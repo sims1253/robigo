@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::{internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
-use crate::env::{Env, BIND_MISSING_DEFAULT};
+use crate::env::{Env, BIND_ACTIVE, BIND_MISSING_DEFAULT};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::{s, Sym};
@@ -349,7 +349,9 @@ fn complex_assign_inner(
 
     // Fast path: `x[i] <- v`, `names(x) <- v`, ... with a builtin
     // replacement function on a local, non-object value: modify in place.
-    if levels.len() == 1 && !superassign && !base_val.is_object() {
+    // (Not for active bindings: their binding holds the function.)
+    let active = env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0);
+    if levels.len() == 1 && !superassign && !base_val.is_object() && !active {
         let l = &levels[0];
         let fname = assign_fun(&l.fun)?;
         if let Value::Sym(fsym) = &fname {

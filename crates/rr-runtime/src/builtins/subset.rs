@@ -29,9 +29,9 @@ pub static DEFS: &[Builtin] = &[
 // ----------------------------------------------------------------------
 // argument evaluation and dispatch
 
-/// R's `R_isMissing` as seen by byte-compiled code: is `sym` (in `env`) a
-/// missing argument, possibly through a chain of promises? Unlike
-/// `missing()`, a formal with a default value is not missing here.
+/// R's `R_isMissing`: is `sym` (in `env`) a missing argument, possibly
+/// through a chain of promises? Unlike for `missing()`, a formal that uses
+/// its default value is not missing here (R marks it `MISSING = 2`).
 // R: envir.c:R_isMissing
 fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
     if sym.is_empty() {

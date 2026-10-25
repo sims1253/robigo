@@ -423,9 +423,14 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
             return Ok(());
         }
         if x.is_null() {
-            work = Some(match y.vtype() {
-                Some(t) => Value::empty_of(t),
-                None => {
+            // coerceVector(NULL, TYPEOF(y))
+            work = Some(match (&y, y.vtype()) {
+                (_, Some(t)) => Value::empty_of(t),
+                (Value::Pairlist(_), _) => return Err(not_subsettable(&Value::Null, None)),
+                (Value::Lang(_), _) => {
+                    return Err(Flow::error("unimplemented type 'NULL' in 'coercePairList'\n"))
+                }
+                _ => {
                     return Err(Flow::error(format!(
                         "invalid type/length ({}/0) in vector allocation",
                         y.type_name()
