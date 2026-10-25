@@ -301,6 +301,12 @@ fn complex_assign(
     }
     interp.ccode_calls.push((interp.frames.len(), call.clone()));
     let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign);
+    // Errors raised with `error()` by the replacement functions report the
+    // assignment call: signal them while its context is still active.
+    let r = match r {
+        Err(Flow::Error(e)) if !e.signaled && e.call.is_none() => Err(interp.signal_error(e)),
+        r => r,
+    };
     interp.ccode_calls.pop();
     r
 }
@@ -426,38 +432,41 @@ fn fast_replace(
     rhs: Value,
     env: &Env,
 ) -> RResult<()> {
+    crate::builtins::subassign::clear_restore();
     // Evaluate the extra (index) arguments while `target` is still bound.
     let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
     let mut argv = Vec::with_capacity(extra.len() + 2);
     argv.push(Arg::pos(Value::Null));
     if b.kind == BuiltinKind::Special {
-        // `[<-` and friends take unevaluated arguments; evaluate the
-        // indices here and pass quoted values.
-        for a in &extra {
-            if a.value.is_missing_arg() {
-                argv.push(a.clone());
-            } else if a.value.as_sym() == Some(s::DOTS) {
-                let ev = interp.eval_args(std::slice::from_ref(a), env, &Value::Null)?;
-                for e in ev {
-                    argv.push(Arg::new(e.tag, quote_if_needed(e.value)));
-                }
-            } else {
-                let v = interp.eval(&a.value, env)?;
-                argv.push(Arg::new(a.tag, quote_if_needed(v)));
+        if b.name == "$<-" {
+            // `$<-` matches its name argument; it is not evaluated.
+            argv.extend(extra.iter().cloned());
+        } else {
+            // `[<-` and friends take unevaluated arguments; evaluate the
+            // indices here (keeping missing ones) and pass quoted values.
+            for e in crate::builtins::subset::eval_keep_missing(interp, &extra, env)? {
+                let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
+                argv.push(Arg::new(e.tag, v));
             }
         }
     } else {
         let ev = interp.eval_args(&extra, env, &Value::Null)?;
         argv.extend(ev);
     }
+    // R's call shows the value of the right-hand side promise.
+    let rhs_shown = rhs.clone();
     argv.push(Arg::new(Some(s::VALUE), if b.kind == BuiltinKind::Special { quote_if_needed(rhs) } else { rhs }));
     // Now take the value out of its binding so we hold the only reference.
-    let obj = env.take_local(target).unwrap_or(Value::Null);
+    let obj = match env.take_local(target).unwrap_or(Value::Null) {
+        // An argument: its promise was forced when the target was looked up.
+        Value::Promise(p) => p.value().unwrap_or(Value::Null),
+        v => v,
+    };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
     cargs.extend(extra);
-    cargs.push(Arg::new(Some(s::VALUE), Value::Sym(Sym::new("value"))));
+    cargs.push(Arg::new(Some(s::VALUE), rhs_shown));
     let rcall = Value::lang(Value::Sym(fsym), cargs);
     let r = if b.kind == BuiltinKind::Special {
         // Specials evaluate their arguments; give them a scratch env where
@@ -468,7 +477,14 @@ fn fast_replace(
     };
     match r {
         Ok(v) => interp.define(target, v, env),
-        Err(f) => Err(f),
+        Err(f) => {
+            // The replacement function owned the object; `[<-` and friends
+            // hand it back (unchanged) when they fail.
+            if let Some(orig) = crate::builtins::subassign::take_restore() {
+                env.set_local(target, orig);
+            }
+            Err(f)
+        }
     }
 }
 

@@ -1,0 +1,57 @@
+[.rec called with 2 args
+[1] "rec"
+[1] "a" "c"
+[[.rec: b 
+[1] 200
+$.rec: c 
+[1] 3.5
+[[.rec: 2 
+[1] 200
+[<-.rec
+[[<-.rec
+$<-.rec: c 
+$a
+[1] 10
+
+$b
+[1] 40
+
+$c
+[1] -30
+
+$<-.rec: d 
+[1] "a" "b" "c" "d"
+$<-.rec: a 
+[1] -7
+[1] "keep"
+[1] 6 7
+[[.keep
+[1] 7
+[<-.keep
+[1] 0 6 7
+[1] "keep"
+y 
+2 
+[1] 1
+[1] "nometh"
+x y 
+1 5 
+[1] 1 2
+attr(,"levels")
+[1] "lo"  "mid" "hi" 
+[1] 1 2 3
+attr(,"levels")
+[1] "lo"  "mid" "hi" 
+[1] 3
+attr(,"levels")
+[1] "lo"  "mid" "hi" 
+[1] "factor"
+[1] "lo"  "mid" "hi" 
+$a
+[1] 10
+
+[1] 40
+[1] 6 7
+[1] "formal classes cannot be used without the 'methods' package"
+[1] "slot" "what"
+[1] "formal classes cannot be used without the 'methods' package"
