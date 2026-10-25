@@ -315,11 +315,8 @@ fn do_format(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
                     if dec == "." { s } else { s.replace('.', &dec) }
                 }))
             }
-            Value::Raw(v) => {
-                // format.default sends raw vectors to as.character(); the
-                // internal formats them as two hex digits.
-                Value::strs_from(v.data.iter().map(|b| format!("{:02x}", b)))
-            }
+            // format.default sends raw vectors to as.character()
+            Value::Raw(_) => return Err(Flow::error("Impossible mode ( x )")),
             Value::Str(v) => {
                 let mut w = wd;
                 if adj != 3 {
