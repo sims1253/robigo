@@ -489,6 +489,30 @@ pub fn strmat2intmat(s: &Value, dnamelist: &Value, call: ECall) -> RResult<Value
     Ok(out)
 }
 
+/// `x[s]` where `x` is an n-d array and `s` an n-column numeric or
+/// character matrix: the equivalent linear subscript (`None` if `s` is not
+/// such a matrix). R reports errors of the two conversions differently in
+/// VectorSubset and VectorAssign, hence the two calls.
+// R: subset.c:VectorSubset, subassign.c:VectorAssign
+pub fn matrix_subscript(x: &Value, s: &Value, str_call: ECall, num_call: ECall) -> RResult<Option<Value>> {
+    if !s.has_attrs() {
+        return Ok(None);
+    }
+    let Some(dim) = dim_of(x) else { return Ok(None) };
+    let Some(sdim) = dim_of(s).filter(|d| d.len() == 2) else { return Ok(None) };
+    if sdim[1] as usize != dim.len() {
+        return Ok(None);
+    }
+    let mut m = s.clone();
+    if matches!(m, Value::Str(_)) {
+        m = strmat2intmat(&m, &get_attrib(x, s::DIMNAMES), str_call)?;
+    }
+    if matches!(m, Value::Int(_) | Value::Real(_)) {
+        m = mat2indsub(&dim, &m, num_call)?;
+    }
+    Ok(Some(m))
+}
+
 // ----------------------------------------------------------------------
 // vector subscripts
 
@@ -580,9 +604,7 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult
     }
     if max >= nx as f64 + 1.0 {
         if canstretch {
-            if max > i32::MAX as f64 {
-                return Err(Flow::error("rr: long vectors are not supported"));
-            }
+            // (saturating; the assignment code rejects lengths rr cannot hold)
             *stretch = max as i64;
         } else {
             return Err(out_of_bounds(call, None));

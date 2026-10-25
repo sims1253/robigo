@@ -290,8 +290,11 @@ fn type_fix(interp: &mut Interp, x: &Value, y: Value, level: u8) -> RResult<Type
     Ok(TypeFix { x_to, y, which })
 }
 
-/// The `check.bounds` warning of EnlargeVector.
+/// The `check.bounds` warning of EnlargeVector (and rr's length limit).
 fn check_bounds(interp: &mut Interp, len: usize, newlen: i64) -> RResult<()> {
+    if newlen > i32::MAX as i64 {
+        return Err(Flow::error("rr: long vectors are not supported"));
+    }
     if let Some(v) = interp.get_option("check.bounds") {
         if crate::coerce::as_logical(&v) == TRUE {
             interp.warning(format!(
@@ -380,27 +383,6 @@ fn assign_values(x: &mut Value, idx: &[i64], y: &Value) {
     }
 }
 
-/// Convert a matrix subscript `s` of array `x` into linear indices
-/// (VectorSubset/VectorAssign).
-fn matrix_index(x: &Value, s: &Value, call: ECall) -> RResult<Option<Value>> {
-    if !s.has_attrs() {
-        return Ok(None);
-    }
-    let Some(dim) = dim_of(x) else { return Ok(None) };
-    let Some(sdim) = dim_of(s).filter(|d| d.len() == 2) else { return Ok(None) };
-    if sdim[1] as usize != dim.len() {
-        return Ok(None);
-    }
-    let mut m = s.clone();
-    if matches!(m, Value::Str(_)) {
-        m = strmat2intmat(&m, &get_attrib(x, s::DIMNAMES), call)?;
-    }
-    if matches!(m, Value::Int(_) | Value::Real(_)) {
-        m = mat2indsub(&dim, &m, call)?;
-    }
-    Ok(Some(m))
-}
-
 // ----------------------------------------------------------------------
 // [<-
 
@@ -486,7 +468,8 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     if x.is_null() && y.is_null() {
         return Ok(());
     }
-    let mat = matrix_index(x, s, None)?;
+    // (R reports numeric matrix subscript errors against the context.)
+    let mat = matrix_subscript(x, s, Some(call), None)?;
     let s = mat.as_ref().unwrap_or(s);
     let mut stretch: i64 = 1;
     let indx = make_subscript(x, s, &mut stretch, None)?;

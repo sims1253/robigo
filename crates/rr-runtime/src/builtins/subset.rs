@@ -354,25 +354,8 @@ fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     if s.is_missing_arg() {
         return Ok(x.clone());
     }
-    let converted;
-    let mut s = s;
-    if s.has_attrs() {
-        if let Some(dim) = dim_of(x) {
-            if let Some(sdim) = dim_of(s).filter(|d| d.len() == 2) {
-                if sdim[1] as usize == dim.len() {
-                    let mut m = s.clone();
-                    if matches!(m, Value::Str(_)) {
-                        m = strmat2intmat(&m, &get_attrib(x, s::DIMNAMES), Some(call))?;
-                    }
-                    if matches!(m, Value::Int(_) | Value::Real(_)) {
-                        m = mat2indsub(&dim, &m, Some(call))?;
-                    }
-                    converted = m;
-                    s = &converted;
-                }
-            }
-        }
-    }
+    let mat = matrix_subscript(x, s, Some(call), Some(call))?;
+    let s = mat.as_ref().unwrap_or(s);
     let mut stretch = 1;
     let indx = make_subscript(x, s, &mut stretch, Some(call))?;
     let mut result = extract_subset(x, &indx.idx, Some(call))?;
