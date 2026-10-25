@@ -132,7 +132,7 @@ fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
 }
 
 thread_local! {
-    static CACHE: RefCell<HashMap<usize, (Value, Rc<Code>)>> = RefCell::new(HashMap::new());
+    static CACHE: RefCell<HashMap<usize, (Value, Rc<Code>), crate::env::FastHash>> = RefCell::new(HashMap::default());
     static ENABLED: bool = std::env::var("RR_COMPILE").map(|v| v != "0").unwrap_or(false);
 }
 
@@ -222,8 +222,8 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
     // Guard results memoized for this run, valid while neither the search
     // path nor the frame's function bindings change. Only used when the
     // frame's parent is on the search path (the common case).
-    let cacheable = env.is_search() || env.parent().is_some_and(|p| p.is_search());
-    let mut guards: Vec<(u64, u32, bool)> = vec![(u64::MAX, 0, false); if cacheable { code.ops.len() } else { 0 }];
+    let cacheable = code.has_guards && (env.is_search() || env.parent().is_some_and(|p| p.is_search()));
+    let mut guards: Vec<(u64, u32, bool)> = if cacheable { vec![(u64::MAX, 0, false); code.ops.len()] } else { Vec::new() };
     let ops = &code.ops;
     let mut pc: usize = 0;
     macro_rules! tryop {

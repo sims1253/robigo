@@ -424,6 +424,19 @@ impl Interp {
     /// slot per formal; `...` gets a `Dots` value (or `None` when empty).
     pub fn match_args(&mut self, formals: &[Arg], supplied: Vec<Arg>, call: &Value) -> RResult<Vec<Option<Value>>> {
         let nf = formals.len();
+        // Fast path: only positional arguments, at most as many as there
+        // are formals before `...`. All three passes reduce to assigning
+        // them in order.
+        if supplied.len() <= nf
+            && supplied.iter().all(|a| a.tag.is_none())
+            && formals[..supplied.len()].iter().all(|f| f.tag != Some(s::DOTS))
+            && !formals[supplied.len()..].iter().any(|f| f.tag == Some(s::DOTS))
+        {
+            let mut out: Vec<Option<Value>> = Vec::with_capacity(nf);
+            out.extend(supplied.into_iter().map(|a| Some(a.value)));
+            out.resize(nf, None);
+            return Ok(out);
+        }
         let mut actuals: Vec<Option<Value>> = vec![None; nf];
         let mut fused = vec![0u8; nf];
         let mut used = vec![0u8; supplied.len()];

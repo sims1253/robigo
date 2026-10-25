@@ -62,6 +62,14 @@ pub struct Code {
     /// A closure body (`Return` ends the call) rather than a standalone
     /// loop (`Return` unwinds to the enclosing function).
     pub is_body: bool,
+    pub has_guards: bool,
+}
+
+impl Code {
+    fn new(ops: Vec<Op>, consts: Vec<Value>, nregs: usize, result: Reg, is_body: bool) -> Code {
+        let has_guards = ops.iter().any(|o| matches!(o, Op::Guard { .. }));
+        Code { ops, consts, nregs, result, is_body, has_guards }
+    }
 }
 
 struct Loop {
@@ -389,7 +397,7 @@ pub fn compile_body(body: &Value) -> Code {
     let mut c = Compiler { ops: Vec::new(), consts: Vec::new(), nregs: 0, loops: Vec::new() };
     let r = c.reg();
     c.expr(body, r);
-    Code { ops: c.ops, consts: c.consts, nregs: c.nregs, result: r, is_body: true }
+    Code::new(c.ops, c.consts, c.nregs, r, true)
 }
 
 /// Compile a loop evaluated outside a compiled body (e.g. at top level).
@@ -410,7 +418,7 @@ pub fn compile_loop(e: &Value) -> Option<Code> {
     let mut c = Compiler { ops: Vec::new(), consts: Vec::new(), nregs: 0, loops: Vec::new() };
     let r = c.reg();
     c.call(l, e, r);
-    Some(Code { ops: c.ops, consts: c.consts, nregs: c.nregs, result: r, is_body: false })
+    Some(Code::new(c.ops, c.consts, c.nregs, r, false))
 }
 
 #[allow(dead_code)]
