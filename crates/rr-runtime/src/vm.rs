@@ -252,6 +252,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
             Op::GetVar { dst, sym } => {
                 let r = interp.eval_sym(*sym, env);
                 let v = tryop!(signal(interp, r));
+                interp.visible = true;
                 regs[*dst as usize] = RVal::V(v);
             }
             Op::SetVar { src, sym } => {
