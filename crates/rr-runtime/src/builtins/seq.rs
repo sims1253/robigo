@@ -91,6 +91,11 @@ pub fn dispatch_or_eval_special(
     env: &Env,
 ) -> RResult<Result<Value, Vec<Arg>>> {
     let pargs = i.promise_args(args, env)?;
+    // With no arguments (after dropping empty `...`), DispatchOrEval
+    // evaluates to list(NULL).
+    if pargs.is_empty() {
+        return Ok(Err(vec![Arg::pos(Value::Null)]));
+    }
     if let Some(first) = pargs.first() {
         let v = match &first.value {
             Value::Promise(p) => i.force_promise(p)?,

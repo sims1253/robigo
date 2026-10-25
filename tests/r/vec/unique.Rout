@@ -20,6 +20,20 @@
 [1] 1 2
 
 NULL
+[[1]]
+NULL
+
+[[2]]
+<environment: R_GlobalEnv>
+
+[[3]]
+a
+
+[[4]]
+b
+
+[1] 1 2
+[1] NA  1
 character(0)
 [1] 1 2
 [1] 2 1

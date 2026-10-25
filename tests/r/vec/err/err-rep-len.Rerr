@@ -1,0 +1,3 @@
+Error in rep_len(1:3, n) : invalid 'length.out' value
+Calls: f -> rep_len
+Execution halted

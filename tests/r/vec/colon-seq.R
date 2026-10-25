@@ -52,4 +52,7 @@ seq.int(-1, 1, length.out = 5)
 sequence(c(3, 2))
 sequence(c(2, 0, 3), from = 5)
 sequence(3, by = -1)
+fx <- c(1L, 2L, NA); levels(fx) <- c("a", "b"); class(fx) <- "factor"
+fy <- c(2L, 1L, 1L); levels(fy) <- c("u", "v", "w"); class(fy) <- "factor"
+unclass(fx:fy)
 seq_len(c(2, 5))
