@@ -8,3 +8,8 @@ authors.workspace = true
 
 [dependencies]
 rr-syntax.workspace = true
+# Regular expressions for grep/sub/regexpr/strsplit (see builtins/grep.rs):
+# regex-automata for POSIX ERE (leftmost-longest via a DFA), fancy-regex for
+# perl = TRUE (look-around, back-references) and EREs with back-references.
+regex-automata = "0.4"
+fancy-regex = "0.16"
