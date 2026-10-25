@@ -224,3 +224,32 @@ fn conformance() {
         panic!("{}", msg);
     }
 }
+
+/// The bytecode VM must not change behaviour: every conformance script
+/// produces identical stdout, stderr and status with RR_COMPILE=1.
+#[test]
+fn compiled_matches_interpreted() {
+    let root = root();
+    let mut scripts = Vec::new();
+    collect(&root.join("tests/r"), &mut scripts);
+    scripts.sort();
+    let run = |script: &Path, compile: bool| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rr"))
+            .arg(script)
+            .env("LANGUAGE", "en")
+            .env("LC_ALL", "C.UTF-8")
+            .env("TZ", "UTC")
+            .env("RR_COMPILE", if compile { "1" } else { "0" })
+            .current_dir(script.parent().unwrap())
+            .output()
+            .expect("spawn rr");
+        (out.stdout, out.stderr, out.status.code())
+    };
+    let mut bad = Vec::new();
+    for s in &scripts {
+        if run(s, false) != run(s, true) {
+            bad.push(s.strip_prefix(&root).unwrap().display().to_string());
+        }
+    }
+    assert!(bad.is_empty(), "compiled and interpreted runs differ for: {:?}", bad);
+}
