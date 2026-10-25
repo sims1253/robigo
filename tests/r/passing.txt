@@ -1,0 +1,1 @@
+# Conformance ratchet: scripts that must keep matching GNU R.

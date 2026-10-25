@@ -1,0 +1,17 @@
+[1] low    high   medium low   
+Levels: high low medium
+[1] "high"   "low"    "medium"
+[1] 3
+[1] 2 1 3 2
+f
+  high    low medium 
+     1      2      1 
+[1] a b
+Levels: b a
+[1] "a" "b"
+x y 
+2 1 
+[1] a
+Levels: a
+[1] one   two   three
+Levels: one two three

@@ -1,0 +1,14 @@
+Dog named Rex 
+Dog named Rex 
+Woof
+generic animal noise
+...
+[1] TRUE
+[1] 0 2
+[1] "dog"    "animal"
+$name
+[1] "Rex"
+
+[1] $1.50  $20.00
+[1] "dog: Rex"
+[1] "a summary"

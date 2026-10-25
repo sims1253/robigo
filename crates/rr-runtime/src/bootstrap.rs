@@ -1,0 +1,65 @@
+//! Loading the base library: GNU R's base-package R sources evaluated in
+//! the base environment on top of rr's builtins.
+
+use std::io::Write;
+
+use crate::interp::Interp;
+use crate::lang::expr_to_value;
+
+static BASE_SOURCES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/base_sources.rs"));
+
+/// One top-level base expression that failed to evaluate.
+pub struct BootFailure {
+    pub file: &'static str,
+    pub line: usize,
+    pub message: String,
+}
+
+/// Evaluate all base sources. Failures of individual top-level
+/// expressions are collected rather than aborting, so that the rest of
+/// base still loads while the runtime is incomplete.
+pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String> {
+    let mut failures = Vec::new();
+    let base = interp.base.clone();
+    // Errors during bootstrap must not be printed.
+    let saved_err = std::mem::replace(&mut interp.err, Box::new(std::io::sink()));
+    for (file, src) in BASE_SOURCES {
+        let exprs = rr_syntax::parse_program(src).map_err(|e| {
+            let (l, c) = rr_syntax::line_col(src, e.offset);
+            format!("{}:{}:{}: {}", file, l, c, e.message)
+        })?;
+        for e in &exprs {
+            let v = expr_to_value(e);
+            interp.frames.clear();
+            interp.handlers = None;
+            interp.restarts = None;
+            match interp.eval(&v, &base) {
+                Ok(_) => {}
+                Err(f) => {
+                    let message = match f {
+                        crate::error::Flow::Error(e) => e.message,
+                        _ => "unexpected control flow".to_string(),
+                    };
+                    let (line, _) = rr_syntax::line_col(src, e.span().start as usize);
+                    failures.push(BootFailure { file, line, message });
+                }
+            }
+        }
+    }
+    interp.warnings.clear();
+    interp.err = saved_err;
+    crate::builtins::post_base_init(interp);
+    Ok(failures)
+}
+
+pub fn load_base(interp: &mut Interp) -> Result<(), String> {
+    let failures = load_base_report(interp)?;
+    if std::env::var_os("RR_BOOT_VERBOSE").is_some() {
+        let mut err = std::io::stderr();
+        for f in &failures {
+            let _ = writeln!(err, "boot: {}:{}: {}", f.file, f.line, f.message);
+        }
+        let _ = writeln!(err, "boot: {} failing top-level expressions", failures.len());
+    }
+    Ok(())
+}
