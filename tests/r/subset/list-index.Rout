@@ -1,0 +1,94 @@
+$alpha
+[1] 1
+
+$beta
+[1] "two"
+
+$alpha
+[1] 1
+
+$beta
+[1] "two"
+
+$beta
+[1] "two"
+
+$gamma
+$gamma$delta
+[1] 4
+
+$gamma$eps
+[1] 5 6 7
+
+
+$alpha
+[1] 1
+
+$gamma
+$gamma$delta
+[1] 4
+
+$gamma$eps
+[1] 5 6 7
+
+
+$alpha
+[1] 1
+
+$<NA>
+NULL
+
+$<NA>
+NULL
+
+[1] 1
+[1] "two"
+[1] 5 6 7
+[1] 6
+[1] 4
+[1] 5 6 7
+[1] 5 6 7
+[1] 7
+NULL
+NULL
+NULL
+NULL
+[1] 1
+[1] 4
+NULL
+[1] 1
+NULL
+NULL
+NULL
+[1] 1
+[1] 3
+[[1]]
+NULL
+
+NULL
+[[1]]
+[1] 1
+
+[[2]]
+[1] "c"
+
+NULL
+NULL
+$a
+[1] 1
+
+$b
+[1] 3
+
+[1] 2
+[1] 3
+[1] ""  "b"
+$names
+[1] "y"
+
+[1] FALSE
+[1] FALSE
+$beta
+[1] "two"
+
+[1] 4
