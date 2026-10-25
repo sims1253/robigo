@@ -71,8 +71,9 @@ impl Interp {
         let base = Env::new_search(Some(empty.clone()), "base");
         let global = Env::new_search(Some(base.clone()), "R_GlobalEnv");
         // The base namespace shares its bindings with the base package
-        // environment; we alias it to the same frame.
-        let base_ns = base.clone();
+        // environment but is a distinct environment whose parent is the
+        // global environment, as in GNU R.
+        let base_ns = Env::alias(&base, Some(global.clone()), "namespace:base");
         let mut interp = Interp {
             global,
             base,

@@ -150,7 +150,7 @@ pub fn install(interp: &mut Interp) {
             }
         }
     });
-    interp.base.set_local(Sym::new(".BaseNamespaceEnv"), Value::Env(interp.base.clone()));
+    interp.base.set_local(Sym::new(".BaseNamespaceEnv"), Value::Env(interp.base_ns.clone()));
     interp.base.set_local(Sym::new(".GlobalEnv"), Value::Env(interp.global.clone()));
     interp.base.set_local(Sym::new("T"), Value::lgl(true));
     interp.base.set_local(Sym::new("F"), Value::lgl(false));

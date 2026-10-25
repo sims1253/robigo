@@ -1,3 +1,4 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
 tests/r/conditions/stop-uncaught.R
+tests/r/lang/missing-dots.R
 tests/r/programs/fizzbuzz.R

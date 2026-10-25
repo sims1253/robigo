@@ -215,7 +215,8 @@ impl<'a, 'i> Reader<'a, 'i> {
         let v = match ty {
             NILVALUE_SXP => return Ok(Value::Null),
             EMPTYENV_SXP => return Ok(Value::Env(self.interp.empty.clone())),
-            BASEENV_SXP | BASENAMESPACE_SXP => return Ok(Value::Env(self.interp.base.clone())),
+            BASEENV_SXP => return Ok(Value::Env(self.interp.base.clone())),
+            BASENAMESPACE_SXP => return Ok(Value::Env(self.interp.base_ns.clone())),
             GLOBALENV_SXP => return Ok(Value::Env(self.interp.global.clone())),
             UNBOUNDVALUE_SXP => return Ok(Value::Null),
             MISSINGARG_SXP => return Ok(Value::missing_arg()),
@@ -832,6 +833,8 @@ impl Writer {
                     self.int(GLOBALENV_SXP as i32);
                 } else if e.special_name().as_deref() == Some("base") {
                     self.int(BASEENV_SXP as i32);
+                } else if e.special_name().as_deref() == Some("namespace:base") {
+                    self.int(BASENAMESPACE_SXP as i32);
                 } else if e.special_name().as_deref() == Some("R_EmptyEnv") {
                     self.int(EMPTYENV_SXP as i32);
                 } else if let Some(i) = self.refs.iter().position(|x| matches!(x, RefKey::Env(y) if y.ptr_eq(e))) {

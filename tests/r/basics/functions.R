@@ -38,6 +38,5 @@ partial <- function(alpha, beta) alpha - beta
 partial(be = 1, al = 10)
 do.call(f, list(1, 2))
 do.call("paste", list("a", "b", sep = "-"))
-Recall
 f2 <- function(n) if (n == 0) 0 else n + Recall(n - 1)
 f2(4)

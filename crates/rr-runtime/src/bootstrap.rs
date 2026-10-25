@@ -20,7 +20,7 @@ pub struct BootFailure {
 /// base still loads while the runtime is incomplete.
 pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String> {
     let mut failures = Vec::new();
-    let base = interp.base.clone();
+    let base = interp.base_ns.clone();
     // Errors during bootstrap must not be printed.
     let saved_err = std::mem::replace(&mut interp.err, Box::new(std::io::sink()));
     for (file, src) in BASE_SOURCES {

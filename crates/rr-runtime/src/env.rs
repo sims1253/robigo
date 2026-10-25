@@ -149,7 +149,9 @@ impl Frame {
 }
 
 pub struct EnvData {
-    pub frame: RefCell<Frame>,
+    /// Shared so that the base namespace and the base package environment
+    /// can be distinct environments over the same bindings, as in GNU R.
+    pub frame: Rc<RefCell<Frame>>,
     pub parent: RefCell<Option<Env>>,
     pub attrs: RefCell<AttrBox>,
     pub locked: Cell<bool>,
@@ -170,13 +172,20 @@ thread_local! {
 
 impl Env {
     pub fn new(parent: Option<Env>) -> Env {
+        Env::with_frame(
+            parent,
+            Rc::new(RefCell::new(Frame { entries: Vec::new(), index: None, search: false })),
+        )
+    }
+
+    fn with_frame(parent: Option<Env>, frame: Rc<RefCell<Frame>>) -> Env {
         let id = NEXT_ENV_ID.with(|c| {
             let v = c.get();
             c.set(v + 1);
             v
         });
         Env(Rc::new(EnvData {
-            frame: RefCell::new(Frame { entries: Vec::new(), index: None, search: false }),
+            frame,
             parent: RefCell::new(parent),
             attrs: RefCell::new(None),
             locked: Cell::new(false),
@@ -184,6 +193,13 @@ impl Env {
             id,
             fn_version: Cell::new(0),
         }))
+    }
+
+    /// A new environment sharing `other`'s bindings (the base namespace).
+    pub fn alias(other: &Env, parent: Option<Env>, name: &str) -> Env {
+        let e = Env::with_frame(parent, other.0.frame.clone());
+        *e.0.name.borrow_mut() = Some(Rc::from(name));
+        e
     }
 
     /// An environment on the search path (global, base, attached).

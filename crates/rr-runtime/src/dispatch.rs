@@ -111,7 +111,7 @@ impl Interp {
     pub fn topenv(&self, env: &Env) -> Env {
         let mut cur = Some(env.clone());
         while let Some(e) = cur {
-            if e.ptr_eq(&self.global) || e.ptr_eq(&self.base) || is_namespace(&e) {
+            if e.ptr_eq(&self.global) || e.ptr_eq(&self.base) || e.ptr_eq(&self.base_ns) || is_namespace(&e) {
                 return e;
             }
             if e.ptr_eq(&self.empty) {

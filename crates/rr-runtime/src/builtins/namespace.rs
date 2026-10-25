@@ -35,7 +35,7 @@ fn name_of(v: &Value, what: &str) -> RResult<String> {
 /// Find a namespace environment, or report R's loadNamespace error.
 pub fn get_namespace(i: &mut Interp, pkg: &str) -> RResult<Env> {
     if pkg == "base" {
-        return Ok(i.base.clone());
+        return Ok(i.base_ns.clone());
     }
     if let Some(e) = i.namespaces.get(pkg) {
         return Ok(e.clone());
@@ -122,7 +122,7 @@ fn do_unregister_ns(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
 fn do_get_registered_ns(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let name = name_of(&arg(&args, 0), "namespace")?;
     if name == "base" {
-        return Ok(Value::Env(i.base.clone()));
+        return Ok(Value::Env(i.base_ns.clone()));
     }
     Ok(i.namespaces.get(&name).map(|e| Value::Env(e.clone())).unwrap_or(Value::Null))
 }
@@ -134,7 +134,7 @@ fn do_is_registered_ns(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
 
 fn do_get_ns_registry(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let e = Env::new(Some(i.empty.clone()));
-    e.set_local(Sym::new("base"), Value::Env(i.base.clone()));
+    e.set_local(Sym::new("base"), Value::Env(i.base_ns.clone()));
     for (k, v) in &i.namespaces {
         e.set_local(Sym::new(k), Value::Env(v.clone()));
     }
