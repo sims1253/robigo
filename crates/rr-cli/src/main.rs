@@ -86,7 +86,13 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
+        interp.source_name = path.clone();
         let ok = interp.run_source(&src, true);
+        if rr_runtime::typeprof::enabled() {
+            let g = interp.global.clone();
+            rr_runtime::typeprof::record_frame(None, &g);
+            rr_runtime::typeprof::write();
+        }
         return finish(&mut interp, ok);
     }
     repl(&mut interp)

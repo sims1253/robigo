@@ -22,6 +22,13 @@ pub fn const_to_value(c: &Const) -> Value {
 }
 
 pub fn expr_to_value(e: &Expr) -> Value {
+    expr_to_value_src(e, None)
+}
+
+/// Like [`expr_to_value`], recording the source positions of function
+/// literals (for type profiling) when `src` is given as (file, text).
+pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
+    let rec = |e: &Expr| expr_to_value_src(e, src);
     match e {
         Expr::Const(c, _) => const_to_value(c),
         Expr::Sym(name, _) => Value::Sym(Sym::new(name)),
@@ -31,25 +38,32 @@ pub fn expr_to_value(e: &Expr) -> Value {
                 .map(|a| {
                     Arg::new(
                         a.name.as_deref().map(Sym::new),
-                        a.value.as_ref().map(expr_to_value).unwrap_or_else(Value::missing_arg),
+                        a.value.as_ref().map(rec).unwrap_or_else(Value::missing_arg),
                     )
                 })
                 .collect();
-            Value::lang(expr_to_value(fun), args)
+            Value::lang(rec(fun), args)
         }
-        Expr::Function { formals, body, .. } => {
+        Expr::Function { formals, body, span } => {
             let formals: Vec<Arg> = formals
                 .iter()
                 .map(|f| {
                     Arg::new(
                         Some(Sym::new(&f.name)),
-                        f.default.as_ref().map(expr_to_value).unwrap_or_else(Value::missing_arg),
+                        f.default.as_ref().map(rec).unwrap_or_else(Value::missing_arg),
                     )
                 })
                 .collect();
+            let body = rec(body);
+            if let Some((file, text)) = src {
+                if crate::typeprof::enabled() {
+                    let (line, col) = rr_syntax::line_col(text, span.start as usize);
+                    crate::typeprof::record_function_span(&body, file, line, col);
+                }
+            }
             Value::lang(
                 Value::Sym(s::FUNCTION),
-                vec![Arg::pos(Value::pairlist(formals)), Arg::pos(expr_to_value(body)), Arg::pos(Value::Null)],
+                vec![Arg::pos(Value::pairlist(formals)), Arg::pos(body), Arg::pos(Value::Null)],
             )
         }
     }

@@ -57,6 +57,8 @@ pub struct Interp {
     /// and starting environment, valid for `fun_cache_epoch`.
     pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,
     pub fun_cache_epoch: u64,
+    /// Name of the script being run (for type profiles).
+    pub source_name: String,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -96,6 +98,7 @@ impl Interp {
             ccode_calls: Vec::new(),
             fun_cache: HashMap::default(),
             fun_cache_epoch: u64::MAX,
+            source_name: "<text>".to_string(),
         };
         crate::builtins::install(&mut interp);
         interp
@@ -636,6 +639,12 @@ impl Interp {
 
     /// Pop the current context, running `on.exit` code.
     pub fn end_context(&mut self, r: RResult<Value>) -> RResult<Value> {
+        if crate::typeprof::enabled() {
+            let ctx = self.frames.last().unwrap();
+            if let Value::Closure(c) = &ctx.function {
+                crate::typeprof::record_frame(Some(&c.body), &ctx.cloenv);
+            }
+        }
         let saved_visible = self.visible;
         let on_exit = std::mem::take(&mut self.frames.last_mut().unwrap().on_exit);
         let mut result = r;
@@ -794,8 +803,9 @@ impl Interp {
             }
         };
         let global = self.global.clone();
+        let file = self.source_name.clone();
         for e in &exprs {
-            let v = crate::lang::expr_to_value(e);
+            let v = crate::lang::expr_to_value_src(e, Some((&file, src)));
             if !self.eval_toplevel(&v, &global, echo_errors_to_stderr) {
                 return false;
             }

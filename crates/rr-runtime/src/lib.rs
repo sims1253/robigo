@@ -16,6 +16,7 @@ pub mod lang;
 pub mod print;
 pub mod serialize;
 pub mod sym;
+pub mod typeprof;
 pub mod value;
 pub mod vm;
 
