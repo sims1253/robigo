@@ -72,6 +72,19 @@ pub static DEFS: &[Builtin] = &[
     internal("dweibull", do_dweibull, 4),
     internal("pweibull", do_pweibull, 5),
     internal("qweibull", do_qweibull, 5),
+    internal("dnbinom", do_dnbinom, 4),
+    internal("pnbinom", do_pnbinom, 5),
+    internal("qnbinom", do_qnbinom, 5),
+    internal("dnbinom_mu", do_dnbinom_mu, 4),
+    internal("pnbinom_mu", do_pnbinom_mu, 5),
+    internal("qnbinom_mu", do_qnbinom_mu, 5),
+    internal("dhyper", do_dhyper, 5),
+    internal("phyper", do_phyper, 6),
+    internal("qhyper", do_qhyper, 6),
+    internal("besselJ", do_besselj, 2),
+    internal("besselY", do_bessely, 2),
+    internal("besselI", do_besseli, 3),
+    internal("besselK", do_besselk, 3),
 ];
 
 // ----------------------------------------------------------------------
@@ -228,6 +241,121 @@ fn math3(i: &mut Interp, sa: &Value, sb: &Value, sc: &Value, f: &dyn Fn(f64, f64
         copy_all_attrs(sc, &mut sy);
     }
     Ok(sy)
+}
+
+/// R: arithmetic.c:math4_1 / math4_2 (`error()` for non-numeric args)
+fn math4(
+    i: &mut Interp,
+    sa: &Value,
+    sb: &Value,
+    sc: &Value,
+    sd: &Value,
+    f: &dyn Fn(f64, f64, f64, f64) -> f64,
+) -> RResult<Value> {
+    if !is_numeric(sa) || !is_numeric(sb) || !is_numeric(sc) || !is_numeric(sd) {
+        return Err(Flow::error(MSG_NONNUM_MATH));
+    }
+    let (na, nb, nc, nd) = (sa.len(), sb.len(), sc.len(), sd.len());
+    if na == 0 || nb == 0 || nc == 0 || nd == 0 {
+        let mut sy = Value::reals(vec![]);
+        if na == 0 {
+            copy_all_attrs(sa, &mut sy);
+        }
+        return Ok(sy);
+    }
+    let n = na.max(nb).max(nc).max(nd);
+    let (a, b, c, d) = (reals(sa), reals(sb), reals(sc), reals(sd));
+    nmath::take_warnings();
+    let mut naflag = false;
+    let mut y = Vec::with_capacity(n);
+    for k in 0..n {
+        let (ai, bi, ci, di) = (a[k % na], b[k % nb], c[k % nc], d[k % nd]);
+        let v = match na_result(&[ai, bi, ci, di]) {
+            Some(v) => v,
+            None => {
+                let v = f(ai, bi, ci, di);
+                if v.is_nan() {
+                    naflag = true;
+                }
+                v
+            }
+        };
+        y.push(v);
+    }
+    emit_nmath_warnings(i)?;
+    if naflag {
+        i.warning("NaNs produced")?;
+    }
+    let mut sy = Value::reals(y);
+    if n == na {
+        copy_all_attrs(sa, &mut sy);
+    } else if n == nb {
+        copy_all_attrs(sb, &mut sy);
+    } else if n == nc {
+        copy_all_attrs(sc, &mut sy);
+    } else if n == nd {
+        copy_all_attrs(sd, &mut sy);
+    }
+    Ok(sy)
+}
+
+/// R: arithmetic.c:math2B / math3B for the Bessel functions. `args` are
+/// (x, nu) or (x, nu, expo).
+fn bessel(
+    i: &mut Interp,
+    args: &[Arg],
+    f: &dyn Fn(&[f64], &[f64], &[f64]) -> (Vec<f64>, bool),
+) -> RResult<Value> {
+    if args.iter().any(|a| !is_numeric(&a.value)) {
+        return Err(Flow::error(MSG_NONNUM_MATH));
+    }
+    let sa = &args[0].value;
+    if args.iter().any(|a| a.value.is_empty()) {
+        let mut sy = Value::reals(vec![]);
+        if sa.is_empty() {
+            copy_all_attrs(sa, &mut sy);
+        }
+        return Ok(sy);
+    }
+    let x = reals(sa);
+    let nu = reals(&args[1].value);
+    let expo = args.get(2).map(|a| reals(&a.value)).unwrap_or_default();
+    nmath::take_warnings();
+    let (y, naflag) = f(&x, &nu, &expo);
+    emit_nmath_warnings(i)?;
+    if naflag {
+        i.warning("NaNs produced")?;
+    }
+    let n = y.len();
+    let mut sy = Value::reals(y);
+    if n == sa.len() {
+        copy_all_attrs(sa, &mut sy);
+    } else if n == args[1].value.len() {
+        copy_all_attrs(&args[1].value, &mut sy);
+    } else if let Some(e) = args.get(2).filter(|e| e.value.len() == n) {
+        copy_all_attrs(&e.value, &mut sy);
+    }
+    Ok(sy)
+}
+
+fn do_besselj(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 2, "besselJ", call)?;
+    bessel(i, &args, &|x, nu, _| nmath::bessel::bessel_j_vec(x, nu))
+}
+
+fn do_bessely(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 2, "besselY", call)?;
+    bessel(i, &args, &|x, nu, _| nmath::bessel::bessel_y_vec(x, nu))
+}
+
+fn do_besseli(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 3, "besselI", call)?;
+    bessel(i, &args, &nmath::bessel::bessel_i_vec)
+}
+
+fn do_besselk(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 3, "besselK", call)?;
+    bessel(i, &args, &nmath::bessel::bessel_k_vec)
 }
 
 fn arity(args: &[Arg], n: usize, name: &str, _call: &Value) -> RResult<()> {
@@ -684,6 +812,39 @@ m3_2!(do_qnorm, "qnorm", nn::qnorm);
 m3_1!(do_dunif, "dunif", nd::dunif);
 m3_2!(do_punif, "punif", nd::punif);
 m3_2!(do_qunif, "qunif", nd::qunif);
+m3_1!(do_dnbinom, "dnbinom", nmath::nbinom::dnbinom);
+m3_2!(do_pnbinom, "pnbinom", nmath::nbinom::pnbinom);
+m3_2!(do_qnbinom, "qnbinom", nmath::nbinom::qnbinom);
+m3_1!(do_dnbinom_mu, "dnbinom_mu", nmath::nbinom::dnbinom_mu);
+m3_2!(do_pnbinom_mu, "pnbinom_mu", nmath::nbinom::pnbinom_mu);
+m3_2!(do_qnbinom_mu, "qnbinom_mu", nmath::nbinom::qnbinom_mu);
+
+fn do_dhyper(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 5, "dhyper", call)?;
+    let lg = flag(&args[4].value);
+    math4(i, &args[0].value, &args[1].value, &args[2].value, &args[3].value, &|a, b, c, d| {
+        nmath::hyper::dhyper(a, b, c, d, lg)
+    })
+}
+
+fn do_phyper(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 6, "phyper", call)?;
+    let lt = flag(&args[4].value);
+    let lg = flag(&args[5].value);
+    math4(i, &args[0].value, &args[1].value, &args[2].value, &args[3].value, &|a, b, c, d| {
+        nmath::hyper::phyper(a, b, c, d, lt, lg)
+    })
+}
+
+fn do_qhyper(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    arity(&args, 6, "qhyper", call)?;
+    let lt = flag(&args[4].value);
+    let lg = flag(&args[5].value);
+    math4(i, &args[0].value, &args[1].value, &args[2].value, &args[3].value, &|a, b, c, d| {
+        nmath::hyper::qhyper(a, b, c, d, lt, lg)
+    })
+}
+
 m3_1!(do_dweibull, "dweibull", nd::dweibull);
 m3_2!(do_pweibull, "pweibull", nd::pweibull);
 m3_2!(do_qweibull, "qweibull", nd::qweibull);

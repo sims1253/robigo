@@ -17,13 +17,16 @@
 
 use std::cell::RefCell;
 
+pub mod bessel;
 pub mod beta;
 pub mod binom;
 pub mod dist;
 pub mod fdist;
 pub mod fround;
 pub mod gamma;
+pub mod hyper;
 pub mod ldouble;
+pub mod nbinom;
 pub mod norm;
 pub mod pgamma;
 pub mod polygamma;

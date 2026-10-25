@@ -891,6 +891,36 @@ rand2!(do_runif, "runif", nr::runif);
 rand2!(do_rweibull, "rweibull", nr::rweibull);
 rand2!(do_rwilcox, "rwilcox", nr::rwilcox);
 
-fn do_rhyper(_i: &mut Interp, _call: &Value, _args: Vec<Arg>, _env: &Env) -> RResult<Value> {
-    Err(Flow::error("rr: 'rhyper' is not implemented yet"))
+/// R: random.c:do_random3 (only rhyper)
+fn do_rhyper(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    check_arity(&args, 4, "rhyper", call)?;
+    let n = random_n(&args[0].value)?;
+    let mut x = try_alloc::<f64>(n)?;
+    if n == 0 {
+        return Ok(Value::reals(x));
+    }
+    let (sa, sb, sc) = (&args[1].value, &args[2].value, &args[3].value);
+    if !is_numeric(sa) || !is_numeric(sb) || !is_numeric(sc) {
+        return Err(invalid());
+    }
+    let (a, b, c) = (real_vec(sa), real_vec(sb), real_vec(sc));
+    if a.is_empty() || b.is_empty() || c.is_empty() {
+        x.resize(n, NA_REAL);
+        i.warning("NAs produced")?;
+        return Ok(Value::reals(x));
+    }
+    get_rng_state(i)?;
+    let mut naflag = false;
+    for k in 0..n {
+        let v = crate::nmath::hyper::rhyper(&mut i.rng, a[k % a.len()], b[k % b.len()], c[k % c.len()]);
+        if v.is_nan() {
+            naflag = true;
+        }
+        x.push(v);
+    }
+    if naflag {
+        i.warning("NAs produced")?;
+    }
+    put_rng_state(i)?;
+    Ok(Value::reals(x))
 }
