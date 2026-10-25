@@ -26,7 +26,6 @@ pub static DEFS: &[Builtin] = &[
     internal("Sys.info", do_sysinfo, 0),
     internal("Sys.getlocale", do_getlocale, 1),
     internal("Sys.setlocale", do_setlocale, 2),
-    internal("l10n_info", do_l10n_info, 0),
     super::prim("proc.time", do_proctime, 0),
     internal("date", do_date, 0),
     internal("commandArgs", do_command_args, 0),
@@ -43,8 +42,6 @@ pub static DEFS: &[Builtin] = &[
     internal("dir.create", do_dircreate, 4).invisible(),
     internal("getwd", do_getwd, 0),
     internal("setwd", do_setwd, 1).invisible(),
-    internal("basename", do_basename, 1),
-    internal("dirname", do_dirname, 1),
     internal("normalizePath", do_normalizepath, 3),
     internal("path.expand", do_pathexpand, 1),
 ];
@@ -61,7 +58,6 @@ unsafe extern "C" {
     fn getpwuid(uid: u32) -> *mut Passwd;
     fn getrusage(who: c_int, usage: *mut RUsage) -> c_int;
     fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
-    fn nl_langinfo(item: c_int) -> *mut c_char;
 }
 
 #[repr(C)]
@@ -400,7 +396,6 @@ const LC_MESSAGES: c_int = 5;
 const LC_ALL: c_int = 6;
 const LC_PAPER: c_int = 7;
 const LC_MEASUREMENT: c_int = 11;
-const CODESET: c_int = 14;
 
 /// R sets these categories from the environment at startup.
 fn init_locale() {
@@ -481,20 +476,6 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             Ok(Value::str(""))
         }
     }
-}
-
-fn do_l10n_info(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    init_locale();
-    let codeset = cstr(unsafe { nl_langinfo(CODESET) }).unwrap_or_default();
-    let lc = codeset.to_ascii_lowercase();
-    let utf8 = lc == "utf-8" || lc == "utf8";
-    let latin1 = lc == "iso-8859-1" || lc == "iso8859-1" || lc == "latin1";
-    Ok(Value::named_list(vec![
-        ("MBCS", Value::lgl(utf8)),
-        ("UTF-8", Value::lgl(utf8)),
-        ("Latin-1", Value::lgl(latin1)),
-        ("codeset", Value::str(&codeset)),
-    ]))
 }
 
 // ----------------------------------------------------------------------
@@ -987,45 +968,6 @@ fn do_setwd(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Val
         return Err(Flow::error("cannot change working directory"));
     }
     Ok(wd)
-}
-
-fn do_basename(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let s = str_vec(&arg(&args, 0), "a character vector argument expected")?;
-    Ok(Value::strs(
-        s.iter()
-            .map(|p| {
-                p.as_ref().map(|p| {
-                    let pp = expand_file_name(p);
-                    let t = pp.trim_end_matches(['/', '\\']);
-                    let start = t.rfind(['/', '\\']).map(|k| k + 1).unwrap_or(0);
-                    std::rc::Rc::from(&t[start..])
-                })
-            })
-            .collect(),
-    ))
-}
-
-fn do_dirname(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let s = str_vec(&arg(&args, 0), "a character vector argument expected")?;
-    Ok(Value::strs(
-        s.iter()
-            .map(|p| {
-                p.as_ref().map(|p| {
-                    let pp = expand_file_name(p);
-                    if pp.is_empty() {
-                        return std::rc::Rc::from("");
-                    }
-                    let t = pp.trim_end_matches('/');
-                    if t.is_empty() {
-                        return std::rc::Rc::from("/");
-                    }
-                    let Some(k) = t.rfind('/') else { return std::rc::Rc::from(".") };
-                    let d = t[..k].trim_end_matches('/');
-                    if d.is_empty() { std::rc::Rc::from("/") } else { std::rc::Rc::from(d) }
-                })
-            })
-            .collect(),
-    ))
 }
 
 fn do_normalizepath(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

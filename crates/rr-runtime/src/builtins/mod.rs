@@ -348,3 +348,18 @@ pub fn int_arg(v: &Value, what: &str) -> RResult<i32> {
     }
     Ok(i)
 }
+
+#[cfg(test)]
+mod tests {
+    /// Each primitive and each .Internal is defined by exactly one module.
+    #[test]
+    fn no_duplicate_registrations() {
+        let mut seen = std::collections::HashSet::new();
+        let dups: Vec<_> = super::all_builtins()
+            .into_iter()
+            .filter(|b| !seen.insert((b.internal, b.name)))
+            .map(|b| b.name)
+            .collect();
+        assert!(dups.is_empty(), "builtins registered twice: {:?}", dups);
+    }
+}

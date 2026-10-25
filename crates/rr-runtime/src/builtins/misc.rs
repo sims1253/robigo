@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::{arg, check_arity, internal, prim, special};
-use crate::coerce::{as_integer, as_logical, CoerceWarnings};
+use crate::coerce::{as_integer, CoerceWarnings};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -23,8 +23,6 @@ pub static DEFS: &[Builtin] = &[
     prim("Arg", do_arg, 1),
     prim("Conj", do_conj, 1),
     internal("polyroot", do_polyroot, 1),
-    internal("charToRaw", do_char_to_raw, 1),
-    internal("rawToChar", do_raw_to_char, 2),
     internal("rawShift", do_raw_shift, 2),
     internal("intToBits", do_int_to_bits, 1),
     internal("rawToBits", do_raw_to_bits, 1),
@@ -207,35 +205,6 @@ fn raw_arg(v: &Value, what: &str) -> RResult<Vec<u8>> {
     match v {
         Value::Raw(r) => Ok(r.data.clone()),
         _ => Err(Flow::error(format!("argument '{}' must be a raw vector", what))),
-    }
-}
-
-fn do_char_to_raw(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = arg(&args, 0);
-    let Value::Str(s) = &x else { return Err(Flow::error("argument must be a character vector of length 1")) };
-    if s.data.is_empty() {
-        return Ok(Value::raws(vec![]));
-    }
-    if s.data.len() > 1 {
-        i.warning("argument should be a character vector of length 1\nall but the first element will be ignored")?;
-    }
-    Ok(Value::raws(s.data[0].as_deref().unwrap_or("NA").as_bytes().to_vec()))
-}
-
-fn do_raw_to_char(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = raw_arg(&arg(&args, 0), "x")?;
-    let multiple = as_logical(&arg(&args, 1));
-    if multiple == NA_LOGICAL {
-        return Err(Flow::error("argument 'multiple' must be TRUE or FALSE"));
-    }
-    if multiple != 0 {
-        Ok(Value::strs(x.iter().map(|b| rstr(&String::from_utf8_lossy(&[*b]))).collect()))
-    } else {
-        let end = x.iter().rposition(|b| *b != 0).map(|p| p + 1).unwrap_or(0);
-        if x[..end].contains(&0) {
-            return Err(Flow::error("embedded nul in string: '...'"));
-        }
-        Ok(Value::str(&String::from_utf8_lossy(&x[..end])))
     }
 }
 

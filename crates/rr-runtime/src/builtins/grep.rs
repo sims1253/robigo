@@ -728,6 +728,8 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
     let mut group_starts: Vec<usize> = Vec::new();
     let mut in_class = false;
     let mut class_start_i = 0usize;
+    // start (in `out`) of the open bracket expression
+    let mut class_out_start = 0usize;
     let mut depth = 0usize;
     let mut last_was_quant = false;
     while i < b.len() {
@@ -738,6 +740,9 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
                     out.push(']');
                     in_class = false;
                     i += 1;
+                    // a bracket expression is a repeatable atom
+                    atom_start = Some(class_out_start);
+                    last_was_quant = false;
                 }
                 '[' if b.get(i + 1) == Some(&':') => {
                     // POSIX class [:name:]
@@ -937,6 +942,7 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
             }
             '[' => {
                 in_class = true;
+                class_out_start = this_start;
                 out.push('[');
                 i += 1;
                 if b.get(i) == Some(&'^') {

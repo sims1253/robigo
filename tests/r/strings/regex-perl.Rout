@@ -132,3 +132,8 @@ attr(,"index.type")
 [1] "chars"
 attr(,"useBytes")
 [1] TRUE
+[1] "x"
+[1] "-x-"
+character(0)
+[1] "aa"
+[1] "hi"    "there"

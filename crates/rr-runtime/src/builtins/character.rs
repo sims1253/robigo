@@ -8,7 +8,6 @@
 //! there are no latin1 or "bytes" encoded strings. Code paths of GNU R
 //! for other encodings are therefore not ported.
 
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::{internal, prim};
@@ -30,7 +29,6 @@ pub static DEFS: &[Builtin] = &[
     internal("endsWith", do_endswith, 2),
     internal("abbreviate", do_abbrev, 3),
     internal("make.names", do_makenames, 2),
-    internal("make.unique", do_makeunique, 2),
     internal("tolower", do_tolower, 1),
     internal("toupper", do_toupper, 1),
     internal("chartr", do_chartr, 3),
@@ -744,57 +742,6 @@ fn do_makenames(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(Value::strs(out))
 }
 
-// R: unique.c:do_makeunique
-fn do_makeunique(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity_internal(&args, 2, "make.unique")?;
-    let Value::Str(names) = &args[0].value else {
-        return Err(Flow::error("'names' must be a character vector"));
-    };
-    let sep = match &args[1].value {
-        Value::Str(s) if s.data.len() == 1 => s.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
-        _ => return Err(Flow::error("'sep' must be a character string")),
-    };
-    let n = names.data.len();
-    let mut ans = names.data.clone();
-    if n > 1 {
-        let mut seen: HashSet<RStr> = HashSet::new();
-        // index of first occurrence (1-based) for duplicates, 0 otherwise
-        let mut first: std::collections::HashMap<RStr, usize> = std::collections::HashMap::new();
-        let mut dup = vec![0usize; n];
-        for (i, nm) in names.data.iter().enumerate() {
-            match first.get(nm) {
-                Some(&f) => dup[i] = f + 1,
-                None => {
-                    first.insert(nm.clone(), i);
-                    seen.insert(nm.clone());
-                }
-            }
-        }
-        let mut cnts = vec![1usize; n];
-        for i in 1..n {
-            let dp = dup[i];
-            if dp == 0 {
-                continue;
-            }
-            let ss: &str = names.data[i].as_deref().unwrap_or("NA");
-            let mut cnt = cnts[dp - 1];
-            let mut newx: RStr = None;
-            while cnt < n {
-                let cand: RStr = Some(Rc::from(format!("{}{}{}", ss, sep, cnt).as_str()));
-                newx = cand.clone();
-                if !seen.contains(&cand) {
-                    break;
-                }
-                cnt += 1;
-            }
-            ans[i] = newx.clone();
-            seen.insert(newx);
-            cnts[dp - 1] = cnt + 1;
-        }
-    }
-    Ok(Value::strs(ans))
-}
-
 // ----------------------------------------------------------------------
 // tolower, toupper, chartr
 
@@ -1205,6 +1152,30 @@ fn parse_enc(e: &str) -> Option<Enc> {
     }
 }
 
+/// Whether the C library's iconv knows the conversion; R reports a failing
+/// `iconv_open` as an unsupported conversion. "" is the native encoding.
+fn system_iconv_supports(from: &str, to: &str) -> bool {
+    use std::ffi::{c_char, c_void, CString};
+    unsafe extern "C" {
+        fn iconv_open(tocode: *const c_char, fromcode: *const c_char) -> *mut c_void;
+        fn iconv_close(cd: *mut c_void) -> i32;
+    }
+    let native = |e: &str| if e.is_empty() { "UTF-8".to_string() } else { e.to_string() };
+    let (Ok(f), Ok(t)) = (CString::new(native(from)), CString::new(native(to))) else {
+        return false;
+    };
+    // SAFETY: both arguments are valid NUL-terminated strings; the
+    // descriptor is closed right away.
+    unsafe {
+        let cd = iconv_open(t.as_ptr(), f.as_ptr());
+        if cd as isize == -1 {
+            return false;
+        }
+        iconv_close(cd);
+    }
+    true
+}
+
 // R: sysutils.c:do_iconv (UTF-8 and ASCII only)
 fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 6, "iconv")?;
@@ -1230,6 +1201,9 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Err(Flow::error("invalid 'toRaw' argument"));
     }
     let (Some(fenc), Some(tenc)) = (parse_enc(&from), parse_enc(&to)) else {
+        if !system_iconv_supports(&from, &to) {
+            return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", from, to)));
+        }
         return Err(Flow::error(format!("rr: iconv() from '{}' to '{}' is not implemented yet", from, to)));
     };
     // Inputs: strings, or a list of raw vectors / NULL.
