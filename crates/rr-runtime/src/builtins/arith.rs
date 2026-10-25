@@ -288,7 +288,26 @@ fn check_recycling(interp: &mut Interp, call: &Value, nx: usize, ny: usize) -> R
     Ok(())
 }
 
+/// Fast path: attribute-free scalars of type double (or int with double).
+#[inline]
+fn scalar_arith(op: ArithOp, x: &Value, y: &Value) -> Option<Value> {
+    let a = match x {
+        Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0],
+        Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() && matches!(y, Value::Real(_)) => int_to_real(v.data[0]),
+        _ => return None,
+    };
+    let b = match y {
+        Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0],
+        Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => int_to_real(v.data[0]),
+        _ => return None,
+    };
+    Some(Value::real(real_op(op, a, b)))
+}
+
 pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y: Value) -> RResult<Value> {
+    if let Some(v) = scalar_arith(op, &x, &y) {
+        return Ok(v);
+    }
     let mut x = fixup(x, call)?;
     let mut y = fixup(y, call)?;
     let (nx, ny) = (x.len(), y.len());
@@ -330,8 +349,8 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
             Value::cplxs(out)
         }
         (Value::Real(_), _) | (_, Value::Real(_)) => {
-            let a: Rc<[f64]> = real_view(&x);
-            let b: Rc<[f64]> = real_view(&y);
+            let a = real_view(&x);
+            let b = real_view(&y);
             let mut out = Vec::with_capacity(n);
             if nx == n && ny == n {
                 for i in 0..n {
@@ -368,11 +387,11 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
     Ok(val)
 }
 
-fn real_view(v: &Value) -> Rc<[f64]> {
+fn real_view(v: &Value) -> std::borrow::Cow<'_, [f64]> {
     match v {
-        Value::Real(r) => Rc::from(r.data.as_slice()),
-        Value::Int(iv) | Value::Lgl(iv) => iv.data.iter().map(|&i| int_to_real(i)).collect(),
-        _ => Rc::from(Vec::new()),
+        Value::Real(r) => std::borrow::Cow::Borrowed(r.data.as_slice()),
+        Value::Int(iv) | Value::Lgl(iv) => std::borrow::Cow::Owned(iv.data.iter().map(|&i| int_to_real(i)).collect()),
+        _ => std::borrow::Cow::Owned(Vec::new()),
     }
 }
 

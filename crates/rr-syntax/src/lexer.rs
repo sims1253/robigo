@@ -99,7 +99,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn err(&self, message: impl Into<String>, offset: usize, incomplete: bool) -> ParseError {
-        ParseError { message: message.into(), offset, incomplete }
+        ParseError { message: message.into(), offset, end: self.pos.max(offset + 1), incomplete }
     }
 
     pub fn tokenize(mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {

@@ -104,6 +104,8 @@ impl Arg {
 pub struct ParseError {
     pub message: String,
     pub offset: usize,
+    /// Byte offset just past the offending token.
+    pub end: usize,
     /// True when the input ended before the expression was complete; a REPL
     /// should read another line instead of reporting the error.
     pub incomplete: bool,

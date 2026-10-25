@@ -107,8 +107,11 @@ impl<'a> Parser<'a> {
             Tok::Eof => "end of input".to_string(),
             Tok::Newline => "end of line".to_string(),
             Tok::Str(_) => "string constant".to_string(),
+            Tok::Const(Const::Null) => "NULL_CONST".to_string(),
             Tok::Const(_) => "numeric constant".to_string(),
             Tok::Sym(_) => "symbol".to_string(),
+            Tok::Special(_) => "SPECIAL".to_string(),
+            Tok::LeftAssign(_) | Tok::RightAssign(_) => "assignment".to_string(),
             _ => format!("'{}'", &self.src[t.span.start as usize..t.span.end as usize]),
         }
     }
@@ -117,6 +120,7 @@ impl<'a> Parser<'a> {
         ParseError {
             message: format!("unexpected {}", self.token_text(t)),
             offset: t.span.start as usize,
+            end: t.span.end as usize,
             incomplete: t.tok == Tok::Eof,
         }
     }
@@ -234,7 +238,12 @@ impl<'a> Parser<'a> {
     }
 
     fn pipe(&mut self, lhs: Expr, rhs: Expr, op_span: Span) -> Result<Expr, ParseError> {
-        let err = |msg: &str| ParseError { message: msg.to_string(), offset: op_span.start as usize, incomplete: false };
+        let err = |msg: &str| ParseError {
+            message: msg.to_string(),
+            offset: op_span.start as usize,
+            end: op_span.end as usize,
+            incomplete: false,
+        };
         match rhs {
             Expr::Call { fun, mut args, span } => {
                 if let Expr::Sym(name, _) = fun.as_ref() {
@@ -416,6 +425,7 @@ impl<'a> Parser<'a> {
                 return Err(ParseError {
                     message: format!("repeated formal argument '{}'", name),
                     offset: t.span.start as usize,
+                    end: t.span.end as usize,
                     incomplete: false,
                 });
             }

@@ -90,6 +90,8 @@ predefined! {
 struct Interner {
     names: Vec<Rc<str>>,
     map: HashMap<Rc<str>, Sym>,
+    /// `..n` index of each symbol, 0 if it is not of that form.
+    ddvals: Vec<u32>,
 }
 
 thread_local! {
@@ -109,6 +111,8 @@ impl Interner {
         }
         let rc: Rc<str> = Rc::from(name);
         let sym = Sym(self.names.len() as u32);
+        let dd = name.strip_prefix("..").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
+        self.ddvals.push(dd);
         self.names.push(rc.clone());
         self.map.insert(rc, sym);
         sym
@@ -133,8 +137,14 @@ impl Sym {
     }
 
     /// `..1`, `..2`, ...: returns the 1-based index.
+    #[inline]
     pub fn ddval(self) -> Option<usize> {
-        self.with_name(|n| n.strip_prefix("..").and_then(|d| d.parse::<usize>().ok()).filter(|&d| d > 0))
+        let d = INTERNER.with(|i| i.borrow().ddvals[self.0 as usize]);
+        if d > 0 {
+            Some(d as usize)
+        } else {
+            None
+        }
     }
 }
 

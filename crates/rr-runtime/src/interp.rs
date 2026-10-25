@@ -64,7 +64,7 @@ impl Interp {
 
     pub fn with_output(out: Box<dyn Write>, err: Box<dyn Write>) -> Interp {
         let empty = Env::named(None, "R_EmptyEnv");
-        let base = Env::named(Some(empty.clone()), "base");
+        let base = Env::new_base(Some(empty.clone()), "base");
         let global = Env::named(Some(base.clone()), "R_GlobalEnv");
         // The base namespace shares its bindings with the base package
         // environment; we alias it to the same frame.
@@ -217,6 +217,13 @@ impl Interp {
 
     /// Look up a function binding, skipping non-function values.
     pub fn find_fun(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
+        // Nothing outside base binds this symbol: go straight to base.
+        if crate::env::shadow_count(sym) == 0 {
+            let found = self.base.0.frame.borrow().get(sym).filter(|b| b.flags == 0).map(|b| b.value.clone());
+            if let Some(v @ (Value::Builtin(_) | Value::Closure(_))) = found {
+                return Ok(v);
+            }
+        }
         let mut cur = env.clone();
         loop {
             let found = {

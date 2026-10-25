@@ -3,6 +3,9 @@ use std::process::ExitCode;
 
 use rr_runtime::Interp;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "\
 usage: rr [options] [FILE]
 
@@ -20,6 +23,12 @@ fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("parse") {
         return parse_cmd(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("--list-builtins") {
+        for b in rr_runtime::builtins::all_builtins() {
+            println!("{}\t{}", b.name, if b.internal { "internal" } else { "primitive" });
+        }
+        return ExitCode::SUCCESS;
     }
     let mut load_base = true;
     let mut exprs: Vec<String> = Vec::new();
@@ -54,6 +63,8 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    #[cfg(feature = "profile")]
+    let _profiler = Profiler::start();
     let mut interp = Interp::new();
     if load_base {
         if let Err(msg) = rr_runtime::bootstrap::load_base(&mut interp) {
@@ -79,6 +90,34 @@ fn main() -> ExitCode {
         return finish(&mut interp, ok);
     }
     repl(&mut interp)
+}
+
+/// With `--features profile`, `RR_PROFILE=out.svg rr script.R` writes a
+/// flamegraph of the run.
+#[cfg(feature = "profile")]
+struct Profiler(Option<pprof::ProfilerGuard<'static>>);
+
+#[cfg(feature = "profile")]
+impl Profiler {
+    fn start() -> Profiler {
+        if std::env::var_os("RR_PROFILE").is_none() {
+            return Profiler(None);
+        }
+        Profiler(pprof::ProfilerGuardBuilder::default().frequency(997).build().ok())
+    }
+}
+
+#[cfg(feature = "profile")]
+impl Drop for Profiler {
+    fn drop(&mut self) {
+        if let (Some(g), Some(path)) = (self.0.take(), std::env::var_os("RR_PROFILE")) {
+            if let Ok(report) = g.report().build() {
+                if let Ok(f) = std::fs::File::create(&path) {
+                    let _ = report.flamegraph(f);
+                }
+            }
+        }
+    }
 }
 
 fn finish(interp: &mut Interp, ok: bool) -> ExitCode {

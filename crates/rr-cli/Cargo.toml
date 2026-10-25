@@ -13,3 +13,8 @@ path = "src/main.rs"
 [dependencies]
 rr-syntax.workspace = true
 rr-runtime.workspace = true
+mimalloc = { version = "0.1", default-features = false }
+pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+
+[features]
+profile = ["dep:pprof"]

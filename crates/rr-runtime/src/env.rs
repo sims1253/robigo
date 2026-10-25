@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use crate::sym::Sym;
@@ -19,12 +20,74 @@ pub struct Binding {
     pub flags: u8,
 }
 
+/// Hasher for interned symbols: they are small integers already, so a
+/// multiplicative mix is enough (SipHash showed up in variable lookup).
+#[derive(Default)]
+pub struct SymHasher(u64);
+
+impl Hasher for SymHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ *b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u32(&mut self, n: u32) {
+        self.0 = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type SymMap<V> = HashMap<Sym, V, BuildHasherDefault<SymHasher>>;
+
 /// Frames are small vectors; large ones (globals, base, namespaces) get a
 /// hash index.
 #[derive(Default)]
 pub struct Frame {
     pub entries: Vec<Binding>,
-    index: Option<HashMap<Sym, usize>>,
+    index: Option<SymMap<usize>>,
+    /// Bindings in this frame count towards [`shadow_count`] (all frames
+    /// except the base environment's).
+    counted: bool,
+}
+
+thread_local! {
+    /// Number of bindings of each symbol in environments other than base.
+    /// When it is zero, a lookup from any environment ends in base, so the
+    /// evaluator can skip walking the environment chain.
+    static SHADOW: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// See [`SHADOW`].
+#[inline]
+pub fn shadow_count(sym: Sym) -> u32 {
+    SHADOW.with(|s| s.borrow().get(sym.0 as usize).copied().unwrap_or(0))
+}
+
+fn shadow_adjust(sym: Sym, up: bool) {
+    SHADOW.with(|s| {
+        let mut s = s.borrow_mut();
+        let i = sym.0 as usize;
+        if s.len() <= i {
+            s.resize(i + 1, 0);
+        }
+        if up {
+            s[i] += 1;
+        } else {
+            s[i] = s[i].saturating_sub(1);
+        }
+    });
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        if self.counted {
+            for b in &self.entries {
+                shadow_adjust(b.sym, false);
+            }
+        }
+    }
 }
 
 const INDEX_THRESHOLD: usize = 12;
@@ -53,6 +116,9 @@ impl Frame {
             return;
         }
         self.entries.push(Binding { sym, value, flags });
+        if self.counted {
+            shadow_adjust(sym, true);
+        }
         let n = self.entries.len();
         match &mut self.index {
             Some(ix) => {
@@ -68,6 +134,9 @@ impl Frame {
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
         let b = self.entries.remove(i);
+        if self.counted {
+            shadow_adjust(sym, false);
+        }
         if let Some(ix) = &mut self.index {
             ix.remove(&sym);
             for (j, e) in self.entries.iter().enumerate().skip(i) {
@@ -103,13 +172,20 @@ impl Env {
             v
         });
         Env(Rc::new(EnvData {
-            frame: RefCell::new(Frame::default()),
+            frame: RefCell::new(Frame { entries: Vec::new(), index: None, counted: true }),
             parent: RefCell::new(parent),
             attrs: RefCell::new(None),
             locked: Cell::new(false),
             name: RefCell::new(None),
             id,
         }))
+    }
+
+    /// The base environment: its bindings do not count as shadowing.
+    pub fn new_base(parent: Option<Env>, name: &str) -> Env {
+        let e = Env::named(parent, name);
+        e.0.frame.borrow_mut().counted = false;
+        e
     }
 
     pub fn named(parent: Option<Env>, name: &str) -> Env {

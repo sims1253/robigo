@@ -25,6 +25,9 @@ pub mod identical;
 pub mod io;
 pub mod lang;
 pub mod math;
+pub mod misc;
+pub mod namespace;
+pub mod parsing;
 pub mod paste;
 pub mod printint;
 pub mod random;
@@ -84,6 +87,11 @@ pub fn lookup_internal(name: &str) -> Option<&'static Builtin> {
     INTERNALS.with(|m| m.borrow().get(name).copied())
 }
 
+/// All registered builtins (for coverage reports).
+pub fn all_builtins() -> Vec<&'static Builtin> {
+    TABLES.iter().flat_map(|t| t.iter()).collect()
+}
+
 pub fn lookup_primitive(name: &str) -> Option<&'static Builtin> {
     for table in TABLES {
         for b in table.iter() {
@@ -103,6 +111,9 @@ static TABLES: &[&[Builtin]] = &[
     lang::DEFS,
     envir::DEFS,
     funs::DEFS,
+    misc::DEFS,
+    namespace::DEFS,
+    parsing::DEFS,
     conditions::DEFS,
     identical::DEFS,
     random::DEFS,

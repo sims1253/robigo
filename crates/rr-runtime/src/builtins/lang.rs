@@ -81,6 +81,14 @@ fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     let n = val.len();
     interp.define(sym, Value::Null, env)?;
     for i in 0..n {
+        // Reuse the previous iteration's scalar if nothing else holds it
+        // (R's ALLOC_LOOP_VAR).
+        if reuse_loop_var(&val, i, sym, env) {
+            if !loop_body(interp, &body, env)? {
+                break;
+            }
+            continue;
+        }
         let v = match &val {
             Value::List(l) | Value::Expr(l) => l.data[i].clone(),
             Value::Pairlist(p) => p.items[i].value.clone(),
@@ -115,6 +123,33 @@ fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     }
     interp.visible = false;
     Ok(Value::Null)
+}
+
+/// Overwrite the loop variable's scalar in place when it is unshared and
+/// of the right type. Returns false if a fresh value is needed.
+fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
+    let mut frame = env.0.frame.borrow_mut();
+    let Some(b) = frame.get_mut(sym) else { return false };
+    if b.flags != 0 {
+        return false;
+    }
+    match (&mut b.value, val) {
+        (Value::Int(cur), Value::Int(src)) => match Rc::get_mut(cur) {
+            Some(c) if c.data.len() == 1 && c.attrs.is_none() => {
+                c.data[0] = src.data[i];
+                true
+            }
+            _ => false,
+        },
+        (Value::Real(cur), Value::Real(src)) => match Rc::get_mut(cur) {
+            Some(c) if c.data.len() == 1 && c.attrs.is_none() => {
+                c.data[0] = src.data[i];
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -308,7 +343,7 @@ fn complex_assign(
 #[allow(clippy::too_many_arguments)]
 fn complex_assign_inner(
     interp: &mut Interp,
-    call: &Value,
+    _call: &Value,
     levels: &[Rc<Lang>],
     target: Sym,
     rhs_expr: &Value,
@@ -888,7 +923,7 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 
 /// `NextMethod(generic, object, ...)`, called through
 /// `.Internal(NextMethod(generic, object, ...))`.
-fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     // The context of the method that called NextMethod: the frame whose
     // environment is the sysparent of NextMethod's closure frame.
     let Some(nm_frame) = interp.current_frame() else {
