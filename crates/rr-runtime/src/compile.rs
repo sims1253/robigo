@@ -26,6 +26,15 @@ pub type Reg = u16;
 /// Index into [`Code::vars`].
 pub type Slot = u16;
 
+/// An operand that can be read without running code: a numeric constant
+/// or a variable.
+#[derive(Clone, Debug)]
+pub enum Leaf {
+    D(f64),
+    I(i32),
+    Var(Sym, Slot),
+}
+
 #[derive(Clone, Debug)]
 pub enum Op {
     Const { dst: Reg, k: u32 },
@@ -50,6 +59,15 @@ pub enum Op {
     /// Assign the next element to `var` and jump to `body`; fall through
     /// when the sequence is exhausted.
     ForStep { seq: Reg, idx: Reg, var: Sym, slot: Slot, body: u32, call: u32 },
+    /// `x[i]` / `x[[i]]` (`two`) for a variable `x`: an in-range scalar
+    /// index into a plain vector is read directly; anything else
+    /// evaluates the call `consts[k]` with the interpreter.
+    Index { dst: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    /// `x[i] <- val` / `x[[i]] <- val` with `val` already evaluated: an
+    /// in-range scalar index into a plain local vector of a compatible type
+    /// is updated in place; anything else runs the complex assignment
+    /// `consts[k]` with that value.
+    SetIndex { val: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
@@ -126,6 +144,34 @@ fn plain_args(l: &Lang, n: usize) -> bool {
         && l.args.iter().all(|a| a.tag.is_none() && !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS))
 }
 
+/// A symbol that names an ordinary variable.
+fn is_var(sym: Sym) -> bool {
+    !sym.is_empty() && sym != s::DOTS && sym.ddval().is_none()
+}
+
+/// `x[i]` or `x[[i]]` with a variable `x` and a leaf index: the
+/// variable, whether it is `[[`, and the index expression.
+fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
+    let Value::Lang(l) = e else { return None };
+    let two = match head(l)?.name().as_ref() {
+        "[" => false,
+        "[[" => true,
+        _ => return None,
+    };
+    if !plain_args(l, 2) {
+        return None;
+    }
+    let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
+    let i = &l.args[1].value;
+    let leafy = match i {
+        Value::Sym(s) => is_var(*s),
+        Value::Real(v) => v.data.len() == 1 && v.attrs.is_none(),
+        Value::Int(v) => v.data.len() == 1 && v.attrs.is_none(),
+        _ => false,
+    };
+    leafy.then_some((x, two, i))
+}
+
 fn arith_op(name: &str) -> Option<ArithOp> {
     Some(match name {
         "+" => ArithOp::Plus,
@@ -164,6 +210,16 @@ impl Compiler {
                 self.vars.push(sym);
                 (self.vars.len() - 1) as Slot
             }
+        }
+    }
+
+    /// `e` as a [`Leaf`], if it is one.
+    fn leaf(&mut self, e: &Value) -> Option<Leaf> {
+        match e {
+            Value::Sym(sym) if is_var(*sym) => Some(Leaf::Var(*sym, self.slot(*sym))),
+            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => Some(Leaf::D(v.data[0])),
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => Some(Leaf::I(v.data[0])),
+            _ => None,
         }
     }
 
@@ -213,7 +269,7 @@ impl Compiler {
     /// regardless.
     fn expr(&mut self, e: &Value, dst: Reg, w: Want) {
         match e {
-            Value::Sym(sym) if !sym.is_empty() && *sym != s::DOTS && sym.ddval().is_none() => {
+            Value::Sym(sym) if is_var(*sym) => {
                 let slot = self.slot(*sym);
                 self.emit(Op::GetVar { dst, sym: *sym, slot });
             }
@@ -292,6 +348,31 @@ impl Compiler {
                 let slot = self.slot(target);
                 self.emit(Op::SetVar { src: dst, sym: target, slot });
                 self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && index_form(&l.args[0].value).is_some() => {
+                let (x, two, i) = index_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new(if two { "[[<-" } else { "[<-" }), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let i = self.leaf(i).unwrap();
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::SetIndex { val: dst, x, slot, i, two, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
+            "[" | "[[" if index_form(whole).is_some() => {
+                let (x, two, i) = index_form(whole).unwrap();
+                let g = self.guard(h, whole, dst);
+                let i = self.leaf(i).unwrap();
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::Index { dst, x, slot, i, two, k });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }

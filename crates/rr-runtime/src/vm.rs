@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, Code, Op};
+use crate::compile::{compile_body, compile_loop, Code, Leaf, Op, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -257,6 +257,110 @@ fn deferrable(env: &Env, sym: Sym, val: &RVal, pending: bool) -> bool {
         Some(flags) => flags == 0,
         None => !env.0.locked.get(),
     }
+}
+
+/// The value of a variable without running code, cached in its slot.
+fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&'a RVal> {
+    let slot = slot as usize;
+    if vars.get(slot).is_none() {
+        let v = plain_lookup(env, sym)?;
+        vars.slots[slot] = SlotVal::Clean(v);
+        vars.any = true;
+    }
+    vars.get(slot)
+}
+
+/// A 0-based index from an in-range positive scalar index.
+fn scalar_index(vars: &mut Vars, env: &Env, i: &Leaf) -> Option<f64> {
+    let x = match i {
+        Leaf::D(x) => *x,
+        Leaf::I(x) => *x as f64,
+        Leaf::Var(sym, slot) => match read_var(vars, env, *sym, *slot)? {
+            RVal::D(x) => *x,
+            RVal::I(x) if *x != NA_INTEGER => *x as f64,
+            _ => return None,
+        },
+    };
+    // NaN fails both comparisons.
+    (x >= 1.0 && x < 4503599627370496.0).then_some(x.trunc() - 1.0)
+}
+
+/// Element `i` of a vector that `x[i]` (`[[` if `two`) reads without
+/// dispatch, attribute handling or allocation beyond a string scalar.
+fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
+    let v = match x {
+        RVal::V(v) => v,
+        _ if i == 0 => return Some(x.clone()),
+        _ => return None,
+    };
+    // `x[i]` keeps names and other attributes; `x[[i]]` drops them, but
+    // classed objects dispatch.
+    let plain = |attrs: &AttrBox| attrs.is_none() || (two && !v.is_object());
+    Some(match v {
+        Value::Real(x) if i < x.data.len() && plain(&x.attrs) => RVal::D(x.data[i]),
+        Value::Int(x) if i < x.data.len() && plain(&x.attrs) => RVal::I(x.data[i]),
+        Value::Lgl(x) if i < x.data.len() && plain(&x.attrs) => RVal::L(x.data[i]),
+        Value::Str(x) if i < x.data.len() && plain(&x.attrs) => RVal::V(Value::strs(vec![x.data[i].clone()])),
+        Value::List(x) if two && i < x.data.len() && plain(&x.attrs) => unbox(x.data[i].clone()),
+        _ => return None,
+    })
+}
+
+/// Make slot `slot` hold the value of the local variable `sym` as a
+/// pending assignment, so that it can be modified in place. Fails unless
+/// `sym` is a plain binding of `env` itself (a variable found in an
+/// enclosing frame is copied into this one by the interpreter path).
+fn own_var(vars: &mut Vars, env: &Env, sym: Sym, slot: Slot) -> bool {
+    let slot = slot as usize;
+    match &vars.slots[slot] {
+        SlotVal::Dirty(RVal::V(_)) => return true,
+        SlotVal::Dirty(r) => {
+            let v = RVal::V(r.clone().into_value());
+            vars.slots[slot] = SlotVal::Dirty(v);
+            return true;
+        }
+        _ => {}
+    }
+    if env.binding_flags(sym) != Some(0) {
+        return false;
+    }
+    match env.get_local(sym) {
+        Some(Value::Promise(p)) if p.value().is_none() => return false,
+        Some(v) if v.is_missing_arg() => return false,
+        _ => {}
+    }
+    vars.slots[slot] = SlotVal::Empty;
+    let v = match env.take_local(sym) {
+        Some(Value::Promise(p)) => p.value().unwrap_or(Value::Null),
+        Some(v) => v,
+        None => return false,
+    };
+    vars.slots[slot] = SlotVal::Dirty(RVal::V(v));
+    vars.any = true;
+    vars.dirty = true;
+    true
+}
+
+/// `x[i] <- val` in place for an in-range index of a plain vector whose
+/// type does not change; `false` leaves `x` untouched.
+fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
+    if x.is_object() || i >= x.len() {
+        return false;
+    }
+    match (x, val) {
+        (Value::Real(v), RVal::D(d)) => Rc::make_mut(v).data[i] = *d,
+        (Value::Real(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = int_to_real(*n),
+        (Value::Int(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = *n,
+        (Value::Lgl(v), RVal::L(n)) => Rc::make_mut(v).data[i] = *n,
+        (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
+            Rc::make_mut(v).data[i] = s.data[0].clone()
+        }
+        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => {
+            Rc::make_mut(v).data[i] = val.to_value()
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn signal(interp: &mut Interp, r: RResult<Value>) -> RResult<Value> {
@@ -500,6 +604,39 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     let v = tryop!(interp.eval(&code.consts[*k as usize], env));
                     regs[*dst as usize] = RVal::V(v);
                     pc = *skip as usize;
+                }
+            }
+            Op::Index { dst, x, slot, i, two, k } => {
+                interp.visible = true;
+                let fast = match scalar_index(&mut vars, env, i) {
+                    Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
+                    None => None,
+                };
+                regs[*dst as usize] = match fast {
+                    Some(v) => v,
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                    }
+                };
+            }
+            Op::SetIndex { val, x, slot, i, two, k } => {
+                let done = match scalar_index(&mut vars, env, i) {
+                    Some(ix) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                        SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[*val as usize], *two),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !done {
+                    flush!();
+                    let whole = &code.consts[*k as usize];
+                    let Value::Lang(l) = whole else { unreachable!() };
+                    let rhs = regs[*val as usize].to_value();
+                    let r = crate::builtins::lang::complex_assign(
+                        interp, whole, &l.args[0].value, &l.args[1].value, rhs, env, false,
+                    );
+                    tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
             }
             Op::Eval { dst, k } => {

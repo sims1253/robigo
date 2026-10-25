@@ -204,7 +204,7 @@ including ~0.03 s startup for both:
 | fib | 0.11 | 0.21 | 0.20 | closure calls, promises |
 | loop | 0.12 | 1.08 | 0.24 | scalar arithmetic in a top-level `for` |
 | loopf | 0.12 | 1.13 | 0.23 | the same inside a function |
-| vecassign | 0.08 | 0.71 | 0.74 | `x[i] <- v` in a loop |
+| vecassign | 0.09 | 0.62 | 0.10 | `x[i] <- v` in a loop |
 | strings | 0.19 | 0.15 | 0.15 | `paste0`, `gsub`, `unique`, `nchar` |
 | apply | 0.18 | 0.26 | 0.27 | `lapply`/`vapply` with closures, `%*%` |
 | sortbench | 0.60 | 0.43 | 0.43 | `order`, `sort` on 10^6 doubles and strings |
@@ -215,15 +215,19 @@ Ledger:
   scalar registers; in-place scalar updates; variables cached in VM slots
   and written back before anything that can observe the frame (1.6× on
   scalar loops); `while`/`for` loops with the test at the bottom and no
-  visibility bookkeeping for discarded values.
+  visibility bookkeeping for discarded values; `x[i]`, `x[[i]]` and
+  `x[i] <- v` with a variable `x` and a constant or variable index read
+  and update plain vectors directly (7× on `vecassign`), falling back to
+  the interpreter for objects, attributes that matter, type changes and
+  out-of-range indices.
 - **Measured, not yet fixed:** each VM instruction costs 5–10 ns on this
   machine (two indirect branches: dispatch and `RVal` cloning), so a scalar
   loop iteration of 6–7 instructions is ~2× GNU R's. Next: fuse
   `GetVar`/constant operands into arithmetic and comparison instructions
   and fold guard checks into the instructions they protect.
-- **Not compiled yet:** `x[i]` and `x[i] <- v` go through the interpreter
-  (`vecassign` is 9× slower than R); closure calls still allocate an
-  environment and promises per call (`fib` is ~1.8× slower).
+- **Not compiled yet:** closure calls still allocate an environment and
+  promises per call (`fib` is ~1.8× slower); matrix indexing `m[i, j]`
+  and computed indices `x[i + 1]` go through the interpreter.
 
 ## 5. Roadmap
 

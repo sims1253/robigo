@@ -293,9 +293,18 @@ fn do_super_assign(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env)
 
 /// The replacement function for a getter head: `f` -> `f<-`,
 /// `pkg::f` -> `pkg::\`f<-\``.
+/// `f` -> `f<-`, memoized (complex assignments look it up every time).
+fn replacement_sym(f: Sym) -> Sym {
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<Sym, Sym, crate::env::FastHash>> =
+            std::cell::RefCell::new(Default::default());
+    }
+    CACHE.with(|c| *c.borrow_mut().entry(f).or_insert_with(|| Sym::new(&format!("{}<-", f))))
+}
+
 fn assign_fun(head: &Value) -> RResult<Value> {
     match head {
-        Value::Sym(s) => Ok(Value::Sym(Sym::new(&format!("{}<-", s)))),
+        Value::Sym(s) => Ok(Value::Sym(replacement_sym(*s))),
         Value::Str(v) if v.data.len() == 1 => Ok(Value::Sym(Sym::new(&format!("{}<-", v.data[0].as_deref().unwrap_or(""))))),
         Value::Lang(l) => {
             let ns = l.fun_sym().map(|s| s.name());
@@ -318,7 +327,7 @@ fn assign_fun(head: &Value) -> RResult<Value> {
 }
 
 /// R's `applydefine`: `f(g(x, a), b) <- value`.
-fn complex_assign(
+pub(crate) fn complex_assign(
     interp: &mut Interp,
     call: &Value,
     lhs: &Value,
