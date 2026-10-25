@@ -1034,10 +1034,19 @@ math_fn!(do_atanh, "atanh", f64::atanh);
 math_fn!(do_cospi, "cospi", cospi);
 math_fn!(do_sinpi, "sinpi", sinpi);
 math_fn!(do_tanpi, "tanpi", tanpi);
-math_fn!(do_gamma, "gamma", gammafn);
-math_fn!(do_lgamma, "lgamma", lgammafn);
-math_fn!(do_digamma, "digamma", digamma);
-math_fn!(do_trigamma, "trigamma", trigamma);
+// gamma family: nmath port (builtins/math.rs emits nmath's warnings)
+fn do_gamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    super::math::do_math1_nmath(i, c, a, e, "gamma", crate::nmath::gammafn)
+}
+fn do_lgamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    super::math::do_math1_nmath(i, c, a, e, "lgamma", crate::nmath::lgammafn)
+}
+fn do_digamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    super::math::do_math1_nmath(i, c, a, e, "digamma", crate::nmath::digamma)
+}
+fn do_trigamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    super::math::do_math1_nmath(i, c, a, e, "trigamma", crate::nmath::trigamma)
+}
 math_fn!(do_log2, "log2", f64::log2);
 math_fn!(do_log10, "log10", f64::log10);
 
@@ -1103,78 +1112,8 @@ fn tanpi(x: f64) -> f64 {
     }
 }
 
-/// Lanczos approximation of the gamma function (placeholder until the
-/// nmath port; accurate to ~15 digits for moderate arguments).
-pub fn gammafn(x: f64) -> f64 {
-    if x == 0.0 || (x < 0.0 && x == x.floor()) {
-        return f64::NAN;
-    }
-    if x == x.floor() && x > 0.0 && x <= 171.0 {
-        let mut r = 1.0;
-        let mut k = 2.0;
-        while k < x {
-            r *= k;
-            k += 1.0;
-        }
-        return r;
-    }
-    if x < 0.5 {
-        return std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * gammafn(1.0 - x));
-    }
-    lanczos(x).exp()
-}
-
-fn lanczos(x: f64) -> f64 {
-    const G: f64 = 7.0;
-    const C: [f64; 9] = [
-        0.999_999_999_999_809_9,
-        676.520_368_121_885_1,
-        -1_259.139_216_722_402_8,
-        771.323_428_777_653_1,
-        -176.615_029_162_140_6,
-        12.507_343_278_686_905,
-        -0.138_571_095_265_720_12,
-        9.984_369_578_019_572e-6,
-        1.505_632_735_149_311_6e-7,
-    ];
-    let x = x - 1.0;
-    let mut a = C[0];
-    let t = x + G + 0.5;
-    for (i, c) in C.iter().enumerate().skip(1) {
-        a += c / (x + i as f64);
-    }
-    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
-}
-
-pub fn lgammafn(x: f64) -> f64 {
-    if x <= 0.0 && x == x.floor() {
-        return f64::INFINITY;
-    }
-    if x < 0.5 {
-        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).abs().ln() - lgammafn(1.0 - x);
-    }
-    lanczos(x)
-}
-
-fn digamma(mut x: f64) -> f64 {
-    let mut r = 0.0;
-    while x < 6.0 {
-        r -= 1.0 / x;
-        x += 1.0;
-    }
-    let f = 1.0 / (x * x);
-    r + x.ln() - 0.5 / x - f * (1.0 / 12.0 - f * (1.0 / 120.0 - f * (1.0 / 252.0 - f * (1.0 / 240.0 - f / 132.0))))
-}
-
-fn trigamma(mut x: f64) -> f64 {
-    let mut r = 0.0;
-    while x < 6.0 {
-        r += 1.0 / (x * x);
-        x += 1.0;
-    }
-    let f = 1.0 / (x * x);
-    r + 1.0 / x + f / 2.0 + f / x * (1.0 / 6.0 - f * (1.0 / 30.0 - f * (1.0 / 42.0 - f / 30.0)))
-}
+/// The nmath port (kept reachable under the old paths).
+pub use crate::nmath::{gammafn, lgammafn};
 
 fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if args.len() != 1 {

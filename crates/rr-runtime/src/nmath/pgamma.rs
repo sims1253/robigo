@@ -216,7 +216,8 @@ fn pgamma_smallx(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
         c *= -x / n;
         let term = c / (alph + n);
         sum += term;
-        if term.abs() <= DBL_EPSILON * sum.abs() {
+        // do { } while (fabs(term) > DBL_EPSILON * fabs(sum)): NaN ends the loop
+        if !(term.abs() > DBL_EPSILON * sum.abs()) {
             break;
         }
     }
@@ -255,7 +256,7 @@ fn pd_upper_series(x: f64, mut y: f64, log_p: bool) -> f64 {
         y += 1.0;
         term *= x / y;
         sum += term;
-        if term <= sum * DBL_EPSILON {
+        if !(term > sum * DBL_EPSILON) {
             break;
         }
     }
@@ -356,7 +357,7 @@ fn dpnorm(mut x: f64, mut lower_tail: bool, lp: f64) -> f64 {
             term *= -i / x2;
             sum += term;
             i += 2.0;
-            if term.abs() <= DBL_EPSILON * sum {
+            if !(term.abs() > DBL_EPSILON * sum) {
                 break;
             }
         }
@@ -583,7 +584,7 @@ pub fn qchisq_appr(p: f64, nu: f64, g: f64, lower_tail: bool, log_p: bool, tol: 
             let p2 = ch * (C9 + ch * (C8 + ch));
             let t = -0.5 + (C7 + 2.0 * ch) * p1 - (C9 + ch * (C10 + 3.0 * ch)) / p2;
             ch -= (1.0 - (a + 0.5 * ch).exp() * p2 * p1) / t;
-            if (q - ch).abs() <= tol * ch.abs() {
+            if !((q - ch).abs() > tol * ch.abs()) {
                 break;
             }
         }

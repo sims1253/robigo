@@ -7,13 +7,20 @@
 //! are collected in a thread-local buffer; builtins drain it with
 //! [`take_warnings`] and emit them against the right call.
 
-#![allow(non_snake_case, clippy::excessive_precision, clippy::many_single_char_names, clippy::too_many_arguments)]
+#![allow(
+    non_snake_case,
+    clippy::excessive_precision,
+    clippy::many_single_char_names,
+    clippy::too_many_arguments,
+    clippy::neg_cmp_op_on_partial_ord
+)]
 
 use std::cell::RefCell;
 
 pub mod beta;
 pub mod binom;
 pub mod dist;
+pub mod fdist;
 pub mod fround;
 pub mod gamma;
 pub mod norm;
@@ -21,6 +28,7 @@ pub mod pgamma;
 pub mod polygamma;
 pub mod rand;
 pub mod rng;
+pub mod tdist;
 pub mod toms708;
 
 pub use self::gamma::{beta as beta_fn, choose, gammafn, lbeta, lchoose, lgammafn, lgammafn_sign};
