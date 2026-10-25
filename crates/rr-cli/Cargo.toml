@@ -1,0 +1,15 @@
+[package]
+name = "rr-cli"
+description = "Command-line interface for rr."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rr"
+path = "src/main.rs"
+
+[dependencies]
+rr-syntax.workspace = true
+rr-runtime.workspace = true

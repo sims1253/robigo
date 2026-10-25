@@ -1,0 +1,10 @@
+[package]
+name = "rr-runtime"
+description = "Values, environments and evaluator for the rr R runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rr-syntax.workspace = true

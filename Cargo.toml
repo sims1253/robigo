@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/rr-syntax", "crates/rr-runtime", "crates/rr-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/sims1253/rr"
+authors = ["Maximilian Scholz"]
+
+[workspace.dependencies]
+rr-syntax = { path = "crates/rr-syntax" }
+rr-runtime = { path = "crates/rr-runtime" }
+
+[profile.release]
+debug = "line-tables-only"
+panic = "unwind"
+
+[profile.bench]
+inherits = "release"
