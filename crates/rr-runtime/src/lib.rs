@@ -13,6 +13,7 @@ pub mod error;
 pub mod format;
 pub mod interp;
 pub mod lang;
+pub mod nmath;
 pub mod print;
 pub mod serialize;
 pub mod sym;

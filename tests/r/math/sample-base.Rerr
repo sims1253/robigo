@@ -1,0 +1,6 @@
+Warning message:
+In set.seed(1, kind = "Mersenne-Twister", normal.kind = "Inversion",  :
+  non-uniform 'Rounding' sampler used
+Warning message:
+In RNGkind("Mersenne-Twister", "Inversion", "Rounding") :
+  non-uniform 'Rounding' sampler used
