@@ -22,3 +22,5 @@ NULL
 [1] "custom if"
 [1]  TRUE FALSE FALSE    NA
 [1] FALSE  TRUE  TRUE    NA
+[1] 2
+[1] FALSE

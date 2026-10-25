@@ -102,3 +102,10 @@ shadow_if()
 cmp <- function(a, b) c(a < b, a == b, a >= b, NA > 1)
 cmp(1, 2)
 cmp(2L, 2)
+# forcing a promise keeps the visibility of its expression
+pass <- function(expr) expr
+pass(invisible(1))
+pass(2)
+loop_pass <- function(expr) { for (i in 1:2) NULL; expr }
+loop_pass(invisible(3))
+withVisible(loop_pass(invisible(4)))$visible

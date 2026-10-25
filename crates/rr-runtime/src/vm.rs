@@ -250,9 +250,11 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
             Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
             Op::Visible { on } => interp.visible = *on,
             Op::GetVar { dst, sym } => {
+                // R: eval() sets R_Visible before the lookup, so forcing a
+                // promise (`expr` in withCallingHandlers) keeps its visibility.
+                interp.visible = true;
                 let r = interp.eval_sym(*sym, env);
                 let v = tryop!(signal(interp, r));
-                interp.visible = true;
                 regs[*dst as usize] = RVal::V(v);
             }
             Op::SetVar { src, sym } => {
