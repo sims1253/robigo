@@ -11,10 +11,16 @@ interpreter, vector fusion, and type information from
 for the research behind it, the architecture and the roadmap, and
 [AGENTS.md](AGENTS.md) for the porting contract.
 
-Status: early. The parser matches GNU R's on R's own library sources; the
-evaluator, condition system, S3 dispatch, printing and deparsing are in
-place, and rr boots GNU R's base-package R code on top of its builtins.
-Many `.Internal` functions are still missing.
+Status: early, but it runs real base-R programs. The parser matches GNU
+R's on R's own library sources. rr boots all of GNU R's base-package R code
+on top of 602 of R's 760 `.Primitive`/`.Internal` functions (ported from
+the C sources: subsetting, strings and regular expressions, nmath and the
+random number generators, date-times, connections, the apply family,
+matrices and LAPACK), and 109 of the 110 conformance scripts match GNU R
+byte for byte. Not yet: loading other packages (`stats`, `utils`, ...),
+S4, and locale-aware string collation. `RR_COMPILE=1` enables the bytecode
+VM; `RR_TYPE_PROFILE=out.json` records observed types for comparison with
+ry ([docs/ry-integration.md](docs/ry-integration.md)).
 
 ## Try it
 

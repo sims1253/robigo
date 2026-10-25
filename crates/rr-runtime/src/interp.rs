@@ -334,7 +334,19 @@ impl Interp {
 
     fn eval_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> RResult<Value> {
         let fun = match &l.fun {
-            Value::Sym(sym) => self.find_fun(*sym, env)?,
+            Value::Sym(sym) => match self.find_fun(*sym, env) {
+                Ok(f) => f,
+                // R: eval.c reports a failed lookup against the call itself,
+                // or the C-level context's call (findFun3(CAR(e), rho, ecall)).
+                Err(Flow::Error(mut e)) if e.call.is_none() && !e.signaled => {
+                    e.call = Some(match self.ccode_calls.last() {
+                        Some((depth, c)) if *depth == self.frames.len() => c.clone(),
+                        _ => call.clone(),
+                    });
+                    return Err(self.signal_error(e));
+                }
+                Err(f) => return Err(f),
+            },
             other => self.eval(other, env)?,
         };
         match &fun {
