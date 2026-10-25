@@ -4,6 +4,14 @@
 //! integer, logical). Arithmetic and comparison on attribute-free scalars
 //! never allocate; assigning a scalar to a variable whose current value is
 //! an unshared scalar of the same type overwrites it in place.
+//!
+//! Variables live in slots while the code runs: a read caches the value
+//! and an assignment only updates the slot. Code that could observe or
+//! change the frame — anything evaluated by the interpreter, a builtin
+//! call, a signal, a promise or active binding — runs only after
+//! [`Vars::flush`] has written pending assignments back to the
+//! environment and dropped all cached values. Between such operations no
+//! other code runs, so the frame cannot tell the difference.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -153,6 +161,104 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
     Some(code)
 }
 
+enum SlotVal {
+    Empty,
+    /// The variable's current value, also bound in the environment.
+    Clean(RVal),
+    /// Assigned but not yet written to the environment.
+    Dirty(RVal),
+}
+
+struct Vars {
+    slots: Vec<SlotVal>,
+    /// Whether any slot is non-empty / dirty.
+    any: bool,
+    dirty: bool,
+}
+
+impl Vars {
+    fn new(n: usize) -> Vars {
+        Vars { slots: (0..n).map(|_| SlotVal::Empty).collect(), any: false, dirty: false }
+    }
+
+    /// Write pending assignments to `env` and forget cached values.
+    fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
+        if !self.any {
+            return Ok(());
+        }
+        let dirty = self.dirty;
+        self.any = false;
+        self.dirty = false;
+        let mut res = Ok(());
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if let SlotVal::Dirty(v) = std::mem::replace(s, SlotVal::Empty) {
+                if dirty && res.is_ok() {
+                    res = set_var(interp, env, syms[i], &v);
+                }
+            }
+        }
+        res
+    }
+
+    fn get(&self, slot: usize) -> Option<&RVal> {
+        match &self.slots[slot] {
+            SlotVal::Clean(v) | SlotVal::Dirty(v) => Some(v),
+            SlotVal::Empty => None,
+        }
+    }
+}
+
+/// The value of `sym` if reading it cannot run code: a plain binding, or
+/// an argument whose promise has been forced.
+fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
+    let mut cur = env.clone();
+    loop {
+        let found = {
+            let frame = cur.0.frame.borrow();
+            frame.get(sym).map(|b| (b.value.clone(), b.flags))
+        };
+        if let Some((v, flags)) = found {
+            if flags & crate::env::BIND_ACTIVE != 0 {
+                return None;
+            }
+            let v = match v {
+                Value::Promise(p) => p.value()?,
+                v => v,
+            };
+            if v.is_missing_arg() {
+                return None;
+            }
+            return Some(unbox(v));
+        }
+        cur = cur.parent()?;
+    }
+}
+
+fn unbox(v: Value) -> RVal {
+    match &v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
+        _ => RVal::V(v),
+    }
+}
+
+/// Whether an assignment of `sym` in `env` may be deferred: the binding is
+/// plain (not locked or active) or can be created, and the value is not a
+/// function (function bindings affect lookups and guards).
+fn deferrable(env: &Env, sym: Sym, val: &RVal, pending: bool) -> bool {
+    if matches!(val, RVal::V(Value::Closure(_) | Value::Builtin(_))) {
+        return false;
+    }
+    if pending {
+        return true;
+    }
+    match env.binding_flags(sym) {
+        Some(flags) => flags == 0,
+        None => !env.0.locked.get(),
+    }
+}
+
 fn signal(interp: &mut Interp, r: RResult<Value>) -> RResult<Value> {
     match r {
         Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
@@ -225,6 +331,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
     let cacheable = code.has_guards && (env.is_search() || env.parent().is_some_and(|p| p.is_search()));
     let mut guards: Vec<(u64, u32, bool)> = if cacheable { vec![(u64::MAX, 0, false); code.ops.len()] } else { Vec::new() };
     let ops = &code.ops;
+    let mut vars = Vars::new(code.vars.len());
     let mut pc: usize = 0;
     macro_rules! tryop {
         ($e:expr) => {
@@ -242,25 +349,59 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
             }
         };
     }
+    // Before anything that may run R code or signal.
+    macro_rules! flush {
+        () => {
+            tryop!(vars.flush(interp, env, &code.vars))
+        };
+    }
+    // Assign `$val` to variable `$sym` (slot `$slot`).
+    macro_rules! assign {
+        ($sym:expr, $slot:expr, $val:expr) => {{
+            let val: RVal = $val;
+            let slot = $slot as usize;
+            if deferrable(env, $sym, &val, matches!(vars.slots[slot], SlotVal::Dirty(_))) {
+                vars.slots[slot] = SlotVal::Dirty(val);
+                vars.any = true;
+                vars.dirty = true;
+            } else {
+                // Locked or active bindings, functions: assign now.
+                flush!();
+                tryop!(set_var(interp, env, $sym, &val));
+            }
+        }};
+    }
     while pc < ops.len() {
         let op = &ops[pc];
         pc += 1;
         match op {
             Op::Const { dst, k } => regs[*dst as usize] = RVal::V(code.consts[*k as usize].clone()),
+            Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
+            Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
+            Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
             Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
             Op::Visible { on } => interp.visible = *on,
-            Op::GetVar { dst, sym } => {
+            Op::GetVar { dst, sym, slot } => {
                 // R: eval() sets R_Visible before the lookup, so forcing a
                 // promise (`expr` in withCallingHandlers) keeps its visibility.
                 interp.visible = true;
-                let r = interp.eval_sym(*sym, env);
-                let v = tryop!(signal(interp, r));
-                regs[*dst as usize] = RVal::V(v);
+                let slot = *slot as usize;
+                if let Some(v) = vars.get(slot) {
+                    regs[*dst as usize] = v.clone();
+                } else if let Some(v) = plain_lookup(env, *sym) {
+                    regs[*dst as usize] = v.clone();
+                    vars.slots[slot] = SlotVal::Clean(v);
+                    vars.any = true;
+                } else {
+                    flush!();
+                    let r = interp.eval_sym(*sym, env);
+                    let v = tryop!(signal(interp, r));
+                    regs[*dst as usize] = RVal::V(v);
+                }
             }
-            Op::SetVar { src, sym } => {
-                let v = std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null));
-                tryop!(set_var(interp, env, *sym, &v));
-                regs[*src as usize] = v;
+            Op::SetVar { src, sym, slot } => {
+                let v = regs[*src as usize].clone();
+                assign!(*sym, *slot, v);
             }
             Op::Arith { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
@@ -275,6 +416,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                         v
                     }
                     None => {
+                        flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         let y = std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
@@ -293,6 +435,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                         v
                     }
                     None => {
+                        flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         let y = std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
@@ -304,6 +447,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     Some(Num::D(x)) => RVal::D(-x),
                     Some(Num::I(x)) | Some(Num::L(x)) => RVal::I(if x == NA_INTEGER { x } else { -x }),
                     None => {
+                        flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
                     }
@@ -314,23 +458,25 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     Some(Num::D(x)) => RVal::L(if x.is_nan() { NA_LOGICAL } else { (x == 0.0) as Lgl }),
                     Some(Num::I(x)) | Some(Num::L(x)) => RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl }),
                     None => {
+                        flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
                     }
                 };
             }
-            Op::JumpIfNot { cond, target, call } => {
+            Op::JumpIfNot { cond, target, call } | Op::JumpIf { cond, target, call } => {
                 let truth = match &regs[*cond as usize] {
                     RVal::L(x) if *x != NA_LOGICAL => *x != 0,
                     other => {
                         let v = other.to_value();
+                        flush!();
                         let c = code.consts[*call as usize].clone();
                         let r = crate::coerce::as_condition(interp, &v, &c).map(|b| Value::lgl(b));
                         let v = tryop!(signal(interp, r));
                         crate::coerce::as_logical(&v) != 0
                     }
                 };
-                if !truth {
+                if truth == matches!(op, Op::JumpIf { .. }) {
                     pc = *target as usize;
                 }
             }
@@ -350,16 +496,19 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     interp.resolves_to_base(*sym, env)
                 };
                 if !ok {
+                    flush!();
                     let v = tryop!(interp.eval(&code.consts[*k as usize], env));
                     regs[*dst as usize] = RVal::V(v);
                     pc = *skip as usize;
                 }
             }
             Op::Eval { dst, k } => {
+                flush!();
                 let v = tryop!(interp.eval(&code.consts[*k as usize], env));
                 regs[*dst as usize] = RVal::V(v);
             }
             Op::Return { src } => {
+                flush!();
                 let v = std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null)).into_value();
                 if code.is_body {
                     return Ok(v);
@@ -376,24 +525,24 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     v = crate::builtins::envir::as_character_factor(&v);
                 }
                 if !(v.is_vector() || v.is_null() || matches!(v, Value::Pairlist(_))) {
+                    flush!();
                     let c = code.consts[*call as usize].clone();
                     return signal(interp, Err(Flow::error_call(c, "invalid for() loop sequence")));
                 }
                 regs[*seq as usize] = RVal::V(v);
                 regs[*seq as usize + 1] = RVal::I(0);
             }
-            Op::ForStep { seq, idx, var, exit, .. } => {
+            Op::ForStep { seq, idx, var, slot, body, .. } => {
                 let i = match regs[*idx as usize] {
                     RVal::I(i) => i as usize,
                     _ => 0,
                 };
                 if i == 0 {
                     // R binds the loop variable to NULL before iterating.
-                    tryop!(set_var(interp, env, *var, &RVal::V(Value::Null)));
+                    assign!(*var, *slot, RVal::V(Value::Null));
                 }
                 let RVal::V(sv) = &regs[*seq as usize] else { unreachable!() };
                 if i >= sv.len() {
-                    pc = *exit as usize;
                     continue;
                 }
                 let elt = match sv {
@@ -408,9 +557,11 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     _ => unreachable!(),
                 };
                 regs[*idx as usize] = RVal::I(i as i32 + 1);
-                tryop!(set_var(interp, env, *var, &elt));
+                assign!(*var, *slot, elt);
+                pc = *body as usize;
             }
         }
     }
+    vars.flush(interp, env, &code.vars)?;
     Ok(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)).into_value())
 }

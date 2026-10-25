@@ -7,9 +7,11 @@
 //! instructions, so any R expression can be compiled.
 //!
 //! Semantics are preserved by runtime guards: every specialized construct
-//! first checks that its head symbol (`+`, `if`, `<-`, ...) is not bound
-//! outside the base environment ([`crate::env::shadow_count`]); if it is,
-//! the original call is evaluated by the interpreter instead. Arithmetic
+//! first checks that its head symbol (`+`, `if`, `<-`, ...) still resolves
+//! to the base function; if not, the original call is evaluated by the
+//! interpreter instead. Variables read or assigned by the code get a slot
+//! (see [`Code::vars`]) that lets the VM keep their values in registers
+//! between operations that could observe the frame. Arithmetic
 //! and comparison only take the fast path for attribute-free scalars and
 //! otherwise call the regular builtin, which handles recycling,
 //! attributes, dispatch and warnings.
@@ -21,24 +23,33 @@ use crate::sym::{s, Sym};
 use crate::value::*;
 
 pub type Reg = u16;
+/// Index into [`Code::vars`].
+pub type Slot = u16;
 
 #[derive(Clone, Debug)]
 pub enum Op {
     Const { dst: Reg, k: u32 },
-    GetVar { dst: Reg, sym: Sym },
+    /// Attribute-free scalar constants, unboxed.
+    ConstD { dst: Reg, x: f64 },
+    ConstI { dst: Reg, x: i32 },
+    ConstL { dst: Reg, x: Lgl },
+    GetVar { dst: Reg, sym: Sym, slot: Slot },
     /// Assign to a symbol in the current frame (`<-`/`=`).
-    SetVar { src: Reg, sym: Sym },
+    SetVar { src: Reg, sym: Sym, slot: Slot },
     Arith { op: ArithOp, dst: Reg, a: Reg, b: Reg, call: u32 },
     Neg { dst: Reg, a: Reg, call: u32 },
     Rel { op: RelOp, dst: Reg, a: Reg, b: Reg, call: u32 },
     Not { dst: Reg, a: Reg, call: u32 },
     /// Jump unless `cond` is TRUE, with `if`/`while` condition semantics.
     JumpIfNot { cond: Reg, target: u32, call: u32 },
+    /// Jump if `cond` is TRUE (the test at the bottom of a `while` loop).
+    JumpIf { cond: Reg, target: u32, call: u32 },
     Jump { target: u32 },
     /// Prepare iteration over the value in `seq`.
     ForInit { seq: Reg, call: u32 },
-    /// Assign the next element to `var`, or jump to `exit`.
-    ForStep { seq: Reg, idx: Reg, var: Sym, exit: u32, call: u32 },
+    /// Assign the next element to `var` and jump to `body`; fall through
+    /// when the sequence is exhausted.
+    ForStep { seq: Reg, idx: Reg, var: Sym, slot: Slot, body: u32, call: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
@@ -57,6 +68,8 @@ pub struct Code {
     pub ops: Vec<Op>,
     pub consts: Vec<Value>,
     pub nregs: usize,
+    /// The variables the code reads or assigns, indexed by [`Slot`].
+    pub vars: Vec<Sym>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
@@ -66,9 +79,26 @@ pub struct Code {
 }
 
 impl Code {
-    fn new(ops: Vec<Op>, consts: Vec<Value>, nregs: usize, result: Reg, is_body: bool) -> Code {
-        let has_guards = ops.iter().any(|o| matches!(o, Op::Guard { .. }));
-        Code { ops, consts, nregs, result, is_body, has_guards }
+    fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
+        let has_guards = c.ops.iter().any(|o| matches!(o, Op::Guard { .. }));
+        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, result, is_body, has_guards }
+    }
+}
+
+/// How the result of an expression is used.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Want {
+    /// Value and visibility (the result of a body or top-level loop).
+    All,
+    /// Only the value (operands, conditions, right-hand sides).
+    Value,
+    /// Neither (loop bodies, all but the last expression of `{`).
+    Effect,
+}
+
+impl Want {
+    fn value(self) -> Want {
+        if self == Want::Effect { Want::Effect } else { Want::Value }
     }
 }
 
@@ -77,10 +107,12 @@ struct Loop {
     nexts: Vec<usize>,
 }
 
+#[derive(Default)]
 struct Compiler {
     ops: Vec<Op>,
     consts: Vec<Value>,
     nregs: usize,
+    vars: Vec<Sym>,
     loops: Vec<Loop>,
 }
 
@@ -125,6 +157,16 @@ impl Compiler {
         (self.nregs - 1) as Reg
     }
 
+    fn slot(&mut self, sym: Sym) -> Slot {
+        match self.vars.iter().position(|s| *s == sym) {
+            Some(i) => i as Slot,
+            None => {
+                self.vars.push(sym);
+                (self.vars.len() - 1) as Slot
+            }
+        }
+    }
+
     fn konst(&mut self, v: Value) -> u32 {
         self.consts.push(v);
         (self.consts.len() - 1) as u32
@@ -141,8 +183,7 @@ impl Compiler {
 
     fn patch(&mut self, at: usize, target: u32) {
         match &mut self.ops[at] {
-            Op::Jump { target: t } | Op::JumpIfNot { target: t, .. } => *t = target,
-            Op::ForStep { exit, .. } => *exit = target,
+            Op::Jump { target: t } | Op::JumpIfNot { target: t, .. } | Op::JumpIf { target: t, .. } => *t = target,
             Op::Guard { skip, .. } => *skip = target,
             Op::LoopEnter { brk, .. } => *brk = target,
             _ => unreachable!(),
@@ -161,45 +202,83 @@ impl Compiler {
         self.emit(Op::Eval { dst, k });
     }
 
-    fn expr(&mut self, e: &Value, dst: Reg) {
+    fn vis(&mut self, w: Want, on: bool) {
+        if w == Want::All {
+            self.emit(Op::Visible { on });
+        }
+    }
+
+    /// Compile `e` into `dst`. `w` says whether the value and its
+    /// visibility are used; anything with possible effects is compiled
+    /// regardless.
+    fn expr(&mut self, e: &Value, dst: Reg, w: Want) {
         match e {
             Value::Sym(sym) if !sym.is_empty() && *sym != s::DOTS && sym.ddval().is_none() => {
-                self.emit(Op::GetVar { dst, sym: *sym });
+                let slot = self.slot(*sym);
+                self.emit(Op::GetVar { dst, sym: *sym, slot });
             }
-            Value::Lang(l) => self.call(l, e, dst),
+            Value::Lang(l) => self.call(l, e, dst, w),
             Value::Sym(_) | Value::Promise(_) => self.fallback(e, dst),
+            _ if w == Want::Effect => {}
+            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                self.emit(Op::ConstD { dst, x: v.data[0] });
+                self.vis(w, true);
+            }
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                self.emit(Op::ConstI { dst, x: v.data[0] });
+                self.vis(w, true);
+            }
+            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                self.emit(Op::ConstL { dst, x: v.data[0] });
+                self.vis(w, true);
+            }
             v => {
                 let k = self.konst(v.clone());
                 self.emit(Op::Const { dst, k });
-                self.emit(Op::Visible { on: true });
+                self.vis(w, true);
             }
         }
     }
 
-    fn call(&mut self, l: &Lang, whole: &Value, dst: Reg) {
+    /// Patch the jumps of a finished loop body and set its LoopEnter.
+    fn close_loop(&mut self, enter: usize, lp: Loop, exit: u32, next: u32) {
+        for b in lp.breaks {
+            self.patch(b, exit);
+        }
+        for n in lp.nexts {
+            self.patch(n, next);
+        }
+        if let Op::LoopEnter { brk, nxt } = &mut self.ops[enter] {
+            *brk = exit;
+            *nxt = next;
+        }
+    }
+
+    fn call(&mut self, l: &Lang, whole: &Value, dst: Reg, w: Want) {
         let Some(h) = head(l) else { return self.fallback(whole, dst) };
         let name = h.name();
         let name = &*name;
         match name {
             "{" => {
                 let g = self.guard(h, whole, dst);
-                if l.args.is_empty() {
-                    self.emit(Op::Null { dst });
-                    self.emit(Op::Visible { on: true });
+                if l.args.iter().any(|a| a.value.is_missing_arg()) {
+                    return self.fallback(whole, dst);
                 }
-                for a in &l.args {
-                    if a.value.is_missing_arg() {
-                        return self.fallback(whole, dst);
-                    }
-                    self.expr(&a.value, dst);
+                if l.args.is_empty() && w != Want::Effect {
+                    self.emit(Op::Null { dst });
+                    self.vis(w, true);
+                }
+                let n = l.args.len();
+                for (i, a) in l.args.iter().enumerate() {
+                    self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
                 }
                 let end = self.here();
                 self.patch(g, end);
             }
             "(" if plain_args(l, 1) => {
                 let g = self.guard(h, whole, dst);
-                self.expr(&l.args[0].value, dst);
-                self.emit(Op::Visible { on: true });
+                self.expr(&l.args[0].value, dst, w.value());
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -209,94 +288,97 @@ impl Compiler {
                     return self.fallback(whole, dst);
                 }
                 let g = self.guard(h, whole, dst);
-                self.expr(&l.args[1].value, dst);
-                self.emit(Op::SetVar { src: dst, sym: target });
-                self.emit(Op::Visible { on: false });
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let slot = self.slot(target);
+                self.emit(Op::SetVar { src: dst, sym: target, slot });
+                self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
             }
             "if" if (l.args.len() == 2 || l.args.len() == 3) && l.args.iter().all(|a| a.tag.is_none()) => {
                 let g = self.guard(h, whole, dst);
                 let c = self.reg();
-                self.expr(&l.args[0].value, c);
+                self.expr(&l.args[0].value, c, Want::Value);
                 let kc = self.konst(whole.clone());
                 let j = self.emit(Op::JumpIfNot { cond: c, target: 0, call: kc });
-                self.expr(&l.args[1].value, dst);
-                let jend = self.emit(Op::Jump { target: 0 });
-                let else_start = self.here();
-                self.patch(j, else_start);
+                self.expr(&l.args[1].value, dst, w);
                 if l.args.len() == 3 {
-                    self.expr(&l.args[2].value, dst);
-                } else {
+                    let jend = self.emit(Op::Jump { target: 0 });
+                    let else_start = self.here();
+                    self.patch(j, else_start);
+                    self.expr(&l.args[2].value, dst, w);
+                    let end = self.here();
+                    self.patch(jend, end);
+                } else if w != Want::Effect {
+                    let jend = self.emit(Op::Jump { target: 0 });
+                    let else_start = self.here();
+                    self.patch(j, else_start);
                     self.emit(Op::Null { dst });
-                    self.emit(Op::Visible { on: false });
+                    self.vis(w, false);
+                    let end = self.here();
+                    self.patch(jend, end);
+                } else {
+                    let end = self.here();
+                    self.patch(j, end);
                 }
                 let end = self.here();
-                self.patch(jend, end);
                 self.patch(g, end);
             }
             "for" if l.args.len() == 3 && matches!(l.args[0].value, Value::Sym(_)) => {
+                // ForInit; LoopEnter; Jump step; body: ...; step: ForStep
+                // (back to body while elements remain); exit: LoopExit.
                 let var = l.args[0].value.as_sym().unwrap();
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                self.expr(&l.args[1].value, seq);
+                self.expr(&l.args[1].value, seq, Want::Value);
                 let kc = self.konst(whole.clone());
                 self.emit(Op::ForInit { seq, call: kc });
                 let enter = self.emit(Op::LoopEnter { brk: 0, nxt: 0 });
-                let top = self.here();
-                let step = self.emit(Op::ForStep { seq, idx, var, exit: 0, call: kc });
+                let jstep = self.emit(Op::Jump { target: 0 });
+                let body_top = self.here();
                 self.loops.push(Loop { breaks: vec![], nexts: vec![] });
                 let body = self.reg();
-                self.expr(&l.args[2].value, body);
-                self.emit(Op::Jump { target: top });
+                self.expr(&l.args[2].value, body, Want::Effect);
                 let lp = self.loops.pop().unwrap();
+                let step = self.here();
+                self.patch(jstep, step);
+                let slot = self.slot(var);
+                self.emit(Op::ForStep { seq, idx, var, slot, body: body_top, call: kc });
                 let exit = self.here();
                 self.emit(Op::LoopExit);
-                self.patch(step, exit);
-                for b in lp.breaks {
-                    self.patch(b, exit);
+                self.close_loop(enter, lp, exit, step);
+                if w != Want::Effect {
+                    self.emit(Op::Null { dst });
                 }
-                for n in lp.nexts {
-                    self.patch(n, top);
-                }
-                if let Op::LoopEnter { brk, nxt } = &mut self.ops[enter] {
-                    *brk = exit;
-                    *nxt = top;
-                }
-                self.emit(Op::Null { dst });
-                self.emit(Op::Visible { on: false });
+                self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
             }
             "while" if plain_args(l, 2) => {
+                // LoopEnter; Jump test; body: ...; test: cond; JumpIf body;
+                // exit: LoopExit.
                 let g = self.guard(h, whole, dst);
                 let enter = self.emit(Op::LoopEnter { brk: 0, nxt: 0 });
-                let top = self.here();
-                let c = self.reg();
-                self.expr(&l.args[0].value, c);
-                let kc = self.konst(whole.clone());
-                let j = self.emit(Op::JumpIfNot { cond: c, target: 0, call: kc });
+                let jtest = self.emit(Op::Jump { target: 0 });
+                let body_top = self.here();
                 self.loops.push(Loop { breaks: vec![], nexts: vec![] });
                 let body = self.reg();
-                self.expr(&l.args[1].value, body);
-                self.emit(Op::Jump { target: top });
+                self.expr(&l.args[1].value, body, Want::Effect);
                 let lp = self.loops.pop().unwrap();
+                let test = self.here();
+                self.patch(jtest, test);
+                let c = self.reg();
+                self.expr(&l.args[0].value, c, Want::Value);
+                let kc = self.konst(whole.clone());
+                self.emit(Op::JumpIf { cond: c, target: body_top, call: kc });
                 let exit = self.here();
                 self.emit(Op::LoopExit);
-                self.patch(j, exit);
-                for b in lp.breaks {
-                    self.patch(b, exit);
+                self.close_loop(enter, lp, exit, test);
+                if w != Want::Effect {
+                    self.emit(Op::Null { dst });
                 }
-                for n in lp.nexts {
-                    self.patch(n, top);
-                }
-                if let Op::LoopEnter { brk, nxt } = &mut self.ops[enter] {
-                    *brk = exit;
-                    *nxt = top;
-                }
-                self.emit(Op::Null { dst });
-                self.emit(Op::Visible { on: false });
+                self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -306,23 +388,16 @@ impl Compiler {
                 let top = self.here();
                 self.loops.push(Loop { breaks: vec![], nexts: vec![] });
                 let body = self.reg();
-                self.expr(&l.args[0].value, body);
+                self.expr(&l.args[0].value, body, Want::Effect);
                 self.emit(Op::Jump { target: top });
                 let lp = self.loops.pop().unwrap();
                 let exit = self.here();
                 self.emit(Op::LoopExit);
-                for b in lp.breaks {
-                    self.patch(b, exit);
+                self.close_loop(enter, lp, exit, top);
+                if w != Want::Effect {
+                    self.emit(Op::Null { dst });
                 }
-                for n in lp.nexts {
-                    self.patch(n, top);
-                }
-                if let Op::LoopEnter { brk, nxt } = &mut self.ops[enter] {
-                    *brk = exit;
-                    *nxt = top;
-                }
-                self.emit(Op::Null { dst });
-                self.emit(Op::Visible { on: false });
+                self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -341,11 +416,13 @@ impl Compiler {
             "return" if l.args.len() <= 1 && l.args.iter().all(|a| a.tag.is_none() && !a.value.is_missing_arg()) => {
                 // `return` from a loop at top level is not a function return;
                 // only compile it inside closure bodies (see `compile_body`).
+                // The value keeps its visibility: return(invisible(x)).
                 let g = self.guard(h, whole, dst);
                 if l.args.is_empty() {
                     self.emit(Op::Null { dst });
+                    self.emit(Op::Visible { on: true });
                 } else {
-                    self.expr(&l.args[0].value, dst);
+                    self.expr(&l.args[0].value, dst, Want::All);
                 }
                 self.emit(Op::Return { src: dst });
                 let end = self.here();
@@ -354,20 +431,20 @@ impl Compiler {
             "!" if plain_args(l, 1) => {
                 let g = self.guard(h, whole, dst);
                 let a = self.reg();
-                self.expr(&l.args[0].value, a);
+                self.expr(&l.args[0].value, a, Want::Value);
                 let k = self.konst(whole.clone());
                 self.emit(Op::Not { dst, a, call: k });
-                self.emit(Op::Visible { on: true });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
             "-" if plain_args(l, 1) => {
                 let g = self.guard(h, whole, dst);
                 let a = self.reg();
-                self.expr(&l.args[0].value, a);
+                self.expr(&l.args[0].value, a, Want::Value);
                 let k = self.konst(whole.clone());
                 self.emit(Op::Neg { dst, a, call: k });
-                self.emit(Op::Visible { on: true });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -375,15 +452,15 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let a = self.reg();
                 let b = self.reg();
-                self.expr(&l.args[0].value, a);
-                self.expr(&l.args[1].value, b);
+                self.expr(&l.args[0].value, a, Want::Value);
+                self.expr(&l.args[1].value, b, Want::Value);
                 let k = self.konst(whole.clone());
                 if let Some(op) = arith_op(n) {
                     self.emit(Op::Arith { op, dst, a, b, call: k });
                 } else {
                     self.emit(Op::Rel { op: rel_op(n).unwrap(), dst, a, b, call: k });
                 }
-                self.emit(Op::Visible { on: true });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -394,10 +471,10 @@ impl Compiler {
 
 /// Compile a closure body.
 pub fn compile_body(body: &Value) -> Code {
-    let mut c = Compiler { ops: Vec::new(), consts: Vec::new(), nregs: 0, loops: Vec::new() };
+    let mut c = Compiler::default();
     let r = c.reg();
-    c.expr(body, r);
-    Code::new(c.ops, c.consts, c.nregs, r, true)
+    c.expr(body, r, Want::All);
+    Code::new(c, r, true)
 }
 
 /// Compile a loop evaluated outside a compiled body (e.g. at top level).
@@ -415,10 +492,10 @@ pub fn compile_loop(e: &Value) -> Option<Code> {
     if !ok {
         return None;
     }
-    let mut c = Compiler { ops: Vec::new(), consts: Vec::new(), nregs: 0, loops: Vec::new() };
+    let mut c = Compiler::default();
     let r = c.reg();
-    c.call(l, e, r);
-    Some(Code::new(c.ops, c.consts, c.nregs, r, false))
+    c.call(l, e, r, Want::All);
+    Some(Code::new(c, r, false))
 }
 
 #[allow(dead_code)]

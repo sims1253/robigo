@@ -118,12 +118,49 @@ impl Drop for Profiler {
     fn drop(&mut self) {
         if let (Some(g), Some(path)) = (self.0.take(), std::env::var_os("RR_PROFILE")) {
             if let Ok(report) = g.report().build() {
-                if let Ok(f) = std::fs::File::create(&path) {
+                if path.to_string_lossy().ends_with(".txt") {
+                    let _ = std::fs::write(&path, line_profile(&report));
+                } else if let Ok(f) = std::fs::File::create(&path) {
                     let _ = report.flamegraph(f);
                 }
             }
         }
     }
+}
+
+/// Self time by source line: for the innermost physical frame of each
+/// sample, the innermost inlined function's line and the line of the
+/// physical function it was inlined into.
+#[cfg(feature = "profile")]
+fn line_profile(report: &pprof::Report) -> String {
+    use std::collections::HashMap;
+    let mut inner: HashMap<String, isize> = HashMap::new();
+    let mut outer: HashMap<String, isize> = HashMap::new();
+    let mut total = 0;
+    let loc = |s: &pprof::Symbol| {
+        let file = s.filename.as_ref().and_then(|f| f.file_name()).map(|f| f.to_string_lossy().into_owned());
+        format!("{} {}:{}", s.name(), file.unwrap_or_default(), s.lineno.unwrap_or(0))
+    };
+    for (frames, n) in &report.data {
+        total += n;
+        let Some(f0) = frames.frames.first() else { continue };
+        if let Some(s) = f0.first() {
+            *inner.entry(loc(s)).or_default() += n;
+        }
+        if let Some(s) = f0.last() {
+            *outer.entry(loc(s)).or_default() += n;
+        }
+    }
+    let mut out = format!("{} samples\n", total);
+    for (title, map) in [("innermost (inlined) location", inner), ("location in the physical function", outer)] {
+        out.push_str(&format!("\n== {}\n", title));
+        let mut v: Vec<_> = map.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, n) in v.into_iter().take(40) {
+            out.push_str(&format!("{:5.1}%  {}\n", 100.0 * n as f64 / total as f64, k));
+        }
+    }
+    out
 }
 
 fn finish(interp: &mut Interp, ok: bool) -> ExitCode {

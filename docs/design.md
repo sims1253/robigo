@@ -193,6 +193,38 @@ make them directly usable by a runtime. Prior type-annotation efforts for R
 checkers or transpiled languages; only the PRL-PRG line and ry infer types
 for unmodified R code, which is what a runtime needs.
 
+### 4.2 Where performance stands
+
+`benchmarks/run.py` times rr against `Rscript` (GNU R 4.5.0 with its
+bytecode JIT) on a 2-vCPU QEMU VM; best of three wall times in seconds,
+including ~0.03 s startup for both:
+
+| script | GNU R | rr | rr VM | what it stresses |
+|---|---|---|---|---|
+| fib | 0.11 | 0.21 | 0.20 | closure calls, promises |
+| loop | 0.12 | 1.08 | 0.24 | scalar arithmetic in a top-level `for` |
+| loopf | 0.12 | 1.13 | 0.23 | the same inside a function |
+| vecassign | 0.08 | 0.71 | 0.74 | `x[i] <- v` in a loop |
+| strings | 0.19 | 0.15 | 0.15 | `paste0`, `gsub`, `unique`, `nchar` |
+| apply | 0.18 | 0.26 | 0.27 | `lapply`/`vapply` with closures, `%*%` |
+| sortbench | 0.60 | 0.43 | 0.43 | `order`, `sort` on 10^6 doubles and strings |
+
+Ledger:
+
+- **Done:** function lookup cache keyed by a search-path epoch; unboxed
+  scalar registers; in-place scalar updates; variables cached in VM slots
+  and written back before anything that can observe the frame (1.6× on
+  scalar loops); `while`/`for` loops with the test at the bottom and no
+  visibility bookkeeping for discarded values.
+- **Measured, not yet fixed:** each VM instruction costs 5–10 ns on this
+  machine (two indirect branches: dispatch and `RVal` cloning), so a scalar
+  loop iteration of 6–7 instructions is ~2× GNU R's. Next: fuse
+  `GetVar`/constant operands into arithmetic and comparison instructions
+  and fold guard checks into the instructions they protect.
+- **Not compiled yet:** `x[i]` and `x[i] <- v` go through the interpreter
+  (`vecassign` is 9× slower than R); closure calls still allocate an
+  environment and promises per call (`fib` is ~1.8× slower).
+
 ## 5. Roadmap
 
 1. Base language and base library (in progress): finish the internals that
