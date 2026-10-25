@@ -1,0 +1,19 @@
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+    A  B   C   D  E
+a 100  6  11  16 21
+b   2  7 200  17 22
+c   3  8  13 300 23
+d   4  9  14  19 24
+e   5 10  15  20 25
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "subscript out of bounds"
