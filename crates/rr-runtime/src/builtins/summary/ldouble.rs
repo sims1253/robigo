@@ -75,8 +75,10 @@ impl F80 {
             if frac == 0 {
                 return F80::inf(neg);
             }
-            // FLD quiets signaling NaNs.
-            return F80 { class: Class::NaN, neg, exp: 0, mant: INT_BIT | QUIET | (frac << 11) };
+            // Keep a signaling NaN signaling: R's accumulators use the
+            // double as a memory operand of FADD/FMUL, where an SNaN
+            // loses against a QNaN (see `nan_pick`).
+            return F80 { class: Class::NaN, neg, exp: 0, mant: INT_BIT | (frac << 11) };
         }
         if bexp == 0 {
             if frac == 0 {
@@ -132,14 +134,22 @@ impl F80 {
         F80 { class: Class::Finite, neg, exp: e127, mant }
     }
 
+    /// x87 NaN propagation: an SNaN loses against a QNaN; otherwise the
+    /// larger significand wins. The result is always quiet.
     fn nan_pick(a: F80, b: F80) -> F80 {
         match (a.is_nan(), b.is_nan()) {
             (true, true) => {
-                let (ma, mb) = (a.mant | QUIET, b.mant | QUIET);
-                if mb > ma {
-                    F80 { mant: mb, ..b }
+                let (sa, sb) = (a.mant & QUIET == 0, b.mant & QUIET == 0);
+                if sa && !sb {
+                    return b;
+                }
+                if sb && !sa {
+                    return a;
+                }
+                if b.mant > a.mant {
+                    F80 { mant: b.mant | QUIET, ..b }
                 } else {
-                    F80 { mant: ma, ..a }
+                    F80 { mant: a.mant | QUIET, ..a }
                 }
             }
             (true, false) => F80 { mant: a.mant | QUIET, ..a },
@@ -359,10 +369,14 @@ mod tests {
 
     #[test]
     fn nan_rules() {
+        // NA_REAL is a signaling NaN: it loses against a quiet NaN ...
         let na = F80::from_f64(crate::value::NA_REAL);
         let nan = F80::from_f64(f64::NAN);
-        assert!(crate::value::is_na_real(nan.add(na).to_f64()));
-        assert!(crate::value::is_na_real(na.add(nan).to_f64()));
+        assert!(!crate::value::is_na_real(nan.add(na).to_f64()));
+        // ... but once quieted by an operation it wins (larger significand).
+        let qna = na.add(F80::ZERO);
+        assert!(crate::value::is_na_real(qna.add(nan).to_f64()));
+        assert!(crate::value::is_na_real(nan.add(qna).to_f64()));
         assert!(!crate::value::is_na_real(nan.add(F80::ONE).to_f64()));
     }
 }

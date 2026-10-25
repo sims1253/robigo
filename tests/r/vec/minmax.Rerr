@@ -1,0 +1,13 @@
+Warning message:
+In max() : no non-missing arguments to max; returning -Inf
+Warning message:
+In min(numeric(0)) : no non-missing arguments to min; returning Inf
+Warning message:
+In max(character(0)) : no non-missing arguments, returning NA
+Warning messages:
+1: In min(x) : no non-missing arguments to min; returning Inf
+2: In max(x) : no non-missing arguments to max; returning -Inf
+Warning message:
+In max(NA, na.rm = TRUE) : no non-missing arguments to max; returning -Inf
+Error in max(list(1, 2)) : invalid 'type' (list) of argument
+Execution halted

@@ -774,7 +774,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             return Err(bad());
         }
         if s1.is_null() {
-            Value::Null
+            return Err(Flow::error("unimplemented type 'NULL' in 'rep2'\n"));
         } else {
             let idx: Vec<usize> = t.iter().enumerate().flat_map(|(k, &c)| std::iter::repeat_n(k, c as usize)).collect();
             gather_all(s1, &idx)
@@ -804,7 +804,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             return Err(bad());
         }
         if s1.is_null() {
-            Value::Null
+            return Err(Flow::error("unimplemented type 'NULL' in 'rep3'\n"));
         } else {
             let idx: Vec<usize> = (0..n * ns).map(|k| k % ns).collect();
             gather_all(s1, &idx)
