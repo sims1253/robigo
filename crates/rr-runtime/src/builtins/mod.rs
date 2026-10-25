@@ -32,6 +32,7 @@ pub mod paste;
 pub mod printint;
 pub mod random;
 pub mod seq;
+pub mod serialize;
 pub mod sort;
 pub mod sprintf;
 pub mod subassign;
@@ -114,6 +115,7 @@ static TABLES: &[&[Builtin]] = &[
     misc::DEFS,
     namespace::DEFS,
     parsing::DEFS,
+    serialize::DEFS,
     conditions::DEFS,
     identical::DEFS,
     random::DEFS,

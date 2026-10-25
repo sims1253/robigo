@@ -8,3 +8,7 @@ authors.workspace = true
 
 [dependencies]
 rr-syntax.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
