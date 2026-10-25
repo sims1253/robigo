@@ -19,6 +19,7 @@ pub mod character;
 pub mod coerce;
 pub mod conditions;
 pub mod envir;
+pub mod funs;
 pub mod grep;
 pub mod identical;
 pub mod io;
@@ -101,6 +102,7 @@ static TABLES: &[&[Builtin]] = &[
     coerce::DEFS,
     lang::DEFS,
     envir::DEFS,
+    funs::DEFS,
     conditions::DEFS,
     identical::DEFS,
     random::DEFS,
