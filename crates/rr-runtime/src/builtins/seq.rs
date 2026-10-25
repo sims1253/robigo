@@ -91,6 +91,11 @@ pub fn dispatch_or_eval_special(
     env: &Env,
 ) -> RResult<Result<Value, Vec<Arg>>> {
     let pargs = i.promise_args(args, env)?;
+    // With no arguments (after dropping empty `...`), DispatchOrEval
+    // evaluates to list(NULL).
+    if pargs.is_empty() {
+        return Ok(Err(vec![Arg::pos(Value::Null)]));
+    }
     if let Some(first) = pargs.first() {
         let v = match &first.value {
             Value::Promise(p) => i.force_promise(p)?,
@@ -774,7 +779,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             return Err(bad());
         }
         if s1.is_null() {
-            Value::Null
+            return Err(Flow::error("unimplemented type 'NULL' in 'rep2'\n"));
         } else {
             let idx: Vec<usize> = t.iter().enumerate().flat_map(|(k, &c)| std::iter::repeat_n(k, c as usize)).collect();
             gather_all(s1, &idx)
@@ -804,7 +809,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             return Err(bad());
         }
         if s1.is_null() {
-            Value::Null
+            return Err(Flow::error("unimplemented type 'NULL' in 'rep3'\n"));
         } else {
             let idx: Vec<usize> = (0..n * ns).map(|k| k % ns).collect();
             gather_all(s1, &idx)

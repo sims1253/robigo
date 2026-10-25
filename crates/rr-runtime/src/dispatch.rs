@@ -186,7 +186,15 @@ impl Interp {
                 }
             }
         }
-        let start = if top.ptr_eq(&self.global) { Some(self.base.clone()) } else { top.parent() };
+        // The base namespace (aliased to the base env here) is enclosed by
+        // R_GlobalEnv in R, so lookups from base code continue there.
+        let start = if top.ptr_eq(&self.global) {
+            Some(self.base.clone())
+        } else if top.ptr_eq(&self.base_ns) {
+            Some(self.global.clone())
+        } else {
+            top.parent()
+        };
         match start {
             Some(st) => self.find_fun_base_after_global(method, &st),
             None => Ok(None),

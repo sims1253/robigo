@@ -644,6 +644,35 @@ where
     Ok(())
 }
 
+const SINCS: [usize; 17] =
+    [1073790977, 268460033, 67121153, 16783361, 4197377, 1050113, 262913, 65921, 16577, 4193, 1073, 281, 77, 23, 8, 1, 0];
+
+/// `sort2_with_index` of orderVector1 (lo = 0, hi = n - 1).
+fn shell_sort_index<F>(indx: &mut [usize], less: &mut F) -> RResult<()>
+where
+    F: FnMut(usize, usize) -> RResult<bool>,
+{
+    let n = indx.len();
+    let mut t = 0;
+    while SINCS[t] > n {
+        t += 1;
+    }
+    while t < 16 {
+        let h = SINCS[t];
+        for i in h..n {
+            let itmp = indx[i];
+            let mut j = i;
+            while j >= h && less(indx[j - h], itmp)? {
+                indx[j] = indx[j - h];
+                j -= h;
+            }
+            indx[j] = itmp;
+        }
+        t += 1;
+    }
+    Ok(())
+}
+
 fn is_na_at(x: &Value, k: usize) -> bool {
     match x {
         Value::Lgl(v) | Value::Int(v) => v.data[k] == NA_INTEGER,
@@ -806,11 +835,36 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         let obj = x.is_object();
         let mut o: Vec<usize> = (0..n).collect();
         {
-            let mut cmp = |a: usize, b: usize| -> RResult<Ordering> {
-                let c = if obj { gt_callback(i, &x, a, b, env)? } else { elt_cmp(&x, a, b, true)? };
-                Ok(c.cmp(&0))
+            // orderVector1() with rho: raw comparisons (NAs were removed by
+            // rank()), or the .gt() callback for classed objects.
+            let mut less = |a: usize, b: usize| -> RResult<bool> {
+                if obj {
+                    let c = gt_callback(i, &x, a, b, env)?;
+                    return Ok(c > 0 || (c == 0 && b < a));
+                }
+                Ok(match &x {
+                    Value::Lgl(v) | Value::Int(v) => {
+                        let (p, q) = (v.data[a], v.data[b]);
+                        p > q || (p == q && a > b)
+                    }
+                    Value::Real(v) => {
+                        let (p, q) = (v.data[a], v.data[b]);
+                        p > q || (p == q && a > b)
+                    }
+                    Value::Cplx(v) => {
+                        let (p, q) = (v.data[a], v.data[b]);
+                        ccmp(p, q, false) > 0 || (p.re == q.re && p.im == q.im && a > b)
+                    }
+                    Value::Str(v) => {
+                        let c = scollate(v.data[a].as_deref().unwrap_or("NA"), v.data[b].as_deref().unwrap_or("NA"));
+                        c == Ordering::Greater || (c == Ordering::Equal && a > b)
+                    }
+                    other => {
+                        return Err(Flow::error(format!("unimplemented type '{}' in 'greater'\n", other.type_name())));
+                    }
+                })
             };
-            stable_sort_by(&mut o, &mut cmp)?;
+            shell_sort_index(&mut o, &mut less)?;
         }
         let mut k0 = 0;
         while k0 < n {

@@ -879,9 +879,12 @@ fn real_mean(x: &[f64]) -> f64 {
     if finite_s {
         s = s.div(n);
     } else {
+        // `s += dx[k]/n`: the division is in double precision.
+        let nd = x.len() as f64;
         s = F80::ZERO;
         for &v in x {
-            s = s.add(F80::from_f64(v).div(n));
+            let q = if v.is_nan() { f64::from_bits(v.to_bits() | (1u64 << 51)) } else { v / nd };
+            s = s.add(F80::from_f64(q));
         }
     }
     if finite_s && s.to_f64().is_finite() {
