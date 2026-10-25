@@ -50,8 +50,6 @@ pub static DEFS: &[Builtin] = &[
     internal("pushBack", do_pushback, 4).invisible(),
     internal("pushBackLength", do_pushbacklength, 1),
     internal("clearPushBack", do_clearpushback, 1).invisible(),
-    internal("formals", do_formals, 1),
-    internal("body", do_body, 1),
 ];
 
 const NCONNECTIONS: usize = 128;
@@ -484,32 +482,6 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             Ok(())
         }
     }
-}
-
-/// Write `text` to connection `n`, opening it with `mode` for the
-/// duration of the call if it is not open (as `dput()` and friends do).
-pub fn write_text_to(i: &mut Interp, n: i32, text: &str, mode: &str) -> RResult<()> {
-    let wasopen = i.conns.get(n)?.isopen;
-    if !wasopen {
-        let con = i.conns.get(n)?;
-        let saved = std::mem::replace(&mut con.mode, mode.to_string());
-        let ok = con_open(i, n)?;
-        i.conns.get(n)?.mode = saved;
-        if !ok {
-            return Err(Flow::error("cannot open the connection"));
-        }
-    }
-    if !i.conns.get(n)?.canwrite {
-        if !wasopen {
-            con_close_raw(i, n)?;
-        }
-        return Err(Flow::error("cannot write to this connection"));
-    }
-    let r = conn_write(i, n, text);
-    if !wasopen {
-        con_close_raw(i, n)?;
-    }
-    r
 }
 
 fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
@@ -1310,35 +1282,6 @@ fn do_clearpushback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
     con.pushback.clear();
     con.pos_pushback = 0;
     Ok(Value::Null)
-}
-
-// ----------------------------------------------------------------------
-// builtin.c: formals, body
-
-/// R: builtin.c:do_formals
-fn do_formals(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match arg(&args, 0) {
-        Value::Closure(c) => Ok(Value::pairlist(c.formals.to_vec())),
-        _ => {
-            if !matches!(arg(&args, 0), Value::Builtin(_)) {
-                i.warning("argument is not a function")?;
-            }
-            Ok(Value::Null)
-        }
-    }
-}
-
-/// R: builtin.c:do_body
-fn do_body(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match arg(&args, 0) {
-        Value::Closure(c) => Ok(c.body.clone()),
-        _ => {
-            if !matches!(arg(&args, 0), Value::Builtin(_)) {
-                i.warning("argument is not a function")?;
-            }
-            Ok(Value::Null)
-        }
-    }
 }
 
 // ----------------------------------------------------------------------

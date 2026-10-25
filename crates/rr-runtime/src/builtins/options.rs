@@ -1,4 +1,4 @@
-//! `options()` and `getOption()` (GNU R's options.c).
+//! `options()` (GNU R's options.c).
 //!
 //! Options live in `Interp::options` in insertion order, like R's
 //! `.Options` pairlist; `options()` returns them sorted by name.
@@ -16,7 +16,6 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     internal("options", do_options, -1).custom_vis(),
-    internal("getOption", do_getoption, 1),
 ];
 
 const R_MIN_WIDTH_OPT: i32 = 10;
@@ -136,16 +135,6 @@ pub fn scollate(a: &str, b: &str) -> Ordering {
 }
 
 // ----------------------------------------------------------------------
-
-fn do_getoption(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = super::arg(&args, 0);
-    let name = match &x {
-        Value::Str(v) if v.data.len() == 1 => v.data[0].clone(),
-        _ => return Err(Flow::error("'x' must be a character string")),
-    };
-    let name = name.map(|s| s.to_string()).unwrap_or_else(|| "NA".into());
-    Ok(i.get_option(&name).unwrap_or(Value::Null))
-}
 
 fn ok_int(v: i32) -> Value {
     Value::int(v)

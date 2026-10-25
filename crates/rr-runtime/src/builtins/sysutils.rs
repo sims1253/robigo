@@ -30,9 +30,7 @@ pub static DEFS: &[Builtin] = &[
     super::prim("proc.time", do_proctime, 0),
     internal("date", do_date, 0),
     internal("commandArgs", do_command_args, 0),
-    internal("Version", do_version, 0),
     internal("R.home", do_rhome, 0),
-    internal("gc", do_gc, 3),
     internal("tempdir", do_tempdir, 1),
     internal("tempfile", do_tempfile, 3),
     internal("file.exists", do_fileexists, 1),
@@ -49,41 +47,7 @@ pub static DEFS: &[Builtin] = &[
     internal("dirname", do_dirname, 1),
     internal("normalizePath", do_normalizepath, 3),
     internal("path.expand", do_pathexpand, 1),
-    internal("gettext", do_gettext, -1),
-    internal("ngettext", do_ngettext, 4),
-    internal("bindtextdomain", do_bindtextdomain, 2),
 ];
-
-// ----------------------------------------------------------------------
-// Message translation (R: errors.c). rr is built without NLS, so these
-// are R's code paths for a build without ENABLE_NLS.
-
-fn do_gettext(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(Flow::error_call(call.clone(), "either 2 or 3 arguments are required"));
-    }
-    Ok(arg(&args, 1))
-}
-
-fn do_ngettext(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let msg1 = arg(&args, 1);
-    let msg2 = arg(&args, 2);
-    let n = as_integer(&arg(&args, 0));
-    if n == NA_INTEGER || n < 0 {
-        return Err(Flow::error("invalid 'n' argument"));
-    }
-    if !matches!(&msg1, Value::Str(v) if v.data.len() == 1) {
-        return Err(Flow::error("'msg1' must be a character string"));
-    }
-    if !matches!(&msg2, Value::Str(v) if v.data.len() == 1) {
-        return Err(Flow::error("'msg2' must be a character string"));
-    }
-    Ok(if n == 1 { msg1 } else { msg2 })
-}
-
-fn do_bindtextdomain(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
-}
 
 unsafe extern "C" {
     fn mkdtemp(template: *mut c_char) -> *mut c_char;
@@ -228,10 +192,6 @@ fn version_list() -> Value {
     ])
 }
 
-fn do_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(version_list())
-}
-
 /// `commandArgs()`: the arguments the way `Rscript` passes them to R.
 fn do_command_args(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let argv: Vec<String> = std::env::args().collect();
@@ -271,12 +231,6 @@ fn do_rhome(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
         Ok(h) if !h.is_empty() => Ok(Value::str(&h)),
         _ => Err(Flow::error("rr: R.home() is not available: R_HOME is not set")),
     }
-}
-
-fn do_gc(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    // rr frees memory by reference counting; there is no collector whose
-    // statistics gc() could report.
-    Err(Flow::error("rr: 'gc' is not implemented (rr uses reference counting)"))
 }
 
 // ----------------------------------------------------------------------

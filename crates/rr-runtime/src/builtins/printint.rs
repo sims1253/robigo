@@ -11,8 +11,6 @@ use crate::value::*;
 pub static DEFS: &[Builtin] = &[
     internal("print.default", do_printdefault, 3).invisible(),
     internal("prmatrix", do_prmatrix, 6).invisible(),
-    internal("deparse", do_deparse, 5),
-    internal("dput", do_dput, 3).invisible(),
 ];
 
 fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -94,75 +92,6 @@ fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRes
     p.call_args = forward;
     p.value_rec(i, &x)?;
     p.flush(i);
-    Ok(x)
-}
-
-// ----------------------------------------------------------------------
-// deparse.c: deparse, dput
-
-const MIN_CUTOFF: i32 = 20;
-const MAX_CUTOFF: i32 = 500;
-const DEFAULT_CUTOFF: i32 = 60;
-
-/// R: deparse.c:do_deparse
-fn do_deparse(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let expr = arg(&args, 0);
-    let mut cut0 = DEFAULT_CUTOFF;
-    let c = arg(&args, 1);
-    if !c.is_null() {
-        cut0 = as_integer(&c);
-        if cut0 == NA_INTEGER || !(MIN_CUTOFF..=MAX_CUTOFF).contains(&cut0) {
-            i.warning("invalid 'cutoff' value for 'deparse', using default")?;
-            cut0 = DEFAULT_CUTOFF;
-        }
-    }
-    let b = arg(&args, 2);
-    let backtick = if b.is_null() {
-        false
-    } else {
-        let l = as_logical(&b);
-        if l == NA_LOGICAL {
-            return Err(Flow::error_call(call.clone(), "NA in coercion to boolean"));
-        }
-        l != 0
-    };
-    let o = arg(&args, 3);
-    let opts = if o.is_null() { crate::deparse::SHOWATTRIBUTES } else { as_integer(&o) as u32 };
-    let nlines = as_integer(&arg(&args, 4));
-    let nlines = if nlines == NA_INTEGER || nlines < 0 { None } else { Some(nlines as usize) };
-    let lines = crate::deparse::deparse_lines(&expr, cut0 as usize, backtick, opts, nlines);
-    Ok(Value::strs_from(lines))
-}
-
-/// R: deparse.c:do_dput
-fn do_dput(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = arg(&args, 0);
-    let o = arg(&args, 2);
-    let opts = if o.is_null() { crate::deparse::SHOWATTRIBUTES } else { as_integer(&o) as u32 };
-    let tval = match &x {
-        Value::Closure(c) => {
-            let mut c2 = (**c).clone();
-            c2.env = i.global.clone();
-            Value::Closure(std::rc::Rc::new(c2))
-        }
-        v => v.clone(),
-    };
-    let lines = crate::deparse::deparse_lines(&tval, DEFAULT_CUTOFF as usize, false, opts, None);
-    let file = arg(&args, 1);
-    if !file.inherits("connection") {
-        return Err(Flow::error("'file' must be a character string or connection"));
-    }
-    let ifile = as_integer(&file);
-    let mut text = String::new();
-    for l in &lines {
-        text.push_str(l);
-        text.push('\n');
-    }
-    if ifile == 1 {
-        i.write_out(&text);
-    } else {
-        super::io::write_text_to(i, ifile, &text, "w")?;
-    }
     Ok(x)
 }
 

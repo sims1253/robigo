@@ -1,0 +1,40 @@
+[1] "hello"
+ RR_TEST_VAR RR_UNSET_VAR 
+     "hello"     "<none>" 
+[1] ""
+[1] NA
+[1] ""
+[1] TRUE
+[1] "POSIXct" "POSIXt" 
+[1] TRUE
+[1] "proc_time"
+[1] "user.self"  "sys.self"   "elapsed"    "user.child" "sys.child" 
+[1] 5
+[1] TRUE
+[1] 24
+[1] "4"
+[1] "R"
+[1] "R version 4.5.0 (2025-04-11)"
+[1] "How About a Twenty-Six"
+[1] 2147483647
+[1] 2.220446e-16
+[1] "/"
+[1] "unix"
+[1] "sysname"        "release"        "version"        "nodename"      
+[5] "machine"        "login"          "user"           "effective_user"
+[1] FALSE
+[1] TRUE
+[1] "C.UTF-8"
+[1] "C"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] 2
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] "invalid 'time' value"
