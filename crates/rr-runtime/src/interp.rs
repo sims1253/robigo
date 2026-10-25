@@ -53,6 +53,8 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
+    /// The connection table and sink state (connections.c).
+    pub conns: crate::builtins::io::ConnState,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -89,6 +91,7 @@ impl Interp {
             in_error: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
+            conns: Default::default(),
         };
         crate::builtins::install(&mut interp);
         interp
@@ -775,10 +778,16 @@ impl Interp {
     }
 
     pub fn write_out(&mut self, s: &str) {
+        if self.conns.sink_number > 0 {
+            return crate::builtins::io::rprintf_sink(self, s);
+        }
         let _ = self.out.write_all(s.as_bytes());
     }
 
     pub fn write_err(&mut self, s: &str) {
+        if self.conns.error_con != 2 {
+            return crate::builtins::io::reprintf_sink(self, s);
+        }
         let _ = self.out.flush();
         let _ = self.err.write_all(s.as_bytes());
     }

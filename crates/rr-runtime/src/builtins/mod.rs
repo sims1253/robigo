@@ -23,7 +23,9 @@ pub mod grep;
 pub mod identical;
 pub mod io;
 pub mod lang;
+pub mod lapack;
 pub mod math;
+pub mod options;
 pub mod paste;
 pub mod printint;
 pub mod random;
@@ -34,6 +36,7 @@ pub mod subassign;
 pub mod subscript;
 pub mod subset;
 pub mod summary;
+pub mod sysutils;
 pub mod unique;
 
 pub type BuiltinFn = fn(&mut Interp, &Value, Vec<Arg>, &Env) -> RResult<Value>;
@@ -120,6 +123,9 @@ static TABLES: &[&[Builtin]] = &[
     printint::DEFS,
     apply::DEFS,
     array::DEFS,
+    options::DEFS,
+    sysutils::DEFS,
+    lapack::DEFS,
 ];
 
 pub fn install(interp: &mut Interp) {
@@ -148,6 +154,8 @@ pub fn install(interp: &mut Interp) {
     interp.set_option("keep.source", Value::lgl(false));
     interp.set_option("expressions", Value::int(5000));
     interp.set_option("useFancyQuotes", Value::lgl(false));
+    options::init_options(interp);
+    sysutils::install_vars(interp);
 }
 
 /// Settings applied after the base library is loaded (the parts of the

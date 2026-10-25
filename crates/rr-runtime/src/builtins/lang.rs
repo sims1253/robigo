@@ -453,6 +453,11 @@ fn fast_replace(
     argv.push(Arg::new(Some(s::VALUE), if b.kind == BuiltinKind::Special { quote_if_needed(rhs) } else { rhs }));
     // Now take the value out of its binding so we hold the only reference.
     let obj = env.take_local(target).unwrap_or(Value::Null);
+    // An argument binding holds its (already forced) promise.
+    let obj = match obj {
+        Value::Promise(p) => p.value().unwrap_or(Value::Null),
+        v => v,
+    };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
