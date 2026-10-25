@@ -1,0 +1,43 @@
+[1] 7
+[1] 80
+NULL
+[1] "fallback"
+$digits
+[1] 7
+
+[1] 3.14
+[1] 0.143
+[1] 3.141593
+$digits
+[1] 7
+
+$width
+[1] 80
+
+[1] "."
+$my.option
+NULL
+
+[1] 42
+NULL
+$digits
+[1] 7
+
+$scipen
+[1] 0
+
+[1] 100000
+[1] 123457
+[1] 1e+05
+[1] 0
+[1] "integer"
+[1] 1
+[1] TRUE
+[1] TRUE
+[1] "invalid 'digits' parameter, allowed 1...22"
+[1] "invalid 'width' parameter, allowed 10...10000"
+[1] "option 'digits' cannot be deleted"
+[1] "invalid value for 'warn'"
+[1] 9999
+[1] 3.1
+[1] 3.141593

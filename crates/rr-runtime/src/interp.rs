@@ -59,6 +59,8 @@ pub struct Interp {
     pub fun_cache_epoch: u64,
     /// Name of the script being run (for type profiles).
     pub source_name: String,
+    /// The connection table and sink state (connections.c).
+    pub conns: crate::builtins::io::ConnState,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -99,6 +101,7 @@ impl Interp {
             fun_cache: HashMap::default(),
             fun_cache_epoch: u64::MAX,
             source_name: "<text>".to_string(),
+            conns: Default::default(),
         };
         crate::builtins::install(&mut interp);
         interp
@@ -882,10 +885,16 @@ impl Interp {
     }
 
     pub fn write_out(&mut self, s: &str) {
+        if self.conns.sink_number > 0 {
+            return crate::builtins::io::rprintf_sink(self, s);
+        }
         let _ = self.out.write_all(s.as_bytes());
     }
 
     pub fn write_err(&mut self, s: &str) {
+        if self.conns.error_con != 2 {
+            return crate::builtins::io::reprintf_sink(self, s);
+        }
         let _ = self.out.flush();
         let _ = self.err.write_all(s.as_bytes());
     }

@@ -8,7 +8,10 @@ use crate::interp::Interp;
 use crate::print::Printer;
 use crate::value::*;
 
-pub static DEFS: &[Builtin] = &[internal("print.default", do_printdefault, 3).invisible()];
+pub static DEFS: &[Builtin] = &[
+    internal("print.default", do_printdefault, 3).invisible(),
+    internal("prmatrix", do_prmatrix, 6).invisible(),
+];
 
 fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
@@ -88,6 +91,50 @@ fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRes
     }
     p.call_args = forward;
     p.value_rec(i, &x)?;
+    p.flush(i);
+    Ok(x)
+}
+
+/// R: print.c:do_prmatrix
+fn do_prmatrix(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let x = arg(&args, 0);
+    let mut rowlab = arg(&args, 1);
+    let mut collab = arg(&args, 2);
+    let quote = as_integer(&arg(&args, 3));
+    let right = as_integer(&arg(&args, 4));
+    let mut p = Printer::new(i, env);
+    let naprint = arg(&args, 5);
+    if !naprint.is_null() {
+        match &naprint {
+            Value::Str(v) if !v.data.is_empty() => {
+                let s = v.data[0].as_deref().unwrap_or("NA").to_string();
+                p.pp.na_width = crate::format::rstrlen(&s, None);
+                p.pp.na_width_noquote = p.pp.na_width;
+                p.pp.na_string = s.clone();
+                p.pp.na_string_noquote = s;
+            }
+            _ => return Err(Flow::error("invalid 'na.print' specification")),
+        }
+    }
+    if rowlab.is_empty() {
+        rowlab = Value::Null;
+    }
+    if collab.is_empty() {
+        collab = Value::Null;
+    }
+    if !rowlab.is_null() && !matches!(rowlab, Value::Str(_)) {
+        return Err(Flow::error("invalid row labels"));
+    }
+    if !collab.is_null() && !matches!(collab, Value::Str(_)) {
+        return Err(Flow::error("invalid column labels"));
+    }
+    let d = match x.get_attr(crate::sym::s::DIM) {
+        Some(Value::Int(d)) => d.data.clone(),
+        _ => vec![x.len() as i32, 1],
+    };
+    let strs = |v: &Value| v.as_str_vec().map(|s| s.data.clone());
+    let (r, c) = (d[0] as usize, d.get(1).copied().unwrap_or(1) as usize);
+    p.matrix(&x, r, c, strs(&rowlab), strs(&collab), None, None, quote != 0, right != 0);
     p.flush(i);
     Ok(x)
 }

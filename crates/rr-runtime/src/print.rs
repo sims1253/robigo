@@ -371,6 +371,8 @@ impl Printer {
         }
     }
 
+    /// R: printarray.c:printMatrix. `rn`/`cn` are `names(dimnames(x))`
+    /// (`None` when there are no names).
     #[allow(clippy::too_many_arguments)]
     pub fn matrix(
         &mut self,
@@ -384,14 +386,96 @@ impl Printer {
         quote: bool,
         right: bool,
     ) {
+        if r == 0 && c == 0 {
+            self.p("<0 x 0 matrix>\n");
+            return;
+        }
+        let max = self.pp.max;
+        let mut r_pr = r;
+        let c_pr = if c > max { max } else { c };
+        if c > 0 && max / c < r {
+            r_pr = max / c;
+        }
+        if c > c_pr && r_pr < 1 && r > 0 {
+            r_pr = 1;
+        }
+        self.matrix_body(v, 0, r_pr, r, c_pr, &rl, &cl, rn.as_deref(), cn.as_deref(), quote, right, true);
+        if r_pr < r || c_pr < c {
+            self.p(" [ reached 'max' / getOption(\"max.print\") -- omitted");
+            if r_pr < r {
+                let k = r - r_pr;
+                self.p(&format!(" {} row{}", k, if k == 1 { "" } else { "s" }));
+            }
+            if c_pr < c {
+                if r_pr < r {
+                    self.p(" and");
+                }
+                let k = c - c_pr;
+                self.p(&format!(" {} column{}", k, if k == 1 { "" } else { "s" }));
+            }
+            self.p(" ]\n");
+        }
+    }
+
+    /// R: printarray.c:MatrixRowLabel
+    fn matrix_row_label(&mut self, rl: &Option<Vec<RStr>>, i: usize, rlabw: usize, lbloff: usize) {
+        match rl {
+            Some(rl) => {
+                let (s, l) = match &rl[i] {
+                    None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
+                    Some(s) => (escape_string(s, None), rstrlen(s, None)),
+                };
+                self.p("\n");
+                self.p(&" ".repeat(lbloff));
+                self.p(&s);
+                self.p(&" ".repeat(rlabw.saturating_sub(l + lbloff)));
+            }
+            None => {
+                let lab = format!("[{},]", i + 1);
+                self.p("\n");
+                self.p(&" ".repeat(rlabw.saturating_sub(3 + index_width(i + 1))));
+                self.p(&lab);
+            }
+        }
+    }
+
+    fn col_label(&self, cl: &Option<Vec<RStr>>, j: usize) -> (String, usize) {
+        match cl {
+            Some(cl) => match &cl[j] {
+                None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
+                Some(s) => (escape_string(s, None), rstrlen(s, None)),
+            },
+            None => (format!("[,{}]", j + 1), index_width(j + 1) + 3),
+        }
+    }
+
+    /// The print<TYPE>Matrix() functions of printarray.c: print rows
+    /// `0..r_pr` and columns `0..c` of the `r`-row matrix stored at
+    /// `offset` in `v`.
+    #[allow(clippy::too_many_arguments)]
+    fn matrix_body(
+        &mut self,
+        v: &Value,
+        offset: usize,
+        r_pr: usize,
+        r: usize,
+        c: usize,
+        rl: &Option<Vec<RStr>>,
+        cl: &Option<Vec<RStr>>,
+        rn: Option<&str>,
+        cn: Option<&str>,
+        quote: bool,
+        right: bool,
+        print_ij: bool,
+    ) {
         let pp = self.pp.clone();
-        let r_pr = r.min(if c > 0 { pp.max / c.max(1) } else { r });
-        let mut rlabw = match &rl {
-            Some(rl) => format_string(rl, None, &pp),
+        // _PRINT_INIT_rl_rn
+        let mut rlabw = match rl {
+            Some(rl) => format_string(&rl[..r.min(rl.len())], None, &pp),
             None => index_width(r + 1) + 3,
         };
         let mut lbloff = 0;
-        if let Some(rn) = &rn {
+        if let Some(rn) = rn {
             let rnw = str_width(rn);
             if rnw < rlabw + R_MIN_LBLOFF {
                 lbloff = R_MIN_LBLOFF;
@@ -402,59 +486,53 @@ impl Printer {
         }
         let is_str = matches!(v, Value::Str(_));
         let qc = if quote { Some('"') } else { None };
-        // Encode each column.
-        let mut cols: Vec<Vec<String>> = Vec::with_capacity(c);
-        let mut w: Vec<usize> = Vec::with_capacity(c);
+        // _COMPUTE_W_: column widths and per-column format info.
+        let mut w = vec![0usize; c];
+        let mut real_fmt: Vec<(usize, usize, usize)> = vec![(0, 0, 0); c];
+        let mut cplx_fmt: Vec<((usize, usize, usize), (usize, usize, usize))> = vec![((0, 0, 0), (0, 0, 0)); c];
         for j in 0..c {
-            let range = j * r..j * r + r;
-            let (enc, wj): (Vec<String>, usize) = match v {
-                Value::Lgl(x) => {
-                    let wj = format_logical(&x.data[range.clone()], pp.na_width);
-                    (x.data[range].iter().map(|&e| encode_logical(e, wj, &pp.na_string)).collect(), wj)
-                }
-                Value::Int(x) => {
-                    let wj = format_integer(&x.data[range.clone()], pp.na_width);
-                    (x.data[range].iter().map(|&e| encode_integer(e, wj, &pp.na_string)).collect(), wj)
-                }
-                Value::Real(x) => {
-                    let (wj, d, e) = format_real(&x.data[range.clone()], pp.digits, pp.scipen, 0, pp.na_width);
-                    (x.data[range].iter().map(|&e2| encode_real0(e2, wj, d, e, &pp.na_string)).collect(), wj)
-                }
-                Value::Cplx(x) => {
-                    let (rr, ii) = format_complex(&x.data[range.clone()], pp.digits, pp.scipen, 0, pp.na_width);
-                    let wj = rr.0 + ii.0 + 2;
-                    (x.data[range].iter().map(|z| encode_complex(*z, rr, ii, &pp.na_string)).collect(), wj)
-                }
-                Value::Str(x) => {
-                    let wj = format_string(&x.data[range.clone()], qc, &pp);
-                    let just = if right { Justify::Right } else { Justify::Left };
-                    (x.data[range].iter().map(|e| encode_string(e, wj, qc, just, &pp)).collect(), wj)
-                }
-                Value::Raw(x) => (x.data[range].iter().map(|b| format!("{:02x}", b)).collect(), 2),
-                _ => (vec![], 0),
-            };
-            let clabw = match &cl {
+            let range = offset + j * r..offset + j * r + r;
+            if print_ij {
+                w[j] = match v {
+                    Value::Lgl(x) => format_logical(&x.data[range], pp.na_width),
+                    Value::Int(x) => format_integer(&x.data[range], pp.na_width),
+                    Value::Real(x) => {
+                        let f = format_real(&x.data[range], pp.digits, pp.scipen, 0, pp.na_width);
+                        real_fmt[j] = f;
+                        f.0
+                    }
+                    Value::Cplx(x) => {
+                        let f = format_complex(&x.data[range], pp.digits, pp.scipen, 0, pp.na_width);
+                        cplx_fmt[j] = f;
+                        f.0 .0 + f.1 .0 + 2
+                    }
+                    Value::Str(x) => format_string(&x.data[range], qc, &pp),
+                    Value::Raw(_) => 2,
+                    _ => 0,
+                };
+            }
+            let clabw = match cl {
                 Some(cl) => match &cl[j] {
                     None => pp.na_width_noquote,
                     Some(s) => str_width(s),
                 },
                 None => index_width(j + 1) + 3,
             };
-            let mut wj = wj.max(clabw);
-            if !is_str {
-                wj += pp.gap;
+            if w[j] < clabw {
+                w[j] = clabw;
             }
-            w.push(wj);
-            cols.push(enc);
+            if !is_str {
+                w[j] += pp.gap;
+            }
         }
         let extra = if is_str { pp.gap } else { 0 };
         let print_row_lab = |this: &mut Printer| {
-            if let Some(cn) = &cn {
+            if let Some(cn) = cn {
                 this.p(&" ".repeat(rlabw));
                 this.p(cn);
                 this.p("\n");
             }
-            match &rn {
+            match rn {
                 Some(rn) => {
                     this.p(rn);
                     this.p(&" ".repeat(rlabw.saturating_sub(str_width(rn))));
@@ -462,41 +540,18 @@ impl Printer {
                 None => this.p(&" ".repeat(rlabw)),
             }
         };
-        let row_label = |this: &mut Printer, i: usize| {
-            this.p("\n");
-            match &rl {
-                Some(rl) => {
-                    let (s, l) = match &rl[i] {
-                        None => (pp.na_string_noquote.clone(), pp.na_width_noquote),
-                        Some(s) => {
-                            let e = escape_string(s, None);
-                            let l = str_width(&e);
-                            (e, l)
-                        }
-                    };
-                    this.p(&" ".repeat(lbloff));
-                    this.p(&s);
-                    this.p(&" ".repeat(rlabw.saturating_sub(l + lbloff)));
-                }
-                None => {
-                    let lab = format!("[{},]", i + 1);
-                    this.p(&" ".repeat(rlabw.saturating_sub(lab.len())));
-                    this.p(&lab);
-                }
-            }
-        };
         if c == 0 {
             print_row_lab(self);
             for i in 0..r {
-                row_label(self, i);
+                self.matrix_row_label(rl, i, rlabw, lbloff);
             }
             self.p("\n");
             return;
         }
         let mut jmin = 0;
+        let mut jmax = 0;
         while jmin < c {
             let mut width = rlabw;
-            let mut jmax = jmin;
             loop {
                 width += w[jmax] + extra;
                 jmax += 1;
@@ -506,84 +561,69 @@ impl Printer {
             }
             print_row_lab(self);
             for j in jmin..jmax {
+                let (lab, l) = self.col_label(cl, j);
                 if is_str {
-                    // Column labels for strings: left- or right-aligned.
-                    let (lab, l) = match &cl {
-                        Some(cl) => match &cl[j] {
-                            None => (pp.na_string_noquote.clone(), pp.na_width_noquote),
-                            Some(s) => {
-                                let e = escape_string(s, None);
-                                let l = str_width(&e);
-                                (e, l)
-                            }
-                        },
-                        None => {
-                            let lab = format!("[,{}]", j + 1);
-                            let l = lab.len();
-                            (lab, l)
-                        }
-                    };
                     if right {
-                        self.p(&" ".repeat(pp.gap + w[j].saturating_sub(l)));
+                        // R: RightMatrixColumnLabel
+                        self.p(&" ".repeat((pp.gap + w[j]).saturating_sub(l)));
                         self.p(&lab);
                     } else {
+                        // R: LeftMatrixColumnLabel
                         self.p(&" ".repeat(pp.gap));
                         self.p(&lab);
                         self.p(&" ".repeat(w[j].saturating_sub(l)));
                     }
                 } else {
-                    match &cl {
-                        Some(cl) => {
-                            let (lab, l) = match &cl[j] {
-                                None => (pp.na_string_noquote.clone(), pp.na_width_noquote),
-                                Some(s) => {
-                                    let e = escape_string(s, None);
-                                    let l = str_width(&e);
-                                    (e, l)
-                                }
-                            };
-                            self.p(&" ".repeat(w[j].saturating_sub(l)));
-                            self.p(&lab);
-                        }
-                        None => {
-                            let lab = format!("[,{}]", j + 1);
-                            self.p(&" ".repeat(w[j].saturating_sub(lab.len())));
-                            self.p(&lab);
-                        }
-                    }
+                    // R: MatrixColumnLabel
+                    self.p(&" ".repeat(w[j].saturating_sub(l)));
+                    self.p(&lab);
                 }
             }
             for i in 0..r_pr {
-                row_label(self, i);
+                self.matrix_row_label(rl, i, rlabw, lbloff);
+                if !print_ij {
+                    continue;
+                }
                 for j in jmin..jmax {
-                    let item = &cols[j][i];
-                    if is_str {
-                        self.p(&" ".repeat(pp.gap));
-                        self.p(item);
-                    } else {
-                        self.p(&" ".repeat(w[j].saturating_sub(str_width(item))));
-                        self.p(item);
-                    }
+                    let k = offset + i + j * r;
+                    let s = match v {
+                        Value::Lgl(x) => encode_logical(x.data[k], w[j], &pp.na_string),
+                        Value::Int(x) => encode_integer(x.data[k], w[j], &pp.na_string),
+                        Value::Real(x) => {
+                            let (_, d, e) = real_fmt[j];
+                            encode_real0(x.data[k], w[j], d, e, &pp.na_string)
+                        }
+                        Value::Cplx(x) => {
+                            let z = x.data[k];
+                            if is_na_real(z.re) || is_na_real(z.im) {
+                                encode_real0(NA_REAL, w[j], 0, 0, &pp.na_string)
+                            } else {
+                                let (rf, imf) = cplx_fmt[j];
+                                encode_complex(z, (w[j] - imf.0 - 2, rf.1, rf.2), imf, &pp.na_string)
+                            }
+                        }
+                        Value::Str(x) => {
+                            let just = if right { Justify::Right } else { Justify::Left };
+                            format!("{}{}", " ".repeat(pp.gap), encode_string(&x.data[k], w[j], qc, just, &pp))
+                        }
+                        Value::Raw(x) => format!("{}{:02x}", " ".repeat(w[j].saturating_sub(2)), x.data[k]),
+                        _ => String::new(),
+                    };
+                    self.p(&s);
                 }
             }
             self.p("\n");
             jmin = jmax;
         }
-        if r_pr < r {
-            self.p(&format!(
-                " [ reached getOption(\"max.print\") -- omitted {} rows ]\n",
-                r - r_pr
-            ));
-        }
     }
 
+    /// R: printarray.c:printArray for arrays of three or more dimensions.
     fn array(&mut self, interp: &mut Interp, v: &Value, dims: &[i32]) -> RResult<()> {
         let _ = interp;
+        let ndim = dims.len();
         let nr = dims[0] as usize;
         let nc = dims[1] as usize;
         let b = nr * nc;
-        let total: usize = dims.iter().map(|&d| d as usize).product();
-        let nb = if b == 0 { 0 } else { total / b };
         let dn = v.get_attr(s::DIMNAMES);
         let dnl: Option<Vec<Value>> = match &dn {
             Some(Value::List(l)) => Some(l.data.clone()),
@@ -599,31 +639,102 @@ impl Printer {
                 _ => None,
             }
         };
-        let rl = dnl.as_ref().and_then(|l| strs(l.first()));
-        let cl = dnl.as_ref().and_then(|l| strs(l.get(1)));
-        let rn = dnn.as_ref().and_then(|n| n.first().cloned().flatten()).map(|s| s.to_string()).filter(|s| !s.is_empty());
-        let cn = dnn.as_ref().and_then(|n| n.get(1).cloned().flatten()).map(|s| s.to_string()).filter(|s| !s.is_empty());
-        for k in 0..nb {
-            // Header ", , i, j"
-            let mut header = String::from(", ");
-            let mut kk = k;
-            for (d, &dim) in dims.iter().enumerate().skip(2) {
-                let ix = kk % dim as usize;
-                kk /= dim as usize;
-                header.push_str(", ");
-                let lab = dnl.as_ref().and_then(|l| strs(l.get(d))).and_then(|v| v.get(ix).cloned().flatten());
-                let name = dnn.as_ref().and_then(|n| n.get(d).cloned().flatten()).filter(|s| !s.is_empty());
-                match (lab, name) {
-                    (Some(l), Some(n)) => header.push_str(&format!("{} = {}", n, l)),
-                    (Some(l), None) => header.push_str(&l),
-                    (None, _) => header.push_str(&(ix + 1).to_string()),
+        let dn0 = dnl.as_ref().and_then(|l| strs(l.first()));
+        let dn1 = dnl.as_ref().and_then(|l| strs(l.get(1)));
+        let nm = |k: usize| -> Option<String> {
+            dnn.as_ref().map(|n| n.get(k).cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into()))
+        };
+        let (rn, cn) = (nm(0), nm(1));
+        let nb: usize = dims[2..].iter().map(|&d| d as usize).product();
+        let max = self.pp.max;
+        let max_reached = b > 0 && max / b < nb;
+        let (nb_pr, nc_last, nr_last);
+        if max_reached {
+            let mut nbp = max.div_ceil(b);
+            let ne_last = max - b * (nbp - 1);
+            let mut ncl = if ne_last < nc { ne_last } else { nc };
+            let mut nrl = if ne_last < nc { 1 } else { ne_last / nc };
+            if nrl == 0 {
+                nbp -= 1;
+                ncl = nc;
+                nrl = nr;
+            }
+            nb_pr = nbp;
+            nc_last = ncl;
+            nr_last = nrl;
+        } else {
+            nb_pr = if nb > 0 { nb } else { 1 };
+            nc_last = nc;
+            nr_last = nr;
+        }
+        for i in 0..nb_pr {
+            let do_ij = nb > 0;
+            let i_last = i == nb_pr - 1;
+            let use_nc = if i_last { nc_last } else { nc };
+            let use_nr = if i_last { nr_last } else { nr };
+            if do_ij {
+                let mut k = 1;
+                let mut header = String::from(", ");
+                for j in 2..ndim {
+                    let l = (i / k) % dims[j] as usize + 1;
+                    match dnl.as_ref().and_then(|d| strs(d.get(j))) {
+                        Some(lab) => {
+                            let lab_s = lab[l - 1].as_deref().unwrap_or("NA").to_string();
+                            match &dnn {
+                                Some(n) => header.push_str(&format!(", {} = {}", n[j].as_deref().unwrap_or("NA"), lab_s)),
+                                None => header.push_str(&format!(", {}", lab_s)),
+                            }
+                        }
+                        None => header.push_str(&format!(", {}", l)),
+                    }
+                    k *= dims[j] as usize;
+                }
+                self.p(&header);
+                self.p("\n\n");
+            } else {
+                let mut s = String::new();
+                for (k, d) in dims.iter().enumerate() {
+                    s.push_str(&format!("{}{}", if k == 0 { "<" } else { " x " }, d));
+                }
+                let tn = match v {
+                    Value::Real(_) => "double",
+                    other => other.type_name(),
+                };
+                s.push_str(&format!(" array of {}>\n", tn));
+                self.p(&s);
+            }
+            self.matrix_body(
+                v,
+                i * b,
+                use_nr,
+                nr,
+                use_nc,
+                &dn0,
+                &dn1,
+                rn.as_deref(),
+                cn.as_deref(),
+                self.pp.quote,
+                self.pp.right,
+                do_ij,
+            );
+            self.p("\n");
+        }
+        if max_reached {
+            self.p(" [ reached 'max' / getOption(\"max.print\") -- omitted");
+            if nb_pr < nb {
+                let k = nb - nb_pr;
+                self.p(&format!(" {} slice{}", k, if k == 1 { "" } else { "s" }));
+            } else if nb_pr == nb {
+                let nr2 = nr - nr_last;
+                if nr2 > 0 {
+                    self.p(&format!(" {} row{}", nr2, if nr2 == 1 { "" } else { "s" }));
+                }
+                let nc2 = nc - nc_last;
+                if nc2 > 0 {
+                    self.p(&format!(" {} column{}", nc2, if nc2 == 1 { "" } else { "s" }));
                 }
             }
-            self.p(&header);
-            self.p("\n\n");
-            let slice = slice_value(v, k * b, b);
-            self.matrix(&slice, nr, nc, rl.clone(), cl.clone(), rn.clone(), cn.clone(), self.pp.quote, self.pp.right);
-            self.p("\n");
+            self.p(" ] \n");
         }
         Ok(())
     }
@@ -769,28 +880,16 @@ pub fn matrix_dimnames(v: &Value) -> (Option<Vec<RStr>>, Option<Vec<RStr>>, Opti
     };
     let rl = strs(l.data.first());
     let cl = strs(l.data.get(1));
+    // R: printutils.c:GetMatrixDimnames
     let names = dn.as_ref().unwrap().get_attr(s::NAMES);
     let (rn, cn) = match names {
         Some(Value::Str(n)) => (
-            n.data.first().cloned().flatten().map(|s| s.to_string()),
-            n.data.get(1).cloned().flatten().map(|s| s.to_string()).filter(|s| !s.is_empty()),
+            Some(n.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into())),
+            Some(n.data.get(1).cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into())),
         ),
         _ => (None, None),
     };
     (rl, cl, rn, cn)
-}
-
-fn slice_value(v: &Value, start: usize, len: usize) -> Value {
-    match v {
-        Value::Lgl(x) => Value::lgls(x.data[start..start + len].to_vec()),
-        Value::Int(x) => Value::ints(x.data[start..start + len].to_vec()),
-        Value::Real(x) => Value::reals(x.data[start..start + len].to_vec()),
-        Value::Cplx(x) => Value::cplxs(x.data[start..start + len].to_vec()),
-        Value::Str(x) => Value::strs(x.data[start..start + len].to_vec()),
-        Value::Raw(x) => Value::raws(x.data[start..start + len].to_vec()),
-        Value::List(x) => Value::list(x.data[start..start + len].to_vec()),
-        _ => Value::Null,
-    }
 }
 
 fn list_elt_summary(x: &Value) -> String {
