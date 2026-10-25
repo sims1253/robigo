@@ -18,6 +18,7 @@ pub mod bind;
 pub mod character;
 pub mod coerce;
 pub mod conditions;
+pub mod datetime;
 pub mod envir;
 pub mod funs;
 pub mod grep;
@@ -135,6 +136,7 @@ static TABLES: &[&[Builtin]] = &[
     printint::DEFS,
     apply::DEFS,
     array::DEFS,
+    datetime::DEFS,
 ];
 
 pub fn install(interp: &mut Interp) {
