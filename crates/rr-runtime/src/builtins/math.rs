@@ -230,8 +230,8 @@ fn math3(i: &mut Interp, sa: &Value, sb: &Value, sc: &Value, f: &dyn Fn(f64, f64
     Ok(sy)
 }
 
-fn arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {
-    super::check_arity(args, n, name, call)
+fn arity(args: &[Arg], n: usize, name: &str, _call: &Value) -> RResult<()> {
+    super::random::check_arity_internal(args, n, name)
 }
 
 fn flag(v: &Value) -> bool {

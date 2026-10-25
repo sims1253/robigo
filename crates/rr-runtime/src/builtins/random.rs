@@ -268,8 +268,22 @@ fn samp_kind(i: &mut Interp, kind: i32) -> RResult<()> {
     put_rng_state(i)
 }
 
-fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {
-    super::check_arity(args, n, name, call)
+/// R: errors.c:checkArityCall for `.Internal`s (reported like `error()`).
+pub fn check_arity_internal(args: &[Arg], n: usize, name: &str) -> RResult<()> {
+    if args.len() != n {
+        return Err(Flow::error(format!(
+            "{} argument{} passed to .Internal({}) which requires {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            name,
+            n
+        )));
+    }
+    Ok(())
+}
+
+fn check_arity(args: &[Arg], n: usize, name: &str, _call: &Value) -> RResult<()> {
+    check_arity_internal(args, n, name)
 }
 
 /// R: RNG.c:do_RNGkind
@@ -534,7 +548,7 @@ fn try_alloc<T>(n: usize) -> RResult<Vec<T>> {
 }
 
 /// R: builtin.c:asVecSize
-fn as_vec_size(x: &Value) -> RResult<i64> {
+fn as_vec_size(i: &mut Interp, x: &Value) -> RResult<i64> {
     if x.is_atomic() && !x.is_empty() {
         match x {
             Value::Int(v) => {
@@ -545,7 +559,10 @@ fn as_vec_size(x: &Value) -> RResult<i64> {
                 return Ok(r as i64);
             }
             Value::Real(_) | Value::Str(_) => {
-                let d = as_real(x);
+                // asReal(): coercion warnings for strings
+                let mut w = CoerceWarnings::default();
+                let d = crate::coerce::to_real(&crate::coerce::first_elt(x), &mut w)[0];
+                w.emit(i)?;
                 if d.is_nan() {
                     return Err(Flow::error("vector size cannot be NA/NaN"));
                 }
@@ -618,7 +635,7 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         y = Value::ints(out);
     } else {
         let dn = as_real(sn);
-        let k = as_vec_size(sk)?;
+        let k = as_vec_size(i, sk)?;
         if !dn.is_finite() || dn < 0.0 || dn > 4.5e15 || (k > 0 && dn == 0.0) {
             return Err(Flow::error("invalid first argument"));
         }
