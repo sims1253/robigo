@@ -212,6 +212,7 @@ fn do_attach(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         k += 1;
     }
     new.set_parent(before.parent());
+    new.set_search(true);
     before.set_parent(Some(new.clone()));
     Ok(nv)
 }

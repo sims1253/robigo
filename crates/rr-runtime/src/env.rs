@@ -35,9 +35,18 @@ impl Hasher for SymHasher {
         }
     }
     fn write_u32(&mut self, n: u32) {
-        self.0 = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = (self.0.rotate_left(26) ^ n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(26) ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
     }
 }
+
+/// A fast hasher for small integer keys.
+pub type FastHash = BuildHasherDefault<SymHasher>;
 
 type SymMap<V> = HashMap<Sym, V, BuildHasherDefault<SymHasher>>;
 
@@ -47,45 +56,37 @@ type SymMap<V> = HashMap<Sym, V, BuildHasherDefault<SymHasher>>;
 pub struct Frame {
     pub entries: Vec<Binding>,
     index: Option<SymMap<usize>>,
-    /// Bindings in this frame count towards [`shadow_count`] (all frames
-    /// except the base environment's).
-    counted: bool,
+    /// The frame belongs to an environment on the search path.
+    pub search: bool,
 }
 
 thread_local! {
-    /// Number of bindings of each symbol in environments other than base.
-    /// When it is zero, a lookup from any environment ends in base, so the
-    /// evaluator can skip walking the environment chain.
-    static SHADOW: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// Incremented whenever a binding that could hold a function changes
+    /// in an environment on the search path (global, attached packages,
+    /// base). Function lookups through the search path are cached against
+    /// it.
+    static SEARCH_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
-/// See [`SHADOW`].
 #[inline]
-pub fn shadow_count(sym: Sym) -> u32 {
-    SHADOW.with(|s| s.borrow().get(sym.0 as usize).copied().unwrap_or(0))
+pub fn search_epoch() -> u64 {
+    SEARCH_EPOCH.with(|e| e.get())
 }
 
-fn shadow_adjust(sym: Sym, up: bool) {
-    SHADOW.with(|s| {
-        let mut s = s.borrow_mut();
-        let i = sym.0 as usize;
-        if s.len() <= i {
-            s.resize(i + 1, 0);
-        }
-        if up {
-            s[i] += 1;
-        } else {
-            s[i] = s[i].saturating_sub(1);
-        }
-    });
+fn bump_search_epoch() {
+    SEARCH_EPOCH.with(|e| e.set(e.get() + 1));
+}
+
+/// Could this value act as (or evaluate to) a function?
+#[inline]
+fn function_like(v: &Value) -> bool {
+    matches!(v, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
 }
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        if self.counted {
-            for b in &self.entries {
-                shadow_adjust(b.sym, false);
-            }
+        if self.search && self.entries.iter().any(|b| function_like(&b.value)) {
+            bump_search_epoch();
         }
     }
 }
@@ -115,10 +116,10 @@ impl Frame {
             b.flags = (b.flags & BIND_LOCKED) | flags;
             return;
         }
-        self.entries.push(Binding { sym, value, flags });
-        if self.counted {
-            shadow_adjust(sym, true);
+        if self.search && (function_like(&value) || flags & BIND_ACTIVE != 0) {
+            bump_search_epoch();
         }
+        self.entries.push(Binding { sym, value, flags });
         let n = self.entries.len();
         match &mut self.index {
             Some(ix) => {
@@ -134,8 +135,8 @@ impl Frame {
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
         let b = self.entries.remove(i);
-        if self.counted {
-            shadow_adjust(sym, false);
+        if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
+            bump_search_epoch();
         }
         if let Some(ix) = &mut self.index {
             ix.remove(&sym);
@@ -155,6 +156,9 @@ pub struct EnvData {
     /// Special name used when printing (`R_GlobalEnv`, `base`, `namespace:foo`).
     pub name: RefCell<Option<Rc<str>>>,
     pub id: usize,
+    /// Incremented when a binding in this frame that could hold a function
+    /// is created, changed or removed (see [`Env::fn_version`]).
+    pub fn_version: Cell<u32>,
 }
 
 #[derive(Clone)]
@@ -172,20 +176,30 @@ impl Env {
             v
         });
         Env(Rc::new(EnvData {
-            frame: RefCell::new(Frame { entries: Vec::new(), index: None, counted: true }),
+            frame: RefCell::new(Frame { entries: Vec::new(), index: None, search: false }),
             parent: RefCell::new(parent),
             attrs: RefCell::new(None),
             locked: Cell::new(false),
             name: RefCell::new(None),
             id,
+            fn_version: Cell::new(0),
         }))
     }
 
-    /// The base environment: its bindings do not count as shadowing.
-    pub fn new_base(parent: Option<Env>, name: &str) -> Env {
+    /// An environment on the search path (global, base, attached).
+    pub fn new_search(parent: Option<Env>, name: &str) -> Env {
         let e = Env::named(parent, name);
-        e.0.frame.borrow_mut().counted = false;
+        e.0.frame.borrow_mut().search = true;
         e
+    }
+
+    pub fn is_search(&self) -> bool {
+        self.0.frame.borrow().search
+    }
+
+    pub fn set_search(&self, on: bool) {
+        self.0.frame.borrow_mut().search = on;
+        bump_search_epoch();
     }
 
     pub fn named(parent: Option<Env>, name: &str) -> Env {
@@ -203,6 +217,9 @@ impl Env {
     }
 
     pub fn set_parent(&self, p: Option<Env>) {
+        if self.is_search() {
+            bump_search_epoch();
+        }
         *self.0.parent.borrow_mut() = p;
     }
 
@@ -230,9 +247,16 @@ impl Env {
 
     pub fn set_local_flags(&self, sym: Sym, value: Value, flags: u8) -> bool {
         let mut f = self.0.frame.borrow_mut();
+        let search = f.search;
         if let Some(b) = f.get_mut(sym) {
             if b.flags & BIND_LOCKED != 0 {
                 return false;
+            }
+            if function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0 {
+                if search {
+                    bump_search_epoch();
+                }
+                self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
             }
             b.value = value;
             b.flags = flags;
@@ -240,6 +264,9 @@ impl Env {
         }
         if self.0.locked.get() {
             return false;
+        }
+        if function_like(&value) || flags & BIND_ACTIVE != 0 {
+            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
         }
         f.insert(sym, value, flags);
         true
@@ -249,15 +276,32 @@ impl Env {
     /// caller holds the only reference and can modify it in place.
     pub fn take_local(&self, sym: Sym) -> Option<Value> {
         let mut f = self.0.frame.borrow_mut();
+        let search = f.search;
         let b = f.get_mut(sym)?;
         if b.flags & (BIND_ACTIVE | BIND_LOCKED) != 0 {
             return Some(b.value.clone());
+        }
+        if function_like(&b.value) {
+            if search {
+                bump_search_epoch();
+            }
+            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
         }
         Some(std::mem::replace(&mut b.value, Value::Null))
     }
 
     pub fn remove(&self, sym: Sym) -> bool {
-        self.0.frame.borrow_mut().remove(sym).is_some()
+        let r = self.0.frame.borrow_mut().remove(sym);
+        if r.as_ref().is_some_and(|b| function_like(&b.value)) {
+            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+        }
+        r.is_some()
+    }
+
+    /// See [`EnvData::fn_version`].
+    #[inline]
+    pub fn fn_version(&self) -> u32 {
+        self.0.fn_version.get()
     }
 
     /// Find the innermost environment binding `sym`.

@@ -53,6 +53,10 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
+    /// Cache of function lookups through the search path, keyed by symbol
+    /// and starting environment, valid for `fun_cache_epoch`.
+    pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,
+    pub fun_cache_epoch: u64,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -64,8 +68,8 @@ impl Interp {
 
     pub fn with_output(out: Box<dyn Write>, err: Box<dyn Write>) -> Interp {
         let empty = Env::named(None, "R_EmptyEnv");
-        let base = Env::new_base(Some(empty.clone()), "base");
-        let global = Env::named(Some(base.clone()), "R_GlobalEnv");
+        let base = Env::new_search(Some(empty.clone()), "base");
+        let global = Env::new_search(Some(base.clone()), "R_GlobalEnv");
         // The base namespace shares its bindings with the base package
         // environment; we alias it to the same frame.
         let base_ns = base.clone();
@@ -89,6 +93,8 @@ impl Interp {
             in_error: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
+            fun_cache: HashMap::default(),
+            fun_cache_epoch: u64::MAX,
         };
         crate::builtins::install(&mut interp);
         interp
@@ -217,12 +223,8 @@ impl Interp {
 
     /// Look up a function binding, skipping non-function values.
     pub fn find_fun(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
-        // Nothing outside base binds this symbol: go straight to base.
-        if crate::env::shadow_count(sym) == 0 {
-            let found = self.base.0.frame.borrow().get(sym).filter(|b| b.flags == 0).map(|b| b.value.clone());
-            if let Some(v @ (Value::Builtin(_) | Value::Closure(_))) = found {
-                return Ok(v);
-            }
+        if let Some(v) = self.find_fun_cached(sym, env) {
+            return Ok(v);
         }
         let mut cur = env.clone();
         loop {
@@ -249,6 +251,77 @@ impl Interp {
                 Some(p) => cur = p,
                 None => return Err(Flow::error(format!("could not find function \"{}\"", sym))),
             }
+        }
+    }
+
+    /// Fast function lookup: scan local frames up to the search path, then
+    /// consult a cache of search-path lookups valid for the current
+    /// [`crate::env::search_epoch`]. Returns `None` when the slow path is
+    /// needed (promises or active bindings on the way).
+    fn find_fun_cached(&mut self, sym: Sym, env: &Env) -> Option<Value> {
+        let mut cur = env.clone();
+        loop {
+            if cur.is_search() {
+                return self.search_fun(sym, &cur);
+            }
+            {
+                let frame = cur.0.frame.borrow();
+                if let Some(b) = frame.get(sym) {
+                    match &b.value {
+                        Value::Closure(_) | Value::Builtin(_) if b.flags == 0 => return Some(b.value.clone()),
+                        Value::Promise(_) | Value::Closure(_) | Value::Builtin(_) => return None,
+                        v if v.is_missing_arg() => return None,
+                        _ => {}
+                    }
+                    if b.flags != 0 {
+                        return None;
+                    }
+                }
+            }
+            cur = cur.parent()?;
+        }
+    }
+
+    fn search_fun(&mut self, sym: Sym, start: &Env) -> Option<Value> {
+        let epoch = crate::env::search_epoch();
+        if self.fun_cache_epoch != epoch {
+            self.fun_cache.clear();
+            self.fun_cache_epoch = epoch;
+        }
+        let key = (sym, start.id());
+        if let Some(v) = self.fun_cache.get(&key) {
+            return Some(v.clone());
+        }
+        let mut cur = start.clone();
+        loop {
+            let found = cur.0.frame.borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+            if let Some((v, flags)) = found {
+                if flags != 0 {
+                    return None;
+                }
+                match v {
+                    Value::Closure(_) | Value::Builtin(_) => {
+                        self.fun_cache.insert(key, v.clone());
+                        return Some(v);
+                    }
+                    Value::Promise(_) => return None,
+                    _ => {}
+                }
+            }
+            cur = cur.parent()?;
+        }
+    }
+
+    /// Does `sym`, looked up as a function from `env`, resolve to the base
+    /// environment's binding? Used by compiled code to validate its
+    /// assumptions about `+`, `if`, `<-` and friends.
+    pub fn resolves_to_base(&mut self, sym: Sym, env: &Env) -> bool {
+        match self.find_fun_cached(sym, env) {
+            Some(v) => match self.base.0.frame.borrow().get(sym) {
+                Some(b) => b.value.ptr_eq(&v),
+                None => false,
+            },
+            None => false,
         }
     }
 
@@ -534,7 +607,10 @@ impl Interp {
             generic: false,
             builtin: false,
         });
-        let r = self.eval(&clo.body, &newenv);
+        let r = match crate::vm::enabled().then(|| crate::vm::code_for(&clo.body, true)).flatten() {
+            Some(code) => crate::vm::run(self, &code, &newenv),
+            None => self.eval(&clo.body, &newenv),
+        };
         let r = match r {
             Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => {
                 Ok(v)

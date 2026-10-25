@@ -69,7 +69,20 @@ fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
     }
 }
 
+/// Run a loop through the bytecode VM when enabled and the loop head is
+/// the base function.
+fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) -> Option<RResult<Value>> {
+    if !crate::vm::enabled() || !interp.resolves_to_base(head, env) {
+        return None;
+    }
+    let code = crate::vm::code_for(call, false)?;
+    Some(crate::vm::run(interp, &code, env))
+}
+
 fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if let Some(r) = try_compiled_loop(interp, call, s::FOR, env) {
+        return r;
+    }
     let Some(sym) = args[0].value.as_sym() else {
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
@@ -153,6 +166,9 @@ fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
 }
 
 fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if let Some(r) = try_compiled_loop(interp, call, s::WHILE, env) {
+        return r;
+    }
     loop {
         let c = interp.eval(&args[0].value, env)?;
         if !as_condition(interp, &c, call)? {
@@ -166,7 +182,10 @@ fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     Ok(Value::Null)
 }
 
-fn do_repeat(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_repeat(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if let Some(r) = try_compiled_loop(interp, call, s::REPEAT, env) {
+        return r;
+    }
     while loop_body(interp, &args[0].value, env)? {}
     interp.visible = false;
     Ok(Value::Null)

@@ -4,6 +4,7 @@ pub mod attrib;
 pub mod bootstrap;
 pub mod builtins;
 pub mod coerce;
+pub mod compile;
 pub mod conditions;
 pub mod deparse;
 pub mod dispatch;
@@ -16,6 +17,7 @@ pub mod print;
 pub mod serialize;
 pub mod sym;
 pub mod value;
+pub mod vm;
 
 pub use env::Env;
 pub use error::{Flow, RResult};

@@ -169,7 +169,7 @@ pub fn myfloor(x1: f64, x2: f64) -> f64 {
     q.floor() + (tmp / x2).floor()
 }
 
-fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
+pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     match op {
         ArithOp::Plus => a + b,
         ArithOp::Minus => a - b,
@@ -181,7 +181,7 @@ fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     }
 }
 
-fn int_to_real(x: i32) -> f64 {
+pub fn int_to_real(x: i32) -> f64 {
     if x == NA_INTEGER {
         NA_REAL
     } else {
@@ -636,7 +636,7 @@ fn do_idiv(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
 // ----------------------------------------------------------------------
 // comparison (relop.c)
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RelOp {
     Eq,
     Ne,
@@ -657,7 +657,7 @@ impl RelOp {
             RelOp::Ge => ">=",
         }
     }
-    fn test<T: PartialOrd>(self, a: T, b: T) -> bool {
+    pub fn test<T: PartialOrd>(self, a: T, b: T) -> bool {
         match self {
             RelOp::Eq => a == b,
             RelOp::Ne => a != b,
@@ -920,7 +920,7 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
 }
 
 /// `&&` / `||` operand: must be length-1 logical-coercible.
-fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
+pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
     let _ = i;
     let ok = matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) | Value::Null);
     if !ok || (matches!(v, Value::Str(_))) {
