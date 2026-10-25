@@ -23,6 +23,7 @@ pub mod dist;
 pub mod fdist;
 pub mod fround;
 pub mod gamma;
+pub mod ldouble;
 pub mod norm;
 pub mod pgamma;
 pub mod polygamma;

@@ -406,11 +406,67 @@ fn z_prec_r(x: Complex, digits: f64) -> Complex {
     r
 }
 
-/// R: complex.c:complex_math2 for round (z_rround) and signif (z_prec)
 fn complex_round(i: &mut Interp, x: &Value, digits: &Value, is_signif: bool) -> RResult<Value> {
+    if is_signif {
+        complex_math2(i, "signif", x, digits, &|a, b| z_prec_r(a, b.re))
+    } else {
+        // R: complex.c:z_rround
+        complex_math2(i, "round", x, digits, &|a, b| {
+            Complex::new(nmath::fround::fround(a.re, b.re), nmath::fround::fround(a.im, b.re))
+        })
+    }
+}
+
+/// C99 `double complex` as passed by value on the SysV ABI.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CDouble {
+    re: f64,
+    im: f64,
+}
+
+unsafe extern "C" {
+    fn catan(z: CDouble) -> CDouble;
+    /// libgcc's complex division, which C's `/` on `double complex` uses
+    fn __divdc3(a: f64, b: f64, c: f64, d: f64) -> CDouble;
+}
+
+/// R: complex.c:z_atan2
+fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
+    let dr;
+    if ccs.re == 0.0 && ccs.im == 0.0 {
+        if csn.re == 0.0 && csn.im == 0.0 {
+            return Complex::new(NA_REAL, NA_REAL);
+        }
+        let y = csn.re;
+        dr = Complex::new(if y.is_nan() { y } else if y >= 0.0 { nmath::M_PI_2 } else { -nmath::M_PI_2 }, 0.0);
+    } else {
+        let q = unsafe { __divdc3(csn.re, csn.im, ccs.re, ccs.im) };
+        let t = unsafe { catan(q) };
+        let mut d = Complex::new(t.re, t.im);
+        if ccs.re < 0.0 {
+            d.re += nmath::M_PI;
+        }
+        if d.re > nmath::M_PI {
+            d.re -= 2.0 * nmath::M_PI;
+        }
+        dr = d;
+    }
+    dr
+}
+
+/// R: complex.c:complex_math2
+fn complex_math2(
+    i: &mut Interp,
+    name: &str,
+    x: &Value,
+    digits: &Value,
+    f: &dyn Fn(Complex, Complex) -> Complex,
+) -> RResult<Value> {
     let mut w = CoerceWarnings::default();
     let a = crate::coerce::to_cplx(x, &mut w);
     let b = crate::coerce::to_cplx(digits, &mut w);
+    w.emit(i)?;
     let (na, nb) = (a.len(), b.len());
     if na == 0 || nb == 0 {
         return Ok(Value::cplxs(vec![]));
@@ -423,11 +479,7 @@ fn complex_round(i: &mut Interp, x: &Value, digits: &Value, is_signif: bool) -> 
         let v = if is_na_real(ai.re) && is_na_real(ai.im) && is_na_real(bi.re) && is_na_real(bi.im) {
             Complex::NA
         } else {
-            let v = if is_signif {
-                z_prec_r(ai, bi.re)
-            } else {
-                Complex::new(nmath::fround::fround(ai.re, bi.re), nmath::fround::fround(ai.im, bi.re))
-            };
+            let v = f(ai, bi);
             if (v.re.is_nan() || v.im.is_nan())
                 && !(ai.re.is_nan() || ai.im.is_nan() || bi.re.is_nan() || bi.im.is_nan())
             {
@@ -438,7 +490,7 @@ fn complex_round(i: &mut Interp, x: &Value, digits: &Value, is_signif: bool) -> 
         y.push(v);
     }
     if naflag {
-        i.warning(format!("NaNs produced in function \"{}\"", if is_signif { "signif" } else { "round" }))?;
+        i.warning(format!("NaNs produced in function \"{}\"", name))?;
     }
     let mut sy = Value::cplxs(y);
     if n == na {
@@ -567,7 +619,7 @@ macro_rules! m3_2 {
 fn do_atan2(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     arity(&args, 2, "atan2", call)?;
     if matches!(args[0].value, Value::Cplx(_)) || matches!(args[1].value, Value::Cplx(_)) {
-        return Err(Flow::error("rr: complex 'atan2' is not implemented yet"));
+        return complex_math2(i, "atan2", &args[0].value, &args[1].value, &z_atan2);
     }
     math2(i, None, &args[0].value, &args[1].value, &f64::atan2)
 }
