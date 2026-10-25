@@ -10,11 +10,31 @@ use crate::interp::Interp;
 use crate::sym::Sym;
 use crate::value::*;
 
+pub mod apply;
+pub mod arith;
+pub mod array;
+pub mod attrib;
+pub mod bind;
+pub mod character;
+pub mod coerce;
 pub mod conditions;
 pub mod envir;
+pub mod grep;
 pub mod identical;
+pub mod io;
 pub mod lang;
+pub mod math;
+pub mod paste;
+pub mod printint;
 pub mod random;
+pub mod seq;
+pub mod sort;
+pub mod sprintf;
+pub mod subassign;
+pub mod subscript;
+pub mod subset;
+pub mod summary;
+pub mod unique;
 
 pub type BuiltinFn = fn(&mut Interp, &Value, Vec<Arg>, &Env) -> RResult<Value>;
 
@@ -74,7 +94,33 @@ pub fn lookup_primitive(name: &str) -> Option<&'static Builtin> {
     None
 }
 
-static TABLES: &[&[Builtin]] = &[lang::DEFS, envir::DEFS, conditions::DEFS, identical::DEFS, random::DEFS];
+static TABLES: &[&[Builtin]] = &[
+    arith::DEFS,
+    attrib::DEFS,
+    bind::DEFS,
+    coerce::DEFS,
+    lang::DEFS,
+    envir::DEFS,
+    conditions::DEFS,
+    identical::DEFS,
+    random::DEFS,
+    subset::DEFS,
+    subassign::DEFS,
+    subscript::DEFS,
+    character::DEFS,
+    paste::DEFS,
+    sprintf::DEFS,
+    grep::DEFS,
+    seq::DEFS,
+    summary::DEFS,
+    sort::DEFS,
+    unique::DEFS,
+    math::DEFS,
+    io::DEFS,
+    printint::DEFS,
+    apply::DEFS,
+    array::DEFS,
+];
 
 pub fn install(interp: &mut Interp) {
     INTERNALS.with(|m| {

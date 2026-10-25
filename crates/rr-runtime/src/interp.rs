@@ -50,6 +50,9 @@ pub struct Interp {
     pub depth: usize,
     pub in_error: bool,
     pub start_time: std::time::Instant,
+    /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
+    /// during a complex assignment, with the frame depth they belong to.
+    pub ccode_calls: Vec<(usize, Value)>,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -85,6 +88,7 @@ impl Interp {
             depth: 0,
             in_error: false,
             start_time: std::time::Instant::now(),
+            ccode_calls: Vec::new(),
         };
         crate::builtins::install(&mut interp);
         interp
@@ -96,18 +100,31 @@ impl Interp {
     pub fn eval(&mut self, e: &Value, env: &Env) -> RResult<Value> {
         self.visible = true;
         match e {
-            Value::Sym(sym) => self.eval_sym(*sym, env),
+            Value::Sym(sym) => match self.eval_sym(*sym, env) {
+                Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
+                r => r,
+            },
             Value::Lang(l) => {
                 self.depth += 1;
                 if self.depth > MAX_DEPTH {
                     self.depth -= 1;
-                    return Err(Flow::error_nocall(
-                        "evaluation nested too deeply: infinite recursion / options(expressions=)?",
-                    ));
+                    let err = Box::new(crate::error::RError {
+                        message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
+                        call: Some(Value::Null),
+                        signaled: false,
+                        classes: vec![],
+                    });
+                    return Err(self.signal_error(err));
                 }
                 let r = self.eval_call(l, e, env);
                 self.depth -= 1;
-                r
+                match r {
+                    // R signals conditions where they are raised; errors
+                    // created by Rust code are signaled at the innermost
+                    // evaluation that sees them.
+                    Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
+                    r => r,
+                }
             }
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
@@ -257,13 +274,12 @@ impl Interp {
             self.visible = b.visibility == Visibility::On;
         }
         let r = (b.func)(self, call, argv, env);
-        if b.visibility != Visibility::Custom {
+        // Non-local exits (UseMethod, return, errors) leave visibility as
+        // set by the code that ran, as R's longjmp would.
+        if r.is_ok() && b.visibility != Visibility::Custom {
             self.visible = b.visibility == Visibility::On;
         }
-        match r {
-            Err(Flow::Error(e)) if !e.signaled => Err(self.signal_error(e, call)),
-            r => r,
-        }
+        r
     }
 
     /// Wrap arguments in promises; expand `...`.
@@ -696,6 +712,7 @@ impl Interp {
         self.handlers = None;
         self.restarts = None;
         self.depth = 0;
+        self.ccode_calls.clear();
         let r = self.eval(e, env);
         let ok = match r {
             Ok(v) => {

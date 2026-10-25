@@ -31,7 +31,7 @@ pub static DEFS: &[Builtin] = &[
     special("missing", do_missing, 1),
     special("on.exit", do_onexit, -1).invisible(),
     special("switch", do_switch, -1).custom_vis(),
-    special("UseMethod", do_usemethod, -1),
+    special("UseMethod", do_usemethod, -1).custom_vis(),
     special(".Internal", do_internal, 1).custom_vis(),
     prim(".Primitive", do_primitive, 1),
     prim("nargs", do_nargs, 0),
@@ -299,6 +299,23 @@ fn complex_assign(
     if env.ptr_eq(&interp.base) {
         return Err(Flow::error_call(call.clone(), "cannot do complex assignments in base environment"));
     }
+    interp.ccode_calls.push((interp.frames.len(), call.clone()));
+    let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign);
+    interp.ccode_calls.pop();
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complex_assign_inner(
+    interp: &mut Interp,
+    call: &Value,
+    levels: &[Rc<Lang>],
+    target: Sym,
+    rhs_expr: &Value,
+    rhs: Value,
+    env: &Env,
+    superassign: bool,
+) -> RResult<()> {
     // Base value (EnsureLocal for `<-`).
     let base_val = if superassign {
         let parent = env.parent().unwrap_or_else(|| interp.global.clone());
@@ -341,11 +358,6 @@ fn complex_assign(
 
     // General path, with `*tmp*` bound to intermediate values.
     let mut vals: Vec<Value> = vec![base_val];
-    for l in levels.iter().rev().skip(0).take(levels.len() - 1) {
-        // levels are outermost-first; getters run innermost-first, but the
-        // outermost level needs no getter.
-        let _ = l;
-    }
     // Evaluate getters for all levels except the outermost.
     for i in (1..levels.len()).rev() {
         let l = &levels[i];

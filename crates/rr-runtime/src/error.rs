@@ -22,8 +22,11 @@ pub enum Flow {
 
 pub struct RError {
     pub message: String,
-    /// The call to report. `None` means "the call of the builtin that raised
-    /// it", filled in at the builtin boundary; `Some(Null)` means no call.
+    /// The call to report. `None` means the context call (R's `error()`):
+    /// the current closure's call, or the call of an enclosing C-level
+    /// context such as a complex assignment. `Some(Null)` means no call;
+    /// builtins that report their own call (R's `errorcall(call, ...)`)
+    /// pass it explicitly.
     pub call: Option<Value>,
     /// Condition handlers have been run and default handling performed.
     pub signaled: bool,

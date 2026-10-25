@@ -1,5 +1,6 @@
 //! The rr R runtime: object model, evaluator and builtins.
 
+pub mod attrib;
 pub mod bootstrap;
 pub mod builtins;
 pub mod coerce;

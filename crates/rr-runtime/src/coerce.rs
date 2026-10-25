@@ -154,15 +154,16 @@ pub struct CoerceWarnings {
 }
 
 impl CoerceWarnings {
-    pub fn emit(&self, interp: &mut Interp, call: &Value) -> RResult<()> {
+    /// Emit as R's coerceVector does: `warning()` against the context call.
+    pub fn emit(&self, interp: &mut Interp) -> RResult<()> {
         if self.na_introduced {
-            interp.warningcall(call, "NAs introduced by coercion")?;
+            interp.warning("NAs introduced by coercion")?;
         }
         if self.int_range {
-            interp.warningcall(call, "NAs introduced by coercion to integer range")?;
+            interp.warning("NAs introduced by coercion to integer range")?;
         }
         if self.imag_discarded {
-            interp.warningcall(call, "imaginary parts discarded in coercion")?;
+            interp.warning("imaginary parts discarded in coercion")?;
         }
         Ok(())
     }
@@ -471,11 +472,11 @@ pub fn coerce_quiet(v: &Value, t: VType) -> Value {
 }
 
 impl Interp {
-    /// Coerce and emit warnings against `call`.
-    pub fn coerce(&mut self, v: &Value, t: VType, call: &Value) -> RResult<Value> {
+    /// Coerce, emitting coercion warnings.
+    pub fn coerce(&mut self, v: &Value, t: VType) -> RResult<Value> {
         let mut w = CoerceWarnings::default();
         let r = coerce_vector(v, t, &mut w)?;
-        w.emit(self, call)?;
+        w.emit(self)?;
         Ok(r)
     }
 }

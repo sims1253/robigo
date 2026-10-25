@@ -107,10 +107,22 @@ impl Interp {
         None
     }
 
+    /// The call R reports for `error()`/`warning()` raised in C code: the
+    /// innermost C-level context's call (e.g. a complex assignment) or the
+    /// current closure's call.
+    pub fn context_call(&self) -> Value {
+        if let Some((depth, call)) = self.ccode_calls.last() {
+            if *depth == self.frames.len() {
+                return call.clone();
+            }
+        }
+        self.caller_call()
+    }
+
     /// Run the handler protocol for an error raised by Rust code
     /// (`vsignalError`) and fall back to default error handling.
-    pub fn signal_error(&mut self, e: Box<RError>, builtin_call: &Value) -> Flow {
-        let ecall = e.call.clone().unwrap_or_else(|| builtin_call.clone());
+    pub fn signal_error(&mut self, e: Box<RError>) -> Flow {
+        let ecall = e.call.clone().unwrap_or_else(|| self.context_call());
         let mut classes: Vec<&str> = e.classes.clone();
         classes.extend(["simpleError", "error", "condition"]);
         let class_rcs: Vec<Rc<str>> = classes.iter().map(|c| Rc::from(*c)).collect();
@@ -236,6 +248,12 @@ impl Interp {
             }
         }
         buf
+    }
+
+    /// Signal a warning attributed to the current context (R's `warning()`).
+    pub fn warning(&mut self, msg: impl Into<String>) -> RResult<()> {
+        let call = self.context_call();
+        self.warningcall(&call, msg)
     }
 
     /// Signal a warning from Rust code (R's `warningcall`).
