@@ -355,6 +355,15 @@ fn math1(name: &str) -> Option<Math1> {
     })
 }
 
+/// The `.Internal` builtin of an inner call `f(args)` when `f` evaluates its
+/// arguments and none is empty or `...`.
+fn internal_call(e: &Value) -> Option<(&'static Builtin, &Lang)> {
+    let Value::Lang(l) = e else { return None };
+    let name = head(l)?.name();
+    let b = crate::builtins::lookup_internal(&name).filter(|b| b.kind == BuiltinKind::Builtin)?;
+    l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)).then_some((b, &**l))
+}
+
 /// A base primitive evaluating its arguments (a BUILTINSXP), by name.
 fn base_builtin(name: &str) -> Option<&'static Builtin> {
     crate::builtins::lookup_primitive(name).filter(|b| b.kind == BuiltinKind::Builtin)
@@ -853,6 +862,26 @@ impl Compiler {
                 let k = self.konst(whole.clone());
                 self.emit(Op::Math1 { f: math1(n).unwrap(), dst, a, call: k });
                 self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            // `.Internal(f(...))` with `f` evaluating its arguments: call it
+            // directly (do_internal does nothing else), reporting against
+            // the inner call as R does.
+            ".Internal" if plain_args(l, 1) && internal_call(&l.args[0].value).is_some() => {
+                let (b, inner) = internal_call(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let mut list = Vec::with_capacity(inner.args.len());
+                for a in &inner.args {
+                    let r = self.reg();
+                    self.expr(&a.value, r, Want::Value);
+                    list.push((a.tag, r));
+                }
+                self.arglists.push(list);
+                let args = (self.arglists.len() - 1) as u32;
+                let f = self.konst(Value::Builtin(b));
+                let call = self.konst(l.args[0].value.clone());
+                self.emit(Op::CallBuiltin { dst, f, args, call });
                 let end = self.here();
                 self.patch(g, end);
             }
