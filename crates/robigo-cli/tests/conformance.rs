@@ -1,9 +1,9 @@
 //! Differential conformance tests against GNU R.
 //!
-//! Every `tests/r/**/*.R` script is run with the `robigo` binary and its stdout
-//! compared byte-for-byte with GNU R's (`*.Rout`, recorded by
-//! `scripts/regen-expected.sh`). Stderr (`*.Rerr`) and the exit status are
-//! compared too, but reported separately.
+//! Every `tests/r/**/*.R` script is run with the `robigo` binary and its
+//! stdout, stderr and exit status compared byte-for-byte with GNU R's
+//! (`*.Rout`, `*.Rerr`, `*.Rstatus`, recorded by `scripts/regen-expected.sh`).
+//! A script passes when all three match.
 //!
 //! Ratchet: `tests/r/passing.txt` lists scripts that must pass. A listed
 //! script that fails fails the test; newly passing scripts are reported so
@@ -43,7 +43,7 @@ struct Outcome {
     diff: String,
 }
 
-fn run_rr(script: &Path) -> (String, String, i32, bool) {
+fn run_rr(script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_robigo"))
         .arg(script)
         .env("LANGUAGE", "en")
@@ -79,9 +79,7 @@ fn run_rr(script: &Path) -> (String, String, i32, bool) {
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let so = String::from_utf8_lossy(&t_out.join().unwrap()).into_owned();
-    let se = String::from_utf8_lossy(&t_err.join().unwrap()).into_owned();
-    (so, se, status, timed_out)
+    (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out)
 }
 
 fn first_diff(expected: &str, got: &str) -> String {
@@ -109,28 +107,35 @@ fn first_diff(expected: &str, got: &str) -> String {
 fn check(root: &Path, script: &Path) -> Outcome {
     let rel = script.strip_prefix(root).unwrap().display().to_string();
     let base = script.with_extension("");
-    let read = |ext: &str| std::fs::read_to_string(format!("{}.{}", base.display(), ext)).ok();
+    let read = |ext: &str| std::fs::read(format!("{}.{}", base.display(), ext)).ok();
     let exp_out = read("Rout").unwrap_or_else(|| panic!("no recorded output for {} (run scripts/regen-expected.sh)", rel));
     let exp_err = read("Rerr").unwrap_or_default();
-    let exp_status: i32 = read("Rstatus").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let exp_status: i32 =
+        read("Rstatus").and_then(|s| String::from_utf8_lossy(&s).trim().parse().ok()).unwrap_or(0);
     let (out, err, status, timed_out) = run_rr(script);
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
         diff.push_str("    timed out\n");
     }
+    // Bytes, not decoded text: invalid UTF-8 must not compare equal.
     let stdout_ok = out == exp_out && !timed_out;
     if !stdout_ok {
-        diff.push_str(&first_diff(&exp_out, &out));
+        diff.push_str(&first_diff(&text(&exp_out), &text(&out)));
     }
     let stderr_ok = err == exp_err;
-    let status_ok = (status == 0) == (exp_status == 0);
+    let status_ok = status == exp_status;
     if stdout_ok && !stderr_ok {
         diff.push_str("    stderr differs:\n");
-        diff.push_str(&first_diff(&exp_err, &err));
+        diff.push_str(&first_diff(&text(&exp_err), &text(&err)));
     }
     if !stdout_ok && !err.is_empty() && exp_err != err {
+        let err = text(&err);
         let tail: Vec<&str> = err.lines().take(3).collect();
         diff.push_str(&format!("    robigo stderr: {}\n", tail.join(" | ")));
+    }
+    if !status_ok {
+        diff.push_str(&format!("    exit status {} (GNU R {})\n", status, exp_status));
     }
     Outcome { rel, stdout_ok, stderr_ok, status_ok, diff }
 }
@@ -182,7 +187,8 @@ fn conformance() {
         if r.status_ok {
             n_status_ok += 1;
         }
-        if r.stdout_ok {
+        let passed = r.stdout_ok && r.stderr_ok && r.status_ok;
+        if passed {
             pass.insert(r.rel.clone());
             if !listed.contains(&r.rel) {
                 new_passes.push(r.rel.clone());
@@ -190,16 +196,17 @@ fn conformance() {
         } else if listed.contains(&r.rel) {
             regressions.push(r);
         }
-        let mark = if r.stdout_ok { if r.stderr_ok { "ok  " } else { "ok* " } } else { "FAIL" };
+        let mark = if passed { "ok  " } else if r.stdout_ok { "ok* " } else { "FAIL" };
         eprintln!("{} {}", mark, r.rel);
         if show_diff && !r.diff.is_empty() {
             eprint!("{}", r.diff);
         }
     }
     eprintln!(
-        "\nconformance: {}/{} stdout match, {} stderr match, {} exit status match",
+        "\nconformance: {}/{} pass; {} stdout, {} stderr, {} exit status match",
         pass.len(),
         results.len(),
+        results.iter().filter(|r| r.stdout_ok).count(),
         n_err_ok,
         n_status_ok
     );
@@ -225,21 +232,23 @@ fn conformance() {
     }
 }
 
-/// The bytecode VM must not change behaviour: every conformance script
-/// produces identical stdout, stderr and status with ROBIGO_COMPILE=1.
+/// The bytecode VM and the JIT must not change behaviour: every
+/// conformance script produces identical stdout, stderr and status in the
+/// interpreter, the VM without the JIT, and the VM with it.
 #[test]
 fn compiled_matches_interpreted() {
     let root = root();
     let mut scripts = Vec::new();
     collect(&root.join("tests/r"), &mut scripts);
     scripts.sort();
-    let run = |script: &Path, compile: bool| {
+    let run = |script: &Path, compile: bool, jit: bool| {
         let out = Command::new(env!("CARGO_BIN_EXE_robigo"))
             .arg(script)
             .env("LANGUAGE", "en")
             .env("LC_ALL", "C.UTF-8")
             .env("TZ", "UTC")
             .env("ROBIGO_COMPILE", if compile { "1" } else { "0" })
+            .env("ROBIGO_JIT", if jit { "1" } else { "0" })
             .current_dir(script.parent().unwrap())
             .output()
             .expect("spawn robigo");
@@ -247,8 +256,11 @@ fn compiled_matches_interpreted() {
     };
     let mut bad = Vec::new();
     for s in &scripts {
-        if run(s, false) != run(s, true) {
-            bad.push(s.strip_prefix(&root).unwrap().display().to_string());
+        let interp = run(s, false, false);
+        for (what, compile, jit) in [("VM", true, false), ("VM+JIT", true, true)] {
+            if run(s, compile, jit) != interp {
+                bad.push(format!("{} ({})", s.strip_prefix(&root).unwrap().display(), what));
+            }
         }
     }
     assert!(bad.is_empty(), "compiled and interpreted runs differ for: {:?}", bad);
