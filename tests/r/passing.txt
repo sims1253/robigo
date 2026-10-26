@@ -116,6 +116,7 @@ tests/r/vec/err/err-seq-len.R
 tests/r/vec/err/err-which.R
 tests/r/vec/factor-table.R
 tests/r/vec/match.R
+tests/r/vec/matprod-bits.R
 tests/r/vec/mean-cum.R
 tests/r/vec/minmax.R
 tests/r/vec/order-radix.R

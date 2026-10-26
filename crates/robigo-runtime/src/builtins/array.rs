@@ -466,6 +466,23 @@ fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: u
     if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
         return z;
     }
+    // R: array.c:matprod. Finite inputs go to the BLAS dgemm, whose
+    // reference loop is C(:,k) += Y(j,k) * X(:,j) for ascending j: each
+    // element sums the same products in the same order as the loop below,
+    // which runs down contiguous columns (and vectorizes).
+    if x.iter().chain(y.iter()).all(|v| v.is_finite()) {
+        for k in 0..ncy {
+            let zc = &mut z[k * nrx..(k + 1) * nrx];
+            for j in 0..ncx {
+                let t = y[j + k * nry];
+                for (zi, xi) in zc.iter_mut().zip(&x[j * nrx..(j + 1) * nrx]) {
+                    *zi += t * xi;
+                }
+            }
+        }
+        return z;
+    }
+    // simple_matprod
     for i in 0..nrx {
         for k in 0..ncy {
             let mut sum = 0.0;
@@ -498,6 +515,20 @@ fn crossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy:
 fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _ncy: usize) -> Vec<f64> {
     let mut z = vec![0.0; nrx * nry];
     if nrx == 0 || ncx == 0 || nry == 0 {
+        return z;
+    }
+    // As in matprod_real: dgemm("N", "T") accumulates Z(:,k) += Y(k,j) * X(:,j)
+    // for ascending j, the same per-element order as the loop below.
+    if x.iter().chain(y.iter()).all(|v| v.is_finite()) {
+        for k in 0..nry {
+            let zc = &mut z[k * nrx..(k + 1) * nrx];
+            for j in 0..ncx {
+                let t = y[k + j * nry];
+                for (zi, xi) in zc.iter_mut().zip(&x[j * nrx..(j + 1) * nrx]) {
+                    *zi += t * xi;
+                }
+            }
+        }
         return z;
     }
     for i in 0..nrx {
