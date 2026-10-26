@@ -150,10 +150,9 @@ robigo-cli      `robigo` (Rscript-like runner, REPL) and the conformance runner
 - **Environments** are `Rc` reference objects with small vector frames that
   switch to a hash index when large. Symbols are interned `u32`s.
 - **Not yet solved:** cycles. A closure stored in the environment it
-  captures (`f <- function() { g <- function() 1; g }`) leaks. The plan is
-  CPython's answer: keep reference counts (R needs them for
-  copy-on-modify anyway) and add a cycle collector over all container
-  objects (§5, F5).
+  captures (`f <- function() { g <- function() 1; g }`) leaks. The new
+  core (§5.6, G2) fixes this; which memory manager is decided by
+  measurement (§5.5).
 - The council review (§5) found that this object model cannot carry R's C
   API as it is; §5.3 lists what changes.
 
@@ -440,11 +439,10 @@ Each item was reproduced against GNU R 4.5.0:
 | The bytecode cache never evicts | `vm.rs` `CACHE` keeps every compiled expression |
 | The REPL is a bare `read_line` loop | no editing, history or interrupts; a Rust panic ends the session |
 
-### 5.3 Fundamental: redesign before more builtins depend on it
+### 5.3 Fundamental: a new core
 
-The cost of each grows with every builtin: at review time there were 1,233
-direct `.data` accesses in 58 files, 169 `RStr::as_deref` sites and ~240
-uses of `Pairlist::items` and `Lang::args`.
+Each of these needs a different object model, so the core is redesigned
+from scratch (§5.6, G2) rather than migrated.
 
 - **F1. Values have no object header.** `Value` is a 16-byte enum with the
   type in the tag; a `SEXP` is one pointer to an object that carries its
@@ -467,13 +465,13 @@ uses of `Pairlist::items` and `Lang::args`.
 - **F4. Pairlists and calls are vectors.** Rcpp, rlang and cpp11 walk and
   mutate cells with `CDR`/`SETCAR`/`SETCDR` and rely on cell identity.
   Target: cons cells; compiled call sites keep a flattened argument array.
-- **F5. Reference counting without a cycle collector.** Target: keep the
-  counts (they are R's copy-on-modify), add trial deletion over all
-  container objects (environments, closures, promises, lists, pairlists,
-  external pointers). Its root registry is the `PROTECT` stack and
-  `R_PreserveObject`; finalizers and weak references build on it.
-- **F6. No native ABI.** Target: `dlopen`, `Rinternals.h` implemented over
-  F1–F5, and trampolines between `Flow` and C's non-local exits
+- **F5. Reference counting without a cycle collector.** Target: a memory
+  manager that frees cycles, with `PROTECT` and `R_PreserveObject` as
+  roots and finalizers and weak references on top; counts with a cycle
+  collector or a tracing heap, decided by measurement (§5.5).
+- **F6. No native ABI.** Target: `dlopen` and a `libR.so` that exports
+  GNU R 4.5's API symbols over F1–F5, so installed package binaries load
+  unmodified, and trampolines between `Flow` and C's non-local exits
   (`Rf_error`, `R_UnwindProtect`, C++ exceptions), nested C → R → C
   included.
 - **F7. No numeric policy.** Exactness is spread over nine files of x87
@@ -501,51 +499,73 @@ cache eviction.
 
 ### 5.5 Where the jurors disagreed
 
+**Rule for deciding:** effort, churn and backwards compatibility are never
+arguments. robigo has no users to keep compatible with; if a design is
+faster for more work, it wins, and rewriting the runtime from scratch for a
+better architecture is fine. Where two designs are close, build both and
+measure.
+
 - **Handles or thin pointers.** Fable 5.1 and GLM-5.3 proposed a handle or
   node layer next to today's `Value`; Opus 5.5, Gemini 4 Argon and Kimi
   K3.1 Pro the value itself as a header'd object; GPT-6 Astra stable
   handles over a non-moving traced heap. **Decision:** thin pointers to
-  header'd objects, because the C API is the long-term interface and must
-  be direct. The accessor layer (G2) keeps this cheap to revisit, and the
-  C API spike (G5) measures it.
-- **Cycle collector or tracing heap.** GPT-6 Astra argued for tracing with
-  separate sharing metadata. **Decision:** reference counts with trial
-  deletion over all container objects; counts are R's own copy-on-modify
-  semantics, and trial deletion finds every cycle among containers.
+  header'd objects; a handle layer costs a translation on every C call.
+  A finding after the review makes this stronger: package binaries built
+  for GNU R 4.5 reach objects only through functions and a few pointer
+  variables (`fastmap.so` imports 27 R symbols, `digest.so` 36,
+  `Rcpp.so` 73, `data_table.so` 133, `rlang.so` 149, `vctrs.so` 153:
+  `INTEGER`, `STRING_ELT`, `Rf_allocVector`, `R_NilValue`, ...). A
+  `libR.so` exporting those symbols over robigo's objects can load the
+  binaries CRAN users already have installed, unmodified, with any object
+  layout, as long as a `SEXP` is one pointer.
+- **Memory management.** GPT-6 Astra argued for a tracing heap with
+  separate sharing metadata; the others for reference counts with trial
+  deletion. Copy-on-modify needs sharing counts in both designs (GNU R has
+  a tracing GC *and* reference counts), so the question is whether
+  freeing by tracing (bump allocation, no decrement on drop) beats freeing
+  by count (immediate reuse, no pauses). **Decision:** measure. The new
+  core is built with two memory managers: (a) counts with a cycle
+  collector, (b) a non-moving mark-region heap with counts kept only for
+  copy-on-modify; deferred counting for VM registers in both. Judged on
+  binarytrees, closure calls (an environment per call), `lapply` and the
+  C API's `PROTECT` traffic.
 - **Global state.** GLM-5.3 and Gemini 4 Argon call `thread_local!` state
   fundamental; Opus 5.5 finds single-threaded values fine, as in GNU R.
-  **Decision:** values stay single-threaded; global state moves into the
-  instance (F8).
+  **Decision:** values stay single-threaded (atomic counts would slow every
+  copy); global state moves into the instance (F8); fast-mode parallel
+  kernels work on borrowed slices.
 - **Order.** Fable 5.1: VM default first. GLM-5.3 and Kimi K3.1 Pro: a C API
   prototype first. Opus 5.5 and Gemini 4 Argon: accessors and storage
-  first. GPT-6 Astra: the gate first (done). **Decision:** below.
+  first. GPT-6 Astra: the gate first (done). **Decision:** no accessor
+  layer: it only existed to migrate today's model gradually. The new core
+  is designed from scratch together with the C API, proven on real package
+  binaries, and the runtime is rebuilt on it.
+- **Optimizing tier.** Fable 5.1 advised no LLVM tier until the `Eval`
+  share is small. It is (0.01–0.7%, G1). **Decision:** an optimizing tier
+  is in scope (G8), chosen by measurement: Cranelift whole-closure code
+  first, LLVM for the hottest closures if it pays, as blaze does.
 
 ### 5.6 Goalposts
 
 In order; the conformance gate stays byte-identical in every tier
-throughout, and the benchmark and idiom tables (§4.2) must not regress by
-more than 5%.
+throughout, and robigo must not get slower on the benchmark and idiom
+tables (§4.2).
 
 | | Goalpost | Exit gate |
 |---|---|---|
 | G0 | Gate on stdout, stderr and exact status, as bytes, in all tiers | done |
 | G1 | VM by default; the AST interpreter for bootstrap, `eval` and deopt; `Eval` share tracked | done |
-| G2 | Accessor layer: `.data`, `RStr`, `items`, `args` behind methods; CI rejects new direct access | no field access outside `value.rs` |
-| G3 | Object model (F1–F4): header'd thin objects with an S4 bit, storage variants with compact ranges as values, interned CHARSXPs, cons cells | `1:2e8` in constant memory; byte strings round-trip |
-| G4 | Cycle collector and root registry (F5); real `reg.finalizer`, `gc()`, weak references | leak tests in the suite: bounded memory for closure-defining and `tryCatch` loops |
-| G5 | C API spike (F6): `robigo-capi`, `dlopen`, `PROTECT`, unwind trampolines | three real packages load and pass their tests: a plain `.Call` package, an Rcpp package, rlang; packages passing becomes a ratchet |
-| G6 | Numeric policy and portability (F7, F8) | wasm32 (JIT off) and aarch64 pass the suite byte for byte in CI; fast mode passes a tolerance suite |
-| G7 | `methods`/S4, default packages without `R_HOME`, a startup snapshot | `library(methods)`, `setClass`, `new` work; robigo runs without GNU R installed |
-| G8 | Whole-closure JIT by sampling; call cost | fib and binarytrees at or below GNU R; `match.arg`, `stopifnot`, `seq` ≤ 1.0x GNU R's instructions |
-| G9 | REPL: line editing, history, interrupts; panics become R errors | an interactive session survives errors and Ctrl-C |
+| G2 | New core, from scratch: header'd thin objects (S4 bit, encoding bits), storage variants (owned, compact, foreign, ALTREP), interned CHARSXPs, cons cells, both memory managers (§5.5), exported as a `libR.so` ABI with `PROTECT` and unwind trampolines | installed `fastmap` and `digest` binaries load unmodified and pass their tests on the core; memory-manager bake-off decided |
+| G3 | Rebuild the runtime on the core: evaluator, VM, JIT, builtins (rewrite allowed) | the full conformance suite; `1:2e8` in constant memory; byte strings round-trip; leak tests bounded |
+| G4 | Real packages: Rcpp, rlang, vctrs, data.table from their installed binaries | their own tests pass; packages passing becomes a ratchet |
+| G5 | Numeric policy and portability (F7, F8) | wasm32 (JIT off) and aarch64 pass the suite byte for byte in CI; fast mode passes a tolerance suite |
+| G6 | `methods`/S4, default packages without `R_HOME`, a startup snapshot | `library(methods)`, `setClass`, `new` work; robigo runs without GNU R installed |
+| G7 | REPL: line editing, history, interrupts; panics become R errors | an interactive session survives errors and Ctrl-C |
+| G8 | Optimizing tier: whole-closure native code by sampling, contextual dispatch, LLVM where it pays | fib and binarytrees at or below GNU R; `match.arg`, `stopifnot`, `seq` ≤ 1.0x GNU R's instructions |
 
-G1 comes first because it is small and every user sees the fast tier.
-G2–G5 are one track: the object model exists to make the C API direct.
-Until G2 lands, new builtins and stats ports wait: each one adds field
-accesses to migrate. Numeric ports that accumulate in long double (LAPACK,
-`optim`, `loess`, ...) wait for the seam in G6. Afterwards: GNU R's own
-`tests/*.R`, ry facts for guarded specialization (§4.1), vector fusion
-over ALTREP-style lazy vectors.
+Until G3 lands, new builtins and stats ports wait; they would be written
+twice. Afterwards: GNU R's own `tests/*.R`, ry facts for guarded
+specialization (§4.1), vector fusion over ALTREP-style lazy vectors.
 
 ## 6. Decisions to revisit
 
