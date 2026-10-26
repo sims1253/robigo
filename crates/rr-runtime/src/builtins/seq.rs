@@ -50,8 +50,20 @@ pub fn gather(x: &Value, idx: &[Option<usize>]) -> Value {
 
 /// `gather` with all indices present.
 pub fn gather_all(x: &Value, idx: &[usize]) -> Value {
-    let idx: Vec<Option<usize>> = idx.iter().map(|&k| Some(k)).collect();
-    gather(x, &idx)
+    fn g<T: Clone>(d: &[T], idx: &[usize]) -> Vec<T> {
+        idx.iter().map(|&k| d[k].clone()).collect()
+    }
+    match x {
+        Value::Lgl(v) => Value::lgls(g(&v.data, idx)),
+        Value::Int(v) => Value::ints(g(&v.data, idx)),
+        Value::Real(v) => Value::reals(g(&v.data, idx)),
+        Value::Cplx(v) => Value::cplxs(g(&v.data, idx)),
+        Value::Str(v) => Value::strs(g(&v.data, idx)),
+        Value::Raw(v) => Value::raws(g(&v.data, idx)),
+        Value::List(v) => Value::list(g(&v.data, idx)),
+        Value::Expr(v) => Value::expr_vec(g(&v.data, idx)),
+        _ => Value::Null,
+    }
 }
 
 /// R's `xlengthgets`: truncate or pad with NA, keeping (padded) names.
@@ -559,30 +571,59 @@ fn do_seq(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 // ----------------------------------------------------------------------
 // rep
 
-/// Index pattern of R's `rep4` (and `rep3` for each == 1, nt == 1).
-fn rep4_index(lx: usize, times: &[i64], len: usize, each: usize, nt: usize) -> Vec<usize> {
+/// R's `rep4` (and `rep3` for each == 1, nt == 1) on the data of a
+/// non-empty vector.
+fn rep4<T: Clone>(d: &[T], times: &[i64], len: usize, each: usize, nt: usize) -> Vec<T> {
     let mut out = Vec::with_capacity(len);
+    if nt == 1 && each == 1 {
+        while out.len() < len {
+            let k = (len - out.len()).min(d.len());
+            out.extend_from_slice(&d[..k]);
+        }
+        return out;
+    }
     if nt == 1 {
-        for k in 0..len {
-            out.push((k / each) % lx);
+        'cycle: loop {
+            for v in d {
+                for _ in 0..each {
+                    if out.len() == len {
+                        break 'cycle;
+                    }
+                    out.push(v.clone());
+                }
+            }
         }
         return out;
     }
     let mut kk = 0;
-    'outer: for xi in 0..lx {
+    'outer: for v in d {
         let mut sum: i64 = 0;
         for _ in 0..each {
             sum += times[kk];
             kk += 1;
         }
         for _ in 0..sum {
-            out.push(xi);
             if out.len() == len {
                 break 'outer;
             }
+            out.push(v.clone());
         }
     }
     out
+}
+
+fn rep4_value(x: &Value, times: &[i64], len: usize, each: usize, nt: usize) -> Value {
+    match x {
+        Value::Lgl(v) => Value::lgls(rep4(&v.data, times, len, each, nt)),
+        Value::Int(v) => Value::ints(rep4(&v.data, times, len, each, nt)),
+        Value::Real(v) => Value::reals(rep4(&v.data, times, len, each, nt)),
+        Value::Cplx(v) => Value::cplxs(rep4(&v.data, times, len, each, nt)),
+        Value::Str(v) => Value::strs(rep4(&v.data, times, len, each, nt)),
+        Value::Raw(v) => Value::raws(rep4(&v.data, times, len, each, nt)),
+        Value::List(v) => Value::list(rep4(&v.data, times, len, each, nt)),
+        Value::Expr(v) => Value::expr_vec(rep4(&v.data, times, len, each, nt)),
+        _ => Value::Null,
+    }
 }
 
 /// Read a `times`-like vector as truncated counts, validating as R does.
@@ -724,13 +765,12 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     if len > 0 && each == 0 {
         return Err(err("each"));
     }
-    let idx = rep4_index(lx, &times, len, each.max(1), nt);
-    let idx = if each == 0 { vec![] } else { idx };
-    let mut ans = gather_all(&x, &idx);
+    let len = if each == 0 { 0 } else { len };
+    let each = each.max(1);
+    let mut ans = rep4_value(&x, &times, len, each, nt);
     if let Value::Str(xn) = get_attrib(&x, s::NAMES) {
         if !xn.data.is_empty() {
-            let nn = gather_all(&Value::Str(xn.clone()), &idx);
-            ans.set_attr_raw(s::NAMES, nn);
+            ans.set_attr_raw(s::NAMES, Value::strs(rep4(&xn.data, &times, len, each, nt)));
         }
     }
     Ok(ans)

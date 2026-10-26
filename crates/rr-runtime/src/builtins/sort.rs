@@ -1014,6 +1014,68 @@ fn str_cmp2(x: &RStr, y: &RStr, order: i32, nalast: i32) -> i32 {
     }
 }
 
+/// Stable sort of `o` by the parallel `keys` (LSD radix, 11-bit digits,
+/// skipping digits all keys share). Returns the keys in sorted order.
+fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>) -> Vec<u64> {
+    let n = o.len();
+    let mut src: Vec<(u64, usize)> = keys.into_iter().zip(o.iter().copied()).collect();
+    if n < 256 || n > u32::MAX as usize {
+        src.sort_by_key(|p| p.0);
+    } else {
+        const BITS: usize = 11;
+        const B: usize = 1 << BITS;
+        const PASSES: usize = 6;
+        let mut hist = vec![0u32; PASSES * B];
+        for &(k, _) in &src {
+            for p in 0..PASSES {
+                hist[p * B + ((k >> (p * BITS)) as usize & (B - 1))] += 1;
+            }
+        }
+        let mut dst = vec![(0u64, 0usize); n];
+        for p in 0..PASSES {
+            let h = &mut hist[p * B..(p + 1) * B];
+            let first = ((src[0].0 >> (p * BITS)) as usize) & (B - 1);
+            if h[first] as usize == n {
+                continue;
+            }
+            let mut sum = 0u32;
+            for c in h.iter_mut() {
+                let t = *c;
+                *c = sum;
+                sum += t;
+            }
+            for &(k, i) in &src {
+                let d = (k >> (p * BITS)) as usize & (B - 1);
+                dst[h[d] as usize] = (k, i);
+                h[d] += 1;
+            }
+            std::mem::swap(&mut src, &mut dst);
+        }
+    }
+    for (slot, &(_, i)) in o.iter_mut().zip(&src) {
+        *slot = i;
+    }
+    src.into_iter().map(|(k, _)| k).collect()
+}
+
+/// Lengths of the runs of equal adjacent keys.
+fn key_runs(keys: &[u64]) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut tt = 1;
+    for k in 1..keys.len() {
+        if keys[k - 1] == keys[k] {
+            tt += 1;
+        } else {
+            runs.push(tt);
+            tt = 1;
+        }
+    }
+    if !keys.is_empty() {
+        runs.push(tt);
+    }
+    runs
+}
+
 /// Sort `o[s..e]` (row indices) stably by column `x`, returning the run
 /// lengths of equal keys.
 fn radix_group(
@@ -1043,15 +1105,13 @@ fn radix_group(
     };
     match x {
         Value::Int(v) | Value::Lgl(v) => {
-            let key = |k: usize| icheck(v.data[k], order, nalast);
-            o.sort_by_key(|&k| key(k));
-            runs_by(o, &|a, b| key(a) == key(b))
+            let keys = o.iter().map(|&k| (icheck(v.data[k], order, nalast) as u64) ^ (1 << 63)).collect();
+            key_runs(&radix_sort_keys(o, keys))
         }
         Value::Real(v) => {
             let dround = if retgrp { 2 } else { 0 };
-            let key = |k: usize| dtwiddle(v.data[k], order, nalast, dround);
-            o.sort_by_key(|&k| key(k));
-            runs_by(o, &|a, b| key(a) == key(b))
+            let keys = o.iter().map(|&k| dtwiddle(v.data[k], order, nalast, dround)).collect();
+            key_runs(&radix_sort_keys(o, keys))
         }
         Value::Str(v) => {
             if sort_str {
@@ -1156,9 +1216,11 @@ fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
         }
         groups = new_groups;
     }
-    let has_na_row = |k: usize| keys.iter().any(|x| is_na_at(x, k));
     let mut ans: Vec<i32> = o.iter().map(|&k| k as i32 + 1).collect();
-    if nalast == 0 {
+    // NA rows, computed in row order once (`o` is a permutation).
+    let na_rows: Vec<bool> = if nalast == 0 { (0..n).map(|k| keys.iter().any(|x| is_na_at(x, k))).collect() } else { vec![] };
+    let has_na_row = |k: usize| na_rows[k];
+    if nalast == 0 && na_rows.contains(&true) {
         if retgrp {
             for (slot, &k) in ans.iter_mut().zip(o.iter()) {
                 if has_na_row(k) {

@@ -388,7 +388,7 @@ macro_rules! real_kernel {
         if n == 0 {
             Vec::new()
         } else if a.len() == n && b.len() == n {
-            a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect::<Vec<f64>>()
+            a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect::<Vec<_>>()
         } else if b.len() == 1 && a.len() == n {
             let y = b[0];
             a.iter().map(|&x| f(x, y)).collect()
@@ -816,33 +816,60 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     } else if matches!(x, Value::Real(_)) || matches!(y, Value::Real(_)) {
         let a = real_view(&x);
         let b = real_view(&y);
-        (0..n)
-            .map(|i| {
-                let (p, q) = (a[i % nx], b[i % ny]);
-                if p.is_nan() || q.is_nan() {
-                    NA_LOGICAL
-                } else {
-                    op.test(p, q) as Lgl
-                }
-            })
-            .collect()
+        macro_rules! cmp {
+            ($t:tt) => {
+                real_kernel!(&*a, &*b, n, |p: f64, q: f64| {
+                    let na = p.is_nan() | q.is_nan();
+                    let r = (p $t q) as Lgl;
+                    if na { NA_LOGICAL } else { r }
+                })
+            };
+        }
+        match op {
+            RelOp::Eq => cmp!(==),
+            RelOp::Ne => cmp!(!=),
+            RelOp::Lt => cmp!(<),
+            RelOp::Le => cmp!(<=),
+            RelOp::Gt => cmp!(>),
+            RelOp::Ge => cmp!(>=),
+        }
     } else if matches!(x, Value::Raw(_)) && matches!(y, Value::Raw(_)) {
         let (Value::Raw(a), Value::Raw(b)) = (&x, &y) else { unreachable!() };
         (0..n).map(|i| op.test(a.data[i % nx], b.data[i % ny]) as Lgl).collect()
     } else {
         let mut w = CoerceWarnings::default();
-        let a = crate::coerce::to_int(&x, &mut w);
-        let b = crate::coerce::to_int(&y, &mut w);
-        (0..n)
-            .map(|i| {
-                let (p, q) = (a[i % nx], b[i % ny]);
-                if p == NA_INTEGER || q == NA_INTEGER {
-                    NA_LOGICAL
-                } else {
-                    op.test(p, q) as Lgl
-                }
-            })
-            .collect()
+        let (ca, cb);
+        let a: &[i32] = match &x {
+            Value::Int(v) | Value::Lgl(v) => &v.data,
+            _ => {
+                ca = crate::coerce::to_int(&x, &mut w);
+                &ca
+            }
+        };
+        let b: &[i32] = match &y {
+            Value::Int(v) | Value::Lgl(v) => &v.data,
+            _ => {
+                cb = crate::coerce::to_int(&y, &mut w);
+                &cb
+            }
+        };
+        macro_rules! cmp {
+            ($t:tt) => {
+                real_kernel!(a, b, n, |p: i32, q: i32| {
+                    let na = (p == NA_INTEGER) | (q == NA_INTEGER);
+                    let r = (p $t q) as Lgl;
+                    if na { NA_LOGICAL } else { r }
+                })
+            };
+        }
+        match op {
+            RelOp::Eq => cmp!(==),
+            RelOp::Ne => cmp!(!=),
+            RelOp::Lt => cmp!(<),
+            RelOp::Le => cmp!(<=),
+            RelOp::Gt => cmp!(>),
+            RelOp::Ge => cmp!(>=),
+        }
     };
     let mut val = Value::lgls(out);
     apply_bin_attrs(&mut val, attrs);
