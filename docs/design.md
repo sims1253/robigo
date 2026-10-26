@@ -239,38 +239,58 @@ for unmodified R code, which is what a runtime needs.
 ### 4.2 Where performance stands
 
 `benchmarks/run.py` times robigo against `Rscript` (GNU R 4.5.0 with its
-bytecode JIT) on a 2-vCPU QEMU VM; best of three wall times in seconds,
-including ~0.03 s startup for both:
+bytecode JIT, `R_DEFAULT_PACKAGES=utils,stats`) on a 2-vCPU QEMU VM; best of
+three wall times in seconds, startup included (GNU R 0.086 s, robigo
+0.073 s with these packages). Ratios below 1 mean robigo is faster.
 
-| script | GNU R | robigo | robigo VM | what it stresses |
+| script | GNU R | robigo VM | ratio | what it stresses |
 |---|---|---|---|---|
-| fib | 0.11 | 0.21 | 0.20 | closure calls, promises |
-| loop | 0.12 | 1.08 | 0.24 | scalar arithmetic in a top-level `for` |
-| loopf | 0.12 | 1.13 | 0.23 | the same inside a function |
-| vecassign | 0.09 | 0.62 | 0.10 | `x[i] <- v` in a loop |
-| strings | 0.19 | 0.15 | 0.15 | `paste0`, `gsub`, `unique`, `nchar` |
-| apply | 0.18 | 0.26 | 0.27 | `lapply`/`vapply` with closures, `%*%` |
-| sortbench | 0.60 | 0.43 | 0.43 | `order`, `sort` on 10^6 doubles and strings |
+| fannkuch | 0.36 | 0.21 | 0.59 | integer vectors, `x[a:b] <- x[b:a]` |
+| dataframe | 0.27 | 0.17 | 0.62 | `data.frame` building, `aggregate`, `merge` |
+| strings | 0.34 | 0.21 | 0.63 | `paste0`, `gsub`, `sprintf`, `nchar` |
+| vecarith | 0.99 | 0.74 | 0.75 | elementwise arithmetic, `sum`, `mean` on 10^6 |
+| queens | 0.16 | 0.12 | 0.77 | recursion with vectors |
+| vecops | 0.68 | 0.55 | 0.81 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
+| lm | 0.21 | 0.19 | 0.93 | `lm`, `summary.lm` |
+| csv | 0.29 | 0.28 | 0.96 | `write.csv`, `read.csv` |
+| apply | 0.40 | 0.43 | 1.07 | `lapply`/`vapply`/`sapply` with closures |
+| matrix | 0.20 | 0.23 | 1.14 | `%*%`, `solve`, `apply` over rows |
+| nbody | 0.40 | 0.48 | 1.20 | scalar arithmetic on short vectors |
+| mandelbrot | 0.17 | 0.22 | 1.35 | scalar `while` loops |
+| fib | 0.20 | 0.29 | 1.43 | closure calls, promises |
+| binarytrees | 0.25 | 0.43 | 1.74 | recursion, list allocation, `[[` |
+| spectralnorm | 0.45 | 0.80 | 1.78 | a tiny closure called in a double loop |
+
+Measurements use callgrind (`~/.cache/rr-tools`, see the scripts under
+`/tmp/cg` in past sessions): instruction counts are exact, so a change can
+be judged without wall-clock noise. A fib call costs GNU R ~2,900
+instructions and robigo ~4,700.
 
 Ledger:
 
-- **Done:** function lookup cache keyed by a search-path epoch; unboxed
-  scalar registers; in-place scalar updates; variables cached in VM slots
-  and written back before anything that can observe the frame (1.6× on
-  scalar loops); `while`/`for` loops with the test at the bottom and no
-  visibility bookkeeping for discarded values; `x[i]`, `x[[i]]` and
-  `x[i] <- v` with a variable `x` and a constant or variable index read
-  and update plain vectors directly (7× on `vecassign`), falling back to
-  the interpreter for objects, attributes that matter, type changes and
-  out-of-range indices.
-- **Measured, not yet fixed:** each VM instruction costs 5–10 ns on this
-  machine (two indirect branches: dispatch and `RVal` cloning), so a scalar
-  loop iteration of 6–7 instructions is ~2× GNU R's. Next: fuse
-  `GetVar`/constant operands into arithmetic and comparison instructions
-  and fold guard checks into the instructions they protect.
-- **Not compiled yet:** closure calls still allocate an environment and
-  promises per call (`fib` is ~1.8× slower); matrix indexing `m[i, j]`
-  and computed indices `x[i + 1]` go through the interpreter.
+- **Done (calls):** `Op::Call` calls closures directly; argument
+  promises carry bytecode (as GNU R's compiler does); the function is
+  memoized per call site; guards memoize per environment and per
+  search-path environment and are skipped when they held since the last
+  point where R code could run; environments keep up to four bindings
+  inline (one allocation); closures cache their bytecode; VM registers live
+  on the Rust stack; a mimalloc allocator without the aligned path.
+- **Done (loops):** unboxed scalar registers; variables cached in slots;
+  `x[i]`/`x[i] <- v` and `x[a:b]`/`x[a:b] <- v` on plain vectors in place;
+  `a:b` as an unmaterialized range; arithmetic and comparisons with
+  constant/variable operands read in place and guards folded in.
+- **Done (vectors):** shape-specialized kernels for arithmetic and
+  comparisons that LLVM vectorizes, reusing unshared operands; `sum`,
+  `mean`, `cumsum`, `prod` in x87 assembly (bit-identical long double
+  accumulation); LSD radix `order`.
+- **Done (startup):** 320M -> 166M instructions: byte-level lexer, no token
+  cloning in the parser, Fx-hashed symbol table, lazy-DFA regexes with
+  ASCII-restricted classes for ASCII text, a cache of compiled patterns.
+- **Next:** each call still allocates an environment, a context and one
+  promise per argument (8 allocations per fib call); each VM op costs
+  ~30-100 instructions of dispatch and enum matching. Candidates:
+  speculative inlining of small pure closures (spectralnorm), environments
+  materialized only when observed, and a Cranelift tier for hot loops.
 
 ## 5. Roadmap
 
