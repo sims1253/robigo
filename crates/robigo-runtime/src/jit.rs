@@ -305,6 +305,9 @@ extern "C" fn h_pow(x: f64, y: f64) -> f64 {
 extern "C" fn h_fmod(x: f64, y: f64) -> f64 {
     myfmod(x, y)
 }
+extern "C" fn h_fmod_warns(x: f64, y: f64) -> i32 {
+    crate::builtins::arith::fmod_warns(x, y) as i32
+}
 extern "C" fn h_fidiv(x: f64, y: f64) -> f64 {
     myfloor(x, y)
 }
@@ -349,6 +352,7 @@ extern "C" fn h_tan(x: f64) -> f64 {
 const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
     ("robigo_pow", h_pow as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod", h_fmod as *const u8, &[types::F64, types::F64], types::F64),
+    ("robigo_fmod_warns", h_fmod_warns as *const u8, &[types::F64, types::F64], types::I32),
     ("robigo_fidiv", h_fidiv as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_ipow", h_ipow as *const u8, &[types::I32, types::I32], types::F64),
     ("robigo_imod", h_imod as *const u8, &[types::I32, types::I32], types::I32),
@@ -1127,7 +1131,13 @@ impl Gen<'_, '_> {
                 ArithOp::Times => self.b.ins().fmul(x, y),
                 ArithOp::Div => self.b.ins().fdiv(x, y),
                 ArithOp::Pow => self.call("robigo_pow", &[x, y]),
-                ArithOp::Mod => self.call("robigo_fmod", &[x, y]),
+                ArithOp::Mod => {
+                    // The VM gives the "loss of accuracy" warning.
+                    let w = self.call("robigo_fmod_warns", &[x, y]);
+                    let warns = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+                    self.deopt_if(warns, pc);
+                    self.call("robigo_fmod", &[x, y])
+                }
                 ArithOp::IDiv => self.call("robigo_fidiv", &[x, y]),
             };
         }

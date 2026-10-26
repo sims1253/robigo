@@ -94,6 +94,9 @@ fn as_i32(n: Num) -> i32 {
 #[inline(always)]
 fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
     if matches!(a, Num::D(_)) || matches!(b, Num::D(_)) {
+        if op == ArithOp::Mod && crate::builtins::arith::fmod_warns(as_f64(a), as_f64(b)) {
+            return None;
+        }
         return Some(RVal::D(real_op(op, as_f64(a), as_f64(b))));
     }
     let (x, y) = (as_i32(a), as_i32(b));

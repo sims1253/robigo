@@ -1,0 +1,8 @@
+Warning messages:
+1: probable complete loss of accuracy in modulus 
+2: probable complete loss of accuracy in modulus 
+Warning message:
+probable complete loss of accuracy in modulus 
+Warning message:
+In g(1e+25, 7) : probable complete loss of accuracy in modulus
+There were 16 warnings (use warnings() to see them)

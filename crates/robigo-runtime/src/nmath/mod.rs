@@ -307,24 +307,7 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
     ML_NAN
 }
 
-/// R: main/arithmetic.c:myfmod
-fn myfmod(x1: f64, x2: f64) -> f64 {
-    if x2 == 0.0 {
-        return ML_NAN;
-    }
-    if x2.abs() * DBL_EPSILON > 1.0 && x1.is_finite() && x1.abs() <= x2.abs() {
-        return if x1.abs() == x2.abs() {
-            0.0
-        } else if (x1 < 0.0 && x2 > 0.0) || (x2 < 0.0 && x1 > 0.0) {
-            x1 + x2
-        } else {
-            x1
-        };
-    }
-    let q = x1 / x2;
-    let tmp = x1 - q.floor() * x2;
-    tmp - (tmp / x2).floor() * x2
-}
+use crate::builtins::arith::myfmod;
 
 /// R: main/arithmetic.c:R_pow_di
 pub fn r_pow_di(mut x: f64, mut n: i32) -> f64 {
