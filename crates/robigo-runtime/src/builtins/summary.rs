@@ -1005,22 +1005,39 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
             Value::ints(ra)
         }
         VType::Real => {
-            let get = |v: &Value| -> Vec<f64> {
-                match quiet(v) {
-                    Value::Real(x) => x.data.clone(),
-                    _ => vec![],
+            // Doubles borrowed when they are doubles already.
+            fn get(v: &Value) -> std::borrow::Cow<'_, [f64]> {
+                match v {
+                    Value::Real(x) => std::borrow::Cow::Borrowed(&x.data[..]),
+                    _ => match crate::coerce::coerce_quiet(v, VType::Real) {
+                        Value::Real(x) => std::borrow::Cow::Owned(x.data.clone()),
+                        _ => std::borrow::Cow::Owned(vec![]),
+                    },
+                }
+            }
+            let r = get(xs[0]);
+            let mut ra: Vec<f64> = if r.len() == len { r.to_vec() } else { r.iter().copied().cycle().take(len).collect() };
+            let update = |slot: &mut f64, tmp: f64| {
+                let better = if max { tmp > *slot } else { tmp < *slot };
+                if (narm && slot.is_nan()) || (!slot.is_nan() && !tmp.is_nan() && better) || (!narm && tmp.is_nan()) {
+                    *slot = tmp;
                 }
             };
-            let r = get(xs[0]);
-            let mut ra: Vec<f64> = (0..len).map(|k| r[k % r.len()]).collect();
             for x in &xs[1..] {
                 let r = get(x);
                 let n = r.len();
-                for (k, slot) in ra.iter_mut().enumerate() {
-                    let tmp = r[k % n];
-                    let better = if max { tmp > *slot } else { tmp < *slot };
-                    if (narm && slot.is_nan()) || (!slot.is_nan() && !tmp.is_nan() && better) || (!narm && tmp.is_nan()) {
-                        *slot = tmp;
+                if n == len {
+                    for (slot, &tmp) in ra.iter_mut().zip(r.iter()) {
+                        update(slot, tmp);
+                    }
+                } else if n == 1 {
+                    let tmp = r[0];
+                    for slot in ra.iter_mut() {
+                        update(slot, tmp);
+                    }
+                } else {
+                    for (slot, &tmp) in ra.iter_mut().zip(r.iter().cycle()) {
+                        update(slot, tmp);
                     }
                 }
             }
