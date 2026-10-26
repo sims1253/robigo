@@ -933,8 +933,15 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
 fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
     let epoch = crate::env::search_epoch();
     let m = memo.get();
-    if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
-        return m.ok;
+    if m.epoch == epoch {
+        if m.env == env.id() && m.version == env.fn_version() {
+            return m.ok;
+        }
+        // A new frame (another call) directly below the memoized search-path
+        // environment: only its own bindings can differ.
+        if m.search != 0 && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search) && !env.local_may_bind_fun(sym) {
+            return m.ok;
+        }
     }
     // The common cases without reference count traffic: `env` on the search
     // path, or a closure frame whose parent is.
@@ -1561,9 +1568,22 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Va
     // (Sized for typical base-R functions, which a call should not have
     // to allocate for.)
     let mut regs: SmallVec<[RVal; 32]> = SmallVec::new();
-    regs.resize_with(code.nregs, || RVal::V(Value::Null));
     let mut slots: SmallVec<[SlotVal; 24]> = SmallVec::new();
-    slots.resize_with(code.vars.len(), || SlotVal::Empty);
+    regs.reserve_exact(code.nregs);
+    slots.reserve_exact(code.vars.len());
+    // Initialized in place (`resize_with` costs ~25 instructions per element).
+    unsafe {
+        let p = regs.as_mut_ptr();
+        for k in 0..code.nregs {
+            p.add(k).write(RVal::V(Value::Null));
+        }
+        regs.set_len(code.nregs);
+        let p = slots.as_mut_ptr();
+        for k in 0..code.vars.len() {
+            p.add(k).write(SlotVal::Empty);
+        }
+        slots.set_len(code.vars.len());
+    }
     let mut vars = Vars { slots: &mut slots, any: false, dirty: false, vclean: false, touched: 0, epoch: crate::env::r_epoch() };
     // Valid in the first flush generation (see `run_with`).
     let init = pre as u32;
