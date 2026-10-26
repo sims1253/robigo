@@ -87,6 +87,25 @@ mod imp {
     binop!(mul, "fmulp st(1), st(0)");
     binop!(div, "fdivp st(1), st(0)");
 
+    /// `sqrtl`: glibc uses the (correctly rounded) x87 `fsqrt`.
+    #[inline]
+    pub fn sqrt(a: &LDouble) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{a}]",
+                "fsqrt",
+                "fstp tbyte ptr [{o}]",
+                a = in(reg) a.0.as_ptr(),
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
     /// Compare: returns -1, 0, 1, or 2 for unordered.
     #[inline]
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
@@ -150,6 +169,9 @@ mod imp {
     pub fn div(a: &LDouble, b: &LDouble) -> LDouble {
         put(get(a) / get(b))
     }
+    pub fn sqrt(a: &LDouble) -> LDouble {
+        put(get(a).sqrt())
+    }
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
         match get(a).partial_cmp(&get(b)) {
             Some(std::cmp::Ordering::Less) => -1,
@@ -172,6 +194,12 @@ impl LDouble {
     #[inline]
     pub fn to_f64(self) -> f64 {
         imp::to_f64(&self)
+    }
+
+    /// `sqrtl(x)`.
+    #[inline]
+    pub fn sqrt(self) -> LDouble {
+        imp::sqrt(&self)
     }
 }
 

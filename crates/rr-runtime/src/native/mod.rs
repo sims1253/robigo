@@ -19,6 +19,7 @@ use crate::value::*;
 static TABLE: &str = include_str!("../../../../rlib/native-routines.tsv");
 
 mod grdevices;
+mod stats;
 
 /// The interface a routine is registered for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -192,7 +193,7 @@ impl Dll {
 pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>) -> RResult<Value>;
 
 /// Rust ports of registered routines, per package: (routine, function).
-static PORTS: &[(&str, &[(&str, NativeFn)])] = &[("grDevices", grdevices::PORTS)];
+static PORTS: &[(&str, &[(&str, NativeFn)])] = &[("grDevices", grdevices::PORTS), ("stats", stats::PORTS)];
 
 /// Routines whose code is the same as an rr `.Internal` of the same name
 /// and arguments: stats' distribution functions (distn.c and random.c are
