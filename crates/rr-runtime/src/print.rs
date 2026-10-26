@@ -754,8 +754,9 @@ impl Printer {
                 return self.attributes(interp, v, false);
             }
         }
-        let names: Option<Vec<RStr>> = match v.get_attr(s::NAMES) {
-            Some(Value::Str(n)) => Some(n.data.clone()),
+        // getAttrib(s, R_NamesSymbol): dimnames[[1]] for a 1-d array.
+        let names: Option<Vec<RStr>> = match crate::attrib::get_attrib(v, s::NAMES) {
+            Value::Str(n) => Some(n.data.clone()),
             _ => None,
         };
         let taglen = self.tagbuf.len();

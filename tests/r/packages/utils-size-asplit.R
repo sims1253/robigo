@@ -1,0 +1,8 @@
+library(utils); library(stats)
+object.size(NULL); object.size(1); object.size(1:10); object.size(c(a = 1)); object.size("x")
+object.size(c("a", "b", "a", NA)); object.size(list(1, "a")); object.size(mtcars <- data.frame(x = 1:3, y = c("a", "b", "c")))
+object.size(factor(c("u", "v"))); object.size(quote(f(x, y = 2))); object.size(function(x) x + 1)
+format(object.size(1:1000), units = "Kb"); print(object.size(numeric(1e4)), units = "auto")
+m <- matrix(1:6, 2, dimnames = list(c("a", "b"), NULL))
+asplit(m, 1); asplit(m, 2)
+pb <- txtProgressBar(0, 2, style = 3); setTxtProgressBar(pb, 1); close(pb)

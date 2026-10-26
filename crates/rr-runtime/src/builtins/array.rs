@@ -12,6 +12,7 @@ use crate::sym::{s, Sym};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
+    internal("asplit", do_asplit, 8),
     internal("matrix", do_matrix, 7),
     internal("array", do_array, 3),
     internal("diag", do_diag, 3),
@@ -1798,4 +1799,49 @@ fn rbind(
         result = set_attrib(result, s::DIMNAMES, Value::list(vec![rn, cn]))?;
     }
     Ok(result)
+}
+
+/// `asplit(x, MARGIN)`: the pieces of an array, prepared by R code.
+// R: array.c:do_asplit
+fn do_asplit(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = |k: usize| args.get(k).map(|a| a.value.clone()).unwrap_or(Value::Null);
+    let (x, da, dc, dna, dnc, d1, d2, drop) = (a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7));
+    let n1 = crate::coerce::as_integer(&d1).max(0) as usize;
+    let n2 = crate::coerce::as_integer(&d2).max(0) as usize;
+    let havednc = !dnc.is_null() && !dnc.is_empty();
+    let keepdim = crate::coerce::as_logical(&drop) == 0;
+    if !matches!(x, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::List(_) | Value::Raw(_)) {
+        return Err(Flow::error(format!("unimplemented type '{}' in 'asplit'\n", x.type_name())));
+    }
+    let mut pieces = Vec::with_capacity(n2);
+    for i in 0..n2 {
+        let idx: Vec<usize> = (i * n1..(i + 1) * n1).collect();
+        let mut e = elements(&x, &idx);
+        if keepdim {
+            e = crate::attrib::set_attrib(e, s::DIM, dc.clone())?;
+            if havednc {
+                e = crate::attrib::set_attrib(e, s::DIMNAMES, dnc.clone())?;
+            }
+        }
+        pieces.push(e);
+    }
+    let mut y = crate::attrib::set_attrib(Value::list(pieces), s::DIM, da)?;
+    if !dna.is_null() && !dna.is_empty() {
+        y = crate::attrib::set_attrib(y, s::DIMNAMES, dna)?;
+    }
+    Ok(y)
+}
+
+/// The elements of a vector at `idx`, without attributes.
+fn elements(x: &Value, idx: &[usize]) -> Value {
+    match x {
+        Value::Lgl(v) => Value::lgls(idx.iter().map(|&k| v.data[k]).collect()),
+        Value::Int(v) => Value::ints(idx.iter().map(|&k| v.data[k]).collect()),
+        Value::Real(v) => Value::reals(idx.iter().map(|&k| v.data[k]).collect()),
+        Value::Cplx(v) => Value::Cplx(std::rc::Rc::new(Vector::new(idx.iter().map(|&k| v.data[k]).collect()))),
+        Value::Str(v) => Value::strs(idx.iter().map(|&k| v.data[k].clone()).collect()),
+        Value::List(v) => Value::list(idx.iter().map(|&k| v.data[k].clone()).collect()),
+        Value::Raw(v) => Value::raws(idx.iter().map(|&k| v.data[k]).collect()),
+        _ => Value::Null,
+    }
 }

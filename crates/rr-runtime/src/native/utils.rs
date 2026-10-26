@@ -14,7 +14,85 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("countfields", |i, _, a, _| countfields(i, &a)),
     ("typeconvert", |i, _, a, _| typeconvert(i, &a)),
     ("writetable", |i, _, a, _| writetable(i, &a)),
+    ("objectSize", |_, _, a, _| Ok(Value::real(objectsize(&arg(&a, 0)) as f64))),
+    ("flushconsole", |i, _, _, _| {
+        i.flush();
+        Ok(Value::Null)
+    }),
+    // rr's time-zone code is a port of glibc's (see builtins/datetime).
+    ("tzcode_type", |_, _, _, _| Ok(Value::str("system (glibc)"))),
 ];
+
+/// GNU R's memory footprint of an object on 64-bit platforms: node and
+/// vector-cell sizes as R allocates them.
+// R: utils/src/size.c:objectsize
+fn objectsize(v: &Value) -> usize {
+    const SEXPREC: usize = 56;
+    const SEXPREC_ALIGN: usize = 48;
+    fn vec_cells(vcnt: usize) -> usize {
+        SEXPREC_ALIGN
+            + if vcnt > 16 {
+                8 * vcnt
+            } else if vcnt > 8 {
+                128
+            } else if vcnt > 6 {
+                64
+            } else if vcnt > 4 {
+                48
+            } else if vcnt > 2 {
+                32
+            } else if vcnt > 1 {
+                16
+            } else if vcnt > 0 {
+                8
+            } else {
+                0
+            }
+    }
+    let byte2vec = |n: usize| if n > 0 { (n - 1) / 8 + 1 } else { 0 };
+    let int2vec = |n: usize| if n > 0 { (n * 4 - 1) / 8 + 1 } else { 0 };
+    let charsxp = |s: &str| vec_cells(byte2vec(s.len() + 1));
+    /// A pairlist node chain: TAG + CAR + node per element.
+    fn pairlist(items: &[Arg]) -> usize {
+        items
+            .iter()
+            .map(|a| a.tag.map(|_| SEXPREC).unwrap_or(0) + objectsize(&a.value) + SEXPREC)
+            .sum()
+    }
+    let attrs = |v: &Value| -> usize {
+        match v.attrs() {
+            Some(a) => a.0.iter().map(|(_, val)| SEXPREC + objectsize(val) + SEXPREC).sum(),
+            None => 0,
+        }
+    };
+    match v {
+        Value::Null => 0,
+        Value::Sym(_) => SEXPREC + attrs(v),
+        Value::Lgl(x) | Value::Int(x) => vec_cells(int2vec(x.data.len())) + attrs(v),
+        Value::Real(x) => vec_cells(x.data.len()) + attrs(v),
+        Value::Cplx(x) => vec_cells(2 * x.data.len()) + attrs(v),
+        Value::Raw(x) => vec_cells(byte2vec(x.data.len())) + attrs(v),
+        Value::Str(x) => {
+            let mut seen: Vec<&str> = Vec::new();
+            let mut cnt = 0;
+            for e in x.data.iter().flatten() {
+                if !seen.contains(&&**e) {
+                    seen.push(e);
+                    cnt += charsxp(e);
+                }
+            }
+            cnt + vec_cells(x.data.len()) + attrs(v)
+        }
+        Value::List(x) | Value::Expr(x) => x.data.iter().map(objectsize).sum::<usize>() + vec_cells(x.data.len()) + attrs(v),
+        Value::Pairlist(p) => pairlist(&p.items),
+        Value::Lang(l) => objectsize(&l.fun) + SEXPREC + pairlist(&l.args) + attrs(v),
+        Value::Closure(c) => {
+            let f: usize = c.formals.iter().map(|a| SEXPREC + objectsize(&a.value) + SEXPREC).sum();
+            f + objectsize(&c.body) + SEXPREC + attrs(v)
+        }
+        _ => SEXPREC + attrs(v),
+    }
+}
 
 fn arg(a: &[Arg], k: usize) -> Value {
     a.get(k).map(|a| a.value.clone()).unwrap_or(Value::Null)

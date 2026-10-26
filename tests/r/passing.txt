@@ -52,6 +52,7 @@ tests/r/packages/stats-misc.R
 tests/r/packages/stats-model-matrix.R
 tests/r/packages/stats-terms.R
 tests/r/packages/utils-csv.R
+tests/r/packages/utils-size-asplit.R
 tests/r/programs/fib.R
 tests/r/programs/fizzbuzz.R
 tests/r/programs/matrix.R
