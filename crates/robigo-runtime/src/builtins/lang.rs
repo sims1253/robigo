@@ -209,9 +209,35 @@ fn do_return(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     Err(Flow::Return(v, env.clone()))
 }
 
+thread_local! {
+    /// The formals of each `function` expression evaluated, by the address
+    /// of its formals pairlist (kept alive here): closures created by one
+    /// expression share them (and the caches keyed by them).
+    static FORMALS: std::cell::RefCell<std::collections::HashMap<usize, (Value, Rc<[Arg]>), crate::env::FastHash>> =
+        Default::default();
+}
+
 fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let formals: Rc<[Arg]> = match &args[0].value {
-        Value::Pairlist(p) => p.items.iter().cloned().collect(),
+        Value::Pairlist(p) => {
+            let key = Rc::as_ptr(p) as *const u8 as usize;
+            match FORMALS.with(|c| c.borrow().get(&key).map(|(_, f)| f.clone())) {
+                Some(f) => f,
+                None => {
+                    let f: Rc<[Arg]> = p.items.iter().cloned().collect();
+                    FORMALS.with(|c| {
+                        let mut c = c.borrow_mut();
+                        // Pairlists built at run time are new each time:
+                        // bound the cache (clearing it only loses sharing).
+                        if c.len() >= 100_000 {
+                            c.clear();
+                        }
+                        c.insert(key, (args[0].value.clone(), f.clone()))
+                    });
+                    f
+                }
+            }
+        }
         Value::Null => Rc::from(Vec::new()),
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };

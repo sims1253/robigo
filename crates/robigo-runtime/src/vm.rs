@@ -160,8 +160,15 @@ pub fn default_codes(formals: &Rc<[Arg]>) -> Rc<[Option<Rc<Code>>]> {
         .iter()
         .map(|f| if f.value.is_missing_arg() { None } else { crate::compile::compile_thunk(&f.value) })
         .collect();
-    // Keep the formals alive so their address is not reused.
-    DEFAULTS.with(|c| c.borrow_mut().insert(key, (formals.clone(), codes.clone())));
+    // Keep the formals alive so their address is not reused (and bound the
+    // cache: formals made at run time are new each time).
+    DEFAULTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 100_000 {
+            c.clear();
+        }
+        c.insert(key, (formals.clone(), codes.clone()))
+    });
     codes
 }
 
