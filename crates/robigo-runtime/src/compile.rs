@@ -116,7 +116,7 @@ pub enum Op {
     Eval { dst: Reg, k: u32 },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
     /// continue at `skip`.
-    Guard { sym: Sym, dst: Reg, k: u32, skip: u32 },
+    Guard { sym: Sym, dst: Reg, k: u32, skip: u32, g: u32 },
     Null { dst: Reg },
     Return { src: Reg },
     /// Call the function `f` (not a base primitive), with the arguments of
@@ -167,6 +167,8 @@ pub struct Code {
     /// A closure body (`Return` ends the call) rather than a standalone
     /// loop (`Return` unwinds to the enclosing function).
     pub is_body: bool,
+    /// Number of `Guard` ops (numbered by their `g`).
+    pub nguards: usize,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
 }
@@ -184,6 +186,7 @@ impl Code {
             vars: c.vars,
             arglists: c.arglists,
             call_sites: c.call_sites,
+            nguards: c.nguards,
             result,
             is_body,
             guard_memo,
@@ -221,6 +224,7 @@ struct Compiler {
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     call_sites: Vec<CallSite>,
+    nguards: usize,
     loops: Vec<Loop>,
 }
 
@@ -399,7 +403,9 @@ impl Compiler {
     /// end of the construct.
     fn guard(&mut self, sym: Sym, whole: &Value, dst: Reg) -> usize {
         let k = self.konst(whole.clone());
-        self.emit(Op::Guard { sym, dst, k, skip: 0 })
+        let g = self.nguards as u32;
+        self.nguards += 1;
+        self.emit(Op::Guard { sym, dst, k, skip: 0, g })
     }
 
     fn fallback(&mut self, e: &Value, dst: Reg) {

@@ -569,10 +569,24 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
     let mut slots: SmallVec<[SlotVal; 8]> = SmallVec::new();
     slots.resize_with(code.vars.len(), || SlotVal::Empty);
     let mut vars = Vars { slots: &mut slots, any: false, dirty: false };
-    run_with(interp, code, env, &mut regs, &mut vars)
+    let mut small = [0u32; 32];
+    let mut big = Vec::new();
+    let checked: &mut [u32] = if code.nguards <= small.len() {
+        &mut small[..code.nguards]
+    } else {
+        big.resize(code.nguards, 0);
+        &mut big
+    };
+    run_with(interp, code, env, &mut regs, &mut vars, checked)
 }
 
-fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars<'_>) -> RResult<Value> {
+fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars<'_>,
+    // The `flush!()` generation in which each guard last held: only R code
+    // (always run after a flush) can rebind functions, so a guard that held
+    // in the current generation needs no new check.
+    checked: &mut [u32],
+) -> RResult<Value> {
+    let mut generation: u32 = 1;
     interp.visible = true;
     // (break target, next target) of active loops.
     let mut loops: Vec<(u32, u32)> = Vec::new();
@@ -596,9 +610,10 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
     }
     // Before anything that may run R code or signal.
     macro_rules! flush {
-        () => {
+        () => {{
+            generation = generation.wrapping_add(1).max(1);
             tryop!(vars.flush(interp, env, &code.vars))
-        };
+        }};
     }
     // Assign `$val` to variable `$sym` (slot `$slot`).
     macro_rules! assign {
@@ -726,9 +741,14 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 }
             }
             Op::Jump { target } => pc = *target as usize,
-            Op::Guard { sym, dst, k, skip } => {
+            Op::Guard { sym, dst, k, skip, g } => {
+                if checked[*g as usize] == generation {
+                    continue;
+                }
                 let ok = guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]);
-                if !ok {
+                if ok {
+                    checked[*g as usize] = generation;
+                } else {
                     if std::env::var_os("ROBIGO_VM_TRACE").is_some() {
                         eprintln!("vm: guard failed for {}", sym);
                     }
