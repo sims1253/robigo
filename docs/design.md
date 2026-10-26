@@ -3,7 +3,7 @@
 robigo is an attempt at a faster, modern runtime for the R language, written in
 Rust. This document records what we learned from earlier attempts (in R,
 Python, Julia and recent AI-assisted compiler ports), the architecture that
-follows from it, and the roadmap.
+follows from it, and the goalposts set by a design review (§5).
 
 ## 0. Goal and ground rules
 
@@ -151,8 +151,10 @@ robigo-cli      `robigo` (Rscript-like runner, REPL) and the conformance runner
 - **Not yet solved:** cycles. A closure stored in the environment it
   captures (`f <- function() { g <- function() 1; g }`) leaks. The plan is
   CPython's answer: keep reference counts (R needs them for
-  copy-on-modify anyway) and add a cycle collector over environments and
-  closures.
+  copy-on-modify anyway) and add a cycle collector over all container
+  objects (§5, F5).
+- The council review (§5) found that this object model cannot carry R's C
+  API as it is; §5.3 lists what changes.
 
 ### 3.2 Evaluation
 
@@ -184,9 +186,8 @@ implement next.
 Formatting and printing are ports of format.c (`formatReal`'s
 fixed/scientific decision), printutils.c, printvector.c, printarray.c,
 print.c and deparse.c, because R users read output and tests compare it.
-One deliberate deviation: GNU R scales by powers of ten in 80-bit
-`long double`; robigo uses Rust's exact decimal conversion, which agrees except
-in pathological double-rounding cases.
+`scientific()` scales by powers of ten in 80-bit `long double` as GNU R
+does on x86_64 (`nmath/ldouble.rs`).
 
 ## 4. Performance plan
 
@@ -369,20 +370,174 @@ Ledger:
   callee's force is a read; unboxed results for compiled callers; the VM
   on by default (it is opt-in, `ROBIGO_COMPILE=1`).
 
-## 5. Roadmap
+## 5. Council review and goalposts
 
-1. Base language and base library (in progress): finish the internals that
-   base R needs; grow the conformance suite; then run GNU R's own
-   `tests/*.R` with their `.Rout.save` files.
-2. Default packages: load `utils`, `stats`, `methods` namespaces from R
-   sources (namespace loading, S4), `datasets` via `unserialize`.
-3. Performance tiers 2–3 with a benchmark suite (`benchmarks/`) compared
-   against GNU R with its bytecode JIT enabled.
-4. C API: `Rinternals.h` implemented directly over robigo's object layout
-   (handles for SEXP, PROTECT as a root stack, ALTREP hooks), starting with
-   the API surface used by the most popular CRAN packages.
-5. ry integration: consume `dump-facts` for guarded specialization;
-   contribute the extra facts runtimes need.
+On 2026-10-26 six models reviewed the design read-only (one round) against
+the project's goals: (1) an interactive REPL and scripts, (2) loading any
+package GNU R can load, compiled code included, (3) better interop with
+other languages, (4) the fastest R implementation, (5) two numeric modes,
+exact (bit-identical to GNU R) and fast, (6) WebAssembly.
+
+| Juror | Score |
+|---|---|
+| Fable 5.1 | 6/10 |
+| GPT-6 Astra | 6.5/10 |
+| Opus 5.5 | 6/10 |
+| GLM-5.3 | 7/10 |
+| Gemini 4 Argon | 7.5/10 |
+| Kimi K3.1 Pro | 7/10 |
+
+The verdict was unanimous in direction: the method and the execution
+engine are right; the object model was built for a Rust interpreter, not
+for R's C API, and has to change before more builtins depend on it.
+
+### 5.1 Keep
+
+- **The oracle.** Byte-for-byte conformance, the ratchet, every tier run
+  against every script. GPT-6 Astra found the gate enforced only stdout;
+  since then it fails on any stdout, stderr or exit-status difference,
+  compared as bytes, under the interpreter, the VM and the VM with the JIT.
+- **Porting GNU R's C sources** and running base R's R code unmodified,
+  under GPL-2.0-or-later. A clean-room implementation would have to rewrite
+  base, stats and utils too, and would lose the oracle. The rule the jurors
+  added: *port behaviour and messages verbatim, not data structures.*
+- **Rust.** Go's GC and cgo costs and the JVM's warmup and C-API emulation
+  rule those out for a pointer-heavy C API; C and C++ bring GNU R's memory
+  safety profile; Zig is young. Keep `unsafe` in one audited boundary.
+- **The VM. It is not a crutch.** On WebAssembly, where an in-process JIT
+  is not possible, it is the fast tier. A JIT needs a deoptimization target
+  that implements R's reflection, and cold base-R code would pay compile
+  latency. Tiers: AST interpreter (bootstrap, `eval` of arbitrary objects,
+  deopt) → register VM by default → Cranelift for whole hot closures chosen
+  by sampling, with contextual dispatch and per-op deopt to the VM.
+- GNU R's payload layouts, `Result<_, Flow>`, guard epochs and the
+  measured ledger.
+
+### 5.2 Wrong today
+
+Each item was reproduced against GNU R 4.5.0:
+
+| Problem | Evidence |
+|---|---|
+| Closure and environment cycles leak | 200k calls of `f <- function(i) { g <- function() i; g }`: 32 → 120 MB (GNU R 39 MB); 200k `tryCatch` calls: 489 MB (GNU R 71 MB) |
+| No compact sequences outside VM registers | `x <- 1:2e8; x[5L]`: 786 MB peak (GNU R 54 MB) |
+| Strings must be valid UTF-8 | `rawToChar(as.raw(c(0x61, 0xff)))` is an error; GNU R returns a 2-byte string |
+| No S4 | `library(methods)` fails in `R_initMethodDispatch` |
+| `dyn.load` loads no code | `.Call` dispatches to hand-written Rust ports by name (`native/mod.rs`) |
+| Exact numerics on x86_64 only | `nmath/ldouble.rs` falls back to `f64` elsewhere, silently |
+| The fast engine is opt-in | the default AST interpreter is 5–15x slower than GNU R on loops |
+| The interpreter's recursion limit | `f(4000)` (simple recursion) is "evaluation nested too deeply"; the VM and GNU R run it |
+| `reg.finalizer` does nothing, `gc()` returns `NA` | placeholders that guess |
+| Not self-contained | `utils` and `stats` load from an installed GNU R (`R_HOME`) |
+| The bytecode cache never evicts | `vm.rs` `CACHE` keeps every compiled expression |
+| The REPL is a bare `read_line` loop | no editing, history or interrupts; a Rust panic ends the session |
+
+### 5.3 Fundamental: redesign before more builtins depend on it
+
+The cost of each grows with every builtin: at review time there were 1,233
+direct `.data` accesses in 58 files, 169 `RStr::as_deref` sites and ~240
+uses of `Pairlist::items` and `Lang::args`.
+
+- **F1. Values have no object header.** `Value` is a 16-byte enum with the
+  type in the tag; a `SEXP` is one pointer to an object that carries its
+  type, flags (object, S4, encoding), attributes and length. A handle table
+  in between is the cost FastR and PyPy's cpyext paid on every C call.
+  Target: header'd heap objects, `Value` a thin pointer, typed Rust views
+  (`RVec<f64>` derefs to a slice) for builtins.
+- **F2. Vector storage is a `Vec<T>`.** It cannot hold a foreign buffer
+  (Arrow, NumPy, mmap), an ALTREP object or a compact range, and C cannot
+  write through `REAL(x)` while Rust holds a reference. Target: storage
+  variants `Owned | Compact | Foreign(ptr, len, release) | Altrep` behind
+  `data()`/`data_mut()`/`elt()`/`get_region()`, materializing on `DATAPTR`,
+  with explicit write-access rules for C.
+- **F3. Strings are not CHARSXPs.** `Option<Rc<str>>` is UTF-8 only, not
+  NUL-terminated, not interned and 16 bytes per element. Packages compare
+  `CHARSXP` pointers and use `TRUELENGTH` as hash scratch. Target: an
+  interned cache of NUL-terminated byte strings with encoding bits (UTF-8,
+  Latin-1, bytes, ASCII) and a cached hash; pointer-sized `STRSXP`
+  elements.
+- **F4. Pairlists and calls are vectors.** Rcpp, rlang and cpp11 walk and
+  mutate cells with `CDR`/`SETCAR`/`SETCDR` and rely on cell identity.
+  Target: cons cells; compiled call sites keep a flattened argument array.
+- **F5. Reference counting without a cycle collector.** Target: keep the
+  counts (they are R's copy-on-modify), add trial deletion over all
+  container objects (environments, closures, promises, lists, pairlists,
+  external pointers). Its root registry is the `PROTECT` stack and
+  `R_PreserveObject`; finalizers and weak references build on it.
+- **F6. No native ABI.** Target: `dlopen`, `Rinternals.h` implemented over
+  F1–F5, and trampolines between `Flow` and C's non-local exits
+  (`Rf_error`, `R_UnwindProtect`, C++ exceptions), nested C → R → C
+  included.
+- **F7. No numeric policy.** Exactness is spread over nine files of x87
+  code with no seam, and the fast mode does not exist. Target: one module
+  for every operation whose result depends on the mode (reductions,
+  `cumsum`, `colSums`, `var`/`cov`, `%%`, `%*%`, `scientific()` scaling,
+  the long-double nmath sites). *Exact* is x87 on x86_64 and software
+  80-bit elsewhere, never a silent `f64` fallback; *fast* is `f64` with
+  SIMD and reassociation. The mode is a runtime setting and part of the
+  compiled-code cache key, not a Cargo feature. Exact mode is gated byte
+  for byte, fast mode with a tolerance oracle (`all.equal`).
+- **F8. Not portable or embeddable.** Cranelift and the x87 assembly are
+  unconditional dependencies, so there is no wasm32 build; 25
+  `thread_local!`s make one runtime per thread. Target: both behind
+  features, and runtime state owned by the interpreter instance.
+
+### 5.4 Hill-climbable
+
+VM by default with the `Eval` share as a metric; closure-call cost
+(caller-forced promises, unboxed returns, pooled frames and promises,
+VM-to-VM calls without Rust recursion); a whole-closure JIT; base-R idioms
+(`match.arg` with the default, `stopifnot`, `seq`, S3 dispatch
+allocations); missing stats natives; the REPL; a startup snapshot; code
+cache eviction.
+
+### 5.5 Where the jurors disagreed
+
+- **Handles or thin pointers.** Fable 5.1 and GLM-5.3 proposed a handle or
+  node layer next to today's `Value`; Opus 5.5, Gemini 4 Argon and Kimi
+  K3.1 Pro the value itself as a header'd object; GPT-6 Astra stable
+  handles over a non-moving traced heap. **Decision:** thin pointers to
+  header'd objects, because the C API is the long-term interface and must
+  be direct. The accessor layer (G2) keeps this cheap to revisit, and the
+  C API spike (G5) measures it.
+- **Cycle collector or tracing heap.** GPT-6 Astra argued for tracing with
+  separate sharing metadata. **Decision:** reference counts with trial
+  deletion over all container objects; counts are R's own copy-on-modify
+  semantics, and trial deletion finds every cycle among containers.
+- **Global state.** GLM-5.3 and Gemini 4 Argon call `thread_local!` state
+  fundamental; Opus 5.5 finds single-threaded values fine, as in GNU R.
+  **Decision:** values stay single-threaded; global state moves into the
+  instance (F8).
+- **Order.** Fable 5.1: VM default first. GLM-5.3 and Kimi K3.1 Pro: a C API
+  prototype first. Opus 5.5 and Gemini 4 Argon: accessors and storage
+  first. GPT-6 Astra: the gate first (done). **Decision:** below.
+
+### 5.6 Goalposts
+
+In order; the conformance gate stays byte-identical in every tier
+throughout, and the benchmark and idiom tables (§4.2) must not regress by
+more than 5%.
+
+| | Goalpost | Exit gate |
+|---|---|---|
+| G0 | Gate on stdout, stderr and exact status, as bytes, in all tiers | done |
+| G1 | VM by default; the AST interpreter for bootstrap, `eval` and deopt; `Eval` share tracked | suite green with the default; `f(4000)` runs |
+| G2 | Accessor layer: `.data`, `RStr`, `items`, `args` behind methods; CI rejects new direct access | no field access outside `value.rs` |
+| G3 | Object model (F1–F4): header'd thin objects with an S4 bit, storage variants with compact ranges as values, interned CHARSXPs, cons cells | `1:2e8` in constant memory; byte strings round-trip |
+| G4 | Cycle collector and root registry (F5); real `reg.finalizer`, `gc()`, weak references | leak tests in the suite: bounded memory for closure-defining and `tryCatch` loops |
+| G5 | C API spike (F6): `robigo-capi`, `dlopen`, `PROTECT`, unwind trampolines | three real packages load and pass their tests: a plain `.Call` package, an Rcpp package, rlang; packages passing becomes a ratchet |
+| G6 | Numeric policy and portability (F7, F8) | wasm32 (JIT off) and aarch64 pass the suite byte for byte in CI; fast mode passes a tolerance suite |
+| G7 | `methods`/S4, default packages without `R_HOME`, a startup snapshot | `library(methods)`, `setClass`, `new` work; robigo runs without GNU R installed |
+| G8 | Whole-closure JIT by sampling; call cost | fib and binarytrees at or below GNU R; `match.arg`, `stopifnot`, `seq` ≤ 1.0x GNU R's instructions |
+| G9 | REPL: line editing, history, interrupts; panics become R errors | an interactive session survives errors and Ctrl-C |
+
+G1 comes first because it is small and every user sees the fast tier.
+G2–G5 are one track: the object model exists to make the C API direct.
+Until G2 lands, new builtins and stats ports wait: each one adds field
+accesses to migrate. Numeric ports that accumulate in long double (LAPACK,
+`optim`, `loess`, ...) wait for the seam in G6. Afterwards: GNU R's own
+`tests/*.R`, ry facts for guarded specialization (§4.1), vector fusion
+over ALTREP-style lazy vectors.
 
 ## 6. Decisions to revisit
 
@@ -392,4 +547,5 @@ Ledger:
 - **Locale.** robigo implements the C.UTF-8 locale (byte-order collation,
   English messages); the oracle runs with `LC_ALL=C.UTF-8`.
 - **Strings** are always valid UTF-8 (`Rc<str>`); R's Latin-1/bytes
-  encodings are not supported yet.
+  encodings are not supported yet. Interned CHARSXPs with encodings
+  replace them (§5.3, F3).
