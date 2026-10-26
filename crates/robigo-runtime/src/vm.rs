@@ -167,6 +167,7 @@ pub fn default_codes(formals: &Rc<[Arg]>) -> Rc<[Option<Rc<Code>>]> {
 
 thread_local! {
     static CACHE: RefCell<HashMap<usize, (Value, Rc<Code>), crate::env::FastHash>> = RefCell::new(HashMap::default());
+    static INLINES: RefCell<HashMap<usize, (Rc<[Arg]>, Option<Rc<Inline>>), crate::env::FastHash>> = RefCell::new(HashMap::default());
     static DEFAULTS: RefCell<HashMap<usize, (Rc<[Arg]>, Rc<[Option<Rc<Code>>]>), crate::env::FastHash>> =
         RefCell::new(HashMap::default());
     static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(false);
@@ -970,7 +971,19 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
 ///   search path: repeated guards in a loop cost no lookup;
 /// - for the first search-path environment, after checking that the frames
 ///   below it (fresh per call) bind no function of that name.
+#[inline(always)]
 fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
+    let epoch = crate::env::search_epoch();
+    // SAFETY: a read of the memo's fields; nothing else accesses it now.
+    let m = unsafe { &*memo.as_ptr() };
+    if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
+        return m.ok;
+    }
+    guard_ok_slow(interp, sym, env, memo)
+}
+
+#[inline(never)]
+fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
     let epoch = crate::env::search_epoch();
     let m = memo.get();
     if m.epoch == epoch {
@@ -982,12 +995,19 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
         if m.search != 0 && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search) && !env.local_may_bind_fun(sym) {
             return m.ok;
         }
+        // A new frame of a closure defined in the memoized call frame.
+        if m.outer != 0
+            && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.outer && p.fn_version() == m.outer_version)
+            && !env.local_may_bind_fun(sym)
+        {
+            return m.ok;
+        }
     }
     // The common cases without reference count traffic: `env` on the search
     // path, or a closure frame whose parent is.
     if env.is_search() {
         let ok = if m.epoch == epoch && m.search == env.id() { m.ok } else { interp.resolves_to_base(sym, env) };
-        memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: env.id(), ok });
+        memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: env.id(), ok, outer: 0, outer_version: 0 });
         return ok;
     }
     if env.local_may_bind_fun(sym) {
@@ -998,7 +1018,7 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
         match &*parent {
             Some(p) if p.is_search() => {
                 let ok = if m.epoch == epoch && m.search == p.id() { m.ok } else { interp.resolves_to_base(sym, p) };
-                memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: p.id(), ok });
+                memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: p.id(), ok, outer: 0, outer_version: 0 });
                 return ok;
             }
             Some(_) => {}
@@ -1021,7 +1041,12 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
     // The per-environment memo is only sound when no frame other than
     // `env` lies between it and the search path.
     let (env_id, version) = if depth <= 1 { (env.id(), env.fn_version()) } else { (0, 0) };
-    memo.set(GuardMemo { epoch, env: env_id, version, search: cur.id(), ok });
+    // Two frames below the search path: memoize the outer one.
+    let (outer, outer_version) = match &*env.parent_ref() {
+        Some(p) if depth == 2 => (p.id(), p.fn_version()),
+        _ => (0, 0),
+    };
+    memo.set(GuardMemo { epoch, env: env_id, version, search: cur.id(), ok, outer, outer_version });
     ok
 }
 
@@ -1030,11 +1055,13 @@ pub struct Inline {
     pub(crate) code: Rc<Code>,
     /// The slot of each formal in `code.vars` (`None`: unused).
     pub(crate) formal_slots: Vec<Option<Slot>>,
-    /// Every function the body guards, and the search epoch in which all of
-    /// them were last seen to resolve to base (from a search-path closure
-    /// environment, where that depends on nothing else).
+    /// Every function the body guards, and the (search epoch, environment
+    /// id, its function-binding version) for which all of them were last
+    /// seen to resolve to base from the closure's environment (one on the
+    /// search path or directly below it, where that depends on nothing
+    /// else).
     pub(crate) guard_syms: Vec<Sym>,
-    guards_epoch: std::cell::Cell<u64>,
+    guards_key: std::cell::Cell<(u64, usize, u32)>,
     /// The body reads variables other than its formals (through the
     /// closure's environment, which may be the caller's frame).
     pub(crate) free_vars: bool,
@@ -1054,6 +1081,25 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
         return None;
     }
     let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    // Closures created by one `function` expression (the same body, so the
+    // same bytecode) share the analysis, which depends on the formals only
+    // through their names (it requires them to have no defaults).
+    let key = Rc::as_ptr(&code) as usize;
+    let same_formals = |f: &[Arg]| {
+        f.len() == clo.formals.len() && f.iter().zip(clo.formals.iter()).all(|(a, b)| a.tag == b.tag && a.value.is_missing_arg() == b.value.is_missing_arg())
+    };
+    if let Some(r) = INLINES.with(|c| c.borrow().get(&key).filter(|(f, _)| same_formals(f)).map(|(_, i)| i.clone())) {
+        return r;
+    }
+    let r = inline_analysis(clo, code.clone());
+    // (The code is kept alive by the bytecode cache, so its address is not
+    // reused.)
+    INLINES.with(|c| c.borrow_mut().insert(key, (clo.formals.clone(), r.clone())));
+    r
+}
+
+#[cold]
+fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
     if clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
         return None;
     }
@@ -1089,7 +1135,7 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     let free_vars = code.vars.iter().any(|v| !formals.contains(v));
-    Some(Rc::new(Inline { code, formal_slots, guard_syms, guards_epoch: std::cell::Cell::new(u64::MAX), free_vars }))
+    Some(Rc::new(Inline { code, formal_slots, guard_syms, guards_key: std::cell::Cell::new((u64::MAX, 0, 0)), free_vars }))
 }
 
 /// Run an inlinable closure body (see [`inline_info`]) with argument values
@@ -1104,17 +1150,33 @@ fn run_inline(interp: &mut Interp, info: &Inline, args: &[RVal], env: &Env) -> O
     let code = &*info.code;
     // All guards at once, once per search epoch, when that suffices.
     let mut guarded = false;
-    if env.is_search() {
-        let epoch = crate::env::search_epoch();
-        if info.guards_epoch.get() != epoch && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
-            info.guards_epoch.set(epoch);
+    if env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) {
+        let key = (crate::env::search_epoch(), env.id(), env.fn_version());
+        if info.guards_key.get() != key && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
+            info.guards_key.set(key);
         }
-        guarded = info.guards_epoch.get() == epoch;
+        guarded = info.guards_key.get() == key;
     }
-    let mut regs: SmallVec<[RVal; 16]> = SmallVec::new();
-    regs.resize_with(code.nregs, || RVal::V(Value::Null));
-    let mut slots: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
-    slots.resize_with(code.vars.len(), || None);
+    let mut regs_buf: SmallVec<[RVal; 16]> = SmallVec::new();
+    let mut slots_buf: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
+    regs_buf.reserve_exact(code.nregs);
+    slots_buf.reserve_exact(code.vars.len());
+    // Initialized in place (see `run_pre`).
+    unsafe {
+        let p = regs_buf.as_mut_ptr();
+        for k in 0..code.nregs {
+            p.add(k).write(RVal::V(Value::Null));
+        }
+        regs_buf.set_len(code.nregs);
+        let p = slots_buf.as_mut_ptr();
+        for k in 0..code.vars.len() {
+            p.add(k).write(None);
+        }
+        slots_buf.set_len(code.vars.len());
+    }
+    // Plain slices: indexing a SmallVec tests where its data is each time.
+    let regs: &mut [RVal] = &mut regs_buf;
+    let mut slots: &mut [Option<RVal>] = &mut slots_buf;
     for (arg, slot) in args.iter().zip(&info.formal_slots) {
         if let Some(s) = slot {
             slots[*s as usize] = Some(arg.clone());

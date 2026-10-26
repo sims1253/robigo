@@ -220,6 +220,12 @@ pub struct GuardMemo {
     pub version: u32,
     pub search: usize,
     pub ok: bool,
+    /// For a frame whose parent `outer` (with function bindings at
+    /// `outer_version`) lies directly below the search path: other frames
+    /// with that parent (calls of a closure defined in a call) share the
+    /// result unless they bind the name themselves.
+    pub outer: usize,
+    pub outer_version: u32,
 }
 
 /// A call compiled to `Op::Call`.
@@ -320,7 +326,7 @@ impl Code {
             }
             _ => None,
         };
-        let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
+        let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
         Code {
             ops: c.ops,

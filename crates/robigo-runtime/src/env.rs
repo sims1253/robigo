@@ -319,6 +319,8 @@ impl Env {
         if self.is_search() {
             bump_search_epoch();
         }
+        // Function lookups through this frame may now resolve elsewhere.
+        self.bump_fn_version();
         *self.0.parent.borrow_mut() = p;
     }
 
