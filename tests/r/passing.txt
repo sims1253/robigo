@@ -26,6 +26,7 @@ tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R
 tests/r/lang/compiled-builtin1.R
 tests/r/lang/compiled-calls.R
+tests/r/lang/compiled-dollar-missing.R
 tests/r/lang/compiled-forms.R
 tests/r/lang/compiled-index.R
 tests/r/lang/compiled-inline.R

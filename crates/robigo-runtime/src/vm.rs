@@ -195,7 +195,15 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
             code.nguards
         );
         for (pc, op) in code.ops.iter().enumerate() {
-            eprintln!("{:4} {:?}", pc, op);
+            match op {
+                Op::Eval { k, .. } => eprintln!(
+                    "{:4} {:?}  # {}",
+                    pc,
+                    op,
+                    crate::deparse::deparse_one_line(&code.consts[*k as usize]).chars().take(80).collect::<String>()
+                ),
+                _ => eprintln!("{:4} {:?}", pc, op),
+            }
         }
     }
     // Keep the expression alive so its address is not reused.
@@ -629,6 +637,30 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
         _ => return false,
     }
     true
+}
+
+/// `x$name` for a list or expression vector by exact name, without
+/// warnings; `None` where `R_subset3_dflt` must run (partial matches,
+/// environments, other types).
+fn dollar_fast(x: &Value, input: &RStr) -> Option<Value> {
+    let (Value::List(v) | Value::Expr(v)) = x else { return None };
+    let input: &str = input.as_deref().unwrap_or("NA");
+    if input.is_empty() {
+        return None;
+    }
+    let names = v.attrs.as_ref().and_then(|_| x.get_attr(s::NAMES));
+    let Some(Value::Str(n)) = names else { return Some(Value::Null) };
+    let mut partial = false;
+    for (i, nm) in n.data.iter().enumerate() {
+        let nm: &str = nm.as_deref().unwrap_or("NA");
+        if nm.starts_with(input) {
+            if nm.len() == input.len() {
+                return Some(v.data[i].clone());
+            }
+            partial = true;
+        }
+    }
+    (!partial).then_some(Value::Null)
 }
 
 /// `x[length(x) + 1] <- val` for a vector without attributes and a value
@@ -1607,8 +1639,13 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 recheck = false;
                 let now = (crate::env::search_epoch(), env.fn_version());
                 if now != token {
+                    // A new local function binding (say a helper defined in
+                    // the body) matters only if it binds a guarded name.
+                    let local_only = now.0 == token.0;
                     token = now;
-                    generation = generation.wrapping_add(1).max(1);
+                    if !local_only || code.guard_syms.iter().any(|s| env.local_may_bind_fun(*s)) {
+                        generation = generation.wrapping_add(1).max(1);
+                    }
                 }
             }
         }};
@@ -1727,6 +1764,8 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
     }
     while pc < ops.len() {
         let op = &ops[pc];
+        #[cfg(feature = "op-stats")]
+        op_stats::count(op);
         pc += 1;
         match op {
             Op::Const { dst, k } => regs[*dst as usize] = RVal::V(code.consts[*k as usize].clone()),
@@ -1908,6 +1947,44 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
                     }
                 };
+            }
+            Op::Dollar { dst, x, name, call } => {
+                interp.visible = true;
+                let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
+                let Value::Str(input) = &code.consts[*name as usize] else { unreachable!() };
+                let input = &input.data[0];
+                let call = &code.consts[*call as usize];
+                regs[*dst as usize] = match (xv.is_object(), dollar_fast(&xv, input)) {
+                    (false, Some(v)) => unbox(v),
+                    (false, None) => {
+                        flush!();
+                        let r = crate::builtins::subset::subset3_dflt(interp, &xv, input, call);
+                        unbox(tryop!(signal(interp, r)))
+                    }
+                    (true, _) => {
+                        // R_DispatchOrEvalSP with `x` evaluated.
+                        flush!();
+                        let Value::Lang(l) = call else { unreachable!() };
+                        let args = vec![
+                            Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv)))),
+                            Arg::new(l.args[1].tag, Value::strs(vec![input.clone()])),
+                        ];
+                        let b = crate::builtins::lookup_primitive("$").expect("$ builtin");
+                        let r = interp.invoke_builtin(b, call, args, env);
+                        RVal::V(tryop!(signal(interp, r)))
+                    }
+                };
+            }
+            Op::Missing { dst, sym, call } => {
+                // Pending assignments first: assigning clears the missing bit.
+                if vars.dirty {
+                    tryop!(vars.flush(interp, env, &code.vars));
+                }
+                regs[*dst as usize] = match crate::builtins::lang::missing_sym(interp, &code.consts[*call as usize], *sym, env) {
+                    Ok(b) => RVal::L(b as Lgl),
+                    Err(e) => return signal(interp, Err(e)),
+                };
+                interp.visible = true;
             }
             Op::Switch { x, table, call } => {
                 // R: eval.c:do_switch
@@ -2306,4 +2383,41 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
         vars.flush(interp, env, &code.vars)?;
     }
     Ok(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)).into_value())
+}
+
+/// Executed ops by kind (`--features op-stats`).
+#[cfg(feature = "op-stats")]
+mod op_stats {
+    use super::Op;
+    use std::collections::HashMap;
+    use std::mem::Discriminant;
+
+    struct Stats(HashMap<Discriminant<Op>, (String, u64)>);
+
+    impl Drop for Stats {
+        fn drop(&mut self) {
+            let mut v: Vec<_> = self.0.values().collect();
+            v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            let total: u64 = v.iter().map(|(_, n)| n).sum();
+            eprintln!("op-stats: {} ops", total);
+            for (name, n) in v {
+                eprintln!("{:>12} {:5.1}% {}", n, 100.0 * *n as f64 / total as f64, name);
+            }
+        }
+    }
+
+    thread_local! {
+        static STATS: std::cell::RefCell<Stats> = std::cell::RefCell::new(Stats(HashMap::new()));
+    }
+
+    pub fn count(op: &Op) {
+        STATS.with(|s| {
+            let mut s = s.borrow_mut();
+            let e = s.0.entry(std::mem::discriminant(op)).or_insert_with(|| {
+                let d = format!("{:?}", op);
+                (d.split([' ', '{', '(']).next().unwrap_or("").to_string(), 0)
+            });
+            e.1 += 1;
+        });
+    }
 }

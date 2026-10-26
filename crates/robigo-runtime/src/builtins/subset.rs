@@ -797,7 +797,35 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
     let input = char_of(input).to_string();
-    let warn = matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
+    let warn_partial =
+        |interp: &mut Interp| matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
+    if let Value::List(_) | Value::Expr(_) = x {
+        // The names are scanned in place (no copies per call).
+        let names = get_attrib(x, s::NAMES);
+        let mut havematch = 0;
+        let mut imatch = 0;
+        if let Value::Str(n) = &names {
+            for (i, nm) in n.data.iter().enumerate() {
+                match pstrmatch(char_of(nm), &input) {
+                    PMatch::Exact => return Ok(generic_elt(x, i)),
+                    PMatch::Partial => {
+                        havematch += 1;
+                        imatch = i;
+                    }
+                    PMatch::No => {}
+                }
+            }
+        }
+        if havematch == 1 {
+            if warn_partial(interp) {
+                let Value::Str(n) = &names else { unreachable!() };
+                interp.warningcall(call, format!("partial match of '{}' to '{}'", input, char_of(&n.data[imatch])))?;
+            }
+            return Ok(generic_elt(x, imatch));
+        }
+        return Ok(Value::Null);
+    }
+    let warn = warn_partial(interp);
     let candidates: Option<Vec<(Option<String>, usize)>> = match x {
         Value::Null => Some(vec![]),
         Value::Pairlist(p) => Some(p.items.iter().enumerate().map(|(i, a)| (a.tag.map(|t| t.name().to_string()), i)).collect()),
@@ -806,13 +834,6 @@ pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) 
                 .chain(l.args.iter().enumerate().map(|(i, a)| (a.tag.map(|t| t.name().to_string()), i + 1)))
                 .collect(),
         ),
-        Value::List(_) | Value::Expr(_) => {
-            let names = match get_attrib(x, s::NAMES) {
-                Value::Str(n) => n.data.clone(),
-                _ => vec![],
-            };
-            Some(names.iter().enumerate().map(|(i, n)| (Some(char_of(n).to_string()), i)).collect())
-        }
         _ => None,
     };
     if let Some(cands) = candidates {

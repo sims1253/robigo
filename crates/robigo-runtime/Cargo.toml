@@ -21,3 +21,8 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # perl = TRUE (look-around, back-references) and EREs with back-references.
 regex-automata = "0.4"
 fancy-regex = "0.16"
+
+[features]
+# Count executed VM ops by kind; printed to stderr when the interpreter
+# thread exits (a profiling aid; costs a hash lookup per op).
+op-stats = []

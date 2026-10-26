@@ -741,27 +741,35 @@ fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
         Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
         _ => return Err(Flow::error_call(call.clone(), "invalid use of 'missing'")),
     };
+    Ok(Value::lgl(missing_sym(interp, call, sym, env)?))
+}
+
+/// `missing(sym)` in `env`.
+// R: envir.c:do_missing
+pub fn missing_sym(interp: &mut Interp, call: &Value, sym: Sym, env: &Env) -> RResult<bool> {
     let (lookup, ddv) = match sym.ddval() {
         Some(i) => (s::DOTS, Some(i)),
         None => (sym, None),
     };
     let binding = env.0.frame().borrow().get(lookup).cloned();
     let Some(b) = binding else {
-        return Err(Flow::error_call(call.clone(), "'missing' can only be used for arguments"));
+        // (For `..N`, R reports the `...` it looked up.)
+        let _ = call;
+        return Err(Flow::error(format!("'missing({})' did not find an argument", lookup)));
     };
     let mut v = b.value;
     if let Some(i) = ddv {
         match &v {
             Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
-            _ => return Ok(Value::lgl(true)),
+            _ => return Ok(true),
         }
     } else if b.flags & BIND_MISSING_DEFAULT != 0 || v.is_missing_arg() {
-        return Ok(Value::lgl(true));
+        return Ok(true);
     }
     if v.is_missing_arg() {
-        return Ok(Value::lgl(true));
+        return Ok(true);
     }
-    let Value::Promise(mut p) = v else { return Ok(Value::lgl(false)) };
+    let Value::Promise(mut p) = v else { return Ok(false) };
     // findRootPromise
     while let Value::Promise(q) = &p.expr {
         p = q.clone();
@@ -773,7 +781,7 @@ fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
         },
         _ => false,
     };
-    Ok(Value::lgl(r))
+    Ok(r)
 }
 
 fn do_onexit(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

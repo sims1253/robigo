@@ -157,6 +157,11 @@ pub enum Op {
     ForRange { kind: RangeKind, a: Reg, b: Reg, seq: Reg, call: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
+    /// `x$name` (call `consts[call]`) with `x` evaluated into register `x`
+    /// and the name as a string `consts[name]`.
+    Dollar { dst: Reg, x: Reg, name: u32, call: u32 },
+    /// `missing(sym)` (call `consts[call]`).
+    Missing { dst: Reg, sym: Sym, call: u32 },
     /// `switch(x, ...)` with `x` evaluated into register `x`: jump to the
     /// alternative `switches[table]` selects (call `consts[call]` for
     /// messages).
@@ -682,6 +687,40 @@ impl Compiler {
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
                 self.emit(Op::Index { dst, x, slot, i, two, k });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            // R: subset.c:do_subset3: `x` is evaluated, the name is not.
+            "$" if l.args.len() == 2
+                && l.args.iter().all(|a| a.tag.is_none())
+                && !l.args[0].value.is_missing_arg()
+                && l.args[0].value.as_sym() != Some(s::DOTS)
+                && match &l.args[1].value {
+                    Value::Sym(s) => is_var(*s),
+                    Value::Str(v) => v.data.len() == 1 && v.attrs.is_none(),
+                    _ => false,
+                } =>
+            {
+                let g = self.guard(h, whole, dst);
+                let x = self.reg();
+                self.expr(&l.args[0].value, x, Want::Value);
+                let name = match &l.args[1].value {
+                    Value::Sym(s) => Value::str(&s.name()),
+                    v => v.clone(),
+                };
+                let name = self.konst(name);
+                let call = self.konst(whole.clone());
+                self.emit(Op::Dollar { dst, x, name, call });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "missing" if plain_args(l, 1) && matches!(&l.args[0].value, Value::Sym(s) if is_var(*s)) => {
+                let g = self.guard(h, whole, dst);
+                let sym = l.args[0].value.as_sym().unwrap();
+                let call = self.konst(whole.clone());
+                self.emit(Op::Missing { dst, sym, call });
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);

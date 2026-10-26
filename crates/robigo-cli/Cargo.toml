@@ -18,3 +18,4 @@ pprof = { version = "0.14", features = ["flamegraph"], optional = true }
 
 [features]
 profile = ["dep:pprof"]
+op-stats = ["robigo-runtime/op-stats"]
