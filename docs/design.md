@@ -264,7 +264,8 @@ three wall times in seconds, startup included (GNU R 0.086 s, robigo
 Most times include ~0.07 s of startup (both runtimes load `utils` and
 `stats`); the JIT'd loops run in a few milliseconds.
 
-`scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
+`scripts/idiom-vs-r.py 'SETUP' 'BODY' N` compares the instructions per
+iteration of an idiom with GNU R's. `scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
 instruction counts are exact, so a change can be judged without
 wall-clock noise (the VM shares two cores with other work). A fib call costs GNU R ~2,900
 instructions and robigo ~3,700. Per call of typical base-R code (callgrind,
@@ -352,10 +353,18 @@ Ledger:
   closures defined in calls share memos; a local helper function does not
   invalidate a body's guards. `--features op-stats` counts executed ops by
   kind.
-- **Next:** a closure call still costs ~25% more than in GNU R: it
-  allocates an environment, a promise per argument, the argument vector
-  and a boxed result, and entering the VM costs ~85 instructions before
-  the first op. Candidates: forced promises built by the caller for
+- **Done (statistics):** `cov`/`cor`/`var` run their long double sums as
+  x87 loops; `anyDuplicated` uses the index tables; logical-mask and
+  matrix subsetting gather directly; recycled arithmetic avoids
+  per-element division; strings of small integers (row names) are shared.
+  `lm` on 20k rows takes 39.5M instructions (was 60.8M), `glm` 174M (was
+  211M). Many stats natives are still missing (`optim`, `nlm`,
+  `integrate`, splines, `fft`, `loess`, `nls`, `kmeans`, `hclust`, the
+  LAPACK internals behind `svd`/`eigen`).
+- **Next:** simple closure calls now cost what GNU R's do, but recursive
+  ones (fib) still ~25% more: each allocates an environment, a promise
+  per argument, the argument vector and a boxed result, and entering the
+  VM costs ~85 instructions before the first op. Candidates: forced promises built by the caller for
   arguments that cannot fail or run code (`n - 1` on numbers), so the
   callee's force is a read; unboxed results for compiled callers; the VM
   on by default (it is opt-in, `ROBIGO_COMPILE=1`).
