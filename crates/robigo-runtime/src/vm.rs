@@ -224,6 +224,22 @@ impl Vars<'_> {
         res
     }
 
+    /// Forget cached values if R code ran since they were read.
+    fn sync(&mut self) {
+        let now = crate::env::r_epoch();
+        if self.epoch != now {
+            self.epoch = now;
+            if self.any {
+                for s in self.slots.iter_mut() {
+                    if matches!(s, SlotVal::Clean(_)) {
+                        *s = SlotVal::Empty;
+                    }
+                }
+                self.vclean = false;
+            }
+        }
+    }
+
     fn get(&mut self, slot: usize) -> Option<&RVal> {
         let now = crate::env::r_epoch();
         if self.epoch != now {
@@ -350,11 +366,41 @@ fn leaf_value(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, regs: &mut [R
         Leaf::Var(sym, slot) => match read_var(vars, env, *sym, *slot) {
             Some(v) => Ok(v.clone()),
             None => {
-                let r = interp.eval_sym(*sym, env);
-                signal(interp, r).map(RVal::V)
+                let r = force_var(interp, env, *sym);
+                let (v, cacheable) = signal_var(interp, r)?;
+                let v = unbox(v);
+                if cacheable {
+                    vars.sync();
+                    vars.cache(*slot as usize, v.clone());
+                }
+                Ok(v)
             }
         },
         Leaf::R(r) => Ok(std::mem::replace(&mut regs[*r as usize], RVal::V(Value::Null))),
+    }
+}
+
+/// The value of a variable that cannot be read in place: an argument of
+/// this frame is forced directly, anything else evaluated. Also whether the
+/// value may be cached (it is now a plain or forced binding).
+fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)> {
+    let p = match env.0.frame().borrow().get(sym) {
+        Some(b) if b.flags == 0 => match &b.value {
+            Value::Promise(p) => Some(p.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    match p {
+        Some(p) => interp.force_promise(&p).map(|v| (v, true)),
+        None => interp.eval_sym(sym, env).map(|v| (v, false)),
+    }
+}
+
+fn signal_var(interp: &mut Interp, r: RResult<(Value, bool)>) -> RResult<(Value, bool)> {
+    match r {
+        Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
+        r => r,
     }
 }
 
@@ -1513,9 +1559,14 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     vars.cache(slot, v);
                 } else {
                     flush!();
-                    let r = interp.eval_sym(*sym, env);
-                    let v = tryop!(signal(interp, r));
-                    regs[*dst as usize] = RVal::V(v);
+                    let r = force_var(interp, env, *sym);
+                    let (v, cacheable) = tryop!(signal_var(interp, r));
+                    let v = unbox(v);
+                    if cacheable {
+                        vars.sync();
+                        vars.cache(slot, v.clone());
+                    }
+                    regs[*dst as usize] = v;
                 }
             }
             Op::SetVar { src, sym, slot } => {
