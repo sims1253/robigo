@@ -261,9 +261,9 @@ three wall times in seconds, startup included (GNU R 0.086 s, robigo
 | binarytrees | 0.25 | 0.43 | 1.74 | recursion, list allocation, `[[` |
 | spectralnorm | 0.45 | 0.80 | 1.78 | a tiny closure called in a double loop |
 
-Measurements use callgrind (`~/.cache/rr-tools`, see the scripts under
-`/tmp/cg` in past sessions): instruction counts are exact, so a change can
-be judged without wall-clock noise. A fib call costs GNU R ~2,900
+`scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
+instruction counts are exact, so a change can be judged without
+wall-clock noise (the VM shares two cores with other work). A fib call costs GNU R ~2,900
 instructions and robigo ~4,700.
 
 Ledger:
