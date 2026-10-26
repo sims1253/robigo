@@ -245,26 +245,26 @@ three wall times in seconds, startup included (GNU R 0.086 s, robigo
 
 | script | GNU R | robigo VM | ratio | what it stresses |
 |---|---|---|---|---|
-| fannkuch | 0.36 | 0.21 | 0.59 | integer vectors, `x[a:b] <- x[b:a]` |
-| dataframe | 0.27 | 0.17 | 0.62 | `data.frame` building, `aggregate`, `merge` |
-| strings | 0.34 | 0.21 | 0.63 | `paste0`, `gsub`, `sprintf`, `nchar` |
+| fannkuch | 0.38 | 0.22 | 0.58 | integer vectors, `x[a:b] <- x[b:a]` |
+| strings | 0.35 | 0.21 | 0.60 | `paste0`, `gsub`, `sprintf`, `nchar` |
+| dataframe | 0.27 | 0.17 | 0.64 | `data.frame` building, `aggregate`, `merge` |
+| spectralnorm | 0.43 | 0.32 | 0.73 | a tiny closure called in a double loop |
+| matrix | 0.19 | 0.14 | 0.74 | `%*%`, `solve`, `apply` over rows |
 | vecarith | 0.99 | 0.74 | 0.75 | elementwise arithmetic, `sum`, `mean` on 10^6 |
-| queens | 0.16 | 0.12 | 0.77 | recursion with vectors |
-| vecops | 0.68 | 0.55 | 0.81 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
-| lm | 0.21 | 0.19 | 0.93 | `lm`, `summary.lm` |
-| csv | 0.29 | 0.28 | 0.96 | `write.csv`, `read.csv` |
-| apply | 0.40 | 0.43 | 1.07 | `lapply`/`vapply`/`sapply` with closures |
-| matrix | 0.20 | 0.23 | 1.14 | `%*%`, `solve`, `apply` over rows |
-| nbody | 0.40 | 0.48 | 1.20 | scalar arithmetic on short vectors |
-| mandelbrot | 0.17 | 0.22 | 1.35 | scalar `while` loops |
-| fib | 0.20 | 0.29 | 1.43 | closure calls, promises |
-| binarytrees | 0.25 | 0.43 | 1.74 | recursion, list allocation, `[[` |
-| spectralnorm | 0.45 | 0.80 | 1.78 | a tiny closure called in a double loop |
+| vecops | 0.65 | 0.54 | 0.82 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
+| lm | 0.22 | 0.19 | 0.85 | `lm`, `summary.lm` |
+| queens | 0.13 | 0.11 | 0.85 | recursion with vectors |
+| csv | 0.30 | 0.28 | 0.96 | `write.csv`, `read.csv` |
+| apply | 0.40 | 0.42 | 1.05 | `lapply`/`vapply`/`sapply` with closures |
+| mandelbrot | 0.18 | 0.22 | 1.22 | scalar `while` loops |
+| fib | 0.20 | 0.25 | 1.23 | closure calls, promises |
+| nbody | 0.40 | 0.50 | 1.25 | scalar arithmetic on short vectors |
+| binarytrees | 0.26 | 0.34 | 1.33 | recursion, list allocation, `[[` |
 
 `scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
 instruction counts are exact, so a change can be judged without
 wall-clock noise (the VM shares two cores with other work). A fib call costs GNU R ~2,900
-instructions and robigo ~4,700.
+instructions and robigo ~4,300.
 
 Ledger:
 
@@ -286,11 +286,16 @@ Ledger:
 - **Done (startup):** 320M -> 166M instructions: byte-level lexer, no token
   cloning in the parser, Fx-hashed symbol table, lazy-DFA regexes with
   ASCII-restricted classes for ASCII text, a cache of compiled patterns.
+- **Done (inlining):** calls of pure closures (arithmetic, comparisons,
+  `if`, no assignments or calls) with constant or variable arguments run
+  their body without a call, giving up before any slow path so warnings
+  and errors come from a real call; single-operation promises (`n - 1`)
+  are evaluated without a VM run.
 - **Next:** each call still allocates an environment, a context and one
-  promise per argument (8 allocations per fib call); each VM op costs
-  ~30-100 instructions of dispatch and enum matching. Candidates:
-  speculative inlining of small pure closures (spectralnorm), environments
-  materialized only when observed, and a Cranelift tier for hot loops.
+  promise per argument; each VM op costs ~30-100 instructions of dispatch
+  and enum matching. Candidates: environments materialized only when
+  observed, `x[i]` operands in arithmetic, and a Cranelift tier for hot
+  loops.
 
 ## 5. Roadmap
 
