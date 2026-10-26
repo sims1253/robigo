@@ -748,7 +748,7 @@ impl Interp {
         });
         let code = if crate::vm::enabled() { clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone() } else { None };
         let r = match code {
-            Some(code) => crate::vm::run(self, &code, &newenv),
+            Some(code) => crate::vm::run_closure(self, &code, &newenv, clo),
             None => self.eval(&clo.body, &newenv),
         };
         let r = match r {

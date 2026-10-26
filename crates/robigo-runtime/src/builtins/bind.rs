@@ -549,12 +549,12 @@ fn do_unlist(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
 }
 
 fn do_list(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let any_tag = args.iter().any(|a| a.tag.is_some());
+    if !args.iter().any(|a| a.tag.is_some()) {
+        return Ok(Value::list(args.into_iter().map(|a| a.value).collect()));
+    }
     let names: Vec<RStr> = args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect();
     let mut v = Value::list(args.into_iter().map(|a| a.value).collect());
-    if any_tag {
-        v.set_attr_raw(s::NAMES, Value::strs(names));
-    }
+    v.set_attr_raw(s::NAMES, Value::strs(names));
     Ok(v)
 }
 

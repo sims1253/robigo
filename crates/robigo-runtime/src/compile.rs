@@ -186,6 +186,12 @@ pub struct Code {
     pub is_body: bool,
     /// Number of `Guard` ops (numbered by their `g`).
     pub nguards: usize,
+    /// Every function the code guards.
+    pub guard_syms: Vec<Sym>,
+    /// (search epoch, closure environment id, formals address) for which
+    /// all guards are known to hold in a fresh call frame (see
+    /// `vm::run_closure`).
+    pub fresh_guards: std::cell::Cell<(u64, usize, usize)>,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
 }
@@ -202,6 +208,16 @@ impl Code {
                 c.call_sites[*site as usize].fslot = c.vars.iter().position(|v| v == f).map(|p| p as Slot);
             }
         }
+        let mut guard_syms: Vec<Sym> = Vec::new();
+        for op in &c.ops {
+            match op {
+                Op::Guard { sym, .. } => guard_syms.push(*sym),
+                Op::ArithL { sym, g, .. } | Op::RelL { sym, g, .. } if *g != NO_GUARD => guard_syms.push(*sym),
+                _ => {}
+            }
+        }
+        guard_syms.sort();
+        guard_syms.dedup();
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
         Code {
@@ -212,6 +228,8 @@ impl Code {
             arglists: c.arglists,
             call_sites: c.call_sites,
             nguards: c.nguards,
+            guard_syms,
+            fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             result,
             is_body,
             guard_memo,

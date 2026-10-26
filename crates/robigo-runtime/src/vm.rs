@@ -868,6 +868,12 @@ fn run_inline(interp: &mut Interp, info: &Inline, args: &[RVal], env: &Env) -> O
     Some(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)))
 }
 
+/// Whether `sym` is bound in `env`'s own frame to a promise not yet forced.
+fn unforced_promise(env: &Env, sym: Sym) -> bool {
+    let frame = env.0.frame().borrow();
+    matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if p.value.borrow().is_none()))
+}
+
 /// The function a call site calls, memoized like [`guard_ok`]: frames below
 /// the search path are checked directly, the search-path lookup is cached
 /// against the search epoch (only when it needs no forcing or active
@@ -901,6 +907,35 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
 }
 
 pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
+    run_pre(interp, code, env, false)
+}
+
+/// Run a closure body in its fresh call frame `env`. For a closure defined
+/// on the search path, such a frame holds only the formals: if none is
+/// named like a guarded function, every guard's result depends only on the
+/// search path, so all are checked once per search epoch (and closure)
+/// rather than once per call, and hold until R code first runs.
+pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure) -> RResult<Value> {
+    let pre = code.nguards > 0 && clo.env.is_search() && fresh_guards_ok(interp, code, clo);
+    run_pre(interp, code, env, pre)
+}
+
+fn fresh_guards_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
+    let key = (crate::env::search_epoch(), clo.env.id(), Rc::as_ptr(&clo.formals) as *const Arg as usize);
+    if code.fresh_guards.get() == key {
+        return true;
+    }
+    if clo.formals.iter().any(|f| f.tag.is_some_and(|t| code.guard_syms.contains(&t))) {
+        return false;
+    }
+    if !code.guard_syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
+        return false;
+    }
+    code.fresh_guards.set(key);
+    true
+}
+
+fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Value> {
     // Registers and slots live on the Rust stack for typical code, so a
     // call does not allocate them.
     let mut regs: SmallVec<[RVal; 16]> = SmallVec::new();
@@ -916,6 +951,10 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
         big.resize(code.nguards, 0);
         &mut big
     };
+    if pre {
+        // Valid in the first flush generation (see `run_with`).
+        checked.fill(1);
+    }
     run_with(interp, code, env, &mut regs, &mut vars, checked)
 }
 
@@ -1163,6 +1202,17 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     if let RVal::Range { start, step, n } = regs[*r as usize] {
                         fast = read_var(&mut vars, env, *x, *slot).and_then(|xv| range_subset(xv, start, step, n));
                     }
+                }
+                if fast.is_none() && vars.get(*slot as usize).is_none() && unforced_promise(env, *x) {
+                    // `x` is an argument not yet forced: force it (`[`/`[[`
+                    // evaluate it first anyway), then retry the fast path.
+                    flush!();
+                    let r = interp.eval_sym(*x, env);
+                    tryop!(signal(interp, r));
+                    fast = match scalar_index(&mut vars, env, &regs, i) {
+                        Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
+                        None => None,
+                    };
                 }
                 regs[*dst as usize] = match (fast, i) {
                     (Some(v), _) => v,
