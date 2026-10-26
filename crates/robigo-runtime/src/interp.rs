@@ -50,6 +50,11 @@ pub struct Interp {
     pub dlls: Vec<crate::native::Dll>,
     pub rng: crate::builtins::random::Rng,
     /// Recursion depth of `eval`, for `expressions` limit checks.
+    /// Approximate address of the bottom of the interpreter's Rust stack
+    /// and how many bytes of it R evaluation may use (0: unchecked); see
+    /// [`Interp::set_stack_limit`].
+    pub stack_base: usize,
+    pub stack_limit: usize,
     pub depth: usize,
     pub in_error: bool,
     pub start_time: std::time::Instant,
@@ -67,6 +72,13 @@ pub struct Interp {
 }
 
 const MAX_DEPTH: usize = 5000;
+
+/// The current stack pointer, approximately.
+#[inline(always)]
+fn stack_address() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
 
 impl Interp {
     pub fn new() -> Interp {
@@ -99,6 +111,8 @@ impl Interp {
             dlls: vec![crate::native::base_dll()],
             rng: Default::default(),
             depth: 0,
+            stack_base: 0,
+            stack_limit: 0,
             in_error: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
@@ -113,6 +127,31 @@ impl Interp {
         interp
     }
 
+    /// Allow R evaluation to use about `limit` bytes of Rust stack below
+    /// the caller's frame, raising R's C stack error beyond (R_CStackLimit).
+    pub fn set_stack_limit(&mut self, limit: usize) {
+        self.stack_base = stack_address();
+        self.stack_limit = limit;
+    }
+
+    /// R: errors.c:R_SignalCStackOverflow.
+    #[inline]
+    fn check_stack(&mut self) -> RResult<()> {
+        if self.stack_limit != 0 {
+            let used = self.stack_base.saturating_sub(stack_address());
+            if used > self.stack_limit {
+                let err = Box::new(crate::error::RError {
+                    message: format!("C stack usage  {} is too close to the limit", used),
+                    call: Some(Value::Null),
+                    signaled: false,
+                    classes: vec![],
+                });
+                return Err(self.signal_error(err));
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // eval
 
@@ -124,6 +163,7 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => {
+                self.check_stack()?;
                 self.depth += 1;
                 if self.depth > MAX_DEPTH {
                     self.depth -= 1;
@@ -161,7 +201,7 @@ impl Interp {
         let mut cur = env.clone();
         loop {
             let found = {
-                let frame = cur.0.frame.borrow();
+                let frame = cur.0.frame().borrow();
                 frame.get(sym).map(|b| (b.value.clone(), b.flags))
             };
             if let Some((v, flags)) = found {
@@ -218,7 +258,13 @@ impl Interp {
         let env = p.env.borrow().clone();
         let Some(env) = env else { return Ok(Value::Null) };
         p.forcing.set(true);
-        let r = self.eval(&p.expr, &env);
+        let r = match &p.code {
+            Some(code) => {
+                self.visible = true;
+                crate::vm::run(self, code, &env)
+            }
+            None => self.eval(&p.expr, &env),
+        };
         p.forcing.set(false);
         let v = r?;
         *p.value.borrow_mut() = Some(v.clone());
@@ -242,7 +288,7 @@ impl Interp {
         let mut cur = env.clone();
         loop {
             let found = {
-                let frame = cur.0.frame.borrow();
+                let frame = cur.0.frame().borrow();
                 frame.get(sym).map(|b| (b.value.clone(), b.flags))
             };
             if let Some((mut v, flags)) = found {
@@ -278,7 +324,7 @@ impl Interp {
                 return self.search_fun(sym, &cur);
             }
             {
-                let frame = cur.0.frame.borrow();
+                let frame = cur.0.frame().borrow();
                 if let Some(b) = frame.get(sym) {
                     match &b.value {
                         // Locked bindings read as usual; active ones need the slow path.
@@ -296,7 +342,7 @@ impl Interp {
         }
     }
 
-    fn search_fun(&mut self, sym: Sym, start: &Env) -> Option<Value> {
+    pub(crate) fn search_fun(&mut self, sym: Sym, start: &Env) -> Option<Value> {
         let epoch = crate::env::search_epoch();
         if self.fun_cache_epoch != epoch {
             self.fun_cache.clear();
@@ -308,7 +354,7 @@ impl Interp {
         }
         let mut cur = start.clone();
         loop {
-            let found = cur.0.frame.borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+            let found = cur.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
             if let Some((v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
                     return None;
@@ -331,7 +377,7 @@ impl Interp {
     /// assumptions about `+`, `if`, `<-` and friends.
     pub fn resolves_to_base(&mut self, sym: Sym, env: &Env) -> bool {
         match self.find_fun_cached(sym, env) {
-            Some(v) => match self.base.0.frame.borrow().get(sym) {
+            Some(v) => match self.base.0.frame().borrow().get(sym) {
                 Some(b) => b.value.ptr_eq(&v),
                 None => false,
             },
@@ -339,21 +385,49 @@ impl Interp {
         }
     }
 
+    /// `find_fun` for the function of `call`, reporting a failed lookup as
+    /// eval.c does: against the call itself, or the C-level context's call
+    /// (findFun3(CAR(e), rho, ecall)).
+    pub fn find_fun_for_call(&mut self, sym: Sym, call: &Value, env: &Env) -> RResult<Value> {
+        match self.find_fun(sym, env) {
+            Err(Flow::Error(mut e)) if e.call.is_none() && !e.signaled => {
+                e.call = Some(match self.ccode_calls.last() {
+                    Some((depth, c)) if *depth == self.frames.len() => c.clone(),
+                    _ => call.clone(),
+                });
+                Err(self.signal_error(e))
+            }
+            r => r,
+        }
+    }
+
+    /// Evaluate `call`, whose function is the closure `clo`, as `eval` does
+    /// (nesting limit, signaling errors), with promised arguments.
+    pub fn call_closure(&mut self, call: &Value, clo: &Rc<Closure>, promargs: Vec<Arg>, env: &Env) -> RResult<Value> {
+        self.visible = true;
+        self.check_stack()?;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            let err = Box::new(crate::error::RError {
+                message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
+                call: Some(Value::Null),
+                signaled: false,
+                classes: vec![],
+            });
+            return Err(self.signal_error(err));
+        }
+        let r = self.apply_closure(call, clo, promargs, env, None);
+        self.depth -= 1;
+        match r {
+            Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
+            r => r,
+        }
+    }
+
     fn eval_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> RResult<Value> {
         let fun = match &l.fun {
-            Value::Sym(sym) => match self.find_fun(*sym, env) {
-                Ok(f) => f,
-                // R: eval.c reports a failed lookup against the call itself,
-                // or the C-level context's call (findFun3(CAR(e), rho, ecall)).
-                Err(Flow::Error(mut e)) if e.call.is_none() && !e.signaled => {
-                    e.call = Some(match self.ccode_calls.last() {
-                        Some((depth, c)) if *depth == self.frames.len() => c.clone(),
-                        _ => call.clone(),
-                    });
-                    return Err(self.signal_error(e));
-                }
-                Err(f) => return Err(f),
-            },
+            Value::Sym(sym) => self.find_fun_for_call(*sym, call, env)?,
             other => self.eval(other, env)?,
         };
         match &fun {
@@ -390,8 +464,19 @@ impl Interp {
 
     /// Wrap arguments in promises; expand `...`.
     pub fn promise_args(&mut self, args: &[Arg], env: &Env) -> RResult<Vec<Arg>> {
+        self.promise_args_with(args, env, &[])
+    }
+
+    /// [`Self::promise_args`], giving the promise of `args[i]` the bytecode
+    /// `codes[i]` when present.
+    pub fn promise_args_with(
+        &mut self,
+        args: &[Arg],
+        env: &Env,
+        codes: &[Option<Rc<crate::compile::Code>>],
+    ) -> RResult<Vec<Arg>> {
         let mut out = Vec::with_capacity(args.len());
-        for a in args {
+        for (i, a) in args.iter().enumerate() {
             match &a.value {
                 Value::Sym(sym) if *sym == s::DOTS => match env.lookup(s::DOTS) {
                     Some((Value::Dots(d), _)) => out.extend(d.iter().cloned()),
@@ -401,7 +486,9 @@ impl Interp {
                 },
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
-                    out.push(Arg::new(a.tag, Value::Promise(Rc::new(Promise::new(a.value.clone(), env.clone())))))
+                    let code = codes.get(i).cloned().flatten();
+                    let p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
                 // Constants are their own value; no promise needed.
@@ -659,7 +746,8 @@ impl Interp {
             generic: false,
             builtin: false,
         });
-        let r = match crate::vm::enabled().then(|| crate::vm::code_for(&clo.body, true)).flatten() {
+        let code = if crate::vm::enabled() { clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone() } else { None };
+        let r = match code {
             Some(code) => crate::vm::run(self, &code, &newenv),
             None => self.eval(&clo.body, &newenv),
         };

@@ -142,7 +142,7 @@ fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
 /// Overwrite the loop variable's scalar in place when it is unshared and
 /// of the right type. Returns false if a fresh value is needed.
 fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
-    let mut frame = env.0.frame.borrow_mut();
+    let mut frame = env.0.frame().borrow_mut();
     let Some(b) = frame.get_mut(sym) else { return false };
     if b.flags != 0 {
         return false;
@@ -216,7 +216,7 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
-    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None })))
+    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default() })))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -706,7 +706,7 @@ pub fn is_missing_in(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool
         Some(i) => (s::DOTS, Some(i)),
         None => (sym, None),
     };
-    let frame = env.0.frame.borrow();
+    let frame = env.0.frame().borrow();
     let Some(b) = frame.get(sym) else { return false };
     let mut v = b.value.clone();
     let flags = b.flags;
@@ -745,7 +745,7 @@ fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
         Some(i) => (s::DOTS, Some(i)),
         None => (sym, None),
     };
-    let binding = env.0.frame.borrow().get(lookup).cloned();
+    let binding = env.0.frame().borrow().get(lookup).cloned();
     let Some(b) = binding else {
         return Err(Flow::error_call(call.clone(), "'missing' can only be used for arguments"));
     };

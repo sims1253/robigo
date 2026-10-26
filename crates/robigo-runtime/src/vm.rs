@@ -13,12 +13,13 @@
 //! environment and dropped all cached values. Between such operations no
 //! other code runs, so the frame cannot tell the difference.
 
+use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, Code, Leaf, Math1, Op, RangeKind, Slot};
+use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, Leaf, Math1, Op, RangeKind, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -173,14 +174,14 @@ enum SlotVal {
     Dirty(RVal),
 }
 
-struct Vars {
-    slots: Vec<SlotVal>,
+struct Vars<'a> {
+    slots: &'a mut [SlotVal],
     /// Whether any slot is non-empty / dirty.
     any: bool,
     dirty: bool,
 }
 
-impl Vars {
+impl Vars<'_> {
     /// Write pending assignments to `env` and forget cached values.
     fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
         if !self.any {
@@ -214,7 +215,7 @@ fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
     let mut cur = env.clone();
     loop {
         let found = {
-            let frame = cur.0.frame.borrow();
+            let frame = cur.0.frame().borrow();
             frame.get(sym).map(|b| (b.value.clone(), b.flags))
         };
         if let Some((v, flags)) = found {
@@ -271,7 +272,7 @@ fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&
 }
 
 /// A 0-based index from an in-range positive scalar index.
-fn scalar_index(vars: &mut Vars, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
+fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
     let num = |r: &RVal| match r {
         RVal::D(x) => Some(*x),
         RVal::I(x) if *x != NA_INTEGER => Some(*x as f64),
@@ -316,7 +317,7 @@ fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
 /// pending assignment, so that it can be modified in place. Fails unless
 /// `sym` is a plain binding of `env` itself (a variable found in an
 /// enclosing frame is copied into this one by the interpreter path).
-fn own_var(vars: &mut Vars, env: &Env, sym: Sym, slot: Slot) -> bool {
+fn own_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: Slot) -> bool {
     let slot = slot as usize;
     match &vars.slots[slot] {
         SlotVal::Dirty(RVal::V(_)) => return true,
@@ -447,7 +448,7 @@ fn signal(interp: &mut Interp, r: RResult<Value>) -> RResult<Value> {
 /// Assign a register value to `sym` in `env`, in place when possible.
 fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> {
     {
-        let mut frame = env.0.frame.borrow_mut();
+        let mut frame = env.0.frame().borrow_mut();
         if let Some(b) = frame.get_mut(sym) {
             if b.flags == 0 {
                 match (&mut b.value, val) {
@@ -498,11 +499,20 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
 }
 
 /// Does `sym`, looked up as a function from `env`, still resolve to base?
-/// Frames below the search path (fresh per call) are checked directly; the
-/// lookup from the first search-path environment on is memoized per guard
-/// against the search epoch, which changes with any function binding there.
-fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<(u64, usize, bool)>) -> bool {
+/// Memoized per guard in two ways:
+/// - for `env` itself, while neither the search path (epoch) nor `env`'s
+///   function bindings (version) change, when `env`'s parent is on the
+///   search path: repeated guards in a loop cost no lookup;
+/// - for the first search-path environment, after checking that the frames
+///   below it (fresh per call) bind no function of that name.
+fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
+    let epoch = crate::env::search_epoch();
+    let m = memo.get();
+    if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
+        return m.ok;
+    }
     let mut cur = env.clone();
+    let mut depth = 0;
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
             return interp.resolves_to_base(sym, env);
@@ -511,41 +521,58 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<(u6
             Some(p) => p,
             None => return false,
         };
+        depth += 1;
     }
-    let epoch = crate::env::search_epoch();
-    let (e, id, r) = memo.get();
-    if e == epoch && id == cur.id() {
-        return r;
-    }
-    let r = interp.resolves_to_base(sym, &cur);
-    memo.set((epoch, cur.id(), r));
-    r
+    let ok = if m.epoch == epoch && m.search == cur.id() { m.ok } else { interp.resolves_to_base(sym, &cur) };
+    // The per-environment memo is only sound when no frame other than
+    // `env` lies between it and the search path.
+    let (env_id, version) = if depth <= 1 { (env.id(), env.fn_version()) } else { (0, 0) };
+    memo.set(GuardMemo { epoch, env: env_id, version, search: cur.id(), ok });
+    ok
 }
 
-thread_local! {
-    /// Register and variable-slot buffers of finished runs, reused so that
-    /// a call does not allocate them.
-    static BUFFERS: RefCell<Vec<(Vec<RVal>, Vec<SlotVal>)>> = const { RefCell::new(Vec::new()) };
+/// The function a call site calls, memoized like [`guard_ok`]: frames below
+/// the search path are checked directly, the search-path lookup is cached
+/// against the search epoch (only when it needs no forcing or active
+/// bindings, i.e. when [`Interp::search_fun`] answers it).
+fn call_site_fun(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> RResult<Value> {
+    let mut cur = env.clone();
+    while !cur.is_search() {
+        if cur.local_may_bind_fun(sym) {
+            return interp.find_fun_for_call(sym, &site.call, env);
+        }
+        cur = match cur.parent() {
+            Some(p) => p,
+            None => return interp.find_fun_for_call(sym, &site.call, env),
+        };
+    }
+    let epoch = crate::env::search_epoch();
+    if let Some((e, id, f)) = &*site.memo.borrow() {
+        if *e == epoch && *id == cur.id() {
+            return Ok(f.clone());
+        }
+    }
+    match interp.search_fun(sym, &cur) {
+        Some(f) => {
+            *site.memo.borrow_mut() = Some((epoch, cur.id(), f.clone()));
+            Ok(f)
+        }
+        None => interp.find_fun_for_call(sym, &site.call, env),
+    }
 }
 
 pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
-    let (mut regs, mut slots) = BUFFERS.with(|b| b.borrow_mut().pop()).unwrap_or_default();
-    regs.resize(code.nregs, RVal::V(Value::Null));
+    // Registers and slots live on the Rust stack for typical code, so a
+    // call does not allocate them.
+    let mut regs: SmallVec<[RVal; 16]> = SmallVec::new();
+    regs.resize_with(code.nregs, || RVal::V(Value::Null));
+    let mut slots: SmallVec<[SlotVal; 8]> = SmallVec::new();
     slots.resize_with(code.vars.len(), || SlotVal::Empty);
-    let mut vars = Vars { slots, any: false, dirty: false };
-    let r = run_with(interp, code, env, &mut regs, &mut vars);
-    regs.clear();
-    vars.slots.clear();
-    BUFFERS.with(|b| {
-        let mut b = b.borrow_mut();
-        if b.len() < 64 {
-            b.push((regs, vars.slots));
-        }
-    });
-    r
+    let mut vars = Vars { slots: &mut slots, any: false, dirty: false };
+    run_with(interp, code, env, &mut regs, &mut vars)
 }
 
-fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars) -> RResult<Value> {
+fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars<'_>) -> RResult<Value> {
     interp.visible = true;
     // (break target, next target) of active loops.
     let mut loops: Vec<(u32, u32)> = Vec::new();
@@ -864,6 +891,22 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], argv, env)))
                     }
                 };
+            }
+            Op::Call { dst, f, site } => {
+                flush!();
+                let site = &code.call_sites[*site as usize];
+                let fun = tryop!(call_site_fun(interp, *f, site, env));
+                let v = match (&fun, &site.call) {
+                    (Value::Closure(clo), Value::Lang(l)) => {
+                        let r = match interp.promise_args_with(&l.args, env, &site.codes) {
+                            Ok(promargs) => interp.call_closure(&site.call, clo, promargs, env),
+                            Err(e) => signal(interp, Err(e)),
+                        };
+                        tryop!(r)
+                    }
+                    _ => tryop!(interp.eval(&site.call, env)),
+                };
+                regs[*dst as usize] = RVal::V(v);
             }
             Op::Eval { dst, k } => {
                 flush!();

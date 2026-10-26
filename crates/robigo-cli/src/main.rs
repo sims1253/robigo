@@ -3,8 +3,48 @@ use std::process::ExitCode;
 
 use robigo_runtime::Interp;
 
+/// mimalloc, calling its plain entry points for word-aligned layouts (all
+/// mimalloc blocks are word-aligned); the `mimalloc` crate always takes the
+/// slower `*_aligned` path.
+struct Allocator;
+
+const WORD: usize = std::mem::size_of::<usize>();
+
+unsafe impl std::alloc::GlobalAlloc for Allocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        use libmimalloc_sys::*;
+        // SAFETY: plain calls into mimalloc with the requested layout.
+        let p = unsafe { if layout.align() <= WORD { mi_malloc(layout.size()) } else { mi_malloc_aligned(layout.size(), layout.align()) } };
+        p as *mut u8
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        use libmimalloc_sys::*;
+        // SAFETY: as in `alloc`.
+        let p = unsafe { if layout.align() <= WORD { mi_zalloc(layout.size()) } else { mi_zalloc_aligned(layout.size(), layout.align()) } };
+        p as *mut u8
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: std::alloc::Layout) {
+        // SAFETY: `ptr` was allocated by mimalloc.
+        unsafe { libmimalloc_sys::mi_free(ptr as *mut std::ffi::c_void) };
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        use libmimalloc_sys::*;
+        let p = ptr as *mut std::ffi::c_void;
+        // SAFETY: `ptr` was allocated by mimalloc with `layout`.
+        let q = unsafe { if layout.align() <= WORD { mi_realloc(p, new_size) } else { mi_realloc_aligned(p, new_size, layout.align()) } };
+        q as *mut u8
+    }
+}
+
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Allocator = Allocator;
 
 const USAGE: &str = "\
 usage: robigo [options] [FILE]
@@ -19,7 +59,24 @@ options:
   --vanilla          accepted for compatibility with Rscript
 ";
 
+/// Rust stack of the interpreter thread. R code may nest calls up to
+/// `expressions` (5000) deep, which needs more than a default 8 MB main
+/// thread; only the pages actually used are committed.
+const STACK_SIZE: usize = 512 << 20;
+
 fn main() -> ExitCode {
+    let thread = std::thread::Builder::new().name("robigo".into()).stack_size(STACK_SIZE).spawn(real_main);
+    match thread.map(|t| t.join()) {
+        Ok(Ok(code)) => code,
+        Ok(Err(_)) => ExitCode::from(101), // panicked; the message is printed already
+        Err(e) => {
+            eprintln!("robigo: cannot start the interpreter thread: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn real_main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("parse") {
         return parse_cmd(&args[1..]);
@@ -75,6 +132,8 @@ fn main() -> ExitCode {
     #[cfg(feature = "profile")]
     let _profiler = Profiler::start();
     let mut interp = Interp::new();
+    // Keep a margin for builtins that recurse in Rust and for error handling.
+    interp.set_stack_limit(STACK_SIZE - (32 << 20));
     if load_base {
         if let Err(msg) = robigo_runtime::bootstrap::load_base(&mut interp) {
             eprintln!("robigo: failed to load base library: {}", msg);

@@ -333,7 +333,7 @@ fn mode_matches(v: &Value, mode: &str) -> bool {
 fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool) -> RResult<Option<Value>> {
     let mut cur = Some(env.clone());
     while let Some(e) = cur {
-        let b = e.0.frame.borrow().get(sym).cloned();
+        let b = e.0.frame().borrow().get(sym).cloned();
         if let Some(b) = b {
             let mut v = b.value;
             if b.flags & BIND_ACTIVE != 0 {

@@ -142,6 +142,8 @@ pub struct Closure {
     pub body: Value,
     pub env: Env,
     pub attrs: AttrBox,
+    /// The body's bytecode, looked up on first call (see `vm::code_for`).
+    pub code: std::cell::OnceCell<Option<Rc<crate::compile::Code>>>,
 }
 
 pub struct Promise {
@@ -149,15 +151,21 @@ pub struct Promise {
     pub env: RefCell<Option<Env>>,
     pub value: RefCell<Option<Value>>,
     pub forcing: Cell<bool>,
+    /// Bytecode for `expr`, when the promise was created by compiled code.
+    pub code: Option<Rc<crate::compile::Code>>,
 }
 
 impl Promise {
     pub fn new(expr: Value, env: Env) -> Self {
-        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(None), forcing: Cell::new(false) }
+        Promise::with_code(expr, env, None)
+    }
+
+    pub fn with_code(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
+        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(None), forcing: Cell::new(false), code }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
-        Promise { expr, env: RefCell::new(None), value: RefCell::new(Some(value)), forcing: Cell::new(false) }
+        Promise { expr, env: RefCell::new(None), value: RefCell::new(Some(value)), forcing: Cell::new(false), code: None }
     }
 
     pub fn value(&self) -> Option<Value> {

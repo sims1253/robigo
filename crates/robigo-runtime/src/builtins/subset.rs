@@ -47,7 +47,7 @@ fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
         Some(i) => (s::DOTS, Some(i)),
         None => (sym, None),
     };
-    let binding = env.0.frame.borrow().get(lookup).map(|b| (b.value.clone(), b.flags));
+    let binding = env.0.frame().borrow().get(lookup).map(|b| (b.value.clone(), b.flags));
     let Some((mut v, flags)) = binding else { return false };
     if let Some(i) = ddv {
         match &v {
@@ -271,7 +271,7 @@ fn extract_exact_arg(args: &mut Vec<Arg>) -> i32 {
 /// `R_findVarInFrame` for `[[` and `$` on environments: forces promises
 /// and calls active bindings.
 fn find_var_in_frame(interp: &mut Interp, e: &Env, sym: Sym) -> RResult<Option<Value>> {
-    let b = e.0.frame.borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+    let b = e.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
     match b {
         None => Ok(None),
         Some((f, flags)) if flags & BIND_ACTIVE != 0 => {

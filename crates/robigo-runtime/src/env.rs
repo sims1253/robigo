@@ -52,9 +52,13 @@ type SymMap<V> = HashMap<Sym, V, BuildHasherDefault<SymHasher>>;
 
 /// Frames are small vectors; large ones (globals, base, namespaces) get a
 /// hash index.
+/// Bindings are stored inline up to this count, so that the frame of a
+/// typical closure call lives in the same allocation as its environment.
+const INLINE_BINDINGS: usize = 4;
+
 #[derive(Default)]
 pub struct Frame {
-    pub entries: Vec<Binding>,
+    pub entries: smallvec::SmallVec<[Binding; INLINE_BINDINGS]>,
     index: Option<SymMap<usize>>,
     /// The frame belongs to an environment on the search path.
     pub search: bool,
@@ -148,16 +152,35 @@ impl Frame {
     }
 }
 
+/// An environment's frame: inline, or shared between environments.
+enum FrameCell {
+    Own(RefCell<Frame>),
+    /// The base namespace and the base package environment are distinct
+    /// environments over the same bindings, as in GNU R.
+    Shared(Rc<RefCell<Frame>>),
+}
+
 pub struct EnvData {
-    /// Shared so that the base namespace and the base package environment
-    /// can be distinct environments over the same bindings, as in GNU R.
-    pub frame: Rc<RefCell<Frame>>,
+    frame: FrameCell,
     pub parent: RefCell<Option<Env>>,
     pub attrs: RefCell<AttrBox>,
     pub locked: Cell<bool>,
     /// Special name used when printing (`R_GlobalEnv`, `base`, `namespace:foo`).
     pub name: RefCell<Option<Rc<str>>>,
     pub id: usize,
+    /// Incremented when a binding in this frame that could hold a function
+    /// is created, changed or removed (see [`Env::fn_version`]).
+    fn_version: Cell<u32>,
+}
+
+impl EnvData {
+    #[inline]
+    pub fn frame(&self) -> &RefCell<Frame> {
+        match &self.frame {
+            FrameCell::Own(f) => f,
+            FrameCell::Shared(f) => f,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -174,13 +197,11 @@ impl Env {
 
     /// A new environment with room for `n` bindings.
     pub fn with_capacity(parent: Option<Env>, n: usize) -> Env {
-        Env::with_frame(
-            parent,
-            Rc::new(RefCell::new(Frame { entries: Vec::with_capacity(n), index: None, search: false })),
-        )
+        let frame = Frame { entries: smallvec::SmallVec::with_capacity(n), index: None, search: false };
+        Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
 
-    fn with_frame(parent: Option<Env>, frame: Rc<RefCell<Frame>>) -> Env {
+    fn with_frame(parent: Option<Env>, frame: FrameCell) -> Env {
         let id = NEXT_ENV_ID.with(|c| {
             let v = c.get();
             c.set(v + 1);
@@ -193,29 +214,35 @@ impl Env {
             locked: Cell::new(false),
             name: RefCell::new(None),
             id,
+            fn_version: Cell::new(0),
         }))
     }
 
     /// A new environment sharing `other`'s bindings (the base namespace).
+    /// `other` must be an environment on the search path.
     pub fn alias(other: &Env, parent: Option<Env>, name: &str) -> Env {
-        let e = Env::with_frame(parent, other.0.frame.clone());
+        let FrameCell::Shared(frame) = &other.0.frame else {
+            panic!("Env::alias: the frame of {:?} is not shareable", other.special_name());
+        };
+        let e = Env::with_frame(parent, FrameCell::Shared(frame.clone()));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
         e
     }
 
     /// An environment on the search path (global, base, attached).
     pub fn new_search(parent: Option<Env>, name: &str) -> Env {
-        let e = Env::named(parent, name);
-        e.0.frame.borrow_mut().search = true;
+        let frame = Frame { entries: Default::default(), index: None, search: true };
+        let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
+        *e.0.name.borrow_mut() = Some(Rc::from(name));
         e
     }
 
     pub fn is_search(&self) -> bool {
-        self.0.frame.borrow().search
+        self.0.frame().borrow().search
     }
 
     pub fn set_search(&self, on: bool) {
-        self.0.frame.borrow_mut().search = on;
+        self.0.frame().borrow_mut().search = on;
         bump_search_epoch();
     }
 
@@ -270,15 +297,15 @@ impl Env {
     }
 
     pub fn get_local(&self, sym: Sym) -> Option<Value> {
-        self.0.frame.borrow().get(sym).map(|b| b.value.clone())
+        self.0.frame().borrow().get(sym).map(|b| b.value.clone())
     }
 
     pub fn binding_flags(&self, sym: Sym) -> Option<u8> {
-        self.0.frame.borrow().get(sym).map(|b| b.flags)
+        self.0.frame().borrow().get(sym).map(|b| b.flags)
     }
 
     pub fn has_local(&self, sym: Sym) -> bool {
-        self.0.frame.borrow().position(sym).is_some()
+        self.0.frame().borrow().position(sym).is_some()
     }
 
     /// Define or overwrite a binding in this frame. Returns false if the
@@ -292,7 +319,7 @@ impl Env {
     /// (locked) base environment, such as `last.warning`.
     pub fn force_set(&self, sym: Sym, value: Value) {
         let flags = {
-            let f = self.0.frame.borrow();
+            let f = self.0.frame().borrow();
             f.get(sym).map(|b| b.flags & !BIND_LOCKED)
         };
         match flags {
@@ -314,14 +341,17 @@ impl Env {
     }
 
     pub fn set_local_flags(&self, sym: Sym, value: Value, flags: u8) -> bool {
-        let mut f = self.0.frame.borrow_mut();
+        let mut f = self.0.frame().borrow_mut();
         let search = f.search;
         if let Some(b) = f.get_mut(sym) {
             if b.flags & BIND_LOCKED != 0 {
                 return false;
             }
-            if search && (function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0) {
-                bump_search_epoch();
+            if function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0 {
+                if search {
+                    bump_search_epoch();
+                }
+                self.bump_fn_version();
             }
             b.value = value;
             b.flags = flags;
@@ -330,6 +360,9 @@ impl Env {
         if self.0.locked.get() {
             return false;
         }
+        if function_like(&value) || flags & BIND_ACTIVE != 0 {
+            self.bump_fn_version();
+        }
         f.insert(sym, value, flags);
         true
     }
@@ -337,27 +370,46 @@ impl Env {
     /// Move a value out of a binding, leaving `NULL` behind, so that the
     /// caller holds the only reference and can modify it in place.
     pub fn take_local(&self, sym: Sym) -> Option<Value> {
-        let mut f = self.0.frame.borrow_mut();
+        let mut f = self.0.frame().borrow_mut();
         let search = f.search;
         let b = f.get_mut(sym)?;
         if b.flags & (BIND_ACTIVE | BIND_LOCKED) != 0 {
             return Some(b.value.clone());
         }
-        if search && function_like(&b.value) {
-            bump_search_epoch();
+        if function_like(&b.value) {
+            if search {
+                bump_search_epoch();
+            }
+            self.bump_fn_version();
         }
         Some(std::mem::replace(&mut b.value, Value::Null))
     }
 
     pub fn remove(&self, sym: Sym) -> bool {
-        self.0.frame.borrow_mut().remove(sym).is_some()
+        let r = self.0.frame().borrow_mut().remove(sym);
+        if r.as_ref().is_some_and(|b| function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
+            self.bump_fn_version();
+        }
+        r.is_some()
+    }
+
+    /// Changes whenever a binding of this frame that could hold a function
+    /// (a function, promise or active binding) is created, changed or
+    /// removed through `Env`'s methods.
+    #[inline]
+    pub fn fn_version(&self) -> u32 {
+        self.0.fn_version.get()
+    }
+
+    fn bump_fn_version(&self) {
+        self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
     }
 
     /// Could a function lookup of `sym` stop in this frame (a function,
     /// promise, active binding or missing argument bound to it)?
     #[inline]
     pub fn local_may_bind_fun(&self, sym: Sym) -> bool {
-        match self.0.frame.borrow().get(sym) {
+        match self.0.frame().borrow().get(sym) {
             Some(b) => function_like(&b.value) || b.flags & BIND_ACTIVE != 0 || b.value.is_missing_arg(),
             None => false,
         }
@@ -376,7 +428,7 @@ impl Env {
     }
 
     pub fn len(&self) -> usize {
-        self.0.frame.borrow().entries.len()
+        self.0.frame().borrow().entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -384,20 +436,20 @@ impl Env {
     }
 
     pub fn symbols(&self) -> Vec<Sym> {
-        self.0.frame.borrow().entries.iter().map(|b| b.sym).collect()
+        self.0.frame().borrow().entries.iter().map(|b| b.sym).collect()
     }
 
     pub fn lock(&self, bindings: bool) {
         self.0.locked.set(true);
         if bindings {
-            for b in self.0.frame.borrow_mut().entries.iter_mut() {
+            for b in self.0.frame().borrow_mut().entries.iter_mut() {
                 b.flags |= BIND_LOCKED;
             }
         }
     }
 
     pub fn set_binding_locked(&self, sym: Sym, locked: bool) -> bool {
-        let mut f = self.0.frame.borrow_mut();
+        let mut f = self.0.frame().borrow_mut();
         match f.get_mut(sym) {
             Some(b) => {
                 if locked {

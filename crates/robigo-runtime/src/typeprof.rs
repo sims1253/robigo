@@ -94,7 +94,7 @@ pub fn record_frame(function_body: Option<&Value>, env: &Env) {
     };
     let bindings: Vec<(String, Value)> = env
         .0
-        .frame
+        .frame()
         .borrow()
         .entries
         .iter()

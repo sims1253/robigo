@@ -16,6 +16,8 @@
 //! otherwise call the regular builtin, which handles recycling,
 //! attributes, dispatch and warnings.
 
+use std::rc::Rc;
+
 use robigo_syntax::Span;
 
 use crate::builtins::arith::{ArithOp, RelOp};
@@ -117,11 +119,37 @@ pub enum Op {
     Guard { sym: Sym, dst: Reg, k: u32, skip: u32 },
     Null { dst: Reg },
     Return { src: Reg },
+    /// Call the function `f` (not a base primitive), with the arguments of
+    /// call site `site` as promises; falls back to `eval` for builtins.
+    Call { dst: Reg, f: Sym, site: u32 },
     /// Set result visibility.
     Visible { on: bool },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
     LoopEnter { brk: u32, nxt: u32 },
     LoopExit,
+}
+
+/// A memoized `Guard` result, valid for search epoch `epoch` when the
+/// lookup starts in the environment with id `env` at function version
+/// `version`, or (after checking the frames below it) starts from the
+/// search-path environment with id `search`.
+#[derive(Clone, Copy)]
+pub struct GuardMemo {
+    pub epoch: u64,
+    pub env: usize,
+    pub version: u32,
+    pub search: usize,
+    pub ok: bool,
+}
+
+/// A call compiled to `Op::Call`.
+pub struct CallSite {
+    pub call: Value,
+    /// Bytecode for each argument's promise (`None`: use the interpreter).
+    pub codes: Vec<Option<Rc<Code>>>,
+    /// The function found from the first search-path environment: (search
+    /// epoch, that environment's id, function).
+    pub memo: std::cell::RefCell<Option<(u64, usize, Value)>>,
 }
 
 pub struct Code {
@@ -132,22 +160,34 @@ pub struct Code {
     pub vars: Vec<Sym>,
     /// Argument lists of `CallBuiltin`: (tag, register) pairs.
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    /// Call sites of `Call`.
+    pub call_sites: Vec<CallSite>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
     /// loop (`Return` unwinds to the enclosing function).
     pub is_body: bool,
-    /// Per-op memo of `Guard` results: (search epoch, id of the first
-    /// search-path environment the lookup reached, result).
-    pub guard_memo: Box<[std::cell::Cell<(u64, usize, bool)>]>,
+    /// Per-op memo of `Guard` results (see `vm::guard_ok`).
+    pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
 }
 
 impl Code {
     fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
         let has_guards = c.ops.iter().any(|o| matches!(o, Op::Guard { .. }));
         let memo = if has_guards { c.ops.len() } else { 0 };
-        let guard_memo = (0..memo).map(|_| std::cell::Cell::new((u64::MAX, 0, false))).collect();
-        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, arglists: c.arglists, result, is_body, guard_memo }
+        let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
+        let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
+        Code {
+            ops: c.ops,
+            consts: c.consts,
+            nregs: c.nregs,
+            vars: c.vars,
+            arglists: c.arglists,
+            call_sites: c.call_sites,
+            result,
+            is_body,
+            guard_memo,
+        }
     }
 }
 
@@ -180,6 +220,7 @@ struct Compiler {
     nregs: usize,
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    call_sites: Vec<CallSite>,
     loops: Vec<Loop>,
 }
 
@@ -720,6 +761,12 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
             }
+            n if crate::builtins::lookup_primitive(n).is_none() => {
+                let codes = l.args.iter().map(|a| compile_thunk(&a.value)).collect();
+                self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default() });
+                let site = (self.call_sites.len() - 1) as u32;
+                self.emit(Op::Call { dst, f: h, site });
+            }
             _ => self.fallback(whole, dst),
         }
     }
@@ -731,6 +778,20 @@ pub fn compile_body(body: &Value) -> Code {
     let r = c.reg();
     c.expr(body, r, Want::All);
     Code::new(c, r, true)
+}
+
+/// Bytecode for a promise of `e`, when the compiler handles `e` itself
+/// (not only by evaluating it in the interpreter). `Return` unwinds to the
+/// function whose frame the promise is evaluated in.
+fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
+    if !matches!(e, Value::Lang(_)) {
+        return None;
+    }
+    let mut c = Compiler::default();
+    let r = c.reg();
+    c.expr(e, r, Want::All);
+    let useful = c.ops.iter().any(|o| !matches!(o, Op::Eval { .. } | Op::Guard { .. } | Op::Visible { .. }));
+    useful.then(|| Rc::new(Code::new(c, r, false)))
 }
 
 /// Compile a loop evaluated outside a compiled body (e.g. at top level).
