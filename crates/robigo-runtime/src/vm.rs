@@ -220,24 +220,38 @@ impl Vars<'_> {
 /// The value of `sym` if reading it cannot run code: a plain binding, or
 /// an argument whose promise has been forced.
 fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
-    let mut cur = env.clone();
+    // A plain value (or forced promise's value), unboxed without cloning
+    // the vector for scalars.
+    #[inline(always)]
+    fn read(v: &Value) -> Option<RVal> {
+        Some(match v {
+            Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
+            Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
+            Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
+            v if v.is_missing_arg() => return None,
+            v => RVal::V(v.clone()),
+        })
+    }
+    // `None`: not bound in `e`; `Some(None)`: bound, but reading may run code.
+    #[inline(always)]
+    fn in_frame(e: &Env, sym: Sym) -> Option<Option<RVal>> {
+        let frame = e.0.frame().borrow();
+        let b = frame.get(sym)?;
+        if b.flags & crate::env::BIND_ACTIVE != 0 {
+            return Some(None);
+        }
+        Some(match &b.value {
+            Value::Promise(p) => p.value.borrow().as_ref().and_then(read),
+            v => read(v),
+        })
+    }
+    if let Some(r) = in_frame(env, sym) {
+        return r;
+    }
+    let mut cur = env.parent()?;
     loop {
-        let found = {
-            let frame = cur.0.frame().borrow();
-            frame.get(sym).map(|b| (b.value.clone(), b.flags))
-        };
-        if let Some((v, flags)) = found {
-            if flags & crate::env::BIND_ACTIVE != 0 {
-                return None;
-            }
-            let v = match v {
-                Value::Promise(p) => p.value()?,
-                v => v,
-            };
-            if v.is_missing_arg() {
-                return None;
-            }
-            return Some(unbox(v));
+        if let Some(r) = in_frame(&cur, sym) {
+            return r;
         }
         cur = cur.parent()?;
     }
@@ -629,8 +643,30 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
     if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
         return m.ok;
     }
-    let mut cur = env.clone();
-    let mut depth = 0;
+    // The common cases without reference count traffic: `env` on the search
+    // path, or a closure frame whose parent is.
+    if env.is_search() {
+        let ok = if m.epoch == epoch && m.search == env.id() { m.ok } else { interp.resolves_to_base(sym, env) };
+        memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: env.id(), ok });
+        return ok;
+    }
+    if env.local_may_bind_fun(sym) {
+        return interp.resolves_to_base(sym, env);
+    }
+    {
+        let parent = env.parent_ref();
+        match &*parent {
+            Some(p) if p.is_search() => {
+                let ok = if m.epoch == epoch && m.search == p.id() { m.ok } else { interp.resolves_to_base(sym, p) };
+                memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: p.id(), ok });
+                return ok;
+            }
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    let Some(mut cur) = env.parent() else { return false };
+    let mut depth = 1;
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
             return interp.resolves_to_base(sym, env);

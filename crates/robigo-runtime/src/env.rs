@@ -171,6 +171,9 @@ pub struct EnvData {
     /// Incremented when a binding in this frame that could hold a function
     /// is created, changed or removed (see [`Env::fn_version`]).
     fn_version: Cell<u32>,
+    /// `Frame::search` of this environment's frame, readable without
+    /// borrowing it (set at creation and by `set_search`).
+    search: Cell<bool>,
 }
 
 impl EnvData {
@@ -202,6 +205,10 @@ impl Env {
     }
 
     fn with_frame(parent: Option<Env>, frame: FrameCell) -> Env {
+        let search = match &frame {
+            FrameCell::Own(f) => f.borrow().search,
+            FrameCell::Shared(f) => f.borrow().search,
+        };
         let id = NEXT_ENV_ID.with(|c| {
             let v = c.get();
             c.set(v + 1);
@@ -215,6 +222,7 @@ impl Env {
             name: RefCell::new(None),
             id,
             fn_version: Cell::new(0),
+            search: Cell::new(search),
         }))
     }
 
@@ -237,13 +245,23 @@ impl Env {
         e
     }
 
+    #[inline]
     pub fn is_search(&self) -> bool {
-        self.0.frame().borrow().search
+        self.0.search.get()
     }
 
+    /// (Not used on environments sharing a frame, whose other environment
+    /// would keep the old flag.)
     pub fn set_search(&self, on: bool) {
         self.0.frame().borrow_mut().search = on;
+        self.0.search.set(on);
         bump_search_epoch();
+    }
+
+    /// The parent, borrowed (no reference count traffic).
+    #[inline]
+    pub fn parent_ref(&self) -> std::cell::Ref<'_, Option<Env>> {
+        self.0.parent.borrow()
     }
 
     pub fn named(parent: Option<Env>, name: &str) -> Env {
