@@ -5,6 +5,26 @@ Rust. This document records what we learned from earlier attempts (in R,
 Python, Julia and recent AI-assisted compiler ports), the architecture that
 follows from it, and the roadmap.
 
+## 0. Goal and ground rules
+
+**Make R as fast as possible.** Existing R scripts and libraries (CRAN
+packages) must run unchanged; nothing from existing R runtimes (GNU R's C
+internals, byte-code compiler, memory manager) has to be reused. Speed is
+the objective, compatibility the constraint:
+
+- **Results are bit-identical to GNU R by default.** Compiling loops,
+  removing allocations and fusing elementwise vector operations do not
+  change results. Reductions (`sum`, `mean`, `cumsum`, ...) stay
+  sequential and accumulate in long double like R; reordered, SIMD or
+  parallel reductions are allowed only in an opt-in fast mode.
+- **Packages with compiled code are supported through R's C API**,
+  implemented over rr's own object model, so CRAN packages can be rebuilt
+  against rr's headers. Engine work comes first, but no design choice may
+  block the C API (vector payloads stay at stable addresses; handles can
+  be protected).
+- **Work is prioritised by profiles of real workloads** (`benchmarks/`),
+  with GNU R as the black-box semantic reference (`tests/r`).
+
 ## 1. What "better runtime for R" has to mean
 
 R's value is its ecosystem: base R, the recommended packages and ~20k CRAN
