@@ -73,6 +73,32 @@ pub struct Interp {
 
 const MAX_DEPTH: usize = 5000;
 
+/// The value of variable `sym` from `env` if reading it runs no code: a
+/// plain binding or a forced promise (not `...`, `..n`, an active binding
+/// or a missing argument).
+fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
+    if sym == s::DOTS || sym.ddval().is_some() {
+        return None;
+    }
+    let mut cur = env.clone();
+    loop {
+        {
+            let frame = cur.0.frame().borrow();
+            if let Some(b) = frame.get(sym) {
+                if b.flags & BIND_ACTIVE != 0 {
+                    return None;
+                }
+                return match &b.value {
+                    Value::Promise(q) => q.value.borrow().clone(),
+                    v if v.is_missing_arg() => None,
+                    v => Some(v.clone()),
+                };
+            }
+        }
+        cur = cur.parent()?;
+    }
+}
+
 /// The current stack pointer, approximately.
 #[inline(always)]
 fn stack_address() -> usize {
@@ -258,6 +284,15 @@ impl Interp {
         }
         let env = p.env.borrow().clone();
         let Some(env) = env else { return Ok(Value::Null) };
+        // A variable with a plain value: read it (no R code runs).
+        if let (Value::Sym(sym), None) = (&p.expr, &p.code) {
+            if let Some(v) = plain_value(&env, *sym) {
+                *p.value.borrow_mut() = Some(v.clone());
+                *p.env.borrow_mut() = None;
+                self.visible = true;
+                return Ok(v);
+            }
+        }
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let r = match &p.code {

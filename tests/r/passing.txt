@@ -30,6 +30,7 @@ tests/r/lang/compiled-ranges.R
 tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-variables.R
 tests/r/lang/environments.R
+tests/r/lang/frame-lifetime.R
 tests/r/lang/missing-dots.R
 tests/r/lang/on-exit.R
 tests/r/lang/pos-to-env.R

@@ -930,6 +930,17 @@ pub fn run_simple(interp: &mut Interp, code: &Code, env: &Env) -> Option<Value> 
     Some(r.into_value())
 }
 
+/// Whether a closure's frame `env` is unreachable once its body returns:
+/// referenced only by the call (`exec_closure`) and its context, with no
+/// `on.exit` code to run in it. Pending assignments then need not be
+/// written: nothing can read them.
+fn frame_dies(interp: &Interp, env: &Env) -> bool {
+    Rc::strong_count(&env.0) == 2
+        && Rc::weak_count(&env.0) == 0
+        && interp.frames.last().is_some_and(|c| c.on_exit.is_empty() && c.cloenv.ptr_eq(env))
+        && !crate::typeprof::enabled()
+}
+
 /// Whether `sym` is bound in `env`'s own frame to a promise not yet forced.
 fn unforced_promise(env: &Env, sym: Sym) -> bool {
     let frame = env.0.frame().borrow();
@@ -1884,7 +1895,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 regs[*dst as usize] = RVal::V(v);
             }
             Op::Return { src } => {
-                flush!();
+                if !(code.is_body && frame_dies(interp, env)) {
+                    flush!();
+                }
                 let v = std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null)).into_value();
                 if code.is_body {
                     return Ok(v);
@@ -1958,6 +1971,8 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             }
         }
     }
-    vars.flush(interp, env, &code.vars)?;
+    if !(code.is_body && frame_dies(interp, env)) {
+        vars.flush(interp, env, &code.vars)?;
+    }
     Ok(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)).into_value())
 }
