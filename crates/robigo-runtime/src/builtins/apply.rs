@@ -60,6 +60,50 @@ fn check_arg_is_symbol(x: &Value) -> RResult<Value> {
     }
 }
 
+/// The closure `FUN` when `FUN(X[[i]], ...)` (in `rho`, `X` being `xx`)
+/// can run without a call (see `vm::inlinable`): `FUN` a pure closure of
+/// one argument, `...` empty, and `xx` a plain vector or list whose
+/// elements `[[` reads without dispatch. Its body cannot tell a value from
+/// the promise `X[[i]]`. (Called only when there are elements: `FUN` is
+/// evaluated as by the first call.)
+fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<Option<Rc<Closure>>> {
+    if xx.is_object() || !matches!(xx, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_)) {
+        return Ok(None);
+    }
+    if matches!(rho.get_local(s::DOTS), Some(Value::Dots(d)) if !d.is_empty()) {
+        return Ok(None);
+    }
+    let Value::Lang(l) = fcall else { return Ok(None) };
+    let Value::Sym(f) = &l.fun else { return Ok(None) };
+    match i.find_fun(*f, rho)? {
+        Value::Closure(c) if c.formals.len() == 1 && c.formals[0].tag != Some(s::DOTS) && crate::vm::inlinable(&c) => Ok(Some(c)),
+        _ => Ok(None),
+    }
+}
+
+/// `xx[[k + 1]]` of a plain vector or list (see [`inline_fun`]).
+fn element2(xx: &Value, k: usize) -> Value {
+    match xx {
+        Value::Real(v) => Value::real(v.data[k]),
+        Value::Int(v) => Value::int(v.data[k]),
+        Value::Lgl(v) => Value::lgl_raw(v.data[k]),
+        Value::Str(v) => Value::strs(vec![v.data[k].clone()]),
+        Value::List(v) => v.data[k].clone(),
+        _ => unreachable!(),
+    }
+}
+
+/// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
+fn call_fun(i: &mut Interp, fast: &Option<Rc<Closure>>, xx: &Value, k: usize, fcall: &Value, isym: Sym, rho: &Env) -> RResult<Value> {
+    if let Some(c) = fast {
+        if let Some(v) = crate::vm::call_inline(i, c, &[element2(xx, k)]) {
+            return Ok(v);
+        }
+    }
+    rho.set_local(isym, Value::int(k as i32 + 1));
+    force_and_call(i, fcall, 1, rho)
+}
+
 /// `FUN(X[[i]], ...)`
 fn fun_x_i_call(fun: Value, x: Value) -> Value {
     let idx = Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(x), Arg::pos(Value::sym("i"))]);
@@ -76,9 +120,9 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x);
     let isym = Sym::new("i");
     let mut out = Vec::with_capacity(n);
+    let fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
     for k in 0..n {
-        rho.set_local(isym, Value::int(k as i32 + 1));
-        out.push(force_and_call(i, &fcall, 1, rho)?);
+        out.push(call_fun(i, &fast, &xx, k, &fcall, isym, rho)?);
     }
     let mut ans = Value::list(out);
     if !names.is_null() {
@@ -133,9 +177,9 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x);
     let isym = Sym::new("i");
     let mut parts: Vec<Value> = Vec::with_capacity(n);
+    let fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
     for k in 0..n {
-        rho.set_local(isym, Value::int(k as i32 + 1));
-        let mut val = force_and_call(i, &fcall, 1, rho)?;
+        let mut val = call_fun(i, &fast, &xx, k, &fcall, isym, rho)?;
         if val.len() != common_len {
             return Err(Flow::error(format!(
                 "values must be length {},\n but FUN(X[[{}]]) result is length {}",

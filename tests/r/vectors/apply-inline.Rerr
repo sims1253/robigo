@@ -1,0 +1,6 @@
+Warning message:
+In sqrt(v - 2) : NaNs produced
+Warning messages:
+1: In i + .Machine$integer.max : NAs produced by integer overflow
+2: In i + .Machine$integer.max : NAs produced by integer overflow
+3: In i + .Machine$integer.max : NAs produced by integer overflow

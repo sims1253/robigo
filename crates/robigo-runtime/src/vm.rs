@@ -940,6 +940,22 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     })
 }
 
+/// Whether calls of `clo` can run inline (see [`inline_info`]).
+pub(crate) fn inlinable(clo: &Closure) -> bool {
+    enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
+}
+
+/// Call an inlinable closure (see [`inlinable`]) with argument values,
+/// without the call machinery; `None` where its body gives up (then make
+/// the real call).
+pub(crate) fn call_inline(interp: &mut Interp, clo: &Closure, args: &[Value]) -> Option<Value> {
+    let info = clo.inline.get()?.clone()?;
+    let vals: SmallVec<[RVal; 4]> = args.iter().map(|a| unbox(a.clone())).collect();
+    let v = run_inline(interp, &info, &vals, &clo.env)?;
+    interp.visible = true;
+    Some(v.into_value())
+}
+
 /// The call at call site `site` (of `f`) as a call native code can run
 /// inline: a pure closure without free variables (see [`inline_info`])
 /// called with plain arguments.

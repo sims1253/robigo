@@ -127,6 +127,7 @@ tests/r/vec/sort-internal.R
 tests/r/vec/sum-ldouble.R
 tests/r/vec/sum-prod.R
 tests/r/vec/unique.R
+tests/r/vectors/apply-inline.R
 tests/r/vectors/apply.R
 tests/r/vectors/factors.R
 tests/r/vectors/lists.R
