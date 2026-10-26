@@ -19,6 +19,7 @@ tests/r/io/messages.R
 tests/r/io/options.R
 tests/r/io/solve.R
 tests/r/io/sysutils.R
+tests/r/lang/compiled-forms.R
 tests/r/lang/compiled-index.R
 tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-variables.R

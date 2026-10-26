@@ -281,12 +281,13 @@ impl Interp {
                 let frame = cur.0.frame.borrow();
                 if let Some(b) = frame.get(sym) {
                     match &b.value {
-                        Value::Closure(_) | Value::Builtin(_) if b.flags == 0 => return Some(b.value.clone()),
+                        // Locked bindings read as usual; active ones need the slow path.
+                        Value::Closure(_) | Value::Builtin(_) if b.flags & BIND_ACTIVE == 0 => return Some(b.value.clone()),
                         Value::Promise(_) | Value::Closure(_) | Value::Builtin(_) => return None,
                         v if v.is_missing_arg() => return None,
                         _ => {}
                     }
-                    if b.flags != 0 {
+                    if b.flags & BIND_ACTIVE != 0 {
                         return None;
                     }
                 }
@@ -309,7 +310,7 @@ impl Interp {
         loop {
             let found = cur.0.frame.borrow().get(sym).map(|b| (b.value.clone(), b.flags));
             if let Some((v, flags)) = found {
-                if flags != 0 {
+                if flags & BIND_ACTIVE != 0 {
                     return None;
                 }
                 match v {

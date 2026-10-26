@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, Code, Leaf, Op, Slot};
+use crate::compile::{compile_body, compile_loop, Code, Leaf, Math1, Op, RangeKind, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -31,6 +31,9 @@ pub enum RVal {
     D(f64),
     I(i32),
     L(Lgl),
+    /// The integer sequence `start, start + step, ...` of length `n` a
+    /// `for` loop steps through (only ever in a sequence register).
+    Range { start: i64, step: i64, n: u64 },
 }
 
 impl RVal {
@@ -40,6 +43,7 @@ impl RVal {
             RVal::D(x) => Value::real(x),
             RVal::I(x) => Value::int(x),
             RVal::L(x) => Value::lgl_raw(x),
+            RVal::Range { start, step, n } => Value::ints((0..n as i64).map(|k| (start + k * step) as i32).collect()),
         }
     }
 
@@ -271,15 +275,21 @@ fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&
 }
 
 /// A 0-based index from an in-range positive scalar index.
-fn scalar_index(vars: &mut Vars, env: &Env, i: &Leaf) -> Option<f64> {
+fn scalar_index(vars: &mut Vars, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
+    let num = |r: &RVal| match r {
+        RVal::D(x) => Some(*x),
+        RVal::I(x) if *x != NA_INTEGER => Some(*x as f64),
+        RVal::V(Value::Real(v)) if v.data.len() == 1 && v.attrs.is_none() => Some(v.data[0]),
+        RVal::V(Value::Int(v)) if v.data.len() == 1 && v.attrs.is_none() && v.data[0] != NA_INTEGER => {
+            Some(v.data[0] as f64)
+        }
+        _ => None,
+    };
     let x = match i {
         Leaf::D(x) => *x,
         Leaf::I(x) => *x as f64,
-        Leaf::Var(sym, slot) => match read_var(vars, env, *sym, *slot)? {
-            RVal::D(x) => *x,
-            RVal::I(x) if *x != NA_INTEGER => *x as f64,
-            _ => return None,
-        },
+        Leaf::Var(sym, slot) => num(read_var(vars, env, *sym, *slot)?)?,
+        Leaf::R(r) => num(&regs[*r as usize])?,
     };
     // NaN fails both comparisons.
     (x >= 1.0 && x < 4503599627370496.0).then_some(x.trunc() - 1.0)
@@ -361,6 +371,74 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Unboxed `sqrt(x)` etc.; `None` where the builtin must run (it warns
+/// about NaNs produced, or the input is not a plain number).
+fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
+    if f == Math1::Abs {
+        return Some(match x {
+            Num::I(i) | Num::L(i) => RVal::I(if i == NA_INTEGER { i } else { i.abs() }),
+            Num::D(d) => RVal::D(d.abs()),
+        });
+    }
+    let d = as_f64(x);
+    let r = match f {
+        Math1::Sqrt => d.sqrt(),
+        Math1::Exp => d.exp(),
+        Math1::Floor => d.floor(),
+        Math1::Ceiling => d.ceil(),
+        Math1::Sin => d.sin(),
+        Math1::Cos => d.cos(),
+        Math1::Tan => d.tan(),
+        Math1::Abs => unreachable!(),
+    };
+    if r.is_nan() && !d.is_nan() {
+        return None;
+    }
+    Some(RVal::D(r))
+}
+
+/// `from:to` as an integer range, when R's `:` gives an integer
+/// sequence (R: seq.c:seq_colon); `None` otherwise.
+fn colon_range(n1: f64, n2: f64) -> Option<(i64, i64, u64)> {
+    if n1.is_nan() || n2.is_nan() {
+        return None;
+    }
+    let int_valued = |x: f64| x == x.trunc() && x > i32::MIN as f64 && x <= i32::MAX as f64;
+    if !int_valued(n1) || !int_valued(n2) {
+        return None;
+    }
+    let n = (n2 - n1).abs() as u64 + 1;
+    Some((n1 as i64, if n1 <= n2 { 1 } else { -1 }, n))
+}
+
+/// An operand of `&&`/`||` as a logical(1).
+// R: logic.c:do_logic2, coerce.c:asLogical2
+fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
+    let is_number = matches!(v, Value::Lgl(_) | Value::Real(_) | Value::Cplx(_))
+        || (matches!(v, Value::Int(_)) && !v.inherits("factor"));
+    if !is_number {
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("invalid '{}' type in 'x {} y'", if is_y { "y" } else { "x" }, if and { "&&" } else { "||" }),
+        ));
+    }
+    crate::builtins::summary::as_logical2(v, true, call)
+}
+
+/// `x[i]` / `x[[i]]` with the index already evaluated: the subset builtin
+/// gets forced promises, so nothing is evaluated twice and methods still
+/// see the expressions.
+fn subset_with_index(interp: &mut Interp, call: &Value, x: Sym, ival: Value, two: bool, env: &Env) -> RResult<Value> {
+    let Value::Lang(l) = call else { unreachable!() };
+    let xval = interp.eval_sym(x, env)?;
+    let args = vec![
+        Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))),
+        Arg::new(l.args[1].tag, Value::Promise(Rc::new(Promise::forced(l.args[1].value.clone(), ival)))),
+    ];
+    let b = crate::builtins::lookup_primitive(if two { "[[" } else { "[" }).expect("subset builtin");
+    interp.invoke_builtin(b, call, args, env)
 }
 
 fn signal(interp: &mut Interp, r: RResult<Value>) -> RResult<Value> {
@@ -600,6 +678,9 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     interp.resolves_to_base(*sym, env)
                 };
                 if !ok {
+                    if std::env::var_os("RR_VM_TRACE").is_some() {
+                        eprintln!("vm: guard failed for {}", sym);
+                    }
                     flush!();
                     let v = tryop!(interp.eval(&code.consts[*k as usize], env));
                     regs[*dst as usize] = RVal::V(v);
@@ -608,20 +689,28 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
             }
             Op::Index { dst, x, slot, i, two, k } => {
                 interp.visible = true;
-                let fast = match scalar_index(&mut vars, env, i) {
+                let fast = match scalar_index(&mut vars, env, &regs, i) {
                     Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
                     None => None,
                 };
-                regs[*dst as usize] = match fast {
-                    Some(v) => v,
-                    None => {
+                regs[*dst as usize] = match (fast, i) {
+                    (Some(v), _) => v,
+                    (None, Leaf::R(r)) => {
+                        // The index was evaluated already: call `[`/`[[`
+                        // with forced promises instead of evaluating it again.
+                        flush!();
+                        let ival = regs[*r as usize].to_value();
+                        let r = subset_with_index(interp, &code.consts[*k as usize], *x, ival, *two, env);
+                        RVal::V(tryop!(signal(interp, r)))
+                    }
+                    (None, _) => {
                         flush!();
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
                     }
                 };
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
-                let done = match scalar_index(&mut vars, env, i) {
+                let done = match scalar_index(&mut vars, env, &regs, i) {
                     Some(ix) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[*val as usize], *two),
                         _ => false,
@@ -633,11 +722,124 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                     let whole = &code.consts[*k as usize];
                     let Value::Lang(l) = whole else { unreachable!() };
                     let rhs = regs[*val as usize].to_value();
-                    let r = crate::builtins::lang::complex_assign(
-                        interp, whole, &l.args[0].value, &l.args[1].value, rhs, env, false,
+                    let pre = match i {
+                        Leaf::R(r) => Some(vec![regs[*r as usize].to_value()]),
+                        _ => None,
+                    };
+                    let r = crate::builtins::lang::complex_assign_pre(
+                        interp,
+                        whole,
+                        &l.args[0].value,
+                        &l.args[1].value,
+                        rhs,
+                        env,
+                        false,
+                        pre.as_deref(),
                     );
                     tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
+            }
+            Op::CallBuiltin { dst, f, args, call } => {
+                flush!();
+                let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
+                let argv: Vec<Arg> = code.arglists[*args as usize]
+                    .iter()
+                    .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
+                    .collect();
+                let r = interp.invoke_builtin(b, &code.consts[*call as usize], argv, env);
+                regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
+            }
+            Op::Math1 { f, dst, a, call } => {
+                regs[*dst as usize] = match scalar(&regs[*a as usize]).and_then(|x| math1_fast(*f, x)) {
+                    Some(v) => {
+                        regs[*a as usize] = RVal::I(0);
+                        v
+                    }
+                    None => {
+                        flush!();
+                        let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
+                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
+                    }
+                };
+            }
+            Op::AndOrArg { dst, a, and, is_y, call } => {
+                let x = match &regs[*a as usize] {
+                    RVal::L(x) => Some(*x),
+                    RVal::I(x) => Some(if *x == NA_INTEGER { NA_LOGICAL } else { (*x != 0) as Lgl }),
+                    RVal::D(x) => Some(if x.is_nan() { NA_LOGICAL } else { (*x != 0.0) as Lgl }),
+                    _ => None,
+                };
+                let x = match x {
+                    Some(x) => x,
+                    None => {
+                        flush!();
+                        let v = regs[*a as usize].to_value();
+                        let r = andor_operand(&v, *and, *is_y, &code.consts[*call as usize]);
+                        crate::coerce::as_logical(&tryop!(signal(interp, r.map(Value::lgl_raw))))
+                    }
+                };
+                regs[*a as usize] = RVal::I(0);
+                regs[*dst as usize] = RVal::L(x);
+            }
+            Op::AndOrShort { x, dst, and, target } => {
+                let RVal::L(xv) = regs[*x as usize] else { unreachable!() };
+                if *and && xv == FALSE {
+                    regs[*dst as usize] = RVal::L(FALSE);
+                    pc = *target as usize;
+                } else if !*and && xv == TRUE {
+                    regs[*dst as usize] = RVal::L(TRUE);
+                    pc = *target as usize;
+                }
+            }
+            Op::AndOr { dst, x, y, and } => {
+                let (RVal::L(x1), RVal::L(x2)) = (&regs[*x as usize], &regs[*y as usize]) else { unreachable!() };
+                let (x1, x2) = (*x1, *x2);
+                // R: logic.c:do_logic2
+                let ans = if *and {
+                    if x1 == NA_LOGICAL {
+                        if x2 == NA_LOGICAL || x2 != 0 { NA_LOGICAL } else { x2 }
+                    } else {
+                        x2
+                    }
+                } else if x1 == NA_LOGICAL {
+                    if x2 == NA_LOGICAL || x2 == 0 { NA_LOGICAL } else { x2 }
+                } else {
+                    x2
+                };
+                regs[*dst as usize] = RVal::L(ans);
+            }
+            Op::ForRange { kind, a, b, seq, call } => {
+                let range = match kind {
+                    RangeKind::Colon => match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
+                        (Some(x), Some(y)) => colon_range(as_f64(x), as_f64(y)),
+                        _ => None,
+                    },
+                    RangeKind::SeqLen => match scalar(&regs[*a as usize]) {
+                        Some(Num::I(n)) if n != NA_INTEGER && n >= 0 => Some((1, 1, n as u64)),
+                        Some(Num::D(d)) if d >= 0.0 && d < 2147483647.0 => Some((1, 1, d as u64)),
+                        _ => None,
+                    },
+                    RangeKind::SeqAlong => match &regs[*a as usize] {
+                        RVal::V(v) if !v.is_object() && v.len() < i32::MAX as usize => Some((1, 1, v.len() as u64)),
+                        RVal::D(_) | RVal::I(_) | RVal::L(_) => Some((1, 1, 1)),
+                        _ => None,
+                    },
+                };
+                regs[*seq as usize] = match range {
+                    Some((start, step, n)) => {
+                        regs[*a as usize] = RVal::I(0);
+                        regs[*b as usize] = RVal::I(0);
+                        RVal::Range { start, step, n }
+                    }
+                    None => {
+                        flush!();
+                        let mut argv = vec![std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null))];
+                        if *kind == RangeKind::Colon {
+                            argv.push(std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null)));
+                        }
+                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], argv, env)))
+                    }
+                };
             }
             Op::Eval { dst, k } => {
                 flush!();
@@ -657,6 +859,10 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                 loops.pop();
             }
             Op::ForInit { seq, call } => {
+                if matches!(regs[*seq as usize], RVal::Range { .. }) {
+                    regs[*seq as usize + 1] = RVal::I(0);
+                    continue;
+                }
                 let mut v = regs[*seq as usize].to_value();
                 if v.inherits("factor") {
                     v = crate::builtins::envir::as_character_factor(&v);
@@ -677,6 +883,15 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
                 if i == 0 {
                     // R binds the loop variable to NULL before iterating.
                     assign!(*var, *slot, RVal::V(Value::Null));
+                }
+                if let RVal::Range { start, step, n } = regs[*seq as usize] {
+                    if i as u64 >= n {
+                        continue;
+                    }
+                    regs[*idx as usize] = RVal::I(i as i32 + 1);
+                    assign!(*var, *slot, RVal::I((start + i as i64 * step) as i32));
+                    pc = *body as usize;
+                    continue;
                 }
                 let RVal::V(sv) = &regs[*seq as usize] else { unreachable!() };
                 if i >= sv.len() {

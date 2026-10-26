@@ -253,3 +253,24 @@ fn compiled_matches_interpreted() {
     }
     assert!(bad.is_empty(), "compiled and interpreted runs differ for: {:?}", bad);
 }
+
+/// Compiled code must stay compiled: the guards that check `+`, `{`,
+/// `<-` etc. still mean the base functions succeed on ordinary programs.
+/// (A failing guard is still correct, just slow, so the other tests
+/// would not notice.)
+#[test]
+fn vm_guards_hold() {
+    let root = root();
+    let script = root.join("benchmarks/suite/nbody.R");
+    let out = Command::new(env!("CARGO_BIN_EXE_rr"))
+        .arg(&script)
+        .env("LANGUAGE", "en")
+        .env("LC_ALL", "C.UTF-8")
+        .env("RR_COMPILE", "1")
+        .env("RR_VM_TRACE", "1")
+        .env("R_DEFAULT_PACKAGES", "NULL")
+        .output()
+        .expect("spawn rr");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("guard failed"), "compiled code fell back to the interpreter:\n{}", err);
+}

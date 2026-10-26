@@ -171,6 +171,9 @@ pub(crate) fn dispatch_or_eval_sp(
     }
     let first = std::mem::replace(&mut args[0].value, Value::Null);
     let (x, expr) = match first {
+        // An argument evaluated already (by compiled code): dispatch sees
+        // its expression, as substitute() would through the promise.
+        Value::Promise(p) if p.value().is_some() => (p.value().unwrap(), Some(p.expr.clone())),
         e @ (Value::Sym(_) | Value::Lang(_) | Value::Promise(_)) => {
             let v = interp.eval(&e, env)?;
             (v, Some(e))

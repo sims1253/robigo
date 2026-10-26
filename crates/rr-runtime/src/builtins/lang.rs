@@ -337,6 +337,24 @@ pub(crate) fn complex_assign(
     env: &Env,
     superassign: bool,
 ) -> RResult<()> {
+    complex_assign_pre(interp, call, lhs, rhs_expr, rhs, env, superassign, None)
+}
+
+/// [`complex_assign`] for a single-level `f(x, i, ...) <- value` whose index
+/// arguments `i, ...` were already evaluated (by compiled code) to `pre`:
+/// they are not evaluated again, and calls in messages still show their
+/// expressions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn complex_assign_pre(
+    interp: &mut Interp,
+    call: &Value,
+    lhs: &Value,
+    rhs_expr: &Value,
+    rhs: Value,
+    env: &Env,
+    superassign: bool,
+    pre: Option<&[Value]>,
+) -> RResult<()> {
     // Unwind the chain of getter calls down to the target symbol.
     let mut levels: Vec<Rc<Lang>> = Vec::new();
     let mut cur = lhs.clone();
@@ -364,7 +382,7 @@ pub(crate) fn complex_assign(
         return Err(Flow::error_call(call.clone(), "cannot do complex assignments in base environment"));
     }
     interp.ccode_calls.push((interp.frames.len(), call.clone()));
-    let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign);
+    let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign, pre);
     // Errors raised with `error()` by the replacement functions report the
     // assignment call: signal them while its context is still active.
     let r = match r {
@@ -376,6 +394,7 @@ pub(crate) fn complex_assign(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn complex_assign_inner(
     interp: &mut Interp,
     _call: &Value,
@@ -385,6 +404,7 @@ fn complex_assign_inner(
     rhs: Value,
     env: &Env,
     superassign: bool,
+    pre: Option<&[Value]>,
 ) -> RResult<()> {
     // Base value (EnsureLocal for `<-`).
     let base_val = if superassign {
@@ -422,7 +442,7 @@ fn complex_assign_inner(
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
                 if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
                     drop(base_val);
-                    return fast_replace(interp, b, *fsym, l, target, rhs, env);
+                    return fast_replace(interp, b, *fsym, l, target, rhs, env, pre);
                 }
             }
         }
@@ -458,7 +478,14 @@ fn complex_assign_inner(
         env.set_local(s::TMP, obj);
         let fname = assign_fun(&l.fun)?;
         let mut args = vec![Arg::pos(Value::Sym(s::TMP))];
-        args.extend(l.args.iter().skip(1).cloned());
+        match pre {
+            // Already evaluated indices reach the replacement function as
+            // forced promises.
+            Some(vals) if i == 0 => args.extend(l.args.iter().skip(1).zip(vals.iter()).map(|(a, v)| {
+                Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.clone()))))
+            })),
+            _ => args.extend(l.args.iter().skip(1).cloned()),
+        }
         args.push(Arg::new(Some(s::VALUE), new_value));
         let setter = Value::lang(fname, args);
         let r = interp.eval(&setter, env);
@@ -489,6 +516,8 @@ fn is_inplace_special(name: &str) -> bool {
 }
 
 /// In-place replacement for a single-level assignment with a builtin.
+/// `pre` holds the index arguments when compiled code evaluated them.
+#[allow(clippy::too_many_arguments)]
 fn fast_replace(
     interp: &mut Interp,
     b: &'static Builtin,
@@ -497,13 +526,19 @@ fn fast_replace(
     target: Sym,
     rhs: Value,
     env: &Env,
+    pre: Option<&[Value]>,
 ) -> RResult<()> {
     crate::builtins::subassign::clear_restore();
     // Evaluate the extra (index) arguments while `target` is still bound.
     let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
     let mut argv = Vec::with_capacity(extra.len() + 2);
     argv.push(Arg::pos(Value::Null));
-    if b.kind == BuiltinKind::Special {
+    if let Some(vals) = pre {
+        for (a, v) in extra.iter().zip(vals.iter()) {
+            let v = if b.kind == BuiltinKind::Special { quote_if_needed(v.clone()) } else { v.clone() };
+            argv.push(Arg::new(a.tag, v));
+        }
+    } else if b.kind == BuiltinKind::Special {
         if b.name == "$<-" {
             // `$<-` matches its name argument; it is not evaluated.
             argv.extend(extra.iter().cloned());

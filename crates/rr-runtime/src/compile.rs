@@ -26,13 +26,38 @@ pub type Reg = u16;
 /// Index into [`Code::vars`].
 pub type Slot = u16;
 
-/// An operand that can be read without running code: a numeric constant
-/// or a variable.
+/// An index operand: a numeric constant, a variable (read without running
+/// code), or a register holding an already evaluated pure expression.
 #[derive(Clone, Debug)]
 pub enum Leaf {
     D(f64),
     I(i32),
     Var(Sym, Slot),
+    R(Reg),
+}
+
+/// The one-argument math functions with an unboxed fast path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Math1 {
+    Sqrt,
+    Abs,
+    Exp,
+    Floor,
+    Ceiling,
+    Sin,
+    Cos,
+    Tan,
+}
+
+/// The sequences a `for` loop can step through without allocating them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RangeKind {
+    /// `a:b`
+    Colon,
+    /// `seq_len(n)`
+    SeqLen,
+    /// `seq_along(x)`
+    SeqAlong,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +93,23 @@ pub enum Op {
     /// is updated in place; anything else runs the complex assignment
     /// `consts[k]` with that value.
     SetIndex { val: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    /// Call the base builtin `consts[f]` with the evaluated arguments
+    /// `arglists[args]`; `consts[call]` is the call.
+    CallBuiltin { dst: Reg, f: u32, args: u32, call: u32 },
+    /// `sqrt(a)` etc. on an attribute-free scalar; otherwise the builtin.
+    Math1 { f: Math1, dst: Reg, a: Reg, call: u32 },
+    /// The `x` (`!is_y`) or `y` operand of `&&`/`||` as a logical(1),
+    /// with R's checks.
+    AndOrArg { dst: Reg, a: Reg, and: bool, is_y: bool, call: u32 },
+    /// Short-circuit: for `&&` (`and`) jump to `target` with `dst` FALSE
+    /// if `x` is FALSE; for `||` with TRUE if `x` is TRUE.
+    AndOrShort { x: Reg, dst: Reg, and: bool, target: u32 },
+    /// Combine the logical operands of `&&`/`||`.
+    AndOr { dst: Reg, x: Reg, y: Reg, and: bool },
+    /// Set up `seq` for a `for` loop over `a:b`, `seq_len(a)` or
+    /// `seq_along(a)`: an integer range when possible, else the vector the
+    /// builtin returns.
+    ForRange { kind: RangeKind, a: Reg, b: Reg, seq: Reg, call: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
@@ -88,6 +130,8 @@ pub struct Code {
     pub nregs: usize,
     /// The variables the code reads or assigns, indexed by [`Slot`].
     pub vars: Vec<Sym>,
+    /// Argument lists of `CallBuiltin`: (tag, register) pairs.
+    pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
@@ -99,7 +143,7 @@ pub struct Code {
 impl Code {
     fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
         let has_guards = c.ops.iter().any(|o| matches!(o, Op::Guard { .. }));
-        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, result, is_body, has_guards }
+        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, arglists: c.arglists, result, is_body, has_guards }
     }
 }
 
@@ -131,6 +175,7 @@ struct Compiler {
     consts: Vec<Value>,
     nregs: usize,
     vars: Vec<Sym>,
+    arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     loops: Vec<Loop>,
 }
 
@@ -149,7 +194,28 @@ fn is_var(sym: Sym) -> bool {
     !sym.is_empty() && sym != s::DOTS && sym.ddval().is_none()
 }
 
-/// `x[i]` or `x[[i]]` with a variable `x` and a leaf index: the
+/// An index expression that can be evaluated before the vector is read
+/// and before any dispatch without observable differences: constants,
+/// variables, and arithmetic, comparisons, `(`, unary minus and `:` over
+/// such expressions (all guarded, so a rebound `+` falls back).
+fn is_pure(e: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    match e {
+        Value::Sym(s) => is_var(*s),
+        Value::Real(_) | Value::Lgl(_) | Value::Int(_) => e.len() == 1 && e.attrs().is_none(),
+        Value::Lang(l) => {
+            let Some(h) = head(l) else { return false };
+            let n = h.name();
+            let ok_head = arith_op(&n).is_some() || rel_op(&n).is_some() || matches!(&*n, "(" | ":");
+            ok_head && !l.args.is_empty() && l.args.len() <= 2 && plain_args(l, l.args.len()) && l.args.iter().all(|a| is_pure(&a.value, depth + 1))
+        }
+        _ => false,
+    }
+}
+
+/// `x[i]` or `x[[i]]` with a variable `x` and a pure index: the
 /// variable, whether it is `[[`, and the index expression.
 fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
     let Value::Lang(l) = e else { return None };
@@ -163,13 +229,39 @@ fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
     }
     let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
     let i = &l.args[1].value;
-    let leafy = match i {
-        Value::Sym(s) => is_var(*s),
-        Value::Real(v) => v.data.len() == 1 && v.attrs.is_none(),
-        Value::Int(v) => v.data.len() == 1 && v.attrs.is_none(),
-        _ => false,
+    is_pure(i, 0).then_some((x, two, i))
+}
+
+fn math1(name: &str) -> Option<Math1> {
+    Some(match name {
+        "sqrt" => Math1::Sqrt,
+        "abs" => Math1::Abs,
+        "exp" => Math1::Exp,
+        "floor" => Math1::Floor,
+        "ceiling" => Math1::Ceiling,
+        "sin" => Math1::Sin,
+        "cos" => Math1::Cos,
+        "tan" => Math1::Tan,
+        _ => return None,
+    })
+}
+
+/// A base primitive evaluating its arguments (a BUILTINSXP), by name.
+fn base_builtin(name: &str) -> Option<&'static Builtin> {
+    crate::builtins::lookup_primitive(name).filter(|b| b.kind == BuiltinKind::Builtin)
+}
+
+/// A for-loop sequence the VM can step through without allocating it.
+fn range_form(e: &Value) -> Option<(Sym, RangeKind, &Value, Option<&Value>)> {
+    let Value::Lang(l) = e else { return None };
+    let h = head(l)?;
+    let kind = match h.name().as_ref() {
+        ":" if plain_args(l, 2) => RangeKind::Colon,
+        "seq_len" if plain_args(l, 1) => RangeKind::SeqLen,
+        "seq_along" if plain_args(l, 1) => RangeKind::SeqAlong,
+        _ => return None,
     };
-    leafy.then_some((x, two, i))
+    Some((h, kind, &l.args[0].value, l.args.get(1).map(|a| &a.value)))
 }
 
 fn arith_op(name: &str) -> Option<ArithOp> {
@@ -209,6 +301,18 @@ impl Compiler {
             None => {
                 self.vars.push(sym);
                 (self.vars.len() - 1) as Slot
+            }
+        }
+    }
+
+    /// An index operand: a leaf, or the register `e` is evaluated into.
+    fn index_operand(&mut self, e: &Value) -> Leaf {
+        match self.leaf(e) {
+            Some(l) => l,
+            None => {
+                let r = self.reg();
+                self.expr(e, r, Want::Value);
+                Leaf::R(r)
             }
         }
     }
@@ -356,7 +460,7 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let g2 = self.guard(Sym::new(if two { "[[<-" } else { "[<-" }), whole, dst);
                 self.expr(&l.args[1].value, dst, Want::Value);
-                let i = self.leaf(i).unwrap();
+                let i = self.index_operand(i);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
                 self.emit(Op::SetIndex { val: dst, x, slot, i, two, k });
@@ -368,7 +472,7 @@ impl Compiler {
             "[" | "[[" if index_form(whole).is_some() => {
                 let (x, two, i) = index_form(whole).unwrap();
                 let g = self.guard(h, whole, dst);
-                let i = self.leaf(i).unwrap();
+                let i = self.index_operand(i);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
                 self.emit(Op::Index { dst, x, slot, i, two, k });
@@ -412,7 +516,23 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                self.expr(&l.args[1].value, seq, Want::Value);
+                if let Some((rh, kind, a_e, b_e)) = range_form(&l.args[1].value) {
+                    // Guard the sequence function; on failure the
+                    // interpreter evaluates the sequence expression.
+                    let gs = self.guard(rh, &l.args[1].value, seq);
+                    let a = self.reg();
+                    let b = self.reg();
+                    self.expr(a_e, a, Want::Value);
+                    if let Some(b_e) = b_e {
+                        self.expr(b_e, b, Want::Value);
+                    }
+                    let kseq = self.konst(l.args[1].value.clone());
+                    self.emit(Op::ForRange { kind, a, b, seq, call: kseq });
+                    let here = self.here();
+                    self.patch(gs, here);
+                } else {
+                    self.expr(&l.args[1].value, seq, Want::Value);
+                }
                 let kc = self.konst(whole.clone());
                 self.emit(Op::ForInit { seq, call: kc });
                 let enter = self.emit(Op::LoopEnter { brk: 0, nxt: 0 });
@@ -542,6 +662,57 @@ impl Compiler {
                     self.emit(Op::Rel { op: rel_op(n).unwrap(), dst, a, b, call: k });
                 }
                 self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "&&" | "||" if plain_args(l, 2) => {
+                let and = name == "&&";
+                let g = self.guard(h, whole, dst);
+                let k = self.konst(whole.clone());
+                let a = self.reg();
+                self.expr(&l.args[0].value, a, Want::Value);
+                let x = self.reg();
+                self.emit(Op::AndOrArg { dst: x, a, and, is_y: false, call: k });
+                let short = self.emit(Op::AndOrShort { x, dst, and, target: 0 });
+                let b = self.reg();
+                self.expr(&l.args[1].value, b, Want::Value);
+                let y = self.reg();
+                self.emit(Op::AndOrArg { dst: y, a: b, and, is_y: true, call: k });
+                self.emit(Op::AndOr { dst, x, y, and });
+                let end = self.here();
+                if let Op::AndOrShort { target, .. } = &mut self.ops[short] {
+                    *target = end;
+                }
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            n if plain_args(l, 1) && math1(n).is_some() => {
+                let g = self.guard(h, whole, dst);
+                let a = self.reg();
+                self.expr(&l.args[0].value, a, Want::Value);
+                let k = self.konst(whole.clone());
+                self.emit(Op::Math1 { f: math1(n).unwrap(), dst, a, call: k });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            n if base_builtin(n).is_some()
+                && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
+            {
+                let b = base_builtin(n).unwrap();
+                let g = self.guard(h, whole, dst);
+                let mut list = Vec::with_capacity(l.args.len());
+                for a in &l.args {
+                    let r = self.reg();
+                    self.expr(&a.value, r, Want::Value);
+                    list.push((a.tag, r));
+                }
+                self.arglists.push(list);
+                let args = (self.arglists.len() - 1) as u32;
+                let f = self.konst(Value::Builtin(b));
+                let call = self.konst(whole.clone());
+                self.emit(Op::CallBuiltin { dst, f, args, call });
                 let end = self.here();
                 self.patch(g, end);
             }
