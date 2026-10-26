@@ -131,6 +131,7 @@ tests/r/vectors/apply-inline.R
 tests/r/vectors/apply.R
 tests/r/vectors/factors.R
 tests/r/vectors/lists.R
+tests/r/vectors/shared-scalars.R
 tests/r/vectors/subassign.R
 tests/r/vectors/subset.R
 tests/r/vectors/types.R

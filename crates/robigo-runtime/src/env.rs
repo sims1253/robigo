@@ -72,6 +72,23 @@ thread_local! {
     static SEARCH_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
+thread_local! {
+    /// Incremented whenever R code may run (an evaluation, a closure
+    /// call, forcing a promise): compiled code's cached variable values
+    /// stay valid while it is unchanged (see `vm::Vars`).
+    static R_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+#[inline]
+pub fn r_epoch() -> u64 {
+    R_EPOCH.with(|e| e.get())
+}
+
+#[inline]
+pub fn bump_r_epoch() {
+    R_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
 #[inline]
 pub fn search_epoch() -> u64 {
     SEARCH_EPOCH.with(|e| e.get())

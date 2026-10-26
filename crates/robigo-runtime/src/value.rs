@@ -330,6 +330,24 @@ impl VType {
     }
 }
 
+/// Shared attribute-free scalars, as GNU R shares its logical constants:
+/// results such as `TRUE` or `length(x)` need no allocation, and
+/// copy-on-modify copies them before any change.
+struct Scalars {
+    /// FALSE, TRUE, NA.
+    lgl: [Value; 3],
+    int: Vec<Value>,
+}
+
+const SMALL_INTS: usize = 128;
+
+thread_local! {
+    static SCALARS: Scalars = Scalars {
+        lgl: [0, 1, NA_LOGICAL].map(|x| Value::Lgl(Rc::new(Vector::new(vec![x])))),
+        int: (0..SMALL_INTS as i32).map(|i| Value::Int(Rc::new(Vector::new(vec![i])))).collect(),
+    };
+}
+
 impl Value {
     // ----- constructors -------------------------------------------------
 
@@ -342,7 +360,7 @@ impl Value {
     }
 
     pub fn lgl(b: bool) -> Value {
-        Value::Lgl(Rc::new(Vector::new(vec![b as Lgl])))
+        SCALARS.with(|c| c.lgl[b as usize].clone())
     }
 
     pub fn lgl_na() -> Value {
@@ -350,10 +368,17 @@ impl Value {
     }
 
     pub fn lgl_raw(x: Lgl) -> Value {
-        Value::Lgl(Rc::new(Vector::new(vec![x])))
+        match x {
+            0 | 1 => SCALARS.with(|c| c.lgl[x as usize].clone()),
+            NA_LOGICAL => SCALARS.with(|c| c.lgl[2].clone()),
+            _ => Value::Lgl(Rc::new(Vector::new(vec![x]))),
+        }
     }
 
     pub fn int(i: i32) -> Value {
+        if (0..SMALL_INTS as i32).contains(&i) {
+            return SCALARS.with(|c| c.int[i as usize].clone());
+        }
         Value::Int(Rc::new(Vector::new(vec![i])))
     }
 

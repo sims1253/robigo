@@ -163,6 +163,7 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => {
+                crate::env::bump_r_epoch();
                 self.check_stack()?;
                 self.depth += 1;
                 if self.depth > MAX_DEPTH {
@@ -258,6 +259,7 @@ impl Interp {
         let env = p.env.borrow().clone();
         let Some(env) = env else { return Ok(Value::Null) };
         p.forcing.set(true);
+        crate::env::bump_r_epoch();
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -737,6 +739,7 @@ impl Interp {
         newenv: Env,
         sysparent: Env,
     ) -> RResult<Value> {
+        crate::env::bump_r_epoch();
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Closure(clo.clone()),

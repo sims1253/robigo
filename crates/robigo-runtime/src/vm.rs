@@ -186,36 +186,71 @@ enum SlotVal {
 
 struct Vars<'a> {
     slots: &'a mut [SlotVal],
-    /// Whether any slot is non-empty / dirty.
+    /// Whether any slot is non-empty / dirty / caches a vector.
     any: bool,
     dirty: bool,
+    vclean: bool,
+    /// `env::r_epoch()` when the cached (clean) values were valid: R code
+    /// that ran since may have changed the variables.
+    epoch: u64,
 }
 
 impl Vars<'_> {
-    /// Write pending assignments to `env` and forget cached values.
+    /// Before R code may run: write pending assignments to `env`. Their
+    /// values stay cached, as do other scalars (until R code actually
+    /// runs, see `get`); cached vectors are dropped so that the binding
+    /// holds the only reference and R code can modify it in place.
     fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
-        if !self.any {
+        if !self.dirty && !self.vclean {
             return Ok(());
         }
-        let dirty = self.dirty;
-        self.any = false;
         self.dirty = false;
+        self.vclean = false;
         let mut res = Ok(());
         for (i, s) in self.slots.iter_mut().enumerate() {
-            if let SlotVal::Dirty(v) = std::mem::replace(s, SlotVal::Empty) {
-                if dirty && res.is_ok() {
-                    res = set_var(interp, env, syms[i], &v);
+            match std::mem::replace(s, SlotVal::Empty) {
+                SlotVal::Dirty(v) => {
+                    if res.is_ok() {
+                        res = set_var(interp, env, syms[i], &v);
+                    }
+                    if res.is_ok() && !matches!(v, RVal::V(_)) {
+                        *s = SlotVal::Clean(v);
+                    }
                 }
+                SlotVal::Clean(v) if !matches!(v, RVal::V(_)) => *s = SlotVal::Clean(v),
+                _ => {}
             }
         }
         res
     }
 
-    fn get(&self, slot: usize) -> Option<&RVal> {
+    fn get(&mut self, slot: usize) -> Option<&RVal> {
+        let now = crate::env::r_epoch();
+        if self.epoch != now {
+            // R code ran: forget cached values (pending ones are newer).
+            self.epoch = now;
+            if self.any {
+                for s in self.slots.iter_mut() {
+                    if matches!(s, SlotVal::Clean(_)) {
+                        *s = SlotVal::Empty;
+                    }
+                }
+                self.vclean = false;
+            }
+        }
         match &self.slots[slot] {
             SlotVal::Clean(v) | SlotVal::Dirty(v) => Some(v),
             SlotVal::Empty => None,
         }
+    }
+
+    /// Cache the current value of a variable.
+    fn cache(&mut self, slot: usize, v: RVal) {
+        if matches!(v, RVal::V(_)) {
+            self.vclean = true;
+        }
+        self.slots[slot] = SlotVal::Clean(v);
+        self.any = true;
     }
 }
 
@@ -290,8 +325,7 @@ fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&
     let slot = slot as usize;
     if vars.get(slot).is_none() {
         let v = plain_lookup(env, sym)?;
-        vars.slots[slot] = SlotVal::Clean(v);
-        vars.any = true;
+        vars.cache(slot, v);
     }
     vars.get(slot)
 }
@@ -1253,12 +1287,14 @@ fn fresh_guards_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
 fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Value> {
     // Registers and slots live on the Rust stack for typical code, so a
     // call does not allocate them.
-    let mut regs: SmallVec<[RVal; 16]> = SmallVec::new();
+    // (Sized for typical base-R functions, which a call should not have
+    // to allocate for.)
+    let mut regs: SmallVec<[RVal; 32]> = SmallVec::new();
     regs.resize_with(code.nregs, || RVal::V(Value::Null));
-    let mut slots: SmallVec<[SlotVal; 8]> = SmallVec::new();
+    let mut slots: SmallVec<[SlotVal; 16]> = SmallVec::new();
     slots.resize_with(code.vars.len(), || SlotVal::Empty);
-    let mut vars = Vars { slots: &mut slots, any: false, dirty: false };
-    let mut small = [0u32; 32];
+    let mut vars = Vars { slots: &mut slots, any: false, dirty: false, vclean: false, epoch: crate::env::r_epoch() };
+    let mut small = [0u32; 64];
     let mut big = Vec::new();
     let checked: &mut [u32] = if code.nguards <= small.len() {
         &mut small[..code.nguards]
@@ -1280,6 +1316,13 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
     checked: &mut [u32],
 ) -> RResult<Value> {
     let mut generation: u32 = 1;
+    // Where `env` or its parent is on the search path, whether guards hold
+    // depends only on the search epoch and `env`'s function bindings: R
+    // code that ran (after a flush) invalidates them only if one changed.
+    // Elsewhere (nested closures) every flush does.
+    let stable = env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search());
+    let mut token = (crate::env::search_epoch(), env.fn_version());
+    let mut recheck = false;
     interp.visible = true;
     // Active loops.
     let mut loops: Vec<LoopRec> = Vec::new();
@@ -1304,8 +1347,26 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
     // Before anything that may run R code or signal.
     macro_rules! flush {
         () => {{
-            generation = generation.wrapping_add(1).max(1);
+            if stable {
+                recheck = true;
+            } else {
+                generation = generation.wrapping_add(1).max(1);
+            }
             tryop!(vars.flush(interp, env, &code.vars))
+        }};
+    }
+    // Before relying on `checked`: start a new generation if R code that
+    // ran since the last flush changed a function binding.
+    macro_rules! revalidate {
+        () => {{
+            if recheck {
+                recheck = false;
+                let now = (crate::env::search_epoch(), env.fn_version());
+                if now != token {
+                    token = now;
+                    generation = generation.wrapping_add(1).max(1);
+                }
+            }
         }};
     }
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
@@ -1313,6 +1374,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
     macro_rules! leaf_op {
         ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
+            if g != NO_GUARD {
+                revalidate!();
+            }
             if g != NO_GUARD && checked[g as usize] != generation {
                 if guard_ok(interp, *$sym, env, &code.guard_memo[pc - 1]) {
                     checked[g as usize] = generation;
@@ -1411,6 +1475,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             } else {
                 // Locked or active bindings, functions: assign now.
                 flush!();
+                vars.slots[slot] = SlotVal::Empty;
                 tryop!(set_var(interp, env, $sym, &val));
             }
         }};
@@ -1434,8 +1499,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     regs[*dst as usize] = v.clone();
                 } else if let Some(v) = plain_lookup(env, *sym) {
                     regs[*dst as usize] = v.clone();
-                    vars.slots[slot] = SlotVal::Clean(v);
-                    vars.any = true;
+                    vars.cache(slot, v);
                 } else {
                     flush!();
                     let r = interp.eval_sym(*sym, env);
@@ -1540,6 +1604,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 pc = *target as usize
             }
             Op::Guard { sym, dst, k, skip, g } => {
+                revalidate!();
                 if checked[*g as usize] == generation {
                     continue;
                 }
@@ -1634,6 +1699,8 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         false,
                         pre.as_deref(),
                     );
+                    // The assignment rebound `x` in the frame.
+                    vars.slots[*slot as usize] = SlotVal::Empty;
                     tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
             }
