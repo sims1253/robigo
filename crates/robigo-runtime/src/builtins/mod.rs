@@ -201,6 +201,18 @@ pub fn post_base_init(interp: &mut Interp) {
 /// `...` if present in `formals`, otherwise it is an error.
 pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Matched> {
     let nf = formals.len();
+    // Positional arguments only, no more than the formals before `...`: all
+    // three passes reduce to assigning them in order.
+    if args.len() <= nf
+        && args.iter().all(|a| a.tag.is_none())
+        && !formals[..args.len()].contains(&"...")
+    {
+        let mut vals: Vec<Option<Value>> = Vec::with_capacity(nf);
+        // (Explicitly empty arguments are missing.)
+        vals.extend(args.into_iter().map(|a| Some(a.value).filter(|v| !v.is_missing_arg())));
+        vals.resize(nf, None);
+        return Ok(Matched { vals, dots: Vec::new() });
+    }
     let mut vals: Vec<Option<Value>> = vec![None; nf];
     let mut fused = vec![false; nf];
     let mut used = vec![false; args.len()];

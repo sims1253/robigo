@@ -2447,6 +2447,12 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     }
                 };
             }
+            Op::CallSpecial { dst, f, k } => {
+                flush!();
+                let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
+                let v = tryop!(interp.eval_special(b, &code.consts[*k as usize], env));
+                regs[*dst as usize] = RVal::V(v);
+            }
             Op::Eval { dst, k } => {
                 flush!();
                 let v = tryop!(interp.eval(&code.consts[*k as usize], env));

@@ -182,6 +182,41 @@ impl Interp {
     // ------------------------------------------------------------------
     // eval
 
+    /// The bookkeeping of `eval` on a call: `f` evaluates it.
+    #[inline]
+    fn eval_lang(&mut self, _e: &Value, f: impl FnOnce(&mut Self) -> RResult<Value>) -> RResult<Value> {
+        crate::env::bump_r_epoch();
+        self.check_stack()?;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            let err = Box::new(crate::error::RError {
+                message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
+                call: Some(Value::Null),
+                signaled: false,
+                classes: vec![],
+            });
+            return Err(self.signal_error(err));
+        }
+        let r = f(self);
+        self.depth -= 1;
+        match r {
+            // R signals conditions where they are raised; errors
+            // created by Rust code are signaled at the innermost
+            // evaluation that sees them.
+            Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
+            r => r,
+        }
+    }
+
+    /// `eval` of the call `e` to the special builtin `b`, known to be the
+    /// function its head names (the compiled code guards that).
+    pub fn eval_special(&mut self, b: &'static Builtin, e: &Value, env: &Env) -> RResult<Value> {
+        let Value::Lang(l) = e else { unreachable!() };
+        self.visible = true;
+        self.eval_lang(e, |s| s.call_builtin(b, e, &l.args, env))
+    }
+
     pub fn eval(&mut self, e: &Value, env: &Env) -> RResult<Value> {
         self.visible = true;
         match e {
@@ -189,30 +224,7 @@ impl Interp {
                 Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
                 r => r,
             },
-            Value::Lang(l) => {
-                crate::env::bump_r_epoch();
-                self.check_stack()?;
-                self.depth += 1;
-                if self.depth > MAX_DEPTH {
-                    self.depth -= 1;
-                    let err = Box::new(crate::error::RError {
-                        message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
-                        call: Some(Value::Null),
-                        signaled: false,
-                        classes: vec![],
-                    });
-                    return Err(self.signal_error(err));
-                }
-                let r = self.eval_call(l, e, env);
-                self.depth -= 1;
-                match r {
-                    // R signals conditions where they are raised; errors
-                    // created by Rust code are signaled at the innermost
-                    // evaluation that sees them.
-                    Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
-                    r => r,
-                }
-            }
+            Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
             _ => Ok(e.clone()),

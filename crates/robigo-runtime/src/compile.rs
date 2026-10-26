@@ -168,6 +168,9 @@ pub enum Op {
     ForRange { kind: RangeKind, a: Reg, b: Reg, seq: Reg, call: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
+    /// The call `consts[k]` to the special builtin `consts[f]`, evaluated
+    /// as `Eval` would without looking the function up.
+    CallSpecial { dst: Reg, f: u32, k: u32 },
     /// `x$name` (call `consts[call]`) with `x` evaluated into register `x`
     /// and the name as a string `consts[name]`.
     Dollar { dst: Reg, x: Reg, name: u32, call: u32 },
@@ -1197,6 +1200,15 @@ impl Compiler {
                 let f = self.konst(Value::Builtin(b));
                 let call = self.konst(whole.clone());
                 self.emit(Op::CallBuiltin { dst, f, args, call });
+                let end = self.here();
+                self.patch(g, end);
+            }
+            n if crate::builtins::lookup_primitive(n).is_some_and(|b| b.kind == BuiltinKind::Special) => {
+                let b = crate::builtins::lookup_primitive(n).unwrap();
+                let g = self.guard(h, whole, dst);
+                let f = self.konst(Value::Builtin(b));
+                let k = self.konst(whole.clone());
+                self.emit(Op::CallSpecial { dst, f, k });
                 let end = self.here();
                 self.patch(g, end);
             }
