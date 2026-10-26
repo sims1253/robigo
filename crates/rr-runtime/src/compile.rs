@@ -137,13 +137,17 @@ pub struct Code {
     /// A closure body (`Return` ends the call) rather than a standalone
     /// loop (`Return` unwinds to the enclosing function).
     pub is_body: bool,
-    pub has_guards: bool,
+    /// Per-op memo of `Guard` results: (search epoch, id of the first
+    /// search-path environment the lookup reached, result).
+    pub guard_memo: Box<[std::cell::Cell<(u64, usize, bool)>]>,
 }
 
 impl Code {
     fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
         let has_guards = c.ops.iter().any(|o| matches!(o, Op::Guard { .. }));
-        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, arglists: c.arglists, result, is_body, has_guards }
+        let memo = if has_guards { c.ops.len() } else { 0 };
+        let guard_memo = (0..memo).map(|_| std::cell::Cell::new((u64::MAX, 0, false))).collect();
+        Code { ops: c.ops, consts: c.consts, nregs: c.nregs, vars: c.vars, arglists: c.arglists, result, is_body, guard_memo }
     }
 }
 

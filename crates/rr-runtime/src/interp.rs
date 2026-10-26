@@ -596,22 +596,35 @@ impl Interp {
         callenv: &Env,
         dispatch_vars: Option<Vec<(Sym, Value)>>,
     ) -> RResult<Value> {
-        let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
-        let newenv = Env::new(Some(clo.env.clone()));
-        for (f, a) in clo.formals.iter().zip(actuals) {
-            let tag = f.tag.unwrap();
-            match a {
-                Some(v) if !v.is_missing_arg() => {
-                    newenv.set_local(tag, v);
+        let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
+        let bind = |tag: Sym, f: &Arg, a: Option<Value>| match a {
+            Some(v) if !v.is_missing_arg() => {
+                newenv.set_local(tag, v);
+            }
+            _ => {
+                if !f.value.is_missing_arg() && tag != s::DOTS {
+                    let p = Value::Promise(Rc::new(Promise::new(f.value.clone(), newenv.clone())));
+                    newenv.set_local_flags(tag, p, BIND_MISSING_DEFAULT);
+                } else {
+                    newenv.set_local(tag, Value::missing_arg());
                 }
-                _ => {
-                    if !f.value.is_missing_arg() && tag != s::DOTS {
-                        let p = Value::Promise(Rc::new(Promise::new(f.value.clone(), newenv.clone())));
-                        newenv.set_local_flags(tag, p, BIND_MISSING_DEFAULT);
-                    } else {
-                        newenv.set_local(tag, Value::missing_arg());
-                    }
-                }
+            }
+        };
+        let nf = clo.formals.len();
+        let np = promargs.len();
+        if np <= nf
+            && promargs.iter().all(|a| a.tag.is_none())
+            && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS))
+        {
+            // Positional arguments only and no `...`: matching assigns them
+            // in order (the fast path of `match_args`, without its copies).
+            for (k, f) in clo.formals.iter().enumerate() {
+                bind(f.tag.unwrap(), f, promargs.get(k).map(|a| a.value.clone()));
+            }
+        } else {
+            let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
+            for (f, a) in clo.formals.iter().zip(actuals) {
+                bind(f.tag.unwrap(), f, a);
             }
         }
         if let Some(vars) = dispatch_vars {

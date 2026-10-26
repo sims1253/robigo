@@ -158,9 +158,6 @@ pub struct EnvData {
     /// Special name used when printing (`R_GlobalEnv`, `base`, `namespace:foo`).
     pub name: RefCell<Option<Rc<str>>>,
     pub id: usize,
-    /// Incremented when a binding in this frame that could hold a function
-    /// is created, changed or removed (see [`Env::fn_version`]).
-    pub fn_version: Cell<u32>,
 }
 
 #[derive(Clone)]
@@ -172,9 +169,14 @@ thread_local! {
 
 impl Env {
     pub fn new(parent: Option<Env>) -> Env {
+        Env::with_capacity(parent, 0)
+    }
+
+    /// A new environment with room for `n` bindings.
+    pub fn with_capacity(parent: Option<Env>, n: usize) -> Env {
         Env::with_frame(
             parent,
-            Rc::new(RefCell::new(Frame { entries: Vec::new(), index: None, search: false })),
+            Rc::new(RefCell::new(Frame { entries: Vec::with_capacity(n), index: None, search: false })),
         )
     }
 
@@ -191,7 +193,6 @@ impl Env {
             locked: Cell::new(false),
             name: RefCell::new(None),
             id,
-            fn_version: Cell::new(0),
         }))
     }
 
@@ -319,11 +320,8 @@ impl Env {
             if b.flags & BIND_LOCKED != 0 {
                 return false;
             }
-            if function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0 {
-                if search {
-                    bump_search_epoch();
-                }
-                self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+            if search && (function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0) {
+                bump_search_epoch();
             }
             b.value = value;
             b.flags = flags;
@@ -331,9 +329,6 @@ impl Env {
         }
         if self.0.locked.get() {
             return false;
-        }
-        if function_like(&value) || flags & BIND_ACTIVE != 0 {
-            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
         }
         f.insert(sym, value, flags);
         true
@@ -348,27 +343,24 @@ impl Env {
         if b.flags & (BIND_ACTIVE | BIND_LOCKED) != 0 {
             return Some(b.value.clone());
         }
-        if function_like(&b.value) {
-            if search {
-                bump_search_epoch();
-            }
-            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+        if search && function_like(&b.value) {
+            bump_search_epoch();
         }
         Some(std::mem::replace(&mut b.value, Value::Null))
     }
 
     pub fn remove(&self, sym: Sym) -> bool {
-        let r = self.0.frame.borrow_mut().remove(sym);
-        if r.as_ref().is_some_and(|b| function_like(&b.value)) {
-            self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
-        }
-        r.is_some()
+        self.0.frame.borrow_mut().remove(sym).is_some()
     }
 
-    /// See [`EnvData::fn_version`].
+    /// Could a function lookup of `sym` stop in this frame (a function,
+    /// promise, active binding or missing argument bound to it)?
     #[inline]
-    pub fn fn_version(&self) -> u32 {
-        self.0.fn_version.get()
+    pub fn local_may_bind_fun(&self, sym: Sym) -> bool {
+        match self.0.frame.borrow().get(sym) {
+            Some(b) => function_like(&b.value) || b.flags & BIND_ACTIVE != 0 || b.value.is_missing_arg(),
+            None => false,
+        }
     }
 
     /// Find the innermost environment binding `sym`.

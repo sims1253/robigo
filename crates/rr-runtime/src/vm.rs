@@ -181,10 +181,6 @@ struct Vars {
 }
 
 impl Vars {
-    fn new(n: usize) -> Vars {
-        Vars { slots: (0..n).map(|_| SlotVal::Empty).collect(), any: false, dirty: false }
-    }
-
     /// Write pending assignments to `env` and forget cached values.
     fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
         if !self.any {
@@ -501,19 +497,59 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
     signal(interp, r)
 }
 
-pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
-    interp.visible = true;
+/// Does `sym`, looked up as a function from `env`, still resolve to base?
+/// Frames below the search path (fresh per call) are checked directly; the
+/// lookup from the first search-path environment on is memoized per guard
+/// against the search epoch, which changes with any function binding there.
+fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<(u64, usize, bool)>) -> bool {
+    let mut cur = env.clone();
+    while !cur.is_search() {
+        if cur.local_may_bind_fun(sym) {
+            return interp.resolves_to_base(sym, env);
+        }
+        cur = match cur.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+    }
+    let epoch = crate::env::search_epoch();
+    let (e, id, r) = memo.get();
+    if e == epoch && id == cur.id() {
+        return r;
+    }
+    let r = interp.resolves_to_base(sym, &cur);
+    memo.set((epoch, cur.id(), r));
+    r
+}
 
-    let mut regs: Vec<RVal> = vec![RVal::V(Value::Null); code.nregs];
+thread_local! {
+    /// Register and variable-slot buffers of finished runs, reused so that
+    /// a call does not allocate them.
+    static BUFFERS: RefCell<Vec<(Vec<RVal>, Vec<SlotVal>)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
+    let (mut regs, mut slots) = BUFFERS.with(|b| b.borrow_mut().pop()).unwrap_or_default();
+    regs.resize(code.nregs, RVal::V(Value::Null));
+    slots.resize_with(code.vars.len(), || SlotVal::Empty);
+    let mut vars = Vars { slots, any: false, dirty: false };
+    let r = run_with(interp, code, env, &mut regs, &mut vars);
+    regs.clear();
+    vars.slots.clear();
+    BUFFERS.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.len() < 64 {
+            b.push((regs, vars.slots));
+        }
+    });
+    r
+}
+
+fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars) -> RResult<Value> {
+    interp.visible = true;
     // (break target, next target) of active loops.
     let mut loops: Vec<(u32, u32)> = Vec::new();
-    // Guard results memoized for this run, valid while neither the search
-    // path nor the frame's function bindings change. Only used when the
-    // frame's parent is on the search path (the common case).
-    let cacheable = code.has_guards && (env.is_search() || env.parent().is_some_and(|p| p.is_search()));
-    let mut guards: Vec<(u64, u32, bool)> = if cacheable { vec![(u64::MAX, 0, false); code.ops.len()] } else { Vec::new() };
     let ops = &code.ops;
-    let mut vars = Vars::new(code.vars.len());
     let mut pc: usize = 0;
     macro_rules! tryop {
         ($e:expr) => {
@@ -664,19 +700,7 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
             }
             Op::Jump { target } => pc = *target as usize,
             Op::Guard { sym, dst, k, skip } => {
-                let ok = if cacheable {
-                    let (epoch, ver) = (crate::env::search_epoch(), env.fn_version());
-                    let slot = &mut guards[pc - 1];
-                    if slot.0 == epoch && slot.1 == ver {
-                        slot.2
-                    } else {
-                        let r = interp.resolves_to_base(*sym, env);
-                        guards[pc - 1] = (epoch, ver, r);
-                        r
-                    }
-                } else {
-                    interp.resolves_to_base(*sym, env)
-                };
+                let ok = guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]);
                 if !ok {
                     if std::env::var_os("RR_VM_TRACE").is_some() {
                         eprintln!("vm: guard failed for {}", sym);
