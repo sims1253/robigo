@@ -77,6 +77,29 @@ share a method, which rr adopts:
 - **Vertical slices with gates**, not "percent ported": parser → printing →
   evaluator → vectors → S3/conditions → base library → packages.
 
+[blaze](https://github.com/indexable-inc/blaze) (per-function Rust
+compilation and live patching) adds lessons for the execution tiers and the
+harness, several of which rr follows or plans to:
+
+- **Every tier is gated against the oracle, not just the fast one.** blaze
+  runs its whole harness under both Cranelift and LLVM; rr runs every
+  conformance script under the interpreter and the bytecode VM and requires
+  identical output (`compiled_matches_interpreted`).
+- **Tier up from sampling, not from counters everywhere.** blaze samples
+  where the program is every 2 ms and recompiles functions with ≥2% of the
+  samples at LLVM -O3 with hot callees inlined, then again with the branch
+  counts that tier collected (PGO). An R JIT can choose closures the same
+  way, keeping the baseline cheap.
+- **Count refusals.** Functions a tier declines are counted with reasons;
+  for rr, the share of operations that fall back to the AST interpreter
+  (`Eval`) is the analogous metric.
+- **Reduced regressions and fuzzing.** Minimal reproductions of bugs found
+  in real code are kept and run one by one ("breakers"); generated programs
+  are compared between implementations. For rr: random scalar/vector loop
+  programs, compared between GNU R, the interpreter and the VM.
+- **Run the reference's own test suite with counted exclusions** (rustc's
+  `tests/ui` for blaze; GNU R's `tests/*.R` with `.Rout.save` for rr).
+
 ## 3. Architecture
 
 ```
