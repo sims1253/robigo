@@ -29,6 +29,7 @@ pub static DEFS: &[Builtin] = &[
     internal("make.unique", do_makeunique, 2),
     internal("match.call", do_matchcall, 4),
     internal("tabulate", do_tabulate, 2),
+    internal("merge", do_merge, 4),
     internal("findInterval", do_findinterval, 6),
     internal("bincode", do_bincode, 4),
     internal("split", do_split, 2),
@@ -146,6 +147,120 @@ pub fn hkeys(x: &Value) -> Vec<HKey> {
 }
 
 // ----------------------------------------------------------------------
+// open-addressing tables of element indices (as R's HashData)
+
+/// The elements of an atomic vector, hashed and compared in place with the
+/// equality `HKey` implements.
+enum Elems<'a> {
+    I(&'a [i32]),
+    R(&'a [f64]),
+    C(&'a [Complex]),
+    S(&'a [RStr]),
+    B(&'a [u8]),
+}
+
+fn elems(x: &Value) -> Option<Elems<'_>> {
+    Some(match x {
+        Value::Lgl(v) | Value::Int(v) => Elems::I(&v.data),
+        Value::Real(v) => Elems::R(&v.data),
+        Value::Cplx(v) => Elems::C(&v.data),
+        Value::Str(v) => Elems::S(&v.data),
+        Value::Raw(v) => Elems::B(&v.data),
+        _ => return None,
+    })
+}
+
+impl Elems<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Elems::I(v) => v.len(),
+            Elems::R(v) => v.len(),
+            Elems::C(v) => v.len(),
+            Elems::S(v) => v.len(),
+            Elems::B(v) => v.len(),
+        }
+    }
+
+    /// A hash whose high bits are well mixed (Fibonacci hashing).
+    #[inline]
+    fn hash(&self, i: usize) -> u64 {
+        let h = match self {
+            Elems::I(v) => v[i] as u32 as u64,
+            Elems::R(v) => {
+                let k = real_key(v[i]);
+                k ^ (k >> 32)
+            }
+            Elems::C(v) => {
+                let (a, b) = cplx_key(v[i]);
+                a ^ (a >> 32) ^ b.rotate_left(29)
+            }
+            Elems::S(v) => match &v[i] {
+                None => 0x5bd1_e995,
+                Some(s) => {
+                    let mut h = crate::sym::StrHasher::default();
+                    h.write(s.as_bytes());
+                    h.finish()
+                }
+            },
+            Elems::B(v) => v[i] as u64,
+        };
+        h.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// Whether element `i` equals element `j` of `other` (of the same type).
+    #[inline]
+    fn eq(&self, i: usize, other: &Elems, j: usize) -> bool {
+        match (self, other) {
+            (Elems::I(a), Elems::I(b)) => a[i] == b[j],
+            (Elems::R(a), Elems::R(b)) => real_key(a[i]) == real_key(b[j]),
+            (Elems::C(a), Elems::C(b)) => cplx_key(a[i]) == cplx_key(b[j]),
+            (Elems::S(a), Elems::S(b)) => match (&a[i], &b[j]) {
+                (Some(x), Some(y)) => std::rc::Rc::ptr_eq(x, y) || **x == **y,
+                (None, None) => true,
+                _ => false,
+            },
+            (Elems::B(a), Elems::B(b)) => a[i] == b[j],
+            _ => false,
+        }
+    }
+}
+
+/// Indices of inserted elements by hash, with linear probing.
+struct IdxTable {
+    slots: Vec<u32>,
+    shift: u32,
+}
+
+const EMPTY_SLOT: u32 = u32::MAX;
+
+impl IdxTable {
+    fn new(n: usize) -> IdxTable {
+        let cap = (n * 2).max(16).next_power_of_two();
+        IdxTable { slots: vec![EMPTY_SLOT; cap], shift: 64 - cap.trailing_zeros() }
+    }
+
+    /// The inserted index `j` with `eq(j)` for an element with hash `h`, or
+    /// the free slot where it would go.
+    #[inline]
+    fn find(&self, h: u64, mut eq: impl FnMut(usize) -> bool) -> Result<usize, usize> {
+        let mask = self.slots.len() - 1;
+        let mut i = (h >> self.shift) as usize;
+        loop {
+            match self.slots[i] {
+                EMPTY_SLOT => return Err(i),
+                j if eq(j as usize) => return Ok(j as usize),
+                _ => i = (i + 1) & mask,
+            }
+        }
+    }
+
+    #[inline]
+    fn insert_at(&mut self, slot: usize, j: usize) {
+        self.slots[slot] = j as u32;
+    }
+}
+
+// ----------------------------------------------------------------------
 // duplicated, unique, anyDuplicated
 
 fn is_false_scalar(v: &Value) -> bool {
@@ -169,6 +284,44 @@ fn hash_limit(x: &Value, nmax: i32) -> Option<i64> {
 
 /// `Duplicated`/`duplicated3`: logical duplicated flags.
 fn duplicated_flags(x: &Value, incomp: Option<&Value>, from_last: bool, nmax: i32) -> RResult<Vec<bool>> {
+    if let Some(e) = elems(x) {
+        let n = e.len();
+        let mut t = IdxTable::new(n);
+        let mut out = vec![false; n];
+        let mut budget = hash_limit(x, nmax);
+        let mut visit = |k: usize| -> RResult<()> {
+            let h = e.hash(k);
+            match t.find(h, |j| e.eq(k, &e, j)) {
+                Ok(_) => out[k] = true,
+                Err(slot) => {
+                    if let Some(b) = budget.as_mut() {
+                        if *b < 0 {
+                            return Err(Flow::error("hash table is full"));
+                        }
+                        *b -= 1;
+                    }
+                    t.insert_at(slot, k);
+                }
+            }
+            Ok(())
+        };
+        if from_last {
+            (0..n).rev().try_for_each(&mut visit)?;
+        } else {
+            (0..n).try_for_each(&mut visit)?;
+        }
+        if let Some(inc) = incomp {
+            let inc = crate::coerce::coerce_quiet(inc, x.vtype().unwrap_or(VType::Lgl));
+            if let Some(ie) = elems(&inc) {
+                for (k, d) in out.iter_mut().enumerate() {
+                    if *d && (0..ie.len()).any(|c| ie.eq(c, &e, k)) {
+                        *d = false;
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
     let keys = hkeys(x);
     let n = keys.len();
     let mut seen: std::collections::HashSet<&HKey> = std::collections::HashSet::with_capacity(n);
@@ -333,6 +486,26 @@ pub fn match5(
     let ty = if tx >= 16 || tt >= 16 { VType::Str } else { vtype_of_code(tx.max(tt)) };
     let x = crate::coerce::coerce_quiet(&x, ty);
     let table = crate::coerce::coerce_quiet(&table, ty);
+    if let (Some(te), Some(xe)) = (elems(&table), elems(&x)) {
+        let mut t = IdxTable::new(te.len());
+        for j in 0..te.len() {
+            let h = te.hash(j);
+            if let Err(slot) = t.find(h, |m| te.eq(j, &te, m)) {
+                t.insert_at(slot, j);
+            }
+        }
+        // R removes the incomparables from the table; equivalently, they
+        // match nothing.
+        let inc = incomp.map(|inc| crate::coerce::coerce_quiet(inc, ty));
+        let ie = inc.as_ref().and_then(elems);
+        return Ok((0..xe.len())
+            .map(|i| match t.find(xe.hash(i), |j| xe.eq(i, &te, j)) {
+                Ok(_) if ie.as_ref().is_some_and(|ie| (0..ie.len()).any(|c| ie.eq(c, &xe, i))) => nomatch,
+                Ok(j) => j as i32 + 1,
+                Err(_) => nomatch,
+            })
+            .collect());
+    }
     let tk = hkeys(&table);
     let mut map: HashMap<&HKey, i32> = HashMap::with_capacity(tk.len());
     for (k, key) in tk.iter().enumerate() {
@@ -634,6 +807,110 @@ fn do_makeunique(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> R
 
 // ----------------------------------------------------------------------
 // tabulate, findInterval, bincode (util.c)
+
+// R: util.c:isort_with_index (a Shell sort; not stable, so the order of
+// equal keys is this algorithm's)
+fn isort_with_index(x: &mut [i32], indx: &mut [i32]) {
+    let n = x.len();
+    let mut h = 1;
+    while h <= n / 9 {
+        h = 3 * h + 1;
+    }
+    while h > 0 {
+        for i in h..n {
+            let (v, iv) = (x[i], indx[i]);
+            let mut j = i;
+            while j >= h && x[j - h] > v {
+                x[j] = x[j - h];
+                indx[j] = indx[j - h];
+                j -= h;
+            }
+            x[j] = v;
+            indx[j] = iv;
+        }
+        h /= 3;
+    }
+}
+
+// R: util.c:do_merge
+fn do_merge(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 4, "merge", call)?;
+    let is_integer = |v: &Value| matches!(v, Value::Int(_)) && !v.inherits("factor");
+    let (xv, yv) = (&args[0].value, &args[1].value);
+    if !is_integer(xv) || xv.is_empty() {
+        return Err(Flow::error("invalid 'xinds' argument"));
+    }
+    if !is_integer(yv) || yv.is_empty() {
+        return Err(Flow::error("invalid 'yinds' argument"));
+    }
+    let flag = |v: &Value, name: &str| {
+        let b = if v.is_empty() { NA_LOGICAL } else { crate::coerce::as_logical(v) };
+        if b == NA_LOGICAL {
+            Err(Flow::error(format!("'{}' must be TRUE or FALSE", name)))
+        } else {
+            Ok(b != 0)
+        }
+    };
+    let all_x = flag(&args[2].value, "all.x")?;
+    let all_y = flag(&args[3].value, "all.y")?;
+    // 0. sort the indices (of copies: R sorts its temporary arguments)
+    let (Value::Int(xv), Value::Int(yv)) = (xv, yv) else { unreachable!() };
+    let mut xi = xv.data.to_vec();
+    let mut yi = yv.data.to_vec();
+    let (nx, ny) = (xi.len(), yi.len());
+    let mut ix: Vec<i32> = (1..=nx as i32).collect();
+    let mut iy: Vec<i32> = (1..=ny as i32).collect();
+    isort_with_index(&mut xi, &mut ix);
+    isort_with_index(&mut yi, &mut iy);
+    // 1. the rows without a match come first
+    let nx_lone = xi.iter().position(|&v| v > 0).unwrap_or(nx);
+    let ny_lone = yi.iter().position(|&v| v > 0).unwrap_or(ny);
+    // 2. pairs of rows with equal common indices
+    let groups = || {
+        let mut out = Vec::new();
+        let (mut i, mut j) = (nx_lone, ny_lone);
+        while i < nx {
+            let tmp = xi[i];
+            let mut nnx = i;
+            while nnx < nx && xi[nnx] == tmp {
+                nnx += 1;
+            }
+            while j < ny && yi[j] < tmp {
+                j += 1;
+            }
+            let mut nny = j;
+            while nny < ny && yi[nny] == tmp {
+                nny += 1;
+            }
+            out.push((i, nnx, j, nny));
+            i = nnx;
+            j = nny;
+        }
+        out
+    };
+    let groups = groups();
+    let nans: f64 = groups.iter().map(|&(i, nnx, j, nny)| (nnx - i) as f64 * (nny - j) as f64).sum();
+    if nans > i64::MAX as f64 {
+        return Err(Flow::error("number of rows in the result exceeds maximum vector length"));
+    }
+    let (mut ansx, mut ansy) = (Vec::with_capacity(nans as usize), Vec::with_capacity(nans as usize));
+    for &(i, nnx, j, nny) in &groups {
+        for i0 in i..nnx {
+            for j0 in j..nny {
+                ansx.push(ix[i0]);
+                ansy.push(iy[j0]);
+            }
+        }
+    }
+    let x_alone = if all_x { Value::ints(ix[..nx_lone].to_vec()) } else { Value::Null };
+    let y_alone = if all_y { Value::ints(iy[..ny_lone].to_vec()) } else { Value::Null };
+    Ok(Value::named_list(vec![
+        ("xi", Value::ints(ansx)),
+        ("yi", Value::ints(ansy)),
+        ("x.alone", x_alone),
+        ("y.alone", y_alone),
+    ]))
+}
 
 // R: util.c:do_tabulate
 fn do_tabulate(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {

@@ -384,7 +384,8 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
 macro_rules! real_kernel {
     ($a:expr, $b:expr, $n:expr, $f:expr) => {{
         let (a, b, n) = ($a, $b, $n);
-        let f = $f;
+        #[allow(unused_mut)]
+        let mut f = $f;
         if n == 0 {
             Vec::new()
         } else if a.len() == n && b.len() == n {
@@ -491,79 +492,56 @@ fn int_slice(v: &Value) -> &[i32] {
 fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: &Value, n: usize) -> RResult<Value> {
     let a = int_slice(x);
     let b = int_slice(y);
-    let (nx, ny) = (a.len(), b.len());
     let mut naflag = false;
+    // R_integer_plus/minus/times: NA in, NA out; results outside
+    // [-INT_MAX, INT_MAX] are NA with a warning.
+    macro_rules! checked {
+        ($f:expr) => {{
+            let f = $f;
+            let mut ovf = false;
+            let out: Vec<i32> = real_kernel!(a, b, n, |x: i32, y: i32| {
+                let r: i64 = f(x as i64, y as i64);
+                let na = x == NA_INTEGER || y == NA_INTEGER;
+                let bad = r > i32::MAX as i64 || r < -(i32::MAX as i64);
+                ovf |= bad & !na;
+                if na | bad { NA_INTEGER } else { r as i32 }
+            });
+            naflag = ovf;
+            Value::ints(out)
+        }};
+    }
     let val = match op {
-        ArithOp::Plus | ArithOp::Minus | ArithOp::Times => {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let (x1, x2) = (a[i % nx], b[i % ny]);
-                if x1 == NA_INTEGER || x2 == NA_INTEGER {
-                    out.push(NA_INTEGER);
-                    continue;
-                }
-                let r = match op {
-                    ArithOp::Plus => (x1 as i64) + (x2 as i64),
-                    ArithOp::Minus => (x1 as i64) - (x2 as i64),
-                    _ => (x1 as i64) * (x2 as i64),
-                };
-                if r > i32::MAX as i64 || r <= i32::MIN as i64 {
-                    naflag = true;
-                    out.push(NA_INTEGER);
-                } else {
-                    out.push(r as i32);
-                }
+        ArithOp::Plus => checked!(|x: i64, y: i64| x + y),
+        ArithOp::Minus => checked!(|x: i64, y: i64| x - y),
+        ArithOp::Times => checked!(|x: i64, y: i64| x * y),
+        ArithOp::Div => Value::reals(real_kernel!(a, b, n, |x1: i32, x2: i32| {
+            if x1 == NA_INTEGER || x2 == NA_INTEGER { NA_REAL } else { x1 as f64 / x2 as f64 }
+        })),
+        ArithOp::Pow => Value::reals(real_kernel!(a, b, n, |x1: i32, x2: i32| {
+            if x1 == 1 || x2 == 0 {
+                1.0
+            } else if x1 == NA_INTEGER || x2 == NA_INTEGER {
+                NA_REAL
+            } else {
+                r_pow(x1 as f64, x2 as f64)
             }
-            Value::ints(out)
-        }
-        ArithOp::Div => {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let (x1, x2) = (a[i % nx], b[i % ny]);
-                out.push(if x1 == NA_INTEGER || x2 == NA_INTEGER { NA_REAL } else { x1 as f64 / x2 as f64 });
+        })),
+        ArithOp::Mod => Value::ints(real_kernel!(a, b, n, |x1: i32, x2: i32| {
+            if x1 == NA_INTEGER || x2 == NA_INTEGER || x2 == 0 {
+                NA_INTEGER
+            } else if x1 >= 0 && x2 > 0 {
+                x1 % x2
+            } else {
+                myfmod(x1 as f64, x2 as f64) as i32
             }
-            Value::reals(out)
-        }
-        ArithOp::Pow => {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let (x1, x2) = (a[i % nx], b[i % ny]);
-                out.push(if x1 == 1 || x2 == 0 {
-                    1.0
-                } else if x1 == NA_INTEGER || x2 == NA_INTEGER {
-                    NA_REAL
-                } else {
-                    r_pow(x1 as f64, x2 as f64)
-                });
+        })),
+        ArithOp::IDiv => Value::ints(real_kernel!(a, b, n, |x1: i32, x2: i32| {
+            if x1 == NA_INTEGER || x2 == NA_INTEGER || x2 == 0 {
+                NA_INTEGER
+            } else {
+                (x1 as f64 / x2 as f64).floor() as i32
             }
-            Value::reals(out)
-        }
-        ArithOp::Mod => {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let (x1, x2) = (a[i % nx], b[i % ny]);
-                out.push(if x1 == NA_INTEGER || x2 == NA_INTEGER || x2 == 0 {
-                    NA_INTEGER
-                } else if x1 >= 0 && x2 > 0 {
-                    x1 % x2
-                } else {
-                    myfmod(x1 as f64, x2 as f64) as i32
-                });
-            }
-            Value::ints(out)
-        }
-        ArithOp::IDiv => {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let (x1, x2) = (a[i % nx], b[i % ny]);
-                out.push(if x1 == NA_INTEGER || x2 == NA_INTEGER || x2 == 0 {
-                    NA_INTEGER
-                } else {
-                    (x1 as f64 / x2 as f64).floor() as i32
-                });
-            }
-            Value::ints(out)
-        }
+        })),
     };
     if naflag {
         interp.warningcall(call, "NAs produced by integer overflow")?;

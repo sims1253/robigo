@@ -146,19 +146,37 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         return (sign * ans.to_f64(), p);
     }
     let mut ndigits: i64 = 0;
+    // `ans = 10 * ans + digit` in long double is exact while ans < 2^63:
+    // accumulate in an integer until then.
+    let mut acc: u64 = 0;
+    let mut big = false;
+    let mut digit = |ans: &mut LD, d: u8| {
+        if !big && acc < (i64::MAX as u64 - 9) / 10 {
+            acc = acc * 10 + d as u64;
+        } else {
+            if !big {
+                *ans = LD::from_i64(acc as i64);
+                big = true;
+            }
+            *ans = *ans * 10.0 + d as f64;
+        }
+    };
     while at(p).is_ascii_digit() {
-        ans = ans * 10.0 + (at(p) - b'0') as f64;
+        digit(&mut ans, at(p) - b'0');
         p += 1;
         ndigits += 1;
     }
     if at(p) == dec && dec != 0 {
         p += 1;
         while at(p).is_ascii_digit() {
-            ans = ans * 10.0 + (at(p) - b'0') as f64;
+            digit(&mut ans, at(p) - b'0');
             p += 1;
             ndigits += 1;
             expn -= 1;
         }
+    }
+    if !big {
+        ans = LD::from_i64(acc as i64);
     }
     if ndigits == 0 {
         return back_out;

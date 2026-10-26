@@ -1318,11 +1318,7 @@ fn do_cum(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: CumOp) ->
             }
         }
         CumOp::Prod => {
-            let mut prod = F80::ONE;
-            for k in 0..n {
-                prod = prod.mul(F80::from_f64(x[k]));
-                s[k] = prod.to_f64();
-            }
+            let prod = F80::ONE.cumprod_slice(&x[..n], &mut s[..n]);
             if prod.is_nan() {
                 handle_nan(x, &mut s);
             }

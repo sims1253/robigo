@@ -1,10 +1,8 @@
 //! Number and string formatting for printing. Port of GNU R's format.c and
 //! printutils.c.
 //!
-//! GNU R's `scientific()` scales by powers of ten in 80-bit `long double`
-//! and rounds with `nearbyintl`. We instead obtain the significant digits
-//! from Rust's correctly rounded decimal conversion, which agrees except in
-//! pathological double-rounding cases.
+//! `scientific()` scales by powers of ten in 80-bit `long double` and
+//! rounds with `nearbyintl`, as GNU R does on x86_64 (see `nmath::ldouble`).
 
 use robigo_syntax::cfmt::{fmt_e, fmt_f};
 
@@ -49,10 +47,20 @@ impl Default for PrintParams {
     }
 }
 
-const KP_MAX: i32 = 22;
+use crate::nmath::ldouble::LDouble;
 
-fn tbl(i: i32) -> f64 {
-    10f64.powi(i)
+/// The largest power of ten in `tbl`.
+const KP_MAX: i32 = 27;
+
+/// GNU R's `tbl[]`: declared `long double`, but initialized with `double`
+/// literals, so 1e23 to 1e27 are the nearest doubles, not exact powers.
+const TBL: [f64; 28] = [
+    1e00, 1e01, 1e02, 1e03, 1e04, 1e05, 1e06, 1e07, 1e08, 1e09, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17,
+    1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27,
+];
+
+fn tbl(i: i32) -> LDouble {
+    LDouble::from_f64(TBL[i as usize])
 }
 
 pub struct Sci {
@@ -64,28 +72,66 @@ pub struct Sci {
 
 /// For finite `x`, the decimal exponent and number of significant digits
 /// (at most `digits`) needed to represent it.
+// R: format.c:scientific
 pub fn scientific(x: f64, digits: usize) -> Sci {
     if x == 0.0 {
         return Sci { neg: false, kpower: 0, nsig: 1, roundingwidens: false };
     }
     let neg = x < 0.0;
     let r = x.abs();
-    let digits = digits.max(1);
-    // Correctly rounded mantissa with `digits` significant digits.
-    let s = format!("{:.*e}", digits - 1, r);
-    let (mant, exp) = s.split_once('e').unwrap();
-    let kpower: i32 = exp.parse().unwrap();
-    let mant_digits: Vec<u8> = mant.bytes().filter(|b| b.is_ascii_digit()).collect();
-    let mut nsig = mant_digits.len() as i32;
-    while nsig > 1 && mant_digits[(nsig - 1) as usize] == b'0' {
-        nsig -= 1;
-    }
+    let digits = digits.max(1) as i32;
     if digits >= 16 {
+        // format_via_sprintf: "%#.*e" (Rust's conversion is correctly
+        // rounded, as glibc's is).
+        let s = format!("{:.*e}", digits as usize - 1, r);
+        let (mant, exp) = s.split_once('e').unwrap();
+        let kpower: i32 = exp.parse().unwrap();
+        let mant = mant.as_bytes();
+        // "d.ddd": digit i (1-based, after the point) is mant[i + 1].
+        let mut nsig = digits;
+        while nsig >= 2 && mant[nsig as usize] == b'0' {
+            nsig -= 1;
+        }
         return Sci { neg, kpower, nsig, roundingwidens: false };
     }
-    let rgt = (digits as i32 - kpower).clamp(0, KP_MAX);
-    let fuzz = 0.5 / tbl(rgt);
-    let roundingwidens = kpower > 0 && kpower <= KP_MAX && r < tbl(kpower) - fuzz;
+    // r = |x|; 10^(kp + digits - 1) <= r
+    let mut kp = r.log10().floor() as i32 - digits + 1;
+    let mut r_prec = LDouble::from_f64(r);
+    // Use the exact scaling factor in long double precision, if possible.
+    if kp.abs() <= KP_MAX {
+        if kp > 0 {
+            r_prec /= tbl(kp);
+        } else if kp < 0 {
+            r_prec *= tbl(-kp);
+        }
+    } else {
+        r_prec /= LDouble::from_f64(10.0).powl(LDouble::from_i64(kp as i64));
+    }
+    if r_prec < tbl(digits - 1) {
+        r_prec *= 10.0;
+        kp -= 1;
+    }
+    // Round alpha to an integer, 10^(digits-1) <= alpha <= 10^digits.
+    let mut alpha = r_prec.rint().to_f64();
+    let mut nsig = digits;
+    for _ in 1..=digits {
+        alpha /= 10.0;
+        if alpha == alpha.floor() {
+            nsig -= 1;
+        } else {
+            break;
+        }
+    }
+    if nsig == 0 {
+        nsig = 1;
+        kp += 1;
+    }
+    let kpower = kp + digits - 1;
+    // Scientific format may do more rounding than fixed format, e.g. 9996
+    // with 3 digits is 1e+04 in scientific, but 9996 in fixed.
+    let rgt = (digits - kpower).clamp(0, KP_MAX);
+    let fuzz = 0.5 / TBL[rgt as usize];
+    let roundingwidens = kpower > 0 && kpower <= KP_MAX && LDouble::from_f64(r) < tbl(kpower) - fuzz;
     Sci { neg, kpower, nsig, roundingwidens }
 }
 
@@ -208,12 +254,22 @@ pub fn encode_real0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
 
 /// `EncodeRealDrop0`: like [`encode_real0`] but dropping trailing zeros.
 pub fn encode_real_drop0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
-    let s = encode_real0(x, w, d, e, na);
-    drop_trailing_zeros(&s)
+    let mut s = encode_real0(x, w, d, e, na);
+    drop_trailing_zeros_in(&mut s);
+    s
 }
 
 pub fn drop_trailing_zeros(s: &str) -> String {
-    let Some(dot) = s.find('.') else { return s.to_string() };
+    let mut s = s.to_string();
+    drop_trailing_zeros_in(&mut s);
+    s
+}
+
+/// Drop the zeros at the end of the digits after the decimal point (and
+/// the point if none remain).
+// R: printutils.c:dropTrailing0
+fn drop_trailing_zeros_in(s: &mut String) {
+    let Some(dot) = s.find('.') else { return };
     let bytes = s.as_bytes();
     let mut end = dot + 1;
     let mut replace = dot;
@@ -224,9 +280,7 @@ pub fn drop_trailing_zeros(s: &str) -> String {
         end += 1;
     }
     if replace != end {
-        format!("{}{}", &s[..replace], &s[end..])
-    } else {
-        s.to_string()
+        s.replace_range(replace..end, "");
     }
 }
 

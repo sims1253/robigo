@@ -67,6 +67,11 @@ impl F80 {
         F80(self.0.cumsum_from(xs, ys))
     }
 
+    /// Running products from `self` into `ys` (rounded to double).
+    pub fn cumprod_slice(self, xs: &[f64], ys: &mut [f64]) -> F80 {
+        F80(self.0.cumprod_from(xs, ys))
+    }
+
     /// `sum((long double) x - self)` over `xs`.
     pub fn sum_dev(self, xs: &[f64]) -> F80 {
         F80(self.0.sum_dev(xs))

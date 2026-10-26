@@ -3,6 +3,7 @@ tests/r/basics/arith-vectors.R
 tests/r/basics/arith.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
+tests/r/basics/int-arith-kernels.R
 tests/r/basics/print-numbers.R
 tests/r/basics/vectors.R
 tests/r/conditions/missing-function.R
@@ -71,6 +72,7 @@ tests/r/programs/shapes.R
 tests/r/programs/stack.R
 tests/r/s3/dispatch.R
 tests/r/s3/ops.R
+tests/r/strings/as-numeric-strtod.R
 tests/r/strings/basic.R
 tests/r/strings/case-names.R
 tests/r/strings/char-errors.R
@@ -107,6 +109,7 @@ tests/r/subset/vector-index.R
 tests/r/vec/allany-which.R
 tests/r/vec/bins.R
 tests/r/vec/colon-seq.R
+tests/r/vec/colsums-ldouble.R
 tests/r/vec/dispatch.R
 tests/r/vec/err/err-any.R
 tests/r/vec/err/err-colon.R
@@ -119,9 +122,12 @@ tests/r/vec/err/err-seq-by.R
 tests/r/vec/err/err-seq-len.R
 tests/r/vec/err/err-which.R
 tests/r/vec/factor-table.R
+tests/r/vec/format-scientific.R
+tests/r/vec/hash-tables.R
 tests/r/vec/match.R
 tests/r/vec/matprod-bits.R
 tests/r/vec/mean-cum.R
+tests/r/vec/merge-internal.R
 tests/r/vec/minmax.R
 tests/r/vec/order-radix.R
 tests/r/vec/rep.R

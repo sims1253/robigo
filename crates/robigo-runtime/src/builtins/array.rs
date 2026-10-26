@@ -1001,47 +1001,10 @@ fn do_aperm(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 // ----------------------------------------------------------------------
 // colSums and friends
 
-/// An accumulator with more precision than `f64`, standing in for R's
-/// `LDOUBLE` (80-bit long double) sums: a double-double.
-#[derive(Clone, Copy, Default)]
-struct LDouble {
-    hi: f64,
-    lo: f64,
-}
-
-impl LDouble {
-    fn add(&mut self, x: f64) {
-        if !x.is_finite() || !self.hi.is_finite() {
-            self.hi += x;
-            self.lo = 0.0;
-            return;
-        }
-        let s = self.hi + x;
-        let bp = s - self.hi;
-        let err = (self.hi - (s - bp)) + (x - bp);
-        let lo = self.lo + err;
-        self.hi = s + lo;
-        self.lo = lo - (self.hi - s);
-    }
-    fn value(&self) -> f64 {
-        if !self.hi.is_finite() {
-            return self.hi;
-        }
-        self.hi + self.lo
-    }
-    fn div(&self, d: f64) -> f64 {
-        if !self.hi.is_finite() || d == 0.0 || d.is_nan() {
-            return self.value() / d;
-        }
-        let q = self.hi / d;
-        let r = (-q).mul_add(d, self.hi) + self.lo;
-        q + r / d
-    }
-}
-
 /// R: array.c:do_colsum. `op`: 0 colSums, 1 colMeans, 2 rowSums,
-/// 3 rowMeans.
+/// 3 rowMeans. Sums are R's `LDOUBLE` (x87 long double) accumulators.
 fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
+    use crate::nmath::ldouble::LDouble;
     let x = arg(args, 0);
     let n = super::io::as_vec_size(&arg(args, 1))?;
     let p = super::io::as_vec_size(&arg(args, 2))?;
@@ -1063,109 +1026,89 @@ fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
     if (n as f64) * (p as f64) > x.len() as f64 {
         return Err(Flow::error("'x' is too short"));
     }
-    // R's integer and logical inputs are summed as doubles, with NA
-    // propagated.
-    let get = |k: usize| -> Option<f64> {
-        match &x {
-            Value::Real(r) => Some(r.data[k]),
-            Value::Int(v) | Value::Lgl(v) => {
-                if v.data[k] == NA_INTEGER {
-                    None
-                } else {
-                    Some(v.data[k] as f64)
-                }
-            }
-            _ => None,
-        }
-    };
-    let is_real = matches!(x, Value::Real(_));
+    /// The non-NaN runs of `xs`, for sums that skip NaNs in order.
+    fn runs(xs: &[f64]) -> impl Iterator<Item = &[f64]> {
+        xs.split(|v| v.is_nan()).filter(|r| !r.is_empty())
+    }
     if op <= 1 {
         let mut ans = Vec::with_capacity(p);
         for j in 0..p {
-            let mut sum = LDouble::default();
-            let mut cnt = n;
-            if is_real {
-                if keep_na {
-                    for k in 0..n {
-                        sum.add(get(k + n * j).unwrap());
-                    }
-                } else {
-                    cnt = 0;
-                    for k in 0..n {
-                        let v = get(k + n * j).unwrap();
-                        if !v.is_nan() {
-                            cnt += 1;
-                            sum.add(v);
-                        }
+            let (sum, cnt) = match &x {
+                Value::Real(r) => {
+                    let col = &r.data[n * j..n * (j + 1)];
+                    if keep_na {
+                        (LDouble::ZERO.sum_from(col), n)
+                    } else {
+                        let nan = col.iter().filter(|v| v.is_nan()).count();
+                        (runs(col).fold(LDouble::ZERO, |s, run| s.sum_from(run)), n - nan)
                     }
                 }
-            } else {
-                cnt = 0;
-                for k in 0..n {
-                    match get(k + n * j) {
-                        Some(v) => {
+                Value::Int(v) | Value::Lgl(v) => {
+                    // Integer partial sums are exact in long double.
+                    let (mut sum, mut cnt, mut na) = (0i64, 0usize, false);
+                    for &e in &v.data[n * j..n * (j + 1)] {
+                        if e != NA_INTEGER {
                             cnt += 1;
-                            sum.add(v);
+                            sum += e as i64;
+                        } else if keep_na {
+                            na = true;
+                            break;
                         }
-                        None => {
-                            if keep_na {
-                                sum = LDouble { hi: NA_REAL, lo: 0.0 };
-                                break;
+                    }
+                    (if na { LDouble::from_f64(NA_REAL) } else { LDouble::from_i64(sum) }, cnt)
+                }
+                _ => unreachable!(),
+            };
+            // colMeans: NaN for cnt = 0.
+            let sum = if op == 1 { sum / LDouble::from_i64(cnt as i64) } else { sum };
+            ans.push(sum.to_f64());
+        }
+        return Ok(Value::reals(ans));
+    }
+    let mut rans = vec![LDouble::ZERO; n];
+    let mut cnt = vec![0usize; if !keep_na && op == 3 { n } else { 0 }];
+    for j in 0..p {
+        match &x {
+            Value::Real(r) => {
+                let col = &r.data[n * j..n * (j + 1)];
+                if keep_na {
+                    LDouble::add_each(&mut rans, col);
+                } else {
+                    for (i, &v) in col.iter().enumerate() {
+                        if !v.is_nan() {
+                            rans[i] += v;
+                            if op == 3 {
+                                cnt[i] += 1;
                             }
                         }
                     }
                 }
             }
-            ans.push(if op == 1 { sum.div(cnt as f64) } else { sum.value() });
-        }
-        return Ok(Value::reals(ans));
-    }
-    let mut rans = vec![LDouble::default(); n];
-    let mut cnt = vec![0usize; n];
-    for j in 0..p {
-        for k in 0..n {
-            let v = get(k + n * j);
-            if is_real {
-                let v = v.unwrap();
-                if keep_na {
-                    rans[k].add(v);
-                } else if !v.is_nan() {
-                    rans[k].add(v);
-                    cnt[k] += 1;
-                }
-            } else {
-                match v {
-                    Some(v) => {
-                        if keep_na {
-                            rans[k].add(v);
+            Value::Int(v) | Value::Lgl(v) => {
+                for (i, &e) in v.data[n * j..n * (j + 1)].iter().enumerate() {
+                    if keep_na {
+                        if e != NA_INTEGER {
+                            rans[i] += LDouble::from_i64(e as i64);
                         } else {
-                            rans[k].add(v);
-                            cnt[k] += 1;
+                            rans[i] = LDouble::from_f64(NA_REAL);
                         }
-                    }
-                    None => {
-                        if keep_na {
-                            rans[k] = LDouble { hi: NA_REAL, lo: 0.0 };
+                    } else if e != NA_INTEGER {
+                        rans[i] += LDouble::from_i64(e as i64);
+                        if op == 3 {
+                            cnt[i] += 1;
                         }
                     }
                 }
             }
+            _ => unreachable!(),
         }
     }
-    let ans: Vec<f64> = (0..n)
-        .map(|k| {
-            if op == 3 {
-                if keep_na {
-                    rans[k].div(p as f64)
-                } else {
-                    rans[k].div(cnt[k] as f64)
-                }
-            } else {
-                rans[k].value()
-            }
-        })
-        .collect();
-    Ok(Value::reals(ans))
+    if op == 3 {
+        for (i, r) in rans.iter_mut().enumerate() {
+            *r /= LDouble::from_i64(if keep_na { p } else { cnt[i] } as i64);
+        }
+    }
+    Ok(Value::reals(rans.iter().map(|r| r.to_f64()).collect()))
 }
 
 fn do_colsums(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

@@ -210,6 +210,63 @@ mod imp {
         out
     }
 
+    /// `s = init; for i: s *= xs[i]; out[i] = (double) s`.
+    pub fn cumprod_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        assert!(ys.len() >= xs.len());
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{i}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fmul qword ptr [{p}]",
+                "fst qword ptr [{q}]",
+                "add {p}, 8",
+                "add {q}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp tbyte ptr [{o}]",
+                i = in(reg) init.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                q = inout(reg) ys.as_mut_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `acc[i] += xs[i]` for each `i`.
+    pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
+        assert!(acc.len() >= xs.len());
+        unsafe {
+            asm!(
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fld tbyte ptr [{a}]",
+                "fadd qword ptr [{p}]",
+                "fstp tbyte ptr [{a}]",
+                "add {a}, 16",
+                "add {p}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                a = inout(reg) acc.as_mut_ptr() => _,
+                p = inout(reg) xs.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+    }
+
     /// `t = 0; for x in xs: t += (long double) x - m` (mean's second pass).
     pub fn sum_dev(m: &LDouble, xs: &[f64]) -> LDouble {
         let mut out = LDouble([0; 16]);
@@ -236,6 +293,56 @@ mod imp {
                 out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
                 out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
                 options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `nearbyintl`: round to an integer in the current (nearest-even)
+    /// rounding mode, as x87 `frndint` does.
+    #[inline]
+    pub fn rint(a: &LDouble) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{a}]",
+                "frndint",
+                "fstp tbyte ptr [{o}]",
+                a = in(reg) a.0.as_ptr(),
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `powl(x, y)`: glibc's, as GNU R calls it (its results for large
+    /// exponents depend on its algorithm, so it is called, not ported).
+    pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
+        unsafe extern "C" {
+            fn powl();
+        }
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            // SysV: long double arguments are passed in memory (16 bytes
+            // each), the result returned in st(0). The output pointer is
+            // in a callee-saved register so that it survives the call.
+            asm!(
+                "sub rsp, 32",
+                "fld tbyte ptr [{x}]",
+                "fstp tbyte ptr [rsp]",
+                "fld tbyte ptr [{y}]",
+                "fstp tbyte ptr [rsp + 16]",
+                "call {f}",
+                "add rsp, 32",
+                "fstp tbyte ptr [r12]",
+                x = in(reg) x.0.as_ptr(),
+                y = in(reg) y.0.as_ptr(),
+                in("r12") out.0.as_mut_ptr(),
+                f = sym powl,
+                clobber_abi("C"),
             );
         }
         out
@@ -298,6 +405,12 @@ mod imp {
     pub fn add(a: &LDouble, b: &LDouble) -> LDouble {
         put(get(a) + get(b))
     }
+    pub fn rint(a: &LDouble) -> LDouble {
+        put(get(a).round_ties_even())
+    }
+    pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
+        put(get(x).powf(get(y)))
+    }
     pub fn sub(a: &LDouble, b: &LDouble) -> LDouble {
         put(get(a) - get(b))
     }
@@ -323,6 +436,19 @@ mod imp {
             *y = s;
         }
         put(s)
+    }
+    pub fn cumprod_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        let mut p = get(init);
+        for (x, y) in xs.iter().zip(ys.iter_mut()) {
+            p *= x;
+            *y = p;
+        }
+        put(p)
+    }
+    pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
+        for (a, x) in acc.iter_mut().zip(xs) {
+            *a = put(get(a) + x);
+        }
     }
     pub fn sum_dev(m: &LDouble, xs: &[f64]) -> LDouble {
         let m = get(m);
@@ -363,6 +489,17 @@ impl LDouble {
         imp::sqrt(&self)
     }
 
+    /// `nearbyintl(x)` (round half to even).
+    #[inline]
+    pub fn rint(self) -> LDouble {
+        imp::rint(&self)
+    }
+
+    /// `powl(x, y)`.
+    pub fn powl(self, y: LDouble) -> LDouble {
+        imp::powl(&self, &y)
+    }
+
     /// `(long double) x` for an integer.
     #[inline]
     pub fn from_i64(x: i64) -> LDouble {
@@ -391,6 +528,15 @@ impl LDouble {
     /// `sum((long double) x - self)` over `xs`, sequentially.
     pub fn sum_dev(self, xs: &[f64]) -> LDouble {
         imp::sum_dev(&self, xs)
+    }
+    /// Running products from `self`, stored rounded to double in `ys`.
+    pub fn cumprod_from(self, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        imp::cumprod_from(&self, xs, ys)
+    }
+
+    /// `acc[i] += xs[i]` for each `i` (R's row sums by column).
+    pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
+        imp::add_each(acc, xs)
     }
 }
 
