@@ -24,6 +24,7 @@ tests/r/lang/compiled-arith.R
 tests/r/lang/compiled-calls.R
 tests/r/lang/compiled-forms.R
 tests/r/lang/compiled-index.R
+tests/r/lang/compiled-inline.R
 tests/r/lang/compiled-ranges.R
 tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-variables.R

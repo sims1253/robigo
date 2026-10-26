@@ -216,7 +216,7 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
-    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default() })))
+    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default(), inline: Default::default() })))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

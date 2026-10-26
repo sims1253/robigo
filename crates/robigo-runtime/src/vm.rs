@@ -23,7 +23,7 @@ use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, NO_G
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::Sym;
+use crate::sym::{s, Sym};
 use crate::value::*;
 
 #[derive(Clone)]
@@ -149,6 +149,8 @@ fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
 thread_local! {
     static CACHE: RefCell<HashMap<usize, (Value, Rc<Code>), crate::env::FastHash>> = RefCell::new(HashMap::default());
     static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(false);
+    /// `ROBIGO_NO_INLINE=1`: never run closure bodies inline (to compare).
+    static NO_INLINE: bool = std::env::var_os("ROBIGO_NO_INLINE").is_some();
 }
 
 pub fn enabled() -> bool {
@@ -685,34 +687,217 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
     ok
 }
 
+/// A closure whose calls can run inline: see [`inline_info`].
+pub struct Inline {
+    code: Rc<Code>,
+    /// The slot of each formal in `code.vars` (`None`: unused).
+    formal_slots: Vec<Option<Slot>>,
+    /// Every function the body guards, and the search epoch in which all of
+    /// them were last seen to resolve to base (from a search-path closure
+    /// environment, where that depends on nothing else).
+    guard_syms: Vec<Sym>,
+    guards_epoch: std::cell::Cell<u64>,
+    /// The body reads variables other than its formals (through the
+    /// closure's environment, which may be the caller's frame).
+    free_vars: bool,
+}
+
+/// Whether calls of `clo` can skip the call machinery: the body only reads
+/// variables and constants and does arithmetic, comparisons, `!`, `if` and
+/// unboxed math functions (no assignments, no calls, so it cannot observe
+/// or change any frame); the formals are plain (no `...`, no defaults); and
+/// no formal is named like a function the body guards. Such a body run
+/// with its arguments' values behaves like the call as long as every step
+/// takes its fast path; [`run_inline`] gives up before anything else.
+#[cold]
+#[inline(never)]
+pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
+    if crate::typeprof::enabled() || NO_INLINE.with(|n| *n) {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    if clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
+        return None;
+    }
+    let formals: Vec<Sym> = clo.formals.iter().map(|f| f.tag.unwrap()).collect();
+    let mut guard_syms = Vec::new();
+    for op in &code.ops {
+        if let Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } = op {
+            if !guard_syms.contains(sym) {
+                guard_syms.push(*sym);
+            }
+        }
+        match op {
+            Op::Const { .. }
+            | Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::Null { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::JumpIfNot { .. }
+            | Op::JumpIf { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Return { .. } => {}
+            Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } if !formals.contains(sym) => {}
+            _ => return None,
+        }
+    }
+    let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
+    let free_vars = code.vars.iter().any(|v| !formals.contains(v));
+    Some(Rc::new(Inline { code, formal_slots, guard_syms, guards_epoch: std::cell::Cell::new(u64::MAX), free_vars }))
+}
+
+/// Run an inlinable closure body (see [`inline_info`]) with argument values
+/// `args`, in place of a call: `env` is the closure's environment (free
+/// variables and guards resolve there, as from the call's frame, which
+/// would hold only the formals). `None` as soon as a step would need its
+/// slow path (a guard failing, a non-scalar, NA in a condition, an
+/// unforced variable): nothing observable has happened, so the caller
+/// then makes the real call.
+#[inline(never)]
+fn run_inline(interp: &mut Interp, info: &Inline, args: &[RVal], env: &Env) -> Option<RVal> {
+    let code = &*info.code;
+    // All guards at once, once per search epoch, when that suffices.
+    let mut guarded = false;
+    if env.is_search() {
+        let epoch = crate::env::search_epoch();
+        if info.guards_epoch.get() != epoch && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
+            info.guards_epoch.set(epoch);
+        }
+        guarded = info.guards_epoch.get() == epoch;
+    }
+    let mut regs: SmallVec<[RVal; 16]> = SmallVec::new();
+    regs.resize_with(code.nregs, || RVal::V(Value::Null));
+    let mut slots: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
+    slots.resize_with(code.vars.len(), || None);
+    for (arg, slot) in args.iter().zip(&info.formal_slots) {
+        if let Some(s) = slot {
+            slots[*s as usize] = Some(arg.clone());
+        }
+    }
+    fn read(slots: &mut [Option<RVal>], env: &Env, sym: Sym, slot: Slot) -> Option<RVal> {
+        let slot = slot as usize;
+        if slots[slot].is_none() {
+            slots[slot] = Some(plain_lookup(env, sym)?);
+        }
+        slots[slot].clone()
+    }
+    let leaf = |slots: &mut [Option<RVal>], regs: &[RVal], l: &Leaf| -> Option<Num> {
+        match l {
+            Leaf::D(x) => Some(Num::D(*x)),
+            Leaf::I(x) => Some(Num::I(*x)),
+            Leaf::Var(sym, slot) => scalar(&read(slots, env, *sym, *slot)?),
+            Leaf::R(r) => scalar(&regs[*r as usize]),
+        }
+    };
+    let ops = &code.ops;
+    let mut pc = 0;
+    while pc < ops.len() {
+        let op = &ops[pc];
+        pc += 1;
+        match op {
+            Op::Const { dst, k } => regs[*dst as usize] = unbox(code.consts[*k as usize].clone()),
+            Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
+            Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
+            Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
+            Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
+            Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(&mut slots, env, *sym, *slot)?,
+            Op::Guard { sym, .. } => {
+                if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                    return None;
+                }
+            }
+            Op::Arith { op, dst, a, b, .. } => {
+                let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
+                regs[*dst as usize] = arith_fast(*op, x, y)?;
+            }
+            Op::Rel { op, dst, a, b, .. } => {
+                let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
+                regs[*dst as usize] = rel_fast(*op, x, y);
+            }
+            Op::ArithL { op, dst, a, b, sym, g, .. } => {
+                if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                    return None;
+                }
+                let x = leaf(&mut slots, &regs, a)?;
+                let y = leaf(&mut slots, &regs, b)?;
+                regs[*dst as usize] = arith_fast(*op, x, y)?;
+            }
+            Op::RelL { op, dst, a, b, sym, g, .. } => {
+                if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                    return None;
+                }
+                let x = leaf(&mut slots, &regs, a)?;
+                let y = leaf(&mut slots, &regs, b)?;
+                regs[*dst as usize] = rel_fast(*op, x, y);
+            }
+            Op::Neg { dst, a, .. } => {
+                regs[*dst as usize] = match scalar(&regs[*a as usize])? {
+                    Num::D(x) => RVal::D(-x),
+                    Num::I(x) | Num::L(x) => RVal::I(if x == NA_INTEGER { x } else { -x }),
+                };
+            }
+            Op::Not { dst, a, .. } => {
+                regs[*dst as usize] = match scalar(&regs[*a as usize])? {
+                    Num::D(x) => RVal::L(if x.is_nan() { NA_LOGICAL } else { (x == 0.0) as Lgl }),
+                    Num::I(x) | Num::L(x) => RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl }),
+                };
+            }
+            Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
+            Op::JumpIfNot { cond, target, .. } | Op::JumpIf { cond, target, .. } => {
+                let truth = match regs[*cond as usize] {
+                    RVal::L(x) if x != NA_LOGICAL => x != 0,
+                    _ => return None,
+                };
+                if truth == matches!(op, Op::JumpIf { .. }) {
+                    pc = *target as usize;
+                }
+            }
+            Op::Jump { target } => pc = *target as usize,
+            Op::Visible { .. } => {}
+            Op::Return { src } => return Some(std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null))),
+            _ => return None,
+        }
+    }
+    Some(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)))
+}
+
 /// The function a call site calls, memoized like [`guard_ok`]: frames below
 /// the search path are checked directly, the search-path lookup is cached
 /// against the search epoch (only when it needs no forcing or active
 /// bindings, i.e. when [`Interp::search_fun`] answers it).
 fn call_site_fun(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> RResult<Value> {
+    match call_site_fun_fast(interp, sym, site, env) {
+        Some(f) => Ok(f),
+        None => interp.find_fun_for_call(sym, &site.call, env),
+    }
+}
+
+/// [`call_site_fun`] when it needs no forcing, active bindings or errors
+/// (so it cannot run R code); `None` otherwise.
+fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> Option<Value> {
     let mut cur = env.clone();
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
-            return interp.find_fun_for_call(sym, &site.call, env);
+            return None;
         }
-        cur = match cur.parent() {
-            Some(p) => p,
-            None => return interp.find_fun_for_call(sym, &site.call, env),
-        };
+        cur = cur.parent()?;
     }
     let epoch = crate::env::search_epoch();
     if let Some((e, id, f)) = &*site.memo.borrow() {
         if *e == epoch && *id == cur.id() {
-            return Ok(f.clone());
+            return Some(f.clone());
         }
     }
-    match interp.search_fun(sym, &cur) {
-        Some(f) => {
-            *site.memo.borrow_mut() = Some((epoch, cur.id(), f.clone()));
-            Ok(f)
-        }
-        None => interp.find_fun_for_call(sym, &site.call, env),
-    }
+    let f = interp.search_fun(sym, &cur)?;
+    *site.memo.borrow_mut() = Some((epoch, cur.id(), f.clone()));
+    Some(f)
 }
 
 pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
@@ -1141,9 +1326,48 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 };
             }
             Op::Call { dst, f, site } => {
-                flush!();
                 let site = &code.call_sites[*site as usize];
-                let fun = tryop!(call_site_fun(interp, *f, site, env));
+                // Look the function up before flushing when that cannot run
+                // code and no pending assignment to its name is outstanding.
+                let pending_f = site.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_)));
+                let fast_fun = if pending_f || site.leaf_args.is_none() {
+                    None
+                } else {
+                    call_site_fun_fast(interp, *f, site, env)
+                };
+                // A pure closure with plain arguments: run its body inline
+                // (it cannot observe the frame, so nothing needs flushing,
+                // unless it reads variables that pending writes may affect).
+                if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.leaf_args) {
+                    if leaves.len() == clo.formals.len() {
+                        if let Some(info) = clo.inline.get_or_init(|| inline_info(clo)).clone().filter(|i| !(i.free_vars && vars.dirty)) {
+                            let mut args: SmallVec<[RVal; 4]> = SmallVec::new();
+                            for l in leaves {
+                                args.push(match l {
+                                    Leaf::D(x) => RVal::D(*x),
+                                    Leaf::I(x) => RVal::I(*x),
+                                    Leaf::Var(sym, slot) => match read_var(&mut vars, env, *sym, *slot) {
+                                        Some(v) => v.clone(),
+                                        None => break,
+                                    },
+                                    Leaf::R(_) => break,
+                                });
+                            }
+                            if args.len() == leaves.len() {
+                                if let Some(v) = run_inline(interp, &info, &args, &clo.env) {
+                                    interp.visible = true;
+                                    regs[*dst as usize] = v;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                flush!();
+                let fun = match fast_fun {
+                    Some(f) => f,
+                    None => tryop!(call_site_fun(interp, *f, site, env)),
+                };
                 let v = match (&fun, &site.call) {
                     (Value::Closure(clo), Value::Lang(l)) => {
                         let r = match interp.promise_args_with(&l.args, env, &site.codes) {

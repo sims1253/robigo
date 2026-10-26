@@ -53,6 +53,7 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
             env: i.global.clone(),
             attrs: None,
             code: Default::default(),
+            inline: Default::default(),
         }))),
         Value::Builtin(b) => {
             // Primitives: look up their argument template in .ArgsEnv or
@@ -66,6 +67,7 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
                             env: i.global.clone(),
                             attrs: None,
                             code: Default::default(),
+                            inline: Default::default(),
                         })));
                     }
                 }

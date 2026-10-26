@@ -161,6 +161,12 @@ pub struct CallSite {
     /// The function found from the first search-path environment: (search
     /// epoch, that environment's id, function).
     pub memo: std::cell::RefCell<Option<(u64, usize, Value)>>,
+    /// The arguments, when all are positional constants or variables (for
+    /// running pure closures inline).
+    pub leaf_args: Option<Vec<Leaf>>,
+    /// The slot of the function's name, if the code has one (filled in once
+    /// compilation is done).
+    pub fslot: Option<Slot>,
 }
 
 pub struct Code {
@@ -190,6 +196,12 @@ impl Code {
             matches!(o, Op::Guard { .. }) || matches!(o, Op::ArithL { g, .. } | Op::RelL { g, .. } if *g != NO_GUARD)
         });
         let memo = if has_guards { c.ops.len() } else { 0 };
+        let mut c = c;
+        for op in &c.ops {
+            if let Op::Call { f, site, .. } = op {
+                c.call_sites[*site as usize].fslot = c.vars.iter().position(|v| v == f).map(|p| p as Slot);
+            }
+        }
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
         Code {
@@ -830,7 +842,12 @@ impl Compiler {
             }
             n if crate::builtins::lookup_primitive(n).is_none() => {
                 let codes = l.args.iter().map(|a| compile_thunk(&a.value)).collect();
-                self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default() });
+                let leaf_args = if l.args.iter().all(|a| a.tag.is_none()) {
+                    l.args.iter().map(|a| self.leaf(&a.value)).collect::<Option<Vec<_>>>()
+                } else {
+                    None
+                };
+                self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default(), leaf_args, fslot: None });
                 let site = (self.call_sites.len() - 1) as u32;
                 self.emit(Op::Call { dst, f: h, site });
             }

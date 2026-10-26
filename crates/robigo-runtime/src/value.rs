@@ -144,6 +144,8 @@ pub struct Closure {
     pub attrs: AttrBox,
     /// The body's bytecode, looked up on first call (see `vm::code_for`).
     pub code: std::cell::OnceCell<Option<Rc<crate::compile::Code>>>,
+    /// Whether calls can run the body inline (see `vm::inline_info`).
+    pub inline: std::cell::OnceCell<Option<Rc<crate::vm::Inline>>>,
 }
 
 pub struct Promise {
