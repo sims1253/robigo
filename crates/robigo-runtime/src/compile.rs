@@ -122,6 +122,9 @@ pub enum Op {
     /// Call the function `f` (not a base primitive), with the arguments of
     /// call site `site` as promises; falls back to `eval` for builtins.
     Call { dst: Reg, f: Sym, site: u32 },
+    /// `a:b`: an unmaterialized `RVal::Range` for integer-valued scalar
+    /// ends, otherwise the builtin.
+    Colon { dst: Reg, a: Reg, b: Reg, call: u32 },
     /// Set result visibility.
     Visible { on: bool },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
@@ -696,6 +699,18 @@ impl Compiler {
                 self.expr(&l.args[0].value, a, Want::Value);
                 let k = self.konst(whole.clone());
                 self.emit(Op::Neg { dst, a, call: k });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            ":" if plain_args(l, 2) => {
+                let g = self.guard(h, whole, dst);
+                let a = self.reg();
+                let b = self.reg();
+                self.expr(&l.args[0].value, a, Want::Value);
+                self.expr(&l.args[1].value, b, Want::Value);
+                let call = self.konst(whole.clone());
+                self.emit(Op::Colon { dst, a, b, call });
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);

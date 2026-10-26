@@ -350,6 +350,85 @@ fn own_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: Slot) -> bool {
 
 /// `x[i] <- val` in place for an in-range index of a plain vector whose
 /// type does not change; `false` leaves `x` untouched.
+/// The 0-based position of the first element of the 1-based range
+/// `start, start + step, ...` (length `n`, `step` = ±1) when all of it
+/// lies within a vector of length `len`.
+fn range_first(start: i64, step: i64, n: u64, len: usize) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    let last = start + (n as i64 - 1) * step;
+    let ok = |p: i64| p >= 1 && p <= len as i64;
+    (ok(start) && ok(last)).then(|| (start - 1) as usize)
+}
+
+fn gather_range<T: Clone>(d: &[T], first: usize, step: i64, n: usize) -> Vec<T> {
+    if step == 1 {
+        d[first..first + n].to_vec()
+    } else {
+        (0..n).map(|k| d[first - k].clone()).collect()
+    }
+}
+
+/// `x[a:b]` for an attribute-free vector and an in-range range.
+fn range_subset(x: &RVal, start: i64, step: i64, n: u64) -> Option<RVal> {
+    let RVal::V(x) = x else { return None };
+    if x.attrs().is_some() {
+        return None;
+    }
+    let first = range_first(start, step, n, x.len())?;
+    let n = n as usize;
+    Some(RVal::V(match x {
+        Value::Real(v) => Value::reals(gather_range(&v.data, first, step, n)),
+        Value::Int(v) => Value::ints(gather_range(&v.data, first, step, n)),
+        Value::Lgl(v) => Value::lgls(gather_range(&v.data, first, step, n)),
+        Value::Str(v) => Value::strs(gather_range(&v.data, first, step, n)),
+        _ => return None,
+    }))
+}
+
+/// `x[a:b] <- val` in place: `x` a non-object vector, the range within
+/// it, `val` of x's type (or an integer into a double vector) and of
+/// length 1 or the range's length. Otherwise false (use `[<-`).
+fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
+    if x.is_object() {
+        return false;
+    }
+    let Some(first) = range_first(start, step, n, x.len()) else { return false };
+    let n = n as usize;
+    let pos = |k: usize| if step == 1 { first + k } else { first - k };
+    fn fill<T: Clone>(d: &mut [T], n: usize, pos: impl Fn(usize) -> usize, src: &[T]) {
+        for k in 0..n {
+            d[pos(k)] = src[if src.len() == 1 { 0 } else { k }].clone();
+        }
+    }
+    let fits = |len: usize| len == n || len == 1;
+    match (x, val) {
+        (Value::Real(v), RVal::D(d)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*d]),
+        (Value::Real(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[int_to_real(*i)]),
+        (Value::Int(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*i]),
+        (Value::Lgl(v), RVal::L(l)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*l]),
+        (Value::Real(v), RVal::V(Value::Real(s))) if fits(s.data.len()) => {
+            fill(&mut Rc::make_mut(v).data, n, pos, &s.data)
+        }
+        (Value::Real(v), RVal::V(Value::Int(s))) if fits(s.data.len()) => {
+            let src: Vec<f64> = s.data.iter().map(|&i| int_to_real(i)).collect();
+            fill(&mut Rc::make_mut(v).data, n, pos, &src)
+        }
+        (Value::Int(v), RVal::V(Value::Int(s))) if fits(s.data.len()) => {
+            fill(&mut Rc::make_mut(v).data, n, pos, &s.data)
+        }
+        (Value::Lgl(v), RVal::V(Value::Lgl(s))) if fits(s.data.len()) => {
+            fill(&mut Rc::make_mut(v).data, n, pos, &s.data)
+        }
+        (Value::Str(v), RVal::V(Value::Str(s))) if fits(s.data.len()) => {
+            fill(&mut Rc::make_mut(v).data, n, pos, &s.data)
+        }
+        _ => return false,
+    }
+    true
+}
+
 fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     if x.is_object() || i >= x.len() {
         return false;
@@ -760,10 +839,15 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             }
             Op::Index { dst, x, slot, i, two, k } => {
                 interp.visible = true;
-                let fast = match scalar_index(&mut vars, env, &regs, i) {
+                let mut fast = match scalar_index(&mut vars, env, &regs, i) {
                     Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
                     None => None,
                 };
+                if let (None, Leaf::R(r), false) = (&fast, i, *two) {
+                    if let RVal::Range { start, step, n } = regs[*r as usize] {
+                        fast = read_var(&mut vars, env, *x, *slot).and_then(|xv| range_subset(xv, start, step, n));
+                    }
+                }
                 regs[*dst as usize] = match (fast, i) {
                     (Some(v), _) => v,
                     (None, Leaf::R(r)) => {
@@ -781,8 +865,21 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 };
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
-                let done = match scalar_index(&mut vars, env, &regs, i) {
-                    Some(ix) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                let range = match (i, *two) {
+                    (Leaf::R(r), false) => match regs[*r as usize] {
+                        RVal::Range { start, step, n } => Some((start, step, n)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let done = match (range, scalar_index(&mut vars, env, &regs, i)) {
+                    (Some((start, step, n)), _) if own_var(&mut vars, env, *x, *slot) => {
+                        match &mut vars.slots[*slot as usize] {
+                            SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &regs[*val as usize]),
+                            _ => false,
+                        }
+                    }
+                    (None, Some(ix)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[*val as usize], *two),
                         _ => false,
                     },
@@ -927,6 +1024,23 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     _ => tryop!(interp.eval(&site.call, env)),
                 };
                 regs[*dst as usize] = RVal::V(v);
+            }
+            Op::Colon { dst, a, b, call } => {
+                let range = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
+                    (Some(x @ (Num::D(_) | Num::I(_))), Some(y @ (Num::D(_) | Num::I(_)))) => {
+                        colon_range(as_f64(x), as_f64(y))
+                    }
+                    _ => None,
+                };
+                regs[*dst as usize] = match range {
+                    Some((start, step, n)) => RVal::Range { start, step, n },
+                    None => {
+                        flush!();
+                        let x = std::mem::replace(&mut regs[*a as usize], RVal::I(0));
+                        let y = std::mem::replace(&mut regs[*b as usize], RVal::I(0));
+                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
+                    }
+                };
             }
             Op::Eval { dst, k } => {
                 flush!();
