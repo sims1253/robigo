@@ -689,17 +689,17 @@ fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<Gua
 
 /// A closure whose calls can run inline: see [`inline_info`].
 pub struct Inline {
-    code: Rc<Code>,
+    pub(crate) code: Rc<Code>,
     /// The slot of each formal in `code.vars` (`None`: unused).
-    formal_slots: Vec<Option<Slot>>,
+    pub(crate) formal_slots: Vec<Option<Slot>>,
     /// Every function the body guards, and the search epoch in which all of
     /// them were last seen to resolve to base (from a search-path closure
     /// environment, where that depends on nothing else).
-    guard_syms: Vec<Sym>,
+    pub(crate) guard_syms: Vec<Sym>,
     guards_epoch: std::cell::Cell<u64>,
     /// The body reads variables other than its formals (through the
     /// closure's environment, which may be the caller's frame).
-    free_vars: bool,
+    pub(crate) free_vars: bool,
 }
 
 /// Whether calls of `clo` can skip the call machinery: the body only reads
@@ -940,6 +940,32 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     })
 }
 
+/// The call at call site `site` (of `f`) as a call native code can run
+/// inline: a pure closure without free variables (see [`inline_info`])
+/// called with plain arguments.
+fn inline_call(interp: &mut Interp, code: &Code, f: Sym, site: u32, env: &Env, vars: &Vars<'_>) -> Option<crate::jit::InlineCall> {
+    let cs = &code.call_sites[site as usize];
+    if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
+        return None;
+    }
+    let leaves = cs.leaf_args.as_ref()?;
+    let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
+    if leaves.len() != clo.formals.len() {
+        return None;
+    }
+    let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
+    if info.free_vars {
+        return None;
+    }
+    Some(crate::jit::InlineCall {
+        code: info.code.clone(),
+        formal_slots: info.formal_slots.clone(),
+        guard_syms: info.guard_syms.clone(),
+        args: leaves.clone(),
+        clo: clo.clone(),
+    })
+}
+
 /// Run the loop entered at op `enter` natively (compiling it first if
 /// needed): see `crate::jit`. `None`: it cannot run natively now (the VM
 /// runs it). Otherwise the outcome and, after a deopt, the loops inside it
@@ -984,7 +1010,16 @@ fn jit_enter(
                     }
                 }
             }
-            let r = crate::jit::compile(code, enter, &|s| types[s as usize], &|r| live.get(&r).copied());
+            // Calls of pure closures without free variables run inline.
+            let mut calls = HashMap::default();
+            for op in &code.ops[enter + 1..brk as usize] {
+                if let Op::Call { f, site, .. } = op {
+                    if let Some(c) = inline_call(interp, code, *f, *site, env, vars) {
+                        calls.insert(*site, c);
+                    }
+                }
+            }
+            let r = crate::jit::compile(code, enter, &|s| types[s as usize], &|r| live.get(&r).copied(), calls);
             let mut cache = code.jit.borrow_mut();
             match r {
                 Ok(l) => {
@@ -1013,9 +1048,26 @@ fn jit_enter(
             }
         }
     };
-    // Guards: native code assumes them.
+    // Guards: native code assumes them, and that its inlined calls still
+    // call the same closures (whose guards hold).
     for (sym, at) in &jl.guards {
         if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
+            return None;
+        }
+    }
+    for (site, clo, syms) in &jl.calls {
+        let cs = &code.call_sites[*site as usize];
+        if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
+            return None;
+        }
+        let Op::Call { f, .. } = code.ops.iter().find(|o| matches!(o, Op::Call { site: s2, .. } if s2 == site))? else {
+            return None;
+        };
+        match call_site_fun_fast(interp, *f, cs, env) {
+            Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => {}
+            _ => return None,
+        }
+        if !syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
             return None;
         }
     }

@@ -109,6 +109,144 @@ pub struct JitLoop {
     /// The functions the loop's guards check, with the index of a guarding
     /// op (for its memo).
     pub guards: Vec<(Sym, usize)>,
+    /// The closures run inline (to check that their call sites still call
+    /// them) and the functions their bodies guard.
+    pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+}
+
+/// A call of a pure closure (see `vm::inline_info`) without free
+/// variables, run inline in native code.
+pub struct InlineCall {
+    pub code: std::rc::Rc<Code>,
+    /// The slot of each formal in the callee's code.
+    pub formal_slots: Vec<Option<Slot>>,
+    pub guard_syms: Vec<Sym>,
+    /// The arguments (constants and variables of the caller).
+    pub args: Vec<Leaf>,
+    pub clo: std::rc::Rc<crate::value::Closure>,
+}
+
+/// Register types of an inlined callee for given argument types.
+struct CalleeTy {
+    states: Vec<Option<RegState>>,
+    slot_ty: HashMap<Slot, JType>,
+    result: JType,
+}
+
+/// The calls run inline (by call site) and their analyses.
+pub struct Inl<'a> {
+    calls: &'a HashMap<u32, InlineCall>,
+    memo: RefCell<HashMap<(u32, Vec<JType>), Option<std::rc::Rc<CalleeTy>>>>,
+}
+
+impl<'a> Inl<'a> {
+    pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
+        Inl { calls, memo: RefCell::new(HashMap::new()) }
+    }
+
+    fn callee(&self, site: u32, args: Vec<JType>) -> Option<std::rc::Rc<CalleeTy>> {
+        let key = (site, args);
+        if let Some(r) = self.memo.borrow().get(&key) {
+            return r.clone();
+        }
+        let r = self.calls.get(&site).and_then(|ic| callee_flow(ic, &key.1)).map(std::rc::Rc::new);
+        self.memo.borrow_mut().insert(key, r.clone());
+        r
+    }
+}
+
+/// Register types through an inlined callee's body, whose formals have the
+/// argument types; `None` if native code cannot run it.
+fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
+    let code = &*ic.code;
+    let mut slot_ty = HashMap::new();
+    for (k, s) in ic.formal_slots.iter().enumerate() {
+        if let Some(s) = s {
+            slot_ty.insert(*s, *args.get(k)?);
+        }
+    }
+    let empty = HashMap::new();
+    let inl = Inl::new(&empty);
+    let len = code.ops.len();
+    let mut states: Vec<Option<RegState>> = vec![None; len + 1];
+    states[0] = Some(vec![None; code.nregs]);
+    let mut result: Option<JType> = None;
+    let mut merge_result = |t: Option<JType>| -> Option<()> {
+        let t = t?;
+        match result {
+            Some(r) if r != t => None,
+            _ => {
+                result = Some(t);
+                Some(())
+            }
+        }
+    };
+    let mut work = vec![0usize];
+    let mut succ = Vec::new();
+    let mut steps = 0;
+    while let Some(pc) = work.pop() {
+        steps += 1;
+        if steps > 10_000 {
+            return None;
+        }
+        let st = states[pc].clone().unwrap();
+        if pc == len {
+            merge_result(st[code.result as usize])?;
+            continue;
+        }
+        let op = &code.ops[pc];
+        match op {
+            Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::ArithL { .. }
+            | Op::RelL { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Guard { .. } => {}
+            Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => {
+                if st[*cond as usize] != Some(JType::L) {
+                    return None;
+                }
+            }
+            Op::Return { src } => {
+                merge_result(st[*src as usize])?;
+                continue;
+            }
+            _ => return None,
+        }
+        for reg in uses(op, &inl).rregs {
+            st[reg as usize]?;
+        }
+        let mut out = st.clone();
+        for (reg, t) in defs(op, &st, &slot_ty, &inl) {
+            out[reg] = Some(t?);
+        }
+        successors(op, pc, &mut succ);
+        for &t in &succ {
+            if t > len || t <= pc {
+                return None;
+            }
+            let merged = match &states[t] {
+                None => Some(out.clone()),
+                Some(old) => {
+                    let m: RegState = old.iter().zip(&out).map(|(a, b)| if a == b { *a } else { None }).collect();
+                    (m != *old).then_some(m)
+                }
+            };
+            if let Some(m) = merged {
+                states[t] = Some(m);
+                work.push(t);
+            }
+        }
+    }
+    Some(CalleeTy { states, slot_ty, result: result? })
 }
 
 /// The compilation state of a loop (per `LoopEnter` index, in `Code::jit`).
@@ -274,9 +412,17 @@ fn leaf_uses(l: &Leaf, u: &mut Uses) {
     }
 }
 
-fn uses(op: &Op) -> Uses {
+fn uses(op: &Op, inl: &Inl) -> Uses {
     let mut u = Uses::default();
     match op {
+        Op::Call { dst, site, .. } => {
+            if let Some(ic) = inl.calls.get(site) {
+                for a in &ic.args {
+                    leaf_uses(a, &mut u);
+                }
+            }
+            u.wregs.push(*dst);
+        }
         Op::ConstD { dst, .. } | Op::ConstI { dst, .. } | Op::ConstL { dst, .. } => u.wregs.push(*dst),
         Op::GetVar { dst, slot, .. } => {
             u.rslots.push(*slot);
@@ -396,7 +542,9 @@ pub fn compile(
     enter: usize,
     entry: &dyn Fn(Slot) -> Option<JType>,
     live_in: &dyn Fn(Reg) -> Option<JType>,
+    calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
+    let inl = Inl::new(&calls);
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
@@ -407,7 +555,8 @@ pub fn compile(
     let mut guards = Vec::new();
     for pc in r.start..r.end {
         let op = &ops[pc];
-        if !supported(op, &r) {
+        let inline_call = matches!(op, Op::Call { site, .. } if calls.contains_key(site));
+        if !inline_call && !supported(op, &r) {
             if trace() {
                 eprintln!("jit: unsupported at {}: {:?}", pc, op);
             }
@@ -435,7 +584,7 @@ pub fn compile(
         }
     }
     for pc in r.start..r.end {
-        for s in uses(&ops[pc]).rslots {
+        for s in uses(&ops[pc], &inl).rslots {
             if let std::collections::hash_map::Entry::Vacant(e) = slot_ty.entry(s) {
                 if let Some(t) = entry(s) {
                     e.insert(t);
@@ -446,7 +595,7 @@ pub fn compile(
     let mut entry_state: RegState = vec![None; code.nregs];
     let mut live = Vec::new();
     for pc in r.start..r.end {
-        for reg in uses(&ops[pc]).rregs {
+        for reg in uses(&ops[pc], &inl).rregs {
             if let Some(t) = live_in(reg) {
                 if entry_state[reg as usize].is_none() {
                     entry_state[reg as usize] = Some(t);
@@ -461,7 +610,7 @@ pub fn compile(
         if rounds > 20 {
             return Err(Reject::Never);
         }
-        if let Some(st) = reg_flow(ops, &r, &entry_state, &mut slot_ty)? {
+        if let Some(st) = reg_flow(ops, &r, &entry_state, &mut slot_ty, &inl)? {
             break st;
         }
     };
@@ -469,7 +618,7 @@ pub fn compile(
     for pc in r.start..r.end {
         let Some(st) = &states[pc - r.start] else { continue };
         let op = &ops[pc];
-        let u = uses(op);
+        let u = uses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
                 return Err(not_now(8));
@@ -502,7 +651,7 @@ pub fn compile(
             Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
             Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
             Op::GetVar { slot, .. } => slot_ty[slot].is_scalar(),
-            _ => defs(op, st, &slot_ty).iter().all(|(_, t)| t.is_some()),
+            _ => defs(op, st, &slot_ty, &inl).iter().all(|(_, t)| t.is_some()),
         };
         if !ok {
             if trace() {
@@ -527,7 +676,7 @@ pub fn compile(
         }
         let Some(mut sd) = state[pc - r.start].clone() else { continue };
         let op = &ops[pc];
-        let u = uses(op);
+        let u = uses(op, &inl);
         for s in &u.rslots {
             if !sd[*s as usize] {
                 needs_entry[*s as usize] = true;
@@ -555,7 +704,7 @@ pub fn compile(
     let mut written = vec![false; nslots];
     let mut writable = vec![false; nslots];
     for pc in r.start..r.end {
-        for s in uses(&ops[pc]).wslots {
+        for s in uses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
         if let Op::SetIndex { slot, .. } = &ops[pc] {
@@ -613,7 +762,7 @@ pub fn compile(
     // Registers only defined (never live at an op) still need a place.
     for pc in r.start..r.end {
         if let Some(st) = &states[pc - r.start] {
-            for (reg, t) in defs(&ops[pc], st, &slot_ty) {
+            for (reg, t) in defs(&ops[pc], st, &slot_ty, &inl) {
                 if let (Some(t), std::collections::hash_map::Entry::Vacant(e)) = (t, reg_idx.entry(reg as Reg)) {
                     e.insert(nvals);
                     nvals += if t == JType::Range { 3 } else { 1 };
@@ -623,8 +772,9 @@ pub fn compile(
     }
 
     let mut deopt_regs = HashMap::new();
-    let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs)?;
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards })
+    let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
+    let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
+    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls })
 }
 
 /// Register types before an op: `None` for undefined, or different types
@@ -641,10 +791,17 @@ fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<
 }
 
 /// The registers an op defines and their types (`None`: unknown).
-fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Vec<(usize, Option<JType>)> {
+fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Vec<(usize, Option<JType>)> {
     let rt = |r: &Reg| st[*r as usize];
     let scalar = |t: Option<JType>| t.filter(|t| t.is_scalar());
     match op {
+        Op::Call { dst, site, .. } => {
+            let t = inl.calls.get(site).and_then(|ic| {
+                let tys: Option<Vec<JType>> = ic.args.iter().map(|a| leaf_type(a, st, slot_ty)).collect();
+                inl.callee(*site, tys?).map(|c| c.result)
+            });
+            vec![(*dst as usize, t)]
+        }
         Op::ConstD { dst, .. } => vec![(*dst as usize, Some(JType::D))],
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
         Op::ConstL { dst, .. } => vec![(*dst as usize, Some(JType::L))],
@@ -714,6 +871,7 @@ fn reg_flow(
     r: &Region,
     entry: &RegState,
     slot_ty: &mut HashMap<Slot, JType>,
+    inl: &Inl,
 ) -> Result<Option<Vec<Option<RegState>>>, Reject> {
     let n = r.end - r.start + 1;
     let mut states: Vec<Option<RegState>> = vec![None; n];
@@ -756,7 +914,7 @@ fn reg_flow(
             _ => {}
         }
         let mut out = st.clone();
-        for (reg, t) in defs(op, &st, slot_ty) {
+        for (reg, t) in defs(op, &st, slot_ty, inl) {
             out[reg] = t;
         }
         successors(op, pc, &mut succ);
@@ -806,7 +964,12 @@ struct Gen<'a, 'b> {
     b: FunctionBuilder<'b>,
     v: Vars,
     slots: &'a [SlotInfo],
-    states: &'a [Option<RegState>],
+    states: Vec<Option<RegState>>,
+    inl: &'a Inl<'a>,
+    /// Inside an inlined callee: leave at this op (the call) instead, and
+    /// where a `Return` stores the result and continues.
+    deopt_at: Option<usize>,
+    ret: Option<(Variable, Block)>,
     reg_idx: &'a HashMap<Reg, usize>,
     vals: CValue,
     blocks: Vec<Block>,
@@ -868,6 +1031,7 @@ impl Gen<'_, '_> {
 
     /// The block that leaves native code to execute op `pc` in the VM.
     fn deopt_block(&mut self, pc: usize) -> Block {
+        let pc = self.deopt_at.unwrap_or(pc);
         if let Some(b) = self.deopt.get(&pc) {
             return *b;
         }
@@ -1349,6 +1513,21 @@ impl Gen<'_, '_> {
                 let addr = self.b.ins().iadd(p, off);
                 self.b.ins().store(MemFlagsData::trusted(), x, addr, 0);
             }
+            Op::Call { dst, site, .. } => {
+                let ic = &self.inl.calls[site];
+                let (code, formal_slots, arg_leaves) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
+                let args: Vec<(CValue, JType)> = arg_leaves.iter().map(|a| self.leaf(a)).collect();
+                let ct = self.inl.callee(*site, args.iter().map(|a| a.1).collect()).unwrap();
+                let v = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+                self.set_reg(*dst, v);
+            }
+            Op::Return { src } => {
+                let (rv, after) = self.ret.expect("Return outside an inlined callee");
+                let (x, _) = self.reg(*src);
+                self.b.def_var(rv, x);
+                self.b.ins().jump(after, &[]);
+                falls = false;
+            }
             // Checked at entry, or no effect in native code.
             Op::Guard { .. } | Op::Visible { .. } | Op::LoopEnter { .. } | Op::LoopExit => {}
             _ => unreachable!("unsupported op in native loop: {:?}", op),
@@ -1357,6 +1536,105 @@ impl Gen<'_, '_> {
             let n = self.target(next);
             self.b.ins().jump(n, &[]);
         }
+    }
+
+    /// The body of a pure closure called at op `call` with argument values
+    /// `args`, translated in place; its result. Anything its fast paths do
+    /// not cover leaves native code at the call, which the VM then makes.
+    fn inline_body(&mut self, call: usize, code: &Code, formal_slots: &[Option<Slot>], ct: &CalleeTy, args: &[(CValue, JType)]) -> CValue {
+        let len = code.ops.len();
+        let res = self.b.declare_var(cl_type(ct.result));
+        let after = self.b.create_block();
+        // The callee's frame: its formals hold the arguments; its registers
+        // get variables of their own.
+        let mut slot = HashMap::new();
+        for (k, s) in formal_slots.iter().enumerate() {
+            if let Some(s) = s {
+                let (x, t) = args[k];
+                let var = self.b.declare_var(cl_type(t));
+                self.b.def_var(var, x);
+                slot.insert(*s, (var, t));
+            }
+        }
+        let mut pairs: Vec<(Reg, JType)> = Vec::new();
+        for (pc, st) in ct.states.iter().enumerate() {
+            let Some(st) = st else { continue };
+            for (reg, t) in st.iter().enumerate() {
+                if let Some(t) = t {
+                    pairs.push((reg as Reg, *t));
+                }
+            }
+            if pc < len {
+                for (reg, t) in defs(&code.ops[pc], st, &ct.slot_ty, self.inl) {
+                    if let Some(t) = t {
+                        pairs.push((reg as Reg, t));
+                    }
+                }
+            }
+        }
+        pairs.sort_by_key(|(r, t)| (*r, *t as u8));
+        pairs.dedup();
+        let mut reg = HashMap::new();
+        for (r, t) in pairs {
+            let var = self.b.declare_var(cl_type(t));
+            let z = if t == JType::D { self.f64c(0.0) } else { self.i32c(0) };
+            self.b.def_var(var, z);
+            reg.insert((r, t), var);
+        }
+        let blocks: Vec<Block> = (0..=len).map(|_| self.b.create_block()).collect();
+        let end = self.b.create_block();
+        self.b.ins().jump(blocks[0], &[]);
+        let saved_states = std::mem::replace(&mut self.states, ct.states.clone());
+        let saved_reg = std::mem::replace(&mut self.v.reg, reg);
+        let saved_slot = std::mem::replace(&mut self.v.slot, slot);
+        let saved_flag = std::mem::take(&mut self.v.flag);
+        let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
+        let (saved_start, saved_cur, saved_exit, saved_deopt, saved_ret) =
+            (self.start, self.cur, self.exit, self.deopt_at, self.ret);
+        let saved_defs = std::mem::take(&mut self.cur_defs);
+        self.start = 0;
+        self.exit = end;
+        self.deopt_at = Some(call);
+        self.ret = Some((res, after));
+        for pc in 0..len {
+            let blk = self.block(pc);
+            self.b.switch_to_block(blk);
+            if self.states[pc].is_none() {
+                let d = self.deopt_block(pc);
+                self.b.ins().jump(d, &[]);
+                continue;
+            }
+            self.cur = pc;
+            self.cur_defs = defs(&code.ops[pc], self.state(pc), &ct.slot_ty, self.inl);
+            self.op(pc, &code.ops[pc]);
+        }
+        let last = self.block(len);
+        self.b.switch_to_block(last);
+        self.b.ins().jump(end, &[]);
+        // Falling off the end: the body's result register.
+        self.b.switch_to_block(end);
+        if self.states[len].is_some() {
+            self.cur = len;
+            let (x, _) = self.reg(code.result);
+            self.b.def_var(res, x);
+            self.b.ins().jump(after, &[]);
+        } else {
+            let d = self.deopt_block(len);
+            self.b.ins().jump(d, &[]);
+        }
+        self.states = saved_states;
+        self.v.reg = saved_reg;
+        self.v.slot = saved_slot;
+        self.v.flag = saved_flag;
+        self.blocks = saved_blocks;
+        self.start = saved_start;
+        self.cur = saved_cur;
+        self.exit = saved_exit;
+        self.deopt_at = saved_deopt;
+        self.ret = saved_ret;
+        self.cur_defs = saved_defs;
+        self.b.switch_to_block(after);
+        self.b.use_var(res)
     }
 
     /// `x == trunc(x) && INT_MIN < x <= INT_MAX` (false for NaN).
@@ -1395,6 +1673,7 @@ fn codegen(
     reg_idx: &HashMap<Reg, usize>,
     live: &[(Reg, JType)],
     deopt_regs: &mut HashMap<u32, Vec<(Reg, JType)>>,
+    inl: &Inl,
 ) -> Result<LoopFn, Reject> {
     MODULE.with(|m| {
         let mut m = m.borrow_mut();
@@ -1469,7 +1748,7 @@ fn codegen(
                     }
                 }
                 if r.start + k < r.end {
-                    for (reg, t) in defs(&code.ops[r.start + k], st, slot_ty) {
+                    for (reg, t) in defs(&code.ops[r.start + k], st, slot_ty, inl) {
                         if let Some(t) = t {
                             pairs.push((reg as Reg, t));
                         }
@@ -1516,7 +1795,10 @@ fn codegen(
                 b,
                 v,
                 slots,
-                states,
+                states: states.to_vec(),
+                inl,
+                deopt_at: None,
+                ret: None,
                 reg_idx,
                 vals,
                 blocks,
@@ -1537,7 +1819,7 @@ fn codegen(
                     continue;
                 }
                 g.cur = pc;
-                g.cur_defs = defs(&code.ops[pc], g.state(pc), slot_ty);
+                g.cur_defs = defs(&code.ops[pc], g.state(pc), slot_ty, inl);
                 g.op(pc, &code.ops[pc]);
             }
             let last = g.block(r.end);

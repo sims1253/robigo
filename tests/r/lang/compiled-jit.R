@@ -65,3 +65,25 @@ mixed <- function() { s <- 0; k <- 0L; for (i in 1:80) { k <- k + 1L; s <- s + k
 print(mixed(), digits = 17)
 whileint <- function() { i <- 0L; z <- 0; while (i < 100L && z < 1e6) { z <- z * 1.5 + i; i <- i + 1L }; c(i, z) }
 print(whileint(), digits = 17)
+# calls of pure closures inside native loops
+sq <- function(x) x * x
+callsum <- function(n) { s <- 0; for (i in 1:n) s <- s + sq(i); s }
+callsum(100)
+sq <- function(x) x + 1
+callsum(100)
+inc <- function(x) x + 1L
+callovf <- function() { s <- .Machine$integer.max - 30L; for (i in 1:60) s <- inc(s); s }
+callovf()
+pos <- function(x) if (x > 0) 1 else 0
+callna <- function() { r <- 0; for (i in 1:50) { v <- if (i == 33) NA else i; r <- r + pos(v) }; r }
+tryCatch(callna(), error = function(e) conditionMessage(e))
+k <- 10
+addk <- function(x) x + k
+callfree <- function() { s <- 0; for (i in 1:40) { if (i == 20) k <<- 1000; s <- s + addk(i) }; s }
+callfree()
+branchy <- function(x) if (x > 25) 1L else 0.5
+callbranch <- function() { s <- 0; for (i in 1:50) s <- s + branchy(i); s }
+callbranch()
+two <- function(a, b) (a - b) / (a + b + 1)
+calltwo <- function() { s <- 0; for (i in 1:40) for (j in 1:40) s <- s + two(i, j); s }
+print(calltwo(), digits = 17)
