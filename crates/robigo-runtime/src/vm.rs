@@ -868,6 +868,34 @@ fn run_inline(interp: &mut Interp, info: &Inline, args: &[RVal], env: &Env) -> O
     Some(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)))
 }
 
+/// Evaluate code that is a single guarded operation on constants and
+/// variables (see `Code::simple`) without a VM run; `None` when any part
+/// needs the general path (which then runs the code normally).
+pub fn run_simple(interp: &mut Interp, code: &Code, env: &Env) -> Option<Value> {
+    let i = code.simple?;
+    let (sym, a, b) = match &code.ops[i] {
+        Op::ArithL { sym, a, b, .. } | Op::RelL { sym, a, b, .. } => (*sym, a, b),
+        _ => return None,
+    };
+    if !guard_ok(interp, sym, env, &code.guard_memo[i]) {
+        return None;
+    }
+    let num = |l: &Leaf| match l {
+        Leaf::D(x) => Some(Num::D(*x)),
+        Leaf::I(x) => Some(Num::I(*x)),
+        Leaf::Var(s, _) => plain_lookup(env, *s).as_ref().and_then(scalar),
+        Leaf::R(_) => None,
+    };
+    let (x, y) = (num(a)?, num(b)?);
+    let r = match &code.ops[i] {
+        Op::ArithL { op, .. } => arith_fast(*op, x, y)?,
+        Op::RelL { op, .. } => rel_fast(*op, x, y),
+        _ => return None,
+    };
+    interp.visible = true;
+    Some(r.into_value())
+}
+
 /// Whether `sym` is bound in `env`'s own frame to a promise not yet forced.
 fn unforced_promise(env: &Env, sym: Sym) -> bool {
     let frame = env.0.frame().borrow();

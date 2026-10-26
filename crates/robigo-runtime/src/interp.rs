@@ -259,10 +259,13 @@ impl Interp {
         let Some(env) = env else { return Ok(Value::Null) };
         p.forcing.set(true);
         let r = match &p.code {
-            Some(code) => {
-                self.visible = true;
-                crate::vm::run(self, code, &env)
-            }
+            Some(code) => match crate::vm::run_simple(self, code, &env) {
+                Some(v) => Ok(v),
+                None => {
+                    self.visible = true;
+                    crate::vm::run(self, code, &env)
+                }
+            },
             None => self.eval(&p.expr, &env),
         };
         p.forcing.set(false);

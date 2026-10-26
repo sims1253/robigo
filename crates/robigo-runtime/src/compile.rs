@@ -188,6 +188,9 @@ pub struct Code {
     pub nguards: usize,
     /// Every function the code guards.
     pub guard_syms: Vec<Sym>,
+    /// The code is a single guarded `ArithL`/`RelL` on constants and
+    /// variables (a promise like `n - 1`): its index in `ops`.
+    pub simple: Option<usize>,
     /// (search epoch, closure environment id, formals address) for which
     /// all guards are known to hold in a fresh call frame (see
     /// `vm::run_closure`).
@@ -218,6 +221,16 @@ impl Code {
         }
         guard_syms.sort();
         guard_syms.dedup();
+        let plain = |l: &Leaf| !matches!(l, Leaf::R(_));
+        let mut real = c.ops.iter().enumerate().filter(|(_, o)| !matches!(o, Op::Visible { .. }));
+        let simple = match (real.next(), real.next()) {
+            (Some((i, Op::ArithL { a, b, g, dst, .. } | Op::RelL { a, b, g, dst, .. })), None)
+                if *g != NO_GUARD && plain(a) && plain(b) && *dst == result =>
+            {
+                Some(i)
+            }
+            _ => None,
+        };
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
         Code {
@@ -229,6 +242,7 @@ impl Code {
             call_sites: c.call_sites,
             nguards: c.nguards,
             guard_syms,
+            simple,
             fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             result,
             is_body,
