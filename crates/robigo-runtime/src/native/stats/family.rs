@@ -37,19 +37,23 @@ pub fn logit_link(_: &mut Interp, mu: &Value) -> RResult<Value> {
     Ok(like(mu, out))
 }
 
-fn reals_of(i: &mut Interp, v: &Value, what: &str) -> RResult<(Value, Vec<f64>)> {
+/// `v` coerced to double (shares `v`'s data when it is one).
+fn reals_of(i: &mut Interp, v: &Value, what: &str) -> RResult<Value> {
     if v.is_empty() || !is_numeric(v) {
         return Err(Flow::error(format!("Argument {} must be a nonempty numeric vector", what)));
     }
-    let r = i.coerce(v, VType::Real)?;
-    let Value::Real(d) = &r else { unreachable!() };
-    let d = d.data.clone();
-    Ok((r, d))
+    i.coerce(v, VType::Real)
+}
+
+fn data_of(r: &Value) -> &[f64] {
+    let Value::Real(d) = r else { unreachable!() };
+    &d.data
 }
 
 // R: family.c:logit_linkinv
 pub fn logit_linkinv(i: &mut Interp, eta: &Value) -> RResult<Value> {
-    let (r, e) = reals_of(i, eta, "eta")?;
+    let r = reals_of(i, eta, "eta")?;
+    let e = data_of(&r);
     let out = e
         .iter()
         .map(|&etai| {
@@ -68,7 +72,8 @@ pub fn logit_linkinv(i: &mut Interp, eta: &Value) -> RResult<Value> {
 
 // R: family.c:logit_mu_eta
 pub fn logit_mu_eta(i: &mut Interp, eta: &Value) -> RResult<Value> {
-    let (r, e) = reals_of(i, eta, "eta")?;
+    let r = reals_of(i, eta, "eta")?;
+    let e = data_of(&r);
     let out = e
         .iter()
         .map(|&etai| {

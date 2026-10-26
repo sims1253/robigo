@@ -143,6 +143,7 @@ tests/r/vec/order-range.R
 tests/r/vec/rep.R
 tests/r/vec/sort-base.R
 tests/r/vec/sort-internal.R
+tests/r/vec/subset-mask-matrix.R
 tests/r/vec/sum-ldouble.R
 tests/r/vec/sum-prod.R
 tests/r/vec/unique.R

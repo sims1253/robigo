@@ -432,8 +432,30 @@ macro_rules! real_kernel {
         } else if a.len() == 1 && b.len() == n {
             let x = a[0];
             b.iter().map(|&y| f(x, y)).collect()
+        } else if a.len() == n && n % b.len() == 0 {
+            // `b` recycled a whole number of times (a matrix times a column).
+            let mut out = Vec::with_capacity(n);
+            for chunk in a.chunks(b.len()) {
+                out.extend(chunk.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)));
+            }
+            out
+        } else if b.len() == n && n % a.len() == 0 {
+            let mut out = Vec::with_capacity(n);
+            for chunk in b.chunks(a.len()) {
+                out.extend(a.iter().zip(chunk.iter()).map(|(&x, &y)| f(x, y)));
+            }
+            out
         } else {
-            (0..n).map(|i| f(a[i % a.len()], b[i % b.len()])).collect()
+            let (na, nb) = (a.len(), b.len());
+            let (mut i, mut j) = (0, 0);
+            (0..n)
+                .map(|_| {
+                    let r = f(a[i], b[j]);
+                    i = if i + 1 == na { 0 } else { i + 1 };
+                    j = if j + 1 == nb { 0 } else { j + 1 };
+                    r
+                })
+                .collect()
         }
     }};
 }
@@ -932,9 +954,15 @@ fn do_ge(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
 // ----------------------------------------------------------------------
 // logic (logic.c)
 
-fn lgl_view(v: &Value) -> Vec<Lgl> {
-    let mut w = CoerceWarnings::default();
-    crate::coerce::to_lgl(v, &mut w)
+/// `v` as logicals: borrowed when it is a logical vector.
+fn lgl_view(v: &Value) -> std::borrow::Cow<'_, [Lgl]> {
+    match v {
+        Value::Lgl(x) => std::borrow::Cow::Borrowed(&x.data),
+        _ => {
+            let mut w = CoerceWarnings::default();
+            std::borrow::Cow::Owned(crate::coerce::to_lgl(v, &mut w))
+        }
+    }
 }
 
 fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bool) -> RResult<Value> {

@@ -358,6 +358,15 @@ fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
         return Ok(x.clone());
     }
     let mat = matrix_subscript(x, s, Some(call), Some(call))?;
+    // A logical subscript as long as `x` without NA (`x[x > 0]`): filter
+    // directly instead of going through positions.
+    if let (None, Value::Lgl(m)) = (&mat, s) {
+        if m.data.len() == x.len() && !m.data.contains(&NA_LOGICAL) {
+            if let Some(r) = mask_subset(x, &m.data) {
+                return Ok(r);
+            }
+        }
+    }
     let s = mat.as_ref().unwrap_or(s);
     let mut stretch = 1;
     let indx = make_subscript(x, s, &mut stretch, Some(call))?;
@@ -383,6 +392,53 @@ fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     Ok(result)
 }
 
+/// `x[m]` for a logical `m` of `x`'s length without NA (as `VectorSubset`
+/// gives it: elements, names and srcrefs where `m` is TRUE). `None` for
+/// types handled elsewhere.
+fn mask_subset(x: &Value, m: &[i32]) -> Option<Value> {
+    fn keep<T: Clone>(d: &[T], m: &[i32]) -> Vec<T> {
+        let n = m.iter().filter(|&&b| b != 0).count();
+        let mut out = Vec::with_capacity(n);
+        for (v, &b) in d.iter().zip(m) {
+            if b != 0 {
+                out.push(v.clone());
+            }
+        }
+        out
+    }
+    let mut result = match x {
+        Value::Lgl(v) => Value::lgls(keep(&v.data, m)),
+        Value::Int(v) => Value::ints(keep(&v.data, m)),
+        Value::Real(v) => Value::reals(keep(&v.data, m)),
+        Value::Cplx(v) => Value::cplxs(keep(&v.data, m)),
+        Value::Str(v) => Value::strs(keep(&v.data, m)),
+        Value::Raw(v) => Value::raws(keep(&v.data, m)),
+        Value::List(v) => Value::list(keep(&v.data, m)),
+        _ => return None,
+    };
+    if x.attrs().is_some() {
+        let mut names = get_attrib(x, s::NAMES);
+        if names.is_null() && is_array(x) {
+            if let Value::List(dn) = get_attrib(x, s::DIMNAMES) {
+                if dn.data.len() == 1 {
+                    names = dn.data[0].clone();
+                }
+            }
+        }
+        match &names {
+            Value::Str(n) if n.data.len() == m.len() => result.set_attr_raw(s::NAMES, Value::strs(keep(&n.data, m))),
+            Value::Null => {}
+            _ => return None,
+        }
+        match x.get_attr(s::SRCREF) {
+            Some(Value::List(sr)) if sr.data.len() == m.len() => result.set_attr_raw(s::SRCREF, Value::list(keep(&sr.data, m))),
+            Some(Value::List(_)) => return None,
+            _ => {}
+        }
+    }
+    Some(result)
+}
+
 fn dim_names_attr(x: &Value) -> Option<Value> {
     x.get_attr(s::DIM).and_then(|d| d.get_attr(s::NAMES))
 }
@@ -395,21 +451,44 @@ fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &
     let nc = dim[1] as i64;
     let sr = array_subscript(interp, 0, s0, &dim, x, Some(call))?;
     let sc = array_subscript(interp, 1, s1, &dim, x, Some(call))?;
-    let mut flat = Vec::with_capacity(sr.len() * sc.len());
-    for &jj in &sc {
-        if jj != NA_IDX && (jj < 1 || jj > nc) {
-            return Err(out_of_bounds(Some(call), None));
-        }
-        for &ii in &sr {
-            if ii != NA_IDX && (ii < 1 || ii > nr) {
-                return Err(out_of_bounds(Some(call), None));
-            }
-            flat.push(if ii == NA_IDX || jj == NA_IDX { NA_IDX } else { ii + (jj - 1) * nr });
-        }
+    // R checks each column index, and for each column every row index.
+    let bad = |v: i64, n: i64| v != NA_IDX && (v < 1 || v > n);
+    if sc.iter().any(|&jj| bad(jj, nc)) || (!sc.is_empty() && sr.iter().any(|&ii| bad(ii, nr))) {
+        return Err(out_of_bounds(Some(call), None));
     }
-    let mut result = match x {
-        x if x.is_vector() => extract_subset(x, &flat, Some(call))?,
-        _ => return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type")),
+    if !x.is_vector() {
+        return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
+    }
+    let mut result = if sr.contains(&NA_IDX) || sc.contains(&NA_IDX) {
+        let mut flat = Vec::with_capacity(sr.len() * sc.len());
+        for &jj in &sc {
+            for &ii in &sr {
+                flat.push(if ii == NA_IDX || jj == NA_IDX { NA_IDX } else { ii + (jj - 1) * nr });
+            }
+        }
+        extract_subset(x, &flat, Some(call))?
+    } else {
+        // In-range positions: gather column by column.
+        fn gather2<T: Clone>(src: &[T], nr: usize, sr: &[i64], sc: &[i64]) -> Vec<T> {
+            let mut out = Vec::with_capacity(sr.len() * sc.len());
+            for &jj in sc {
+                let col = &src[(jj - 1) as usize * nr..];
+                out.extend(sr.iter().map(|&ii| col[(ii - 1) as usize].clone()));
+            }
+            out
+        }
+        let nr = nr as usize;
+        match x {
+            Value::Lgl(v) => Value::lgls(gather2(&v.data, nr, &sr, &sc)),
+            Value::Int(v) => Value::ints(gather2(&v.data, nr, &sr, &sc)),
+            Value::Real(v) => Value::reals(gather2(&v.data, nr, &sr, &sc)),
+            Value::Cplx(v) => Value::cplxs(gather2(&v.data, nr, &sr, &sc)),
+            Value::Str(v) => Value::strs(gather2(&v.data, nr, &sr, &sc)),
+            Value::Raw(v) => Value::raws(gather2(&v.data, nr, &sr, &sc)),
+            Value::List(v) => Value::list(gather2(&v.data, nr, &sr, &sc)),
+            Value::Expr(v) => Value::expr_vec(gather2(&v.data, nr, &sr, &sc)),
+            _ => return Err(not_subsettable(x, Some(call))),
+        }
     };
     let mut d = Value::ints(vec![sr.len() as i32, sc.len() as i32]);
     if let Some(n) = dim_names_attr(x) {

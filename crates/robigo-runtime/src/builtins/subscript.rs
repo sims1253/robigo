@@ -528,10 +528,19 @@ fn logical_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall) -> RRes
     if ns == 0 {
         return Ok(vec![]);
     }
-    let mut out = Vec::new();
     let ns = ns as usize;
+    if ns == nmax as usize {
+        let mut out = Vec::with_capacity(s.iter().filter(|&&v| v != 0).count());
+        for (i, &v) in s.iter().enumerate() {
+            if v != 0 {
+                out.push(if v == NA_LOGICAL { NA_IDX } else { i as i64 + 1 });
+            }
+        }
+        return Ok(out);
+    }
+    let mut out = Vec::new();
     for i in 0..nmax as usize {
-        let v = s[if ns == nmax as usize { i } else { i % ns }];
+        let v = s[i % ns];
         if v != 0 {
             out.push(if v == NA_LOGICAL { NA_IDX } else { i as i64 + 1 });
         }

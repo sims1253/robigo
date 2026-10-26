@@ -123,10 +123,14 @@ fn ncols(v: &Value) -> usize {
     if d.len() >= 2 { d[1] as usize } else { 1 }
 }
 
-fn reals_of(v: &Value) -> Vec<f64> {
-    match coerce_quiet(v, VType::Real) {
-        Value::Real(r) => r.data.clone(),
-        _ => vec![],
+/// The values of `v` as doubles: borrowed when it is a double vector.
+fn reals_of(v: &Value) -> std::borrow::Cow<'_, [f64]> {
+    match v {
+        Value::Real(r) => std::borrow::Cow::Borrowed(&r.data),
+        _ => match coerce_quiet(v, VType::Real) {
+            Value::Real(r) => std::borrow::Cow::Owned(r.data.clone()),
+            _ => std::borrow::Cow::Owned(vec![]),
+        },
     }
 }
 
