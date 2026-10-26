@@ -71,6 +71,7 @@ tests/r/strings/encode-paths.R
 tests/r/strings/format.R
 tests/r/strings/nchar-substr.R
 tests/r/strings/paste.R
+tests/r/strings/regex-classes.R
 tests/r/strings/regex-errors.R
 tests/r/strings/regex-fixed.R
 tests/r/strings/regex-perl.R

@@ -86,10 +86,56 @@ predefined! {
     ELLIPSIS_ELT = "...elt",
 }
 
+/// FxHash (as in rustc): fast for short strings such as symbol names.
+#[derive(Default, Clone, Copy)]
+pub struct StrHasher(u64);
+
+const FX_K: u64 = 0x517c_c1b7_2722_0a95;
+
+impl StrHasher {
+    #[inline]
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(FX_K);
+    }
+}
+
+impl std::hash::Hasher for StrHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.add(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(buf));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.add(i as u64);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type StrHash = std::hash::BuildHasherDefault<StrHasher>;
+
 #[derive(Default)]
 struct Interner {
     names: Vec<Rc<str>>,
-    map: HashMap<Rc<str>, Sym>,
+    map: HashMap<Rc<str>, Sym, StrHash>,
     /// `..n` index of each symbol, 0 if it is not of that form.
     ddvals: Vec<u32>,
 }

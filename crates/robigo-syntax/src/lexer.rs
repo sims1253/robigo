@@ -86,12 +86,30 @@ impl<'a> Lexer<'a> {
         Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new() }
     }
 
+    #[inline]
     fn peek_char(&self) -> Option<char> {
-        self.src[self.pos..].chars().next()
+        let b = *self.bytes.get(self.pos)?;
+        if b < 0x80 {
+            Some(b as char)
+        } else {
+            self.src[self.pos..].chars().next()
+        }
     }
 
     fn peek_char_at(&self, offset: usize) -> Option<char> {
-        self.src[self.pos..].chars().nth(offset)
+        // ASCII up to `offset`: index bytes directly.
+        let mut i = self.pos;
+        for k in 0..=offset {
+            let b = *self.bytes.get(i)?;
+            if b >= 0x80 {
+                return self.src[self.pos..].chars().nth(offset);
+            }
+            if k == offset {
+                return Some(b as char);
+            }
+            i += 1;
+        }
+        None
     }
 
     fn byte_at(&self, i: usize) -> u8 {
@@ -118,18 +136,14 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Result<Token, ParseError> {
         // Skip horizontal whitespace and comments.
         loop {
-            match self.peek_char() {
-                Some(' ') | Some('\t') | Some('\r') | Some('\u{c}') | Some('\u{a0}') => {
-                    self.pos += self.peek_char().unwrap().len_utf8();
+            match self.byte_at(self.pos) {
+                b' ' | b'\t' | b'\r' | 0x0c => self.pos += 1,
+                b'#' => {
+                    // To the end of the line (a newline byte never occurs
+                    // inside a multi-byte character).
+                    self.pos += self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
                 }
-                Some('#') => {
-                    while let Some(c) = self.peek_char() {
-                        if c == '\n' {
-                            break;
-                        }
-                        self.pos += c.len_utf8();
-                    }
-                }
+                0xc2 if self.byte_at(self.pos + 1) == 0xa0 => self.pos += 2, // U+00A0
                 _ => break,
             }
         }
@@ -217,34 +231,42 @@ impl<'a> Lexer<'a> {
 
     fn ident(&mut self) -> Tok {
         let start = self.pos;
-        while let Some(c) = self.peek_char() {
-            if is_ident_char(c) {
-                self.pos += c.len_utf8();
-            } else {
-                break;
+        loop {
+            match self.byte_at(self.pos) {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' => self.pos += 1,
+                b if b >= 0x80 => match self.peek_char() {
+                    Some(c) if is_ident_char(c) => self.pos += c.len_utf8(),
+                    _ => break,
+                },
+                _ => break,
             }
         }
         let s = &self.src[start..self.pos];
-        match s {
-            "NULL" => Tok::Const(Const::Null),
-            "NA" => Tok::Const(Const::Lgl(None)),
-            "TRUE" => Tok::Const(Const::Lgl(Some(true))),
-            "FALSE" => Tok::Const(Const::Lgl(Some(false))),
-            "Inf" => Tok::Const(Const::Dbl(f64::INFINITY)),
-            "NaN" => Tok::Const(Const::Dbl(f64::NAN)),
-            "NA_integer_" => Tok::Const(Const::Int(None)),
-            "NA_real_" => Tok::Const(Const::DblNa),
-            "NA_character_" => Tok::Const(Const::Str(None)),
-            "NA_complex_" => Tok::Const(Const::CplxNa),
-            "function" => Tok::Function,
-            "if" => Tok::If,
-            "else" => Tok::Else,
-            "for" => Tok::For,
-            "in" => Tok::In,
-            "while" => Tok::While,
-            "repeat" => Tok::Repeat,
-            "break" => Tok::Break,
-            "next" => Tok::Next,
+        // Slice patterns compile to length and byte tests (no string
+        // comparisons per keyword).
+        match s.as_bytes() {
+            [b'N', b'U', b'L', b'L'] => Tok::Const(Const::Null),
+            [b'N', b'A'] => Tok::Const(Const::Lgl(None)),
+            [b'T', b'R', b'U', b'E'] => Tok::Const(Const::Lgl(Some(true))),
+            [b'F', b'A', b'L', b'S', b'E'] => Tok::Const(Const::Lgl(Some(false))),
+            [b'I', b'n', b'f'] => Tok::Const(Const::Dbl(f64::INFINITY)),
+            [b'N', b'a', b'N'] => Tok::Const(Const::Dbl(f64::NAN)),
+            [b'N', b'A', b'_', rest @ ..] => match rest {
+                [b'i', b'n', b't', b'e', b'g', b'e', b'r', b'_'] => Tok::Const(Const::Int(None)),
+                [b'r', b'e', b'a', b'l', b'_'] => Tok::Const(Const::DblNa),
+                [b'c', b'h', b'a', b'r', b'a', b'c', b't', b'e', b'r', b'_'] => Tok::Const(Const::Str(None)),
+                [b'c', b'o', b'm', b'p', b'l', b'e', b'x', b'_'] => Tok::Const(Const::CplxNa),
+                _ => Tok::Sym(s.to_string()),
+            },
+            [b'f', b'u', b'n', b'c', b't', b'i', b'o', b'n'] => Tok::Function,
+            [b'i', b'f'] => Tok::If,
+            [b'e', b'l', b's', b'e'] => Tok::Else,
+            [b'f', b'o', b'r'] => Tok::For,
+            [b'i', b'n'] => Tok::In,
+            [b'w', b'h', b'i', b'l', b'e'] => Tok::While,
+            [b'r', b'e', b'p', b'e', b'a', b't'] => Tok::Repeat,
+            [b'b', b'r', b'e', b'a', b'k'] => Tok::Break,
+            [b'n', b'e', b'x', b't'] => Tok::Next,
             _ => Tok::Sym(s.to_string()),
         }
     }
@@ -366,6 +388,16 @@ impl<'a> Lexer<'a> {
         let mut byte_escape = false;
         let mut unicode_escape = false;
         loop {
+            // Copy a run of plain bytes at once (multi-byte characters are
+            // copied whole: their bytes are all >= 0x80).
+            let run = self.bytes[self.pos..]
+                .iter()
+                .position(|&b| b == b'\\' || b == quote as u8)
+                .unwrap_or(self.bytes.len() - self.pos);
+            if run > 0 {
+                out.push_str(&self.src[self.pos..self.pos + run]);
+                self.pos += run;
+            }
             let Some(c) = self.peek_char() else {
                 return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
             };
@@ -495,67 +527,71 @@ impl<'a> Lexer<'a> {
     }
 
     fn operator(&mut self, start: usize) -> Result<Tok, ParseError> {
-        let rest = &self.src[self.pos..];
-        let table: &[(&str, Tok)] = &[
-            ("<<-", Tok::LeftAssign("<<-")),
-            ("->>", Tok::RightAssign("->>")),
-            (":::", Tok::NsGet(":::")),
-            ("<-", Tok::LeftAssign("<-")),
-            ("->", Tok::RightAssign("->")),
-            (":=", Tok::LeftAssign(":=")),
-            ("::", Tok::NsGet("::")),
-            ("<=", Tok::Cmp("<=")),
-            (">=", Tok::Cmp(">=")),
-            ("==", Tok::Cmp("==")),
-            ("!=", Tok::Cmp("!=")),
-            ("&&", Tok::And2),
-            ("||", Tok::Or2),
-            ("|>", Tok::Pipe),
-            ("=>", Tok::PipeBind),
-            ("**", Tok::Caret),
-            ("[[", Tok::LBB),
-            ("<", Tok::Cmp("<")),
-            (">", Tok::Cmp(">")),
-            ("=", Tok::EqAssign),
-            ("&", Tok::And),
-            ("|", Tok::Or),
-            ("!", Tok::Not),
-            ("~", Tok::Tilde),
-            ("?", Tok::Question),
-            ("+", Tok::Plus),
-            ("-", Tok::Minus),
-            ("*", Tok::Star),
-            ("/", Tok::Slash),
-            ("^", Tok::Caret),
-            (":", Tok::Colon),
-            ("$", Tok::Dollar),
-            ("@", Tok::At),
-            ("(", Tok::LParen),
-            (")", Tok::RParen),
-            ("{", Tok::LBrace),
-            ("}", Tok::RBrace),
-            ("[", Tok::LBracket),
-            ("]", Tok::RBracket),
-            (",", Tok::Comma),
-            (";", Tok::Semi),
-            ("\\", Tok::Lambda),
-        ];
-        if rest.starts_with('%') {
-            if let Some(end) = rest[1..].find(['%', '\n']) {
-                if rest.as_bytes()[1 + end] == b'%' {
-                    let op = &rest[..end + 2];
-                    self.pos += op.len();
-                    return Ok(Tok::Special(op.to_string()));
+        let (b0, b1, b2) = (self.byte_at(self.pos), self.byte_at(self.pos + 1), self.byte_at(self.pos + 2));
+        // Longest match first, as R's lexer does.
+        let (tok, len) = match b0 {
+            b'<' => match (b1, b2) {
+                (b'<', b'-') => (Tok::LeftAssign("<<-"), 3),
+                (b'-', _) => (Tok::LeftAssign("<-"), 2),
+                (b'=', _) => (Tok::Cmp("<="), 2),
+                _ => (Tok::Cmp("<"), 1),
+            },
+            b'-' => match (b1, b2) {
+                (b'>', b'>') => (Tok::RightAssign("->>"), 3),
+                (b'>', _) => (Tok::RightAssign("->"), 2),
+                _ => (Tok::Minus, 1),
+            },
+            b':' => match (b1, b2) {
+                (b':', b':') => (Tok::NsGet(":::"), 3),
+                (b':', _) => (Tok::NsGet("::"), 2),
+                (b'=', _) => (Tok::LeftAssign(":="), 2),
+                _ => (Tok::Colon, 1),
+            },
+            b'>' if b1 == b'=' => (Tok::Cmp(">="), 2),
+            b'>' => (Tok::Cmp(">"), 1),
+            b'=' if b1 == b'=' => (Tok::Cmp("=="), 2),
+            b'=' if b1 == b'>' => (Tok::PipeBind, 2),
+            b'=' => (Tok::EqAssign, 1),
+            b'!' if b1 == b'=' => (Tok::Cmp("!="), 2),
+            b'!' => (Tok::Not, 1),
+            b'&' if b1 == b'&' => (Tok::And2, 2),
+            b'&' => (Tok::And, 1),
+            b'|' if b1 == b'|' => (Tok::Or2, 2),
+            b'|' if b1 == b'>' => (Tok::Pipe, 2),
+            b'|' => (Tok::Or, 1),
+            b'*' if b1 == b'*' => (Tok::Caret, 2),
+            b'*' => (Tok::Star, 1),
+            b'[' if b1 == b'[' => (Tok::LBB, 2),
+            b'[' => (Tok::LBracket, 1),
+            b'~' => (Tok::Tilde, 1),
+            b'?' => (Tok::Question, 1),
+            b'+' => (Tok::Plus, 1),
+            b'/' => (Tok::Slash, 1),
+            b'^' => (Tok::Caret, 1),
+            b'$' => (Tok::Dollar, 1),
+            b'@' => (Tok::At, 1),
+            b'(' => (Tok::LParen, 1),
+            b')' => (Tok::RParen, 1),
+            b'{' => (Tok::LBrace, 1),
+            b'}' => (Tok::RBrace, 1),
+            b']' => (Tok::RBracket, 1),
+            b',' => (Tok::Comma, 1),
+            b';' => (Tok::Semi, 1),
+            b'\\' => (Tok::Lambda, 1),
+            b'%' => {
+                let rest = &self.src[self.pos..];
+                if let Some(end) = rest[1..].find(['%', '\n']) {
+                    if rest.as_bytes()[1 + end] == b'%' {
+                        let op = &rest[..end + 2];
+                        self.pos += op.len();
+                        return Ok(Tok::Special(op.to_string()));
+                    }
                 }
+                return Err(self.err("unexpected input", start, false));
             }
-            return Err(self.err("unexpected input", start, false));
-        }
-        for (text, tok) in table {
-            if rest.starts_with(text) {
-                self.pos += text.len();
-                return Ok(tok.clone());
-            }
-        }
-        Err(self.err("unexpected input", start, false))
+            _ => return Err(self.err("unexpected input", start, false)),
+        };
+        self.pos += len;
+        Ok(tok)
     }
 }

@@ -89,16 +89,21 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_newlines(&mut self) {
-        while self.toks[self.pos].tok == Tok::Newline {
+        while matches!(self.toks[self.pos].tok, Tok::Newline) {
             self.pos += 1;
         }
     }
 
+    /// Consume the next token. Tokens are only read again after a
+    /// `bump` when backtracking over newlines (see `if_expr`), so the token
+    /// is moved out, leaving a newline in its place.
     fn bump(&mut self) -> Token {
-        let t = self.toks[self.pos].clone();
-        if t.tok != Tok::Eof {
-            self.pos += 1;
+        if matches!(self.toks[self.pos].tok, Tok::Eof) {
+            return self.toks[self.pos].clone();
         }
+        let span = self.toks[self.pos].span;
+        let t = std::mem::replace(&mut self.toks[self.pos], Token { tok: Tok::Newline, span });
+        self.pos += 1;
         t
     }
 
@@ -121,7 +126,7 @@ impl<'a> Parser<'a> {
             message: format!("unexpected {}", self.token_text(t)),
             offset: t.span.start as usize,
             end: t.span.end as usize,
-            incomplete: t.tok == Tok::Eof,
+            incomplete: matches!(t.tok, Tok::Eof),
         }
     }
 
@@ -140,7 +145,7 @@ impl<'a> Parser<'a> {
             while matches!(self.raw_peek().tok, Tok::Newline | Tok::Semi) {
                 self.pos += 1;
             }
-            if self.raw_peek().tok == Tok::Eof {
+            if matches!(self.raw_peek().tok, Tok::Eof) {
                 break;
             }
             let e = self.expr(0)?;
@@ -381,7 +386,7 @@ impl<'a> Parser<'a> {
         if self.cur_ctx() != Ctx::TopLevel {
             self.skip_newlines();
         }
-        if self.raw_peek().tok == Tok::Else {
+        if matches!(self.raw_peek().tok, Tok::Else) {
             self.bump();
             let other = self.expr(0)?;
             let full = span.to(other.span());
@@ -410,7 +415,7 @@ impl<'a> Parser<'a> {
     fn formals(&mut self) -> Result<Vec<Formal>, ParseError> {
         self.expect(Tok::LParen)?;
         let mut out: Vec<Formal> = Vec::new();
-        if self.peek().tok == Tok::RParen {
+        if matches!(self.peek().tok, Tok::RParen) {
             self.bump();
             return Ok(out);
         }
@@ -429,7 +434,7 @@ impl<'a> Parser<'a> {
                     incomplete: false,
                 });
             }
-            let default = if self.peek().tok == Tok::EqAssign {
+            let default = if matches!(self.peek().tok, Tok::EqAssign) {
                 self.bump();
                 Some(self.expr(BP_EQ_ASSIGN)?)
             } else {
@@ -457,11 +462,11 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             let t = self.raw_peek().clone();
-            if t.tok == Tok::RBrace {
+            if matches!(t.tok, Tok::RBrace) {
                 self.bump();
                 return Ok(Expr::call("{", open, stmts, open.to(t.span)));
             }
-            if t.tok == Tok::Eof {
+            if matches!(t.tok, Tok::Eof) {
                 return Err(self.unexpected(&t));
             }
             let e = self.expr(0)?;
@@ -493,7 +498,7 @@ impl<'a> Parser<'a> {
                 args.push(Arg { name: None, value: None });
             }
             let mut close = self.expect(close_tok.clone())?;
-            if open.tok == Tok::LBB {
+            if matches!(open.tok, Tok::LBB) {
                 close = self.expect(Tok::RBracket)?;
             }
             let span = lhs.span().to(close.span);
@@ -525,7 +530,7 @@ impl<'a> Parser<'a> {
         }
         loop {
             let t = self.peek().clone();
-            let arg = if &t.tok == close || t.tok == Tok::Comma {
+            let arg = if &t.tok == close || matches!(t.tok, Tok::Comma) {
                 Arg { name: None, value: None }
             } else {
                 // `name = value`, where name is a symbol, string or NULL.
@@ -536,10 +541,10 @@ impl<'a> Parser<'a> {
                 };
                 let named = name.is_some() && {
                     let mut j = self.pos + 1;
-                    while self.toks[j].tok == Tok::Newline {
+                    while matches!(self.toks[j].tok, Tok::Newline) {
                         j += 1;
                     }
-                    self.toks[j].tok == Tok::EqAssign
+                    matches!(self.toks[j].tok, Tok::EqAssign)
                 };
                 if named {
                     self.bump();
@@ -556,7 +561,7 @@ impl<'a> Parser<'a> {
             };
             out.push(arg);
             let t = self.peek().clone();
-            if t.tok == Tok::Comma {
+            if matches!(t.tok, Tok::Comma) {
                 self.bump();
                 continue;
             }

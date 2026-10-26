@@ -1169,6 +1169,14 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
 // ======================================================================
 // Compiled patterns
 
+/// A regex-automata meta regex using lazy DFAs only: R code typically
+/// compiles a pattern per call and matches short strings, where building a
+/// full DFA up front (the default for small patterns) dominates, notably
+/// for Unicode classes such as `[[:alnum:]]`.
+fn meta_regex(pattern: &str) -> Result<MetaRegex, regex_automata::meta::BuildError> {
+    MetaRegex::builder().configure(MetaRegex::config().dfa(false)).build(pattern)
+}
+
 /// A TRE program: leftmost-longest matching via regex-automata, or
 /// fancy-regex for patterns with back-references.
 enum TreProg {
@@ -1188,7 +1196,7 @@ impl TreProg {
         if t.has_backref || t.has_lookaround {
             return fancy_regex::Regex::new(&t.pattern).map(TreProg::Fancy).map_err(|e| e.to_string());
         }
-        let meta = MetaRegex::new(&t.pattern).map_err(|e| e.to_string())?;
+        let meta = meta_regex(&t.pattern).map_err(|e| e.to_string())?;
         // TRE honours minimal repetitions, so only extend to the longest
         // match when there are none.
         let dfa = if t.has_minimal {
@@ -1200,7 +1208,7 @@ impl TreProg {
                 .ok()
         };
         let cap = if want_caps && t.nsub > 0 {
-            MetaRegex::new(&format!(r"(?:{})\z", t.pattern)).ok()
+            meta_regex(&format!(r"(?:{})\z", t.pattern)).ok()
         } else {
             None
         };
@@ -1268,6 +1276,18 @@ struct Re {
     nsub: usize,
 }
 
+/// (pattern, perl, ignore.case, captures wanted, ASCII-only text).
+type ReKey = (String, bool, bool, bool, bool);
+
+const RE_CACHE_SIZE: usize = 32;
+
+thread_local! {
+    /// Recently compiled patterns, most recent first. R code often matches
+    /// the same pattern call after call (in loops, `lapply`), and for short
+    /// strings compiling costs far more than matching.
+    static RE_CACHE: RefCell<Vec<(ReKey, Rc<Re>)>> = const { RefCell::new(Vec::new()) };
+}
+
 /// How to start a search at a byte offset.
 #[derive(Clone, Copy, PartialEq)]
 enum Ctx {
@@ -1300,7 +1320,50 @@ impl Re {
         Flow::error(format!("invalid regular expression '{}'", pat))
     }
 
-    fn compile(interp: &mut Interp, pat: &str, fixed: bool, perl: bool, icase: bool, want_caps: bool) -> RResult<Re> {
+    /// `ascii`: every string the pattern will be matched against is ASCII.
+    /// Compiled patterns are cached (see [`RE_CACHE`]).
+    fn compile(
+        interp: &mut Interp,
+        pat: &str,
+        fixed: bool,
+        perl: bool,
+        icase: bool,
+        want_caps: bool,
+        ascii: bool,
+    ) -> RResult<Rc<Re>> {
+        if fixed {
+            return Ok(Rc::new(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 }));
+        }
+        let key = (pat.to_string(), perl, icase, want_caps, ascii);
+        let hit = RE_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            let i = c.iter().position(|(k, _)| *k == key)?;
+            let e = c.remove(i);
+            let re = e.1.clone();
+            c.insert(0, e);
+            Some(re)
+        });
+        if let Some(re) = hit {
+            return Ok(re);
+        }
+        let re = Rc::new(Re::compile_uncached(interp, pat, fixed, perl, icase, want_caps, ascii)?);
+        RE_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            c.insert(0, (key, re.clone()));
+            c.truncate(RE_CACHE_SIZE);
+        });
+        Ok(re)
+    }
+
+    fn compile_uncached(
+        interp: &mut Interp,
+        pat: &str,
+        fixed: bool,
+        perl: bool,
+        icase: bool,
+        want_caps: bool,
+        ascii: bool,
+    ) -> RResult<Re> {
         if fixed {
             return Ok(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 });
         }
@@ -1320,10 +1383,17 @@ impl Re {
             let nsub = re.captures_len() - 1;
             return Ok(Re { kind: Kind::Pcre(re), nsub });
         }
-        let t = tre_translate(pat, icase, false, false).map_err(|r| Re::tre_error(interp, pat, r))?;
+        let restrict = |mut t: TreOut| {
+            // (fancy-regex, used for these, has no class set operations)
+            if ascii && !t.has_backref && !t.has_lookaround {
+                t.pattern = ascii_classes(&t.pattern);
+            }
+            t
+        };
+        let t = restrict(tre_translate(pat, icase, false, false).map_err(|r| Re::tre_error(interp, pat, r))?);
         let std = TreProg::new(&t, want_caps).map_err(|e| unsupported(pat, &e))?;
         let notbol = if t.has_bol {
-            let t2 = tre_translate(pat, icase, true, false).map_err(|r| Re::tre_error(interp, pat, r))?;
+            let t2 = restrict(tre_translate(pat, icase, true, false).map_err(|r| Re::tre_error(interp, pat, r))?);
             Some(TreProg::new(&t2, want_caps).map_err(|e| unsupported(pat, &e))?)
         } else {
             None
@@ -1407,6 +1477,38 @@ fn nchars(s: &str) -> usize {
 
 fn char_len_at(s: &str, i: usize) -> usize {
     s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+}
+
+/// Restrict the Unicode classes (`\p{..}`, `\P{..}`) of a translated
+/// pattern to ASCII. Matching only ASCII strings gives the same results,
+/// and classes such as `\p{Alphabetic}` (hundreds of ranges) become tiny
+/// automata, which matters because R code compiles patterns per call.
+fn ascii_classes(p: &str) -> String {
+    let b = p.as_bytes();
+    let mut out = String::with_capacity(p.len() + 16);
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 1 < b.len() {
+            if matches!(b[i + 1], b'p' | b'P') && b.get(i + 2) == Some(&b'{') {
+                if let Some(close) = p[i..].find('}') {
+                    out.push('[');
+                    out.push_str(&p[i..=i + close]);
+                    out.push_str(r"&&\x00-\x7F]");
+                    i += close + 1;
+                    continue;
+                }
+            }
+            // An escape pair; the escaped character may be multi-byte.
+            let n = p[i + 1..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&p[i..i + 1 + n]);
+            i += 1 + n;
+            continue;
+        }
+        let c = p[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
 }
 
 fn only_ascii(v: &[RStr]) -> bool {
@@ -1507,7 +1609,7 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                 }
             }
             Some(split) => {
-                let re = Re::compile(interp, split, false, perl, false, false)?;
+                let re = Re::compile(interp, split, false, perl, false, false, only_ascii(&xv.data))?;
                 for i in idx {
                     ans[i] = match &xv.data[i] {
                         None => Value::str_na(),
@@ -1583,7 +1685,7 @@ fn grep_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, grepl: bool) -> 
             return Ok(Value::ints(vec![NA_INTEGER; n]));
         }
     };
-    let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, false)?;
+    let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, false, only_ascii(&tv.data))?;
     let ind: Vec<bool> = tv
         .data
         .iter()
@@ -1714,7 +1816,7 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                 return Err(Flow::error("zero-length pattern"));
             }
             let groups = !o.fixed && has_backrefs(srep);
-            let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups)?;
+            let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&tv.data))?;
             let mut out = Vec::with_capacity(n);
             for e in &tv.data {
                 let Some(s) = e else {
@@ -1811,7 +1913,7 @@ fn int_matrix(data: Vec<i32>, nrow: usize, ncol: usize, names: &[RStr]) -> Value
 }
 
 struct RegexprSetup {
-    re: Re,
+    re: Rc<Re>,
     use_bytes: bool,
     itype: &'static str,
     perl: bool,
@@ -1841,7 +1943,7 @@ fn regexpr_setup(interp: &mut Interp, call: &Value, args: &[Arg]) -> RResult<(Re
     let itype = if use_bytes { "bytes" } else { "chars" };
     let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
     let pstr = p.data[0].clone().unwrap();
-    let re = Re::compile(interp, &pstr, o.fixed, o.perl, o.icase && !o.fixed, o.perl)?;
+    let re = Re::compile(interp, &pstr, o.fixed, o.perl, o.icase && !o.fixed, o.perl, only_ascii(&tv.data))?;
     Ok((RegexprSetup { re, use_bytes, itype, perl: o.perl, fixed: o.fixed }, tv.clone()))
 }
 
