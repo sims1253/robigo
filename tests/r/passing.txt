@@ -136,6 +136,7 @@ tests/r/vec/mean-cum.R
 tests/r/vec/merge-internal.R
 tests/r/vec/minmax.R
 tests/r/vec/order-radix.R
+tests/r/vec/order-range.R
 tests/r/vec/rep.R
 tests/r/vec/sort-base.R
 tests/r/vec/sort-internal.R

@@ -1018,21 +1018,48 @@ fn str_cmp2(x: &RStr, y: &RStr, order: i32, nalast: i32) -> i32 {
 /// skipping digits all keys share). Returns the keys in sorted order.
 fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>) -> Vec<u64> {
     let n = o.len();
-    let mut src: Vec<(u64, usize)> = keys.into_iter().zip(o.iter().copied()).collect();
+    // Keys relative to the smallest (order is unchanged): only the digits
+    // of the range need sorting, and a small range is counted directly,
+    // as R's radixsort.c does.
+    let (kmin, kmax) = keys.iter().fold((u64::MAX, 0), |(lo, hi), &k| (lo.min(k), hi.max(k)));
+    let kmin = kmin.min(kmax);
+    let range = kmax - kmin;
+    if n >= 256 && n <= u32::MAX as usize && range < 100_000 {
+        let mut count = vec![0u32; range as usize + 2];
+        for &k in &keys {
+            count[(k - kmin) as usize + 1] += 1;
+        }
+        for d in 1..count.len() {
+            count[d] += count[d - 1];
+        }
+        let src: Vec<usize> = o.to_vec();
+        let mut sorted = vec![0u64; n];
+        for (&k, &i) in keys.iter().zip(&src) {
+            let pos = &mut count[(k - kmin) as usize];
+            o[*pos as usize] = i;
+            sorted[*pos as usize] = k;
+            *pos += 1;
+        }
+        return sorted;
+    }
+    let mut src: Vec<(u64, usize)> = keys.into_iter().map(|k| k - kmin).zip(o.iter().copied()).collect();
     if n < 256 || n > u32::MAX as usize {
         src.sort_by_key(|p| p.0);
     } else {
         const BITS: usize = 11;
         const B: usize = 1 << BITS;
+        let bits = 64 - range.leading_zeros() as usize;
+        let passes_needed = bits.div_ceil(BITS).max(1);
         const PASSES: usize = 6;
         let mut hist = vec![0u32; PASSES * B];
+        let passes = passes_needed.min(PASSES);
         for &(k, _) in &src {
-            for p in 0..PASSES {
+            for p in 0..passes {
                 hist[p * B + ((k >> (p * BITS)) as usize & (B - 1))] += 1;
             }
         }
         let mut dst = vec![(0u64, 0usize); n];
-        for p in 0..PASSES {
+        for p in 0..passes {
             let h = &mut hist[p * B..(p + 1) * B];
             let first = ((src[0].0 >> (p * BITS)) as usize) & (B - 1);
             if h[first] as usize == n {
@@ -1055,7 +1082,7 @@ fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>) -> Vec<u64> {
     for (slot, &(_, i)) in o.iter_mut().zip(&src) {
         *slot = i;
     }
-    src.into_iter().map(|(k, _)| k).collect()
+    src.into_iter().map(|(k, _)| k + kmin).collect()
 }
 
 /// Lengths of the runs of equal adjacent keys.
