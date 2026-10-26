@@ -75,8 +75,9 @@ Lessons:
 
 ## 2. How we build it: lessons from AI-assisted ports
 
-Recent large ports (Cloudflare/VoidZero's TypeScript→Rust `tsrs`,
-pingdotgg/ts-rust, vercel-labs/tsc-ts, aardappel/goose, t3dotgg/lust-lang)
+Recent large ports (the TypeScript 7 rewrites in Rust, oxc-project/tsrs
+(type checker) and pingdotgg/ts-rust (compiler), vercel-labs/tsc-ts,
+aardappel/goose, t3dotgg/lust-lang)
 share a method, which robigo adopts:
 
 - **An oracle and a harness before breadth.** ts-rust's first attempt
