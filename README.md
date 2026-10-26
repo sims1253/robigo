@@ -23,11 +23,13 @@ stats' distribution functions plus 33 others, including R's formula
 engine, LINPACK QR, `cov`, `glm` families, `read.csv`/`write.csv`); a
 routine without a port raises an error saying so. `lm`, `glm`,
 `summary`, `anova`, `predict`, `read.csv` and `write.csv` give output
-identical to GNU R, and all 123 conformance scripts match byte for byte.
+identical to GNU R, and all 157 conformance scripts match byte for byte.
 
 Not yet: S4 (`methods`), many stats routines (`optim`, `integrate`,
 `fft`, `splines`, ...), packages with compiled code beyond base R's, and
-locale-aware string collation. `ROBIGO_COMPILE=1` enables the bytecode VM;
+locale-aware string collation. Closures and loops run in a register
+bytecode VM, hot loops as Cranelift native code; `ROBIGO_COMPILE=0` runs
+everything in the AST interpreter and `ROBIGO_JIT=0` turns off native code.
 `ROBIGO_TYPE_PROFILE=out.json` records observed types for comparison with
 ry ([docs/ry-integration.md](docs/ry-integration.md)).
 

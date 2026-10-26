@@ -194,19 +194,21 @@ does on x86_64 (`nmath/ldouble.rs`).
 Measured first, optimised second (a "measured and rejected" ledger like
 tsrs's keeps us honest). Planned tiers:
 
-1. **AST interpreter** (now). Correctness reference for all reflective
-   features.
+1. **AST interpreter.** Bootstrap, `eval` of arbitrary objects, and
+   whatever the compiler hands back (`Op::Eval`); `ROBIGO_COMPILE=0` runs
+   everything here.
 2. **Interpreter fast paths:** unboxed scalar values; caching of function
    lookups for base functions (`+`, `[`, `if`) validated by a global
    "base binding changed" epoch; skipping promise creation for constants
    (done) and for arguments to builtins; arena-allocated frames for
    closures whose environment never escapes.
-3. **Specializing bytecode.** Compile closures to a register bytecode;
+3. **Specializing bytecode** (the default). Compile closures to a register bytecode;
    quicken instructions to type-specialized forms (`add_real_scalar`,
    `index_int_vector`) with inline caches and guards; deoptimize to the AST
    interpreter on reflection (`sys.function`, `environment()`,
    `eval(parent.frame())`), as Ř does.
-4. **JIT** (Cranelift) for hot specialized code, with contextual dispatch.
+4. **JIT** (Cranelift) for hot specialized code, with contextual dispatch
+   (hot loops today).
 5. **Vector fusion** for chains of vectorised arithmetic, exposed through
    ALTREP-like lazy vectors so it composes with the C API.
 
@@ -362,13 +364,18 @@ Ledger:
   211M). Many stats natives are still missing (`optim`, `nlm`,
   `integrate`, splines, `fft`, `loess`, `nls`, `kmeans`, `hclust`, the
   LAPACK internals behind `svd`/`eigen`).
+- **Done (VM by default, G1):** the VM runs closures and loops unless
+  `ROBIGO_COMPILE=0`; startup costs the same either way (151M
+  instructions, 274M with `utils` and `stats`). The share of VM ops that
+  fall back to the interpreter (`Op::Eval`, counted by `--features
+  op-stats`) is 0.01–0.7% on the benchmark programs: each runs ~800, the
+  same in all 15, from loading `utils` and `stats`.
 - **Next:** simple closure calls now cost what GNU R's do, but recursive
   ones (fib) still ~25% more: each allocates an environment, a promise
   per argument, the argument vector and a boxed result, and entering the
   VM costs ~85 instructions before the first op. Candidates: forced promises built by the caller for
   arguments that cannot fail or run code (`n - 1` on numbers), so the
-  callee's force is a read; unboxed results for compiled callers; the VM
-  on by default (it is opt-in, `ROBIGO_COMPILE=1`).
+  callee's force is a read; unboxed results for compiled callers.
 
 ## 5. Council review and goalposts
 
@@ -425,8 +432,8 @@ Each item was reproduced against GNU R 4.5.0:
 | No S4 | `library(methods)` fails in `R_initMethodDispatch` |
 | `dyn.load` loads no code | `.Call` dispatches to hand-written Rust ports by name (`native/mod.rs`) |
 | Exact numerics on x86_64 only | `nmath/ldouble.rs` falls back to `f64` elsewhere, silently |
-| The fast engine is opt-in | the default AST interpreter is 5–15x slower than GNU R on loops |
-| The interpreter's recursion limit | `f(4000)` (simple recursion) is "evaluation nested too deeply"; the VM and GNU R run it |
+| The fast engine is opt-in | the default AST interpreter is 5–15x slower than GNU R on loops. *Fixed (G1): the VM is the default.* |
+| The interpreter's recursion limit | `f(4000)` (simple recursion) is "evaluation nested too deeply"; the VM and GNU R run it. *Fixed for compiled closures (G1): the VM nests 4,999 calls, GNU R 4,996, the interpreter 2,498, like GNU R's own AST evaluator.* |
 | `reg.finalizer` does nothing, `gc()` returns `NA` | placeholders that guess |
 | Not self-contained | `utils` and `stats` load from an installed GNU R (`R_HOME`) |
 | The bytecode cache never evicts | `vm.rs` `CACHE` keeps every compiled expression |
@@ -521,7 +528,7 @@ more than 5%.
 | | Goalpost | Exit gate |
 |---|---|---|
 | G0 | Gate on stdout, stderr and exact status, as bytes, in all tiers | done |
-| G1 | VM by default; the AST interpreter for bootstrap, `eval` and deopt; `Eval` share tracked | suite green with the default; `f(4000)` runs |
+| G1 | VM by default; the AST interpreter for bootstrap, `eval` and deopt; `Eval` share tracked | done |
 | G2 | Accessor layer: `.data`, `RStr`, `items`, `args` behind methods; CI rejects new direct access | no field access outside `value.rs` |
 | G3 | Object model (F1–F4): header'd thin objects with an S4 bit, storage variants with compact ranges as values, interned CHARSXPs, cons cells | `1:2e8` in constant memory; byte strings round-trip |
 | G4 | Cycle collector and root registry (F5); real `reg.finalizer`, `gc()`, weak references | leak tests in the suite: bounded memory for closure-defining and `tryCatch` loops |

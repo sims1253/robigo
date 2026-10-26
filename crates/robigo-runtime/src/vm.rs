@@ -177,7 +177,9 @@ thread_local! {
     static INLINES: RefCell<HashMap<usize, (Rc<[Arg]>, Option<Rc<Inline>>), crate::env::FastHash>> = RefCell::new(HashMap::default());
     static DEFAULTS: RefCell<HashMap<usize, (Rc<[Arg]>, Rc<[Option<Rc<Code>>]>), crate::env::FastHash>> =
         RefCell::new(HashMap::default());
-    static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(false);
+    /// The VM runs closures and loops unless `ROBIGO_COMPILE=0` (then only
+    /// the AST interpreter runs).
+    static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(true);
     /// `ROBIGO_NO_INLINE=1`: never run closure bodies inline (to compare).
     static NO_INLINE: bool = std::env::var_os("ROBIGO_NO_INLINE").is_some();
 }
