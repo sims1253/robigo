@@ -330,6 +330,17 @@ Ledger:
   `is.null`, `is.na`, `typeof`, ...) and scalar string `==` run without a
   call; primitives are found by hash and S3 method names built without
   `format!`.
+- **Done (vector builtins, found by a sweep of ~80 base operations against
+  GNU R):** `duplicated`/`unique`/`match` use open-addressing tables of
+  element indices; integer arithmetic has shape-specialized kernels;
+  `x[length(x) + 1] <- v` appends in place (4x fewer instructions than GNU
+  R); `switch()` compiles to a jump table. Several of these were also
+  conformance bugs, now exact ports: `scientific()` (long double scaling,
+  with R's `tbl[]` of double literals and glibc's `powl`), `colSums` and
+  friends (x87 long double instead of a double-double), `%%`/`%/%` on
+  doubles (long double remainder, `c_eps = LDBL_EPSILON`, the "loss of
+  accuracy" warning), and `switch()` on `NA`. `.Internal(merge)` was
+  missing.
 - **Next:** a closure call still costs ~25% more than in GNU R: it
   allocates an environment, a promise per argument, the argument vector
   and a boxed result, and entering the VM costs ~85 instructions before
