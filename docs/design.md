@@ -272,11 +272,16 @@ VM, `R_DEFAULT_PACKAGES=NULL`):
 
 | idiom | GNU R | robigo |
 |---|---|---|
-| `match.arg(type)` with a choice given | 68.1k | 71.0k |
-| `match.arg(type)` with the default | 43.1k | 58.1k |
-| `stopifnot(is.numeric(x), length(x) == 1)` | 25.7k | 36.6k |
-| `tryCatch(i, error = function(e) NULL)` | 42.3k | 49.8k |
-| S3 dispatch (`UseMethod`, `s$side^2`) | 16.6k | 18.1k |
+| `match.arg(type)` with a choice given | 68.1k | 67.8k |
+| `match.arg(type)` with the default | 43.1k | 57.3k |
+| `stopifnot(is.numeric(x), length(x) == 1)` | 25.7k | 35.7k |
+| `tryCatch(i, error = function(e) NULL)` | 42.3k | 48.2k |
+| S3 dispatch (`UseMethod`, `s$side^2`) | 16.6k | 17.6k |
+| `seq(1, 10, by = 2)` | 106k | 131k |
+| `vapply(xs, function(v) ..., 0)`, 20 elements | 118k | 48k |
+| `m[i, j] <- v` in a loop | 3.3k | 1.8k |
+| `l$a <- l$a + 1` | 1.5k | 1.4k |
+| `r[i] <- i` growing `r` | 2.0k | 0.5k |
 
 Ledger:
 
@@ -341,6 +346,12 @@ Ledger:
   doubles (long double remainder, `c_eps = LDBL_EPSILON`, the "loss of
   accuracy" warning), and `switch()` on `NA`. `.Internal(merge)` was
   missing.
+- **Done (VM coverage):** `m[i, j]`, `m[i, j] <- v`, `x$name`,
+  `x$name <- v`, `missing()`, `switch()` and calls to special primitives
+  run in the VM rather than falling back to the interpreter; guards of
+  closures defined in calls share memos; a local helper function does not
+  invalidate a body's guards. `--features op-stats` counts executed ops by
+  kind.
 - **Next:** a closure call still costs ~25% more than in GNU R: it
   allocates an environment, a promise per argument, the argument vector
   and a boxed result, and entering the VM costs ~85 instructions before
