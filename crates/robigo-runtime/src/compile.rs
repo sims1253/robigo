@@ -138,6 +138,17 @@ pub enum Op {
     /// is updated in place; anything else runs the complex assignment
     /// `consts[k]` with that value.
     SetIndex { val: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    /// `x[i, j]` for a variable `x`: an element of a plain matrix by
+    /// in-range scalar indices is read directly; anything else evaluates
+    /// the call `consts[k]`.
+    Index2 { dst: Reg, x: Sym, slot: Slot, i: Leaf, j: Leaf, k: u32 },
+    /// `x[i, j] <- val`: in place for a plain local matrix and in-range
+    /// scalar indices, otherwise the complex assignment `consts[k]`.
+    SetIndex2 { val: Reg, x: Sym, slot: Slot, i: Leaf, j: Leaf, k: u32 },
+    /// `x$name <- val` (name `consts[name]`): in place for an existing
+    /// element of a plain local list, otherwise the complex assignment
+    /// `consts[k]`.
+    SetDollar { val: Reg, x: Sym, slot: Slot, name: u32, k: u32 },
     /// Call the base builtin `consts[f]` with the evaluated arguments
     /// `arglists[args]`; `consts[call]` is the call.
     CallBuiltin { dst: Reg, f: u32, args: u32, call: u32 },
@@ -425,6 +436,32 @@ fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
     is_pure(i, 0).then_some((x, two, i))
 }
 
+/// `x[i, j]` with a variable `x` and pure indices (see [`is_pure`]).
+fn index2_form(e: &Value) -> Option<(Sym, &Value, &Value)> {
+    let Value::Lang(l) = e else { return None };
+    if &*head(l)?.name() != "[" || !plain_args(l, 3) {
+        return None;
+    }
+    let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
+    let (i, j) = (&l.args[1].value, &l.args[2].value);
+    (is_pure(i, 0) && is_pure(j, 0)).then_some((x, i, j))
+}
+
+/// `x$name` with a variable `x`: the variable and the name.
+fn dollar_form(e: &Value) -> Option<(Sym, RStr)> {
+    let Value::Lang(l) = e else { return None };
+    if &*head(l)?.name() != "$" || !plain_args(l, 2) {
+        return None;
+    }
+    let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
+    let name = match &l.args[1].value {
+        Value::Sym(s) if is_var(*s) => Some(s.name()),
+        Value::Str(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0].clone(),
+        _ => return None,
+    };
+    Some((x, name))
+}
+
 fn math1(name: &str) -> Option<Math1> {
     Some(match name {
         "sqrt" => Math1::Sqrt,
@@ -679,6 +716,47 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
                 self.patch(g2, end);
+            }
+            "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && index2_form(&l.args[0].value).is_some() => {
+                let (x, i, j) = index2_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new("[<-"), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let i = self.index_operand(i);
+                let j = self.index_operand(j);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::SetIndex2 { val: dst, x, slot, i, j, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
+            "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && dollar_form(&l.args[0].value).is_some() => {
+                let (x, name) = dollar_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new("$<-"), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let slot = self.slot(x);
+                let name = self.konst(Value::strs(vec![name]));
+                let k = self.konst(whole.clone());
+                self.emit(Op::SetDollar { val: dst, x, slot, name, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
+            "[" if index2_form(whole).is_some() => {
+                let (x, i, j) = index2_form(whole).unwrap();
+                let g = self.guard(h, whole, dst);
+                let i = self.index_operand(i);
+                let j = self.index_operand(j);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::Index2 { dst, x, slot, i, j, k });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
             }
             "[" | "[[" if index_form(whole).is_some() => {
                 let (x, two, i) = index_form(whole).unwrap();

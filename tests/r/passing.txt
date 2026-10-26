@@ -31,6 +31,7 @@ tests/r/lang/compiled-forms.R
 tests/r/lang/compiled-index.R
 tests/r/lang/compiled-inline.R
 tests/r/lang/compiled-jit.R
+tests/r/lang/compiled-matrix-dollar.R
 tests/r/lang/compiled-ranges.R
 tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-subset.R

@@ -663,6 +663,46 @@ fn dollar_fast(x: &Value, input: &RStr) -> Option<Value> {
     (!partial).then_some(Value::Null)
 }
 
+/// The offset of element `[i, j]` (0-based) of a matrix that is not an
+/// object, if in range.
+fn matrix_offset(x: &Value, i: usize, j: usize) -> Option<usize> {
+    if x.is_object() {
+        return None;
+    }
+    let Some(Value::Int(d)) = x.get_attr(s::DIM) else { return None };
+    let [nr, nc] = d.data[..] else { return None };
+    let (nr, nc) = (nr as usize, nc as usize);
+    (i < nr && j < nc).then_some(i + j * nr)
+}
+
+/// `x[i, j]` (0-based, in range) of a plain matrix, as a scalar.
+fn matrix_element(x: &RVal, i: usize, j: usize) -> Option<RVal> {
+    let RVal::V(v) = x else { return None };
+    let k = matrix_offset(v, i, j)?;
+    Some(match v {
+        Value::Real(x) => RVal::D(x.data[k]),
+        Value::Int(x) => RVal::I(x.data[k]),
+        Value::Lgl(x) => RVal::L(x.data[k]),
+        Value::Str(x) => RVal::V(Value::strs(vec![x.data[k].clone()])),
+        _ => return None,
+    })
+}
+
+/// `x$name <- val` in place: an existing element (first exact match of a
+/// non-NA name, as R's `$<-` finds it) of a list that is not an object,
+/// and a value other than NULL (which deletes).
+fn set_list_field(x: &mut Value, name: &RStr, val: &RVal) -> bool {
+    if x.is_object() || matches!(val, RVal::V(Value::Null)) {
+        return false;
+    }
+    let Some(name) = name.as_deref() else { return false };
+    let Some(Value::Str(names)) = x.get_attr(s::NAMES) else { return false };
+    let Some(i) = names.data.iter().position(|n| n.as_deref() == Some(name)) else { return false };
+    let Value::List(v) = x else { return false };
+    Rc::make_mut(v).data[i] = val.to_value();
+    true
+}
+
 /// `x[length(x) + 1] <- val` for a vector without attributes and a value
 /// of its type: append (the vector's buffer grows geometrically, as R's
 /// growable vectors do), instead of reallocating it through `[<-`.
@@ -2083,6 +2123,96 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         RVal::V(tryop!(signal(interp, r)))
                     }
                 };
+            }
+            Op::Index2 { dst, x, slot, i, j, k } => {
+                interp.visible = true;
+                let mut fast = None;
+                for attempt in 0..2 {
+                    fast = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
+                        (Some(a), Some(b)) => {
+                            read_var(&mut vars, env, *x, *slot).and_then(|xv| matrix_element(xv, a as usize, b as usize))
+                        }
+                        _ => None,
+                    };
+                    if fast.is_some() || attempt == 1 || vars.get(*slot as usize).is_some() || !unforced_promise(env, *x) {
+                        break;
+                    }
+                    // `x` is an argument not yet forced: force it (`[`
+                    // evaluates it first anyway), then retry.
+                    flush!();
+                    let r = interp.eval_sym(*x, env);
+                    tryop!(signal(interp, r));
+                }
+                regs[*dst as usize] = match fast {
+                    Some(v) => v,
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                    }
+                };
+            }
+            Op::SetIndex2 { val, x, slot, i, j, k } => {
+                let done = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
+                    (Some(a), Some(b)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                        SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
+                            Some(off) => set_element(xv, off, &regs[*val as usize], false),
+                            None => false,
+                        },
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !done {
+                    flush!();
+                    let whole = &code.consts[*k as usize];
+                    let Value::Lang(l) = whole else { unreachable!() };
+                    let rhs = regs[*val as usize].to_value();
+                    let pre = if matches!(i, Leaf::R(_)) || matches!(j, Leaf::R(_)) {
+                        let iv = tryop!(leaf_value(interp, &mut vars, env, regs, i)).to_value();
+                        let jv = tryop!(leaf_value(interp, &mut vars, env, regs, j)).to_value();
+                        Some(vec![iv, jv])
+                    } else {
+                        None
+                    };
+                    let r = crate::builtins::lang::complex_assign_pre(
+                        interp,
+                        whole,
+                        &l.args[0].value,
+                        &l.args[1].value,
+                        rhs,
+                        env,
+                        false,
+                        pre.as_deref(),
+                    );
+                    vars.slots[*slot as usize] = SlotVal::Empty;
+                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                }
+            }
+            Op::SetDollar { val, x, slot, name, k } => {
+                let Value::Str(nm) = &code.consts[*name as usize] else { unreachable!() };
+                let done = own_var(&mut vars, env, *x, *slot)
+                    && match &mut vars.slots[*slot as usize] {
+                        SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &regs[*val as usize]),
+                        _ => false,
+                    };
+                if !done {
+                    flush!();
+                    let whole = &code.consts[*k as usize];
+                    let Value::Lang(l) = whole else { unreachable!() };
+                    let rhs = regs[*val as usize].to_value();
+                    let r = crate::builtins::lang::complex_assign_pre(
+                        interp,
+                        whole,
+                        &l.args[0].value,
+                        &l.args[1].value,
+                        rhs,
+                        env,
+                        false,
+                        None,
+                    );
+                    vars.slots[*slot as usize] = SlotVal::Empty;
+                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                }
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
                 let range = match (i, *two) {
