@@ -16,7 +16,67 @@ pub fn fmt_e(x: f64, prec: usize, upper: bool) -> String {
 
 /// `%.{prec}f`
 pub fn fmt_f(x: f64, prec: usize) -> String {
-    format!("{:.*}", prec, x)
+    match fmt_f_exact(x, prec) {
+        Some(s) => s,
+        None => format!("{:.*}", prec, x),
+    }
+}
+
+/// `%.{prec}f` by integer arithmetic: `|x| = m * 2^e`, so `|x| * 10^prec`
+/// rounded half to even (as glibc rounds the exact binary value) is
+/// `m * 10^prec / 2^-e` with the remainder deciding. For `|x| < 1e15` and
+/// `prec <= 17` everything fits in 128 bits; `None` otherwise.
+fn fmt_f_exact(x: f64, prec: usize) -> Option<String> {
+    let a = x.abs();
+    if !a.is_finite() || a >= 1e15 || prec > 17 {
+        return None;
+    }
+    let bits = a.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    // a = m * 2^e, with e < 0 since a < 2^50.
+    let (m, e) = if exp == 0 { (frac, -1074) } else { (frac | (1u64 << 52), exp - 1075) };
+    let p10 = 10u128.pow(prec as u32);
+    let num = m as u128 * p10;
+    let sh = (-e) as u32;
+    let q = if sh >= 128 {
+        0
+    } else {
+        let q = num >> sh;
+        let r = num & ((1u128 << sh) - 1);
+        let half = 1u128 << (sh - 1);
+        if r > half || (r == half && q & 1 == 1) { q + 1 } else { q }
+    };
+    let mut s = String::with_capacity(24 + prec);
+    if x.is_sign_negative() {
+        s.push('-');
+    }
+    // (Both parts fit in 64 bits: q < 1e32 and 10^prec <= 1e17.)
+    let (int, frac) = match u64::try_from(q) {
+        Ok(q) => (q / p10 as u64, q % p10 as u64),
+        Err(_) => ((q / p10) as u64, (q % p10) as u64),
+    };
+    push_u64(&mut s, int, 1);
+    if prec > 0 {
+        s.push('.');
+        push_u64(&mut s, frac, prec);
+    }
+    Some(s)
+}
+
+/// Decimal digits of `v`, zero-padded to at least `width`.
+fn push_u64(s: &mut String, mut v: u64, width: usize) {
+    let mut buf = [b'0'; 24];
+    let mut i = buf.len();
+    while v > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    let start = i.min(buf.len().saturating_sub(width));
+    for &b in &buf[start..] {
+        s.push(b as char);
+    }
 }
 
 /// Decimal exponent of `x` after rounding to `prec` significant digits.

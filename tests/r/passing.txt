@@ -94,6 +94,7 @@ tests/r/strings/regex-perl.R
 tests/r/strings/regex-tre.R
 tests/r/strings/regex.R
 tests/r/strings/sprintf-errors.R
+tests/r/strings/sprintf-fixed-exact.R
 tests/r/strings/sprintf.R
 tests/r/strings/strsplit.R
 tests/r/strings/utf8.R
