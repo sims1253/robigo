@@ -568,27 +568,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "rr-cli"
+name = "robigo-cli"
 version = "0.0.1"
 dependencies = [
  "mimalloc",
  "pprof",
- "rr-runtime",
- "rr-syntax",
+ "robigo-runtime",
+ "robigo-syntax",
 ]
 
 [[package]]
-name = "rr-runtime"
+name = "robigo-runtime"
 version = "0.0.1"
 dependencies = [
  "fancy-regex",
  "flate2",
  "regex-automata",
- "rr-syntax",
+ "robigo-syntax",
 ]
 
 [[package]]
-name = "rr-syntax"
+name = "robigo-syntax"
 version = "0.0.1"
 
 [[package]]

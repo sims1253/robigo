@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Report which of GNU R's .Primitive/.Internal functions rr implements.
+"""Report which of GNU R's .Primitive/.Internal functions robigo implements.
 
-Usage: scripts/builtin-coverage.py [path/to/rr]
-Compares `rr --list-builtins` with scripts/names-4.5.0.tsv (extracted from
+Usage: scripts/builtin-coverage.py [path/to/robigo]
+Compares `robigo --list-builtins` with scripts/names-4.5.0.tsv (extracted from
 GNU R 4.5.0's src/main/names.c: name, C function, C file, kind).
 """
 import collections, os, subprocess, sys
 
 here = os.path.dirname(os.path.abspath(__file__))
-rr = sys.argv[1] if len(sys.argv) > 1 else "rr"
+robigo = sys.argv[1] if len(sys.argv) > 1 else "robigo"
 have = {}
-for line in subprocess.run([rr, "--list-builtins"], capture_output=True, text=True, check=True).stdout.splitlines():
+for line in subprocess.run([robigo, "--list-builtins"], capture_output=True, text=True, check=True).stdout.splitlines():
     name, kind = line.split("\t")
     have[name] = kind
 total = collections.Counter()
@@ -23,7 +23,7 @@ for line in open(os.path.join(here, "names-4.5.0.tsv")):
     if name in have:
         done[cfile] += 1
         if have[name] != kind:
-            wrong_kind.append(f"{name} (R: {kind}, rr: {have[name]})")
+            wrong_kind.append(f"{name} (R: {kind}, robigo: {have[name]})")
     else:
         missing[cfile].append(name)
 print(f"{sum(done.values())}/{sum(total.values())} builtins implemented\n")

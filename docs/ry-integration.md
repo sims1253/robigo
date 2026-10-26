@@ -1,16 +1,16 @@
-# rr and ry
+# robigo and ry
 
-[ry](https://github.com/sims1253/ry) is a static type checker for R. rr is a
+[ry](https://github.com/sims1253/ry) is a static type checker for R. robigo is a
 runtime. They can help each other in both directions.
 
 ## Runtime types as an oracle for ry (available now)
 
-rr can record the types it actually observes, in the same "scope exit"
+robigo can record the types it actually observes, in the same "scope exit"
 shape that `ry dump-facts` exports:
 
 ```sh
 ry dump-facts script.R --format json > facts.json
-RR_TYPE_PROFILE=observed.json rr script.R
+ROBIGO_TYPE_PROFILE=observed.json robigo script.R
 scripts/compare-ry-types.py facts.json observed.json
 ```
 
@@ -29,13 +29,13 @@ facts. The profile records mode, length, class, attribute names and
 NA-presence; ry's facts currently have no NA or attribute information (see
 below), so those fields are reported but not compared yet.
 
-Running this over a corpus of scripts and packages (rr executes base R's
+Running this over a corpus of scripts and packages (robigo executes base R's
 own R code, and will be able to run packages' R code) gives ry a stream of
 counterexamples and missed precision, without hand-written expectations.
 
 ## Static types for the runtime (planned)
 
-rr's bytecode VM already specializes dynamically: arithmetic on
+robigo's bytecode VM already specializes dynamically: arithmetic on
 attribute-free scalars is unboxed behind cheap checks, and variable
 updates happen in place. Static facts would let it do what dynamic checks
 cannot:

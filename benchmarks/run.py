@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Time rr (interpreter and bytecode VM) against GNU R's Rscript.
+"""Time robigo (interpreter and bytecode VM) against GNU R's Rscript.
 
-Usage: benchmarks/run.py [--rr path/to/rr] [--runs N] [names...]
+Usage: benchmarks/run.py [--robigo path/to/robigo] [--runs N] [names...]
 
 Runs the programs in benchmarks/suite (or the named ones) with the oracle
 environment and R_DEFAULT_PACKAGES=utils,stats. Reports the best wall
 time of N runs (default 3), including process startup, and the ratio
-rr/R (below 1 means rr is faster). A row is marked if outputs differ.
+robigo/R (below 1 means robigo is faster). A row is marked if outputs differ.
 """
 import argparse
 import os
@@ -16,7 +16,7 @@ import time
 here = os.path.dirname(os.path.abspath(__file__))
 suite = os.path.join(here, "suite")
 ap = argparse.ArgumentParser()
-ap.add_argument("--rr", default=os.path.expanduser("~/.cache/cargo-target/release/rr"))
+ap.add_argument("--robigo", default=os.path.expanduser("~/.cache/cargo-target/release/robigo"))
 ap.add_argument("--runs", type=int, default=3)
 ap.add_argument("names", nargs="*")
 args = ap.parse_args()
@@ -35,11 +35,11 @@ def run(cmd, extra):
     return best, out
 
 
-print(f"{'program':14} {'R':>7} {'rr':>7} {'rr-vm':>7} {'vm/R':>6}")
+print(f"{'program':14} {'R':>7} {'robigo':>7} {'robigo-vm':>7} {'vm/R':>6}")
 for n in names:
     f = os.path.join(suite, n + ".R")
     r, ro = run(["Rscript", f], {})
-    a, ao = run([args.rr, f], {"RR_COMPILE": "0"})
-    b, bo = run([args.rr, f], {"RR_COMPILE": "1"})
+    a, ao = run([args.robigo, f], {"ROBIGO_COMPILE": "0"})
+    b, bo = run([args.robigo, f], {"ROBIGO_COMPILE": "1"})
     mark = "" if ro == ao == bo else "  (output differs)"
     print(f"{n:14} {r:7.2f} {a:7.2f} {b:7.2f} {b / r:6.2f}{mark}", flush=True)

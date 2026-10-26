@@ -1,6 +1,6 @@
-# rr: design
+# robigo: design
 
-rr is an attempt at a faster, modern runtime for the R language, written in
+robigo is an attempt at a faster, modern runtime for the R language, written in
 Rust. This document records what we learned from earlier attempts (in R,
 Python, Julia and recent AI-assisted compiler ports), the architecture that
 follows from it, and the roadmap.
@@ -18,8 +18,8 @@ the objective, compatibility the constraint:
   sequential and accumulate in long double like R; reordered, SIMD or
   parallel reductions are allowed only in an opt-in fast mode.
 - **Packages with compiled code are supported through R's C API**,
-  implemented over rr's own object model, so CRAN packages can be rebuilt
-  against rr's headers. Engine work comes first, but no design choice may
+  implemented over robigo's own object model, so CRAN packages can be rebuilt
+  against robigo's headers. Engine work comes first, but no design choice may
   block the C API (vector payloads stay at stable addresses; handles can
   be protected).
 - **Work is prioritised by profiles of real workloads** (`benchmarks/`),
@@ -77,10 +77,10 @@ Lessons:
 
 Recent large ports (Cloudflare/VoidZero's TypeScript→Rust `tsrs`,
 pingdotgg/ts-rust, vercel-labs/tsc-ts, aardappel/goose, t3dotgg/lust-lang)
-share a method, which rr adopts:
+share a method, which robigo adopts:
 
 - **An oracle and a harness before breadth.** ts-rust's first attempt
-  plateaued because breadth came before an authoritative harness. rr pins
+  plateaued because breadth came before an authoritative harness. robigo pins
   GNU R 4.5.0 as the oracle and compares byte-for-byte:
   - `tests/parse`: parse trees against GNU R's `parse()`
     (`scripts/oracle-parse.R`); also run over all 834 `.R` files of R's own
@@ -99,10 +99,10 @@ share a method, which rr adopts:
 
 [blaze](https://github.com/indexable-inc/blaze) (per-function Rust
 compilation and live patching) adds lessons for the execution tiers and the
-harness, several of which rr follows or plans to:
+harness, several of which robigo follows or plans to:
 
 - **Every tier is gated against the oracle, not just the fast one.** blaze
-  runs its whole harness under both Cranelift and LLVM; rr runs every
+  runs its whole harness under both Cranelift and LLVM; robigo runs every
   conformance script under the interpreter and the bytecode VM and requires
   identical output (`compiled_matches_interpreted`).
 - **Tier up from sampling, not from counters everywhere.** blaze samples
@@ -111,23 +111,23 @@ harness, several of which rr follows or plans to:
   counts that tier collected (PGO). An R JIT can choose closures the same
   way, keeping the baseline cheap.
 - **Count refusals.** Functions a tier declines are counted with reasons;
-  for rr, the share of operations that fall back to the AST interpreter
+  for robigo, the share of operations that fall back to the AST interpreter
   (`Eval`) is the analogous metric.
 - **Reduced regressions and fuzzing.** Minimal reproductions of bugs found
   in real code are kept and run one by one ("breakers"); generated programs
-  are compared between implementations. For rr: random scalar/vector loop
+  are compared between implementations. For robigo: random scalar/vector loop
   programs, compared between GNU R, the interpreter and the VM.
 - **Run the reference's own test suite with counted exclusions** (rustc's
-  `tests/ui` for blaze; GNU R's `tests/*.R` with `.Rout.save` for rr).
+  `tests/ui` for blaze; GNU R's `tests/*.R` with `.Rout.save` for robigo).
 
 ## 3. Architecture
 
 ```
-rr-syntax   lexer + Pratt parser reproducing gram.y (precedence, newline and
+robigo-syntax   lexer + Pratt parser reproducing gram.y (precedence, newline and
             `else` rules, `->`, `|>` and placeholder rewrites)
-rr-runtime  object model, evaluator, condition system, builtins, printing
+robigo-runtime  object model, evaluator, condition system, builtins, printing
   rlib/     GNU R 4.5.0's base-package R sources, evaluated at startup
-rr-cli      `rr` (Rscript-like runner, REPL) and the conformance runner
+robigo-cli      `robigo` (Rscript-like runner, REPL) and the conformance runner
 ```
 
 ### 3.1 Object model and memory
@@ -175,9 +175,9 @@ handler and restart stacks; `tryCatch`, `withCallingHandlers`, `try`,
 
 `builtins/` implements `.Primitive`s and `.Internal`s with the same
 primitive/internal split, argument evaluation (builtin vs special) and
-visibility rules as names.c. At startup rr parses and evaluates the 161
+visibility rules as names.c. At startup robigo parses and evaluates the 161
 files of GNU R's base package (≈22k lines, ~50 ms in a release build);
-`RR_BOOT_VERBOSE=1` lists top-level expressions that still fail because an
+`ROBIGO_BOOT_VERBOSE=1` lists top-level expressions that still fail because an
 internal is missing. That list, plus the conformance suite, drives what to
 implement next.
 
@@ -185,7 +185,7 @@ Formatting and printing are ports of format.c (`formatReal`'s
 fixed/scientific decision), printutils.c, printvector.c, printarray.c,
 print.c and deparse.c, because R users read output and tests compare it.
 One deliberate deviation: GNU R scales by powers of ten in 80-bit
-`long double`; rr uses Rust's exact decimal conversion, which agrees except
+`long double`; robigo uses Rust's exact decimal conversion, which agrees except
 in pathological double-rounding cases.
 
 ## 4. Performance plan
@@ -212,7 +212,7 @@ tsrs's keeps us honest). Planned tiers:
 ### 4.1 Types from ry
 
 [ry](https://github.com/sims1253/ry) statically infers types for R code and
-exports them (`ry dump-facts`, versioned JSON keyed by source spans). rr
+exports them (`ry dump-facts`, versioned JSON keyed by source spans). robigo
 parses with exact source spans, so facts can be joined to call sites. A
 type checker cannot be trusted blindly in R (redefinable `+`, `eval`,
 `assign`, active bindings), so facts become **guarded hints**:
@@ -238,11 +238,11 @@ for unmodified R code, which is what a runtime needs.
 
 ### 4.2 Where performance stands
 
-`benchmarks/run.py` times rr against `Rscript` (GNU R 4.5.0 with its
+`benchmarks/run.py` times robigo against `Rscript` (GNU R 4.5.0 with its
 bytecode JIT) on a 2-vCPU QEMU VM; best of three wall times in seconds,
 including ~0.03 s startup for both:
 
-| script | GNU R | rr | rr VM | what it stresses |
+| script | GNU R | robigo | robigo VM | what it stresses |
 |---|---|---|---|---|
 | fib | 0.11 | 0.21 | 0.20 | closure calls, promises |
 | loop | 0.12 | 1.08 | 0.24 | scalar arithmetic in a top-level `for` |
@@ -281,7 +281,7 @@ Ledger:
    sources (namespace loading, S4), `datasets` via `unserialize`.
 3. Performance tiers 2–3 with a benchmark suite (`benchmarks/`) compared
    against GNU R with its bytecode JIT enabled.
-4. C API: `Rinternals.h` implemented directly over rr's object layout
+4. C API: `Rinternals.h` implemented directly over robigo's object layout
    (handles for SEXP, PROTECT as a root stack, ALTREP hooks), starting with
    the API surface used by the most popular CRAN packages.
 5. ry integration: consume `dump-facts` for guarded specialization;
@@ -289,10 +289,10 @@ Ledger:
 
 ## 6. Decisions to revisit
 
-- **License.** rr ports GNU R's C sources and vendors base R's R code, so it
+- **License.** robigo ports GNU R's C sources and vendors base R's R code, so it
   is GPL-2.0-or-later like R. A permissively licensed runtime would have to
   be a clean-room design and could not reuse base R's R code.
-- **Locale.** rr implements the C.UTF-8 locale (byte-order collation,
+- **Locale.** robigo implements the C.UTF-8 locale (byte-order collation,
   English messages); the oracle runs with `LC_ALL=C.UTF-8`.
 - **Strings** are always valid UTF-8 (`Rc<str>`); R's Latin-1/bytes
   encodings are not supported yet.

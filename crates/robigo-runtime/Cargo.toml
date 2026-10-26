@@ -1,0 +1,16 @@
+[package]
+name = "robigo-runtime"
+description = "Values, environments and evaluator for the robigo R runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+robigo-syntax.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Regular expressions for grep/sub/regexpr/strsplit (see builtins/grep.rs):
+# regex-automata for POSIX ERE (leftmost-longest via a DFA), fancy-regex for
+# perl = TRUE (look-around, back-references) and EREs with back-references.
+regex-automata = "0.4"
+fancy-regex = "0.16"

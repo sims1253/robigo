@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/rr-syntax", "crates/rr-runtime", "crates/rr-cli"]
+members = ["crates/robigo-syntax", "crates/robigo-runtime", "crates/robigo-cli"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/sims1253/rr"
+repository = "https://github.com/sims1253/robigo"
 authors = ["Maximilian Scholz"]
 
 [workspace.dependencies]
-rr-syntax = { path = "crates/rr-syntax" }
-rr-runtime = { path = "crates/rr-runtime" }
+robigo-syntax = { path = "crates/robigo-syntax" }
+robigo-runtime = { path = "crates/robigo-runtime" }
 
 [profile.release]
 debug = "line-tables-only"

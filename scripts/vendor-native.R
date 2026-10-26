@@ -1,7 +1,7 @@
 ## Dump the native routines that GNU R's base packages register, for
-## rlib/native-routines.tsv: rr does not load the packages' shared
+## rlib/native-routines.tsv: robigo does not load the packages' shared
 ## libraries, but reports these registrations from dyn.load() so that
-## loadNamespace() binds the same C_xxx symbols; calls dispatch to rr's
+## loadNamespace() binds the same C_xxx symbols; calls dispatch to robigo's
 ## ports. Run with: Rscript scripts/vendor-native.R > rlib/native-routines.tsv
 pkgs <- c("base", "utils", "stats", "methods", "grDevices", "graphics",
           "tools", "parallel", "grid", "splines", "compiler", "tcltk",

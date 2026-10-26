@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compare ry's static types with types rr observed at run time.
+"""Compare ry's static types with types robigo observed at run time.
 
 Usage:
   ry dump-facts script.R --format json > facts.json
-  RR_TYPE_PROFILE=observed.json rr script.R
+  ROBIGO_TYPE_PROFILE=observed.json robigo script.R
   scripts/compare-ry-types.py facts.json observed.json
 
 Both describe scope-exit snapshots: the bindings of the top level and of
@@ -34,7 +34,7 @@ def ry_scopes(facts):
     return out
 
 
-def rr_scopes(obs):
+def robigo_scopes(obs):
     out = {}
     for sc in obs["scopes"]:
         key = "top" if sc["kind"] == "top" else tuple(sc["start"])
@@ -56,10 +56,10 @@ def main():
     facts = json.load(open(sys.argv[1]))
     obs = json.load(open(sys.argv[2]))
     ry = ry_scopes(facts)
-    rr = rr_scopes(obs)
+    robigo = robigo_scopes(obs)
     counts = {"agree": 0, "conflict": 0, "opportunity": 0, "unobserved": 0}
     for key, bindings in sorted(ry.items(), key=lambda kv: str(kv[0])):
-        observed = rr.get(key)
+        observed = robigo.get(key)
         label = "top level" if key == "top" else f"function at {key[0]}:{key[1]}"
         for name, t in sorted(bindings.items()):
             if observed is None or name not in observed:
@@ -71,7 +71,7 @@ def main():
             if t["mode"] in ("opaque", "union") or (t["length"]["kind"] != "known" and t["mode"] == "opaque"):
                 if len(modes) == 1:
                     counts["opportunity"] += 1
-                    print(f"opportunity  {label:28} {name:12} ry: {describe_ry(t):18} rr: {describe_obs(o)}")
+                    print(f"opportunity  {label:28} {name:12} ry: {describe_ry(t):18} robigo: {describe_obs(o)}")
                 continue
             ok = modes == {t["mode"]}
             if t["length"]["kind"] == "known":
@@ -80,7 +80,7 @@ def main():
                 counts["agree"] += 1
             else:
                 counts["conflict"] += 1
-                print(f"CONFLICT     {label:28} {name:12} ry: {describe_ry(t):18} rr: {describe_obs(o)}")
+                print(f"CONFLICT     {label:28} {name:12} ry: {describe_ry(t):18} robigo: {describe_obs(o)}")
     print()
     print(", ".join(f"{k}: {v}" for k, v in counts.items()))
 

@@ -1,0 +1,20 @@
+[package]
+name = "robigo-cli"
+description = "Command-line interface for robigo."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "robigo"
+path = "src/main.rs"
+
+[dependencies]
+robigo-syntax.workspace = true
+robigo-runtime.workspace = true
+mimalloc = { version = "0.1", default-features = false }
+pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+
+[features]
+profile = ["dep:pprof"]

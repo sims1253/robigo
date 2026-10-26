@@ -1,14 +1,14 @@
-# Working on rr
+# Working on robigo
 
-rr is a reimplementation of the R language runtime in Rust. Its goal is to
+robigo is a reimplementation of the R language runtime in Rust. Its goal is to
 behave exactly like GNU R 4.5.0: same printed output, same error and
 warning messages, same semantics. Read this before changing code.
 
 ## Layout
 
-- `crates/rr-syntax` — lexer and parser. Produces R-shaped syntax trees.
+- `crates/robigo-syntax` — lexer and parser. Produces R-shaped syntax trees.
   Checked against GNU R's `parse()` (`tests/parse`, `scripts/oracle-parse.R`).
-- `crates/rr-runtime` — the runtime.
+- `crates/robigo-runtime` — the runtime.
   - `value.rs` object model (`Value`, `Vector<T>`, attributes, NA encodings),
     `env.rs` environments, `sym.rs` interned symbols.
   - `interp.rs` evaluator (eval, promises, argument matching, closures),
@@ -20,14 +20,14 @@ warning messages, same semantics. Read this before changing code.
     source file (`arith.rs` ~ arithmetic.c/relop.c/logic.c, `attrib.rs` ~
     attrib.c, `bind.rs` ~ bind.c, ...).
   - `bootstrap.rs` loads GNU R's own base-package R code from `rlib/`.
-- `crates/rr-cli` — the `rr` binary and the conformance test runner.
+- `crates/robigo-cli` — the `robigo` binary and the conformance test runner.
 - `rlib/` — vendored GNU R 4.5.0 R sources (do not edit; see its README).
 - `tests/r/**/*.R` — conformance scripts with GNU R's recorded output.
 
 ## The porting contract
 
 1. **GNU R's C sources are the spec.** A copy of the R 4.5.0 sources lives
-   at `~/.cache/rr-research/rsrc/R-4.5.0` (re-download from
+   at `~/.cache/robigo-research/rsrc/R-4.5.0` (re-download from
    https://cran.r-project.org/src/base/R-4/R-4.5.0.tar.gz if missing).
    Port the C function; do not reimplement from memory. "Improvements" are
    bugs. Mark non-obvious ports with `// R: file.c:function`.
@@ -55,7 +55,7 @@ warning messages, same semantics. Read this before changing code.
    in a loop can update in place: take arguments out of `args` with
    `std::mem::replace` instead of cloning, and validate before mutating.
 6. **No placeholders that guess.** If something is not implemented, raise an
-   error that says so (e.g. `"rr: '<feature>' is not implemented yet"`)
+   error that says so (e.g. `"robigo: '<feature>' is not implemented yet"`)
    rather than returning a plausible value.
 
 ## Writing a builtin
@@ -87,11 +87,11 @@ copy_most_attrib}`, `interp.call_value(f, args, env)` to call an R function.
   with `scripts/regen-expected.sh tests/r/<area>/<name>.R` (writes `.Rout`,
   `.Rerr`, `.Rstatus`; GNU R runs with `R_DEFAULT_PACKAGES=NULL`, so only
   base functions are available — no `head`, `str`, `median`, `setNames`).
-- Run a subset: `RR_CONF_FILTER=tests/r/strings RR_CONF_DIFF=1 cargo test
-  -p rr-cli --test conformance -- --nocapture`.
+- Run a subset: `ROBIGO_CONF_FILTER=tests/r/strings ROBIGO_CONF_DIFF=1 cargo test
+  -p robigo-cli --test conformance -- --nocapture`.
 - `tests/r/passing.txt` is a ratchet: listed scripts must keep passing.
   Never remove entries to make a test pass.
-- `RR_BOOT_VERBOSE=1 rr -e 1` lists base-library top-level expressions that
+- `ROBIGO_BOOT_VERBOSE=1 robigo -e 1` lists base-library top-level expressions that
   still fail to evaluate — a good source of missing internals.
 - Keep test scripts small and focused: Rscript stops at the first error,
   so one unimplemented function hides everything after it.
@@ -99,4 +99,4 @@ copy_most_attrib}`, `interp.call_value(f, args, env)` to call an R function.
 ## Machine
 
 2 cores, shared `~/.cache/cargo-target` (see `~/.cargo/config.toml`).
-Builds are slow; prefer `cargo build -p rr-cli` over full rebuilds.
+Builds are slow; prefer `cargo build -p robigo-cli` over full rebuilds.

@@ -1,4 +1,4 @@
-# Dump GNU R's parse trees in the canonical format of rr_syntax::dump.
+# Dump GNU R's parse trees in the canonical format of robigo_syntax::dump.
 #
 # Usage: Rscript --vanilla scripts/oracle-parse.R IN.R [OUT.dump]
 # Writes one line per top-level expression, or a single line "ERROR" when
