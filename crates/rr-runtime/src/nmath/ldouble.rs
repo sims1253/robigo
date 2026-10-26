@@ -40,6 +40,24 @@ mod imp {
         out
     }
 
+    /// `(long double) x` for a 64-bit integer: exact (`fild`).
+    #[inline]
+    pub fn from_i64(x: i64) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fild qword ptr [{x}]",
+                "fstp tbyte ptr [{o}]",
+                x = in(reg) &x,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
     #[inline]
     pub fn to_f64(x: &LDouble) -> f64 {
         let mut out = 0.0f64;
@@ -106,6 +124,123 @@ mod imp {
         out
     }
 
+    /// `s = init; for x in xs: s += x` with `s` kept on the FPU stack, as
+    /// GNU R's C loops do (`fadd m64` loads each double exactly).
+    pub fn sum_from(init: &LDouble, xs: &[f64]) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{i}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fadd qword ptr [{p}]",
+                "add {p}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp tbyte ptr [{o}]",
+                i = in(reg) init.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `s = init; for x in xs: s *= x`.
+    pub fn prod_from(init: &LDouble, xs: &[f64]) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{i}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fmul qword ptr [{p}]",
+                "add {p}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp tbyte ptr [{o}]",
+                i = in(reg) init.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `s = init; for i: s += xs[i]; out[i] = (double) s`.
+    pub fn cumsum_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        assert!(ys.len() >= xs.len());
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{i}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fadd qword ptr [{p}]",
+                "fst qword ptr [{q}]",
+                "add {p}, 8",
+                "add {q}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp tbyte ptr [{o}]",
+                i = in(reg) init.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                q = inout(reg) ys.as_mut_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `t = 0; for x in xs: t += (long double) x - m` (mean's second pass).
+    pub fn sum_dev(m: &LDouble, xs: &[f64]) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{m}]",
+                "fldz",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fld qword ptr [{p}]",
+                "fsub st(0), st(2)",
+                "faddp st(1), st(0)",
+                "add {p}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp tbyte ptr [{o}]",
+                "fstp st(0)",
+                m = in(reg) m.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
     /// Compare: returns -1, 0, 1, or 2 for unordered.
     #[inline]
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
@@ -154,6 +289,9 @@ mod imp {
     pub fn from_f64(x: f64) -> LDouble {
         put(x)
     }
+    pub fn from_i64(x: i64) -> LDouble {
+        put(x as f64)
+    }
     pub fn to_f64(x: &LDouble) -> f64 {
         get(x)
     }
@@ -172,6 +310,24 @@ mod imp {
     pub fn sqrt(a: &LDouble) -> LDouble {
         put(get(a).sqrt())
     }
+    pub fn sum_from(init: &LDouble, xs: &[f64]) -> LDouble {
+        put(xs.iter().fold(get(init), |s, x| s + x))
+    }
+    pub fn prod_from(init: &LDouble, xs: &[f64]) -> LDouble {
+        put(xs.iter().fold(get(init), |s, x| s * x))
+    }
+    pub fn cumsum_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        let mut s = get(init);
+        for (x, y) in xs.iter().zip(ys.iter_mut()) {
+            s += x;
+            *y = s;
+        }
+        put(s)
+    }
+    pub fn sum_dev(m: &LDouble, xs: &[f64]) -> LDouble {
+        let m = get(m);
+        put(xs.iter().fold(0.0, |t, x| t + (x - m)))
+    }
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
         match get(a).partial_cmp(&get(b)) {
             Some(std::cmp::Ordering::Less) => -1,
@@ -184,6 +340,11 @@ mod imp {
 
 impl LDouble {
     pub const ZERO: LDouble = LDouble([0; 16]);
+    /// 1.0: significand 0x8000000000000000, biased exponent 0x3fff.
+    #[cfg(target_arch = "x86_64")]
+    pub const ONE: LDouble = LDouble([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f, 0, 0, 0, 0, 0, 0]);
+    #[cfg(not(target_arch = "x86_64"))]
+    pub const ONE: LDouble = LDouble([0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0]);
 
     #[inline]
     pub fn from_f64(x: f64) -> LDouble {
@@ -200,6 +361,36 @@ impl LDouble {
     #[inline]
     pub fn sqrt(self) -> LDouble {
         imp::sqrt(&self)
+    }
+
+    /// `(long double) x` for an integer.
+    #[inline]
+    pub fn from_i64(x: i64) -> LDouble {
+        imp::from_i64(x)
+    }
+
+    pub fn is_nan(&self) -> bool {
+        imp::cmp(self, self) == 2
+    }
+
+    /// `self + xs[0] + xs[1] + ...`, sequentially in long double.
+    pub fn sum_from(self, xs: &[f64]) -> LDouble {
+        imp::sum_from(&self, xs)
+    }
+
+    /// `self * xs[0] * xs[1] * ...`, sequentially in long double.
+    pub fn prod_from(self, xs: &[f64]) -> LDouble {
+        imp::prod_from(&self, xs)
+    }
+
+    /// Running sums from `self`, stored rounded to double in `ys`.
+    pub fn cumsum_from(self, xs: &[f64], ys: &mut [f64]) -> LDouble {
+        imp::cumsum_from(&self, xs, ys)
+    }
+
+    /// `sum((long double) x - self)` over `xs`, sequentially.
+    pub fn sum_dev(self, xs: &[f64]) -> LDouble {
+        imp::sum_dev(&self, xs)
     }
 }
 
@@ -289,5 +480,40 @@ mod tests {
         assert!(LDouble::from(1.0) < LDouble::from(2.0));
         assert!(LDouble::from(f64::NAN).partial_cmp(&LDouble::from(1.0)).is_none());
         assert_eq!((LDouble::from(1.0) / 0.0).to_f64(), f64::INFINITY);
+    }
+
+    #[test]
+    fn slice_loops_match_scalar_ops() {
+        let bits = |l: LDouble| l.0;
+        let mut xs = vec![0.1, 1e16, -3.5, 1.0 / 3.0, -1e16, 2.5e-300, 7.0, f64::NAN, 1e308, 1e308];
+        for k in 0..50 {
+            xs.push((k as f64 * 0.37).sin() * 10f64.powi(k % 7));
+        }
+        for n in [0, 1, 2, 7, 8, xs.len()] {
+            let xs = &xs[..n];
+            let init = LDouble::from(0.25);
+            let mut s = init;
+            let mut p = init;
+            let mut ys = Vec::new();
+            for &x in xs {
+                s += x;
+                p *= x;
+                ys.push(s.to_f64());
+            }
+            assert_eq!(bits(init.sum_from(xs)), bits(s), "sum n={n}");
+            assert_eq!(bits(init.prod_from(xs)), bits(p), "prod n={n}");
+            let mut out = vec![0.0; n];
+            assert_eq!(bits(init.cumsum_from(xs, &mut out)), bits(s), "cumsum n={n}");
+            assert_eq!(
+                out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                ys.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+            let m = LDouble::from(1.0) / 3.0;
+            let mut t = LDouble::ZERO;
+            for &x in xs {
+                t += LDouble::from(x) - m;
+            }
+            assert_eq!(bits(m.sum_dev(xs)), bits(t), "sum_dev n={n}");
+        }
     }
 }

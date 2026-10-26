@@ -349,24 +349,15 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
             Value::cplxs(out)
         }
         (Value::Real(_), _) | (_, Value::Real(_)) => {
-            let a = real_view(&x);
-            let b = real_view(&y);
-            let mut out = Vec::with_capacity(n);
-            if nx == n && ny == n {
-                for i in 0..n {
-                    out.push(real_op(op, a[i], b[i]));
-                }
-            } else if ny == 1 {
-                let bv = b[0];
-                for &av in a.iter().take(n) {
-                    out.push(real_op(op, av, bv));
-                }
-            } else {
-                for i in 0..n {
-                    out.push(real_op(op, a[i % nx], b[i % ny]));
+            if !attrs.any_attr {
+                // Plain vectors: compute into an operand nobody else holds.
+                if let Some(out) = real_binary_inplace(op, &mut x, &mut y, n) {
+                    return Ok(Value::reals(out));
                 }
             }
-            Value::reals(out)
+            let a = real_view(&x);
+            let b = real_view(&y);
+            Value::reals(real_binary(op, &a, &b, n))
         }
         _ => integer_binary(interp, call, op, &x, &y, n)?,
     };
@@ -385,6 +376,101 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
         }
     }
     Ok(val)
+}
+
+/// Apply `f` elementwise with R's recycling: one operand has length `n`
+/// or both are recycled. Written as plain iterator maps per operator so
+/// the loops vectorize; results are the same IEEE operations as R's.
+macro_rules! real_kernel {
+    ($a:expr, $b:expr, $n:expr, $f:expr) => {{
+        let (a, b, n) = ($a, $b, $n);
+        let f = $f;
+        if n == 0 {
+            Vec::new()
+        } else if a.len() == n && b.len() == n {
+            a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect::<Vec<f64>>()
+        } else if b.len() == 1 && a.len() == n {
+            let y = b[0];
+            a.iter().map(|&x| f(x, y)).collect()
+        } else if a.len() == 1 && b.len() == n {
+            let x = a[0];
+            b.iter().map(|&y| f(x, y)).collect()
+        } else {
+            (0..n).map(|i| f(a[i % a.len()], b[i % b.len()])).collect()
+        }
+    }};
+}
+
+/// `a op b` on doubles (R: arithmetic.c:real_binary).
+fn real_binary(op: ArithOp, a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+    match op {
+        ArithOp::Plus => real_kernel!(a, b, n, |x: f64, y: f64| x + y),
+        ArithOp::Minus => real_kernel!(a, b, n, |x: f64, y: f64| x - y),
+        ArithOp::Times => real_kernel!(a, b, n, |x: f64, y: f64| x * y),
+        ArithOp::Div => real_kernel!(a, b, n, |x: f64, y: f64| x / y),
+        ArithOp::Pow => real_kernel!(a, b, n, r_pow),
+        ArithOp::Mod => real_kernel!(a, b, n, myfmod),
+        ArithOp::IDiv => real_kernel!(a, b, n, myfloor),
+    }
+}
+
+/// [`real_binary`] writing into the buffer of an operand of length `n`
+/// that is a double vector held only here (a temporary), as R reuses
+/// unreferenced arguments. `None` if neither operand qualifies.
+fn real_binary_inplace(op: ArithOp, x: &mut Value, y: &mut Value, n: usize) -> Option<Vec<f64>> {
+    fn take_unique(v: &mut Value, n: usize) -> Option<Vec<f64>> {
+        match v {
+            Value::Real(rc) if rc.data.len() == n => Rc::get_mut(rc).map(|v| std::mem::take(&mut v.data)),
+            _ => None,
+        }
+    }
+    macro_rules! apply {
+        ($out:expr, $other:expr, $left:expr) => {{
+            let mut out: Vec<f64> = $out;
+            let other = real_view($other);
+            let m = other.len();
+            macro_rules! go {
+                ($f:expr) => {{
+                    let f = $f;
+                    if m == n {
+                        for (o, &w) in out.iter_mut().zip(other.iter()) {
+                            *o = if $left { f(*o, w) } else { f(w, *o) };
+                        }
+                    } else if m == 1 {
+                        let w = other[0];
+                        for o in out.iter_mut() {
+                            *o = if $left { f(*o, w) } else { f(w, *o) };
+                        }
+                    } else {
+                        for (i, o) in out.iter_mut().enumerate() {
+                            let w = other[i % m];
+                            *o = if $left { f(*o, w) } else { f(w, *o) };
+                        }
+                    }
+                }};
+            }
+            match op {
+                ArithOp::Plus => go!(|p: f64, q: f64| p + q),
+                ArithOp::Minus => go!(|p: f64, q: f64| p - q),
+                ArithOp::Times => go!(|p: f64, q: f64| p * q),
+                ArithOp::Div => go!(|p: f64, q: f64| p / q),
+                ArithOp::Pow => go!(r_pow),
+                ArithOp::Mod => go!(myfmod),
+                ArithOp::IDiv => go!(myfloor),
+            }
+            Some(out)
+        }};
+    }
+    if n == 0 {
+        return None;
+    }
+    if let Some(out) = take_unique(x, n) {
+        return apply!(out, &*y, true);
+    }
+    if let Some(out) = take_unique(y, n) {
+        return apply!(out, &*x, false);
+    }
+    None
 }
 
 fn real_view(v: &Value) -> std::borrow::Cow<'_, [f64]> {
@@ -978,7 +1064,7 @@ fn do_or2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 // ----------------------------------------------------------------------
 // Math group (do_math1)
 
-fn math1(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, f: fn(f64) -> f64) -> RResult<Value> {
+fn math1<F: Fn(f64) -> f64>(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, name: &str, f: F) -> RResult<Value> {
     if args.len() != 1 {
         return Err(Flow::error_call(
             call.clone(),
@@ -997,26 +1083,39 @@ fn math1(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, f:
     if !x.is_numeric_type() {
         return Err(Flow::error_call(call.clone(), "non-numeric argument to mathematical function"));
     }
-    let a = real_view(x);
+    // NaN in gives the same NaN out (keeping NA's payload); a new NaN
+    // makes R warn.
+    let g = |v: f64| if v.is_nan() { v } else { f(v) };
     let mut naflag = false;
-    let out: Vec<f64> = a
-        .iter()
-        .map(|&v| {
-            if v.is_nan() {
-                v
-            } else {
-                let r = f(v);
-                if r.is_nan() {
-                    naflag = true;
-                }
-                r
+    let unique = matches!(&args[0].value, Value::Real(rc) if Rc::strong_count(rc) == 1 && Rc::weak_count(rc) == 0);
+    let val = match &mut args[0].value {
+        // A double vector held only here: compute in place.
+        Value::Real(rc) if unique => {
+            let vecv = Rc::get_mut(rc).unwrap();
+            for v in vecv.data.iter_mut() {
+                let r = g(*v);
+                naflag |= r.is_nan() && !v.is_nan();
+                *v = r;
             }
-        })
-        .collect();
-    let mut val = Value::reals(out);
-    if let Some(at) = x.attrs() {
-        val.set_attrs(Some(Box::new(at.clone())));
-    }
+            std::mem::replace(&mut args[0].value, Value::Null)
+        }
+        x => {
+            let a = real_view(x);
+            let out: Vec<f64> = a
+                .iter()
+                .map(|&v| {
+                    let r = g(v);
+                    naflag |= r.is_nan() && !v.is_nan();
+                    r
+                })
+                .collect();
+            let mut val = Value::reals(out);
+            if let Some(at) = x.attrs() {
+                val.set_attrs(Some(Box::new(at.clone())));
+            }
+            val
+        }
+    };
     if naflag {
         i.warningcall(call, "NaNs produced")?;
     }

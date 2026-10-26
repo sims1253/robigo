@@ -1,4 +1,5 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
+tests/r/basics/arith-vectors.R
 tests/r/basics/arith.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
@@ -115,6 +116,7 @@ tests/r/vec/minmax.R
 tests/r/vec/rep.R
 tests/r/vec/sort-base.R
 tests/r/vec/sort-internal.R
+tests/r/vec/sum-ldouble.R
 tests/r/vec/sum-prod.R
 tests/r/vec/unique.R
 tests/r/vectors/apply.R

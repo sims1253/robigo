@@ -231,14 +231,20 @@ fn isum(x: &[i32], narm: bool) -> Result<Option<i64>, ()> {
 }
 
 fn rsum(x: &[f64], narm: bool) -> Option<f64> {
-    let mut s = F80::ZERO;
-    let mut updated = false;
-    for &v in x {
-        if !narm || !v.is_nan() {
-            updated = true;
-            s = s.add(F80::from_f64(v));
+    let (s, updated) = if !narm {
+        (F80::ZERO.sum_slice(x), !x.is_empty())
+    } else {
+        // Sum the runs between NaNs, continuing the same accumulator.
+        let mut s = F80::ZERO;
+        let mut updated = false;
+        for run in x.split(|v| v.is_nan()) {
+            if !run.is_empty() {
+                updated = true;
+                s = s.sum_slice(run);
+            }
         }
-    }
+        (s, updated)
+    };
     if updated {
         Some(s.to_f64_clamped())
     } else {
@@ -371,14 +377,19 @@ fn iprod(x: &[i32], narm: bool) -> Option<f64> {
 }
 
 fn rprod(x: &[f64], narm: bool) -> Option<f64> {
-    let mut s = F80::ONE;
-    let mut updated = false;
-    for &v in x {
-        if !narm || !v.is_nan() {
-            updated = true;
-            s = s.mul(F80::from_f64(v));
+    let (s, updated) = if !narm {
+        (F80::ONE.prod_slice(x), !x.is_empty())
+    } else {
+        let mut s = F80::ONE;
+        let mut updated = false;
+        for run in x.split(|v| v.is_nan()) {
+            if !run.is_empty() {
+                updated = true;
+                s = s.prod_slice(run);
+            }
         }
-    }
+        (s, updated)
+    };
     if updated {
         Some(s.to_f64_clamped())
     } else {
@@ -871,10 +882,7 @@ fn do_mean(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult
 // R: summary.c:real_mean
 fn real_mean(x: &[f64]) -> f64 {
     let n = F80::from_i64(x.len() as i64);
-    let mut s = F80::ZERO;
-    for &v in x {
-        s = s.add(F80::from_f64(v));
-    }
+    let mut s = F80::ZERO.sum_slice(x);
     let finite_s = s.to_f64().is_finite();
     if finite_s {
         s = s.div(n);
@@ -888,10 +896,7 @@ fn real_mean(x: &[f64]) -> f64 {
         }
     }
     if finite_s && s.to_f64().is_finite() {
-        let mut t = F80::ZERO;
-        for &v in x {
-            t = t.add(F80::from_f64(v).sub(s));
-        }
+        let t = s.sum_dev(x);
         s = s.add(t.div(n));
     } else if s.to_f64().is_finite() {
         let mut t = F80::ZERO;
@@ -1307,11 +1312,7 @@ fn do_cum(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: CumOp) ->
     }
     match op {
         CumOp::Sum => {
-            let mut sum = F80::ZERO;
-            for k in 0..n {
-                sum = sum.add(F80::from_f64(x[k]));
-                s[k] = sum.to_f64();
-            }
+            let sum = F80::ZERO.cumsum_slice(&x[..n], &mut s[..n]);
             if sum.is_nan() {
                 handle_nan(x, &mut s);
             }
