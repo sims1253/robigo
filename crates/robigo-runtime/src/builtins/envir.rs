@@ -786,7 +786,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         function: Value::Builtin(super::lookup_internal("eval").unwrap()),
         cloenv: env.clone(),
         sysparent,
-        promargs: Rc::new(vec![]),
+        promargs: vec![],
         on_exit: vec![],
         handlers: i.handlers.clone(),
         restarts: i.restarts.clone(),

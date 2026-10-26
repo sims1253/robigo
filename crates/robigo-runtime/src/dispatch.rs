@@ -218,7 +218,7 @@ impl Interp {
         generic: &str,
         obj: &Value,
         call: &Value,
-        promargs: Rc<Vec<Arg>>,
+        promargs: Vec<Arg>,
         rho: &Env,
         callenv: &Env,
         defenv: &Env,
@@ -271,7 +271,7 @@ impl Interp {
         dot_class: Value,
         info: &DispatchInfo,
         call: &Value,
-        promargs: Rc<Vec<Arg>>,
+        promargs: Vec<Arg>,
         rho: &Env,
     ) -> RResult<Value> {
         let vars = vec![
@@ -295,8 +295,8 @@ impl Interp {
             c.generic = true;
         }
         let r = match f {
-            Value::Closure(c) => self.apply_closure(&newcall, c, (*promargs).clone(), rho, Some(vars)),
-            Value::Builtin(_) => self.apply_function(f, (*promargs).clone(), rho, &newcall),
+            Value::Closure(c) => self.apply_closure(&newcall, c, promargs, rho, Some(vars)),
+            Value::Builtin(_) => self.apply_function(f, promargs, rho, &newcall),
             _ => Err(Flow::error("attempt to apply non-function")),
         };
         if let Some(c) = self.frames.last_mut() {
@@ -333,7 +333,6 @@ impl Interp {
         env: &Env,
     ) -> RResult<Option<Value>> {
         let rho1 = Env::new(Some(env.clone()));
-        let pargs = Rc::new(pargs);
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Null,

@@ -245,21 +245,21 @@ three wall times in seconds, startup included (GNU R 0.086 s, robigo
 
 | script | GNU R | robigo | ratio | what it stresses |
 |---|---|---|---|---|
-| spectralnorm | 0.49 | 0.09 | 0.19 | a tiny closure called in a double loop (JIT, inlined) |
-| nbody | 0.42 | 0.11 | 0.27 | scalar arithmetic on short vectors (JIT) |
-| mandelbrot | 0.18 | 0.09 | 0.51 | scalar `while` loops (JIT) |
-| apply | 0.39 | 0.21 | 0.53 | `lapply`/`vapply`/`sapply` with closures |
-| strings | 0.37 | 0.21 | 0.57 | `paste0`, `gsub`, `sprintf`, `nchar` |
-| fannkuch | 0.37 | 0.23 | 0.60 | integer vectors, `x[a:b] <- x[b:a]` |
-| dataframe | 0.26 | 0.17 | 0.66 | `data.frame` building, `aggregate`, `merge` |
-| matrix | 0.21 | 0.14 | 0.70 | `%*%`, `solve`, `apply` over rows |
-| vecarith | 1.03 | 0.77 | 0.75 | elementwise arithmetic, `sum`, `mean` on 10^6 |
-| vecops | 0.71 | 0.58 | 0.81 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
-| queens | 0.13 | 0.11 | 0.86 | recursion with vectors |
-| lm | 0.23 | 0.20 | 0.87 | `lm`, `summary.lm` |
-| csv | 0.30 | 0.28 | 0.95 | `write.csv`, `read.csv` |
-| fib | 0.22 | 0.27 | 1.23 | closure calls, promises |
-| binarytrees | 0.26 | 0.34 | 1.31 | recursion, list allocation, `[[` |
+| spectralnorm | 0.42 | 0.08 | 0.19 | a tiny closure called in a double loop (JIT, inlined) |
+| nbody | 0.40 | 0.10 | 0.26 | scalar arithmetic on short vectors (JIT) |
+| apply | 0.40 | 0.19 | 0.48 | `lapply`/`vapply`/`sapply` with closures |
+| mandelbrot | 0.18 | 0.09 | 0.49 | scalar `while` loops (JIT) |
+| strings | 0.34 | 0.19 | 0.56 | `paste0`, `gsub`, `sprintf`, `nchar` |
+| dataframe | 0.25 | 0.15 | 0.61 | `data.frame` building, `aggregate`, `merge` |
+| fannkuch | 0.37 | 0.23 | 0.63 | integer vectors, `x[a:b] <- x[b:a]` |
+| matrix | 0.20 | 0.13 | 0.66 | `%*%`, `solve`, `apply` over rows |
+| vecarith | 0.95 | 0.72 | 0.76 | elementwise arithmetic, `sum`, `mean` on 10^6 |
+| queens | 0.13 | 0.10 | 0.77 | recursion with vectors |
+| lm | 0.22 | 0.18 | 0.80 | `lm`, `summary.lm` |
+| vecops | 0.65 | 0.52 | 0.80 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
+| csv | 0.30 | 0.26 | 0.86 | `write.csv`, `read.csv` |
+| fib | 0.21 | 0.24 | 1.14 | closure calls, promises |
+| binarytrees | 0.27 | 0.30 | 1.14 | recursion, list allocation, `[[` |
 
 Most times include ~0.07 s of startup (both runtimes load `utils` and
 `stats`); the JIT'd loops run in a few milliseconds.
@@ -267,7 +267,16 @@ Most times include ~0.07 s of startup (both runtimes load `utils` and
 `scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
 instruction counts are exact, so a change can be judged without
 wall-clock noise (the VM shares two cores with other work). A fib call costs GNU R ~2,900
-instructions and robigo ~4,300.
+instructions and robigo ~3,700. Per call of typical base-R code (callgrind,
+VM, `R_DEFAULT_PACKAGES=NULL`):
+
+| idiom | GNU R | robigo |
+|---|---|---|
+| `match.arg(type)` with a choice given | 68.1k | 71.0k |
+| `match.arg(type)` with the default | 43.1k | 58.1k |
+| `stopifnot(is.numeric(x), length(x) == 1)` | 25.7k | 36.6k |
+| `tryCatch(i, error = function(e) NULL)` | 42.3k | 49.8k |
+| S3 dispatch (`UseMethod`, `s$side^2`) | 16.6k | 18.1k |
 
 Ledger:
 
@@ -310,13 +319,24 @@ Ledger:
   change; cached scalars survive flushes until R code runs; `TRUE`,
   `FALSE`, `NA` and small integers are shared constants; `.Internal(f(..))`
   compiles to a direct builtin call.
-- **Next:** typical base-R functions (`match.arg`, `stopifnot`,
-  `tryCatch`, `format`, S3 dispatch) are ~2x GNU R: every closure call
-  costs an environment, a context, a promise per argument and a VM run
-  (~2-4k instructions), and each VM op ~30-70 instructions. Candidates: a
-  cheaper calling convention (frames without heap environments until
-  observed, promise elision for arguments forced on entry), and native
-  code for whole function bodies, not only loops.
+- **Done (base-R functions):** registers are allocated as a stack and
+  freed after each call expression (`stopifnot` needs 21 instead of 100),
+  so registers, variable slots and guard state stay on the Rust stack;
+  constant default arguments are bound without a promise and other
+  defaults carry bytecode; formals are bound without frame lookups; frames
+  keep a 64-bit mask of their symbols, so most failed lookups cost one
+  test; `x[i]`/`x[[i]]` with any index compile to VM ops (dispatching
+  with a promise for objects); one-argument builtins (`length`,
+  `is.null`, `is.na`, `typeof`, ...) and scalar string `==` run without a
+  call; primitives are found by hash and S3 method names built without
+  `format!`.
+- **Next:** a closure call still costs ~25% more than in GNU R: it
+  allocates an environment, a promise per argument, the argument vector
+  and a boxed result, and entering the VM costs ~85 instructions before
+  the first op. Candidates: forced promises built by the caller for
+  arguments that cannot fail or run code (`n - 1` on numbers), so the
+  callee's force is a read; unboxed results for compiled callers; the VM
+  on by default (it is opt-in, `ROBIGO_COMPILE=1`).
 
 ## 5. Roadmap
 

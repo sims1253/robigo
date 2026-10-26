@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use smallvec::SmallVec;
 use std::rc::Rc;
 
 use crate::conditions::{HandlerStack, RestartStack};
@@ -17,7 +18,7 @@ pub struct Context {
     pub function: Value,
     pub cloenv: Env,
     pub sysparent: Env,
-    pub promargs: Rc<Vec<Arg>>,
+    pub promargs: Vec<Arg>,
     pub on_exit: Vec<Value>,
     pub handlers: HandlerStack,
     pub restarts: RestartStack,
@@ -574,7 +575,7 @@ impl Interp {
 
     /// Match supplied arguments to formals (R's `matchArgs`). Returns one
     /// slot per formal; `...` gets a `Dots` value (or `None` when empty).
-    pub fn match_args(&mut self, formals: &[Arg], supplied: Vec<Arg>, call: &Value) -> RResult<Vec<Option<Value>>> {
+    pub fn match_args(&mut self, formals: &[Arg], supplied: &[Arg], call: &Value) -> RResult<Vec<Option<Value>>> {
         let nf = formals.len();
         // Fast path: only positional arguments, at most as many as there
         // are formals before `...`. All three passes reduce to assigning
@@ -585,16 +586,17 @@ impl Interp {
             && !formals[supplied.len()..].iter().any(|f| f.tag == Some(s::DOTS))
         {
             let mut out: Vec<Option<Value>> = Vec::with_capacity(nf);
-            out.extend(supplied.into_iter().map(|a| Some(a.value)));
+            out.extend(supplied.iter().map(|a| Some(a.value.clone())));
             out.resize(nf, None);
             return Ok(out);
         }
         let mut actuals: Vec<Option<Value>> = vec![None; nf];
-        let mut fused = vec![0u8; nf];
-        let mut used = vec![0u8; supplied.len()];
+        let mut fused: SmallVec<[u8; 16]> = smallvec::smallvec![0u8; nf];
+        let mut used: SmallVec<[u8; 16]> = smallvec::smallvec![0u8; supplied.len()];
+        let any_tag = supplied.iter().any(|a| a.tag.is_some());
 
         // Pass 1: exact matching by tag.
-        for (fi, f) in formals.iter().enumerate() {
+        for (fi, f) in formals.iter().enumerate().filter(|_| any_tag) {
             let ftag = f.tag.unwrap();
             if ftag == s::DOTS {
                 continue;
@@ -631,6 +633,9 @@ impl Interp {
             if ftag == s::DOTS && !seendots {
                 dots_index = Some(fi);
                 seendots = true;
+                continue;
+            }
+            if !any_tag {
                 continue;
             }
             let fname = ftag.name();
@@ -746,7 +751,7 @@ impl Interp {
                 bind(k, f.tag.unwrap(), f, promargs.get(k).map(|a| a.value.clone()));
             }
         } else {
-            let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
+            let actuals = self.match_args(&clo.formals, &promargs, call)?;
             for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
                 bind(k, f.tag.unwrap(), f, a);
             }
@@ -760,14 +765,14 @@ impl Interp {
             Some(c) if c.generic => c.sysparent.clone(),
             _ => callenv.clone(),
         };
-        self.exec_closure(call, clo, Rc::new(promargs), newenv, sysparent)
+        self.exec_closure(call, clo, promargs, newenv, sysparent)
     }
 
     pub fn exec_closure(
         &mut self,
         call: &Value,
         clo: &Rc<Closure>,
-        promargs: Rc<Vec<Arg>>,
+        promargs: Vec<Arg>,
         newenv: Env,
         sysparent: Env,
     ) -> RResult<Value> {

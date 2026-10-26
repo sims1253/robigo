@@ -562,7 +562,7 @@ fn do_matchcall(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RRe
             }
         }
     }
-    let matched = i.match_args(&b.formals, actuals, call)?;
+    let matched = i.match_args(&b.formals, &actuals, call)?;
     let mut out: Vec<Arg> = Vec::new();
     for (f, m) in b.formals.iter().zip(matched) {
         let tag = f.tag.unwrap();

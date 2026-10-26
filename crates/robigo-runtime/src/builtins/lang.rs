@@ -1127,7 +1127,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     // Arguments: the method's promargs, with formals rebound to promises
     // for their current values in the method frame.
     let mut newargs: Vec<Arg> = Vec::new();
-    let actuals = interp.match_args(&mclo.formals, (*mpromargs).clone(), &mcall)?;
+    let actuals = interp.match_args(&mclo.formals, &mpromargs, &mcall)?;
     let mut used_dots = false;
     for (f, a) in mclo.formals.iter().zip(actuals) {
         let tag = f.tag.unwrap();
@@ -1229,7 +1229,7 @@ impl Interp {
         sysparent: &Env,
         vars: Option<Vec<(Sym, Value)>>,
     ) -> RResult<Value> {
-        let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
+        let actuals = self.match_args(&clo.formals, &promargs, call)?;
         let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
         for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
             let tag = f.tag.unwrap();
@@ -1249,7 +1249,7 @@ impl Interp {
                 newenv.set_local(k, v);
             }
         }
-        self.exec_closure(call, clo, Rc::new(promargs), newenv, sysparent.clone())
+        self.exec_closure(call, clo, promargs, newenv, sysparent.clone())
     }
 }
 
