@@ -640,6 +640,17 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     true
 }
 
+/// `forceAndCall`: force the first `n` promise arguments.
+// R: eval.c:R_forceAndCall
+fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
+    for a in promargs.iter().take(n as usize) {
+        if let Value::Promise(p) = &a.value {
+            interp.force_promise(p)?;
+        }
+    }
+    Ok(())
+}
+
 /// `x$name` for a list or expression vector by exact name, without
 /// warnings; `None` where `R_subset3_dflt` must run (partial matches,
 /// environments, other types).
@@ -2483,10 +2494,36 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 let v = match (&fun, &site.call) {
                     (Value::Closure(clo), Value::Lang(l)) => {
                         let r = match interp.promise_args_with(&l.args, env, &site.codes) {
-                            Ok(promargs) => interp.call_closure(&site.call, clo, promargs, env),
+                            Ok(promargs) => match force_args(interp, &promargs, site.force) {
+                                Ok(()) => interp.call_closure(&site.call, clo, promargs, env),
+                                Err(e) => signal(interp, Err(e)),
+                            },
                             Err(e) => signal(interp, Err(e)),
                         };
                         tryop!(r)
+                    }
+                    // A builtin (say the value of a variable): its arguments
+                    // through their bytecode, left to right, as evalList.
+                    (Value::Builtin(b), Value::Lang(l))
+                        if b.kind == crate::value::BuiltinKind::Builtin
+                            && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
+                    {
+                        // (As `eval` of the call would: cached variables
+                        // are stale if an argument assigns one.)
+                        crate::env::bump_r_epoch();
+                        let mut argv = Vec::with_capacity(l.args.len());
+                        for (a, c) in l.args.iter().zip(&site.codes) {
+                            let v = match c {
+                                Some(c) => match run_simple(interp, c, env) {
+                                    Some(v) => v,
+                                    None => tryop!(run(interp, c, env)),
+                                },
+                                None => tryop!(interp.eval(&a.value, env)),
+                            };
+                            argv.push(Arg::new(a.tag, v));
+                        }
+                        let r = interp.invoke_builtin(b, &site.call, argv, env);
+                        tryop!(signal(interp, r))
                     }
                     _ => tryop!(interp.eval(&site.call, env)),
                 };

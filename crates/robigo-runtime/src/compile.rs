@@ -242,6 +242,9 @@ pub struct CallSite {
     /// The slot of the function's name, if the code has one (filled in once
     /// compilation is done).
     pub fslot: Option<Slot>,
+    /// `forceAndCall(force, f, ...)`: the number of promise arguments of a
+    /// closure forced before the call.
+    pub force: u32,
 }
 
 /// The jump targets of a compiled `switch` (R: eval.c:do_switch).
@@ -456,6 +459,16 @@ fn index2_form(e: &Value) -> Option<(Sym, &Value, &Value)> {
     (is_pure(i, 0) && is_pure(j, 0)).then_some((x, i, j))
 }
 
+/// The `n` of `forceAndCall(n, ...)` when it is a small constant.
+fn force_count(e: &Value) -> Option<u32> {
+    let n = match e {
+        Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0],
+        Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() && v.data[0] != NA_INTEGER => v.data[0] as f64,
+        _ => return None,
+    };
+    (n >= 0.0 && n <= 64.0 && n == n.trunc()).then_some(n as u32)
+}
+
 /// `x$name` with a variable `x`: the variable and the name.
 fn dollar_form(e: &Value) -> Option<(Sym, RStr)> {
     let Value::Lang(l) = e else { return None };
@@ -607,6 +620,19 @@ impl Compiler {
         let g = self.nguards as u32;
         self.nguards += 1;
         self.emit(Op::Guard { sym, dst, k, skip: 0, g })
+    }
+
+    /// `Op::Call` of the function named `f` for the call `whole`.
+    fn call_site(&mut self, l: &Lang, whole: &Value, dst: Reg, f: Sym, force: u32) {
+        let codes = l.args.iter().map(|a| compile_thunk(&a.value)).collect();
+        let leaf_args = if l.args.iter().all(|a| a.tag.is_none()) {
+            l.args.iter().map(|a| self.leaf(&a.value)).collect::<Option<Vec<_>>>()
+        } else {
+            None
+        };
+        self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default(), leaf_args, fslot: None, force });
+        let site = (self.call_sites.len() - 1) as u32;
+        self.emit(Op::Call { dst, f, site });
     }
 
     fn fallback(&mut self, e: &Value, dst: Reg) {
@@ -1209,6 +1235,23 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
             }
+            // R: eval.c:R_forceAndCall: `f(...)` forcing the first `n`
+            // promises of a closure first; the call is `f(...)`.
+            "forceAndCall"
+                if l.args.len() >= 2
+                    && l.args[..2].iter().all(|a| a.tag.is_none())
+                    && force_count(&l.args[0].value).is_some()
+                    && matches!(&l.args[1].value, Value::Sym(f) if is_var(*f))
+                    && l.args[2..].iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
+            {
+                let g = self.guard(h, whole, dst);
+                let f = l.args[1].value.as_sym().unwrap();
+                let inner = Value::lang(Value::Sym(f), l.args[2..].to_vec());
+                let Value::Lang(il) = &inner else { unreachable!() };
+                self.call_site(il, &inner, dst, f, force_count(&l.args[0].value).unwrap());
+                let end = self.here();
+                self.patch(g, end);
+            }
             n if crate::builtins::lookup_primitive(n).is_some_and(|b| b.kind == BuiltinKind::Special) => {
                 let b = crate::builtins::lookup_primitive(n).unwrap();
                 let g = self.guard(h, whole, dst);
@@ -1218,17 +1261,7 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
             }
-            n if crate::builtins::lookup_primitive(n).is_none() => {
-                let codes = l.args.iter().map(|a| compile_thunk(&a.value)).collect();
-                let leaf_args = if l.args.iter().all(|a| a.tag.is_none()) {
-                    l.args.iter().map(|a| self.leaf(&a.value)).collect::<Option<Vec<_>>>()
-                } else {
-                    None
-                };
-                self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default(), leaf_args, fslot: None });
-                let site = (self.call_sites.len() - 1) as u32;
-                self.emit(Op::Call { dst, f: h, site });
-            }
+            n if crate::builtins::lookup_primitive(n).is_none() => self.call_site(l, whole, dst, h, 0),
             _ => self.fallback(whole, dst),
         }
     }
