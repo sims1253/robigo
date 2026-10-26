@@ -12,6 +12,7 @@ pub mod env;
 pub mod error;
 pub mod format;
 pub mod interp;
+pub mod jit;
 pub mod lang;
 pub mod native;
 pub mod nmath;

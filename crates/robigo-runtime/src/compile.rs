@@ -195,6 +195,8 @@ pub struct Code {
     /// all guards are known to hold in a fresh call frame (see
     /// `vm::run_closure`).
     pub fresh_guards: std::cell::Cell<(u64, usize, usize)>,
+    /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
+    pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
 }
@@ -243,6 +245,7 @@ impl Code {
             nguards: c.nguards,
             guard_syms,
             simple,
+            jit: Default::default(),
             fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             result,
             is_body,

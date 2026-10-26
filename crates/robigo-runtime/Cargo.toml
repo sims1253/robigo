@@ -9,6 +9,12 @@ authors.workspace = true
 [dependencies]
 robigo-syntax.workspace = true
 smallvec = "1"
+# Native code for hot loops (src/jit.rs).
+cranelift-codegen = "0.137"
+cranelift-frontend = "0.137"
+cranelift-jit = "0.137"
+cranelift-module = "0.137"
+cranelift-native = "0.137"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Regular expressions for grep/sub/regexpr/strsplit (see builtins/grep.rs):
 # regex-automata for POSIX ERE (leftmost-longest via a DFA), fancy-regex for

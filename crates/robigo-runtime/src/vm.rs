@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
+use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, Reg, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -902,6 +902,225 @@ fn unforced_promise(env: &Env, sym: Sym) -> bool {
     matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if p.value.borrow().is_none()))
 }
 
+/// An active loop: break and next targets, its `LoopEnter` index and how
+/// often its back edge ran in this entry.
+#[derive(Clone, Copy)]
+struct LoopRec {
+    brk: u32,
+    nxt: u32,
+    enter: u32,
+    count: u32,
+}
+
+/// Iterations of a loop in the VM before it is compiled to native code.
+const JIT_THRESHOLD: u32 = 16;
+
+/// The scalar or vector type of a variable's current value for native code.
+fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
+    use crate::jit::JType;
+    Some(match v {
+        RVal::D(_) => JType::D,
+        RVal::I(_) => JType::I,
+        RVal::L(_) => JType::L,
+        RVal::V(Value::Real(x)) if x.attrs.is_none() => {
+            if x.data.len() == 1 {
+                JType::D
+            } else {
+                JType::VecD
+            }
+        }
+        RVal::V(Value::Int(x)) if x.attrs.is_none() => {
+            if x.data.len() == 1 {
+                JType::I
+            } else {
+                JType::VecI
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// Run the loop entered at op `enter` natively (compiling it first if
+/// needed): see `crate::jit`. `None`: it cannot run natively now (the VM
+/// runs it). Otherwise the outcome and, after a deopt, the loops inside it
+/// that are active at the op where the VM continues.
+fn jit_enter(
+    interp: &mut Interp,
+    code: &Code,
+    enter: usize,
+    env: &Env,
+    regs: &mut [RVal],
+    vars: &mut Vars<'_>,
+) -> Option<(crate::jit::Outcome, Vec<(u32, u32, u32)>)> {
+    use crate::jit::{JType, JitSlot, Outcome, Reject};
+    let key = enter as u32;
+    let state = match code.jit.borrow().get(&key) {
+        Some(JitSlot::Ready(l)) => Some(l.clone()),
+        Some(JitSlot::Never) => return None,
+        Some(JitSlot::Failed(n)) if *n >= 3 => return None,
+        _ => None,
+    };
+    let jl = match state {
+        Some(l) => l,
+        None => {
+            // Types of the variables' current values, and of the for
+            // sequences set up before the loop.
+            let mut types: Vec<Option<JType>> = Vec::with_capacity(code.vars.len());
+            for (s, sym) in code.vars.iter().enumerate() {
+                types.push(read_var(vars, env, *sym, s as Slot).and_then(jit_type));
+            }
+            let Op::LoopEnter { brk, .. } = code.ops[enter] else { return None };
+            let mut live: HashMap<Reg, JType> = HashMap::default();
+            for op in &code.ops[enter + 1..brk as usize] {
+                if let Op::ForStep { seq, idx, .. } = op {
+                    let set_inside = code.ops[enter + 1..brk as usize]
+                        .iter()
+                        .any(|o| matches!(o, Op::ForRange { seq: s2, .. } if s2 == seq));
+                    if !set_inside {
+                        if let (RVal::Range { .. }, RVal::I(_)) = (&regs[*seq as usize], &regs[*idx as usize]) {
+                            live.insert(*seq, JType::Range);
+                            live.insert(*idx, JType::I);
+                        }
+                    }
+                }
+            }
+            let r = crate::jit::compile(code, enter, &|s| types[s as usize], &|r| live.get(&r).copied());
+            let mut cache = code.jit.borrow_mut();
+            match r {
+                Ok(l) => {
+                    if crate::jit::trace() {
+                        eprintln!("jit: compiled loop at {} ({} variables, {} registers)", enter, l.slots.len(), l.reg_idx.len());
+                    }
+                    let l = Rc::new(l);
+                    cache.insert(key, JitSlot::Ready(l.clone()));
+                    l
+                }
+                Err(Reject::Never) => {
+                    if crate::jit::trace() {
+                        eprintln!("jit: loop at {} cannot be compiled", enter);
+                    }
+                    cache.insert(key, JitSlot::Never);
+                    return None;
+                }
+                Err(Reject::NotNow) => {
+                    let n = match cache.get(&key) {
+                        Some(JitSlot::Failed(n)) => *n,
+                        _ => 0,
+                    };
+                    cache.insert(key, JitSlot::Failed(n + 1));
+                    return None;
+                }
+            }
+        }
+    };
+    // Guards: native code assumes them.
+    for (sym, at) in &jl.guards {
+        if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
+            return None;
+        }
+    }
+    let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
+    vals.resize(jl.nvals, 0);
+    let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
+    for s in &jl.slots {
+        if s.ty.is_vector() {
+            let ok = match read_var(vars, env, s.sym, s.slot) {
+                Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
+                _ => false,
+            };
+            if !ok || (s.writable && !own_var(vars, env, s.sym, s.slot)) {
+                return None;
+            }
+            let view = match &mut vars.slots[s.slot as usize] {
+                SlotVal::Dirty(RVal::V(Value::Real(x))) | SlotVal::Clean(RVal::V(Value::Real(x))) if s.ty == JType::VecD => {
+                    let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut f64 };
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
+                }
+                SlotVal::Dirty(RVal::V(Value::Int(x))) | SlotVal::Clean(RVal::V(Value::Int(x))) if s.ty == JType::VecI => {
+                    let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut i32 };
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
+                }
+                _ => return None,
+            };
+            debug_assert_eq!(vecs.len(), s.idx);
+            vecs.push(view);
+            continue;
+        }
+        let cur = read_var(vars, env, s.sym, s.slot).cloned();
+        if s.written {
+            let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
+            if !deferrable(env, s.sym, &RVal::I(0), pending) {
+                return None;
+            }
+        }
+        let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
+            (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
+            (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
+            _ => None,
+        };
+        match bits {
+            Some(b) => vals[s.idx] = b,
+            None if s.needs_entry => return None,
+            None => {}
+        }
+    }
+    for (reg, ty) in &jl.live_in {
+        let idx = jl.reg_idx[reg];
+        match (&regs[*reg as usize], ty) {
+            (RVal::Range { start, step, n }, JType::Range) => {
+                vals[idx] = *start as u64;
+                vals[idx + 1] = *step as u64;
+                vals[idx + 2] = *n;
+            }
+            (RVal::I(i), JType::I) => vals[idx] = *i as i64 as u64,
+            _ => return None,
+        }
+    }
+    let ret = (jl.func)(vals.as_mut_ptr(), vecs.as_ptr());
+    // Write the variables back as pending assignments.
+    for s in &jl.slots {
+        if !s.written || !s.ty.is_scalar() {
+            continue;
+        }
+        let assigned = s.needs_entry || s.flag.is_some_and(|f| vals[f] != 0);
+        if !assigned {
+            continue;
+        }
+        let b = vals[s.idx];
+        let v = match s.ty {
+            JType::D => RVal::D(f64::from_bits(b)),
+            JType::I => RVal::I(b as i32),
+            _ => RVal::L(b as i32),
+        };
+        vars.slots[s.slot as usize] = SlotVal::Dirty(v);
+        vars.any = true;
+        vars.dirty = true;
+    }
+    if ret == crate::jit::EXIT {
+        if crate::jit::trace() {
+            eprintln!("jit: loop at {} finished", enter);
+        }
+        return Some((Outcome::Exited, Vec::new()));
+    }
+    let p = ret as usize;
+    for (reg, ty) in jl.deopt_regs.get(&ret).map(|v| v.as_slice()).unwrap_or(&[]) {
+        let idx = jl.reg_idx[reg];
+        let b = vals[idx];
+        regs[*reg as usize] = match ty {
+            JType::D => RVal::D(f64::from_bits(b)),
+            JType::I => RVal::I(b as i32),
+            JType::L => RVal::L(b as i32),
+            JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+            _ => continue,
+        };
+    }
+    if crate::jit::trace() {
+        eprintln!("jit: loop at {} continues in the VM at {}", enter, p);
+    }
+    let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
+    Some((Outcome::Deopt(p), nested))
+}
+
 /// The function a call site calls, memoized like [`guard_ok`]: frames below
 /// the search path are checked directly, the search-path lookup is cached
 /// against the search epoch (only when it needs no forcing or active
@@ -994,8 +1213,8 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
 ) -> RResult<Value> {
     let mut generation: u32 = 1;
     interp.visible = true;
-    // (break target, next target) of active loops.
-    let mut loops: Vec<(u32, u32)> = Vec::new();
+    // Active loops.
+    let mut loops: Vec<LoopRec> = Vec::new();
     let ops = &code.ops;
     let mut pc: usize = 0;
     macro_rules! tryop {
@@ -1003,11 +1222,11 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             match $e {
                 Ok(v) => v,
                 Err(Flow::Break(e)) if e.ptr_eq(env) && !loops.is_empty() => {
-                    pc = loops.last().unwrap().0 as usize;
+                    pc = loops.last().unwrap().brk as usize;
                     continue;
                 }
                 Err(Flow::Next(e)) if e.ptr_eq(env) && !loops.is_empty() => {
-                    pc = loops.last().unwrap().1 as usize;
+                    pc = loops.last().unwrap().nxt as usize;
                     continue;
                 }
                 Err(f) => return Err(f),
@@ -1069,6 +1288,47 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     }
                 }
             };
+        }};
+    }
+    let jit_on = crate::jit::enabled();
+    // Run the innermost loop natively from its head (the op being executed
+    // is at the head or the back edge, so the VM state is that of the loop
+    // between iterations) if it compiles; continue after it or where the
+    // native code gave up.
+    macro_rules! jit_loop {
+        () => {{
+            let rec = *loops.last().unwrap();
+            match jit_enter(interp, code, rec.enter as usize, env, regs, &mut vars) {
+                Some((crate::jit::Outcome::Exited, _)) => {
+                    loops.pop();
+                    pc = rec.brk as usize + 1;
+                    continue;
+                }
+                Some((crate::jit::Outcome::Deopt(p), nested)) => {
+                    for (e, b, n) in nested {
+                        loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1 });
+                    }
+                    loops.last_mut().unwrap().count = JIT_THRESHOLD + 1;
+                    pc = p;
+                    continue;
+                }
+                None => {}
+            }
+        }};
+    }
+    // Count iterations of the innermost loop; at the threshold, try native.
+    macro_rules! back_edge {
+        () => {{
+            if jit_on {
+                if let Some(rec) = loops.last_mut() {
+                    rec.count += 1;
+                    if rec.count == JIT_THRESHOLD {
+                        // (Native code starts at the loop head, re-executing
+                        // this op.)
+                        jit_loop!();
+                    }
+                }
+            }
         }};
     }
     // Assign `$val` to variable `$sym` (slot `$slot`).
@@ -1187,6 +1447,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 };
             }
             Op::JumpIfNot { cond, target, call } | Op::JumpIf { cond, target, call } => {
+                if (*target as usize) < pc {
+                    back_edge!();
+                }
                 let truth = match &regs[*cond as usize] {
                     RVal::L(x) if *x != NA_LOGICAL => *x != 0,
                     other => {
@@ -1202,7 +1465,12 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     pc = *target as usize;
                 }
             }
-            Op::Jump { target } => pc = *target as usize,
+            Op::Jump { target } => {
+                if (*target as usize) < pc {
+                    back_edge!();
+                }
+                pc = *target as usize
+            }
             Op::Guard { sym, dst, k, skip, g } => {
                 if checked[*g as usize] == generation {
                     continue;
@@ -1488,7 +1756,13 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 }
                 return Err(Flow::Return(v, env.clone()));
             }
-            Op::LoopEnter { brk, nxt } => loops.push((*brk, *nxt)),
+            Op::LoopEnter { brk, nxt } => {
+                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
+                // A loop compiled on an earlier entry runs natively at once.
+                if jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_))) {
+                    jit_loop!();
+                }
+            }
             Op::LoopExit => {
                 loops.pop();
             }
@@ -1510,6 +1784,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 regs[*seq as usize + 1] = RVal::I(0);
             }
             Op::ForStep { seq, idx, var, slot, body, .. } => {
+                back_edge!();
                 let i = match regs[*idx as usize] {
                     RVal::I(i) => i as usize,
                     _ => 0,
