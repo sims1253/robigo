@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, Reg, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
+use crate::compile::{compile_body, compile_loop, Builtin1, CallSite, Code, GuardMemo, Reg, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -166,7 +166,13 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
     }
     let code = Rc::new(if body { compile_body(e) } else { compile_loop(e)? });
     if std::env::var_os("ROBIGO_VM_DUMP").is_some() {
-        eprintln!("== {}", crate::deparse::deparse_one_line(e).chars().take(100).collect::<String>());
+        eprintln!(
+            "== {} (regs {}, vars {}, guards {})",
+            crate::deparse::deparse_one_line(e).chars().take(100).collect::<String>(),
+            code.nregs,
+            code.vars.len(),
+            code.nguards
+        );
         for (pc, op) in code.ops.iter().enumerate() {
             eprintln!("{:4} {:?}", pc, op);
         }
@@ -584,6 +590,107 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     true
 }
 
+thread_local! {
+    /// `typeof` results, shared.
+    static TYPE_NAMES: RefCell<HashMap<&'static str, Value>> = RefCell::new(HashMap::default());
+}
+
+fn type_name_value(name: &'static str) -> Value {
+    TYPE_NAMES.with(|t| t.borrow_mut().entry(name).or_insert_with(|| Value::str(name)).clone())
+}
+
+/// [`Builtin1`] without a call: for values that are not objects, or
+/// whatever the builtin does not dispatch on. `None`: call the builtin.
+fn builtin1_fast(f: Builtin1, x: &RVal) -> Option<RVal> {
+    let v = match x {
+        RVal::V(v) => v,
+        RVal::D(d) => {
+            return Some(match f {
+                Builtin1::Length => RVal::I(1),
+                Builtin1::IsNa => RVal::L(d.is_nan() as Lgl),
+                Builtin1::IsAtomic | Builtin1::IsNumeric => RVal::L(TRUE),
+                Builtin1::Attributes => RVal::V(Value::Null),
+                Builtin1::Typeof => RVal::V(type_name_value("double")),
+                _ => RVal::L(FALSE),
+            });
+        }
+        RVal::I(i) | RVal::L(i) => {
+            let lgl = matches!(x, RVal::L(_));
+            return Some(match f {
+                Builtin1::Length => RVal::I(1),
+                Builtin1::IsNa => RVal::L((*i == NA_INTEGER) as Lgl),
+                Builtin1::IsAtomic => RVal::L(TRUE),
+                Builtin1::IsNumeric => RVal::L(!lgl as Lgl),
+                Builtin1::IsLogical => RVal::L(lgl as Lgl),
+                Builtin1::Attributes => RVal::V(Value::Null),
+                Builtin1::Typeof => RVal::V(type_name_value(if lgl { "logical" } else { "integer" })),
+                _ => RVal::L(FALSE),
+            });
+        }
+        // An integer vector without attributes or NAs. Always answered for
+        // `typeof`: its builtin is an .Internal, not a base binding.
+        RVal::Range { n, .. } => {
+            return Some(match f {
+                Builtin1::Length => RVal::I(i32::try_from(*n).ok()?),
+                Builtin1::IsNa if *n == 1 => RVal::L(FALSE),
+                Builtin1::IsNa => return None,
+                Builtin1::IsAtomic | Builtin1::IsNumeric => RVal::L(TRUE),
+                Builtin1::Attributes => RVal::V(Value::Null),
+                Builtin1::Typeof => RVal::V(type_name_value("integer")),
+                _ => RVal::L(FALSE),
+            });
+        }
+    };
+    let l = |b: bool| Some(RVal::L(b as Lgl));
+    match f {
+        Builtin1::IsNull => l(v.is_null()),
+        Builtin1::IsAtomic => l(v.is_atomic()),
+        Builtin1::IsCharacter => l(matches!(v, Value::Str(_))),
+        Builtin1::IsLogical => l(matches!(v, Value::Lgl(_))),
+        Builtin1::IsFunction => l(v.is_function()),
+        Builtin1::IsList => l(matches!(v, Value::List(_) | Value::Pairlist(_))),
+        Builtin1::Typeof => Some(RVal::V(type_name_value(v.type_name()))),
+        _ if v.is_object() => None,
+        Builtin1::Length => {
+            let n = v.len();
+            (n <= i32::MAX as usize).then_some(RVal::I(n as i32))
+        }
+        Builtin1::IsNumeric => l(matches!(v, Value::Int(_) | Value::Real(_))),
+        Builtin1::IsNa => {
+            let na = match v {
+                Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => x.data[0].is_nan(),
+                Value::Int(x) | Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => x.data[0] == NA_INTEGER,
+                Value::Str(x) if x.data.len() == 1 && x.attrs.is_none() => x.data[0].is_none(),
+                _ => return None,
+            };
+            l(na)
+        }
+        Builtin1::Attributes => match v {
+            Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Str(_) | Value::List(_)
+                if v.attrs().is_none() =>
+            {
+                Some(RVal::V(Value::Null))
+            }
+            _ => None,
+        },
+    }
+}
+
+/// Scalar string `==`/`!=` (R compares strings by bytes for equality).
+fn str_eq_fast(op: RelOp, a: &RVal, b: &RVal) -> Option<RVal> {
+    if !matches!(op, RelOp::Eq | RelOp::Ne) {
+        return None;
+    }
+    let (RVal::V(Value::Str(x)), RVal::V(Value::Str(y))) = (a, b) else { return None };
+    if x.data.len() != 1 || y.data.len() != 1 || x.attrs.is_some() || y.attrs.is_some() {
+        return None;
+    }
+    Some(RVal::L(match (&x.data[0], &y.data[0]) {
+        (Some(p), Some(q)) => ((p == q) == (op == RelOp::Eq)) as Lgl,
+        _ => NA_LOGICAL,
+    }))
+}
+
 /// Unboxed `sqrt(x)` etc.; `None` where the builtin must run (it warns
 /// about NaNs produced, or the input is not a plain number).
 fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
@@ -819,6 +926,7 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
             | Op::Neg { .. }
             | Op::Not { .. }
             | Op::Math1 { .. }
+            | Op::Builtin1 { .. }
             | Op::JumpIfNot { .. }
             | Op::JumpIf { .. }
             | Op::Jump { .. }
@@ -930,6 +1038,7 @@ fn run_inline(interp: &mut Interp, info: &Inline, args: &[RVal], env: &Env) -> O
                 };
             }
             Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
+            Op::Builtin1 { f, dst, a, .. } => regs[*dst as usize] = builtin1_fast(*f, &regs[*a as usize])?,
             Op::JumpIfNot { cond, target, .. } | Op::JumpIf { cond, target, .. } => {
                 let truth = match regs[*cond as usize] {
                     RVal::L(x) if x != NA_LOGICAL => x != 0,
@@ -1602,7 +1711,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
                     (Some(x), Some(y)) => Some(rel_fast(*op, x, y)),
-                    _ => None,
+                    _ => str_eq_fast(*op, &regs[*a as usize], &regs[*b as usize]),
                 };
                 regs[*dst as usize] = match fast {
                     Some(v) => {
@@ -1775,6 +1884,20 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     .collect();
                 let r = interp.invoke_builtin(b, &code.consts[*call as usize], argv, env);
                 regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
+            }
+            Op::Builtin1 { f, dst, a, call } => {
+                interp.visible = true;
+                regs[*dst as usize] = match builtin1_fast(*f, &regs[*a as usize]) {
+                    Some(v) => {
+                        regs[*a as usize] = RVal::I(0);
+                        v
+                    }
+                    None => {
+                        flush!();
+                        let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
+                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
+                    }
+                };
             }
             Op::Math1 { f, dst, a, call } => {
                 regs[*dst as usize] = match scalar(&regs[*a as usize]).and_then(|x| math1_fast(*f, x)) {

@@ -21,6 +21,7 @@ tests/r/io/options.R
 tests/r/io/solve.R
 tests/r/io/sysutils.R
 tests/r/lang/compiled-arith.R
+tests/r/lang/compiled-builtin1.R
 tests/r/lang/compiled-calls.R
 tests/r/lang/compiled-forms.R
 tests/r/lang/compiled-index.R

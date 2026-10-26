@@ -38,6 +38,40 @@ pub enum Leaf {
     R(Reg),
 }
 
+/// One-argument builtins answered without a call for values that are not
+/// objects (so no dispatch can happen); see `vm::builtin1_fast`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Builtin1 {
+    Length,
+    IsNull,
+    IsNa,
+    IsAtomic,
+    IsCharacter,
+    IsLogical,
+    IsNumeric,
+    IsFunction,
+    IsList,
+    Attributes,
+    /// `.Internal(typeof(x))`
+    Typeof,
+}
+
+fn builtin1(name: &str) -> Option<Builtin1> {
+    Some(match name {
+        "length" => Builtin1::Length,
+        "is.null" => Builtin1::IsNull,
+        "is.na" => Builtin1::IsNa,
+        "is.atomic" => Builtin1::IsAtomic,
+        "is.character" => Builtin1::IsCharacter,
+        "is.logical" => Builtin1::IsLogical,
+        "is.numeric" => Builtin1::IsNumeric,
+        "is.function" => Builtin1::IsFunction,
+        "is.list" => Builtin1::IsList,
+        "attributes" => Builtin1::Attributes,
+        _ => return None,
+    })
+}
+
 /// The one-argument math functions with an unboxed fast path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Math1 {
@@ -130,6 +164,9 @@ pub enum Op {
     /// `a:b`: an unmaterialized `RVal::Range` for integer-valued scalar
     /// ends, otherwise the builtin.
     Colon { dst: Reg, a: Reg, b: Reg, call: u32 },
+    /// `f(a)` for a [`Builtin1`]; the builtin itself (`call`) when the
+    /// fast path does not apply.
+    Builtin1 { f: Builtin1, dst: Reg, a: Reg, call: u32 },
     /// Set result visibility.
     Visible { on: bool },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
@@ -855,6 +892,16 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
             }
+            n if plain_args(l, 1) && builtin1(n).is_some() => {
+                let g = self.guard(h, whole, dst);
+                let a = self.reg();
+                self.expr(&l.args[0].value, a, Want::Value);
+                let call = self.konst(whole.clone());
+                self.emit(Op::Builtin1 { f: builtin1(n).unwrap(), dst, a, call });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
             n if plain_args(l, 1) && math1(n).is_some() => {
                 let g = self.guard(h, whole, dst);
                 let a = self.reg();
@@ -868,6 +915,20 @@ impl Compiler {
             // `.Internal(f(...))` with `f` evaluating its arguments: call it
             // directly (do_internal does nothing else), reporting against
             // the inner call as R does.
+            ".Internal"
+                if plain_args(l, 1)
+                    && matches!(&l.args[0].value, Value::Lang(il) if head(il).is_some_and(|f| &*f.name() == "typeof") && plain_args(il, 1)) =>
+            {
+                let Value::Lang(il) = &l.args[0].value else { unreachable!() };
+                let g = self.guard(h, whole, dst);
+                let a = self.reg();
+                self.expr(&il.args[0].value, a, Want::Value);
+                let call = self.konst(l.args[0].value.clone());
+                self.emit(Op::Builtin1 { f: Builtin1::Typeof, dst, a, call });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
             ".Internal" if plain_args(l, 1) && internal_call(&l.args[0].value).is_some() => {
                 let (b, inner) = internal_call(&l.args[0].value).unwrap();
                 let g = self.guard(h, whole, dst);
