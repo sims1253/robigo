@@ -22,6 +22,7 @@ mod base;
 mod grdevices;
 pub mod linpack;
 mod stats;
+mod utils;
 
 /// The interface a routine is registered for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -198,7 +199,7 @@ pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>, &crate::env::Env) -> RResu
 
 /// Rust ports of registered routines, per package: (routine, function).
 static PORTS: &[(&str, &[(&str, NativeFn)])] =
-    &[("base", base::PORTS), ("grDevices", grdevices::PORTS), ("stats", stats::PORTS)];
+    &[("base", base::PORTS), ("grDevices", grdevices::PORTS), ("stats", stats::PORTS), ("utils", utils::PORTS)];
 
 /// Argument `k` of a `.C`/`.Fortran` call as doubles.
 pub fn real_arg(args: &[Arg], k: usize) -> Vec<f64> {

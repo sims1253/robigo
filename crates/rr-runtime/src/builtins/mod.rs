@@ -35,6 +35,7 @@ pub mod options;
 pub mod paste;
 pub mod printint;
 pub mod random;
+pub mod scan;
 pub mod seq;
 pub mod serialize;
 pub mod sort;
@@ -147,6 +148,7 @@ static TABLES: &[&[Builtin]] = &[
     lapack::DEFS,
     util::DEFS,
     dotcode::DEFS,
+    scan::DEFS,
 ];
 
 pub fn install(interp: &mut Interp) {

@@ -343,6 +343,26 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     Ok(true)
 }
 
+/// The description of connection `n`.
+pub fn connection_description(i: &mut Interp, n: i32) -> RResult<String> {
+    Ok(i.conns.get(n)?.description.clone())
+}
+
+/// `Rconn_fgetc` on connection `n` (`-1` at end of input).
+pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
+    Ok(rconn_fgetc(i.conns.get(n)?))
+}
+
+/// Push a line back onto connection `n` (R's `con_pushback`).
+pub fn conn_pushback(i: &mut Interp, n: i32, line: &[u8]) -> RResult<()> {
+    let con = i.conns.get(n)?;
+    if !line.is_empty() {
+        con.pushback.push(line.to_vec());
+        con.pos_pushback = 0;
+    }
+    Ok(())
+}
+
 /// State of connection `n`: (is open, can read, can write, text mode).
 pub fn conn_state(i: &mut Interp, n: i32) -> RResult<(bool, bool, bool, bool)> {
     let c = i.conns.get(n)?;
