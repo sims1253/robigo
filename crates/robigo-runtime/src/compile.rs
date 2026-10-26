@@ -157,6 +157,10 @@ pub enum Op {
     ForRange { kind: RangeKind, a: Reg, b: Reg, seq: Reg, call: u32 },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval { dst: Reg, k: u32 },
+    /// `switch(x, ...)` with `x` evaluated into register `x`: jump to the
+    /// alternative `switches[table]` selects (call `consts[call]` for
+    /// messages).
+    Switch { x: Reg, table: u32, call: u32 },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
     /// continue at `skip`.
     Guard { sym: Sym, dst: Reg, k: u32, skip: u32, g: u32 },
@@ -215,6 +219,22 @@ pub struct CallSite {
     pub fslot: Option<Slot>,
 }
 
+/// The jump targets of a compiled `switch` (R: eval.c:do_switch).
+#[derive(Debug)]
+pub struct SwitchTable {
+    /// The tag of each alternative.
+    pub names: Vec<Option<Sym>>,
+    /// For a string matching alternative `k`: the code of the first
+    /// non-missing alternative from `k` on (or `null`).
+    pub by_name: Vec<u32>,
+    /// The untagged alternative, if any.
+    pub default: Option<u32>,
+    /// For a number `k`: alternative `k`'s code, `None` if it is empty.
+    pub by_number: Vec<Option<u32>>,
+    /// Code that gives an invisible NULL.
+    pub null: u32,
+}
+
 pub struct Code {
     pub ops: Vec<Op>,
     pub consts: Vec<Value>,
@@ -245,6 +265,8 @@ pub struct Code {
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
+    /// Tables of `Switch` ops.
+    pub switches: Vec<SwitchTable>,
 }
 
 impl Code {
@@ -296,6 +318,7 @@ impl Code {
             result,
             is_body,
             guard_memo,
+            switches: c.switches,
         }
     }
 }
@@ -336,6 +359,7 @@ struct Compiler {
     call_sites: Vec<CallSite>,
     nguards: usize,
     loops: Vec<Loop>,
+    switches: Vec<SwitchTable>,
 }
 
 fn head(l: &Lang) -> Option<Sym> {
@@ -355,8 +379,9 @@ fn is_var(sym: Sym) -> bool {
 
 /// An index expression that can be evaluated before the vector is read
 /// and before any dispatch without observable differences: constants,
-/// variables, and arithmetic, comparisons, `(`, unary minus and `:` over
-/// such expressions (all guarded, so a rebound `+` falls back).
+/// variables, `length()` of a variable, and arithmetic, comparisons, `(`,
+/// unary minus and `:` over such expressions (all guarded, so a rebound
+/// `+` falls back).
 fn is_pure(e: &Value, depth: usize) -> bool {
     if depth > 8 {
         return false;
@@ -367,6 +392,10 @@ fn is_pure(e: &Value, depth: usize) -> bool {
         Value::Lang(l) => {
             let Some(h) = head(l) else { return false };
             let n = h.name();
+            // `length(x)` of a variable (the `x[[length(x) + 1]] <- v` idiom).
+            if &*n == "length" && plain_args(l, 1) {
+                return matches!(&l.args[0].value, Value::Sym(s) if is_var(*s));
+            }
             let ok_head = arith_op(&n).is_some() || rel_op(&n).is_some() || matches!(&*n, "(" | ":");
             ok_head && !l.args.is_empty() && l.args.len() <= 2 && plain_args(l, l.args.len()) && l.args.iter().all(|a| is_pure(&a.value, depth + 1))
         }
@@ -656,6 +685,56 @@ impl Compiler {
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
+            }
+            // R: eval.c:do_switch, for alternatives without `...` and at
+            // most one default (more is an error R reports while matching).
+            "switch"
+                if l.args.len() >= 2
+                    && l.args[0].tag.is_none()
+                    && !l.args[0].value.is_missing_arg()
+                    && l.args.iter().all(|a| a.value.as_sym() != Some(s::DOTS))
+                    && l.args[1..].iter().filter(|a| a.tag.is_none()).count() <= 1
+                    && !l.args[1..].iter().any(|a| a.tag.is_none() && a.value.is_missing_arg()) =>
+            {
+                let g = self.guard(h, whole, dst);
+                let x = self.reg();
+                self.expr(&l.args[0].value, x, Want::Value);
+                let call = self.konst(whole.clone());
+                let table = self.switches.len() as u32;
+                self.switches.push(SwitchTable {
+                    names: Vec::new(),
+                    by_name: Vec::new(),
+                    default: None,
+                    by_number: Vec::new(),
+                    null: 0,
+                });
+                self.emit(Op::Switch { x, table, call });
+                let alts = &l.args[1..];
+                let mut code: Vec<Option<u32>> = Vec::with_capacity(alts.len());
+                let mut ends = Vec::new();
+                for a in alts {
+                    if a.value.is_missing_arg() {
+                        code.push(None);
+                        continue;
+                    }
+                    code.push(Some(self.here()));
+                    self.expr(&a.value, dst, w);
+                    ends.push(self.emit(Op::Jump { target: 0 }));
+                }
+                let null = self.here();
+                self.emit(Op::Null { dst });
+                self.vis(w, false);
+                let end = self.here();
+                for j in ends {
+                    self.patch(j, end);
+                }
+                self.patch(g, end);
+                let t = &mut self.switches[table as usize];
+                t.names = alts.iter().map(|a| a.tag).collect();
+                t.by_name = (0..alts.len()).map(|k| code[k..].iter().flatten().next().copied().unwrap_or(null)).collect();
+                t.default = alts.iter().zip(&code).find(|(a, _)| a.tag.is_none()).and_then(|(_, c)| *c);
+                t.by_number = code;
+                t.null = null;
             }
             // R: subset.c:do_subset2 (DispatchOrEval): `x` is evaluated
             // first; only for non-objects is the index evaluated here. Not

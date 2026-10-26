@@ -22,6 +22,7 @@ tests/r/io/messages.R
 tests/r/io/options.R
 tests/r/io/solve.R
 tests/r/io/sysutils.R
+tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R
 tests/r/lang/compiled-builtin1.R
 tests/r/lang/compiled-calls.R
@@ -32,6 +33,7 @@ tests/r/lang/compiled-jit.R
 tests/r/lang/compiled-ranges.R
 tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-subset.R
+tests/r/lang/compiled-switch.R
 tests/r/lang/compiled-variables.R
 tests/r/lang/environments.R
 tests/r/lang/frame-lifetime.R

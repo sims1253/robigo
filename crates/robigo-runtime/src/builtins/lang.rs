@@ -848,7 +848,8 @@ fn do_switch(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
             }
         }
         if let Value::Str(sv) = &x {
-            let key = sv.data[0].clone();
+            // pmatch() compares CHAR(): NA_STRING is "NA".
+            let key: Option<std::rc::Rc<str>> = Some(sv.data[0].clone().unwrap_or_else(|| "NA".into()));
             let mut dflt: Option<Value> = None;
             let set_dflt = |d: &mut Option<Value>, v: &Value| -> RResult<()> {
                 if let Some(old) = d {

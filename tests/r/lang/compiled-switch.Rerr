@@ -1,0 +1,3 @@
+Warning message:
+In switch(x, "first", "second") : EXPR is a "factor", treated as integer.
+ Consider using 'switch(as.character( * ), ...)' instead.

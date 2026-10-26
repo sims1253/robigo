@@ -609,6 +609,9 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
 }
 
 fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
+    if i == x.len() && x.attrs().is_none() {
+        return append_element(x, val, two);
+    }
     if x.is_object() || i >= x.len() {
         return false;
     }
@@ -623,6 +626,27 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
         (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => {
             Rc::make_mut(v).data[i] = val.to_value()
         }
+        _ => return false,
+    }
+    true
+}
+
+/// `x[length(x) + 1] <- val` for a vector without attributes and a value
+/// of its type: append (the vector's buffer grows geometrically, as R's
+/// growable vectors do), instead of reallocating it through `[<-`.
+fn append_element(x: &mut Value, val: &RVal, two: bool) -> bool {
+    if x.len() >= i32::MAX as usize {
+        return false;
+    }
+    match (x, val) {
+        (Value::Real(v), RVal::D(d)) => Rc::make_mut(v).data.push(*d),
+        (Value::Real(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data.push(int_to_real(*n)),
+        (Value::Int(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data.push(*n),
+        (Value::Lgl(v), RVal::L(n)) => Rc::make_mut(v).data.push(*n),
+        (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
+            Rc::make_mut(v).data.push(s.data[0].clone())
+        }
+        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => Rc::make_mut(v).data.push(val.to_value()),
         _ => return false,
     }
     true
@@ -1884,6 +1908,50 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
                     }
                 };
+            }
+            Op::Switch { x, table, call } => {
+                // R: eval.c:do_switch
+                let call = &code.consts[*call as usize];
+                let t = &code.switches[*table as usize];
+                let xv = regs[*x as usize].to_value();
+                regs[*x as usize] = RVal::I(0);
+                if !xv.is_vector() || xv.len() != 1 {
+                    flush!();
+                    return signal(interp, Err(Flow::error_call(call.clone(), "EXPR must be a length 1 vector")));
+                }
+                if xv.inherits("factor") {
+                    flush!();
+                    let r = interp.warningcall(
+                        call,
+                        "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
+                    );
+                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                }
+                interp.visible = true;
+                pc = match &xv {
+                    Value::Str(sv) => {
+                        // pmatch() compares CHAR(): NA_STRING is "NA".
+                        let key: &str = sv.data[0].as_deref().unwrap_or("NA");
+                        match t.names.iter().position(|n| n.is_some_and(|n| n.with_name(|m| m == key))) {
+                            Some(k) => t.by_name[k],
+                            None => t.default.unwrap_or(t.null),
+                        }
+                    }
+                    _ => {
+                        let k = crate::coerce::as_integer(&xv);
+                        if k != NA_INTEGER && k >= 1 && k as usize <= t.by_number.len() {
+                            match t.by_number[k as usize - 1] {
+                                Some(c) => c,
+                                None => {
+                                    flush!();
+                                    return signal(interp, Err(Flow::error("empty alternative in numeric switch")));
+                                }
+                            }
+                        } else {
+                            t.null
+                        }
+                    }
+                } as usize;
             }
             Op::SubsetObj { dst, x, two, k, end } => {
                 if matches!(&regs[*x as usize], RVal::V(v) if v.is_object()) {

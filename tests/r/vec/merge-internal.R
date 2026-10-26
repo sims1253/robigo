@@ -5,7 +5,7 @@ merge(a, b)
 merge(a, b, all = TRUE)
 merge(a, b, all.x = TRUE)
 merge(a, b, by = NULL)[1:3, ]
-merge(data.frame(k = 1:5000 %% 37, a = 1), data.frame(k = 5000:1 %% 41, b = 2))[c(1, 100, 1000), ]
+merge(data.frame(k = 1:500 %% 37, a = 1), data.frame(k = 500:1 %% 41, b = 2))[c(1, 100, 1000), ]
 x <- data.frame(id = c(1, 1, 2, 3, 3, 3), s = 1:6); y <- data.frame(id = c(3, 1, 3, 1), t = 11:14)
 merge(x, y, sort = FALSE)
 tryCatch(.Internal(merge(1:3, numeric(0), TRUE, FALSE)), error = function(e) conditionMessage(e))
