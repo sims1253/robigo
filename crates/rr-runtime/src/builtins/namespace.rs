@@ -24,121 +24,171 @@ pub static DEFS: &[Builtin] = &[
     internal("mkUnbound", do_mk_unbound, 1),
 ];
 
-fn name_of(v: &Value, what: &str) -> RResult<String> {
+// R: envir.c:checkNSname
+fn check_ns_name(call: &Value, v: &Value) -> RResult<Sym> {
     match v {
-        Value::Sym(s) => Ok(s.name().to_string()),
-        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => Ok(s.data[0].as_ref().unwrap().to_string()),
-        _ => Err(Flow::error(format!("bad {} name", what))),
+        Value::Sym(s) => Ok(*s),
+        Value::Str(s) if !s.data.is_empty() => Ok(Sym::new(s.data[0].as_deref().unwrap_or("NA"))),
+        _ => Err(Flow::error_call(call.clone(), "bad namespace name")),
     }
 }
 
-/// Find a namespace environment, or report R's loadNamespace error.
+// R: envir.c:checkVarName
+fn check_var_name(call: &Value, v: &Value) -> RResult<Sym> {
+    match v {
+        Value::Sym(s) => Ok(*s),
+        Value::Str(s) if !s.data.is_empty() => Ok(Sym::new(s.data[0].as_deref().unwrap_or("NA"))),
+        _ => Err(Flow::error_call(call.clone(), "bad variable name")),
+    }
+}
+
+/// Call `fun(x)` with `x` bound to `arg` in a new environment enclosed by
+/// the base namespace.
+// R: envir.c:callR1
+fn call_r1(i: &mut Interp, fun: &str, arg: Value) -> RResult<Value> {
+    let rho = Env::new(Some(i.base_ns.clone()));
+    rho.set_local(Sym::new("x"), arg);
+    let expr = Value::call_sym(fun, vec![Value::sym("x")]);
+    i.eval(&expr, &rho)
+}
+
+/// A variable's value in one frame, forcing a promise.
+// R: envir.c:getVarValInFrame
+fn var_in_frame(i: &mut Interp, rho: &Env, sym: Sym, unbound_ok: bool) -> RResult<Option<Value>> {
+    match rho.get_local(sym) {
+        None if unbound_ok => Ok(None),
+        None => Err(Flow::error(format!("object '{}' not found", sym))),
+        Some(Value::Promise(p)) => i.force_promise(&p).map(Some),
+        Some(v) => Ok(Some(v)),
+    }
+}
+
+fn is_namespace_env(i: &Interp, e: &Env) -> bool {
+    e.ptr_eq(&i.base_ns) || crate::dispatch::is_namespace(e)
+}
+
+/// The namespace `pkg`, loading it with base R's `loadNamespace` if needed.
 pub fn get_namespace(i: &mut Interp, pkg: &str) -> RResult<Env> {
-    if pkg == "base" {
-        return Ok(i.base_ns.clone());
+    if let Some(Value::Env(e)) = i.ns_registry.get_local(Sym::new(pkg)) {
+        return Ok(e);
     }
-    if let Some(e) = i.namespaces.get(pkg) {
-        return Ok(e.clone());
+    match call_r1(i, "loadNamespace", Value::Sym(Sym::new(pkg)))? {
+        Value::Env(e) if is_namespace_env(i, &e) => Ok(e),
+        _ => Err(Flow::error_call(Value::Null, "bad namespace")),
     }
-    let call = Value::call_sym("loadNamespace", vec![Value::sym("x")]);
-    Err(Flow::error_call(call, format!("there is no package called \u{2018}{}\u{2019}", pkg)))
 }
 
-fn ns_value(i: &mut Interp, call: &Value, args: Vec<Arg>, exported: bool) -> RResult<Value> {
-    if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), "2 arguments passed to '::' which requires 2"));
-    }
-    let pkg = name_of(&args[0].value, "package")?;
-    let name = name_of(&args[1].value, "variable")?;
-    let ns = get_namespace(i, &pkg)?;
-    let sym = Sym::new(&name);
-    i.visible = true;
-    match ns.get_local(sym) {
-        Some(v) => i.force(v),
-        None => {
-            if pkg == "base" {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    format!("object '{}' not found", name),
-                ));
-            }
-            if exported {
-                Err(Flow::error_call(
-                    call.clone(),
-                    format!("'{}' is not an exported object from 'namespace:{}'", name, pkg),
-                ))
-            } else {
-                Err(Flow::error_call(call.clone(), format!("object '{}' not found", name)))
+// R: envir.c:R_getNSValue
+fn get_ns_value(i: &mut Interp, call: &Value, ns: &Value, name: &Value, exported: bool) -> RResult<Value> {
+    let ns = match ns {
+        Value::Env(e) if is_namespace_env(i, e) => e.clone(),
+        other => {
+            let pkg = check_ns_name(call, other)?;
+            let found = i.ns_registry.get_local(pkg);
+            let v = match found {
+                Some(v) => v,
+                None => call_r1(i, "loadNamespace", Value::Sym(pkg))?,
+            };
+            match v {
+                Value::Env(e) if is_namespace_env(i, &e) => e,
+                _ => return Err(Flow::error_call(call.clone(), "bad namespace")),
             }
         }
+    };
+    let name = check_var_name(call, name)?;
+    if ns.ptr_eq(&i.base_ns) || !exported {
+        return Ok(var_in_frame(i, &ns, name, false)?.unwrap());
     }
+    let info = match var_in_frame(i, &ns, Sym::new(".__NAMESPACE__."), false)? {
+        Some(Value::Env(e)) => e,
+        _ => return Err(Flow::error("bad namespace information")),
+    };
+    let exports = match var_in_frame(i, &info, Sym::new("exports"), false)? {
+        Some(Value::Env(e)) => e,
+        _ => return Err(Flow::error("bad namespace exports")),
+    };
+    if let Some(export_name) = var_in_frame(i, &exports, name, true)? {
+        let sym = check_var_name(call, &export_name)?;
+        return i.eval(&Value::Sym(sym), &ns);
+    }
+    if let Some(Value::Env(ld)) = var_in_frame(i, &info, Sym::new("lazydata"), false)? {
+        if let Some(v) = var_in_frame(i, &ld, name, true)? {
+            return Ok(v);
+        }
+    }
+    let nsname = match call_r1(i, "getNamespaceName", Value::Env(ns))? {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error_call(call.clone(), "bad value returned by `getNamespaceName'")),
+    };
+    Err(Flow::error_call(
+        call.clone(),
+        format!("'{}' is not an exported object from 'namespace:{}'", name, nsname),
+    ))
 }
 
 fn do_colon2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    ns_value(i, call, args, true)
+    if args.len() != 2 {
+        return Err(Flow::error_call(call.clone(), format!("{} arguments passed to '::' which requires 2", args.len())));
+    }
+    i.visible = true;
+    // R reports errors without a call here, "to avoid changing the error message".
+    get_ns_value(i, &Value::Null, &args[0].value, &args[1].value, true)
 }
 
 fn do_colon3(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    ns_value(i, call, args, false)
+    if args.len() != 2 {
+        return Err(Flow::error_call(call.clone(), format!("{} arguments passed to ':::' which requires 2", args.len())));
+    }
+    i.visible = true;
+    get_ns_value(i, call, &args[0].value, &args[1].value, false)
 }
 
-fn do_get_ns_value(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let ns = arg(&args, 0);
-    let name = name_of(&arg(&args, 1), "variable")?;
-    let exported = crate::coerce::as_logical(&arg(&args, 2)) == TRUE;
-    let pkg = match &ns {
-        Value::Env(e) => {
-            let sym = Sym::new(&name);
-            return match e.get_local(sym) {
-                Some(v) => i.force(v),
-                None => Err(Flow::error_call(call.clone(), format!("object '{}' not found", name))),
-            };
-        }
-        other => name_of(other, "namespace")?,
-    };
-    ns_value(i, call, vec![Arg::pos(Value::str(&pkg)), Arg::pos(Value::str(&name))], exported)
+fn do_get_ns_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let exported = crate::coerce::as_logical(&arg(&args, 2)) != 0;
+    get_ns_value(i, &Value::Null, &arg(&args, 0), &arg(&args, 1), exported)
 }
 
+// R: envir.c:do_regNS
 fn do_register_ns(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = name_of(&arg(&args, 0), "namespace")?;
-    let Value::Env(e) = arg(&args, 1) else {
-        return Err(Flow::error_call(call.clone(), "bad namespace"));
-    };
-    if i.namespaces.contains_key(&name) {
+    let name = check_ns_name(call, &arg(&args, 0))?;
+    if i.ns_registry.has_local(name) {
         return Err(Flow::error_call(call.clone(), "namespace already registered"));
     }
-    i.namespaces.insert(name, e);
+    i.ns_registry.set_local(name, arg(&args, 1));
     Ok(Value::Null)
 }
 
+// R: envir.c:do_unregNS
 fn do_unregister_ns(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = name_of(&arg(&args, 0), "namespace")?;
-    if i.namespaces.remove(&name).is_none() {
+    let name = check_ns_name(call, &arg(&args, 0))?;
+    if !i.ns_registry.remove(name) {
         return Err(Flow::error_call(call.clone(), "namespace not registered"));
     }
     Ok(Value::Null)
 }
 
-fn do_get_registered_ns(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = name_of(&arg(&args, 0), "namespace")?;
-    if name == "base" {
-        return Ok(Value::Env(i.base_ns.clone()));
-    }
-    Ok(i.namespaces.get(&name).map(|e| Value::Env(e.clone())).unwrap_or(Value::Null))
+fn registered_ns_name(call: &Value, v: &Value) -> RResult<Sym> {
+    let v = match v {
+        Value::Str(_) | Value::Sym(_) => v.clone(),
+        other => crate::coerce::coerce_vector(other, VType::Str, &mut Default::default())?,
+    };
+    check_ns_name(call, &v)
 }
 
-fn do_is_registered_ns(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = name_of(&arg(&args, 0), "namespace")?;
-    Ok(Value::lgl(name == "base" || i.namespaces.contains_key(&name)))
+// R: envir.c:do_getRegNS (op 0)
+fn do_get_registered_ns(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let name = registered_ns_name(call, &arg(&args, 0))?;
+    Ok(i.ns_registry.get_local(name).unwrap_or(Value::Null))
+}
+
+// R: envir.c:do_getRegNS (op 1)
+fn do_is_registered_ns(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let name = registered_ns_name(call, &arg(&args, 0))?;
+    Ok(Value::lgl(i.ns_registry.has_local(name)))
 }
 
 fn do_get_ns_registry(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let e = Env::new(Some(i.empty.clone()));
-    e.set_local(Sym::new("base"), Value::Env(i.base_ns.clone()));
-    for (k, v) in &i.namespaces {
-        e.set_local(Sym::new(k), Value::Env(v.clone()));
-    }
-    Ok(Value::Env(e))
+    Ok(Value::Env(i.ns_registry.clone()))
 }
 
 fn do_import_into_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

@@ -31,13 +31,22 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut load_base = true;
+    let mut startup = rr_runtime::startup::StartupOptions::default();
     let mut exprs: Vec<String> = Vec::new();
     let mut file: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--no-base" => load_base = false,
-            "--vanilla" | "--no-echo" | "--quiet" | "-q" | "--slave" => {}
+            "--vanilla" => {
+                startup.no_environ = true;
+                startup.no_site_file = true;
+                startup.no_init_file = true;
+            }
+            "--no-environ" => startup.no_environ = true,
+            "--no-site-file" => startup.no_site_file = true,
+            "--no-init-file" => startup.no_init_file = true,
+            "--no-echo" | "--quiet" | "-q" | "--slave" | "--no-restore" => {}
             "-e" => {
                 i += 1;
                 match args.get(i) {
@@ -70,6 +79,15 @@ fn main() -> ExitCode {
         if let Err(msg) = rr_runtime::bootstrap::load_base(&mut interp) {
             eprintln!("rr: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
+        }
+        // rr cannot load the default packages (utils, stats, ...) yet, so
+        // it starts as `R_DEFAULT_PACKAGES=NULL` does unless told otherwise.
+        if std::env::var_os("R_DEFAULT_PACKAGES").is_none() {
+            // SAFETY: single-threaded at this point.
+            unsafe { std::env::set_var("R_DEFAULT_PACKAGES", "NULL") };
+        }
+        if !rr_runtime::startup::run(&mut interp, startup) {
+            return finish(&mut interp, false);
         }
     }
 

@@ -4,6 +4,7 @@ tests/r/basics/control.R
 tests/r/basics/functions.R
 tests/r/basics/print-numbers.R
 tests/r/basics/vectors.R
+tests/r/conditions/missing-function.R
 tests/r/conditions/stop-uncaught.R
 tests/r/conditions/trycatch.R
 tests/r/conditions/warnings.R
@@ -12,12 +13,15 @@ tests/r/datetime/zones.R
 tests/r/io/apply.R
 tests/r/io/bind.R
 tests/r/io/connections.R
+tests/r/io/dataframe.R
 tests/r/io/matrix.R
 tests/r/io/messages.R
 tests/r/io/options.R
 tests/r/io/solve.R
 tests/r/io/sysutils.R
+tests/r/lang/compiled-index.R
 tests/r/lang/compiled-semantics.R
+tests/r/lang/compiled-variables.R
 tests/r/lang/environments.R
 tests/r/lang/missing-dots.R
 tests/r/lang/on-exit.R
@@ -39,6 +43,7 @@ tests/r/math/round.R
 tests/r/math/sample-base.R
 tests/r/math/sample-error.R
 tests/r/math/sample.R
+tests/r/packages/load-stats-utils.R
 tests/r/programs/fib.R
 tests/r/programs/fizzbuzz.R
 tests/r/programs/matrix.R

@@ -400,6 +400,14 @@ impl Value {
     }
 
     /// A list with names.
+    /// The element of a named list called `name`, if any.
+    pub fn list_get(&self, name: &str) -> Option<Value> {
+        let Value::List(l) = self else { return None };
+        let Some(Value::Str(n)) = self.get_attr(s::NAMES) else { return None };
+        let k = n.data.iter().position(|e| e.as_deref() == Some(name))?;
+        l.data.get(k).cloned()
+    }
+
     pub fn named_list(items: Vec<(&str, Value)>) -> Value {
         let names = Value::strs_from(items.iter().map(|(n, _)| *n));
         let mut v = Vector::new(items.into_iter().map(|(_, v)| v).collect());

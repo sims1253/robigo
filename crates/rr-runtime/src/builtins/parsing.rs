@@ -60,15 +60,38 @@ fn text_of(v: &Value) -> Option<String> {
     }
 }
 
-fn do_parse(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let n = arg(&args, 1);
     let text = arg(&args, 2);
     let srcfile = match arg(&args, 4) {
         Value::Str(s) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "<text>".into()),
         _ => "<text>".into(),
     };
-    let Some(src) = text_of(&text) else {
-        return Err(Flow::error("rr: parse() from connections is not implemented yet"));
+    let src = match text_of(&text) {
+        Some(src) => src,
+        None if text.is_null() => {
+            // R: source.c:do_parse, reading the whole connection
+            use super::io;
+            let con = io::connection_number(&arg(&args, 0))?;
+            if con < 3 {
+                return Err(Flow::error("rr: parse() from the console is not implemented yet"));
+            }
+            let (wasopen, ..) = io::conn_state(i, con)?;
+            if !wasopen && !io::open_in_mode(i, con, "r")? {
+                return Err(Flow::error("cannot open the connection"));
+            }
+            let r = (|| {
+                if !io::conn_state(i, con)?.1 {
+                    return Err(Flow::error("cannot read from this connection"));
+                }
+                io::con_read_all(i, con)
+            })();
+            if !wasopen {
+                io::close_conn(i, con)?;
+            }
+            String::from_utf8_lossy(&r?).into_owned()
+        }
+        None => return Err(Flow::error("coercion of 'text' to character was unsuccessful")),
     };
     let mut exprs = parse_text(&src, &srcfile)?;
     if !n.is_null() {

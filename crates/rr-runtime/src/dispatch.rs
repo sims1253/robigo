@@ -107,11 +107,19 @@ pub struct DispatchInfo {
 }
 
 impl Interp {
-    /// `topenv(envir)`: first enclosing global, base or namespace env.
+    /// `topenv(envir)`: first enclosing global, base, package or namespace
+    /// environment, or one that defines `.packageName`.
+    // R: envir.c:topenv
     pub fn topenv(&self, env: &Env) -> Env {
         let mut cur = Some(env.clone());
         while let Some(e) = cur {
-            if e.ptr_eq(&self.global) || e.ptr_eq(&self.base) || e.ptr_eq(&self.base_ns) || is_namespace(&e) {
+            if e.ptr_eq(&self.global)
+                || e.ptr_eq(&self.base)
+                || e.ptr_eq(&self.base_ns)
+                || e.package_env_name().is_some()
+                || is_namespace(&e)
+                || e.has_local(crate::sym::Sym::new(".packageName"))
+            {
                 return e;
             }
             if e.ptr_eq(&self.empty) {
@@ -495,5 +503,5 @@ impl Interp {
 }
 
 pub fn is_namespace(e: &Env) -> bool {
-    e.special_name().is_some_and(|n| n.starts_with("namespace:"))
+    e.namespace_name().is_some()
 }

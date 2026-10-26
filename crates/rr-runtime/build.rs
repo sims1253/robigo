@@ -27,4 +27,16 @@ fn main() {
     out.push_str("]\n");
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("base_sources.rs");
     std::fs::write(dest, out).unwrap();
+
+    // The system profile: R's build concatenates these into
+    // library/base/R/Rprofile.
+    let mut out = String::from("&[\n");
+    for f in ["profile/Common.R", "profile/Rprofile.unix"] {
+        let canon = root.join(f).canonicalize().unwrap();
+        println!("cargo:rerun-if-changed={}", canon.display());
+        out.push_str(&format!("    ({:?}, include_str!({:?})),\n", f, canon.display().to_string()));
+    }
+    out.push_str("]\n");
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("profile_sources.rs");
+    std::fs::write(dest, out).unwrap();
 }

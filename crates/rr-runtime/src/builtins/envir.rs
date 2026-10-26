@@ -52,7 +52,7 @@ pub static DEFS: &[Builtin] = &[
     internal("topenv", do_topenv, 2),
     internal("isNamespaceEnv", do_is_namespace_env, 1),
     internal("search", do_search, 0),
-    internal("pos.to.env", do_pos_to_env, 1),
+    super::prim("pos.to.env", do_pos_to_env, 1),
 ];
 
 fn do_globalenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -98,14 +98,22 @@ pub fn as_env(interp: &mut Interp, v: &Value, call: &Value) -> RResult<Env> {
         }
         Value::Str(sv) if sv.data.len() == 1 => {
             let name = sv.data[0].as_deref().unwrap_or("");
+            // R: envir.c:matchEnvir
             match name {
-                ".GlobalEnv" | "R_GlobalEnv" => Ok(interp.global.clone()),
-                "package:base" | "base" => Ok(interp.base.clone()),
+                ".GlobalEnv" => Ok(interp.global.clone()),
+                "package:base" => Ok(interp.base.clone()),
                 _ => {
-                    if let Some(ns) = name.strip_prefix("package:") {
-                        if let Some(e) = interp.namespaces.get(ns) {
-                            return Ok(e.clone());
+                    let mut t = interp.global.parent();
+                    while let Some(e) = t {
+                        if e.ptr_eq(&interp.empty) {
+                            break;
                         }
+                        if let Some(Value::Str(n)) = Value::Env(e.clone()).get_attr(Sym::new("name")) {
+                            if n.data.first().and_then(|s| s.as_deref()) == Some(name) {
+                                return Ok(e);
+                            }
+                        }
+                        t = e.parent();
                     }
                     Err(Flow::error_call(call.clone(), format!("no item called \"{}\" on the search list", name)))
                 }
@@ -253,8 +261,10 @@ fn do_environment_name(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
                 "base".to_string()
             } else if e.ptr_eq(&i.empty) {
                 "R_EmptyEnv".to_string()
-            } else if let Some(n) = e.special_name() {
-                n.strip_prefix("namespace:").unwrap_or(&n).to_string()
+            } else if let Some(n) = e.package_env_name() {
+                n.to_string()
+            } else if let Some(n) = e.namespace_name() {
+                n.to_string()
             } else if let Some(Value::Str(n)) = v.get_attr(Sym::new("name")) {
                 n.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_default()
             } else {
@@ -917,7 +927,7 @@ fn do_topenv(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 
 fn do_is_namespace_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::lgl(match arg(&args, 0) {
-        Value::Env(e) => e.ptr_eq(&i.base) || crate::dispatch::is_namespace(&e),
+        Value::Env(e) => e.ptr_eq(&i.base_ns) || crate::dispatch::is_namespace(&e),
         _ => false,
     }))
 }

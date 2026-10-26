@@ -19,6 +19,7 @@ pub mod character;
 pub mod coerce;
 pub mod conditions;
 pub mod datetime;
+pub mod dotcode;
 pub mod envir;
 pub mod funs;
 pub mod grep;
@@ -44,6 +45,7 @@ pub mod subset;
 pub mod summary;
 pub mod sysutils;
 pub mod unique;
+pub mod util;
 
 pub type BuiltinFn = fn(&mut Interp, &Value, Vec<Arg>, &Env) -> RResult<Value>;
 
@@ -143,6 +145,8 @@ static TABLES: &[&[Builtin]] = &[
     options::DEFS,
     sysutils::DEFS,
     lapack::DEFS,
+    util::DEFS,
+    dotcode::DEFS,
 ];
 
 pub fn install(interp: &mut Interp) {

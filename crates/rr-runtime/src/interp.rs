@@ -44,7 +44,10 @@ pub struct Interp {
     pub err: Box<dyn Write>,
     /// Message of the last error, for `geterrmessage()`.
     pub errmsg: String,
-    pub namespaces: HashMap<String, Env>,
+    /// R's namespace registry: package name -> namespace environment.
+    pub ns_registry: Env,
+    /// Loaded DLLs (see [`crate::native`]).
+    pub dlls: Vec<crate::native::Dll>,
     pub rng: crate::builtins::random::Rng,
     /// Recursion depth of `eval`, for `expressions` limit checks.
     pub depth: usize,
@@ -92,7 +95,8 @@ impl Interp {
             out,
             err,
             errmsg: String::new(),
-            namespaces: HashMap::new(),
+            ns_registry: Env::new(None),
+            dlls: vec![crate::native::base_dll()],
             rng: Default::default(),
             depth: 0,
             in_error: false,
@@ -103,6 +107,8 @@ impl Interp {
             source_name: "<text>".to_string(),
             conns: Default::default(),
         };
+        interp.ns_registry.set_parent(Some(interp.empty.clone()));
+        interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));
         crate::builtins::install(&mut interp);
         interp
     }
@@ -792,6 +798,9 @@ impl Interp {
         } else {
             self.options.push((name.to_string(), value));
         }
+        // R keeps the options as the pairlist `.Options` in base.
+        let items: Vec<Arg> = self.options.iter().map(|(n, v)| Arg::new(Some(Sym::new(n)), v.clone())).collect();
+        self.base.force_set(Sym::new(".Options"), Value::pairlist(items));
         old
     }
 
@@ -809,6 +818,14 @@ impl Interp {
     /// Parse and evaluate R source at top level, printing visible results.
     /// Returns false if evaluation stopped with an error.
     pub fn run_source(&mut self, src: &str, echo_errors_to_stderr: bool) -> bool {
+        let global = self.global.clone();
+        let _ = echo_errors_to_stderr;
+        self.run_source_in(src, &global)
+    }
+
+    /// Evaluate the top-level expressions of `src` in `env`, printing
+    /// visible values, until one fails.
+    pub fn run_source_in(&mut self, src: &str, env: &Env) -> bool {
         let exprs = match rr_syntax::parse_program(src) {
             Ok(e) => e,
             Err(e) => {
@@ -817,11 +834,10 @@ impl Interp {
                 return false;
             }
         };
-        let global = self.global.clone();
         let file = self.source_name.clone();
         for e in &exprs {
             let v = crate::lang::expr_to_value_src(e, Some((&file, src)));
-            if !self.eval_toplevel(&v, &global, echo_errors_to_stderr) {
+            if !self.eval_toplevel(&v, env, true) {
                 return false;
             }
         }

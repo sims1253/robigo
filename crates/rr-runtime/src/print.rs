@@ -859,12 +859,18 @@ impl Printer {
     }
 }
 
+// R: printutils.c:EncodeEnvironment
 pub fn encode_environment(e: &Env) -> String {
-    match e.special_name() {
-        Some(n) if &*n == "R_GlobalEnv" || &*n == "R_EmptyEnv" || &*n == "base" => format!("<environment: {}>", n),
-        Some(n) if n.starts_with("namespace:") => format!("<environment: {}>", n),
-        _ => format!("<environment: 0x{:012x}>", 0x55d5_c000_0000usize + e.id() * 0x38),
+    if let Some(n) = e.special_name().filter(|n| matches!(&**n, "R_GlobalEnv" | "R_EmptyEnv" | "base")) {
+        return format!("<environment: {}>", n);
     }
+    if let Some(n) = e.package_env_name() {
+        return format!("<environment: {}>", n);
+    }
+    if let Some(n) = e.namespace_name() {
+        return format!("<environment: namespace:{}>", n);
+    }
+    format!("<environment: 0x{:012x}>", 0x55d5_c000_0000usize + e.id() * 0x38)
 }
 
 /// Row/column dimnames of a matrix and their names.

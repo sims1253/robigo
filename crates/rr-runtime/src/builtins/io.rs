@@ -69,6 +69,10 @@ pub enum ConnKind {
     /// `textConnection(name, "w")`: lines go to a character vector bound
     /// to `namesym` in `env` (or kept internally for `NULL`).
     TextOut { namesym: Option<Sym>, env: Env, data: Vec<RStr>, lastline: Vec<u8> },
+    /// `gzfile()`: read by decompressing the whole file when opened
+    /// (uncompressed files are read as they are), written by compressing
+    /// the buffered output when closed.
+    Gz { level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
 }
 
 pub struct Connection {
@@ -226,6 +230,9 @@ fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     let mode = con.mode.clone();
     let description = con.description.clone();
+    if matches!(con.kind, ConnKind::Gz { .. }) {
+        return gz_open(i, n);
+    }
     if !matches!(con.kind, ConnKind::File { .. }) {
         con.save = -1000;
         return Ok(true);
@@ -293,6 +300,117 @@ fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     Ok(true)
 }
 
+/// Open a `gzfile` connection.
+// R: connections.c:gzfile_open
+fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let con = i.conns.get(n)?;
+    let name = expand_file_name(&con.description);
+    let m = con.mode.clone();
+    let writing = m.starts_with('w') || m.starts_with('a');
+    let mut data = Vec::new();
+    if !writing {
+        let raw = match std::fs::read(&name) {
+            Ok(d) => d,
+            Err(e) => {
+                i.warning(format!("cannot open compressed file '{}', probable reason '{}'", name, os_error_message(&e)))?;
+                return Ok(false);
+            }
+        };
+        if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
+            if flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut data).is_err() {
+                return Err(Flow::error(format!("rr: '{}' is not a valid gzip file", name)));
+            }
+        } else {
+            data = raw;
+        }
+    } else if let Err(e) = std::fs::OpenOptions::new().write(true).create(true).append(true).open(&name) {
+        i.warning(format!("cannot open compressed file '{}', probable reason '{}'", name, os_error_message(&e)))?;
+        return Ok(false);
+    }
+    let con = i.conns.get(n)?;
+    if let ConnKind::Gz { data: d, cur, out, writing: w, append, .. } = &mut con.kind {
+        *d = data;
+        *cur = 0;
+        out.clear();
+        *w = writing;
+        *append = m.starts_with('a');
+    }
+    con.isopen = true;
+    con.canread = !writing;
+    con.canwrite = writing;
+    con.text = m.contains('t');
+    con.save = -1000;
+    Ok(true)
+}
+
+/// State of connection `n`: (is open, can read, can write, text mode).
+pub fn conn_state(i: &mut Interp, n: i32) -> RResult<(bool, bool, bool, bool)> {
+    let c = i.conns.get(n)?;
+    Ok((c.isopen, c.canread, c.canwrite, c.text))
+}
+
+/// Open connection `n` in `mode` without changing its recorded mode, as
+/// serialize.c does for connections it was given closed.
+pub fn open_in_mode(i: &mut Interp, n: i32, mode: &str) -> RResult<bool> {
+    let saved = std::mem::replace(&mut i.conns.get(n)?.mode, mode.to_string());
+    let r = con_open(i, n);
+    i.conns.get(n)?.mode = saved;
+    r
+}
+
+/// `con->close(con)`.
+pub fn close_conn(i: &mut Interp, n: i32) -> RResult<()> {
+    con_close_raw(i, n)
+}
+
+/// The connection number of a connection object.
+pub fn connection_number(v: &Value) -> RResult<i32> {
+    con_arg(v)
+}
+
+/// Read the rest of a connection opened for binary reading (R's
+/// `con->read` until end of input).
+pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
+    let con = i.conns.get(n)?;
+    let mut out: Vec<u8> = Vec::new();
+    while con.pos_pushback < con.pushback.len() {
+        // Pushed-back lines come first.
+        let line = con.pushback.pop().unwrap_or_default();
+        out.extend_from_slice(&line);
+    }
+    match &mut con.kind {
+        ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } => {
+            out.extend_from_slice(&data[*cur..]);
+            *cur = data.len();
+        }
+        ConnKind::File { fp: Some(f), rbuf, rpos, .. } => {
+            out.extend_from_slice(&rbuf[*rpos..]);
+            *rpos = rbuf.len();
+            let _ = f.read_to_end(&mut out);
+        }
+        ConnKind::Terminal => {
+            let _ = std::io::stdin().read_to_end(&mut out);
+        }
+        _ => return Err(Flow::error("cannot read from this connection")),
+    }
+    Ok(out)
+}
+
+/// Write bytes to a connection (R's `con->write`).
+pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
+    let con = i.conns.get(n)?;
+    match &mut con.kind {
+        ConnKind::Gz { out, writing: true, .. } => {
+            out.extend_from_slice(bytes);
+            Ok(())
+        }
+        ConnKind::File { fp: Some(f), .. } => f
+            .write_all(bytes)
+            .map_err(|e| Flow::error(format!("Error writing to connection:  {}", os_error_message(&e)))),
+        _ => Err(Flow::error("cannot write to this connection")),
+    }
+}
+
 fn i_tempdir() -> RResult<String> {
     super::sysutils::session_tempdir()
 }
@@ -331,6 +449,28 @@ fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                     env.set_local(sym, v);
                 }
             }
+        }
+        ConnKind::Gz { level, out, writing, append, data, .. } => {
+            if *writing {
+                let name = expand_file_name(&con.description);
+                let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level));
+                let ok = enc.write_all(out).is_ok();
+                let bytes = enc.finish().ok().filter(|_| ok);
+                let file = std::fs::OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(&name);
+                con.status = match (bytes, file) {
+                    (Some(b), Ok(mut f)) => {
+                        if f.write_all(&b).is_ok() {
+                            0
+                        } else {
+                            -1
+                        }
+                    }
+                    _ => -1,
+                };
+            }
+            out.clear();
+            data.clear();
+            con.isopen = false;
         }
         ConnKind::TextIn { .. } | ConnKind::Terminal => {}
     }
@@ -390,6 +530,14 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
             }
         }
         ConnKind::File { .. } => file_fgetc(con),
+        ConnKind::Gz { data, cur, .. } => {
+            if *cur >= data.len() {
+                EOF
+            } else {
+                *cur += 1;
+                data[*cur - 1] as i32
+            }
+        }
         ConnKind::Terminal => {
             let mut b = [0u8; 1];
             match std::io::stdin().read(&mut b) {
@@ -448,6 +596,13 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
         ConnKind::Terminal | ConnKind::TextIn { .. } => Err(Flow::error("cannot write to this connection")),
+        ConnKind::Gz { out, writing, .. } => {
+            if !*writing {
+                return Err(Flow::error("cannot write to this connection"));
+            }
+            out.extend_from_slice(text.as_bytes());
+            Ok(())
+        }
         ConnKind::File { fp, .. } => match fp {
             Some(f) => {
                 if let Err(e) = f.write_all(text.as_bytes()) {
@@ -811,8 +966,82 @@ fn do_url(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Err(Flow::error("rr: url() connections are not implemented yet"))
 }
 
-fn do_gzfile(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error("rr: compressed file connections are not implemented yet"))
+/// `gzfile()`; `bzfile()`, `xzfile()` and `zstdfile()` share the entry
+/// point (R's PRIMVAL), but only gzip is implemented.
+// R: connections.c:do_gzfile
+fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let fname = match call {
+        Value::Lang(l) => l.fun_sym().map(|s| s.name().to_string()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut ty = match fname.as_str() {
+        "bzfile" => 1,
+        "xzfile" => 2,
+        "zstdfile" => 3,
+        _ => 0,
+    };
+    let file = match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => s.data[0].clone().unwrap().to_string(),
+        _ => return Err(Flow::error("invalid 'description' argument")),
+    };
+    let open = match arg(&args, 1) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("invalid 'open' argument")),
+    };
+    let enc = match arg(&args, 2) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].as_ref().is_some_and(|e| e.len() <= 100) => {
+            s.data[0].clone().unwrap().to_string()
+        }
+        _ => return Err(Flow::error("invalid 'encoding' argument")),
+    };
+    let compress = as_integer(&arg(&args, 3));
+    let limit = match ty {
+        3 => 19,
+        _ => 9,
+    };
+    if compress == NA_INTEGER || (ty < 2 && compress < 0) || compress.abs() > limit {
+        return Err(Flow::error("invalid 'compress' argument"));
+    }
+    if ty == 0 && (open.is_empty() || open.starts_with('r')) {
+        // check magic no
+        let efn = expand_file_name(&file);
+        let mut buf = [0u8; 6];
+        let k = File::open(&efn).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
+        if k >= 3 && &buf[..3] == b"BZh" {
+            ty = 1;
+        } else if k >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
+            ty = 2;
+        } else if k >= 4 && buf[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
+            ty = 3;
+        }
+    }
+    if ty != 0 {
+        let what = ["", "bzip2", "xz", "zstd"][ty];
+        return Err(Flow::error(format!("rr: {} compressed file connections are not implemented yet", what)));
+    }
+    let ncon = i.conns.next_connection()?;
+    let mode = if open.is_empty() { "rb".to_string() } else { open.clone() };
+    let kind = ConnKind::Gz { level: compress as u32, data: Vec::new(), cur: 0, out: Vec::new(), writing: false, append: false };
+    let mut con = Connection::new("gzfile", &file, &mode, kind);
+    con.blocking = true;
+    con.canseek = false;
+    con.encname = enc;
+    let v = install_connection(i, ncon, con);
+    if !open.is_empty() {
+        // R: connections.c:checked_open
+        let ok = match con_open(i, ncon as i32) {
+            Ok(ok) => ok,
+            Err(e) => {
+                i.conns.table[ncon] = None;
+                return Err(e);
+            }
+        };
+        if !ok {
+            i.conns.table[ncon] = None;
+            return Err(Flow::error("cannot open the connection"));
+        }
+    }
+    Ok(v)
 }
 
 /// `.Internal(textConnection(name, object, open, env, type))`

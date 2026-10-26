@@ -243,6 +243,31 @@ impl Env {
         self.0.name.borrow().clone()
     }
 
+    /// `"package:foo"` for an attached package environment
+    /// (R's `R_IsPackageEnv`/`R_PackageEnvName`).
+    pub fn package_env_name(&self) -> Option<Rc<str>> {
+        match Value::Env(self.clone()).get_attr(Sym::new("name")) {
+            Some(Value::Str(s)) => s.data.first()?.clone().filter(|n| n.starts_with("package:")),
+            _ => None,
+        }
+    }
+
+    /// The package name of a namespace environment: `base` for the base
+    /// namespace, otherwise the first element of `.__NAMESPACE__.$spec`
+    /// (R's `R_IsNamespaceEnv`/`R_NamespaceEnvSpec`).
+    pub fn namespace_name(&self) -> Option<Rc<str>> {
+        if let Some(n) = self.special_name() {
+            if let Some(n) = n.strip_prefix("namespace:") {
+                return Some(Rc::from(n));
+            }
+        }
+        let Some(Value::Env(info)) = self.get_local(Sym::new(".__NAMESPACE__.")) else { return None };
+        match info.get_local(Sym::new("spec")) {
+            Some(Value::Str(s)) => s.data.first()?.clone(),
+            _ => None,
+        }
+    }
+
     pub fn get_local(&self, sym: Sym) -> Option<Value> {
         self.0.frame.borrow().get(sym).map(|b| b.value.clone())
     }
@@ -259,6 +284,32 @@ impl Env {
     /// binding (or the environment, for new bindings) is locked.
     pub fn set_local(&self, sym: Sym, value: Value) -> bool {
         self.set_local_flags(sym, value, 0)
+    }
+
+    /// Set a binding regardless of locks, keeping its flags, as GNU R's C
+    /// code does with `SET_SYMVALUE` for variables it maintains in the
+    /// (locked) base environment, such as `last.warning`.
+    pub fn force_set(&self, sym: Sym, value: Value) {
+        let flags = {
+            let f = self.0.frame.borrow();
+            f.get(sym).map(|b| b.flags & !BIND_LOCKED)
+        };
+        match flags {
+            Some(flags) if flags & BIND_ACTIVE == 0 => {
+                let locked = self.binding_flags(sym).unwrap_or(0) & BIND_LOCKED;
+                self.set_binding_locked(sym, false);
+                self.set_local_flags(sym, value, flags);
+                if locked != 0 {
+                    self.set_binding_locked(sym, true);
+                }
+            }
+            Some(_) => {}
+            None => {
+                let was = self.0.locked.replace(false);
+                self.set_local(sym, value);
+                self.0.locked.set(was);
+            }
+        }
     }
 
     pub fn set_local_flags(&self, sym: Sym, value: Value, flags: u8) -> bool {

@@ -365,6 +365,6 @@ impl Interp {
         let mut lw = Vector::new(warnings.into_iter().map(|(c, _)| c).collect());
         lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)])));
         let base = self.base.clone();
-        base.set_local(crate::sym::Sym::new("last.warning"), Value::List(Rc::new(lw)));
+        base.force_set(crate::sym::Sym::new("last.warning"), Value::List(Rc::new(lw)));
     }
 }

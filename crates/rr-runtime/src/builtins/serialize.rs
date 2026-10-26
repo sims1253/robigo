@@ -13,7 +13,9 @@ pub static DEFS: &[Builtin] = &[
     internal("serialize", do_serialize, 5),
     internal("serializeb", do_serialize, 5),
     internal("unserialize", do_unserialize, 2),
-    internal("lazyLoadDBfetch", do_lazy_load_db_fetch, 4),
+    internal("serializeToConn", do_serialize_to_conn, 5).invisible(),
+    internal("unserializeFromConn", do_unserialize_from_conn, 2),
+    super::prim("lazyLoadDBfetch", do_lazy_load_db_fetch, 4),
 ];
 
 fn do_serialize(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -34,6 +36,73 @@ fn do_unserialize(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         }
         _ => Err(Flow::error("rr: unserialize() from connections is not implemented yet")),
     }
+}
+
+/// `saveRDS` and `serialize(x, con)`.
+// R: serialize.c:do_serializeToConn
+fn do_serialize_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use super::io;
+    let object = arg(&args, 0);
+    let con = io::connection_number(&arg(&args, 1))?;
+    let Value::Lgl(a) = arg(&args, 2) else { return Err(Flow::error("'ascii' must be logical")) };
+    let ascii = a.data.first().copied().unwrap_or(NA_LOGICAL);
+    let version = match arg(&args, 3) {
+        Value::Null => 3,
+        v => crate::coerce::as_integer(&v),
+    };
+    if version == NA_INTEGER || version <= 0 {
+        return Err(Flow::error("bad version value"));
+    }
+    if version < 2 {
+        return Err(Flow::error(format!("cannot save to connections in version {} format", version)));
+    }
+    if !arg(&args, 4).is_null() {
+        return Err(Flow::error("rr: serialization hooks are not implemented yet"));
+    }
+    if ascii != 0 || version != 3 {
+        return Err(Flow::error("rr: only binary (XDR) serialization version 3 is implemented"));
+    }
+    let (wasopen, ..) = io::conn_state(i, con)?;
+    if !wasopen && !io::open_in_mode(i, con, "wb")? {
+        return Err(Flow::error("cannot open the connection"));
+    }
+    let (_, _, canwrite, text) = io::conn_state(i, con)?;
+    let r = (|| {
+        if text {
+            return Err(Flow::error("binary-mode connection required for ascii=FALSE"));
+        }
+        if !canwrite {
+            return Err(Flow::error("connection not open for writing"));
+        }
+        io::con_write_bytes(i, con, &crate::serialize::serialize(&object))
+    })();
+    if !wasopen {
+        io::close_conn(i, con)?;
+    }
+    r.map(|_| Value::Null)
+}
+
+/// `readRDS` and `unserialize(con)`.
+// R: serialize.c:do_unserializeFromConn
+fn do_unserialize_from_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use super::io;
+    let con = io::connection_number(&arg(&args, 0))?;
+    let (wasopen, ..) = io::conn_state(i, con)?;
+    if !wasopen && !io::open_in_mode(i, con, "rb")? {
+        return Err(Flow::error("cannot open the connection"));
+    }
+    let r = (|| {
+        let (_, canread, ..) = io::conn_state(i, con)?;
+        if !canread {
+            return Err(Flow::error("connection not open for reading"));
+        }
+        let bytes = io::con_read_all(i, con)?;
+        crate::serialize::unserialize(i, &bytes, arg(&args, 1))
+    })();
+    if !wasopen {
+        io::close_conn(i, con)?;
+    }
+    r
 }
 
 /// Decompress a lazy-load database entry (R_decompress1/3).

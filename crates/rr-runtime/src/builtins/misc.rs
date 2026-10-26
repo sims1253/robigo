@@ -471,8 +471,12 @@ fn do_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
     Ok(Value::named_list(fields.into_iter().map(|(k, v)| (k, Value::str(v))).collect()))
 }
 
+/// GNU R 4.5.0's `R_INTERNALS_UUID` (Defn.h). loadNamespace refuses
+/// packages whose compiled code was built against other internals. rr
+/// never runs packages' compiled code (their native routines are ported),
+/// so the packages it can use are those installed for R 4.5.0.
 fn do_internals_id(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::str("rr-0.0.1"))
+    Ok(Value::str("2fdf6c18-697a-4ba7-b8ef-11c0d92f1327"))
 }
 
 fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

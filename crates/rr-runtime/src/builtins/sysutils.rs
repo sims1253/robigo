@@ -44,7 +44,196 @@ pub static DEFS: &[Builtin] = &[
     internal("setwd", do_setwd, 1).invisible(),
     internal("normalizePath", do_normalizepath, 3),
     internal("path.expand", do_pathexpand, 1),
+    internal("readRenviron", do_read_renviron, 1),
+    internal("Sys.glob", do_glob, 2),
+    internal("system", do_system, 4).custom_vis(),
+    internal("capabilities", do_capabilities, 0),
+    internal("capabilitiesX11", do_capabilities_x11, 0),
 ];
+
+/// What this build of rr supports, in GNU R's order.
+// R: platform.c:do_capabilities
+fn do_capabilities(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let caps: [(&str, bool); 19] = [
+        ("jpeg", false),
+        ("png", false),
+        ("tiff", false),
+        ("tcltk", false),
+        ("X11", false),
+        ("aqua", false),
+        ("http/ftp", false),
+        ("sockets", false),
+        ("libxml", false),
+        ("fifo", false),
+        ("cledit", false),
+        ("iconv", true),
+        ("NLS", false),
+        ("Rprof", false),
+        ("profmem", false),
+        ("cairo", false),
+        ("ICU", false),
+        ("long.double", true),
+        ("libcurl", false),
+    ];
+    let mut v = Value::lgls(caps.iter().map(|(_, b)| *b as i32).collect());
+    v.set_attr_raw(s::NAMES, Value::strs_from(caps.iter().map(|(n, _)| *n)));
+    Ok(v)
+}
+
+fn do_capabilities_x11(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    Ok(Value::lgl(false))
+}
+
+/// The exit status of a finished shell command, as R reports it.
+fn exit_status(st: &std::process::ExitStatus) -> i32 {
+    st.code().unwrap_or(0)
+}
+
+// R: unix/sys-unix.c:do_system
+fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let cmd = match arg(&args, 0) {
+        Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => s.data[0].clone().unwrap().to_string(),
+        _ => return Err(Flow::error("non-empty character argument expected")),
+    };
+    let intern = as_logical(&arg(&args, 1));
+    if intern == NA_LOGICAL {
+        return Err(Flow::error("'intern' must be logical and not NA"));
+    }
+    let timeout = as_integer(&arg(&args, 2));
+    if timeout == NA_INTEGER || timeout < 0 {
+        return Err(Flow::error("invalid 'timeout' argument"));
+    }
+    if as_logical(&arg(&args, 3)) == NA_LOGICAL {
+        return Err(Flow::error("'receive.console.signals' must be logical and not NA"));
+    }
+    if timeout > 0 {
+        return Err(Flow::error("rr: system() with a timeout is not implemented yet"));
+    }
+    i.flush();
+    let mut command = std::process::Command::new("/bin/sh");
+    command.arg("-c").arg(&cmd);
+    if intern != 0 {
+        let out = match command.stdout(std::process::Stdio::piped()).output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(Flow::error(format!(
+                    "cannot popen '{}', probable reason '{}'",
+                    cmd,
+                    super::io::os_error_message(&e)
+                )));
+            }
+        };
+        let res = exit_status(&out.status);
+        if res & 0xff == 127 {
+            return Err(Flow::error("error in running command"));
+        }
+        if res != 0 {
+            i.warning(format!("running command '{}' had status {}", cmd, res))?;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut v = Value::strs_from(text.lines());
+        if res != 0 {
+            v.set_attr_raw(Sym::new("status"), Value::int(res));
+        }
+        i.visible = true;
+        return Ok(v);
+    }
+    let res = match command.status() {
+        Ok(st) => exit_status(&st),
+        Err(_) => 127,
+    };
+    if res == 127 {
+        i.warning("error in running command")?;
+    }
+    i.visible = false;
+    Ok(Value::int(res))
+}
+
+/// glibc's `glob_t`.
+#[repr(C)]
+struct GlobT {
+    gl_pathc: usize,
+    gl_pathv: *mut *mut c_char,
+    gl_offs: usize,
+    gl_flags: c_int,
+    gl_closedir: *mut std::ffi::c_void,
+    gl_readdir: *mut std::ffi::c_void,
+    gl_opendir: *mut std::ffi::c_void,
+    gl_lstat: *mut std::ffi::c_void,
+    gl_stat: *mut std::ffi::c_void,
+}
+
+unsafe extern "C" {
+    fn glob(pattern: *const c_char, flags: c_int, errfunc: *const std::ffi::c_void, pglob: *mut GlobT) -> c_int;
+    fn globfree(pglob: *mut GlobT);
+}
+
+const GLOB_MARK: c_int = 1 << 1;
+const GLOB_APPEND: c_int = 1 << 5;
+const GLOB_NOSPACE: c_int = 1;
+const GLOB_ABORTED: c_int = 2;
+
+// R: sysutils.c:do_glob
+fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let Value::Str(x) = arg(&args, 0) else {
+        return Err(Flow::error("invalid 'paths' argument"));
+    };
+    if x.data.is_empty() {
+        return Ok(Value::strs(vec![]));
+    }
+    let dirmark = as_logical(&arg(&args, 1));
+    if dirmark == NA_LOGICAL {
+        return Err(Flow::error("invalid 'dirmark' argument"));
+    }
+    // SAFETY: an all-zero glob_t is its documented initial state; glob()
+    // fills it and globfree() releases it.
+    let mut g: GlobT = unsafe { std::mem::zeroed() };
+    let mut initialized = false;
+    for el in x.data.iter() {
+        let Some(el) = el else { continue };
+        let Ok(pat) = CString::new(el.as_bytes()) else { continue };
+        let flags = (if dirmark != 0 { GLOB_MARK } else { 0 }) | (if initialized { GLOB_APPEND } else { 0 });
+        let res = unsafe { glob(pat.as_ptr(), flags, std::ptr::null(), &mut g) };
+        if res == GLOB_ABORTED {
+            i.warning(format!("read error on '{}'", el))?;
+        }
+        if res == GLOB_NOSPACE {
+            return Err(Flow::error("internal out-of-memory condition"));
+        }
+        initialized = true;
+    }
+    let mut out = Vec::new();
+    if initialized {
+        for k in 0..g.gl_pathc {
+            // SAFETY: glob() returned gl_pathc valid C strings.
+            let p = unsafe { CStr::from_ptr(*g.gl_pathv.add(k)) };
+            out.push(Some(std::rc::Rc::from(p.to_string_lossy().as_ref())));
+        }
+        unsafe { globfree(&mut g) };
+    }
+    Ok(Value::strs(out))
+}
+
+// R: Renviron.c:do_readEnviron
+fn do_read_renviron(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let fname = match args.first().map(|a| &a.value) {
+        Some(Value::Str(s)) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("argument 'x' must be a character string")),
+    };
+    let fname = super::io::expand_file_name(&fname);
+    match crate::startup::process_renviron(&fname) {
+        None => {
+            i.warning(format!("file '{}' cannot be opened for reading", fname))?;
+            Ok(Value::lgl(false))
+        }
+        Some(invalid) => {
+            if let Some(msg) = invalid {
+                i.warningcall(&Value::Null, msg)?;
+            }
+            Ok(Value::lgl(true))
+        }
+    }
+}
 
 unsafe extern "C" {
     fn mkdtemp(template: *mut c_char) -> *mut c_char;

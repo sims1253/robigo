@@ -24,6 +24,14 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
     // Errors during bootstrap must not be printed.
     let saved_err = std::mem::replace(&mut interp.err, Box::new(std::io::sink()));
     for (file, src) in BASE_SOURCES {
+        // The configure substitution R's build applies (basepkg.mk).
+        let configured;
+        let src: &str = if src.contains("@WHICH@") {
+            configured = src.replace("@WHICH@", &find_program("which"));
+            &configured
+        } else {
+            src
+        };
         let exprs = rr_syntax::parse_program(src).map_err(|e| {
             let (l, c) = rr_syntax::line_col(src, e.offset);
             format!("{}:{}:{}: {}", file, l, c, e.message)
@@ -50,6 +58,17 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
     interp.err = saved_err;
     crate::builtins::post_base_init(interp);
     Ok(failures)
+}
+
+/// The absolute path of `prog` on `PATH`, or "" (configure's
+/// `AC_PATH_PROGS`).
+fn find_program(prog: &str) -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|d| d.join(prog))
+        .find(|p| p.is_file())
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
 }
 
 pub fn load_base(interp: &mut Interp) -> Result<(), String> {
