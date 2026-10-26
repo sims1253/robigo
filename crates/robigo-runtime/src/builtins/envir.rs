@@ -108,7 +108,7 @@ pub fn as_env(interp: &mut Interp, v: &Value, call: &Value) -> RResult<Env> {
                         if e.ptr_eq(&interp.empty) {
                             break;
                         }
-                        if let Some(Value::Str(n)) = Value::Env(e.clone()).get_attr(Sym::new("name")) {
+                        if let Some(Value::Str(n)) = Value::Env(e.clone()).get_attr(s::NAME) {
                             if n.data.first().and_then(|s| s.as_deref()) == Some(name) {
                                 return Ok(e);
                             }
@@ -259,7 +259,7 @@ fn do_environment_name(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
                 n.to_string()
             } else if let Some(n) = e.namespace_name() {
                 n.to_string()
-            } else if let Some(Value::Str(n)) = v.get_attr(Sym::new("name")) {
+            } else if let Some(Value::Str(n)) = v.get_attr(s::NAME) {
                 n.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_default()
             } else {
                 String::new()
@@ -539,8 +539,9 @@ fn do_list2env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
 // ----- frames ---------------------------------------------------------
 
 /// Function frames (excluding builtin dispatch frames), outermost first.
-fn fn_frames(i: &Interp) -> Vec<usize> {
-    (0..i.frames.len()).filter(|&k| !i.frames[k].builtin).collect()
+/// Function frames up to `c`, innermost first.
+fn fn_frames_from(i: &Interp, c: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+    (0..=c).rev().filter(|&k| !i.frames[k].builtin)
 }
 
 /// The context for `sys.xxx()`: the function frame whose environment is
@@ -555,7 +556,7 @@ fn lexical_context(i: &Interp) -> Option<usize> {
 fn framedepth(i: &Interp, cptr: Option<usize>) -> i32 {
     match cptr {
         None => 0,
-        Some(c) => fn_frames(i).iter().filter(|&&k| k <= c).count() as i32,
+        Some(c) => fn_frames_from(i, c).count() as i32,
     }
 }
 
@@ -566,11 +567,7 @@ fn nth_frame(i: &Interp, n: i32, cptr: Option<usize>) -> RResult<Option<usize>> 
     if n < 0 {
         return Err(Flow::error("not that many frames on the stack"));
     }
-    let frames: Vec<usize> = match cptr {
-        Some(c) => fn_frames(i).into_iter().filter(|&k| k <= c).rev().collect(),
-        None => vec![],
-    };
-    for k in frames {
+    for k in cptr.into_iter().flat_map(|c| fn_frames_from(i, c)) {
         if n == 0 {
             return Ok(Some(k));
         }
@@ -652,27 +649,21 @@ fn do_sys_frames(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Val
 
 /// R_sysparent
 fn sysparent(i: &Interp, mut n: i32, cptr: Option<usize>) -> i32 {
-    let frames: Vec<usize> = match cptr {
-        Some(c) => fn_frames(i).into_iter().filter(|&k| k <= c).rev().collect(),
-        None => return 0,
-    };
-    let mut pos = 0;
-    while pos < frames.len() && n > 1 {
+    let Some(c) = cptr else { return 0 };
+    let mut frames = fn_frames_from(i, c);
+    while n > 1 && frames.next().is_some() {
         n -= 1;
-        pos += 1;
     }
-    if pos >= frames.len() {
-        return 0;
-    }
-    let s = i.frames[frames[pos]].sysparent.clone();
+    let Some(first) = frames.clone().next() else { return 0 };
+    let s = &i.frames[first].sysparent;
     if s.ptr_eq(&i.global) {
         return 0;
     }
     let mut j = 0;
     let mut nn = n;
-    for &k in &frames[pos..] {
+    for k in frames {
         j += 1;
-        if i.frames[k].cloenv.ptr_eq(&s) {
+        if i.frames[k].cloenv.ptr_eq(s) {
             nn = j;
         }
     }
@@ -952,7 +943,7 @@ fn do_pos_to_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
 impl Env {
     pub fn get_attr_name(&self) -> Option<String> {
         let a = self.0.attrs.borrow();
-        match a.as_ref().and_then(|a| a.get(Sym::new("name"))) {
+        match a.as_ref().and_then(|a| a.get(s::NAME)) {
             Some(Value::Str(v)) => v.data.first().cloned().flatten().map(|s| s.to_string()),
             _ => None,
         }

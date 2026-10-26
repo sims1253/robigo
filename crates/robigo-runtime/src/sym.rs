@@ -84,6 +84,10 @@ predefined! {
     PLUS = "+",
     UNCLASS = "unclass",
     ELLIPSIS_ELT = "...elt",
+    NAME = "name",
+    DOT_PACKAGE_NAME = ".packageName",
+    DOT_NAMESPACE = ".__NAMESPACE__.",
+    SPEC = "spec",
 }
 
 /// FxHash (as in rustc): fast for short strings such as symbol names.
@@ -168,6 +172,21 @@ impl Interner {
 impl Sym {
     pub fn new(name: &str) -> Sym {
         INTERNER.with(|i| i.borrow_mut().intern(name))
+    }
+
+    /// The symbol `a.b` (an S3 method name), without allocating.
+    pub fn dotted(a: &str, b: &str) -> Sym {
+        thread_local! {
+            static BUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+        }
+        BUF.with(|buf| {
+            let mut buf = buf.borrow_mut();
+            buf.clear();
+            buf.push_str(a);
+            buf.push('.');
+            buf.push_str(b);
+            Sym::new(&buf)
+        })
     }
 
     pub fn name(self) -> Rc<str> {

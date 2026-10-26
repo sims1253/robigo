@@ -724,16 +724,13 @@ impl Interp {
         dispatch_vars: Option<Vec<(Sym, Value)>>,
     ) -> RResult<Value> {
         let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
-        let bind = |tag: Sym, f: &Arg, a: Option<Value>| match a {
-            Some(v) if !v.is_missing_arg() => {
-                newenv.set_local(tag, v);
-            }
+        let bind = |k: usize, tag: Sym, f: &Arg, a: Option<Value>| match a {
+            Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
             _ => {
                 if !f.value.is_missing_arg() && tag != s::DOTS {
-                    let p = Value::Promise(Rc::new(Promise::new(f.value.clone(), newenv.clone())));
-                    newenv.set_local_flags(tag, p, BIND_MISSING_DEFAULT);
+                    newenv.bind_arg(tag, default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
                 } else {
-                    newenv.set_local(tag, Value::missing_arg());
+                    newenv.bind_arg(tag, Value::missing_arg(), 0);
                 }
             }
         };
@@ -746,12 +743,12 @@ impl Interp {
             // Positional arguments only and no `...`: matching assigns them
             // in order (the fast path of `match_args`, without its copies).
             for (k, f) in clo.formals.iter().enumerate() {
-                bind(f.tag.unwrap(), f, promargs.get(k).map(|a| a.value.clone()));
+                bind(k, f.tag.unwrap(), f, promargs.get(k).map(|a| a.value.clone()));
             }
         } else {
             let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
-            for (f, a) in clo.formals.iter().zip(actuals) {
-                bind(f.tag.unwrap(), f, a);
+            for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
+                bind(k, f.tag.unwrap(), f, a);
             }
         }
         if let Some(vars) = dispatch_vars {
@@ -1074,5 +1071,25 @@ impl Interp {
 impl Default for Interp {
     fn default() -> Self {
         Interp::new()
+    }
+}
+
+/// The binding of formal `k` of `clo` when no argument was supplied: a
+/// promise to evaluate its default in the new frame (with bytecode when the
+/// VM is on). Constants evaluate to themselves without side effects, so they
+/// are bound directly (`missing()` still sees the BIND_MISSING_DEFAULT flag,
+/// and `substitute()` the same constant).
+pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
+    let expr = &clo.formals[k].value;
+    match expr {
+        Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) => expr.clone(),
+        _ => {
+            let code = if crate::vm::enabled() {
+                clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
+            } else {
+                None
+            };
+            Value::Promise(Rc::new(Promise::with_code(expr.clone(), newenv.clone(), code)))
+        }
     }
 }

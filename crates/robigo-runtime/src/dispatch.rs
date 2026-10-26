@@ -118,7 +118,7 @@ impl Interp {
                 || e.ptr_eq(&self.base_ns)
                 || e.package_env_name().is_some()
                 || is_namespace(&e)
-                || e.has_local(crate::sym::Sym::new(".packageName"))
+                || e.has_local(crate::sym::s::DOT_PACKAGE_NAME)
             {
                 return e;
             }
@@ -225,7 +225,7 @@ impl Interp {
     ) -> RResult<Option<Value>> {
         let klass = dispatch_class(obj);
         for (i, c) in klass.iter().enumerate() {
-            let method = Sym::new(&format!("{}.{}", generic, c));
+            let method = Sym::dotted(generic, c);
             if let Some(f) = self.lookup_method(method, callenv, defenv)? {
                 if &*method.name() == "sort.list" {
                     continue;
@@ -250,7 +250,7 @@ impl Interp {
                     .map(Some);
             }
         }
-        let method = Sym::new(&format!("{}.default", generic));
+        let method = Sym::dotted(generic, "default");
         if let Some(f) = self.lookup_method(method, callenv, defenv)? {
             let info = DispatchInfo {
                 generic: generic.to_string(),
@@ -489,7 +489,7 @@ impl Interp {
     ) -> RResult<(Option<Value>, String, Option<Sym>, usize)> {
         let base = self.base.clone();
         for (i, c) in class.iter().enumerate() {
-            let meth = Sym::new(&format!("{}.{}", generic, c));
+            let meth = Sym::dotted(generic, c);
             if let Some(f) = self.lookup_method(meth, env, &base)? {
                 return Ok((Some(f), String::new(), Some(meth), i));
             }

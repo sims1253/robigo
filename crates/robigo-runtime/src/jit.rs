@@ -592,16 +592,28 @@ pub fn compile(
             }
         }
     }
+    // Registers read before any write in the loop (in op order) carry a
+    // value in. (Registers are reused, so others may hold leftovers of
+    // earlier statements; leaving such a register out is safe, as reading
+    // a register without a type rejects the loop.)
     let mut entry_state: RegState = vec![None; code.nregs];
+    let mut written = vec![false; code.nregs];
     let mut live = Vec::new();
     for pc in r.start..r.end {
-        for reg in uses(&ops[pc], &inl).rregs {
+        let u = uses(&ops[pc], &inl);
+        for reg in u.rregs {
+            if written[reg as usize] {
+                continue;
+            }
             if let Some(t) = live_in(reg) {
                 if entry_state[reg as usize].is_none() {
                     entry_state[reg as usize] = Some(t);
                     live.push((reg, t));
                 }
             }
+        }
+        for reg in u.wregs {
+            written[reg as usize] = true;
         }
     }
     let mut rounds = 0;

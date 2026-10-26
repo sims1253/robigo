@@ -216,7 +216,7 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
-    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default(), inline: Default::default() })))
+    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() })))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -1088,7 +1088,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     let mut found: Option<(Value, Sym, usize)> = None;
     let start = if j < klass.len() { j + 1 } else { 0 };
     for (i, c) in klass.iter().enumerate().skip(start) {
-        let m1 = Sym::new(&format!("{}.{}", generic, c));
+        let m1 = Sym::dotted(&generic, c);
         if let Some(f) = interp.lookup_method(m1, &callenv, &defenv)? {
             found = Some((f, m1, i));
             break;
@@ -1102,7 +1102,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
         }
     }
     if found.is_none() {
-        let m1 = Sym::new(&format!("{}.default", generic));
+        let m1 = Sym::dotted(&generic, "default");
         if let Some(f) = interp.lookup_method(m1, &callenv, &defenv)? {
             found = Some((f, m1, klass.len()));
         }
@@ -1230,19 +1230,16 @@ impl Interp {
         vars: Option<Vec<(Sym, Value)>>,
     ) -> RResult<Value> {
         let actuals = self.match_args(&clo.formals, promargs.clone(), call)?;
-        let newenv = Env::new(Some(clo.env.clone()));
-        for (f, a) in clo.formals.iter().zip(actuals) {
+        let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
+        for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
             let tag = f.tag.unwrap();
             match a {
-                Some(v) if !v.is_missing_arg() => {
-                    newenv.set_local(tag, v);
-                }
+                Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
                 _ => {
                     if !f.value.is_missing_arg() && tag != s::DOTS {
-                        let p = Value::Promise(Rc::new(Promise::new(f.value.clone(), newenv.clone())));
-                        newenv.set_local_flags(tag, p, BIND_MISSING_DEFAULT);
+                        newenv.bind_arg(tag, crate::interp::default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
                     } else {
-                        newenv.set_local(tag, Value::missing_arg());
+                        newenv.bind_arg(tag, Value::missing_arg(), 0);
                     }
                 }
             }

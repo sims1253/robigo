@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use crate::sym::Sym;
+use crate::sym::{s, Sym};
 use crate::value::{AttrBox, Value};
 
 pub const BIND_LOCKED: u8 = 1;
@@ -60,8 +60,16 @@ const INLINE_BINDINGS: usize = 4;
 pub struct Frame {
     pub entries: smallvec::SmallVec<[Binding; INLINE_BINDINGS]>,
     index: Option<SymMap<usize>>,
+    /// A bit per symbol (`sym_bit`) that was ever bound here: most lookups
+    /// of a symbol not in the frame stop at this test.
+    mask: u64,
     /// The frame belongs to an environment on the search path.
     pub search: bool,
+}
+
+#[inline(always)]
+fn sym_bit(sym: Sym) -> u64 {
+    1 << (sym.0 & 63)
 }
 
 thread_local! {
@@ -115,7 +123,11 @@ impl Drop for Frame {
 const INDEX_THRESHOLD: usize = 12;
 
 impl Frame {
+    #[inline]
     pub fn position(&self, sym: Sym) -> Option<usize> {
+        if self.mask & sym_bit(sym) == 0 {
+            return None;
+        }
         match &self.index {
             Some(ix) => ix.get(&sym).copied(),
             None => self.entries.iter().position(|b| b.sym == sym),
@@ -137,17 +149,25 @@ impl Frame {
             b.flags = (b.flags & BIND_LOCKED) | flags;
             return;
         }
+        self.push_new(sym, value, flags);
+    }
+
+    /// Append a binding without looking for an existing one. Should `sym`
+    /// be bound already, lookups keep finding the first binding, as in a
+    /// GNU R frame with repeated tags.
+    fn push_new(&mut self, sym: Sym, value: Value, flags: u8) {
         if self.search && (function_like(&value) || flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
         }
         self.entries.push(Binding { sym, value, flags });
+        self.mask |= sym_bit(sym);
         let n = self.entries.len();
         match &mut self.index {
             Some(ix) => {
-                ix.insert(sym, n - 1);
+                ix.entry(sym).or_insert(n - 1);
             }
             None if n > INDEX_THRESHOLD => {
-                self.index = Some(self.entries.iter().enumerate().map(|(i, b)| (b.sym, i)).collect());
+                self.index = Some(self.entries.iter().enumerate().rev().map(|(i, b)| (b.sym, i)).collect());
             }
             None => {}
         }
@@ -217,7 +237,7 @@ impl Env {
 
     /// A new environment with room for `n` bindings.
     pub fn with_capacity(parent: Option<Env>, n: usize) -> Env {
-        let frame = Frame { entries: smallvec::SmallVec::with_capacity(n), index: None, search: false };
+        let frame = Frame { entries: smallvec::SmallVec::with_capacity(n), index: None, mask: 0, search: false };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
 
@@ -256,7 +276,7 @@ impl Env {
 
     /// An environment on the search path (global, base, attached).
     pub fn new_search(parent: Option<Env>, name: &str) -> Env {
-        let frame = Frame { entries: Default::default(), index: None, search: true };
+        let frame = Frame { entries: Default::default(), index: None, mask: 0, search: true };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
         e
@@ -309,7 +329,7 @@ impl Env {
     /// `"package:foo"` for an attached package environment
     /// (R's `R_IsPackageEnv`/`R_PackageEnvName`).
     pub fn package_env_name(&self) -> Option<Rc<str>> {
-        match Value::Env(self.clone()).get_attr(Sym::new("name")) {
+        match Value::Env(self.clone()).get_attr(s::NAME) {
             Some(Value::Str(s)) => s.data.first()?.clone().filter(|n| n.starts_with("package:")),
             _ => None,
         }
@@ -324,8 +344,8 @@ impl Env {
                 return Some(Rc::from(n));
             }
         }
-        let Some(Value::Env(info)) = self.get_local(Sym::new(".__NAMESPACE__.")) else { return None };
-        match info.get_local(Sym::new("spec")) {
+        let Some(Value::Env(info)) = self.get_local(s::DOT_NAMESPACE) else { return None };
+        match info.get_local(s::SPEC) {
             Some(Value::Str(s)) => s.data.first()?.clone(),
             _ => None,
         }
@@ -398,8 +418,18 @@ impl Env {
         if function_like(&value) || flags & BIND_ACTIVE != 0 {
             self.bump_fn_version();
         }
-        f.insert(sym, value, flags);
+        f.push_new(sym, value, flags);
         true
+    }
+
+    /// Bind a formal argument in a new function frame: no lookup for an
+    /// existing binding (R's NewEnvironment builds the frame from the
+    /// matched arguments; with repeated formals the first one is found).
+    pub fn bind_arg(&self, sym: Sym, value: Value, flags: u8) {
+        if function_like(&value) {
+            self.bump_fn_version();
+        }
+        self.0.frame().borrow_mut().push_new(sym, value, flags);
     }
 
     /// Move a value out of a binding, leaving `NULL` behind, so that the

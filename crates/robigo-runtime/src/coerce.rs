@@ -640,6 +640,15 @@ pub fn as_logical(v: &Value) -> Lgl {
     if v.is_atomic() && !v.is_empty() {
         let mut w = CoerceWarnings::default();
         match v {
+            Value::Lgl(x) => x.data[0],
+            Value::Int(x) => match x.data[0] {
+                NA_INTEGER => NA_LOGICAL,
+                i => (i != 0) as Lgl,
+            },
+            Value::Real(x) => match x.data[0] {
+                d if d.is_nan() => NA_LOGICAL,
+                d => (d != 0.0) as Lgl,
+            },
             Value::Str(x) => x.data[0].as_deref().map(str_to_logical).unwrap_or(NA_LOGICAL),
             _ => to_lgl(&first_elt(v), &mut w)[0],
         }
@@ -651,7 +660,11 @@ pub fn as_logical(v: &Value) -> Lgl {
 pub fn as_integer(v: &Value) -> i32 {
     if v.is_atomic() && !v.is_empty() {
         let mut w = CoerceWarnings::default();
-        to_int(&first_elt(v), &mut w)[0]
+        match v {
+            Value::Lgl(x) | Value::Int(x) => x.data[0],
+            Value::Real(x) => real_to_int(x.data[0], &mut false),
+            _ => to_int(&first_elt(v), &mut w)[0],
+        }
     } else {
         NA_INTEGER
     }
@@ -660,7 +673,11 @@ pub fn as_integer(v: &Value) -> i32 {
 pub fn as_real(v: &Value) -> f64 {
     if v.is_atomic() && !v.is_empty() {
         let mut w = CoerceWarnings::default();
-        to_real(&first_elt(v), &mut w)[0]
+        match v {
+            Value::Lgl(x) | Value::Int(x) => int_to_real(x.data[0]),
+            Value::Real(x) => x.data[0],
+            _ => to_real(&first_elt(v), &mut w)[0],
+        }
     } else {
         NA_REAL
     }

@@ -124,6 +124,15 @@ pub enum Op {
     /// index into a plain vector is read directly; anything else
     /// evaluates the call `consts[k]` with the interpreter.
     Index { dst: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    /// The object case of a general `x[i]` / `x[[i]]` (call `consts[k]`),
+    /// after `x` was evaluated into register `x` and before `i` is: if `x`
+    /// is an object, call `[`/`[[` (which may dispatch) with `x`'s value and
+    /// a promise of the index, and jump to `end`.
+    SubsetObj { dst: Reg, x: Reg, two: bool, k: u32, end: u32 },
+    /// The rest of a general `x[i]` / `x[[i]]` (`two`): an in-range scalar
+    /// index into a plain vector is read directly, otherwise `[`/`[[` is
+    /// called with both values.
+    Subset { dst: Reg, x: Reg, i: Reg, two: bool, k: u32 },
     /// `x[i] <- val` / `x[[i]] <- val` with `val` already evaluated: an
     /// in-range scalar index into a plain local vector of a compatible type
     /// is updated in place; anything else runs the complex assignment
@@ -317,7 +326,11 @@ struct Loop {
 struct Compiler {
     ops: Vec<Op>,
     consts: Vec<Value>,
+    /// Registers needed (the most live at once).
     nregs: usize,
+    /// The next free register: registers are allocated as a stack, and a
+    /// statement's temporaries are free again once it has run.
+    top: usize,
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     call_sites: Vec<CallSite>,
@@ -446,8 +459,9 @@ fn rel_op(name: &str) -> Option<RelOp> {
 
 impl Compiler {
     fn reg(&mut self) -> Reg {
-        self.nregs += 1;
-        (self.nregs - 1) as Reg
+        self.top += 1;
+        self.nregs = self.nregs.max(self.top);
+        (self.top - 1) as Reg
     }
 
     fn slot(&mut self, sym: Sym) -> Slot {
@@ -501,6 +515,7 @@ impl Compiler {
             Op::Jump { target: t } | Op::JumpIfNot { target: t, .. } | Op::JumpIf { target: t, .. } => *t = target,
             Op::Guard { skip, .. } => *skip = target,
             Op::LoopEnter { brk, .. } => *brk = target,
+            Op::SubsetObj { end, .. } => *end = target,
             _ => unreachable!(),
         }
     }
@@ -534,7 +549,12 @@ impl Compiler {
                 let slot = self.slot(*sym);
                 self.emit(Op::GetVar { dst, sym: *sym, slot });
             }
-            Value::Lang(l) => self.call(l, e, dst, w),
+            Value::Lang(l) => {
+                // The temporaries of a call are dead once its value is in `dst`.
+                let top = self.top;
+                self.call(l, e, dst, w);
+                self.top = top;
+            }
             Value::Sym(_) | Value::Promise(_) => self.fallback(e, dst),
             _ if w == Want::Effect => {}
             Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => {
@@ -635,6 +655,25 @@ impl Compiler {
                 self.emit(Op::Index { dst, x, slot, i, two, k });
                 self.vis(w, true);
                 let end = self.here();
+                self.patch(g, end);
+            }
+            // R: subset.c:do_subset2 (DispatchOrEval): `x` is evaluated
+            // first; only for non-objects is the index evaluated here. Not
+            // for a symbol index, which may be a missing argument (an empty
+            // subscript).
+            "[" | "[[" if plain_args(l, 2) && !matches!(l.args[1].value, Value::Sym(_)) => {
+                let two = &*h.name() == "[[";
+                let g = self.guard(h, whole, dst);
+                let x = self.reg();
+                self.expr(&l.args[0].value, x, Want::Value);
+                let k = self.konst(whole.clone());
+                let obj = self.emit(Op::SubsetObj { dst, x, two, k, end: 0 });
+                let i = self.reg();
+                self.expr(&l.args[1].value, i, Want::Value);
+                self.emit(Op::Subset { dst, x, i, two, k });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(obj, end);
                 self.patch(g, end);
             }
             "if" if (l.args.len() == 2 || l.args.len() == 3) && l.args.iter().all(|a| a.tag.is_none()) => {
@@ -992,7 +1031,7 @@ pub fn compile_body(body: &Value) -> Code {
 /// Bytecode for a promise of `e`, when the compiler handles `e` itself
 /// (not only by evaluating it in the interpreter). `Return` unwinds to the
 /// function whose frame the promise is evaluated in.
-fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
+pub fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
     if !matches!(e, Value::Lang(_)) {
         return None;
     }

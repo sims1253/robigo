@@ -1410,7 +1410,7 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
         };
         if method.is_none() && obj.is_object() {
             for c in crate::dispatch::dispatch_class(&obj) {
-                let msym = Sym::new(&format!("{}.{}", generic, c));
+                let msym = Sym::dotted(&generic, &c);
                 let base = i.base.clone();
                 if let Some(f) = i.lookup_method(msym, env, &base)? {
                     method = Some(f);

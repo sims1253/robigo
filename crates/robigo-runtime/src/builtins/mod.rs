@@ -100,15 +100,19 @@ pub fn all_builtins() -> Vec<&'static Builtin> {
     TABLES.iter().flat_map(|t| t.iter()).collect()
 }
 
-pub fn lookup_primitive(name: &str) -> Option<&'static Builtin> {
-    for table in TABLES {
-        for b in table.iter() {
-            if !b.internal && b.name == name {
-                return Some(b);
-            }
+thread_local! {
+    static PRIMITIVES: HashMap<&'static str, &'static Builtin> = {
+        let mut m = HashMap::new();
+        for b in TABLES.iter().flat_map(|t| t.iter()).filter(|b| !b.internal) {
+            // The first definition wins, as in a linear search.
+            m.entry(b.name).or_insert(b);
         }
-    }
-    None
+        m
+    };
+}
+
+pub fn lookup_primitive(name: &str) -> Option<&'static Builtin> {
+    PRIMITIVES.with(|m| m.get(name).copied())
 }
 
 static TABLES: &[&[Builtin]] = &[

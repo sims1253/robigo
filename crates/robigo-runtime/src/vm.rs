@@ -146,8 +146,26 @@ fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
     RVal::L(if x == NA_INTEGER || y == NA_INTEGER { NA_LOGICAL } else { op.test(x, y) as Lgl })
 }
 
+/// Bytecode for the default arguments of closures with these `formals`,
+/// compiled on first use and shared by closures with the same formals.
+pub fn default_codes(formals: &Rc<[Arg]>) -> Rc<[Option<Rc<Code>>]> {
+    let key = Rc::as_ptr(formals) as *const Arg as usize;
+    if let Some(c) = DEFAULTS.with(|c| c.borrow().get(&key).map(|(_, codes)| codes.clone())) {
+        return c;
+    }
+    let codes: Rc<[Option<Rc<Code>>]> = formals
+        .iter()
+        .map(|f| if f.value.is_missing_arg() { None } else { crate::compile::compile_thunk(&f.value) })
+        .collect();
+    // Keep the formals alive so their address is not reused.
+    DEFAULTS.with(|c| c.borrow_mut().insert(key, (formals.clone(), codes.clone())));
+    codes
+}
+
 thread_local! {
     static CACHE: RefCell<HashMap<usize, (Value, Rc<Code>), crate::env::FastHash>> = RefCell::new(HashMap::default());
+    static DEFAULTS: RefCell<HashMap<usize, (Rc<[Arg]>, Rc<[Option<Rc<Code>>]>), crate::env::FastHash>> =
+        RefCell::new(HashMap::default());
     static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(false);
     /// `ROBIGO_NO_INLINE=1`: never run closure bodies inline (to compare).
     static NO_INLINE: bool = std::env::var_os("ROBIGO_NO_INLINE").is_some();
@@ -196,6 +214,9 @@ struct Vars<'a> {
     any: bool,
     dirty: bool,
     vclean: bool,
+    /// The slots that may be dirty or cache a vector (bit `i` for slot `i`;
+    /// bit 63 for slots 63 and above): those `flush` visits.
+    touched: u64,
     /// `env::r_epoch()` when the cached (clean) values were valid: R code
     /// that ran since may have changed the variables.
     epoch: u64,
@@ -213,21 +234,33 @@ impl Vars<'_> {
         self.dirty = false;
         self.vclean = false;
         let mut res = Ok(());
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            match std::mem::replace(s, SlotVal::Empty) {
-                SlotVal::Dirty(v) => {
-                    if res.is_ok() {
-                        res = set_var(interp, env, syms[i], &v);
+        let mut touched = std::mem::take(&mut self.touched);
+        while touched != 0 {
+            let i = touched.trailing_zeros() as usize;
+            touched &= touched - 1;
+            let end = if i == 63 { self.slots.len() } else { i + 1 };
+            for (j, s) in self.slots[i..end].iter_mut().enumerate() {
+                match std::mem::replace(s, SlotVal::Empty) {
+                    SlotVal::Dirty(v) => {
+                        if res.is_ok() {
+                            res = set_var(interp, env, syms[i + j], &v);
+                        }
+                        if res.is_ok() && !matches!(v, RVal::V(_)) {
+                            *s = SlotVal::Clean(v);
+                        }
                     }
-                    if res.is_ok() && !matches!(v, RVal::V(_)) {
-                        *s = SlotVal::Clean(v);
-                    }
+                    SlotVal::Clean(v) if !matches!(v, RVal::V(_)) => *s = SlotVal::Clean(v),
+                    _ => {}
                 }
-                SlotVal::Clean(v) if !matches!(v, RVal::V(_)) => *s = SlotVal::Clean(v),
-                _ => {}
             }
         }
         res
+    }
+
+    /// Note that `slot` may now be dirty or cache a vector.
+    #[inline(always)]
+    fn touch(&mut self, slot: usize) {
+        self.touched |= 1 << slot.min(63);
     }
 
     /// Forget cached values if R code ran since they were read.
@@ -270,6 +303,7 @@ impl Vars<'_> {
     fn cache(&mut self, slot: usize, v: RVal) {
         if matches!(v, RVal::V(_)) {
             self.vclean = true;
+            self.touch(slot);
         }
         self.slots[slot] = SlotVal::Clean(v);
         self.any = true;
@@ -486,6 +520,7 @@ fn own_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: Slot) -> bool {
     vars.slots[slot] = SlotVal::Dirty(RVal::V(v));
     vars.any = true;
     vars.dirty = true;
+    vars.touch(slot);
     true
 }
 
@@ -749,11 +784,21 @@ fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl>
 /// gets forced promises, so nothing is evaluated twice and methods still
 /// see the expressions.
 fn subset_with_index(interp: &mut Interp, call: &Value, x: Sym, ival: Value, two: bool, env: &Env) -> RResult<Value> {
-    let Value::Lang(l) = call else { unreachable!() };
     let xval = interp.eval_sym(x, env)?;
+    subset_values(interp, call, xval, Some(ival), two, env)
+}
+
+/// Call `[`/`[[` for `call` (`x[i]`) with the value of `x` and that of the
+/// index, or (`None`) a promise to evaluate it.
+fn subset_values(interp: &mut Interp, call: &Value, xval: Value, ival: Option<Value>, two: bool, env: &Env) -> RResult<Value> {
+    let Value::Lang(l) = call else { unreachable!() };
+    let i = match ival {
+        Some(v) => Promise::forced(l.args[1].value.clone(), v),
+        None => Promise::new(l.args[1].value.clone(), env.clone()),
+    };
     let args = vec![
         Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))),
-        Arg::new(l.args[1].tag, Value::Promise(Rc::new(Promise::forced(l.args[1].value.clone(), ival)))),
+        Arg::new(l.args[1].tag, Value::Promise(Rc::new(i))),
     ];
     let b = crate::builtins::lookup_primitive(if two { "[[" } else { "[" }).expect("subset builtin");
     interp.invoke_builtin(b, call, args, env)
@@ -1363,6 +1408,7 @@ fn jit_enter(
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
         vars.any = true;
         vars.dirty = true;
+        vars.touch(s.slot as usize);
     }
     if ret == crate::jit::EXIT {
         if crate::jit::trace() {
@@ -1457,21 +1503,26 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Va
     // to allocate for.)
     let mut regs: SmallVec<[RVal; 32]> = SmallVec::new();
     regs.resize_with(code.nregs, || RVal::V(Value::Null));
-    let mut slots: SmallVec<[SlotVal; 16]> = SmallVec::new();
+    let mut slots: SmallVec<[SlotVal; 24]> = SmallVec::new();
     slots.resize_with(code.vars.len(), || SlotVal::Empty);
-    let mut vars = Vars { slots: &mut slots, any: false, dirty: false, vclean: false, epoch: crate::env::r_epoch() };
-    let mut small = [0u32; 64];
+    let mut vars = Vars { slots: &mut slots, any: false, dirty: false, vclean: false, touched: 0, epoch: crate::env::r_epoch() };
+    // Valid in the first flush generation (see `run_with`).
+    let init = pre as u32;
+    let mut small = std::mem::MaybeUninit::<[u32; 128]>::uninit();
     let mut big = Vec::new();
-    let checked: &mut [u32] = if code.nguards <= small.len() {
-        &mut small[..code.nguards]
+    let checked: &mut [u32] = if code.nguards <= 128 {
+        // Only the guards the code has are initialized.
+        let p = small.as_mut_ptr() as *mut u32;
+        unsafe {
+            for k in 0..code.nguards {
+                p.add(k).write(init);
+            }
+            std::slice::from_raw_parts_mut(p, code.nguards)
+        }
     } else {
-        big.resize(code.nguards, 0);
+        big.resize(code.nguards, init);
         &mut big
     };
-    if pre {
-        // Valid in the first flush generation (see `run_with`).
-        checked.fill(1);
-    }
     run_with(interp, code, env, &mut regs, &mut vars, checked)
 }
 
@@ -1638,6 +1689,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 vars.slots[slot] = SlotVal::Dirty(val);
                 vars.any = true;
                 vars.dirty = true;
+                vars.touch(slot);
             } else {
                 // Locked or active bindings, functions: assign now.
                 flush!();
@@ -1827,6 +1879,40 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     (None, _) => {
                         flush!();
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                    }
+                };
+            }
+            Op::SubsetObj { dst, x, two, k, end } => {
+                if matches!(&regs[*x as usize], RVal::V(v) if v.is_object()) {
+                    flush!();
+                    let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
+                    let r = subset_values(interp, &code.consts[*k as usize], xv, None, *two, env);
+                    regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
+                    interp.visible = true;
+                    pc = *end as usize;
+                }
+            }
+            Op::Subset { dst, x, i, two, k } => {
+                interp.visible = true;
+                let fast = match &regs[*i as usize] {
+                    RVal::Range { start, step, n } if !*two => range_subset(&regs[*x as usize], *start, *step, *n),
+                    _ => match scalar_index(&mut vars, env, regs, &Leaf::R(*i)) {
+                        Some(ix) => element(&regs[*x as usize], ix as usize, *two),
+                        None => None,
+                    },
+                };
+                regs[*dst as usize] = match fast {
+                    Some(v) => {
+                        regs[*x as usize] = RVal::I(0);
+                        regs[*i as usize] = RVal::I(0);
+                        v
+                    }
+                    None => {
+                        flush!();
+                        let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
+                        let iv = std::mem::replace(&mut regs[*i as usize], RVal::I(0)).into_value();
+                        let r = subset_values(interp, &code.consts[*k as usize], xv, Some(iv), *two, env);
+                        RVal::V(tryop!(signal(interp, r)))
                     }
                 };
             }

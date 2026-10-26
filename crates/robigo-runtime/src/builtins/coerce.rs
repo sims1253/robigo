@@ -591,5 +591,5 @@ fn do_asfunction(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
             Arg::new(tag, v.clone())
         })
         .collect();
-    Ok(Value::Closure(Rc::new(Closure { formals: formals.into(), body: items[n - 1].clone(), env: envir, attrs: None, code: Default::default(), inline: Default::default() })))
+    Ok(Value::Closure(Rc::new(Closure { formals: formals.into(), body: items[n - 1].clone(), env: envir, attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() })))
 }

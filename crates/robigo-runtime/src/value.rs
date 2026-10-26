@@ -146,6 +146,9 @@ pub struct Closure {
     pub code: std::cell::OnceCell<Option<Rc<crate::compile::Code>>>,
     /// Whether calls can run the body inline (see `vm::inline_info`).
     pub inline: std::cell::OnceCell<Option<Rc<crate::vm::Inline>>>,
+    /// Bytecode for the promises of default arguments, per formal (see
+    /// `vm::default_codes`).
+    pub defaults: std::cell::OnceCell<Rc<[Option<Rc<crate::compile::Code>>]>>,
 }
 
 pub struct Promise {

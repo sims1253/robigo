@@ -10,7 +10,7 @@ use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::lang::expr_to_value;
-use crate::sym::Sym;
+use crate::sym::{s, Sym};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -164,7 +164,7 @@ fn do_expression(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     let names: Vec<RStr> = args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect();
     let mut v = Value::expr_vec(args.into_iter().map(|a| a.value).collect());
     if any_tag {
-        v.set_attr_raw(crate::sym::s::NAMES, Value::strs(names));
+        v.set_attr_raw(s::NAMES, Value::strs(names));
     }
     Ok(v)
 }
@@ -223,7 +223,7 @@ fn do_withvisible(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     i.visible = true;
     let names = Value::strs_from(["value", "visible"]);
     let mut l = Value::list(vec![v, Value::lgl(vis)]);
-    l.set_attr_raw(crate::sym::s::NAMES, names);
+    l.set_attr_raw(s::NAMES, names);
     let _ = Sym::new("value");
     Ok(l)
 }

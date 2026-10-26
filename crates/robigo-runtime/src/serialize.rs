@@ -469,7 +469,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     Value::Pairlist(p) => p.items.iter().cloned().collect(),
                     _ => Rc::from(Vec::new()),
                 };
-                let mut v = Value::Closure(Rc::new(Closure { formals, body: cdr, env, attrs: None, code: Default::default(), inline: Default::default() }));
+                let mut v = Value::Closure(Rc::new(Closure { formals, body: cdr, env, attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() }));
                 set_attr_pairlist(&mut v, head_attr);
                 Ok(v)
             }

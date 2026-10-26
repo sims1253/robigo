@@ -5,7 +5,7 @@ use super::{arg, internal, special};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::Sym;
+use crate::sym::{s, Sym};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -99,7 +99,7 @@ fn get_ns_value(i: &mut Interp, call: &Value, ns: &Value, name: &Value, exported
     if ns.ptr_eq(&i.base_ns) || !exported {
         return Ok(var_in_frame(i, &ns, name, false)?.unwrap());
     }
-    let info = match var_in_frame(i, &ns, Sym::new(".__NAMESPACE__."), false)? {
+    let info = match var_in_frame(i, &ns, s::DOT_NAMESPACE, false)? {
         Some(Value::Env(e)) => e,
         _ => return Err(Flow::error("bad namespace information")),
     };
@@ -250,7 +250,7 @@ fn do_attach(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         _ => return Err(Flow::error_call(call.clone(), "'attach' only works for lists, data frames and environments")),
     }
     let mut nv = Value::Env(new.clone());
-    nv.set_attr_raw(Sym::new("name"), name);
+    nv.set_attr_raw(s::NAME, name);
     // Insert after position pos - 1 on the search path.
     let mut before = i.global.clone();
     let mut k = 2;
