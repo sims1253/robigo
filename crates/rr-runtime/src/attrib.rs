@@ -359,6 +359,29 @@ pub fn copy_most_attrib(from: &Value, to: &mut Value) {
     }
 }
 
+/// `copyMostAttribNoTs`: like [`copy_most_attrib`], also leaving out
+/// `tsp` and removing "ts" from the class.
+pub fn copy_most_attrib_no_ts(from: &Value, to: &mut Value) {
+    let Some(a) = from.attrs() else { return };
+    let tsp = Sym::new("tsp");
+    for (k, val) in &a.0 {
+        if *k == s::CLASS {
+            if let Value::Str(cl) = val {
+                if cl.data.iter().any(|c| c.as_deref() == Some("ts")) {
+                    if cl.data.len() > 1 {
+                        let rest: Vec<RStr> = cl.data.iter().filter(|c| c.as_deref() != Some("ts")).cloned().collect();
+                        to.set_attr_raw(*k, Value::strs(rest));
+                    }
+                    continue;
+                }
+            }
+            to.set_attr_raw(*k, val.clone());
+        } else if *k != s::NAMES && *k != tsp && *k != s::DIM && *k != s::DIMNAMES {
+            to.set_attr_raw(*k, val.clone());
+        }
+    }
+}
+
 /// `attributes(x)` as a named list (names first).
 pub fn attributes_list(v: &Value) -> Value {
     let mut names: Vec<RStr> = Vec::new();

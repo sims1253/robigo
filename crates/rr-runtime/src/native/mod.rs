@@ -18,7 +18,9 @@ use crate::value::*;
 
 static TABLE: &str = include_str!("../../../../rlib/native-routines.tsv");
 
+mod base;
 mod grdevices;
+pub mod linpack;
 mod stats;
 
 /// The interface a routine is registered for.
@@ -190,10 +192,52 @@ impl Dll {
     }
 }
 
-pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>) -> RResult<Value>;
+/// A port: (interpreter, the `.Call`/`.External` call, arguments without
+/// `.NAME`, the calling environment as `.External2` passes it).
+pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>, &crate::env::Env) -> RResult<Value>;
 
 /// Rust ports of registered routines, per package: (routine, function).
-static PORTS: &[(&str, &[(&str, NativeFn)])] = &[("grDevices", grdevices::PORTS), ("stats", stats::PORTS)];
+static PORTS: &[(&str, &[(&str, NativeFn)])] =
+    &[("base", base::PORTS), ("grDevices", grdevices::PORTS), ("stats", stats::PORTS)];
+
+/// Argument `k` of a `.C`/`.Fortran` call as doubles.
+pub fn real_arg(args: &[Arg], k: usize) -> Vec<f64> {
+    match args.get(k).map(|a| &a.value) {
+        Some(Value::Real(v)) => v.data.clone(),
+        Some(v @ (Value::Int(_) | Value::Lgl(_))) => crate::coerce::to_real(v, &mut Default::default()),
+        _ => vec![],
+    }
+}
+
+/// Argument `k` of a `.C`/`.Fortran` call as integers.
+pub fn int_arg(args: &[Arg], k: usize) -> Vec<i32> {
+    match args.get(k).map(|a| &a.value) {
+        Some(Value::Int(v) | Value::Lgl(v)) => v.data.clone(),
+        Some(v @ Value::Real(_)) => crate::coerce::to_int(v, &mut Default::default()),
+        _ => vec![],
+    }
+}
+
+/// The value of `.C`/`.Fortran`: the list of all arguments, those the
+/// routine wrote replaced by their new contents with the attributes of
+/// the originals, named by the argument tags if any.
+// R: dotcode.c:do_dotCode (result construction)
+pub fn dotc_result(args: Vec<Arg>, replaced: Vec<(usize, Value)>) -> Value {
+    let havenames = args.iter().any(|a| a.tag.is_some());
+    let names: Vec<String> = args.iter().map(|a| a.tag.map(|t| t.name().to_string()).unwrap_or_default()).collect();
+    let mut items: Vec<Value> = args.into_iter().map(|a| a.value).collect();
+    for (k, mut v) in replaced {
+        if let Some(orig) = items.get(k) {
+            v.set_attrs(orig.attrs().cloned().map(Box::new));
+            items[k] = v;
+        }
+    }
+    let mut ans = Value::list(items);
+    if havenames {
+        ans.set_attr_raw(s::NAMES, Value::strs_from(names));
+    }
+    ans
+}
 
 /// Routines whose code is the same as an rr `.Internal` of the same name
 /// and arguments: stats' distribution functions (distn.c and random.c are
@@ -213,7 +257,7 @@ fn is_internal_alias(r: &Routine) -> bool {
 }
 
 /// Call a routine with already evaluated arguments.
-pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>) -> RResult<Value> {
+pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
     if is_internal_alias(r) {
         if let Some(b) = crate::builtins::lookup_internal(&r.name) {
             let env = interp.global.clone();
@@ -226,7 +270,7 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>) ->
         .flat_map(|(_, t)| t.iter())
         .find(|(n, _)| *n == &*r.name);
     match port {
-        Some((_, f)) => f(interp, call, args),
+        Some((_, f)) => f(interp, call, args, env),
         None => Err(Flow::error_call(
             call.clone(),
             format!("rr: native routine '{}' of package '{}' is not implemented yet", r.name, r.package),

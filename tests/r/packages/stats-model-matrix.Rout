@@ -1,0 +1,78 @@
+  y x g
+1 1 1 a
+2 3 2 b
+3 2 3 c
+4 5 4 a
+5 4 5 b
+6 6 6 c
+Classes 'terms', 'formula'  language y ~ x + g
+  ..- attr(*, "variables")= language list(y, x, g)
+  ..- attr(*, "factors")= int [1:3, 1:2] 0 1 0 0 0 1
+  .. ..- attr(*, "dimnames")=List of 2
+  .. .. ..$ : chr [1:3] "y" "x" "g"
+  .. .. ..$ : chr [1:2] "x" "g"
+  ..- attr(*, "term.labels")= chr [1:2] "x" "g"
+  ..- attr(*, "order")= int [1:2] 1 1
+  ..- attr(*, "intercept")= int 1
+  ..- attr(*, "response")= int 1
+  ..- attr(*, ".Environment")=<environment: R_GlobalEnv> 
+  ..- attr(*, "predvars")= language list(y, x, g)
+  ..- attr(*, "dataClasses")= Named chr [1:3] "numeric" "numeric" "factor"
+  .. ..- attr(*, "names")= chr [1:3] "y" "x" "g"
+  (Intercept) x gb gc
+1           1 1  0  0
+2           1 2  1  0
+3           1 3  0  1
+4           1 4  0  0
+5           1 5  1  0
+6           1 6  0  1
+attr(,"assign")
+[1] 0 1 2 2
+attr(,"contrasts")
+attr(,"contrasts")$g
+[1] "contr.treatment"
+
+  ga gb gc
+1  1  0  0
+2  0  1  0
+3  0  0  1
+4  1  0  0
+5  0  1  0
+6  0  0  1
+attr(,"assign")
+[1] 1 1 1
+attr(,"contrasts")
+attr(,"contrasts")$g
+[1] "contr.treatment"
+
+  (Intercept) zTRUE x:ga x:gb x:gc
+1           1     1    1    0    0
+2           1     0    0    2    0
+3           1     1    0    0    3
+4           1     1    4    0    0
+5           1     0    0    5    0
+6           1     0    0    0    6
+attr(,"assign")
+[1] 0 1 2 2 2
+attr(,"contrasts")
+attr(,"contrasts")$g
+[1] "contr.treatment"
+
+attr(,"contrasts")$z
+[1] "contr.treatment"
+
+  (Intercept) poly(x, 2)1 poly(x, 2)2
+1           1  -0.5976143   0.5455447
+2           1  -0.3585686  -0.1091089
+3           1  -0.1195229  -0.4364358
+4           1   0.1195229  -0.4364358
+5           1   0.3585686  -0.1091089
+6           1   0.5976143   0.5455447
+attr(,"assign")
+[1] 0 1 1
+[1] 5
+  y x
+3 2 3
+4 5 4
+5 4 5
+6 6 6

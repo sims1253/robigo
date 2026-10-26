@@ -25,6 +25,7 @@ tests/r/lang/compiled-variables.R
 tests/r/lang/environments.R
 tests/r/lang/missing-dots.R
 tests/r/lang/on-exit.R
+tests/r/lang/pos-to-env.R
 tests/r/lang/quote.R
 tests/r/math/atan2.R
 tests/r/math/bessel-nbinom-hyper.R
@@ -44,6 +45,10 @@ tests/r/math/sample-base.R
 tests/r/math/sample-error.R
 tests/r/math/sample.R
 tests/r/packages/load-stats-utils.R
+tests/r/packages/stats-cov.R
+tests/r/packages/stats-lm.R
+tests/r/packages/stats-model-matrix.R
+tests/r/packages/stats-terms.R
 tests/r/programs/fib.R
 tests/r/programs/fizzbuzz.R
 tests/r/programs/matrix.R

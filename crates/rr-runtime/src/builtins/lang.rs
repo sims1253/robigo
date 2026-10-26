@@ -13,6 +13,7 @@ use crate::sym::{s, Sym};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
+    special("~", do_tilde, -1),
     special("if", do_if, -1).custom_vis(),
     special("for", do_for, 3).invisible(),
     special("while", do_while, 2).invisible(),
@@ -1339,4 +1340,15 @@ fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     interp.visible = true;
     let v = d[n as usize - 1].value.clone();
     interp.eval(&v, env)
+}
+
+/// `~`: the call itself, as a formula remembering its environment.
+// R: names.c:do_tilde
+fn do_tilde(_: &mut Interp, call: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let mut f = call.clone();
+    if !call.is_object() {
+        f.set_attr_raw(s::CLASS, Value::str("formula"));
+        f.set_attr_raw(Sym::new(".Environment"), Value::Env(env.clone()));
+    }
+    Ok(f)
 }

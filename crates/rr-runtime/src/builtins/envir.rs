@@ -144,18 +144,12 @@ fn list_into_env(v: &Value, e: &Env) {
 
 fn pos_to_env(interp: &mut Interp, n: i32, call: &Value) -> RResult<Env> {
     if n == -1 {
-        // The environment the caller was called from.
-        let cur = interp.current_frame();
-        return Ok(match cur {
-            Some(i) => {
-                let sp = interp.frames[i].sysparent.clone();
-                match interp.frame_of_env(&sp) {
-                    Some(j) => interp.frames[j].sysparent.clone(),
-                    None => interp.global.clone(),
-                }
-            }
-            None => interp.global.clone(),
-        });
+        // R: envir.c:do_pos2env: the calling environment of the innermost
+        // function context.
+        return match interp.current_frame() {
+            Some(i) => Ok(interp.frames[i].sysparent.clone()),
+            None => Err(Flow::error_call(call.clone(), "no enclosing environment")),
+        };
     }
     if n == NA_INTEGER || n < 1 {
         return Err(Flow::error_call(call.clone(), "invalid 'pos' argument"));

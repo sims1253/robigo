@@ -10,6 +10,11 @@ use crate::value::*;
 
 /// Parse a number the way `as.numeric("...")` does (R_strtod + checks for
 /// trailing garbage). `None` means NA (with a coercion warning).
+/// R's `isBlankString`.
+pub fn is_blank(s: &str) -> bool {
+    s.chars().all(char::is_whitespace)
+}
+
 pub fn str_to_real(s: &str) -> Option<f64> {
     let t = s.trim_matches(|c: char| c.is_ascii_whitespace());
     if t.is_empty() {
@@ -249,7 +254,10 @@ pub fn to_int(v: &Value, w: &mut CoerceWarnings) -> Vec<i32> {
                         }
                     }
                     None => {
-                        w.na_introduced = true;
+                        // R: String2Real etc.: blank strings give NA silently.
+                        if !is_blank(s) {
+                            w.na_introduced = true;
+                        }
                         NA_INTEGER
                     }
                 },
@@ -292,7 +300,10 @@ pub fn to_real(v: &Value, w: &mut CoerceWarnings) -> Vec<f64> {
                 Some(s) => match str_to_real(s) {
                     Some(d) => d,
                     None => {
-                        w.na_introduced = true;
+                        // R: String2Real etc.: blank strings give NA silently.
+                        if !is_blank(s) {
+                            w.na_introduced = true;
+                        }
                         NA_REAL
                     }
                 },
@@ -319,7 +330,10 @@ pub fn to_cplx(v: &Value, w: &mut CoerceWarnings) -> Vec<Complex> {
                 Some(s) => match parse_complex(s) {
                     Some(z) => z,
                     None => {
-                        w.na_introduced = true;
+                        // R: String2Real etc.: blank strings give NA silently.
+                        if !is_blank(s) {
+                            w.na_introduced = true;
+                        }
                         Complex::NA
                     }
                 },

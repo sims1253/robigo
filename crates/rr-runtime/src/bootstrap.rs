@@ -54,6 +54,22 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
             }
         }
     }
+    // What R's baseloader.R does after loading base: bind the base DLL's
+    // registered routines as .F_xxx and .C_xxx.
+    let tail = r#"local({
+    routines <- getDLLRegisteredRoutines("base")
+    for (i in c("dchdc", "dqrcf", "dqrdc2", "dqrqty", "dqrqy", "dqrrsd", "dqrxb", "dtrco"))
+        assign(paste0(".F_", i), routines[[3]][[i]], envir = .BaseNamespaceEnv)
+    for(i in 1:2)
+        lapply(routines[[i]],
+               function(sym) assign(paste0(".C_", sym$name), sym, envir = .BaseNamespaceEnv))
+})"#;
+    for e in rr_syntax::parse_program(tail).map_err(|e| e.message)? {
+        interp.frames.clear();
+        if let Err(crate::error::Flow::Error(e)) = interp.eval(&expr_to_value(&e), &base) {
+            failures.push(BootFailure { file: "baseloader", line: 0, message: e.message });
+        }
+    }
     interp.warnings.clear();
     interp.err = saved_err;
     crate::builtins::post_base_init(interp);

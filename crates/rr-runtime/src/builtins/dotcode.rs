@@ -235,7 +235,7 @@ fn interface_name(i: Interface) -> &'static str {
     }
 }
 
-fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface) -> RResult<Value> {
+fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, env: &Env) -> RResult<Value> {
     let (r, args) = resolve(i, call, args, interface)?;
     if r.nargs >= 0 && args.len() as i32 != r.nargs && interface != Interface::External {
         return Err(Flow::error_call(
@@ -248,21 +248,21 @@ fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface) 
             ),
         ));
     }
-    native::invoke(i, call, &r, args)
+    native::invoke(i, call, &r, args, env)
 }
 
-fn do_dotcall(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    dot_code(i, call, args, Interface::Call)
+fn do_dotcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    dot_code(i, call, args, Interface::Call, env)
 }
 
-fn do_external(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    dot_code(i, call, args, Interface::External)
+fn do_external(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    dot_code(i, call, args, Interface::External, env)
 }
 
-fn do_dot_c(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    dot_code(i, call, args, Interface::C)
+fn do_dot_c(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    dot_code(i, call, args, Interface::C, env)
 }
 
-fn do_dot_fortran(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    dot_code(i, call, args, Interface::Fortran)
+fn do_dot_fortran(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    dot_code(i, call, args, Interface::Fortran, env)
 }
