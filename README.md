@@ -11,15 +11,23 @@ interpreter, vector fusion, and type information from
 for the research behind it, the architecture and the roadmap, and
 [AGENTS.md](AGENTS.md) for the porting contract.
 
-Status: early, but it runs real base-R programs. The parser matches GNU
-R's on R's own library sources. rr boots all of GNU R's base-package R code
-on top of 602 of R's 760 `.Primitive`/`.Internal` functions (ported from
-the C sources: subsetting, strings and regular expressions, nmath and the
-random number generators, date-times, connections, the apply family,
-matrices and LAPACK), and 109 of the 110 conformance scripts match GNU R
-byte for byte. Not yet: loading other packages (`stats`, `utils`, ...),
-S4, and locale-aware string collation. `RR_COMPILE=1` enables the bytecode
-VM; `RR_TYPE_PROFILE=out.json` records observed types for comparison with
+Status: early, but it runs real R code. The parser matches GNU R's on R's
+own library sources. rr boots all of GNU R's base-package R code on top of
+627 of R's 760 `.Primitive`/`.Internal` functions, starts up like R
+(Renviron, profiles, a locked base namespace), and loads installed
+packages from a GNU R 4.5.0 library through R's own `loadNamespace`:
+`utils`, `stats`, `grDevices` and `graphics` work today. rr cannot load
+packages' compiled code, so native routines are ported to Rust (75 of
+stats' distribution functions plus 33 others, including R's formula
+engine, LINPACK QR, `cov`, `glm` families, `read.csv`/`write.csv`); a
+routine without a port raises an error saying so. `lm`, `glm`,
+`summary`, `anova`, `predict`, `read.csv` and `write.csv` give output
+identical to GNU R, and all 123 conformance scripts match byte for byte.
+
+Not yet: S4 (`methods`), many stats routines (`optim`, `integrate`,
+`fft`, `splines`, ...), packages with compiled code beyond base R's, and
+locale-aware string collation. `RR_COMPILE=1` enables the bytecode VM;
+`RR_TYPE_PROFILE=out.json` records observed types for comparison with
 ry ([docs/ry-integration.md](docs/ry-integration.md)).
 
 ## Try it
