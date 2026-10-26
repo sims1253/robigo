@@ -243,23 +243,26 @@ bytecode JIT, `R_DEFAULT_PACKAGES=utils,stats`) on a 2-vCPU QEMU VM; best of
 three wall times in seconds, startup included (GNU R 0.086 s, robigo
 0.073 s with these packages). Ratios below 1 mean robigo is faster.
 
-| script | GNU R | robigo VM | ratio | what it stresses |
+| script | GNU R | robigo | ratio | what it stresses |
 |---|---|---|---|---|
-| fannkuch | 0.38 | 0.22 | 0.58 | integer vectors, `x[a:b] <- x[b:a]` |
-| strings | 0.35 | 0.21 | 0.60 | `paste0`, `gsub`, `sprintf`, `nchar` |
-| dataframe | 0.27 | 0.17 | 0.64 | `data.frame` building, `aggregate`, `merge` |
-| spectralnorm | 0.43 | 0.32 | 0.73 | a tiny closure called in a double loop |
-| matrix | 0.19 | 0.14 | 0.74 | `%*%`, `solve`, `apply` over rows |
-| vecarith | 0.99 | 0.74 | 0.75 | elementwise arithmetic, `sum`, `mean` on 10^6 |
-| vecops | 0.65 | 0.54 | 0.82 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
-| lm | 0.22 | 0.19 | 0.85 | `lm`, `summary.lm` |
-| queens | 0.13 | 0.11 | 0.85 | recursion with vectors |
-| csv | 0.30 | 0.28 | 0.96 | `write.csv`, `read.csv` |
-| apply | 0.40 | 0.42 | 1.05 | `lapply`/`vapply`/`sapply` with closures |
-| mandelbrot | 0.18 | 0.22 | 1.22 | scalar `while` loops |
-| fib | 0.20 | 0.25 | 1.23 | closure calls, promises |
-| nbody | 0.40 | 0.50 | 1.25 | scalar arithmetic on short vectors |
-| binarytrees | 0.26 | 0.34 | 1.33 | recursion, list allocation, `[[` |
+| spectralnorm | 0.49 | 0.09 | 0.19 | a tiny closure called in a double loop (JIT, inlined) |
+| nbody | 0.42 | 0.11 | 0.27 | scalar arithmetic on short vectors (JIT) |
+| mandelbrot | 0.18 | 0.09 | 0.51 | scalar `while` loops (JIT) |
+| apply | 0.39 | 0.21 | 0.53 | `lapply`/`vapply`/`sapply` with closures |
+| strings | 0.37 | 0.21 | 0.57 | `paste0`, `gsub`, `sprintf`, `nchar` |
+| fannkuch | 0.37 | 0.23 | 0.60 | integer vectors, `x[a:b] <- x[b:a]` |
+| dataframe | 0.26 | 0.17 | 0.66 | `data.frame` building, `aggregate`, `merge` |
+| matrix | 0.21 | 0.14 | 0.70 | `%*%`, `solve`, `apply` over rows |
+| vecarith | 1.03 | 0.77 | 0.75 | elementwise arithmetic, `sum`, `mean` on 10^6 |
+| vecops | 0.71 | 0.58 | 0.81 | `x[x > 0]`, `ifelse`, `cumsum`, `which`, `order` |
+| queens | 0.13 | 0.11 | 0.86 | recursion with vectors |
+| lm | 0.23 | 0.20 | 0.87 | `lm`, `summary.lm` |
+| csv | 0.30 | 0.28 | 0.95 | `write.csv`, `read.csv` |
+| fib | 0.22 | 0.27 | 1.23 | closure calls, promises |
+| binarytrees | 0.26 | 0.34 | 1.31 | recursion, list allocation, `[[` |
+
+Most times include ~0.07 s of startup (both runtimes load `utils` and
+`stats`); the JIT'd loops run in a few milliseconds.
 
 `scripts/callgrind-diff.py WORK.R BASE.R UNITS` measures with callgrind:
 instruction counts are exact, so a change can be judged without
@@ -291,11 +294,29 @@ Ledger:
   their body without a call, giving up before any slow path so warnings
   and errors come from a real call; single-operation promises (`n - 1`)
   are evaluated without a VM run.
-- **Next:** each call still allocates an environment, a context and one
-  promise per argument; each VM op costs ~30-100 instructions of dispatch
-  and enum matching. Candidates: environments materialized only when
-  observed, `x[i]` operands in arithmetic, and a Cranelift tier for hot
-  loops.
+- **Done (JIT, `src/jit.rs`):** loops whose ops all have scalar fast
+  paths (arithmetic, comparisons, `&&`/`||`, `if`, `for` over ranges,
+  double/integer vector element reads and writes, unboxed math, calls of
+  pure closures without free variables) are compiled by Cranelift once
+  they have iterated 16 times. Variables and registers are typed by a
+  forward analysis (registers per op) and live in machine registers;
+  guards are checked once on entry. Wherever a fast path would give up
+  (overflow, NA condition, index out of range, NaN from a math function),
+  native code writes its state back and the VM executes that op, so
+  results, warnings and errors are the VM's. `ROBIGO_JIT=0` disables it,
+  `ROBIGO_JIT_TRACE=1` reports compilations and exits.
+- **Done (general code):** `lapply`/`vapply` run pure `FUN`s without a
+  call per element; guards are revalidated only when function bindings
+  change; cached scalars survive flushes until R code runs; `TRUE`,
+  `FALSE`, `NA` and small integers are shared constants; `.Internal(f(..))`
+  compiles to a direct builtin call.
+- **Next:** typical base-R functions (`match.arg`, `stopifnot`,
+  `tryCatch`, `format`, S3 dispatch) are ~2x GNU R: every closure call
+  costs an environment, a context, a promise per argument and a VM run
+  (~2-4k instructions), and each VM op ~30-70 instructions. Candidates: a
+  cheaper calling convention (frames without heap environments until
+  observed, promise elision for arguments forced on entry), and native
+  code for whole function bodies, not only loops.
 
 ## 5. Roadmap
 
