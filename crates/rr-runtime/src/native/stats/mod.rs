@@ -1,7 +1,9 @@
 //! Native routines of the stats package (src/library/stats/src).
 
 mod cov;
+mod family;
 mod lm;
+mod misc;
 mod model;
 
 use super::NativeFn;
@@ -17,6 +19,19 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("modelframe", |i, _, a, env| model::modelframe(i, &a, env)),
     ("modelmatrix", |i, _, a, env| model::modelmatrix(i, &a, env)),
     ("updateform", |_, _, a, _| model::updateform(&a[0].value, &a[1].value)),
+    ("logit_link", |i, _, a, _| family::logit_link(i, &a[0].value)),
+    ("logit_linkinv", |i, _, a, _| family::logit_linkinv(i, &a[0].value)),
+    ("logit_mu_eta", |i, _, a, _| family::logit_mu_eta(i, &a[0].value)),
+    ("binomial_dev_resids", |i, _, a, _| family::binomial_dev_resids(i, &a[0].value, &a[1].value, &a[2].value)),
+    ("ApproxTest", |_, _, a, _| misc::approx_test(&a)),
+    ("Approx", |i, _, a, _| misc::approx(i, &a)),
+    ("compcases", |_, _, a, _| misc::compcases(&a)),
+    ("Cdist", |i, _, a, _| misc::cdist(i, &a)),
+    ("cfilter", |_, _, a, _| misc::cfilter(&a)),
+    ("rfilter", |_, _, a, _| misc::rfilter(&a)),
+    ("acf", |i, _, a, _| misc::acf(i, &a)),
+    ("do_fmin", |i, _, a, env| misc::do_fmin(i, &a, env)),
+    ("zeroin2", |i, _, a, env| misc::zeroin2(i, &a, env)),
     ("Cdqrls", |i, _, a, _| lm::cdqrls(i, &a[0].value, &a[1].value, &a[2].value, &a[3].value)),
 ];
 

@@ -1,0 +1,73 @@
+
+Call:  glm(formula = y ~ x, family = binomial)
+
+Coefficients:
+(Intercept)            x  
+     -5.715        2.032  
+
+Degrees of Freedom: 9 Total (i.e. Null);  8 Residual
+Null Deviance:	    13.46 
+Residual Deviance: 4.814 	AIC: 8.814
+
+Call:
+glm(formula = y ~ x, family = binomial)
+
+Coefficients:
+            Estimate Std. Error z value Pr(>|z|)
+(Intercept)   -5.715      3.962  -1.442    0.149
+x              2.032      1.348   1.508    0.132
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 13.4602  on 9  degrees of freedom
+Residual deviance:  4.8144  on 8  degrees of freedom
+AIC: 8.8144
+
+Number of Fisher Scoring iterations: 7
+
+[1] "-5.7146506085509" "2.03194930036209"
+        1 
+0.5941618 
+
+Call:
+glm(formula = cnt ~ x, family = poisson)
+
+Coefficients:
+            Estimate Std. Error z value Pr(>|z|)    
+(Intercept)  1.01455    0.28920   3.508 0.000451 ***
+x            0.29848    0.05942   5.024 5.07e-07 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for poisson family taken to be 1)
+
+    Null deviance: 29.3560  on 9  degrees of freedom
+Residual deviance:  1.6583  on 8  degrees of freedom
+AIC: 44.613
+
+Number of Fisher Scoring iterations: 4
+
+Analysis of Deviance Table
+
+Model: poisson, link: log
+
+Response: cnt
+
+Terms added sequentially (first to last)
+
+
+     Df Deviance Resid. Df Resid. Dev  Pr(>Chi)    
+NULL                     9    29.3560              
+x     1   27.698         8     1.6583 1.418e-07 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Call:  glm(formula = cnt ~ x, family = gaussian)
+
+Coefficients:
+(Intercept)            x  
+     0.1375       2.5893  
+
+Degrees of Freedom: 9 Total (i.e. Null);  8 Residual
+Null Deviance:	    265.6 
+Residual Deviance: 17.81 	AIC: 40.15
