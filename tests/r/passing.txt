@@ -63,6 +63,7 @@ tests/r/math/sample-base.R
 tests/r/math/sample-error.R
 tests/r/math/sample.R
 tests/r/packages/load-stats-utils.R
+tests/r/packages/stats-cov-ldouble.R
 tests/r/packages/stats-cov.R
 tests/r/packages/stats-glm.R
 tests/r/packages/stats-lm.R

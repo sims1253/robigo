@@ -292,10 +292,44 @@ pub fn lgl_to_str(x: Lgl) -> RStr {
 
 pub fn int_to_str(x: i32) -> RStr {
     if x == NA_INTEGER {
-        None
-    } else {
-        rstr(&x.to_string())
+        return None;
     }
+    // Small non-negative integers (row names, indices) share their strings.
+    const CACHED: i32 = 1 << 16;
+    thread_local! {
+        static SMALL: std::cell::RefCell<Vec<RStr>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if (0..CACHED).contains(&x) {
+        return SMALL.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.is_empty() {
+                c.resize(CACHED as usize, None);
+            }
+            c[x as usize].get_or_insert_with(|| int_to_str_new(x).unwrap()).clone().into()
+        });
+    }
+    int_to_str_new(x)
+}
+
+fn int_to_str_new(x: i32) -> RStr {
+    // Digits written directly (no formatting machinery, one allocation).
+    let mut buf = [0u8; 12];
+    let mut i = buf.len();
+    let mut v = (x as i64).unsigned_abs();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    if x < 0 {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    // SAFETY: ASCII digits and '-'.
+    rstr(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
 }
 
 pub fn cplx_to_str(z: Complex) -> RStr {

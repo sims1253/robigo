@@ -421,6 +421,27 @@ fn do_any_duplicated(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     if !x.is_vector() {
         return Err(Flow::error("anyDuplicated() applies only to vectors"));
     }
+    if let Some(e) = elems(x) {
+        let n = e.len();
+        let inc = incomp.map(|inc| crate::coerce::coerce_quiet(&inc, x.vtype().unwrap_or(VType::Lgl)));
+        let ie = inc.as_ref().and_then(elems);
+        let mut t = IdxTable::new(n);
+        let mut visit = |k: usize| -> Option<i32> {
+            let h = e.hash(k);
+            match t.find(h, |j| e.eq(k, &e, j)) {
+                Ok(_) => {
+                    let incomparable = ie.as_ref().is_some_and(|ie| (0..ie.len()).any(|c| ie.eq(c, &e, k)));
+                    (!incomparable).then_some(k as i32 + 1)
+                }
+                Err(slot) => {
+                    t.insert_at(slot, k);
+                    None
+                }
+            }
+        };
+        let first = if fl { (0..n).rev().find_map(&mut visit) } else { (0..n).find_map(&mut visit) };
+        return Ok(Value::int(first.unwrap_or(0)));
+    }
     let keys = hkeys(x);
     let n = keys.len();
     let ik = incomp.map(|inc| hkeys(&crate::coerce::coerce_quiet(&inc, x.vtype().unwrap_or(VType::Lgl))));

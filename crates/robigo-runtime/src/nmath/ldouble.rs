@@ -241,6 +241,78 @@ mod imp {
         out
     }
 
+    /// `t = 0; for x in xs: t += ((long double) x - m) * ((long double) x - m)`.
+    pub fn sum_sq_dev(m: &LDouble, xs: &[f64]) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fldz",
+                "fld tbyte ptr [{m}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fld qword ptr [{p}]",
+                "fsub st(0), st(1)",
+                "fmul st(0), st(0)",
+                "faddp st(2), st(0)",
+                "add {p}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp st(0)",
+                "fstp tbyte ptr [{o}]",
+                m = in(reg) m.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
+    /// `t = 0; for i: t += ((long double) xs[i] - xm) * ((long double) ys[i] - ym)`.
+    pub fn sum_cross_dev(xm: &LDouble, xs: &[f64], ym: &LDouble, ys: &[f64]) -> LDouble {
+        assert!(ys.len() >= xs.len());
+        let mut out = LDouble([0; 16]);
+        unsafe {
+            asm!(
+                "fldz",
+                "fld tbyte ptr [{ym}]",
+                "fld tbyte ptr [{xm}]",
+                "test {n}, {n}",
+                "jz 3f",
+                "2:",
+                "fld qword ptr [{p}]",
+                "fsub st(0), st(1)",
+                "fld qword ptr [{q}]",
+                "fsub st(0), st(3)",
+                "fmulp st(1), st(0)",
+                "faddp st(3), st(0)",
+                "add {p}, 8",
+                "add {q}, 8",
+                "dec {n}",
+                "jnz 2b",
+                "3:",
+                "fstp st(0)",
+                "fstp st(0)",
+                "fstp tbyte ptr [{o}]",
+                xm = in(reg) xm.0.as_ptr(),
+                ym = in(reg) ym.0.as_ptr(),
+                p = inout(reg) xs.as_ptr() => _,
+                q = inout(reg) ys.as_ptr() => _,
+                n = inout(reg) xs.len() => _,
+                o = in(reg) out.0.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                options(nostack),
+            );
+        }
+        out
+    }
+
     /// `acc[i] += xs[i]` for each `i`.
     pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
         assert!(acc.len() >= xs.len());
@@ -445,6 +517,14 @@ mod imp {
         }
         put(p)
     }
+    pub fn sum_sq_dev(m: &LDouble, xs: &[f64]) -> LDouble {
+        let m = get(m);
+        put(xs.iter().map(|x| (x - m) * (x - m)).sum())
+    }
+    pub fn sum_cross_dev(xm: &LDouble, xs: &[f64], ym: &LDouble, ys: &[f64]) -> LDouble {
+        let (xm, ym) = (get(xm), get(ym));
+        put(xs.iter().zip(ys).map(|(x, y)| (x - xm) * (y - ym)).sum())
+    }
     pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
         for (a, x) in acc.iter_mut().zip(xs) {
             *a = put(get(a) + x);
@@ -532,6 +612,16 @@ impl LDouble {
     /// Running products from `self`, stored rounded to double in `ys`.
     pub fn cumprod_from(self, xs: &[f64], ys: &mut [f64]) -> LDouble {
         imp::cumprod_from(&self, xs, ys)
+    }
+
+    /// `sum(((long double) x - self)^2)` over `xs`, sequentially.
+    pub fn sum_sq_dev(self, xs: &[f64]) -> LDouble {
+        imp::sum_sq_dev(&self, xs)
+    }
+
+    /// `sum(((long double) xs[i] - self) * ((long double) ys[i] - ym))`.
+    pub fn sum_cross_dev(self, xs: &[f64], ym: LDouble, ys: &[f64]) -> LDouble {
+        imp::sum_cross_dev(&self, xs, &ym, ys)
     }
 
     /// `acc[i] += xs[i]` for each `i` (R's row sums by column).

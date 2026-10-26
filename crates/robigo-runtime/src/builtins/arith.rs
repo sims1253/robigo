@@ -981,26 +981,24 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
     }
     let a = lgl_view(&x);
     let b = lgl_view(&y);
-    let out: Vec<Lgl> = (0..n)
-        .map(|k| {
-            let (p, q) = (a[k % nx], b[k % ny]);
-            if and {
-                if p == FALSE || q == FALSE {
-                    FALSE
-                } else if p == NA_LOGICAL || q == NA_LOGICAL {
-                    NA_LOGICAL
-                } else {
-                    TRUE
-                }
-            } else if p == TRUE || q == TRUE {
-                TRUE
-            } else if p == NA_LOGICAL || q == NA_LOGICAL {
-                NA_LOGICAL
-            } else {
-                FALSE
-            }
+    let (a, b): (&[Lgl], &[Lgl]) = (&a, &b);
+    let out: Vec<Lgl> = if and {
+        real_kernel!(a, b, n, |p: Lgl, q: Lgl| if p == FALSE || q == FALSE {
+            FALSE
+        } else if p == NA_LOGICAL || q == NA_LOGICAL {
+            NA_LOGICAL
+        } else {
+            TRUE
         })
-        .collect();
+    } else {
+        real_kernel!(a, b, n, |p: Lgl, q: Lgl| if p == TRUE || q == TRUE {
+            TRUE
+        } else if p == NA_LOGICAL || q == NA_LOGICAL {
+            NA_LOGICAL
+        } else {
+            FALSE
+        })
+    };
     let mut val = Value::lgls(out);
     apply_bin_attrs(&mut val, attrs);
     Ok(val)

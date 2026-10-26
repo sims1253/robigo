@@ -200,16 +200,10 @@ fn mean_na(x: &[f64], n: usize, nc: usize, has_na: &[bool]) -> Vec<f64> {
                 return NA_REAL;
             }
             let xx = col(x, n, i);
-            let mut sum = ld(0.0);
-            for &v in xx {
-                sum += v;
-            }
+            let sum = ld(0.0).sum_from(xx);
             let mut tmp = sum / ld_int(n);
             if tmp.to_f64().is_finite() {
-                sum = ld(0.0);
-                for &v in xx {
-                    sum += dm(v, tmp);
-                }
+                let sum = tmp.sum_dev(xx);
                 tmp = tmp + sum / ld_int(n);
             }
             tmp.to_f64()
@@ -244,6 +238,9 @@ fn kendall_sum(xx: &[f64], yy: &[f64], ind: Option<&[i32]>) -> LD {
 
 fn cross_sum(xx: &[f64], xxm: f64, yy: &[f64], yym: f64, ind: Option<&[i32]>) -> LD {
     let (xxm, yym) = (ld(xxm), ld(yym));
+    if ind.is_none() {
+        return xxm.sum_cross_dev(xx, yym, yy);
+    }
     let mut sum = ld(0.0);
     for k in 0..xx.len() {
         if ind.is_none_or(|ind| ind[k] != 0) {
@@ -359,9 +356,13 @@ fn sdev(x: &[f64], n: usize, nc: usize, means: &mut [f64], ind: Option<&[i32]>, 
         let mut sum = ld(0.0);
         if !kendall {
             let xxm = ld(means[i]);
-            for k in 0..n {
-                if ok(k) {
-                    sum += dm(xx[k], xxm) * dm(xx[k], xxm);
+            if ind.is_none() {
+                sum = xxm.sum_sq_dev(xx);
+            } else {
+                for k in 0..n {
+                    if ok(k) {
+                        sum += dm(xx[k], xxm) * dm(xx[k], xxm);
+                    }
                 }
             }
             sum /= ld_int(n1);
