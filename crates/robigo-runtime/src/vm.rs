@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, Leaf, Math1, Op, RangeKind, Slot};
+use crate::compile::{compile_body, compile_loop, CallSite, Code, GuardMemo, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -60,7 +60,7 @@ enum Num {
     L(i32),
 }
 
-#[inline]
+#[inline(always)]
 fn scalar(r: &RVal) -> Option<Num> {
     match r {
         RVal::D(x) => Some(Num::D(*x)),
@@ -73,6 +73,7 @@ fn scalar(r: &RVal) -> Option<Num> {
     }
 }
 
+#[inline(always)]
 fn as_f64(n: Num) -> f64 {
     match n {
         Num::D(x) => x,
@@ -80,6 +81,7 @@ fn as_f64(n: Num) -> f64 {
     }
 }
 
+#[inline(always)]
 fn as_i32(n: Num) -> i32 {
     match n {
         Num::I(x) | Num::L(x) => x,
@@ -89,7 +91,7 @@ fn as_i32(n: Num) -> i32 {
 
 /// Scalar arithmetic; `None` means "use the general builtin" (e.g. on
 /// integer overflow, which needs a warning).
-#[inline]
+#[inline(always)]
 fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
     if matches!(a, Num::D(_)) || matches!(b, Num::D(_)) {
         return Some(RVal::D(real_op(op, as_f64(a), as_f64(b))));
@@ -134,7 +136,7 @@ fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
     })
 }
 
-#[inline]
+#[inline(always)]
 fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
     if matches!(a, Num::D(_)) || matches!(b, Num::D(_)) {
         let (x, y) = (as_f64(a), as_f64(b));
@@ -161,6 +163,12 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
         return Some(c);
     }
     let code = Rc::new(if body { compile_body(e) } else { compile_loop(e)? });
+    if std::env::var_os("ROBIGO_VM_DUMP").is_some() {
+        eprintln!("== {}", crate::deparse::deparse_one_line(e).chars().take(100).collect::<String>());
+        for (pc, op) in code.ops.iter().enumerate() {
+            eprintln!("{:4} {:?}", pc, op);
+        }
+    }
     // Keep the expression alive so its address is not reused.
     CACHE.with(|c| c.borrow_mut().insert(key, (e.clone(), code.clone())));
     Some(code)
@@ -261,6 +269,7 @@ fn deferrable(env: &Env, sym: Sym, val: &RVal, pending: bool) -> bool {
 }
 
 /// The value of a variable without running code, cached in its slot.
+#[inline(always)]
 fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&'a RVal> {
     let slot = slot as usize;
     if vars.get(slot).is_none() {
@@ -271,7 +280,36 @@ fn read_var<'a>(vars: &'a mut Vars, env: &Env, sym: Sym, slot: Slot) -> Option<&
     vars.get(slot)
 }
 
+/// A leaf operand as a number, without running code.
+#[inline(always)]
+fn leaf_num(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], l: &Leaf) -> Option<Num> {
+    match l {
+        Leaf::D(x) => Some(Num::D(*x)),
+        Leaf::I(x) => Some(Num::I(*x)),
+        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot).and_then(scalar),
+        Leaf::R(r) => scalar(&regs[*r as usize]),
+    }
+}
+
+/// A leaf operand's value, evaluating a variable (forcing a promise,
+/// signaling a missing one) when it cannot be read in place.
+fn leaf_value(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, regs: &mut [RVal], l: &Leaf) -> RResult<RVal> {
+    match l {
+        Leaf::D(x) => Ok(RVal::D(*x)),
+        Leaf::I(x) => Ok(RVal::I(*x)),
+        Leaf::Var(sym, slot) => match read_var(vars, env, *sym, *slot) {
+            Some(v) => Ok(v.clone()),
+            None => {
+                let r = interp.eval_sym(*sym, env);
+                signal(interp, r).map(RVal::V)
+            }
+        },
+        Leaf::R(r) => Ok(std::mem::replace(&mut regs[*r as usize], RVal::V(Value::Null))),
+    }
+}
+
 /// A 0-based index from an in-range positive scalar index.
+#[inline(always)]
 fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
     let num = |r: &RVal| match r {
         RVal::D(x) => Some(*x),
@@ -294,6 +332,7 @@ fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Opti
 
 /// Element `i` of a vector that `x[i]` (`[[` if `two`) reads without
 /// dispatch, attribute handling or allocation beyond a string scalar.
+#[inline(always)]
 fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
     let v = match x {
         RVal::V(v) => v,
@@ -694,6 +733,56 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             tryop!(vars.flush(interp, env, &code.vars))
         }};
     }
+    // `ArithL`/`RelL`: check the folded guard (if any), read the operands
+    // in place, take `$fast` for scalars, else call the builtin.
+    macro_rules! leaf_op {
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr) => {{
+            let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
+            if g != NO_GUARD && checked[g as usize] != generation {
+                if guard_ok(interp, *$sym, env, &code.guard_memo[pc - 1]) {
+                    checked[g as usize] = generation;
+                } else {
+                    if std::env::var_os("ROBIGO_VM_TRACE").is_some() {
+                        eprintln!("vm: guard failed for {}", $sym);
+                    }
+                    flush!();
+                    regs[dst] = RVal::V(tryop!(interp.eval(&code.consts[call], env)));
+                    continue;
+                }
+            }
+            let x = leaf_num(&mut vars, env, &regs, $a);
+            let y = leaf_num(&mut vars, env, &regs, $b);
+            let fast = match (x, y) {
+                (Some(x), Some(y)) => $fast(x, y),
+                _ => None,
+            };
+            regs[dst] = match fast {
+                Some(v) => {
+                    // Drop operand references so bindings stay unshared.
+                    for l in [$a, $b] {
+                        if let Leaf::R(r) = l {
+                            regs[*r as usize] = RVal::I(0);
+                        }
+                    }
+                    v
+                }
+                None => {
+                    flush!();
+                    let x = tryop!(leaf_value(interp, &mut vars, env, regs, $a));
+                    let y = tryop!(leaf_value(interp, &mut vars, env, regs, $b));
+                    // Operands that needed evaluating (forced promises) are
+                    // usually scalars.
+                    match (scalar(&x), scalar(&y)) {
+                        (Some(p), Some(q)) => match $fast(p, q) {
+                            Some(v) => v,
+                            None => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
+                        },
+                        _ => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
+                    }
+                }
+            };
+        }};
+    }
     // Assign `$val` to variable `$sym` (slot `$slot`).
     macro_rules! assign {
         ($sym:expr, $slot:expr, $val:expr) => {{
@@ -761,6 +850,12 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
                     }
                 };
+            }
+            Op::ArithL { op, dst, a, b, call, sym, g } => {
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y));
+            }
+            Op::RelL { op, dst, a, b, call, sym, g } => {
+                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)));
             }
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {

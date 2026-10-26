@@ -30,7 +30,7 @@ pub type Slot = u16;
 
 /// An index operand: a numeric constant, a variable (read without running
 /// code), or a register holding an already evaluated pure expression.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Leaf {
     D(f64),
     I(i32),
@@ -122,6 +122,11 @@ pub enum Op {
     /// Call the function `f` (not a base primitive), with the arguments of
     /// call site `site` as promises; falls back to `eval` for builtins.
     Call { dst: Reg, f: Sym, site: u32 },
+    /// `a op b` with operands read directly (constants, variables, or
+    /// registers holding evaluated subexpressions), guarding `sym` itself
+    /// unless `g` is [`NO_GUARD`] (then a `Guard` op precedes it).
+    ArithL { op: ArithOp, dst: Reg, a: Leaf, b: Leaf, call: u32, sym: Sym, g: u32 },
+    RelL { op: RelOp, dst: Reg, a: Leaf, b: Leaf, call: u32, sym: Sym, g: u32 },
     /// `a:b`: an unmaterialized `RVal::Range` for integer-valued scalar
     /// ends, otherwise the builtin.
     Colon { dst: Reg, a: Reg, b: Reg, call: u32 },
@@ -131,6 +136,9 @@ pub enum Op {
     LoopEnter { brk: u32, nxt: u32 },
     LoopExit,
 }
+
+/// `g` of an `ArithL`/`RelL` without its own guard.
+pub const NO_GUARD: u32 = u32::MAX;
 
 /// A memoized `Guard` result, valid for search epoch `epoch` when the
 /// lookup starts in the environment with id `env` at function version
@@ -178,7 +186,9 @@ pub struct Code {
 
 impl Code {
     fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
-        let has_guards = c.ops.iter().any(|o| matches!(o, Op::Guard { .. }));
+        let has_guards = c.ops.iter().any(|o| {
+            matches!(o, Op::Guard { .. }) || matches!(o, Op::ArithL { g, .. } | Op::RelL { g, .. } if *g != NO_GUARD)
+        });
         let memo = if has_guards { c.ops.len() } else { 0 };
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
@@ -714,6 +724,42 @@ impl Compiler {
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
+            }
+            n if plain_args(l, 2)
+                && (arith_op(n).is_some() || rel_op(n).is_some())
+                && self.leaf(&l.args[1].value).is_some() =>
+            {
+                // Operands read in place. A variable on the left is only read
+                // in place when the right is a leaf too: reading it may force
+                // a promise or fail, which must happen before evaluating the
+                // right operand. The guard is folded in when no operand needs
+                // evaluating first (a failed guard re-evaluates everything).
+                let b = self.leaf(&l.args[1].value).unwrap();
+                let a_leaf = self.leaf(&l.args[0].value);
+                let (a, g, guard) = match a_leaf {
+                    Some(a) => {
+                        let g = self.nguards as u32;
+                        self.nguards += 1;
+                        (a, g, None)
+                    }
+                    None => {
+                        let gop = self.guard(h, whole, dst);
+                        let r = self.reg();
+                        self.expr(&l.args[0].value, r, Want::Value);
+                        (Leaf::R(r), NO_GUARD, Some(gop))
+                    }
+                };
+                let call = self.konst(whole.clone());
+                if let Some(op) = arith_op(n) {
+                    self.emit(Op::ArithL { op, dst, a, b, call, sym: h, g });
+                } else {
+                    self.emit(Op::RelL { op: rel_op(n).unwrap(), dst, a, b, call, sym: h, g });
+                }
+                self.vis(w, true);
+                if let Some(gop) = guard {
+                    let end = self.here();
+                    self.patch(gop, end);
+                }
             }
             n if plain_args(l, 2) && (arith_op(n).is_some() || rel_op(n).is_some()) => {
                 let g = self.guard(h, whole, dst);
