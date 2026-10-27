@@ -246,7 +246,10 @@ fn interface_name(i: Interface) -> &'static str {
 
 fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, env: &Env) -> RResult<Value> {
     let (r, args) = resolve(i, call, args, interface)?;
-    if r.nargs >= 0 && args.len() as i32 != r.nargs && interface != Interface::External {
+    // R: dotcode.c do_External/do_dotCode — a registered routine with a
+    // known arity (numArgs > -1) is checked on every interface, .External
+    // included.
+    if r.nargs >= 0 && args.len() as i32 != r.nargs {
         return Err(Flow::error_call(
             call.clone(),
             format!("Incorrect number of arguments ({}), expecting {} for '{}'", args.len(), r.nargs, r.name),
