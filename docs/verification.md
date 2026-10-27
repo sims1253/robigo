@@ -34,6 +34,7 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 | `fastr` | 31,374 | script | FastR's unit-test snippets (GPL-3), one R expression each |
 | `gnur-tests` | 59 | echo | GNU R's own `tests/*.R` |
 | `gnur-examples` | 1,153 | echo | the examples of every help page of base R's packages |
+| `capi` | 20 | script | C cases compiled by each case's `build.sh` (`R CMD SHLIB`), driven from R; GNU R's output is `robigo-capi`'s (G2) target, weighted coverage measured by `scripts/capi-census.py coverage` |
 
 ```sh
 scripts/corpus.py run fastr --filter 'builtins/TestBuiltin_paste/'   # a slice

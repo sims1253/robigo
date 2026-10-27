@@ -86,6 +86,18 @@ def cdir(name):
     return os.path.join(CORPORA, name)
 
 
+def build_corpus(name, conf):
+    """A per-corpus build step: the corpus's `build` key names a script in
+    its directory, run once before cases (the capi corpus compiles its C
+    cases with R CMD SHLIB; built artifacts are gitignored)."""
+    script = conf.get("build")
+    if not script:
+        return
+    env = dict(os.environ, **BASE_ENV)
+    p = os.path.join(cdir(name), script)
+    subprocess.run(["sh", p], cwd=cdir(name), check=True, env=env)
+
+
 # ---------------------------------------------------------------- cases
 
 def load_cases(name):
@@ -244,6 +256,7 @@ def cmd_list(_):
 
 def cmd_record(a):
     conf = corpus_conf(a.name)
+    build_corpus(a.name, conf)
     cases = load_cases(a.name)
     if a.filter:
         rx = re.compile(a.filter)
@@ -310,6 +323,7 @@ def classify(exp, o, e, s):
 
 def cmd_run(a):
     conf = corpus_conf(a.name)
+    build_corpus(a.name, conf)
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
