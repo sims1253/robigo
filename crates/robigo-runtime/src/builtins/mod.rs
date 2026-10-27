@@ -17,6 +17,7 @@ pub mod attrib;
 pub mod bind;
 pub mod character;
 pub mod coerce;
+pub mod complex;
 pub mod conditions;
 pub mod datetime;
 pub mod dotcode;
