@@ -17,6 +17,9 @@ pub static DEFS: &[Builtin] = &[
     internal("serializeToConn", do_serialize_to_conn, 5).invisible(),
     internal("unserializeFromConn", do_unserialize_from_conn, 2),
     internal("serializeInfoFromConn", do_serialize_info_from_conn, 1),
+    internal("saveToConn", do_save_to_conn, 6).invisible(),
+    internal("loadFromConn2", do_load_from_conn2, 3).invisible(),
+    internal("loadInfoFromConn2", do_load_info_from_conn2, 1),
     super::prim("lazyLoadDBfetch", do_lazy_load_db_fetch, 4),
 ];
 
@@ -174,6 +177,180 @@ fn do_serialize_info_from_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &En
         }
         let bytes = io::con_read_all(i, con)?;
         crate::serialize::serialize_info(&bytes)
+    })();
+    if !wasopen {
+        io::close_conn(i, con)?;
+    }
+    r
+}
+
+/// `save(list, con, ascii, version, envir, eval.promises)` — `save()` after
+/// its R wrapper has resolved the connection.
+// R: saveload.c do_saveToConn
+fn do_save_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use super::io;
+    let list = match arg(&args, 0) {
+        Value::Str(s) => s.data.clone(),
+        _ => return Err(Flow::error("first argument must be a character vector")),
+    };
+    let con = io::connection_number(&arg(&args, 1))?;
+    let ascii = crate::coerce::as_logical(&arg(&args, 2));
+    let version = match arg(&args, 3) {
+        Value::Null => crate::serialize::default_serialize_version(),
+        v => as_integer(&v),
+    };
+    if version == NA_INTEGER || version <= 0 {
+        return Err(Flow::error("invalid 'version' argument"));
+    }
+    if version < 2 {
+        return Err(Flow::error(format!("cannot save to connections in version {} format", version)));
+    }
+    let source = arg(&args, 4);
+    let env = match &source {
+        Value::Env(e) => e.clone(),
+        Value::Null => i.global.clone(),
+        _ => return Err(Flow::error("invalid 'environment' argument")),
+    };
+    let ep = crate::coerce::as_logical(&arg(&args, 5));
+    if ep == NA_LOGICAL {
+        return Err(Flow::error("invalid 'eval.promises' argument"));
+    }
+    if ascii != 0 {
+        return Err(Flow::error("robigo: ascii serialization is not implemented yet"));
+    }
+    let (wasopen, ..) = io::conn_state(i, con)?;
+    if !wasopen && !io::open_in_mode(i, con, "wb")? {
+        return Err(Flow::error("cannot open the connection"));
+    }
+    let r = (|| -> RResult<()> {
+        if !io::conn_state(i, con)?.2 {
+            return Err(Flow::error("connection not open for writing"));
+        }
+        if io::conn_state(i, con)?.3 {
+            return Err(Flow::error("cannot save XDR format to a text-mode connection"));
+        }
+        // R writes the magic number, then a tagged pairlist of the objects.
+        let magic = format!("RDX{}\n", version);
+        io::con_write_bytes(i, con, magic.as_bytes())?;
+        let mut items: Vec<Arg> = Vec::with_capacity(list.len());
+        for name in &list {
+            let Some(name) = name.as_deref() else { continue };
+            let sym = crate::sym::Sym::new(name);
+            let val =
+                env.lookup(sym).map(|(v, _)| v).ok_or_else(|| Flow::error(format!("object '{}' not found", name)))?;
+            items.push(Arg::new(Some(sym), val));
+        }
+        let bytes = crate::serialize::serialize_version(&Value::pairlist(items), version);
+        io::con_write_bytes(i, con, &bytes)
+    })();
+    if !wasopen {
+        io::close_conn(i, con)?;
+    }
+    r.map(|_| Value::Null)
+}
+
+/// `loadFromConn2(con, envir, verbose)`.
+// R: saveload.c do_loadFromConn2
+fn do_load_from_conn2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use super::io;
+    let con = io::connection_number(&arg(&args, 0))?;
+    let (wasopen, ..) = io::conn_state(i, con)?;
+    if !wasopen && !io::open_in_mode(i, con, "rb")? {
+        return Err(Flow::error("cannot open the connection"));
+    }
+    let r = (|| -> RResult<Value> {
+        if !io::conn_state(i, con)?.1 {
+            return Err(Flow::error("connection not open for reading"));
+        }
+        if io::conn_state(i, con)?.3 {
+            return Err(Flow::error("can only load() from a binary connection"));
+        }
+        let venv = arg(&args, 1);
+        let Value::Env(aenv) = &venv else {
+            if venv.is_null() {
+                return Err(Flow::error("use of NULL environment is defunct"));
+            }
+            return Err(Flow::error("invalid 'envir' argument"));
+        };
+        let mut magic = [0u8; 5];
+        let count = io::con_read_bytes(i, con, &mut magic)?;
+        if count == 0 {
+            return Err(Flow::error("no input is available"));
+        }
+        let ok = ["RDA2\n", "RDB2\n", "RDX2\n", "RDA3\n", "RDB3\n", "RDX3\n"]
+            .iter()
+            .any(|m| magic.starts_with(m.as_bytes()));
+        if !ok {
+            return Err(Flow::error(
+                "the input does not start with a magic number compatible with loading from a connection",
+            ));
+        }
+        // The rest of the stream is an ordinary serialized object.
+        let rest = io::con_read_all(i, con)?;
+        let obj = crate::serialize::unserialize(i, &rest, Value::Null)?;
+        // R: saveload.c RestoreToEnv — a pairlist (or named list) of objects.
+        let mut names: Vec<RStr> = Vec::new();
+        match &obj {
+            Value::Pairlist(p) => {
+                for a in &p.items {
+                    if let Some(t) = a.tag {
+                        aenv.set_local(t, a.value.clone());
+                        names.push(Some(t.name()));
+                    }
+                }
+            }
+            Value::List(l) => {
+                let ns = obj.names().unwrap_or(Value::Null);
+                let ns = crate::coerce::to_str(&ns);
+                for (k, v) in l.data.iter().enumerate() {
+                    let Some(n) = ns.get(k).and_then(|x| x.clone()) else {
+                        return Err(Flow::error("not a valid named list"));
+                    };
+                    aenv.set_local(crate::sym::Sym::new(&n), v.clone());
+                    names.push(Some(n));
+                }
+            }
+            _ => return Err(Flow::error("loaded data is not in pair list form")),
+        }
+        Ok(Value::strs(names))
+    })();
+    if !wasopen {
+        io::close_conn(i, con)?;
+    }
+    r
+}
+
+/// `loadInfoFromConn2(con)` — the header after a save() magic number.
+// R: saveload.c do_loadFromConn2 (PRIMVAL = 1)
+fn do_load_info_from_conn2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use super::io;
+    let con = io::connection_number(&arg(&args, 0))?;
+    let (wasopen, ..) = io::conn_state(i, con)?;
+    if !wasopen && !io::open_in_mode(i, con, "rb")? {
+        return Err(Flow::error("cannot open the connection"));
+    }
+    let r = (|| -> RResult<Value> {
+        if !io::conn_state(i, con)?.1 {
+            return Err(Flow::error("connection not open for reading"));
+        }
+        if io::conn_state(i, con)?.3 {
+            return Err(Flow::error("can only load() from a binary connection"));
+        }
+        let mut magic = [0u8; 5];
+        let count = io::con_read_bytes(i, con, &mut magic)?;
+        if count == 0 {
+            return Err(Flow::error("no input is available"));
+        }
+        let ok = ["RDA2\n", "RDB2\n", "RDX2\n", "RDA3\n", "RDB3\n", "RDX3\n"]
+            .iter()
+            .any(|m| magic.starts_with(m.as_bytes()));
+        if !ok {
+            return Err(Flow::error(
+                "the input does not start with a magic number compatible with loading from a connection",
+            ));
+        }
+        let rest = io::con_read_all(i, con)?;
+        crate::serialize::serialize_info(&rest)
     })();
     if !wasopen {
         io::close_conn(i, con)?;
