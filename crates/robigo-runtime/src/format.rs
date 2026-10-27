@@ -516,7 +516,7 @@ pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
         }
         Value::Str(x) => match &x.data[i] {
             None => "NA".into(),
-            Some(s) => robigo_syntax::dump::encode_string(s, '"'),
+            Some(s) => escape_string(s, Some('"')),
         },
         Value::Raw(x) => format!("{:02x}", x.data[i]),
         _ => String::new(),

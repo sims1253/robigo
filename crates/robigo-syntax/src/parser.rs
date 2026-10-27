@@ -222,7 +222,8 @@ impl<'a> Parser<'a> {
             _ => {
                 // End of input: GNU R's lexer appends a virtual newline, so
                 // the statement ends on the last line at column 0.
-                let line = self.src.matches('\n').count() + if self.src.ends_with('\n') || self.src.is_empty() { 0 } else { 1 };
+                let line = self.src.matches('\n').count()
+                    + if self.src.ends_with('\n') || self.src.is_empty() { 0 } else { 1 };
                 (line.max(1), 0)
             }
         };
@@ -281,7 +282,8 @@ impl<'a> Parser<'a> {
                     // `_R_USE_PIPEBIND_` asks for it.
                     if !pipebind_enabled() {
                         return Err(ParseError {
-                            message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it".into(),
+                            message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it"
+                                .into(),
                             offset: t.span.start as usize,
                             end: t.span.end as usize,
                             incomplete: false,

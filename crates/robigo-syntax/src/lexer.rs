@@ -516,7 +516,9 @@ impl<'a> Lexer<'a> {
                 out.push(b'\n');
                 continue;
             }
-            if let Some(ch) = self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)? {
+            if let Some(ch) =
+                self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)?
+            {
                 let mut buf = [0u8; 4];
                 out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             }
@@ -738,9 +740,5 @@ impl<'a> Lexer<'a> {
 
 /// `"\uxxxx"`/`"\Uxxxxxxxx"` in the backtick error message.
 fn placeholder_seq(name: &str) -> &str {
-    if name == "u" {
-        "uxxxx"
-    } else {
-        "Uxxxxxxxx"
-    }
+    if name == "u" { "uxxxx" } else { "Uxxxxxxxx" }
 }

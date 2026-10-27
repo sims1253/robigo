@@ -65,8 +65,16 @@ pub enum Expr {
     /// placeholders trigger GNU R's post-statement check, and so pipes can
     /// substitute them.
     Placeholder(Span),
-    Call { fun: Box<Expr>, args: Vec<Arg>, span: Span },
-    Function { formals: Vec<Formal>, body: Box<Expr>, span: Span },
+    Call {
+        fun: Box<Expr>,
+        args: Vec<Arg>,
+        span: Span,
+    },
+    Function {
+        formals: Vec<Formal>,
+        body: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
