@@ -171,7 +171,9 @@ fn quotify(name: &str, quote: char) -> String {
     if is_valid_name(name) || name.is_empty() {
         name.to_string()
     } else {
-        robigo_syntax::dump::encode_string(name, quote)
+        let mut out = Vec::new();
+        robigo_syntax::dump::encode_string(name.as_bytes(), quote as u8, &mut out);
+        String::from_utf8_lossy(&out).into_owned()
     }
 }
 

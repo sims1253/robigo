@@ -1,1 +1,1 @@
-ERROR
+ERROR 1 12 mixing Unicode and octal/hex escapes in a string is not allowed (<input>:1:12)

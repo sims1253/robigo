@@ -1,1 +1,1 @@
-ERROR
+ERROR 1 13 repeated formal argument 'x' (<input>:1:13)

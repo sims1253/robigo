@@ -3,17 +3,34 @@
 
 use std::path::{Path, PathBuf};
 
-use robigo_syntax::dump::dump;
+use robigo_syntax::dump::{dump, dump_error};
 use robigo_syntax::parse_program;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
-fn our_dump(src: &str) -> String {
+fn our_dump(src: &str) -> Vec<u8> {
     match parse_program(src) {
-        Ok(exprs) => exprs.iter().map(dump).collect::<Vec<_>>().join("\n"),
-        Err(_) => "ERROR".to_string(),
+        Ok(exprs) => {
+            let mut out = Vec::new();
+            for (i, e) in exprs.iter().enumerate() {
+                if i > 0 {
+                    out.push(b'\n');
+                }
+                out.extend_from_slice(&dump(e));
+            }
+            // `writeLines` terminates every line, also the last one.
+            if !out.is_empty() {
+                out.push(b'\n');
+            }
+            out
+        }
+        Err(e) => {
+            let mut out = dump_error(src, &e);
+            out.push(b'\n');
+            out
+        }
     }
 }
 
@@ -25,13 +42,15 @@ fn check_dir(dir: &Path) -> Vec<String> {
         if path.extension().is_none_or(|e| e != "R") {
             continue;
         }
-        let src = std::fs::read_to_string(&path).unwrap();
-        let expected = std::fs::read_to_string(path.with_extension("dump"))
+        let src = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+        let expected = std::fs::read(path.with_extension("dump"))
             .unwrap_or_else(|_| panic!("missing oracle dump for {}", path.display()));
         let ours = our_dump(&src);
-        let expected_lines: Vec<&str> = expected.lines().collect();
-        let our_lines: Vec<&str> = ours.lines().collect();
-        if expected_lines != our_lines {
+        if expected != ours {
+            let expected = String::from_utf8_lossy(&expected);
+            let ours = String::from_utf8_lossy(&ours);
+            let expected_lines: Vec<&str> = expected.lines().collect();
+            let our_lines: Vec<&str> = ours.lines().collect();
             let mut msg = format!("{}:\n", path.display());
             for i in 0..expected_lines.len().max(our_lines.len()) {
                 let e = expected_lines.get(i).copied().unwrap_or("<none>");
@@ -61,7 +80,7 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] =
     &[("graphics/demo/Hershey.R", "\\xc1 escapes produce a Latin-1 byte; robigo strings are always valid UTF-8")];
 
 /// Parse a large external corpus (e.g. GNU R's own `src/library`) and compare
-/// against dumps from `scripts/oracle-parse-corpus.R`. Run with
+/// against dumps from `scripts/oracle-parse-batch.R`. Run with
 /// `ROBIGO_PARSE_CORPUS=SRC_DIR ROBIGO_PARSE_DUMPS=DUMP_DIR cargo test -- --ignored`.
 #[test]
 #[ignore]
@@ -86,22 +105,24 @@ fn external_corpus_matches_gnu_r() {
                 continue;
             }
             let dump_path = Path::new(&dumps).join(format!("{}.dump", rel.display()));
-            let Ok(expected) = std::fs::read_to_string(&dump_path) else { continue };
+            let Ok(expected) = std::fs::read(&dump_path) else { continue };
             let Ok(bytes) = std::fs::read(&path) else { continue };
-            let src_text = String::from_utf8_lossy(&bytes);
+            let src_text = String::from_utf8_lossy(&bytes).into_owned();
             total += 1;
             let ours = our_dump(&src_text);
-            let e: Vec<&str> = expected.lines().collect();
-            let o: Vec<&str> = ours.lines().collect();
-            if e != o {
-                let first = (0..e.len().max(o.len())).find(|&i| e.get(i) != o.get(i)).unwrap();
-                let clip = |s: Option<&&str>| s.map(|s| s.chars().take(300).collect::<String>()).unwrap_or_default();
+            if expected != ours {
+                let expected = String::from_utf8_lossy(&expected);
+                let ours = String::from_utf8_lossy(&ours);
+                let first = (0..expected.lines().count().max(ours.lines().count()))
+                    .find(|&i| expected.lines().nth(i) != ours.lines().nth(i))
+                    .unwrap();
+                let clip = |s: Option<&str>| s.map(|s| s.chars().take(300).collect::<String>()).unwrap_or_default();
                 failed.push(format!(
                     "{} (expr {}):\n    R:  {}\n    robigo: {}",
                     rel.display(),
                     first + 1,
-                    clip(e.get(first)),
-                    clip(o.get(first))
+                    clip(expected.lines().nth(first)),
+                    clip(ours.lines().nth(first))
                 ));
             }
         }

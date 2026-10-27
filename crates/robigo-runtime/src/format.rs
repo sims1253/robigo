@@ -429,15 +429,15 @@ pub fn char_width(c: char) -> usize {
 
 /// Escape a string for printing (R's `EncodeString` without padding).
 pub fn escape_string(s: &str, quote: Option<char>) -> String {
-    match quote {
-        Some(q) => robigo_syntax::dump::encode_string(s, q),
-        None => {
-            let quoted = robigo_syntax::dump::encode_string(s, '"');
-            // Strip the quotes and un-escape `\"`.
-            let inner = &quoted[1..quoted.len() - 1];
-            inner.replace("\\\"", "\"")
-        }
+    let q = quote.unwrap_or('"') as u8;
+    let mut out = Vec::new();
+    robigo_syntax::dump::encode_string(s.as_bytes(), q, &mut out);
+    if quote.is_none() {
+        // Strip the quotes and un-escape `\"`.
+        let inner = String::from_utf8_lossy(&out[1..out.len() - 1]).into_owned();
+        return inner.replace("\\\"", "\"");
     }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `Rstrlen`: display width of the escaped (and maybe quoted) string.
@@ -516,7 +516,7 @@ pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
         }
         Value::Str(x) => match &x.data[i] {
             None => "NA".into(),
-            Some(s) => robigo_syntax::dump::encode_string(s, '"'),
+            Some(s) => escape_string(s, Some('"')),
         },
         Value::Raw(x) => format!("{:02x}", x.data[i]),
         _ => String::new(),
