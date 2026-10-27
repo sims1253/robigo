@@ -336,6 +336,36 @@ fn command_args(argv0: &str, args: &[String], cl: &CommandLine) -> Vec<String> {
     out
 }
 
+/// Was robigo invoked Rscript-style — a positional file, or `-e`
+/// expressions — rather than as `R` (`-f`/`--file=`, or the console)?
+/// The distinction decides who consumes `--default-packages=` (R: unix/
+/// Rscript.c) and how `commandArgs()` is reported.
+fn is_rscript_invocation(args: &[String]) -> bool {
+    let mut e_mode = false;
+    let mut k = 0;
+    while k < args.len() {
+        if args[k] == "-e" {
+            e_mode = true;
+            k += 2;
+            continue;
+        }
+        if e_mode {
+            break;
+        }
+        match args[k].as_str() {
+            "-" => return true, // the script is stdin
+            "-f" | "--args" | "--interactive" => return false,
+            a if a.starts_with("--file=") => return false,
+            // Only `--` options are forwarded to R; another single-dash
+            // option (`-q`, ...) makes this an `R` invocation.
+            a if !a.starts_with('-') => return true, // the file
+            _ => {}
+        }
+        k += 1;
+    }
+    e_mode
+}
+
 fn real_main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("parse") {
@@ -359,6 +389,32 @@ fn real_main() -> ExitCode {
     if let Some(pos) = args.iter().position(|a| a == "--no-base") {
         load_base = false;
         args.remove(pos);
+    }
+    // In Rscript mode (a positional file, or `-e`), Rscript consumes
+    // `--default-packages=` itself and exports the value (R:
+    // unix/Rscript.c). As R's own option (with `-f`/`--file=`, at the
+    // console) it stays unknown and is warned about below, exactly like
+    // `R` does.
+    if is_rscript_invocation(&args) {
+        let mut k = 0;
+        let mut e_mode = false;
+        while k < args.len() {
+            if args[k] == "-e" {
+                e_mode = true;
+                k += 2;
+                continue;
+            }
+            if e_mode || !args[k].starts_with("--") {
+                break; // the script (its arguments follow it)
+            }
+            if let Some(v) = args[k].strip_prefix("--default-packages=") {
+                // SAFETY: single-threaded at this point.
+                unsafe { std::env::set_var("R_DEFAULT_PACKAGES", v) };
+                args.remove(k);
+                continue;
+            }
+            k += 1;
+        }
     }
     let mut cl = CommandLine::default();
     let mut kept = Vec::new();
