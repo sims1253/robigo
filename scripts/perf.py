@@ -178,7 +178,7 @@ def cmd_run(a):
             if isinstance(rt, dict):
                 rt.pop("out", None)
     out = a.out or os.path.join(STATE, "perf", "latest.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     doc = {"metric": a.metric, "robigo": robigo, "results": results}
     if os.path.exists(out) and a.merge:
         with open(out) as f:
