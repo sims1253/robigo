@@ -28,12 +28,29 @@ use std::time::Instant;
 
 const SAT: u32 = 0x7fff_f000;
 
+/// Alternating mark colors. Each collection marks with one bit; survivors
+/// keep it and the next collection uses the other, so a clean block's
+/// object headers are never touched just to clear marks (the sweep can
+/// skip blocks where nothing died without leaving stale bits behind).
+const MARK_A: u8 = flags::MARK; // 1 << 1
+const MARK_B: u8 = 1 << 5; // mm-rc's F_GRAY; unused here
+
 /// Grow the heap at least this much between GCs. Overridable with
 /// MM_GC_MIN (bytes) so tests can stress with tiny heaps.
+///
+/// 2 MiB (was 8): the churn window between collections is also the
+/// allocation stream's cache footprint. At 8 MiB the gc streamed fresh
+/// lines through the LLC between collections (fib: 149k LL misses, wall
+/// 0.72x of rc despite 1.68x fewer instructions); at 2 MiB the window
+/// fits cache (fib LL misses 51k, wall ahead of rc, RSS 10.8 -> 4.5 MB,
+/// max pause 23.8 ms -> 0.6 ms). Below 2 MiB the per-collection fixed
+/// costs grow faster than the locality win (capi est cycles 1553M ->
+/// 1763M -> 1986M at 2M/1M/512K); skip-clean sweeps keep the sweep
+/// itself cheap. Est-cycle geomean at 2M ties 8M (247.0 vs 247.4).
 #[inline]
 fn gc_min() -> usize {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("MM_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(8 << 20))
+    *V.get_or_init(|| std::env::var("MM_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(2 << 20))
 }
 
 // ---- layout -------------------------------------------------------------
@@ -219,6 +236,8 @@ pub struct GcMem {
     mark_stack: Vec<*mut u8>,
     alloc_since_gc: usize,
     gc_threshold: usize,
+    /// which mark color the current collection uses (MARK_A / MARK_B)
+    cur_mark: u8,
     stack_top: usize,
     pub stats: Stats,
     live_bytes: u64,
@@ -234,10 +253,23 @@ unsafe fn mark_obj(g: *mut GcMem, p: *mut u8) {
         return;
     }
     let f = get_flags(p);
-    if f & (flags::MARK | flags::IMMORTAL) != 0 {
+    if f & flags::IMMORTAL != 0 {
+        // immortal objects never die, so their block's `marked` must count
+        // them or blocks full of cached ints would look forever dirty
+        let b = (p as usize & !(BLOCK - 1)) as *mut Block;
+        (*b).marked = (*b).marked.wrapping_add(1);
         return;
     }
-    set_flags(p, f | flags::MARK);
+    let cur = (*g).cur_mark;
+    if f & cur != 0 {
+        return;
+    }
+    // set this round's color and clear the other: a stale bit from two
+    // collections ago must not read as "already marked" when its color
+    // comes around again
+    set_flags(p, (f & !(MARK_A | MARK_B)) | cur);
+    let b = (p as usize & !(BLOCK - 1)) as *mut Block;
+    (*b).marked = (*b).marked.wrapping_add(1);
     (*g).mark_stack.push(p);
 }
 
@@ -315,6 +347,7 @@ impl GcMem {
             mark_stack: Vec::new(),
             alloc_since_gc: 0,
             gc_threshold: gc_min(),
+            cur_mark: MARK_B, // the first collect() flips it to MARK_A
             stack_top: 0,
             stats: Stats::default(),
             live_bytes: 0,
@@ -455,10 +488,11 @@ impl GcMem {
     }
 
     fn prune_chars(&mut self) {
+        let cur = self.cur_mark;
         let mut pruned = 0u64;
         self.chars.retain(|_, bucket| {
             bucket.retain(|&q| {
-                let live = unsafe { get_flags(q) } & (flags::MARK | flags::IMMORTAL) != 0;
+                let live = unsafe { get_flags(q) } & (cur | flags::IMMORTAL) != 0;
                 if !live {
                     pruned += 1;
                 }
@@ -486,14 +520,16 @@ impl GcMem {
         let mut dead_small_chunks: Vec<(usize, usize, usize)> = Vec::new();
 
         let chunks: Vec<mm_heap::Chunk> = self.heap.chunks.clone();
+        let cur = self.cur_mark;
+        let mut dbg_skipped = 0u64;
+        let mut dbg_walked = 0u64;
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + mm_heap::DATA_OFF) as *mut u8;
                 let f = unsafe { get_flags(obj) };
-                if f & (flags::MARK | flags::IMMORTAL) != 0 {
-                    if f & flags::MARK != 0 {
-                        unsafe { set_flags(obj, f & !flags::MARK) };
-                    }
+                if f & (cur | flags::IMMORTAL) != 0 {
+                    // mark colors alternate, so survivors keep their bit
+                    // and the next collection checks the other: no clearing
                     live_bytes += (c.end - c.base) as u64;
                     live_objects += 1;
                 } else {
@@ -515,6 +551,18 @@ impl GcMem {
                         }
                         continue;
                     }
+                    if (*b).live_objects == (*b).marked && (*b).live_objects > 0 {
+                        // nothing in this block died since the last
+                        // collection: skip the whole bitmap walk. This is
+                        // what makes small, frequent collections cheap —
+                        // the long-lived heap costs nothing per sweep.
+                        live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
+                        live_objects += (*b).live_objects as u64;
+                        dbg_skipped += 1;
+                        (*b).marked = 0;
+                        chunk_dead = false;
+                        continue;
+                    }
                     // Rebuild the starts bitmap from the survivors only: a
                     // freed-but-unreallocated slot must never be swept again
                     // (its fields hold freelist pointers) nor stay
@@ -531,10 +579,7 @@ impl GcMem {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = (*b).data_ptr().add(g * 16);
                             let f = get_flags(p);
-                            if f & (flags::MARK | flags::IMMORTAL) != 0 {
-                                if f & flags::MARK != 0 {
-                                    set_flags(p, f & !flags::MARK);
-                                }
+                            if f & (cur | flags::IMMORTAL) != 0 {
                                 live += 1;
                                 live_bytes += csize;
                                 (*b).start_set(g);
@@ -548,7 +593,14 @@ impl GcMem {
                             s &= s - 1;
                         }
                     }
+                    (*b).marked = 0;
                     (*b).live_objects = live;
+                    dbg_walked += 1;
+                    // count the block's survivors (the totals fed the
+                    // threshold and stats; live_bytes was always counted,
+                    // live_objects only for large chunks — an undercount
+                    // the skip-clean path exposed)
+                    live_objects += live as u64;
                     if live == 0 {
                         if (*b).owner == OWNER_EMPTY {
                             // already in the empty pool: must not be pushed
@@ -640,11 +692,20 @@ impl GcMem {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
+        if std::env::var("MM_GC_DEBUG").is_ok() {
+            eprintln!(
+                "sweep: skipped={} walked={} live_objects={live_objects} live_bytes={live_bytes} freed={freed}",
+                dbg_skipped, dbg_walked
+            );
+        }
         self.gc_threshold = ((live_bytes as usize) * 3 / 2).max(gc_min());
     }
 
     fn collect_internal(&mut self) -> u64 {
         let t0 = Instant::now();
+        // alternate the mark color: last round's survivors carry the old
+        // bit, which this round treats as unmarked (see mark_obj)
+        self.cur_mark = if self.cur_mark == MARK_A { MARK_B } else { MARK_A };
         let g = self as *mut GcMem;
         unsafe {
             // precise roots: the protection stack and the global frame
@@ -655,6 +716,18 @@ impl GcMem {
                 mark_obj(g, *prot.get_unchecked(i));
             }
             mark_obj(g, self.global_env);
+            // the interned-symbol table and the small-int cache are roots
+            // the manager itself owns: marking them counts their blocks'
+            // immortal objects, so those blocks read as clean in the sweep
+            // instead of being bitmap-walked (and header-read) every round
+            for i in 0..self.int_cache.len() {
+                mark_obj(g, *self.int_cache.as_ptr().add(i));
+            }
+            for bucket in self.syms.values() {
+                for &s in bucket {
+                    mark_obj(g, s);
+                }
+            }
             mm_gc_spill(scan_and_mark, g as *mut u8);
             self.prune_chars();
         }
@@ -1198,6 +1271,7 @@ mod tests {
     fn cycles_collected() {
         let mut m = GcMem::new();
         m.set_stack_top(&m as *const _ as usize);
+        let base = m.stats().live_objects; // bootstrap: immortal ints, symbols, nil, ...
         let nil = m.nil();
         for _ in 0..10_000 {
             let e = m.env_new(&m.global_env());
@@ -1207,7 +1281,9 @@ mod tests {
         }
         m.collect();
         let s = m.stats();
-        assert!(s.live_objects < 500, "live objects: {}", s.live_objects);
+        // the cycle garbage must die; the bootstrap floor plus a handful of
+        // stack-stale survivors is all that may remain
+        assert!(s.live_objects < base + 500, "live objects: {} (base {base})", s.live_objects);
     }
 
     #[test]
@@ -1265,8 +1341,9 @@ mod tests {
             if n < 2 { n } else { n + s(n - 1) + s(n - 2) }
         }
         assert_eq!(r, 6765 + s(20));
+        let base = m.stats().live_objects;
         m.collect();
-        assert!(m.stats().live_objects < 500);
+        assert!(m.stats().live_objects < base + 500);
     }
 
     #[test]

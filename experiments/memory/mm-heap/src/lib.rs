@@ -53,11 +53,23 @@ pub struct Block {
     pub granules: u32,
     pub freelist: *mut u8,
     pub chunk_base: *mut u8,
-    _rsv: [u8; 24],
+    /// objects in this block the last mark phase found live (immortal
+    /// included). The sweeper compares it with `live_objects`: equal means
+    /// nothing died here and the block's bitmap need not be walked at all.
+    /// Reset to 0 by the sweep that reads it. Large chunks use the same
+    /// pseudo-header word harmlessly (the sweeper never reads it there).
+    pub marked: u32,
+    _rsv: [u8; 20],
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     pub data: [MaybeUninit<u8>; BLOCK - DATA_OFF],
 }
+
+// the sweeper and the conservative resolver index `starts`/`data` through
+// these offsets; `marked` must not push them around
+const _: () = assert!(std::mem::offset_of!(Block, starts) == 64);
+const _: () = assert!(std::mem::offset_of!(Block, data) == DATA_OFF);
+const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
 
 impl Block {
     #[inline]
@@ -149,7 +161,8 @@ impl Heap {
                             granules: BLOCK_GRANULES,
                             freelist: std::ptr::null_mut(),
                             chunk_base: base as *mut u8,
-                            _rsv: [0; 24],
+                            marked: 0,
+                            _rsv: [0; 20],
                             starts: [0; START_WORDS],
                             data: [MaybeUninit::uninit(); BLOCK - DATA_OFF],
                         },
