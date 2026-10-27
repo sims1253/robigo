@@ -256,12 +256,14 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
 
 /// The last `PARSE_CONTEXT_SIZE` characters before `end`, tab-expanded
 /// like `tabExpand` and split into lines like `getParseContext` (R:
-/// main/source.c), which also drops an empty line after a newline.
+/// main/source.c), which also drops an empty line after a newline. R's
+/// ring buffer works in bytes, so a slice can split a multi-byte
+/// character; the pieces are shown lossily instead of panicking.
 fn parse_context(buf: &str, end: usize) -> Vec<String> {
     let end = end.min(buf.len());
     let start = floor_char_boundary(buf, end.saturating_sub(PARSE_CONTEXT_SIZE));
     let mut context = String::new();
-    for c in buf[start..end].chars() {
+    for c in String::from_utf8_lossy(&buf.as_bytes()[start..end]).chars() {
         if c == '\t' {
             // Fill with spaces to the next multiple of 8.
             loop {
