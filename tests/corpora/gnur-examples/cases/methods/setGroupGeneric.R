@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setGroupGeneric
 ### Title: Create a Group Generic Version of a Function
 ### Aliases: setGroupGeneric

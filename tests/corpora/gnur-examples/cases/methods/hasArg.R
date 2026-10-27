@@ -1,3 +1,4 @@
+library(methods)
 ### Name: hasArg
 ### Title: Look for an Argument in the Call
 ### Aliases: hasArg

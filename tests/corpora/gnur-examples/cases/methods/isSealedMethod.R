@@ -1,3 +1,4 @@
+library(methods)
 ### Name: isSealedMethod
 ### Title: Check for a Sealed Method or Class
 ### Aliases: isSealedMethod isSealedClass

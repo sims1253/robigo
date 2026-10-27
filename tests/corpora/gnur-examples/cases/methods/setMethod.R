@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setMethod
 ### Title: Create and Save a Method
 ### Aliases: setMethod

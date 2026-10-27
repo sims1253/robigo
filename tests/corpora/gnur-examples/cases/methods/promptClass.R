@@ -1,3 +1,4 @@
+library(methods)
 ### Name: promptClass
 ### Title: Generate a Shell for Documentation of a Formal Class
 ### Aliases: promptClass

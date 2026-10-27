@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setAs
 ### Title: Methods for Coercing an Object to a Class
 ### Aliases: coerce coerce<- setAs coerce-methods coerce,ANY,array-method

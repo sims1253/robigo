@@ -1,3 +1,4 @@
+library(methods)
 ### Name: classesToAM
 ### Title: Compute an Adjacency Matrix for Superclasses of Class
 ###   Definitions

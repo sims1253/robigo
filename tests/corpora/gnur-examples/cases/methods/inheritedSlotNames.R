@@ -1,3 +1,4 @@
+library(methods)
 ### Name: inheritedSlotNames
 ### Title: Names of Slots Inherited From a Super Class
 ### Aliases: inheritedSlotNames

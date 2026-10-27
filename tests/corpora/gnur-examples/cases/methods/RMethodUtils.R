@@ -1,3 +1,4 @@
+library(methods)
 ### Name: RMethodUtils
 ### Title: Method Utilities
 ### Aliases: substituteFunctionArgs makeGeneric makeStandardGeneric

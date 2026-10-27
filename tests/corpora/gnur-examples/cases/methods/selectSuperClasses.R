@@ -1,3 +1,4 @@
+library(methods)
 ### Name: selectSuperClasses
 ### Title: Super Classes (of Specific Kinds) of a Class
 ### Aliases: selectSuperClasses .selectSuperClasses

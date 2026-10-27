@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setOldClass
 ### Title: Register Old-Style (S3) Classes and Inheritance
 ### Aliases: setOldClass .setOldIs POSIXct-class POSIXlt-class POSIXt-class

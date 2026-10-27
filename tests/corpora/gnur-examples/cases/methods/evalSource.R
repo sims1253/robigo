@@ -1,3 +1,4 @@
+library(methods)
 ### Name: evalSource
 ### Title: Use Function Definitions from a Source File without Reinstalling
 ###   a Package

@@ -1,3 +1,4 @@
+library(methods)
 ### Name: S3Part
 ### Title: S4 Classes that Contain S3 Classes
 ### Aliases: S3Part S3Part<- S3Class S3Class<- isXS3Class slotsFromS3 S4 S3

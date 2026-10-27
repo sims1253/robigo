@@ -1,3 +1,4 @@
+library(methods)
 ### Name: testInheritedMethods
 ### Title: Test for and Report about Selection of Inherited Methods
 ### Aliases: testInheritedMethods MethodSelectionReport-class .Other-class

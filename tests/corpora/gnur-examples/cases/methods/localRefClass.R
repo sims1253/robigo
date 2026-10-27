@@ -1,3 +1,4 @@
+library(methods)
 ### Name: LocalReferenceClasses
 ### Title: Localized Objects based on Reference Classes
 ### Aliases: LocalReferenceClasses localRefClass-class

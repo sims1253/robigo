@@ -1,3 +1,4 @@
+library(methods)
 ### Name: canCoerce
 ### Title: Can an Object be Coerced to a Certain S4 Class?
 ### Aliases: canCoerce

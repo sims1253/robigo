@@ -1,3 +1,4 @@
+library(methods)
 ### Name: nonStructure-class
 ### Title: A non-structure S4 Class for basic types
 ### Aliases: nonStructure-class Math,nonStructure-method

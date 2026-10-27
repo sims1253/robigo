@@ -1,3 +1,4 @@
+library(methods)
 ### Name: RClassUtils
 ### Title: Utilities for Managing Class Definitions
 ### Aliases: completeSubclasses newClassRepresentation

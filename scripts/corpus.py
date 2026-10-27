@@ -436,7 +436,7 @@ def import_gnur_tests(conf):
 
 EXTRACT_EXAMPLES = r"""
 args <- commandArgs(TRUE); out <- args[1]; pkgs <- args[-1]
-attached <- c("base", "stats", "graphics", "grDevices", "utils", "datasets", "methods")
+attached <- c("base", "stats", "graphics", "grDevices", "utils", "datasets")
 for (p in pkgs) {
   db <- tools::Rd_db(p)
   dir.create(file.path(out, p), recursive = TRUE, showWarnings = FALSE)

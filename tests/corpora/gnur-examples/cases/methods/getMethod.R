@@ -1,3 +1,4 @@
+library(methods)
 ### Name: getMethod
 ### Title: Get or Test for the Definition of a Method
 ### Aliases: getMethod findMethod existsMethod selectMethod hasMethod

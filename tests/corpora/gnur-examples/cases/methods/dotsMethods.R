@@ -1,3 +1,4 @@
+library(methods)
 ### Name: dotsMethods
 ### Title: The Use of '...' in Method Signatures
 ### Aliases: dotsMethods

@@ -1,3 +1,4 @@
+library(methods)
 ### Name: as
 ### Title: Force an Object to Belong to a Class
 ### Aliases: as as<-

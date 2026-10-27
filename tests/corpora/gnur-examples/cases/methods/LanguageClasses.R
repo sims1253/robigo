@@ -1,3 +1,4 @@
+library(methods)
 ### Name: language-class
 ### Title: Classes to Represent Unevaluated Language Objects
 ### Aliases: language-class (-class <--class call-class for-class if-class

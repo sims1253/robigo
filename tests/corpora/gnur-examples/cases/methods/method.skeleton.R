@@ -1,3 +1,4 @@
+library(methods)
 ### Name: method.skeleton
 ### Title: Create a Skeleton File for a New Method
 ### Aliases: method.skeleton

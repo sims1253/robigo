@@ -1,3 +1,4 @@
+library(methods)
 ### Name: representation
 ### Title: Construct a Representation or a Prototype for a Class Definition
 ### Aliases: representation prototype

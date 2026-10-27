@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setClass
 ### Title: Create a Class Definition
 ### Aliases: setClass classGeneratorFunction-class

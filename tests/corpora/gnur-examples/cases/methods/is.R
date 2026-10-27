@@ -1,3 +1,4 @@
+library(methods)
 ### Name: is
 ### Title: Is an Object from a Class?
 ### Aliases: is extends

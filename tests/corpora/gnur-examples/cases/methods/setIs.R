@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setIs
 ### Title: Specify a Superclass Explicitly
 ### Aliases: setIs

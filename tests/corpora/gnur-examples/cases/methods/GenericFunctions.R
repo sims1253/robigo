@@ -1,3 +1,4 @@
+library(methods)
 ### Name: GenericFunctions
 ### Title: Tools for Managing Generic Functions
 ### Aliases: GenericFunctions isGeneric isGroup removeGeneric getGenerics

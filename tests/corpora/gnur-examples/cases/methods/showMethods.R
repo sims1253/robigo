@@ -1,3 +1,4 @@
+library(methods)
 ### Name: showMethods
 ### Title: Show all the methods for the specified function(s) or class
 ### Aliases: showMethods .S4methods

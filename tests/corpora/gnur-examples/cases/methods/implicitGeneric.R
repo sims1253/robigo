@@ -1,3 +1,4 @@
+library(methods)
 ### Name: implicitGeneric
 ### Title: Manage Implicit Versions of Generic Functions
 ### Aliases: implicitGeneric setGenericImplicit prohibitGeneric

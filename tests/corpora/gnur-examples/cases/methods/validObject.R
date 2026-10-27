@@ -1,3 +1,4 @@
+library(methods)
 ### Name: validObject
 ### Title: Test the Validity of an Object
 ### Aliases: validObject getValidity setValidity

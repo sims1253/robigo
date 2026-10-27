@@ -1,3 +1,4 @@
+library(methods)
 ### Name: StructureClasses
 ### Title: Classes Corresponding to Basic Structures
 ### Aliases: structure-class matrix-class array-class ts-class

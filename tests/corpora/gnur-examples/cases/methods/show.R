@@ -1,3 +1,4 @@
+library(methods)
 ### Name: show
 ### Title: Show an Object
 ### Aliases: show show-methods show,ANY-method show,traceable-method

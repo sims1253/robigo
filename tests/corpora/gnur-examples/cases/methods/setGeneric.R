@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setGeneric
 ### Title: Create a Generic Version of a Function
 ### Aliases: setGeneric

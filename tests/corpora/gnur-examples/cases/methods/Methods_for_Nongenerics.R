@@ -1,3 +1,4 @@
+library(methods)
 ### Name: Methods_for_Nongenerics
 ### Title: Methods for Non-Generic Functions in Other Packages
 ### Aliases: Methods_for_Nongenerics

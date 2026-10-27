@@ -1,3 +1,4 @@
+library(methods)
 ### Name: getClass
 ### Title: Get Class Definition
 ### Aliases: getClass getClassDef

@@ -1,3 +1,4 @@
+library(methods)
 ### Name: S4groupGeneric
 ### Title: S4 Group Generic Functions
 ### Aliases: S4groupGeneric GroupGenericFunctions Math Ops matrixOps

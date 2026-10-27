@@ -1,3 +1,4 @@
+library(methods)
 ### Name: getPackageName
 ### Title: The Name associated with a Given Package
 ### Aliases: getPackageName setPackageName packageSlot packageSlot<-

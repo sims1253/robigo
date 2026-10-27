@@ -1,3 +1,4 @@
+library(methods)
 ### Name: ReferenceClasses
 ### Title: Objects With Fields Treated by Reference (OOP-style)
 ### Aliases: ReferenceClasses setRefClass getRefClass initFieldArgs

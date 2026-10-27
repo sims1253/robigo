@@ -1,3 +1,4 @@
+library(methods)
 ### Name: slot
 ### Title: The Slots in an Object from a Formal Class
 ### Aliases: slot .hasSlot slot<- slotNames .slotNames getSlots

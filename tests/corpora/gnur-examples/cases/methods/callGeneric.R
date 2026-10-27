@@ -1,3 +1,4 @@
+library(methods)
 ### Name: callGeneric
 ### Title: Call the Current Generic Function from a Method
 ### Aliases: callGeneric

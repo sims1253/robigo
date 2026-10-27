@@ -1,3 +1,4 @@
+library(methods)
 ### Name: callNextMethod
 ### Title: Call an Inherited Method
 ### Aliases: callNextMethod

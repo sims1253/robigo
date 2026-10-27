@@ -1,3 +1,4 @@
+library(methods)
 ### Name: cbind2
 ### Title: Combine two Objects by Columns or Rows
 ### Aliases: cbind2 rbind2 cbind2-methods cbind2,ANY,ANY-method

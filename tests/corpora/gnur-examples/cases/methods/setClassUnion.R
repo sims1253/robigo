@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setClassUnion
 ### Title: Classes Defined as the Union of Other Classes
 ### Aliases: setClassUnion isClassUnion ClassUnionRepresentation-class

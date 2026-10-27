@@ -1,3 +1,4 @@
+library(methods)
 ### Name: className
 ### Title: Class names including the corresponding package
 ### Aliases: className multipleClasses className-class

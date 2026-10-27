@@ -1,3 +1,4 @@
+library(methods)
 ### Name: findMethods
 ### Title: Description of the Methods Defined for a Generic Function
 ### Aliases: findMethods findMethodSignatures hasMethods getMethods

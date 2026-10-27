@@ -1,3 +1,4 @@
+library(methods)
 ### Name: setLoadActions
 ### Title: Set Actions For Package Loading
 ### Aliases: setLoadAction setLoadActions getLoadActions hasLoadAction

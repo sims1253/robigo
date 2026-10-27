@@ -1,3 +1,4 @@
+library(methods)
 ### Name: new
 ### Title: Generate an Object from a Class
 ### Aliases: new initialize
