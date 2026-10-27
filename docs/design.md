@@ -529,6 +529,15 @@ measure.
   copy-on-modify; deferred counting for VM registers in both. Judged on
   binarytrees, closure calls (an environment per call), `lapply` and the
   C API's `PROTECT` traffic.
+  **Measured (`experiments/memory`, PRs #7 and #12): (b) wins.** Over seven
+  R-shaped workloads, reference counting needs 1.65x the instructions and
+  1.38x the estimated cycles (callgrind with cache simulation); its early
+  wall-time wins came from cache-hot slot reuse, which the mark-region
+  heap matches by reusing a 2 MiB floor before growing and by skipping
+  sweeps of fully live blocks. The heap is now also ahead on wall time,
+  uses about half the memory on churn workloads and pauses 4-40x less.
+  Open: incremental marking (binarytrees: 61 MB, 21 ms marks), a
+  generational nursery (needs write barriers), a borrowed-read object API.
 - **Global state.** GLM-5.3 and Gemini 4 Argon call `thread_local!` state
   fundamental; Opus 5.5 finds single-threaded values fine, as in GNU R.
   **Decision:** values stay single-threaded (atomic counts would slow every

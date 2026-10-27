@@ -113,12 +113,14 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   interop), and ALTREP classes. `DATAPTR` materializes; element and region
   access does not have to.
 - **Copy-on-modify** by reference counts, as in GNU R since 4.0.
-- **Memory manager:** decided by measurement in G2 (`docs/design.md`
-  §5.5): (a) reference counts with a trial-deletion cycle collector, or
-  (b) a non-moving mark-region heap with conservative stack scanning,
-  counts kept only for copy-on-modify. Both keep objects at fixed
-  addresses (C holds pointers), make `PROTECT`/`R_PreserveObject` roots,
-  and support finalizers and weak references.
+- **Memory manager** (decided by measurement, `docs/design.md` §5.5,
+  `experiments/memory`): a non-moving mark-region heap with conservative
+  scanning of the Rust stack, a precise root stack for `PROTECT` and
+  `R_PreserveObject`, reference counts kept only for copy-on-modify
+  (heap-to-heap references and bindings, like GNU R's REFCNT), a 2 MiB
+  reuse floor and skip-clean sweeps. Rust code holds `Sexp`s as plain
+  `Copy` pointers. Objects stay at fixed addresses (C holds pointers);
+  finalizers and weak references build on the same tracing.
 - **Instance state:** symbol and string tables, epochs and caches belong
   to a runtime instance, not to `thread_local!`s, so several runtimes can
   live in one process (embedding). Values are single-threaded.
