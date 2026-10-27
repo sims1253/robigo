@@ -5,6 +5,48 @@ numeric-policy seam. Metric: (1) bit agreement with x87 over property
 tests, operations covered; (2) instructions per operation; (3) policy
 kernels implemented and benchmarked.
 
+## 2026-10-28: interpreter policy wired through reduction callers
+
+- why: fast kernels are useful only when real R operations select them,
+  while separate interpreter instances must retain independent policies.
+- what: `Interp::numerics`, initialized once from `ROBIGO_NUMERICS=fast`
+  with exact as the default. Summary helpers, matrix reductions, and the
+  existing covariance/correlation algorithms select typed accumulators at
+  entry. Scalar correction and missing-value passes use that same type.
+  The mode is not baked into the current VM or JIT; future specialization
+  must add it to the compiled-code cache key.
+- result: all 9 policy operations wired into their runtime consumers.
+  Exact output unchanged; kept. The real-mean algorithm moved unchanged
+  into the policy module. An oracle check confirmed GNU R's corrected
+  mean of `c(1e16, 1, -1e16)` is `0.3336588541666667`, including its
+  extended-precision rounding, rather than a rounded mathematical 1/3.
+- verification: `cargo test -p robigo-numerics` (36 tests + doctest),
+  `cargo test --release -p robigo-numerics -p robigo-runtime -p robigo-cli`
+  (36 + 21 + 7 unit tests, 2 runtime integration tests, doctest, and all
+  three conformance checks including the ratchet and tier agreement),
+  `cargo fmt --check`. Four new runtime tests cover independent modes,
+  missing values and names, chunk/column state, and covariance use modes.
+  End-to-end scripts compared exact stdout/stderr/status with both the
+  saved pre-change binary and GNU R, and fast results within tolerance,
+  under AST, VM, and JIT. Unset, exact, unrecognized, and fast environment
+  values were exercised. Numerics cross-checks build for aarch64 and
+  wasm32; wasm retains the existing unrelated libm import warning.
+- filtered FastR check: `TestBuiltin_(sum|prod|mean|cumsum|cumprod|colSums|colMeans|rowSums|rowMeans|cov|cor)/`,
+  `--jobs 1`: **347/348 pass, 0 regressions**. The one stderr mismatch,
+  `TestBuiltin_rowMeans/90be0e7fdd75d32b`, also fails on the saved baseline.
+  Full corpora remain CI's job.
+- exact performance gate: `scripts/perf.py` with `--suite robigo`,
+  `--filter 'robigo/(vecarith|vecops|matrix|lm)$'`, `--metric instr`,
+  `--jobs 1`. Compare: **0 slower above 0.5%, 0 broken**. Counts below
+  include startup; the maximum change is +0.186%.
+
+| benchmark | before instructions | after instructions |
+|---|---:|---:|
+| lm | 762,390,958 | 763,806,774 |
+| matrix | 757,202,174 | 758,307,297 |
+| vecarith | 4,465,393,944 | 4,466,439,199 |
+| vecops | 2,540,056,974 | 2,540,981,758 |
+
 ## 2026-10-28: runtime policy kernels, inherited WIP reviewed
 
 - why: the runtime had no fast-mode reduction kernels or common policy API.
@@ -110,4 +152,8 @@ kernels implemented and benchmarked.
   polynomial (its error curve is smooth; sample with the /tmp/opencode
   probes) to close the last 0.109% divergence of soft powl.
 - callgrind measurement of the software ops; make them fast.
-- numeric-policy seam (exact/fast) for the ldouble kernels + benchmark.
+- extend the policy to the remaining numeric sites (`%%`, `%*%`, formatting
+  scaling, and long-double nmath operations), using the same interpreter
+  setting; measure and gate each operation separately.
+- add the policy to compiler cache keys when native kernels specialize on
+  the mode; current generated code calls the runtime builtins.
