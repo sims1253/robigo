@@ -201,13 +201,17 @@ fn renviron_startup(path: &str) -> bool {
     }
 }
 
-/// The system, site and user `Renviron` files.
-// R: Renviron.c:process_system_Renviron, process_site_Renviron,
-// process_user_Renviron
-fn process_environ_files(home: &str) {
+/// The system `Renviron`, read even with `--no-environ`/`--vanilla`.
+// R: Renviron.c:process_system_Renviron, called from unix/system.c:Rf_initialize_R
+fn process_system_environ(home: &str) {
     if !renviron_startup(&format!("{}/etc/Renviron", home)) {
         eprintln!("cannot find system Renviron");
     }
+}
+
+/// The site and user `Renviron` files, skipped by `--no-environ`.
+// R: Renviron.c:process_site_Renviron, process_user_Renviron
+fn process_environ_files(home: &str) {
     match std::env::var("R_ENVIRON") {
         Ok(p) => {
             if !p.is_empty() {
@@ -269,6 +273,7 @@ fn call_first(interp: &mut Interp, name: &str, env: &Env) -> bool {
 pub fn run(interp: &mut Interp, opts: StartupOptions) -> bool {
     let home = init_r_home();
     if let Some(home) = &home {
+        process_system_environ(home);
         if !opts.no_environ {
             process_environ_files(home);
         }
