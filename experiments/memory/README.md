@@ -91,7 +91,7 @@ penalties — the conclusion below survives 14/250).
 | strings | 293 | 313 | 0.94× |
 | cycles | 163 | 38 | **4.35×** |
 | capi | 1998 | 1364 | 1.47× |
-| *geometric mean* | | | *1.53×* |
+| *geometric mean* | | | *1.63×* |
 
 (gc numbers at the 2 MiB floor; at the old 8 MiB floor the geomean was
 1.70× — more frequent collections cost instructions and buy locality.)
@@ -248,7 +248,7 @@ settled it:
    garbage made the gc win wall time on fib (34 vs 47 ms), capi (293 vs
    323) and cycles (4 vs 18), halve RSS on churn workloads, and cut
    pauses 4–40× — while est cycles still favor it 1.32× (1.18× even at
-   a contended-machine 14/250 miss model) and Ir 1.53×.
+   a contended-machine 14/250 miss model) and Ir 1.63×.
 3. **rc could not be improved where it is weak.** The purple-trigger
    dial (factor 1/4/8) is worse everywhere (factor 1: cycles RSS
    5 → 35 MB; 4/8: more collections, more instructions, longer
