@@ -1,0 +1,14 @@
+[package]
+name = "mm-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mmbench"
+path = "src/main.rs"
+
+[dependencies]
+mm-core = { path = "../mm-core" }
+mm-rc = { path = "../mm-rc" }
+mm-gc = { path = "../mm-gc" }

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/robigo-syntax", "crates/robigo-numerics", "crates/robigo-runtime", "crates/robigo-cli"]
+# the memory bake-off is its own workspace (docs/workstreams.md, track memory)
+exclude = ["experiments"]
 
 [workspace.package]
 version = "0.0.1"
