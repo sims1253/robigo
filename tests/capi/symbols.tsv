@@ -1,0 +1,834 @@
+# libR symbols imported by installed R packages from /usr/lib/R/lib/libR.so (nm -D), 24 of GNU R's own + 79 CRAN packages.
+# api: api|eapi|emb per tools:::funAPI() (Writing R Extensions); empty: not documented. Regenerate: scripts/capi-census.py scan
+symbol	kind	n_pkgs	gnur_pkgs	header	api
+R_registerRoutines	function	100	KernSmooth,MASS,Matrix,class,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,nnet,parallel,rpart,spatial,splines,stats,tcltk,tools,utils	R_ext/Rdynload.h	api
+R_useDynamicSymbols	function	100	KernSmooth,MASS,Matrix,class,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,nnet,parallel,rpart,spatial,splines,stats,tcltk,tools,utils	R_ext/Rdynload.h	api
+Rf_allocVector	function	81	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,mgcv,nlme,parallel,rpart,splines,stats,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_protect	function	81	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,rpart,splines,stats,tools,utils	Rinternals.h	api
+Rf_unprotect	function	81	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,rpart,splines,stats,tools,utils	Rinternals.h	api
+Rf_error	function	73	MASS,Matrix,class,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,nnet,parallel,rpart,spatial,splines,stats,tcltk,tools,utils	R_ext/Error.h;Rdefines.h;Rinternals.h	api
+R_NilValue	data	72	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,nlme,parallel,rpart,stats,tcltk,tools,utils	R_ext/GraphicsDevice.h;R_ext/GraphicsEngine.h;Rdefines.h;Rinternals.h	
+INTEGER	function	68	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,mgcv,nlme,parallel,rpart,splines,stats,tools,utils	R_ext/BLAS.h;R_ext/Lapack.h;Rdefines.h;Rinternals.h	api
+SET_STRING_ELT	function	66	Matrix,cluster,foreign,grDevices,graphics,grid,methods,mgcv,rpart,stats,tcltk,tools,utils	Rinternals.h	api
+Rf_setAttrib	function	61	Matrix,cluster,foreign,grDevices,graphics,grid,methods,mgcv,parallel,rpart,splines,stats,tools,utils	Rdefines.h;Rinternals.h	api
+STRING_ELT	function	61	Matrix,foreign,graphics,grid,methods,mgcv,nlme,stats,tools,utils	Rinternals.h	api
+Rf_install	function	60	Matrix,foreign,grDevices,graphics,grid,lattice,methods,mgcv,parallel,rpart,splines,stats,tcltk,tools	Rinternals.h	api
+VECTOR_ELT	function	60	Matrix,foreign,grDevices,graphics,grid,methods,mgcv,nlme,stats,tcltk,tools,utils	Rinternals.h	api
+R_NamesSymbol	data	57	Matrix,cluster,foreign,grDevices,graphics,grid,methods,mgcv,nlme,rpart,stats,tcltk,utils	Rdefines.h;Rinternals.h	
+SET_VECTOR_ELT	function	57	Matrix,cluster,foreign,grDevices,graphics,grid,methods,rpart,stats,tcltk,tools,utils	Rdefines.h;Rinternals.h	api
+TYPEOF	function	57	Matrix,cluster,foreign,graphics,stats,tools,utils	Rdefines.h;Rinternals.h	api
+R_CHAR	function	55	Matrix,foreign,grid,methods,mgcv,nlme,stats,tools,utils	Rinternals.h	api
+Rf_mkChar	function	55	Matrix,cluster,foreign,grDevices,graphics,grid,methods,mgcv,rpart,stats,tcltk,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_length	function	53	Matrix,foreign,graphics,grid,methods,mgcv,nlme,splines,stats,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_getAttrib	function	51	Matrix,cluster,foreign,grDevices,graphics,grid,methods,mgcv,nlme,stats,tcltk,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_eval	function	50	Matrix,grDevices,grid,lattice,methods,nlme,rpart,stats,tcltk	Rdefines.h;Rinternals.h	api
+R_NaInt	data	49	Matrix,foreign,grDevices,graphics,grid,methods,parallel,splines,stats,tcltk,tools,utils	R_ext/Arith.h	
+REAL	function	48	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,mgcv,nlme,rpart,splines,stats	Rdefines.h;Rinternals.h	api
+Rf_mkString	function	43	Matrix,foreign,graphics,grid,stats,utils	Rinternals.h	api
+R_ClassSymbol	data	42	Matrix,foreign,grDevices,graphics,methods,stats,tcltk,tools,utils	Rdefines.h;Rinternals.h	
+R_forceSymbols	function	42	MASS,class,foreign,grDevices,graphics,grid,methods,nlme,nnet,parallel,rpart,spatial,splines,stats,tcltk,tools,utils	R_ext/Rdynload.h	api
+Rf_coerceVector	function	42	Matrix,foreign,grDevices,graphics,grid,mgcv,nlme,parallel,splines,stats,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_xlength	function	42		Rinternals.h	api
+Rf_warning	function	41	Matrix,cluster,foreign,grDevices,graphics,grid,nlme,parallel,rpart,stats,tcltk,tools,utils	R_ext/Error.h	api
+Rf_asInteger	function	40	Matrix,cluster,foreign,grDevices,graphics,grid,lattice,methods,mgcv,parallel,rpart,splines,stats,tools,utils	Rdefines.h;Rinternals.h	api
+CDR	function	39	Matrix,grid,stats,utils	Rinternals.h	api
+Rf_lang2	function	39	Matrix,grid,lattice,methods,nlme,stats	Rinternals.h	api
+LOGICAL	function	38	Matrix,foreign,grid,stats,tools,utils	R_ext/BLAS.h;R_ext/Lapack.h;Rdefines.h;Rinternals.h	api
+R_GlobalEnv	data	38	Matrix,grDevices,grid,lattice,methods,nlme,stats,tcltk	Rdefines.h;Rinternals.h	
+CAR	function	37	Matrix,grid,stats,utils	Rinternals.h	api
+Rf_ScalarInteger	function	37	Matrix,cluster,foreign,grDevices,graphics,grid,stats,tools,utils	Rinternals.h	api
+Rf_ScalarLogical	function	37	Matrix,grDevices,grid,methods,stats,tools,utils	Rinternals.h	api
+R_NaString	data	36	Matrix,foreign,grDevices,graphics,stats,tools,utils	Rinternals.h	
+R_alloc	function	35	MASS,Matrix,cluster,foreign,grDevices,graphics,grid,methods,rpart,splines,stats,tcltk,tools,utils	R.h;R_ext/Memory.h	api
+Rf_inherits	function	35	Matrix,foreign,graphics,grid	Rinternals.h	api
+Rprintf	function	34	MASS,Matrix,cluster,graphics,mgcv,rpart,stats,tools	R.h;R_ext/Print.h	api
+R_NaReal	data	33	Matrix,foreign,graphics,grid,stats,tcltk,utils	R_ext/Arith.h	
+LENGTH	function	32	Matrix,cluster,foreign,grDevices,graphics,grid,nlme,rpart,stats,tools	Rinternals.h	api
+R_BaseEnv	data	32	Matrix,methods,stats,tools,utils	Rinternals.h	
+R_PreserveObject	function	31	methods	Rinternals.h	api
+Rf_isNull	function	31	Matrix,foreign,grid,stats	Rinternals.h	api
+R_DimSymbol	data	30	Matrix,cluster,grDevices,graphics,grid,stats,utils	Rdefines.h;Rinternals.h	
+Rf_ScalarString	function	29	tools	Rinternals.h	api
+Rf_duplicate	function	29	Matrix,cluster,foreign,graphics,grid,methods,stats,tools,utils	Rinternals.h	api
+Rf_type2char	function	29	Matrix	Rinternals.h	api
+R_CheckUserInterrupt	function	26	MASS,Matrix,cluster,nlme,rpart,spatial,stats,utils	R_ext/Itermacros.h;R_ext/Utils.h	api
+Rf_cons	function	26	grDevices,graphics,methods,stats,tcltk,tools	Rinternals.h	api
+Rf_isString	function	26	foreign,grid,stats,tools,utils	Rdefines.h;Rinternals.h	api
+RAW	function	25	Matrix	Rdefines.h;Rinternals.h	api
+REprintf	function	25	Matrix,foreign,graphics,parallel,stats	R_ext/Print.h	api
+R_ProtectWithIndex	function	25	Matrix,foreign,stats	Rinternals.h	api
+R_Reprotect	function	25	Matrix,foreign,stats	Rinternals.h	api
+Rf_asLogical	function	24	Matrix,cluster,grDevices,graphics,methods,parallel,stats,tools,utils	Rdefines.h;Rinternals.h	api
+Rf_mkCharCE	function	24	tools	Rinternals.h	api
+Rf_mkCharLenCE	function	24	tools	Rinternals.h	api
+R_MakeExternalPtr	function	23	grid,mgcv,stats,tcltk	Rinternals.h	api
+R_ExternalPtrAddr	function	22	grid,mgcv,stats,tcltk	Rinternals.h	api
+R_ReleaseObject	function	22		Rinternals.h	api
+Rf_ScalarReal	function	22	Matrix,grid,stats	Rinternals.h	api
+R_GetCCallable	function	21		R_ext/Rdynload.h;R_ext/stats_stubs.h	api
+Rf_isInteger	function	21	grid,stats	Rdefines.h;Rinternals.h	api
+Rf_lcons	function	21		Rinternals.h	api
+Rf_translateCharUTF8	function	21	stats,tcltk,tools	Rinternals.h	api
+R_IsNA	function	20	grDevices,nlme,stats	R_ext/Arith.h	api
+R_RegisterCCallable	function	20	Matrix,mgcv,stats	R_ext/Rdynload.h	api
+R_finite	function	20	Matrix,foreign,grid,nlme,rpart,stats	R_ext/Arith.h;Rmath.h	api
+Rf_defineVar	function	20	Matrix,grid,methods,stats,tools	Rinternals.h	api
+SETCAR	function	20	Matrix,graphics,methods,stats,tools	Rinternals.h	api
+XLENGTH	function	20	Matrix,graphics,grid,stats,tools,utils	R_ext/Itermacros.h;Rinternals.h	api
+R_ContinueUnwind	function	19		Rinternals.h	api
+Rf_asReal	function	19	Matrix,grDevices,graphics,lattice,mgcv,parallel,rpart,stats,utils	Rdefines.h;Rinternals.h	api
+Rf_isLogical	function	19	grid,stats	Rdefines.h;Rinternals.h	api
+SETCDR	function	19	stats,tools	Rinternals.h	api
+R_FlushConsole	function	18	graphics,utils	R.h;Rinterface.h	emb
+R_UnwindProtect	function	18		Rinternals.h	api
+R_chk_calloc	function	18	MASS,Matrix,class,foreign,grDevices,mgcv,nlme,nnet,rpart,spatial,stats,tcltk,tools	R_ext/RS.h	eapi
+R_chk_free	function	18	MASS,Matrix,class,foreign,grDevices,mgcv,nlme,nnet,rpart,spatial,stats,tcltk,tools	R_ext/RS.h	eapi
+Rf_findFun	function	18	grid,methods	Rinternals.h	api
+Rf_onintr	function	18	grDevices	R_ext/GraphicsDevice.h;Rinterface.h	api
+R_MakeUnwindCont	function	17		Rinternals.h	api
+Rf_errorcall	function	17		Rinternals.h	api
+Rf_isReal	function	17	Matrix,grid,mgcv,rpart,stats	Rdefines.h;Rinternals.h	api
+Rf_lang1	function	17	grid,stats	Rinternals.h	api
+SET_TAG	function	17	Matrix,grid,stats	Rinternals.h	api
+COMPLEX	function	16	Matrix,stats	R_ext/Complex.h;R_ext/Lapack.h;Rdefines.h;Rinternals.h	api
+R_DimNamesSymbol	data	16	Matrix,grDevices,stats,utils	Rdefines.h;Rinternals.h	
+R_PosInf	data	16	Matrix,foreign,graphics,stats	R_ext/Arith.h;Rmath.h	
+Rf_allocMatrix	function	16	Matrix,cluster,foreign,grDevices,grid,mgcv,rpart,splines,stats	Rinternals.h	api
+Rf_getCharCE	function	16	graphics,grid,tools	Rinternals.h	api
+Rf_isMatrix	function	16	Matrix,stats	Rinternals.h	api
+Rf_lang3	function	16	Matrix,grid,stats	Rinternals.h	api
+Rf_shallow_duplicate	function	16	grid,methods,stats	Rinternals.h	api
+CADR	function	15	foreign,grid,utils	Rinternals.h	api
+R_RegisterCFinalizerEx	function	15	mgcv	Rinternals.h	api
+R_NaN	data	14	Matrix,splines,stats	R_ext/Arith.h	
+R_NegInf	data	14	Matrix,foreign,graphics,stats	R_ext/Arith.h;Rmath.h	
+R_RowNamesSymbol	data	14	foreign,stats	Rinternals.h	
+Rf_isNumeric	function	14	Matrix,graphics,stats	Rinternals.h	api
+Rf_translateChar	function	14	grDevices,graphics,stats,tcltk,tools,utils	Rinternals.h	api
+STRING_PTR_RO	function	14		Rinternals.h	api
+GetRNGstate	function	13	MASS,Matrix,class,cluster,spatial,stats	R_ext/Random.h	api
+PRINTNAME	function	13		Rinternals.h	api
+PutRNGstate	function	13	MASS,Matrix,class,cluster,spatial,stats	R_ext/Random.h	api
+R_BlankString	data	13	foreign,graphics,grid	Rinternals.h	
+R_ClearExternalPtr	function	13		Rinternals.h	api
+Rf_asChar	function	13	Matrix,foreign,grDevices,methods	Rdefines.h;Rinternals.h	api
+Rf_isVector	function	13	Matrix,graphics,grid,stats	Rdefines.h;Rinternals.h	api
+Rf_lang4	function	13	grid,lattice,stats	Rinternals.h	api
+Rf_nthcdr	function	13	graphics	Rinternals.h	api
+vmaxget	function	13	grDevices,graphics,grid,methods,stats,tcltk,tools,utils	R_ext/Memory.h	api
+vmaxset	function	13	grDevices,graphics,grid,methods,stats,tcltk,tools,utils	R_ext/Memory.h	api
+R_getVar	function	12		Rinternals.h	api
+Rf_copyMostAttrib	function	12		Rinternals.h	api
+Rf_ncols	function	12	graphics,mgcv,rpart,stats	Rinternals.h	api
+Rf_nrows	function	12	grDevices,graphics,mgcv,rpart,stats	Rinternals.h	api
+TAG	function	12	Matrix	Rinternals.h	api
+unif_rand	function	12	MASS,Matrix,class,cluster,spatial,stats	R_ext/Random.h;Rmath.h	api
+Rf_lengthgets	function	11	foreign,stats,tools	Rdefines.h;Rinternals.h	api
+ALTREP	function	10		R_ext/Itermacros.h;Rinternals.h	eapi
+R_UnboundValue	data	10	grDevices,methods,tools	Rinternals.h	
+Rf_isEnvironment	function	10	Matrix,stats	Rinternals.h	api
+Rf_mkNamed	function	10	Matrix,grDevices,stats	Rinternals.h	api
+DATAPTR_RO	function	9		Rinternals.h	api
+NO_REFERENCES	function	9	grid,stats	Rinternals.h	api
+R_EmptyEnv	data	9	tools	Rinternals.h	
+R_ExternalPtrTag	function	9	stats	Rinternals.h	api
+R_NewEnv	function	9	stats	Rinternals.h	api
+Rf_GetOption1	function	9	grDevices,graphics	Rinternals.h	api
+Rf_isObject	function	9	Matrix	Rinternals.h	api
+Rf_isS4	function	9	Matrix	Rinternals.h	api
+Rf_mkCharLen	function	9	tools	Rinternals.h	api
+Rf_xlengthgets	function	9	stats,tools	Rinternals.h	api
+SETCADR	function	9	Matrix,graphics,stats	Rinternals.h	api
+ALTREP_LENGTH	function	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+ALTVEC_DATAPTR	function	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+CADDR	function	8	foreign,utils	Rinternals.h	api
+INTEGER_ELT	function	8		Rinternals.h	api
+LOGICAL_ELT	function	8		Rinternals.h	api
+MARK_NOT_MUTABLE	function	8	stats	Rinternals.h	api
+R_BadLongVector	function	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+R_DotsSymbol	data	8	methods,tcltk	Rinternals.h	
+R_PPStack	data	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+R_PPStackSize	data	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+R_PPStackTop	data	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+R_ToplevelExec	function	8	tcltk	Rinternals.h	api
+R_signal_protect_error	function	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils		
+Rf_allocVector3	function	8	grDevices,graphics,methods,parallel,stats,tcltk,tools,utils	Rinternals.h	
+Rf_isVectorAtomic	function	8	Matrix	Rinternals.h	api
+ALTSTRING_ELT	function	7	grDevices,graphics,methods,stats,tcltk,tools,utils		
+ATTRIB	function	7	Matrix	Rinternals.h	
+CDDR	function	7		Rinternals.h	api
+R_ClosureFormals	function	7		Rinternals.h	api
+R_ExecWithCleanup	function	7	methods	Rinternals.h	api
+R_LevelsSymbol	data	7	stats,utils	Rdefines.h;Rinternals.h	
+R_ParseVector	function	7	tcltk	R_ext/Parse.h	api
+R_SetExternalPtrAddr	function	7		Rinternals.h	api
+Rf_envlength	function	7	grDevices,graphics,methods,stats,tcltk,tools,utils		
+Rf_findVar	function	7	grDevices,grid,methods,stats,tools	Rinternals.h	
+Rf_findVarInFrame	function	7	Matrix,methods,rpart,stats	Rinternals.h	
+Rf_installChar	function	7		Rinternals.h	api
+Rf_isFunction	function	7	stats	Rinternals.h	api
+Rf_namesgets	function	7	foreign	Rinternals.h	api
+Rf_warningcall	function	7	tcltk,tools	Rinternals.h	api
+REAL_ELT	function	6		Rinternals.h	api
+R_ExpandFileName	function	6	foreign,grDevices	R_ext/Utils.h	api
+R_ExternalPtrAddrFn	function	6		Rinternals.h	api
+R_FindNamespace	function	6	grDevices	Rinternals.h	eapi
+R_MissingArg	data	6	methods,stats	Rinternals.h	
+R_chk_realloc	function	6	Matrix,foreign,mgcv,spatial,tools	R_ext/RS.h	eapi
+R_do_slot	function	6	Matrix,methods,mgcv	Rdefines.h;Rinternals.h	eapi
+R_do_slot_assign	function	6	Matrix,methods,mgcv	Rdefines.h;Rinternals.h	eapi
+R_mkClosure	function	6		Rinternals.h	api
+R_tryEval	function	6		Rinternals.h	api
+Rf_allocSExp	function	6	stats	Rinternals.h	
+Rf_fmax2	function	6	cluster,graphics,grid,stats	Rmath.h	
+Rf_fmin2	function	6	cluster,grDevices,graphics,grid,stats	Rmath.h	
+Rf_installTrChar	function	6	grid,methods,stats,tools	Rinternals.h	api
+Rf_isFactor	function	6		Rinternals.h	api
+Rf_list2	function	6		Rinternals.h	api
+SHALLOW_DUPLICATE_ATTRIB	function	6	stats	Rinternals.h	api
+VECTOR_PTR_RO	function	6		Rinternals.h	api
+R_FalseValue	data	5	grDevices,graphics,methods,parallel,tcltk		
+R_LogicalNAValue	data	5	grDevices,graphics,methods,parallel,tcltk		
+R_MakeActiveBinding	function	5		Rinternals.h	eapi
+R_TrueValue	data	5	grDevices,graphics,methods,parallel,tcltk		
+R_do_new_object	function	5	Matrix,methods,mgcv	Rdefines.h;Rinternals.h	eapi
+R_existsVarInFrame	function	5		Rinternals.h	eapi
+R_getVarEx	function	5		Rinternals.h	api
+R_isnancpp	function	5		R_ext/Arith.h;Rmath.h	api
+R_removeVarFromFrame	function	5		Rinternals.h	eapi
+Rf_asBool	function	5	grDevices,grid,methods,stats,tools	Rinternals.h	
+Rf_asCharacterFactor	function	5	Matrix	Rinternals.h	api
+Rf_charIsASCII	function	5		Rinternals.h	eapi
+Rf_classgets	function	5	grid	Rinternals.h	api
+Rf_gammafn	function	5	stats	Rmath.h	
+Rf_imax2	function	5	cluster,graphics,stats,tools	Rmath.h	
+Rf_imin2	function	5	cluster,graphics,grid,stats	Rmath.h	
+Rf_lgammafn	function	5	stats	Rmath.h	
+Rf_pgamma	function	5	stats	Rmath.h	api
+Rf_pnorm5	function	5	stats	Rmath.h	api
+Rf_qnorm5	function	5	stats	Rmath.h	api
+SETLENGTH	function	5	grid	Rinternals.h	
+SET_PRCODE	function	5		Rinternals.h	
+SET_PRENV	function	5		Rinternals.h	
+SET_PRVALUE	function	5		Rinternals.h	
+ANY_ATTRIB	function	4		Rinternals.h	api
+INTEGER_OR_NULL	function	4		Rinternals.h	eapi
+INTEGER_RO	function	4		Rinternals.h	api
+LOGICAL_RO	function	4		Rinternals.h	api
+PRVALUE	function	4		Rinternals.h	
+REAL_RO	function	4	stats	Rinternals.h	api
+R_BraceSymbol	data	4	stats	Rinternals.h	
+R_Bracket2Symbol	data	4		Rinternals.h	
+R_BracketSymbol	data	4	stats	Rinternals.h	
+R_CheckStack2	function	4	grDevices,graphics	R_ext/Utils.h	api
+R_ClosureEnv	function	4		Rinternals.h	api
+R_IsNaN	function	4		R_ext/Arith.h	api
+R_altrep_data1	function	4		Rinternals.h	eapi
+R_altrep_data2	function	4		Rinternals.h	eapi
+R_do_MAKE_CLASS	function	4	Matrix,methods	Rdefines.h;Rinternals.h	eapi
+R_has_slot	function	4	methods	Rinternals.h	eapi
+R_pow_di	function	4	graphics,stats	Rmath.h	api
+Rf_PrintValue	function	4		Rinternals.h	api
+Rf_dbinom	function	4	stats	Rmath.h	api
+Rf_dnbinom	function	4	stats	Rmath.h	api
+Rf_dnorm4	function	4	stats	Rmath.h	api
+Rf_duplicated	function	4	stats,utils	Rinternals.h	eapi
+Rf_findVarInFrame3	function	4		Rinternals.h	
+Rf_isNewList	function	4	stats	Rinternals.h	api
+Rf_lbeta	function	4		Rmath.h	
+Rf_list1	function	4		Rinternals.h	api
+Rf_pbeta	function	4	stats	Rmath.h	api
+Rf_pnbinom	function	4	stats	Rmath.h	api
+Rf_rbinom	function	4	stats	Rmath.h	api
+Rf_rgamma	function	4	stats	Rmath.h	api
+Rf_rgeom	function	4	stats	Rmath.h	api
+Rf_rpois	function	4	stats	Rmath.h	api
+Rf_runif	function	4	stats	Rmath.h	api
+Rf_str2type	function	4		Rinternals.h	api
+Rf_type2str	function	4		Rinternals.h	api
+SET_ATTRIB	function	4	Matrix,stats	Rinternals.h	
+SET_GROWABLE_BIT	function	4		Rinternals.h	
+SET_INTEGER_ELT	function	4		Rinternals.h	api
+SET_TRUELENGTH	function	4		Rinternals.h	
+S_realloc	function	4		R_ext/Memory.h	api
+dqrdc2_	function	4	MASS,nlme,stats		
+dqrsl_	function	4	KernSmooth,MASS,nlme,stats		api
+exp_rand	function	4		R_ext/Random.h;Rmath.h	api
+mbcslocale	data	4	grDevices,graphics,grid,tools	R_ext/GraphicsDevice.h	
+vmmin	function	4	MASS,nnet,stats	R_ext/Applic.h	api
+COMPLEX_RO	function	3		Rinternals.h	api
+GEMode	function	3	grDevices,graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEcurrentDevice	function	3	grDevices,graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEinitDisplayList	function	3	grDevices,graphics,grid	R_ext/GraphicsEngine.h	eapi
+MAYBE_SHARED	function	3		Rinternals.h	api
+PRENV	function	3		Rinternals.h	
+RAW_RO	function	3		Rinternals.h	api
+REAL_OR_NULL	function	3		Rinternals.h	eapi
+R_ActiveBindingFunction	function	3		Rinternals.h	eapi
+R_BaseNamespace	data	3		Rinternals.h	
+R_BindingIsActive	function	3		Rinternals.h	eapi
+R_DoubleColonSymbol	data	3		Rinternals.h	
+R_ExternalPtrProtected	function	3		Rinternals.h	api
+R_InitOutPStream	function	3		Rinternals.h	eapi
+R_IsNamespaceEnv	function	3		Rinternals.h	eapi
+R_MakeWeakRef	function	3		Rinternals.h	api
+R_ParentEnv	function	3		Rinternals.h	api
+R_ProcessEvents	function	3	parallel,utils	R.h;R_ext/GraphicsDevice.h	emb
+R_PromiseExpr	function	3		Rinternals.h	
+R_Serialize	function	3		Rinternals.h	eapi
+R_TripleColonSymbol	data	3		Rinternals.h	
+R_WeakRefKey	function	3		Rinternals.h	api
+R_chk_memcpy	function	3	splines,stats	R_ext/RS.h	
+R_compute_identical	function	3	grid	Rinternals.h	eapi
+R_lsInternal3	function	3		Rinternals.h	eapi
+R_new_altrep	function	3		R_ext/Altrep.h	eapi
+R_pow	function	3	stats	Rmath.h	api
+R_rsort	function	3	MASS,graphics,stats	R_ext/Utils.h	api
+R_set_altrep_Length_method	function	3			eapi
+R_set_altvec_Dataptr_method	function	3			eapi
+Rf_CreateAtVector	function	3	grDevices,graphics,grid	R_ext/GraphicsEngine.h	eapi
+Rf_PrintDefaults	function	3	graphics,stats,utils		
+Rf_ScalarRaw	function	3		Rinternals.h	api
+Rf_allocList	function	3	graphics,stats	Rinternals.h	api
+Rf_any_duplicated	function	3		Rinternals.h	eapi
+Rf_col2name	function	3	grDevices,graphics,grid	R_ext/GraphicsEngine.h	eapi
+Rf_dpois	function	3	stats	Rmath.h	api
+Rf_isArray	function	3		Rinternals.h	api
+Rf_isDataFrame	function	3		Rinternals.h	api
+Rf_isList	function	3	stats	Rinternals.h	api
+Rf_isSymbol	function	3	grid	Rinternals.h	api
+Rf_isVectorList	function	3		Rinternals.h	api
+Rf_match	function	3		Rinternals.h	eapi
+Rf_pbinom	function	3	stats	Rmath.h	api
+Rf_ppois	function	3	stats	Rmath.h	api
+Rf_pt	function	3	stats	Rmath.h	api
+Rf_qbeta	function	3	stats	Rmath.h	api
+Rf_qbinom	function	3	stats	Rmath.h	api
+Rf_qchisq	function	3	stats	Rmath.h	api
+Rf_qnbinom	function	3	stats	Rmath.h	api
+Rf_qpois	function	3	stats	Rmath.h	api
+Rf_rPsort	function	3	MASS,stats	R_ext/Utils.h	api
+Rf_rbeta	function	3	stats	Rmath.h	api
+Rf_rnbinom	function	3	stats	Rmath.h	api
+Rf_rnorm	function	3	stats	Rmath.h	api
+Rf_ucstoutf8	function	3	grDevices,grid	R_ext/GraphicsDevice.h	eapi
+SETCADDR	function	3	graphics,stats	Rinternals.h	api
+SET_REAL_ELT	function	3		Rinternals.h	api
+S_alloc	function	3		R.h;R_ext/Memory.h	api
+norm_rand	function	3	stats	R_ext/Random.h;Rmath.h	api
+optif9	function	3	nlme,stats	R_ext/Applic.h	
+CAD4R	function	2	foreign	Rinternals.h	api
+CADDDR	function	2	foreign	Rinternals.h	api
+CLEAR_ATTRIB	function	2		Rinternals.h	api
+DUPLICATE_ATTRIB	function	2		Rinternals.h	api
+GECap	function	2	grDevices,grid	R_ext/GraphicsEngine.h	eapi
+GECircle	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEExpressionHeight	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEExpressionWidth	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GELine	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEMathText	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GENewPage	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEPath	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEPolygon	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEPolyline	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GERaster	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GERect	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GESetClip	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEStrHeight	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEStrWidth	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEText	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEXspline	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GE_LENDpar	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GE_LJOINpar	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GE_LTYget	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GE_LTYpar	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEdirtyDevice	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEregisterSystem	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEstring_to_pch	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+GEunregisterSystem	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+IS_LONG_VEC	function	2	graphics,stats	Rinternals.h	eapi
+LENGTH_EX	function	2	graphics,stats	Rinternals.h	
+REFCNT	function	2	Matrix,survival	Rinternals.h	
+REvprintf	function	2		R_ext/Print.h	api
+R_CheckStack	function	2	Matrix	R_ext/Utils.h	api
+R_ClosureBody	function	2		Rinternals.h	api
+R_ClosureExpr	function	2		Rinternals.h	api
+R_FindSymbol	function	2	grDevices,utils	R_ext/Rdynload.h	api
+R_GE_str2col	function	2	grDevices,grid	R_ext/GraphicsEngine.h	eapi
+R_MB_CUR_MAX	data	2	tools,utils		
+R_MakeExternalPtrFn	function	2	methods	Rinternals.h	api
+R_NamespaceRegistry	data	2		Rinternals.h	
+R_RegisterCFinalizer	function	2	tcltk	Rinternals.h	api
+R_SetExternalPtrProtected	function	2		Rinternals.h	api
+R_SrcrefSymbol	data	2	methods,tools		
+R_WeakRefValue	function	2		Rinternals.h	api
+R_getClassDef	function	2	mgcv	Rinternals.h	eapi
+R_interrupts_pending	data	2	grDevices	R_ext/GraphicsDevice.h	
+R_interrupts_suspended	data	2	grDevices	R_ext/GraphicsDevice.h	
+R_isForkedChild	data	2	parallel,tcltk		
+R_isort	function	2	stats	R_ext/Utils.h	api
+R_print	data	2	graphics,utils		
+R_set_altrep_Inspect_method	function	2			eapi
+R_set_altrep_data2	function	2		Rinternals.h	eapi
+R_set_altvec_Dataptr_or_null_method	function	2			eapi
+R_signal_reprotect_error	function	2	graphics,stats		
+R_typeToChar	function	2	methods,stats	Rinternals.h	
+R_wait_usec	data	2	parallel,tcltk	R_ext/eventloop.h	emb
+Rconn_fgetc	function	2	tools,utils		
+Rdqags	function	2	stats	R_ext/Applic.h	api
+Rf_GAxisPars	function	2	grDevices,graphics	R_ext/GraphicsEngine.h	eapi
+Rf_NewFrameConfirm	function	2	graphics,grid	R_ext/GraphicsDevice.h	eapi
+Rf_NoDevices	function	2	graphics,grid	R_ext/GraphicsDevice.h	eapi
+Rf_PairToVectorList	function	2	stats,tools	Rinternals.h	eapi
+Rf_RGBpar3	function	2	graphics,grid	R_ext/GraphicsEngine.h	eapi
+Rf_ScalarComplex	function	2		Rinternals.h	api
+Rf_StringBlank	function	2		Rinternals.h	eapi
+Rf_allocS4Object	function	2	methods	Rinternals.h	eapi
+Rf_asRboolean	function	2	grDevices,graphics	Rinternals.h	api
+Rf_asS4	function	2		Rinternals.h	eapi
+Rf_begincontext	function	2	tools,utils		
+Rf_bessel_k	function	2		Rmath.h	
+Rf_choose	function	2	stats	Rmath.h	
+Rf_dbeta	function	2	stats	Rmath.h	api
+Rf_dgamma	function	2	stats	Rmath.h	api
+Rf_dgeom	function	2	stats	Rmath.h	api
+Rf_dimnamesgets	function	2	Matrix	Rinternals.h	api
+Rf_dlnorm	function	2	stats	Rmath.h	api
+Rf_dnbinom_mu	function	2	stats	Rmath.h	api
+Rf_dt	function	2	stats	Rmath.h	api
+Rf_dunif	function	2	stats	Rmath.h	api
+Rf_dweibull	function	2	stats	Rmath.h	api
+Rf_endcontext	function	2	tools,utils		
+Rf_fround	function	2	grDevices	Rmath.h	
+Rf_isLanguage	function	2	grid	Rinternals.h	api
+Rf_isPairList	function	2		Rinternals.h	api
+Rf_lang6	function	2		Rinternals.h	api
+Rf_lchoose	function	2		Rmath.h	
+Rf_list4	function	2		Rinternals.h	api
+Rf_pchisq	function	2	stats	Rmath.h	api
+Rf_pexp	function	2	stats	Rmath.h	api
+Rf_pgeom	function	2	stats	Rmath.h	api
+Rf_plnorm	function	2	stats	Rmath.h	api
+Rf_plogis	function	2	stats	Rmath.h	api
+Rf_punif	function	2	stats	Rmath.h	api
+Rf_pweibull	function	2	stats	Rmath.h	api
+Rf_qgamma	function	2	stats	Rmath.h	api
+Rf_qgeom	function	2	stats	Rmath.h	api
+Rf_qt	function	2	stats	Rmath.h	api
+Rf_rcauchy	function	2	stats	Rmath.h	api
+Rf_rchisq	function	2	stats	Rmath.h	api
+Rf_reEnc	function	2		Rinternals.h	api
+Rf_rexp	function	2	stats	Rmath.h	api
+Rf_rhyper	function	2	stats	Rmath.h	api
+Rf_rt	function	2	stats	Rmath.h	api
+Rf_sign	function	2	stats	Rmath.h	
+Rf_warningcall_immediate	function	2		Rinternals.h	api
+Riconv	function	2	grDevices	R_ext/Riconv.h	api
+Riconv_close	function	2	grDevices	R_ext/Riconv.h	api
+Riconv_open	function	2	grDevices	R_ext/Riconv.h	api
+SETCADDDR	function	2	graphics,stats	Rinternals.h	api
+SET_LOGICAL_ELT	function	2		Rinternals.h	api
+UNIMPLEMENTED_TYPE	function	2	stats,utils		
+dpofa_	function	2	nlme		api
+dqrdc_	function	2	KernSmooth,stats		api
+getConnection	function	2	tools,utils		
+intpr_	function	2	stats		
+known_to_be_latin1	data	2	graphics,utils		
+nmmin	function	2	stats	R_ext/Applic.h	api
+rexit_	function	2	stats		
+utf8locale	data	2	grDevices,utils		
+ALTREP_CLASS	function	1		Rinternals.h	eapi
+CAAR	function	1		Rinternals.h	api
+CDAR	function	1		Rinternals.h	api
+CDDDR	function	1		Rinternals.h	api
+COMPLEX_ELT	function	1		Rinternals.h	api
+DATAPTR	function	1	graphics	Rinternals.h	
+DATAPTR_OR_NULL	function	1		R_ext/Itermacros.h;Rinternals.h	eapi
+ENC_KNOWN	function	1	utils		
+GEExpressionMetric	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEFill	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEFillStroke	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEGlyph	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEPretty	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEStrMetric	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEStroke	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GESymbol	function	1	graphics	R_ext/GraphicsEngine.h	eapi
+GE_LENDget	function	1	graphics	R_ext/GraphicsEngine.h	eapi
+GE_LJOINget	function	1	graphics	R_ext/GraphicsEngine.h	eapi
+GEaddDevice2f	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+GEcopyDisplayList	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+GEcreateDevDesc	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+GEdeviceDirty	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEfromDeviceHeight	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEfromDeviceWidth	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEfromDeviceX	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEfromDeviceY	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GErecordGraphicOperation	function	1	graphics	R_ext/GraphicsEngine.h	eapi
+GErecording	function	1	graphics	R_ext/GraphicsEngine.h	eapi
+GEtoDeviceHeight	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEtoDeviceWidth	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEtoDeviceX	function	1	grid	R_ext/GraphicsEngine.h	eapi
+GEtoDeviceY	function	1	grid	R_ext/GraphicsEngine.h	eapi
+INTEGER_GET_REGION	function	1		Rinternals.h	eapi
+INTEGER_IS_SORTED	function	1		Rinternals.h	eapi
+INTEGER_NO_NA	function	1		Rinternals.h	eapi
+IS_ASCII	function	1	utils		
+IS_GROWABLE	function	1		Rinternals.h	
+IS_SCALAR	function	1		Rinternals.h	eapi
+IS_UTF8	function	1	utils		
+LEVELS	function	1		Rinternals.h	
+LOGICAL_NO_NA	function	1		Rinternals.h	eapi
+LOGICAL_OR_NULL	function	1		Rinternals.h	eapi
+OutDec	data	1	graphics		
+RC_fopen	function	1	tools		
+REAL_IS_SORTED	function	1		Rinternals.h	eapi
+REAL_NO_NA	function	1		Rinternals.h	eapi
+R_AllocStringBuffer	function	1	utils		
+R_BlankScalarString	data	1		Rinternals.h	
+R_Busy	function	1	tcltk		emb
+R_CStackDir	data	1	utils		
+R_CStackLimit	data	1	utils	Rinterface.h	
+R_CStackStart	data	1	utils	Rinterface.h	
+R_CheckDeviceAvailable	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+R_ClearerrConsole	function	1	utils	Rinterface.h	emb
+R_Consolefile	data	1	tcltk	Rinterface.h	
+R_EditFiles	function	1	utils		emb
+R_EnvironmentIsLocked	function	1		Rinternals.h	eapi
+R_FileExists	function	1	tools		
+R_FreeStringBuffer	function	1	utils		
+R_GE_checkVersionOrDie	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_clipPathFillRule	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphColour	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFont	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontFamily	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontFile	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontIndex	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontPSname	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontStyle	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphFontWeight	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphID	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphInfoFonts	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphInfoGlyphs	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphRotation	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_glyphSize	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_hasGlyphRotation	function	1	grid	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientColour	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientExtend	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientNumStops	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientStop	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientX1	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientX2	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientY1	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_linearGradientY2	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_maskType	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_patternType	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientCX1	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientCX2	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientCY1	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientCY2	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientColour	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientExtend	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientNumStops	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientR1	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientR2	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_radialGradientStop	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_rasterInterpolate	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternExtend	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternFunction	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternHeight	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternWidth	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternX	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GE_tilingPatternY	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+R_GUIType	data	1	utils	Rinterface.h	
+R_GetVarLocMISSING	function	1	methods		
+R_HashtabSEXP	function	1	utils	Rinternals.h	
+R_Home	data	1	grDevices	Rinterface.h	
+R_InitInPStream	function	1		Rinternals.h	eapi
+R_InputHandlers	data	1	tcltk	R_ext/eventloop.h	
+R_Interactive	data	1	parallel	R_ext/RStartup.h;Rinterface.h	emb
+R_IsPackageEnv	function	1		Rinternals.h	eapi
+R_LockBinding	function	1		Rinternals.h	eapi
+R_MakeWeakRefC	function	1		Rinternals.h	api
+R_MethodsNamespace	data	1	methods		
+R_ModeSymbol	data	1		Rinternals.h	
+R_NameSymbol	data	1		Rinternals.h	
+R_NewHashedEnv	function	1	tools		
+R_NewPreciousMSet	function	1	tools	Rinternals.h	api
+R_Outputfile	data	1	tcltk	Rinterface.h	
+R_PackageEnvName	function	1		Rinternals.h	eapi
+R_PackageSymbol	data	1	methods	Rinternals.h	
+R_ParseContext	data	1	tools		
+R_ParseContextLast	data	1	tools		
+R_ParseContextLine	data	1	tools		
+R_ParseError	data	1	tools		
+R_ParseErrorMsg	data	1	tools		
+R_PolledEvents	data	1	tcltk	R_ext/eventloop.h	emb
+R_PreserveInMSet	function	1	tools	Rinternals.h	api
+R_ReadConsole	function	1	utils		emb
+R_ReleaseFromMSet	function	1	tools	Rinternals.h	api
+R_RunWeakRefFinalizer	function	1		Rinternals.h	api
+R_SelectEx	function	1	parallel	R_ext/eventloop.h	
+R_ShowMessage	function	1	grDevices	R_ext/Error.h	api
+R_SignalCStackOverflow	function	1	utils		
+R_SpecSymbol	data	1		Rinternals.h	
+R_SrcfileSymbol	data	1	tools		
+R_TempDir	data	1	grDevices	Rembedded.h	
+R_Unserialize	function	1		Rinternals.h	eapi
+R_Visible	data	1	grDevices		
+R_asHashtable	function	1	utils	Rinternals.h	
+R_atof	function	1	foreign	R_ext/Utils.h	api
+R_cairoCdynload	function	1	grDevices		
+R_checkActivity	function	1	tcltk	R_ext/eventloop.h	
+R_check_class_etc	function	1	Matrix	Rinternals.h	eapi
+R_chk_memset	function	1	stats	R_ext/RS.h	
+R_closedir	function	1	tools		
+R_clrhash	function	1	utils	Rinternals.h	
+R_data_class	function	1	methods		
+R_deferred_default_method	function	1	methods		
+R_dot_Generic	data	1	methods	Rinternals.h	
+R_dot_Method	data	1	methods	Rinternals.h	
+R_dot_defined	data	1	methods	Rinternals.h	
+R_dot_target	data	1	methods	Rinternals.h	
+R_execMethod	function	1	methods		
+R_findVarLocInFrame	function	1	methods		
+R_fopen	function	1	grDevices		
+R_forceAndCall	function	1		Rinternals.h	eapi
+R_gethash	function	1	utils	Rinternals.h	
+R_gzclose	function	1	grDevices		
+R_gzgets	function	1	grDevices		
+R_gzopen	function	1	grDevices		
+R_ignore_SIGPIPE	data	1	parallel		
+R_isHashtable	function	1	utils	Rinternals.h	
+R_make_altinteger_class	function	1		R_ext/Altrep.h	eapi
+R_make_altlogical_class	function	1		R_ext/Altrep.h	eapi
+R_make_altreal_class	function	1		R_ext/Altrep.h	eapi
+R_make_altstring_class	function	1		R_ext/Altrep.h	eapi
+R_maphash	function	1	utils	Rinternals.h	
+R_mkhashtab	function	1	utils	Rinternals.h	
+R_moduleCdynload	function	1	utils		
+R_new_custom_connection	function	1		R_ext/Connections.h	
+R_num_math_threads	data	1	stats	R_ext/MathThreads.h	
+R_numhash	function	1	utils	Rinternals.h	
+R_opendir	function	1	tools		
+R_popen	function	1	grDevices	Rinternals.h	
+R_primitive_generic	function	1	methods		
+R_primitive_methods	function	1	methods		
+R_qsort_I	function	1		R_ext/Utils.h	api
+R_qsort_int	function	1		R_ext/Utils.h	api
+R_qsort_int_I	function	1		R_ext/Utils.h	api
+R_readdir	function	1	tools		
+R_remhash	function	1	utils	Rinternals.h	
+R_runHandlers	function	1	tcltk	R_ext/eventloop.h	
+R_set_altinteger_Elt_method	function	1			eapi
+R_set_altinteger_Get_region_method	function	1			eapi
+R_set_altinteger_Is_sorted_method	function	1			eapi
+R_set_altinteger_Max_method	function	1			eapi
+R_set_altinteger_Min_method	function	1			eapi
+R_set_altinteger_Sum_method	function	1			eapi
+R_set_altlogical_Elt_method	function	1			eapi
+R_set_altrep_Duplicate_method	function	1			eapi
+R_set_altstring_Elt_method	function	1			eapi
+R_set_altstring_Set_elt_method	function	1			eapi
+R_set_altvec_Extract_subset_method	function	1			eapi
+R_set_prim_method	function	1	methods		
+R_set_quick_method_check	function	1	methods		
+R_set_standardGeneric_ptr	function	1	methods		
+R_sethash	function	1	utils	Rinternals.h	
+R_strtod5	function	1	utils		
+R_subassign3_dflt	function	1	methods		
+R_system	function	1	grDevices	Rinternals.h	
+R_tmpnam	function	1	grDevices	R_ext/Utils.h	api
+R_tryCatchError	function	1		Rinternals.h	api
+R_tryEvalSilent	function	1		Rinternals.h	api
+R_typhash	function	1	utils	Rinternals.h	
+R_withCallingErrorHandler	function	1	methods	Rinternals.h	api
+Rconn_printf	function	1	utils		
+Rdownload	function	1	utils		
+Rdqagi	function	1	stats	R_ext/Applic.h	api
+Rf_EncodeChar	function	1	methods		
+Rf_EncodeComplex	function	1	graphics	R_ext/PrtUtil.h	
+Rf_EncodeElement0	function	1	utils		
+Rf_EncodeInteger	function	1	graphics	R_ext/PrtUtil.h	
+Rf_EncodeLogical	function	1	graphics	R_ext/PrtUtil.h	
+Rf_EncodeReal0	function	1	graphics	R_ext/PrtUtil.h	
+Rf_GPretty	function	1	graphics		
+Rf_NewEnvironment	function	1	methods		
+Rf_RGBpar	function	1	grDevices	R_ext/GraphicsEngine.h	eapi
+Rf_VectorToPairList	function	1	methods	Rinternals.h	eapi
+Rf_acopy_string	function	1	utils	Rinternals.h	
+Rf_alloc3DArray	function	1	stats	Rinternals.h	api
+Rf_allocArray	function	1		Rinternals.h	api
+Rf_allocLang	function	1	stats	Rinternals.h	api
+Rf_any_duplicated3	function	1		Rinternals.h	eapi
+Rf_bessel_i	function	1		Rmath.h	
+Rf_beta	function	1		Rmath.h	
+Rf_con_pushback	function	1	utils		
+Rf_copyMatrix	function	1	Matrix	Rinternals.h	api
+Rf_copyMostAttribNoTs	function	1	stats		
+Rf_copyVector	function	1	utils	Rinternals.h	api
+Rf_csduplicated	function	1	utils		
+Rf_curDevice	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_currentTime	function	1	parallel		
+Rf_dbinom_raw	function	1		Rmath.h	api
+Rf_dcauchy	function	1	stats	Rmath.h	api
+Rf_dchisq	function	1	stats	Rmath.h	api
+Rf_deparse1	function	1	stats		
+Rf_deparse1line	function	1	stats		
+Rf_dexp	function	1	stats	Rmath.h	api
+Rf_df	function	1	stats	Rmath.h	api
+Rf_dhyper	function	1	stats	Rmath.h	api
+Rf_digamma	function	1	mgcv	Rmath.h	
+Rf_dlogis	function	1	stats	Rmath.h	api
+Rf_dnbeta	function	1	stats	Rmath.h	api
+Rf_dnchisq	function	1	stats	Rmath.h	api
+Rf_dnf	function	1	stats	Rmath.h	api
+Rf_dnt	function	1	stats	Rmath.h	api
+Rf_dsignrank	function	1	stats	Rmath.h	api
+Rf_dwilcox	function	1	stats	Rmath.h	api
+Rf_envxlength	function	1	utils		
+Rf_formatComplex	function	1	graphics	R_ext/PrtUtil.h	
+Rf_formatReal	function	1	graphics	R_ext/PrtUtil.h	
+Rf_fsign	function	1	stats	Rmath.h	
+Rf_iPsort	function	1		R_ext/Utils.h	api
+Rf_isBlankString	function	1	utils	R_ext/Utils.h	eapi
+Rf_isComplex	function	1		Rdefines.h;Rinternals.h	api
+Rf_isExpression	function	1	grid	Rinternals.h	api
+Rf_isOrdered	function	1		Rinternals.h	api
+Rf_killDevice	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_lang5	function	1		Rinternals.h	api
+Rf_list3	function	1		Rinternals.h	api
+Rf_list5	function	1		Rinternals.h	api
+Rf_log1mexp	function	1		Rmath.h	
+Rf_log1pexp	function	1		Rmath.h	
+Rf_log1pmx	function	1	mgcv	Rmath.h	
+Rf_logspace_add	function	1	Matrix	Rmath.h	
+Rf_logspace_sub	function	1	Matrix	Rmath.h	
+Rf_matchE	function	1	utils	Rinternals.h	
+Rf_mbcsToUcs2	function	1	grDevices		
+Rf_mbrtowc	function	1	tools		
+Rf_memtrace_report	function	1	stats		
+Rf_mkFalse	function	1	stats		
+Rf_nextDevice	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_pcauchy	function	1	stats	Rmath.h	api
+Rf_pf	function	1	stats	Rmath.h	api
+Rf_phyper	function	1	stats	Rmath.h	api
+Rf_pnbeta	function	1	stats	Rmath.h	api
+Rf_pnbinom_mu	function	1	stats	Rmath.h	api
+Rf_pnchisq	function	1	stats	Rmath.h	api
+Rf_pnf	function	1	stats	Rmath.h	api
+Rf_pnt	function	1	stats	Rmath.h	api
+Rf_prevDevice	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_psignrank	function	1	stats	Rmath.h	api
+Rf_ptukey	function	1	stats	Rmath.h	api
+Rf_pwilcox	function	1	stats	Rmath.h	api
+Rf_qcauchy	function	1	stats	Rmath.h	api
+Rf_qexp	function	1	stats	Rmath.h	api
+Rf_qf	function	1	stats	Rmath.h	api
+Rf_qhyper	function	1	stats	Rmath.h	api
+Rf_qlnorm	function	1	stats	Rmath.h	api
+Rf_qlogis	function	1	stats	Rmath.h	api
+Rf_qnbeta	function	1	stats	Rmath.h	api
+Rf_qnbinom_mu	function	1	stats	Rmath.h	api
+Rf_qnchisq	function	1	stats	Rmath.h	api
+Rf_qnf	function	1	stats	Rmath.h	api
+Rf_qnt	function	1	stats	Rmath.h	api
+Rf_qsignrank	function	1	stats	Rmath.h	api
+Rf_qtukey	function	1	stats	Rmath.h	api
+Rf_qunif	function	1	stats	Rmath.h	api
+Rf_qweibull	function	1	stats	Rmath.h	api
+Rf_qwilcox	function	1	stats	Rmath.h	api
+Rf_revsort	function	1	mgcv	R_ext/Utils.h	api
+Rf_rf	function	1	stats	Rmath.h	api
+Rf_rlnorm	function	1	stats	Rmath.h	api
+Rf_rlogis	function	1	stats	Rmath.h	api
+Rf_rmultinom	function	1	stats	Rmath.h	
+Rf_rnbinom_mu	function	1	stats	Rmath.h	api
+Rf_rnchisq	function	1	stats	Rmath.h	api
+Rf_rsignrank	function	1	stats	Rmath.h	api
+Rf_rweibull	function	1	stats	Rmath.h	api
+Rf_rwilcox	function	1	stats	Rmath.h	api
+Rf_selectDevice	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_setVar	function	1		Rinternals.h	api
+Rf_sortVector	function	1	utils		
+Rf_strIsASCII	function	1	grDevices		
+Rf_strchr	function	1	tools		
+Rf_substitute	function	1	methods	Rinternals.h	
+Rf_translateCharFP	function	1	grDevices		
+Rf_trigamma	function	1	mgcv	Rmath.h	
+Rf_utf8Toutf8NoPUA	function	1	grDevices	R_ext/GraphicsDevice.h	eapi
+Rf_utf8toucs	function	1	grDevices		
+Rf_utf8towcs	function	1	grDevices		
+Rf_wtransChar	function	1	utils		
+Rg_set_col_ptrs	function	1	grDevices		
+Ri18n_wcwidth	function	1	grDevices		
+Rsockclose	function	1	utils		
+Rsockconnect	function	1	utils		
+Rsocklisten	function	1	utils		
+Rsockopen	function	1	utils		
+Rsockread	function	1	utils		
+Rsockwrite	function	1	utils		
+Runzip	function	1	utils		
+Rvprintf	function	1		R_ext/Print.h	api
+SETCAD4R	function	1	graphics	Rinternals.h	api
+SET_BODY	function	1	stats	Rinternals.h	
+SET_CLOENV	function	1	stats	Rinternals.h	
+SET_FORMALS	function	1	stats	Rinternals.h	
+SET_OBJECT	function	1	Matrix	Rinternals.h	
+STRING_IS_SORTED	function	1		Rinternals.h	eapi
+STRING_NO_NA	function	1		Rinternals.h	eapi
+TRUELENGTH	function	1		Rinternals.h	
+UNSET_S4_OBJECT	function	1	Matrix	Rinternals.h	
+XTRUELENGTH	function	1		Rinternals.h	
+baseRegisterIndex	data	1	graphics		
+cgmin	function	1	stats	R_ext/Applic.h	api
+d1mach_	function	1	stats		
+dblepr_	function	1			
+do_Rprof	function	1	utils		
+do_Rprofmem	function	1	utils		
+do_X11	function	1	grDevices		
+do_bmVersion	function	1	grDevices		
+do_contourLines	function	1	grDevices		
+do_edit	function	1	utils		
+do_getGraphicsEvent	function	1	grDevices	R_ext/GraphicsDevice.h	
+do_getGraphicsEventEnv	function	1	grDevices		
+do_getSnapshot	function	1	grDevices		
+do_playSnapshot	function	1	grDevices		
+do_saveplot	function	1	grDevices		
+do_setGraphicsEventEnv	function	1	grDevices	R_ext/GraphicsDevice.h	
+do_set_prim_method	function	1	methods		
+dpbfa_	function	1	stats		api
+dpbsl_	function	1	stats		api
+dqrcf_	function	1	stats		
+dqrls_	function	1	stats		
+dqrqy_	function	1			
+dsvdc_	function	1	stats		api
+dtrsl_	function	1	nlme		api
+extR_HTTPDCreate	function	1	tools		
+extR_HTTPDStop	function	1	tools		
+fdhess	function	1	stats	R_ext/Applic.h	
+getPRIMNAME	function	1	methods		
+interv_	function	1	stats		
+lbfgsb	function	1	stats	R_ext/Applic.h;R_ext/Linpack.h	api
+locale2charset	function	1	grDevices		
+max_contour_segments	data	1	graphics		
+mbcsValid	function	1	grDevices		
+parseError	function	1	tools		
+ptr_R_ClearerrConsole	data	1	tcltk	Rinterface.h	
+ptr_R_FlushConsole	data	1	tcltk	Rinterface.h	
+ptr_R_ReadConsole	data	1	tcltk	Rinterface.h	
+ptr_R_ResetConsole	data	1	tcltk	Rinterface.h	
+ptr_R_WriteConsole	data	1	tcltk	Rinterface.h	
+ptr_R_addhistory	data	1	utils	Rinterface.h	
+ptr_R_loadhistory	data	1	utils	Rinterface.h	
+ptr_R_savehistory	data	1	utils	Rinterface.h	
+ptr_do_dataentry	data	1	utils	Rinterface.h	
+ptr_do_dataviewer	data	1	utils	Rinterface.h	
+ptr_do_selectlist	data	1	utils	Rinterface.h	
+rchkusr_	function	1	stats		
+rsort_with_index	function	1	graphics	R_ext/Utils.h	api
+rwarn_	function	1	stats		
+samin	function	1	stats	R_ext/Applic.h	api
+signrank_free	function	1	stats	Rmath.h	api
+utf8Valid	function	1	grDevices		
+utf8clen	function	1	grDevices		
+wilcox_free	function	1	stats	Rmath.h	api
