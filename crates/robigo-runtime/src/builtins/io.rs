@@ -50,6 +50,14 @@ pub static DEFS: &[Builtin] = &[
     internal("pushBack", do_pushback, 4).invisible(),
     internal("pushBackLength", do_pushbacklength, 1),
     internal("clearPushBack", do_clearpushback, 1).invisible(),
+    internal("rawConnection", do_rawconnection, 3),
+    internal("rawConnectionValue", do_rawconvalue, 1),
+    internal("seek", do_seek, 4),
+    internal("truncate", do_truncate, 1),
+    internal("readBin", do_readbin, 6),
+    internal("writeBin", do_writebin, 5).custom_vis(),
+    internal("readChar", do_readchar, 3),
+    internal("writeChar", do_writechar, 5).custom_vis(),
 ];
 
 const NCONNECTIONS: usize = 128;
@@ -69,31 +77,23 @@ pub enum ConnKind {
         rbuf: Vec<u8>,
         rpos: usize,
         temp: bool,
+        /// R: connections.c fileconn — whether the last operation was a
+        /// write, to pick the position `seek()` reports.
+        last_was_write: bool,
     },
     /// `textConnection(object, "r")`: the lines joined with newlines.
-    TextIn {
-        data: Vec<u8>,
-        cur: usize,
-    },
+    TextIn { data: Vec<u8>, cur: usize },
     /// `textConnection(name, "w")`: lines go to a character vector bound
     /// to `namesym` in `env` (or kept internally for `NULL`).
-    TextOut {
-        namesym: Option<Sym>,
-        env: Env,
-        data: Vec<RStr>,
-        lastline: Vec<u8>,
-    },
+    TextOut { namesym: Option<Sym>, env: Env, data: Vec<RStr>, lastline: Vec<u8> },
     /// `gzfile()`: read by decompressing the whole file when opened
     /// (uncompressed files are read as they are), written by compressing
     /// the buffered output when closed.
-    Gz {
-        level: u32,
-        data: Vec<u8>,
-        cur: usize,
-        out: Vec<u8>,
-        writing: bool,
-        append: bool,
-    },
+    Gz { level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
+    /// `rawConnection()`: an in-memory raw vector (R: connections.c
+    /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
+    /// smaller than `data.len()` (the allocation is over-sized).
+    Raw { data: Vec<u8>, pos: usize, nbytes: usize },
 }
 
 pub struct Connection {
@@ -424,7 +424,12 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
             out.extend_from_slice(&data[*cur..]);
             *cur = data.len();
         }
-        ConnKind::File { fp: Some(f), rbuf, rpos, .. } => {
+        ConnKind::Raw { data, pos, nbytes } => {
+            out.extend_from_slice(&data[*pos..*nbytes]);
+            *pos = *nbytes;
+        }
+        ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, .. } => {
+            *last_was_write = false;
             out.extend_from_slice(&rbuf[*rpos..]);
             *rpos = rbuf.len();
             let _ = f.read_to_end(&mut out);
@@ -445,9 +450,33 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
             out.extend_from_slice(bytes);
             Ok(())
         }
-        ConnKind::File { fp: Some(f), .. } => f
-            .write_all(bytes)
-            .map_err(|e| Flow::error(format!("Error writing to connection:  {}", os_error_message(&e)))),
+        ConnKind::Raw { data, pos, nbytes } => {
+            // R: connections.c raw_write + raw_resize's growth policy
+            let freespace = data.len().saturating_sub(*pos);
+            if bytes.len() >= freespace {
+                let needed = bytes.len() + *pos;
+                let mut nalloc = 64usize;
+                if needed > 8192 {
+                    nalloc = needed + needed / 5; // 20% over-allocation
+                } else {
+                    while nalloc < needed {
+                        nalloc *= 2;
+                    }
+                }
+                data.resize(nalloc, 0);
+            }
+            data[*pos..*pos + bytes.len()].copy_from_slice(bytes);
+            *pos += bytes.len();
+            if *nbytes < *pos {
+                *nbytes = *pos;
+            }
+            Ok(())
+        }
+        ConnKind::File { fp: Some(f), last_was_write, .. } => {
+            *last_was_write = true;
+            f.write_all(bytes)
+                .map_err(|e| Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))))
+        }
         _ => Err(Flow::error("cannot write to this connection")),
     }
 }
@@ -514,7 +543,7 @@ fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
             data.clear();
             con.isopen = false;
         }
-        ConnKind::TextIn { .. } | ConnKind::Terminal => {}
+        ConnKind::TextIn { .. } | ConnKind::Terminal | ConnKind::Raw { .. } => {}
     }
     Ok(())
 }
@@ -540,7 +569,8 @@ fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
-    let ConnKind::File { fp: Some(f), rbuf, rpos, .. } = &mut con.kind else { return EOF };
+    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, .. } = &mut con.kind else { return EOF };
+    *last_was_write = false;
     if *rpos >= rbuf.len() {
         rbuf.resize(8192, 0);
         match f.read(rbuf) {
@@ -578,6 +608,15 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
             } else {
                 *cur += 1;
                 data[*cur - 1] as i32
+            }
+        }
+        ConnKind::Raw { data, pos, nbytes } => {
+            // R: connections.c raw_fgetc
+            if *pos >= *nbytes {
+                EOF
+            } else {
+                *pos += 1;
+                data[*pos - 1] as i32
             }
         }
         ConnKind::Terminal => {
@@ -636,17 +675,25 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         _ => {}
     }
     let con = i.conns.get(n)?;
+    let mut raw_bytes: Option<Vec<u8>> = None;
     match &mut con.kind {
-        ConnKind::Terminal | ConnKind::TextIn { .. } => Err(Flow::error("cannot write to this connection")),
+        ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
             if !*writing {
                 return Err(Flow::error("cannot write to this connection"));
             }
             out.extend_from_slice(text.as_bytes());
+            return Ok(());
+        }
+        // Rconn_printf on a raw connection formats then calls con->write
+        // (connections.c dummy_vfprintf).
+        ConnKind::Raw { .. } => {
+            raw_bytes = Some(text.as_bytes().to_vec());
             Ok(())
         }
-        ConnKind::File { fp, .. } => match fp {
+        ConnKind::File { fp, last_was_write, .. } => match fp {
             Some(f) => {
+                *last_was_write = true;
                 if let Err(e) = f.write_all(text.as_bytes()) {
                     return Err(Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))));
                 }
@@ -678,7 +725,11 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             }
             Ok(())
         }
+    }?;
+    if let Some(bytes) = raw_bytes {
+        con_write_bytes(i, n, &bytes)?;
     }
+    Ok(())
 }
 
 fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
@@ -982,7 +1033,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         }
     }
     let mode = if open.is_empty() { "r".to_string() } else { open.clone() };
-    let kind = ConnKind::File { raw, fp: None, rbuf: Vec::new(), rpos: 0, temp: false };
+    let kind = ConnKind::File { raw, fp: None, rbuf: Vec::new(), rpos: 0, temp: false, last_was_write: false };
     let mut con = Connection::new("file", &description, &mode, kind);
     con.canseek = !raw;
     con.blocking = block != 0;
@@ -1304,19 +1355,33 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         }
     } else if !i.conns.get(ncon)?.canread {
         return Err(Flow::error("cannot read from this connection"));
+    } else {
+        // R: for a non-blocking connection, more input may have become
+        // available, so re-position (tell then seek the read position).
+        let (canseek, blocking) = {
+            let c = i.conns.get(ncon)?;
+            (c.canseek, c.blocking)
+        };
+        if canseek && !blocking {
+            let tell = con_seek(i, ncon, f64::NAN, 1, 1)?;
+            con_seek(i, ncon, tell, 1, 1)?;
+        }
     }
     let nnn = if n < 0 { i64::MAX } else { n };
     let mut ans: Vec<RStr> = Vec::new();
     let mut nul_warnings: Vec<usize> = Vec::new();
-    let mut incomplete: Option<Vec<u8>> = None;
+    // R: the incomplete final line is stored like any other before
+    // `no_more_lines` handling; `incomplete_buf` holds it for the
+    // pushback-or-warn decision.
+    let mut incomplete_buf: Option<Vec<u8>> = None;
+    let mut eof = false;
     {
         let con = i.conns.get(ncon)?;
         con.incomplete = false;
         let mut nread: i64 = 0;
-        while nread < nnn {
+        while nread < nnn && !eof {
             let mut buf: Vec<u8> = Vec::new();
             let mut c;
-            let mut saw_nul = false;
             loop {
                 c = rconn_fgetc(con);
                 if c == EOF {
@@ -1328,22 +1393,12 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
                 if c == '\n' as i32 {
                     break;
                 }
-                if c == 0 {
-                    saw_nul = true;
-                }
                 buf.push(c as u8);
             }
-            if c == EOF {
-                if !buf.is_empty() {
-                    incomplete = Some(buf);
-                }
-                break;
-            }
+            // The string stops at the first NUL (mkCharCE semantics).
+            let nul = buf.contains(&0);
             let mut line: &[u8] = &buf;
-            if saw_nul {
-                if warn != 0 {
-                    nul_warnings.push(nread as usize + 1);
-                }
+            if nul {
                 let end = line.iter().position(|&b| b == 0).unwrap_or(line.len());
                 line = &line[..end];
             }
@@ -1351,7 +1406,16 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
                 line = &line[3..];
             }
             ans.push(rstr(&String::from_utf8_lossy(line)));
+            if nul && warn != 0 {
+                nul_warnings.push(nread as usize + 1);
+            }
             nread += 1;
+            if c == EOF {
+                eof = true;
+                if !buf.is_empty() {
+                    incomplete_buf = Some(buf);
+                }
+            }
         }
     }
     for k in nul_warnings {
@@ -1360,22 +1424,27 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if !wasopen {
         con_close_raw(i, ncon)?;
     }
-    if let Some(buf) = incomplete {
-        let con = i.conns.get(ncon)?;
-        if con.text && !con.blocking && con.class != "gzfile" {
-            // push back the rest
-            con.pushback.push(buf);
-            con.pos_pushback = 0;
-            con.incomplete = true;
-        } else {
-            let desc = con.description.clone();
-            let mut line: &[u8] = &buf;
-            if ans.is_empty() && line.starts_with(b"\xef\xbb\xbf") {
-                line = &line[3..];
+    if eof {
+        match incomplete_buf {
+            Some(buf) => {
+                let con = i.conns.get(ncon)?;
+                if con.text && !con.blocking && con.class != "gzfile" {
+                    // R: the pushed-back line is not part of the result.
+                    ans.pop();
+                    con.pushback.push(buf);
+                    con.pos_pushback = 0;
+                    con.incomplete = true;
+                } else {
+                    let desc = con.description.clone();
+                    if warn != 0 {
+                        i.warning(format!("incomplete final line found on '{}'", desc))?;
+                    }
+                }
             }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
-            if warn != 0 {
-                i.warning(format!("incomplete final line found on '{}'", desc))?;
+            // EOF right after a newline: R stores an empty string in the
+            // slot and then truncates the result to exclude it.
+            None => {
+                ans.pop();
             }
         }
     }
@@ -1562,6 +1631,857 @@ fn do_clearpushback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
     con.pushback.clear();
     con.pos_pushback = 0;
     Ok(Value::Null)
+}
+
+// ----------------------------------------------------------------------
+// raw connections
+
+/// `.Internal(rawConnection(deparse(substitute(object)), object, open))`
+// R: connections.c do_rawconnection
+fn do_rawconnection(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let desc = match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => s.data[0].clone().unwrap().to_string(),
+        _ => return Err(Flow::error("invalid 'description' argument")),
+    };
+    let raw = match arg(&args, 1) {
+        Value::Raw(r) => r.data.clone(),
+        _ => return Err(Flow::error("invalid 'raw' argument")),
+    };
+    let open = match arg(&args, 2) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("invalid 'open' argument")),
+    };
+    if open.contains('t') {
+        return Err(Flow::error("invalid 'open' argument"));
+    }
+    let ncon = i.conns.next_connection()?;
+    // R: connections.c newraw
+    let nbytes = raw.len();
+    let mut con = Connection::new("rawConnection", &desc, &open, ConnKind::Raw { data: raw, pos: 0, nbytes });
+    con.isopen = true;
+    con.text = false;
+    con.blocking = true;
+    con.canseek = true;
+    con.canwrite = open.starts_with('w') || open.starts_with('a');
+    con.canread = open.starts_with('r');
+    if open.len() >= 2 && open.as_bytes()[1] == b'+' {
+        con.canread = true;
+        con.canwrite = true;
+    }
+    let v = install_connection(i, ncon, con);
+    if open.starts_with('a') {
+        con_seek(i, ncon as i32, 0.0, 3, 0)?;
+    }
+    Ok(v)
+}
+
+/// `.Internal(rawConnectionValue(con))`
+// R: connections.c do_rawconvalue
+fn do_rawconvalue(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let v = arg(&args, 0);
+    if !v.inherits("rawConnection") {
+        return Err(Flow::error("'con' is not a rawConnection"));
+    }
+    let n = as_integer(&v);
+    if i.conns.get(n)?.class != "rawConnection" {
+        return Err(Flow::error("internal connection is not a rawConnection"));
+    }
+    let con = i.conns.get(n)?;
+    if !con.canwrite {
+        return Err(Flow::error("'con' is not an output rawConnection"));
+    }
+    match &con.kind {
+        ConnKind::Raw { data, nbytes, .. } => Ok(Value::raws(data[..*nbytes].to_vec())),
+        _ => Err(Flow::error("'con' is not an output rawConnection")),
+    }
+}
+
+// ----------------------------------------------------------------------
+// seeking
+
+/// `Rconn_seek` on connection `n`: returns the old position.
+// R: connections.c do_seek, file_seek, raw_seek, buff_seek
+fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResult<f64> {
+    let r#where = pos_arg;
+    use std::io::Seek;
+    let con = i.conns.get(n)?;
+    if matches!(con.kind, ConnKind::File { .. }) {
+        // R: connections.c file_seek (both positions are kept; the read
+        // buffer holds bytes already consumed from the OS file).
+        let (os_pos, unread): (u64, usize) = match &mut con.kind {
+            ConnKind::File { fp: Some(f), rbuf, rpos, .. } => (f.stream_position().unwrap_or(0), rbuf.len() - *rpos),
+            _ => (0, 0),
+        };
+        let mut last_was_write = match &con.kind {
+            ConnKind::File { last_was_write, .. } => *last_was_write,
+            _ => false,
+        };
+        let (mut rpos, mut wpos) = (os_pos - unread as u64, os_pos);
+        if last_was_write {
+            wpos = os_pos;
+        } else {
+            rpos = os_pos - unread as u64;
+        }
+        let mut pos = if last_was_write { wpos } else { rpos };
+        if rw == 1 {
+            if !con.canread {
+                return Err(Flow::error("connection is not open for reading"));
+            }
+            pos = rpos;
+            last_was_write = false;
+        }
+        if rw == 2 {
+            if !con.canwrite {
+                return Err(Flow::error("connection is not open for writing"));
+            }
+            pos = wpos;
+            last_was_write = true;
+        }
+        if r#where.is_nan() {
+            return Ok(pos as f64);
+        }
+        let whence = match origin {
+            2 => std::io::SeekFrom::Current(r#where as i64),
+            3 => std::io::SeekFrom::End(r#where as i64),
+            _ => std::io::SeekFrom::Start(r#where as u64),
+        };
+        if let ConnKind::File { fp: Some(f), rbuf, rpos: rb, .. } = &mut con.kind {
+            rbuf.clear();
+            *rb = 0;
+            let new = f.seek(whence).unwrap_or(0);
+            if last_was_write {
+                wpos = new;
+            } else {
+                rpos = new;
+            }
+        }
+        let _ = (rpos, wpos);
+        return Ok(pos as f64);
+    }
+    match &mut con.kind {
+        // R: connections.c raw_seek
+        ConnKind::Raw { pos, nbytes, .. } => {
+            let old = *pos;
+            if r#where.is_nan() {
+                return Ok(old as f64);
+            }
+            let newpos = match origin {
+                2 => *pos as f64 + r#where,
+                3 => *nbytes as f64 + r#where,
+                _ => r#where,
+            };
+            if newpos < 0.0 || newpos > *nbytes as f64 {
+                return Err(Flow::error("attempt to seek outside the range of the raw connection"));
+            }
+            *pos = newpos as usize;
+            Ok(old as f64)
+        }
+        _ => Err(Flow::error("seek is not relevant for text connection")),
+    }
+}
+
+/// `seek(con, where, origin, rw)`
+// R: connections.c do_seek
+fn do_seek(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let v = arg(&args, 0);
+    if !inherits_connection(&v) {
+        return Err(Flow::error("'con' is not a connection"));
+    }
+    let n = con_arg(&v)?;
+    if !i.conns.get(n)?.isopen {
+        return Err(Flow::error("connection is not open"));
+    }
+    let r#where = crate::coerce::as_real(&arg(&args, 1));
+    let origin = as_integer(&arg(&args, 2));
+    let rw = as_integer(&arg(&args, 3));
+    if !r#where.is_nan() {
+        let con = i.conns.get(n)?;
+        con.pushback.clear();
+        con.pos_pushback = 0;
+    }
+    Ok(Value::real(con_seek(i, n, r#where, origin, rw)?))
+}
+
+/// `truncate(con)`
+// R: connections.c do_truncate
+fn do_truncate(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let v = arg(&args, 0);
+    if !inherits_connection(&v) {
+        return Err(Flow::error("'con' is not a connection"));
+    }
+    let n = con_arg(&v)?;
+    // R: connections.c raw_truncate
+    if let ConnKind::Raw { pos, nbytes, .. } = &mut i.conns.get(n)?.kind {
+        *nbytes = *pos;
+    }
+    Ok(Value::Null)
+}
+
+// ----------------------------------------------------------------------
+// binary reading and writing
+
+/// Read up to `buf.len()` bytes from a connection (R's `con->read`),
+/// returning how many bytes were read.
+pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> {
+    let con = i.conns.get(n)?;
+    let mut used = 0usize;
+    // Pushed-back bytes come first.
+    while used < buf.len() && con.pos_pushback < con.pushback.len() {
+        let last = con.pushback.len() - 1;
+        let src = &con.pushback[last];
+        let take = (buf.len() - used).min(src.len() - con.pos_pushback);
+        buf[used..used + take].copy_from_slice(&src[con.pos_pushback..con.pos_pushback + take]);
+        con.pos_pushback += take;
+        used += take;
+        if con.pos_pushback >= src.len() {
+            con.pushback.pop();
+            con.pos_pushback = 0;
+        }
+    }
+    if used == buf.len() {
+        return Ok(used);
+    }
+    match &mut con.kind {
+        ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
+            let take = (buf.len() - used).min(data.len() - *cur);
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
+            *cur += take;
+            Ok(used + take)
+        }
+        ConnKind::Raw { data, pos, nbytes } => {
+            let take = (buf.len() - used).min(nbytes.saturating_sub(*pos));
+            buf[used..used + take].copy_from_slice(&data[*pos..*pos + take]);
+            *pos += take;
+            Ok(used + take)
+        }
+        ConnKind::File { fp: Some(f), rbuf, rpos, .. } => {
+            let take = (buf.len() - used).min(rbuf.len() - *rpos);
+            buf[used..used + take].copy_from_slice(&rbuf[*rpos..*rpos + take]);
+            *rpos += take;
+            used += take;
+            if used == buf.len() {
+                return Ok(used);
+            }
+            rbuf.clear();
+            *rpos = 0;
+            match f.read(&mut buf[used..]) {
+                Ok(k) => Ok(used + k),
+                Err(_) => Err(Flow::error("error reading from the connection")),
+            }
+        }
+        ConnKind::Terminal => match std::io::stdin().read(&mut buf[used..]) {
+            Ok(k) => Ok(used + k),
+            Err(_) => Err(Flow::error("error reading from the connection")),
+        },
+        _ => Err(Flow::error("cannot read from this connection")),
+    }
+}
+
+/// Read one NUL-terminated string from a connection (R: connections.c
+/// readOneString).
+fn read_one_string(i: &mut Interp, n: i32) -> RResult<Option<RStr>> {
+    let mut buf = Vec::new();
+    loop {
+        let mut b = [0u8; 1];
+        let got = con_read_bytes(i, n, &mut b)?;
+        if got == 0 {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            // A non-terminated final string: R errors here.
+            return Err(Flow::error("incomplete string at end of file"));
+        }
+        if b[0] == 0 {
+            return Ok(Some(rstr(&String::from_utf8_lossy(&buf))));
+        }
+        buf.push(b[0]);
+    }
+}
+
+/// `readBin(con, what, n, size, signed, swap)`
+// R: connections.c do_readbin
+fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let con_arg0 = arg(&args, 0);
+    let (mut ncon, bytes): (Option<i32>, Option<Vec<u8>>) = match &con_arg0 {
+        Value::Raw(r) => (None, Some(r.data.clone())),
+        v => {
+            let n = con_arg(v)?;
+            if i.conns.get(n)?.text {
+                return Err(Flow::error("can only read from a binary connection"));
+            }
+            (Some(n), None)
+        }
+    };
+    let what = match arg(&args, 1) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("invalid 'what' argument")),
+    };
+    let n = as_vec_size(&arg(&args, 2))?;
+    if n < 0 {
+        return Err(Flow::error("invalid 'n' argument"));
+    }
+    let n = n as usize;
+    let mut size = as_integer(&arg(&args, 3));
+    let signd = as_logical(&arg(&args, 4)) != 0;
+    if as_logical(&arg(&args, 4)) == NA_LOGICAL {
+        return Err(Flow::error("invalid 'signed' argument"));
+    }
+    let swap = as_logical(&arg(&args, 5)) != 0;
+    if as_logical(&arg(&args, 5)) == NA_LOGICAL {
+        return Err(Flow::error("invalid 'swap' argument"));
+    }
+    let mut np = 0usize;
+    // A raw source reads from the vector; a connection is opened "rb" if
+    // needed (documented behaviour).
+    let mut wasopen = true;
+    if let Some(nc) = ncon {
+        wasopen = i.conns.get(nc)?.isopen;
+        if !wasopen {
+            let opened = open_in_mode(i, nc, "rb")?;
+            if !opened {
+                return Err(Flow::error("cannot open the connection"));
+            }
+            ncon = Some(nc);
+        }
+        if !i.conns.get(nc)?.canread {
+            if !wasopen {
+                close_conn(i, nc)?;
+            }
+            return Err(Flow::error("cannot read from this connection"));
+        }
+    }
+    let r = (|| -> RResult<Value> {
+        match what.as_str() {
+            "character" => {
+                let mut out: Vec<RStr> = Vec::new();
+                for _ in 0..n {
+                    match ncon {
+                        Some(nc) => match read_one_string(i, nc)? {
+                            Some(s) => out.push(s),
+                            None => break,
+                        },
+                        None => {
+                            // R: connections.c rawOneString
+                            let Some(b) = &bytes else { break };
+                            if np >= b.len() {
+                                break;
+                            }
+                            let end = b[np..].iter().position(|&c| c == 0).map(|p| np + p).unwrap_or(b.len());
+                            let s = String::from_utf8_lossy(&b[np..end]).into_owned();
+                            np = (end + 1).min(b.len());
+                            out.push(rstr(&s));
+                        }
+                    }
+                }
+                Ok(Value::strs(out))
+            }
+            "complex" => {
+                if size == NA_INTEGER {
+                    size = 16;
+                }
+                if size != 16 {
+                    return Err(Flow::error("size changing is not supported for complex vectors"));
+                }
+                let mut out = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut b = [0u8; 16];
+                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b)?;
+                    if got < 16 {
+                        break;
+                    }
+                    let mut re = f64::from_le_bytes(b[..8].try_into().unwrap());
+                    let mut im = f64::from_le_bytes(b[8..].try_into().unwrap());
+                    if swap {
+                        re = f64::from_bits(re.to_bits().swap_bytes());
+                        im = f64::from_bits(im.to_bits().swap_bytes());
+                    }
+                    out.push(Complex::new(re, im));
+                }
+                Ok(Value::cplxs(out))
+            }
+            w if w == "integer" || w == "int" || w == "logical" || w == "raw" => {
+                let (sizedef, is_logical, is_raw) = match w {
+                    "logical" => (4, true, false),
+                    "raw" => (1, false, true),
+                    _ => (4, false, false),
+                };
+                if size == NA_INTEGER {
+                    size = sizedef;
+                }
+                match size {
+                    1 | 2 | 4 | 8 => {}
+                    _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
+                }
+                if is_raw && size != 1 {
+                    return Err(Flow::error("raw is always of size 1"));
+                }
+                if !signd && (is_logical || size > 2) && !is_raw {
+                    i.warning("'signed = FALSE' is only valid for integers of sizes 1 and 2")?;
+                }
+                let mut ints: Vec<i32> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut b = [0u8; 8];
+                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b[..size as usize])?;
+                    if got < size as usize {
+                        break;
+                    }
+                    let v = read_int_bytes(&b, size, signd, swap);
+                    ints.push(v);
+                }
+                Ok(if is_logical {
+                    Value::lgls(ints)
+                } else if is_raw {
+                    Value::raws(ints.into_iter().map(|x| x as u8).collect())
+                } else {
+                    Value::ints(ints)
+                })
+            }
+            w if w == "numeric" || w == "double" => {
+                if size == NA_INTEGER {
+                    size = 8;
+                }
+                match size {
+                    4 | 8 | 16 => {}
+                    _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
+                }
+                let mut out = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut b = [0u8; 16];
+                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b[..size as usize])?;
+                    if got < size as usize {
+                        break;
+                    }
+                    out.push(read_real_bytes(&b, size, swap));
+                }
+                Ok(Value::reals(out))
+            }
+            _ => Err(Flow::error("invalid 'what' argument")),
+        }
+    })();
+    if let Some(nc) = ncon {
+        if !wasopen {
+            close_conn(i, nc)?;
+        }
+    }
+    r
+}
+
+/// Read into `buf` from a raw vector (advancing `np`) or a connection.
+// R: connections.c rawRead / con->read
+fn readbin_read(
+    i: &mut Interp,
+    ncon: Option<i32>,
+    bytes: Option<&Vec<u8>>,
+    np: &mut usize,
+    buf: &mut [u8],
+) -> RResult<usize> {
+    match (ncon, bytes) {
+        (Some(nc), _) => con_read_bytes(i, nc, buf),
+        (None, Some(b)) => {
+            let take = buf.len().min(b.len().saturating_sub(*np));
+            buf[..take].copy_from_slice(&b[*np..*np + take]);
+            *np += take;
+            Ok(take)
+        }
+        _ => Ok(0),
+    }
+}
+
+/// Decode an integer of `size` (1, 2, 4 or 8) bytes, native endianness.
+fn read_int_bytes(b: &[u8; 8], size: i32, signd: bool, swap: bool) -> i32 {
+    let size = size as usize;
+    let mut raw = [0u8; 8];
+    raw[..size].copy_from_slice(&b[..size]);
+    if swap && size > 1 {
+        raw[..size].reverse();
+    }
+    match (size, signd) {
+        (1, true) => raw[0] as i8 as i32,
+        (1, false) => raw[0] as i32,
+        (2, true) => i16::from_le_bytes(raw[..2].try_into().unwrap()) as i32,
+        (2, false) => u16::from_le_bytes(raw[..2].try_into().unwrap()) as i32,
+        (4, _) => i32::from_le_bytes(raw[..4].try_into().unwrap()),
+        (8, _) => i64::from_le_bytes(raw[..8].try_into().unwrap()) as i32,
+        _ => 0,
+    }
+}
+
+/// Decode a double of `size` (4, 8 or 16 x87) bytes, native endianness.
+fn read_real_bytes(b: &[u8], size: i32, swap: bool) -> f64 {
+    let size = size as usize;
+    let mut raw = [0u8; 8];
+    raw[..size.min(8)].copy_from_slice(&b[..size.min(8)]);
+    if swap && size > 1 {
+        raw[..size.min(8)].reverse();
+    }
+    match size {
+        4 => f32::from_le_bytes(raw[..4].try_into().unwrap()) as f64,
+        _ => f64::from_le_bytes(raw),
+    }
+}
+
+/// `writeBin(object, con, size, swap, useBytes)`
+// R: connections.c do_writebin
+fn do_writebin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let _swap_raw = as_logical(&arg(&args, 3));
+    let object = arg(&args, 0);
+    if !object.is_atomic() {
+        return Err(Flow::error("'x' is not an atomic vector type"));
+    }
+    let con_arg1 = arg(&args, 1);
+    let (mut ncon, is_raw) = match &con_arg1 {
+        Value::Raw(_) => (None, true),
+        v => {
+            let n = con_arg(v)?;
+            if i.conns.get(n)?.text {
+                return Err(Flow::error("can only write to a binary connection"));
+            }
+            if !i.conns.get(n)?.canwrite {
+                return Err(Flow::error("cannot write to this connection"));
+            }
+            (Some(n), false)
+        }
+    };
+    let mut size = as_integer(&arg(&args, 2));
+    let swap = as_logical(&arg(&args, 3)) != 0;
+    if as_logical(&arg(&args, 3)) == NA_LOGICAL {
+        return Err(Flow::error("invalid 'swap' argument"));
+    }
+    let use_bytes = as_logical(&arg(&args, 4));
+    if use_bytes == NA_LOGICAL {
+        return Err(Flow::error("invalid 'useBytes' argument"));
+    }
+    let len = object.len();
+    if len == 0 {
+        return Ok(if is_raw { Value::raws(vec![]) } else { Value::Null });
+    }
+    let mut wasopen = true;
+    if let Some(nc) = ncon {
+        wasopen = i.conns.get(nc)?.isopen;
+        if !wasopen {
+            let opened = open_in_mode(i, nc, "wb")?;
+            if !opened {
+                return Err(Flow::error("cannot open the connection"));
+            }
+            ncon = Some(nc);
+            if !i.conns.get(nc)?.canwrite {
+                close_conn(i, nc)?;
+                return Err(Flow::error("cannot write to this connection"));
+            }
+        }
+    }
+    let r = (|| -> RResult<Vec<u8>> {
+        if let Value::Str(s) = &object {
+            // Strings are written NUL-terminated.
+            let mut out = Vec::new();
+            for e in &s.data {
+                let b = e.as_deref().unwrap_or("NA").as_bytes();
+                out.extend_from_slice(b);
+                out.push(0);
+            }
+            return Ok(out);
+        }
+        match &object {
+            Value::Lgl(x) | Value::Int(x) => {
+                if size == NA_INTEGER {
+                    size = 4;
+                }
+                match size {
+                    1 | 2 | 4 | 8 => {}
+                    _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
+                }
+                let mut out = vec![0u8; len * size as usize];
+                for (k, &v) in x.data.iter().enumerate() {
+                    let b = match size {
+                        1 => vec![v as i8 as u8],
+                        2 => (v as i16).to_le_bytes().to_vec(),
+                        4 => v.to_le_bytes().to_vec(),
+                        _ => (v as i64).to_le_bytes().to_vec(),
+                    };
+                    out[k * size as usize..(k + 1) * size as usize].copy_from_slice(&b);
+                }
+                if swap && size > 1 {
+                    for chunk in out.chunks_mut(size as usize) {
+                        chunk.reverse();
+                    }
+                }
+                Ok(out)
+            }
+            Value::Real(x) => {
+                if size == NA_INTEGER {
+                    size = 8;
+                }
+                match size {
+                    4 | 8 => {}
+                    _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
+                }
+                let mut out = vec![0u8; len * size as usize];
+                for (k, &v) in x.data.iter().enumerate() {
+                    let b = if size == 4 { (v as f32).to_le_bytes().to_vec() } else { v.to_le_bytes().to_vec() };
+                    out[k * size as usize..(k + 1) * size as usize].copy_from_slice(&b);
+                }
+                if swap && size > 1 {
+                    for chunk in out.chunks_mut(size as usize) {
+                        chunk.reverse();
+                    }
+                }
+                Ok(out)
+            }
+            Value::Cplx(x) => {
+                if size == NA_INTEGER {
+                    size = 16;
+                }
+                if size != 16 {
+                    return Err(Flow::error("size changing is not supported for complex vectors"));
+                }
+                let mut out = vec![0u8; len * 16];
+                for (k, z) in x.data.iter().enumerate() {
+                    out[k * 16..k * 16 + 8].copy_from_slice(&z.re.to_le_bytes());
+                    out[k * 16 + 8..(k + 1) * 16].copy_from_slice(&z.im.to_le_bytes());
+                }
+                if swap {
+                    for chunk in out.chunks_mut(8) {
+                        chunk.reverse();
+                    }
+                }
+                Ok(out)
+            }
+            Value::Raw(x) => {
+                if size == NA_INTEGER {
+                    size = 1;
+                }
+                if size != 1 {
+                    return Err(Flow::error("size changing is not supported for raw vectors"));
+                }
+                Ok(x.data.clone())
+            }
+            _ => Err(Flow::error("'x' is not an atomic vector type")),
+        }
+    })();
+    let out = r;
+    let write_res = if let (Some(nc), Ok(b)) = (ncon, out.as_ref()) { con_write_bytes(i, nc, b) } else { Ok(()) };
+    if let Some(nc) = ncon {
+        if !wasopen {
+            check_close(i, nc)?;
+        }
+    }
+    write_res?;
+    match out {
+        Ok(b) => Ok(if is_raw_target(&con_arg1) { Value::raws(b) } else { Value::Null }),
+        Err(e) => Err(e),
+    }
+}
+
+fn is_raw_target(v: &Value) -> bool {
+    matches!(v, Value::Raw(_))
+}
+
+// ----------------------------------------------------------------------
+// fixed-size character reading and writing
+
+/// `readChar(con, nchars, useBytes)` — `con` may be a raw vector.
+// R: connections.c do_readchar
+fn do_readchar(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let con_arg0 = arg(&args, 0);
+    let (ncon, bytes): (Option<i32>, Option<Vec<u8>>) = match &con_arg0 {
+        Value::Raw(r) => (None, Some(r.data.clone())),
+        v => {
+            let n = con_arg(v)?;
+            if !i.conns.get(n)?.canread {
+                return Err(Flow::error("cannot read from this connection"));
+            }
+            (Some(n), None)
+        }
+    };
+    let nchars = match arg(&args, 1) {
+        Value::Int(v) => v.data.clone(),
+        _ => return Err(Flow::error("invalid 'nchars' argument")),
+    };
+    let n = nchars.len();
+    if n == 0 {
+        return Ok(Value::strs(vec![]));
+    }
+    let use_bytes = as_logical(&arg(&args, 2));
+    if use_bytes == NA_LOGICAL {
+        return Err(Flow::error("invalid 'useBytes' argument"));
+    }
+    let mut wasopen = true;
+    if let Some(nc) = ncon {
+        wasopen = i.conns.get(nc)?.isopen;
+        if !wasopen {
+            let opened = open_in_mode(i, nc, "rb")?;
+            if !opened {
+                return Err(Flow::error("cannot open the connection"));
+            }
+        }
+        if !i.conns.get(nc)?.canread {
+            if !wasopen {
+                close_conn(i, nc)?;
+            }
+            return Err(Flow::error("cannot read from this connection"));
+        }
+        if i.conns.get(nc)?.text {
+            i.warning("text connection used with readChar(), results may be incorrect")?;
+        }
+    }
+
+    let mut np = 0usize;
+    let mut warn_on_nul = true;
+    let mut out: Vec<RStr> = Vec::with_capacity(n);
+    let r = (|| -> RResult<()> {
+        for &len in &nchars {
+            if len == NA_INTEGER || len < 0 {
+                return Err(Flow::error("invalid 'nchars' argument"));
+            }
+            let len = len as usize;
+            match (&bytes, ncon) {
+                (Some(b), _) => {
+                    // R: connections.c rawFixedString
+                    let mut l = len;
+                    if np + l > b.len() {
+                        l = b.len().saturating_sub(np);
+                        if l == 0 {
+                            break;
+                        }
+                    }
+                    let s = String::from_utf8_lossy(&b[np..np + l]).into_owned();
+                    np += l;
+                    out.push(rstr(&s));
+                }
+                (None, Some(nc)) => {
+                    // R: connections.c readFixedString
+                    let mut buf = vec![0u8; len];
+                    let got = con_read_bytes(i, nc, &mut buf)?;
+                    if len > 0 && got == 0 {
+                        break;
+                    }
+                    buf.truncate(got);
+                    if buf.len() < got {
+                        // unreachable, keeps clippy quiet
+                    }
+                    if buf.contains(&0) && warn_on_nul {
+                        warn_on_nul = false;
+                        i.warning("truncating string with embedded nuls")?;
+                    }
+                    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                    out.push(rstr(&String::from_utf8_lossy(&buf[..end])));
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    })();
+    if let Some(nc) = ncon {
+        if !wasopen {
+            close_conn(i, nc)?;
+        }
+    }
+    r?;
+    Ok(Value::strs(out))
+}
+
+/// `writeChar(object, con, nchars, eos, useBytes)`
+// R: connections.c do_writechar
+fn do_writechar(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let object = match arg(&args, 0) {
+        Value::Str(s) => s.data.clone(),
+        _ => return Err(Flow::error("invalid 'object' argument")),
+    };
+    let con_arg1 = arg(&args, 1);
+    let (mut ncon, is_raw) = match &con_arg1 {
+        Value::Raw(_) => (None, true),
+        v => {
+            let n = con_arg(v)?;
+            if !i.conns.get(n)?.canwrite {
+                return Err(Flow::error("cannot write to this connection"));
+            }
+            (Some(n), false)
+        }
+    };
+    let nchars = match arg(&args, 2) {
+        Value::Int(v) => v.data.clone(),
+        _ => return Err(Flow::error("invalid 'nchars' argument")),
+    };
+    let sep = arg(&args, 3);
+    let ssep = match &sep {
+        Value::Null => None,
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().map(|s| s.to_string()),
+        _ => return Err(Flow::error("invalid 'sep' argument")),
+    };
+    let use_bytes = as_logical(&arg(&args, 4));
+    if use_bytes == NA_LOGICAL {
+        return Err(Flow::error("invalid 'useBytes' argument"));
+    }
+    let n = nchars.len();
+    if object.len() < n {
+        return Err(Flow::error("'object' is too short"));
+    }
+    if n == 0 {
+        return Ok(if is_raw { Value::raws(vec![]) } else { Value::Null });
+    }
+    let mut wasopen = true;
+    if let Some(nc) = ncon {
+        wasopen = i.conns.get(nc)?.isopen;
+        if !wasopen {
+            let opened = open_in_mode(i, nc, "wb")?;
+            if !opened {
+                return Err(Flow::error("cannot open the connection"));
+            }
+            ncon = Some(nc);
+            if !i.conns.get(nc)?.canwrite {
+                close_conn(i, nc)?;
+                return Err(Flow::error("cannot write to this connection"));
+            }
+        }
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let r = (|| -> RResult<()> {
+        for (k, &len) in nchars.iter().enumerate() {
+            if len == NA_INTEGER || len < 0 {
+                return Err(Flow::error("invalid 'nchars' argument"));
+            }
+            let len = len as usize;
+            let s = object[k].as_deref().unwrap_or("NA");
+            let sb = s.as_bytes();
+            let sepl = ssep.as_ref().map(|x| x.len() + 1).unwrap_or(0);
+            let start = out.len();
+            if sb.contains(&0) {
+                // Embedded nuls: operate byte-wise (R's first branch).
+                if len > sb.len() {
+                    i.warning("writeChar: more bytes requested than are in the string - will zero-pad")?;
+                }
+                out.resize(start + len + sepl, 0);
+                let take = sb.len().min(len);
+                out[start..start + take].copy_from_slice(&sb[..take]);
+            } else {
+                // R: lenb starts at the byte length; nchars counts characters.
+                let lenc = s.chars().count();
+                let mut lenb = sb.len();
+                if len > lenc {
+                    i.warning("writeChar: more characters requested than are in the string - will zero-pad")?;
+                    lenb += len - lenc;
+                } else if len < lenc {
+                    lenb = s.chars().take(len).map(|c| c.len_utf8()).sum();
+                }
+                out.resize(start + lenb + sepl, 0);
+                let take = sb.len().min(lenb);
+                out[start..start + take].copy_from_slice(&sb[..take]);
+            }
+            if let Some(sep) = &ssep {
+                let p = out.len() - sep.len() - 1;
+                out[p..p + sep.len()].copy_from_slice(sep.as_bytes());
+            }
+        }
+        Ok(())
+    })();
+    let write_res = if let Some(nc) = ncon { if r.is_ok() { con_write_bytes(i, nc, &out) } else { r } } else { r };
+    if let Some(nc) = ncon {
+        if !wasopen {
+            check_close(i, nc)?;
+        }
+    }
+    write_res?;
+    if is_raw { Ok(Value::raws(out)) } else { Ok(Value::Null) }
 }
 
 // ----------------------------------------------------------------------
