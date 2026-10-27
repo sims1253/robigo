@@ -98,5 +98,9 @@ scripts/perf.py compare before.json after.json          # the gate
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
 
-The runner is `ubuntu-24.04` unless the repository variable
-`ROBIGO_RUNNER` names another (e.g. a self-hosted machine).
+Every job runs in a `debian:trixie` container with Debian's
+`r-base-core 4.5.0-3`: the GNU R the corpora were recorded with, on the
+same C library (GNU R uses glibc's `sinpi` and friends when they exist, so
+other builds of GNU R 4.5.0 can differ in the last bit). The host runner
+is `ubuntu-24.04` unless the repository variable `ROBIGO_RUNNER` names
+another (e.g. a self-hosted machine).

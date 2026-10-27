@@ -1,0 +1,27 @@
+# The oracle's platform: Debian 13 (trixie) with its r-base-core 4.5.0-3,
+# the GNU R the corpora were recorded with (glibc 2.41: GNU R uses the C
+# library's sinpi & co., so results match to the last bit). Runs inside a
+# debian:trixie container after checkout.
+name: setup
+description: GNU R 4.5.0 from Debian trixie, Rust, and the tools the harnesses need
+inputs:
+  rust:
+    description: install the Rust toolchain
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends r-base-core=4.5.0-3 r-base-dev \
+          build-essential python3 curl ca-certificates git gh valgrind xz-utils > /dev/null
+        R --version | head -1
+        echo "R_HOME=$(R RHOME)" >> "$GITHUB_ENV"
+    - if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        "$HOME/.cargo/bin/rustup" show active-toolchain || "$HOME/.cargo/bin/rustup" toolchain install

@@ -26,20 +26,18 @@ env:
 jobs:
   build:
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
     steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: "4.5.0"
-          use-public-rspm: true
-      - run: rustup show active-toolchain
+      - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --check
       - name: Build
         run: cargo build --release --workspace
       - name: Unit tests, parser oracle, conformance (all tiers)
-        run: R_HOME=$(R RHOME) cargo test --release --workspace
+        run: cargo test --release --workspace
       - name: Keep the binary for later jobs
         run: |
           mkdir -p dist
@@ -63,12 +61,13 @@ jobs:
           - { corpus: fastr, shard: "2/4" }
           - { corpus: fastr, shard: "3/4" }
           - { corpus: fastr, shard: "4/4" }
+    container: debian:trixie
     steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
-      - uses: r-lib/actions/setup-r@v2
+      - uses: ./.github/actions/setup
         with:
-          r-version: "4.5.0"
-          use-public-rspm: true
+          rust: "false"
       - uses: actions/download-artifact@v4
         with:
           name: robigo
@@ -76,7 +75,6 @@ jobs:
       - run: chmod +x dist/robigo
       - name: Run ${{ matrix.corpus }} (${{ matrix.shard }})
         run: |
-          export R_HOME=$(R RHOME)
           python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
             --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Name the results
@@ -92,13 +90,13 @@ jobs:
   perf:
     needs: build
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
     steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
-      - uses: r-lib/actions/setup-r@v2
+      - uses: ./.github/actions/setup
         with:
-          r-version: "4.5.0"
-          use-public-rspm: true
-      - run: sudo apt-get install -y valgrind
+          rust: "false"
       - uses: actions/download-artifact@v4
         with:
           name: robigo
@@ -107,7 +105,7 @@ jobs:
       - run: python3 scripts/perf.py fetch
       - name: Measure robigo (and GNU R on main)
         run: |
-          export R_HOME=$(R RHOME) VALGRIND=valgrind
+          export VALGRIND=valgrind
           runtime=robigo
           [ "${{ github.ref }}" = refs/heads/main ] && runtime=both
           python3 scripts/perf.py run --metric instr --runtime $runtime --robigo dist/robigo \

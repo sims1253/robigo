@@ -78,16 +78,48 @@ pub const ML_POSINF: f64 = f64::INFINITY;
 pub const ML_NEGINF: f64 = f64::NEG_INFINITY;
 
 // ----------------------------------------------------------------------
-// C library functions GNU R uses that Rust's std does not expose. R 4.5.0
-// as built on this system links the C23 `sinpi`/`cospi`/`tanpi` from
-// glibc (>= 2.41), and nmath calls the C library's `lgamma` in places.
+// C library functions GNU R uses that Rust's std does not expose. nmath
+// calls the C library's `lgamma` in places, and GNU R 4.5.0 uses the C23
+// `sinpi`/`cospi`/`tanpi`/`atanpi` when the C library has them (glibc >=
+// 2.41, as for the oracle, Debian 13's r-base-core) and its own versions
+// in nmath/cospi.c otherwise. robigo does the same at run time, so one
+// binary runs on any glibc and matches GNU R built for that system.
+
+mod c23 {
+    use std::ffi::{CStr, c_char, c_void};
+    use std::sync::OnceLock;
+
+    pub type F = unsafe extern "C" fn(f64) -> f64;
+
+    #[cfg(target_os = "linux")]
+    fn lookup(name: &CStr) -> Option<F> {
+        unsafe extern "C" {
+            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        }
+        // RTLD_DEFAULT is the null handle on glibc.
+        // SAFETY: dlsym with a NUL-terminated name; a non-null result is the
+        // address of the C library's `double f(double)`.
+        let p = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr()) };
+        (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, F>(p) })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn lookup(_: &CStr) -> Option<F> {
+        None
+    }
+
+    pub fn get(cell: &OnceLock<Option<F>>, name: &CStr) -> Option<F> {
+        *cell.get_or_init(|| lookup(name))
+    }
+
+    pub static SINPI: OnceLock<Option<F>> = OnceLock::new();
+    pub static COSPI: OnceLock<Option<F>> = OnceLock::new();
+    pub static TANPI: OnceLock<Option<F>> = OnceLock::new();
+    pub static ATANPI: OnceLock<Option<F>> = OnceLock::new();
+}
 
 mod libm {
     unsafe extern "C" {
-        pub fn sinpi(x: f64) -> f64;
-        pub fn cospi(x: f64) -> f64;
-        pub fn tanpi(x: f64) -> f64;
-        pub fn atanpi(x: f64) -> f64;
         pub fn lgamma_r(x: f64, sign: *mut i32) -> f64;
         pub fn logb(x: f64) -> f64;
         pub fn ldexp(x: f64, e: i32) -> f64;
@@ -97,28 +129,94 @@ mod libm {
     }
 }
 
-/// `sinpi(x)` from the C library (exact for multiples of 1/2).
+/// `sin(pi * x)`: the C library's `sinpi`, else GNU R's.
 #[inline]
 pub fn sinpi(x: f64) -> f64 {
-    unsafe { libm::sinpi(x) }
+    match c23::get(&c23::SINPI, c"sinpi") {
+        // SAFETY: the C library's `double sinpi(double)`.
+        Some(f) => unsafe { f(x) },
+        None => r_sinpi(x),
+    }
 }
 
-/// `cospi(x)` from the C library.
+/// `cos(pi * x)`: the C library's `cospi`, else GNU R's.
 #[inline]
 pub fn cospi(x: f64) -> f64 {
-    unsafe { libm::cospi(x) }
+    match c23::get(&c23::COSPI, c"cospi") {
+        // SAFETY: the C library's `double cospi(double)`.
+        Some(f) => unsafe { f(x) },
+        None => r_cospi(x),
+    }
 }
 
-/// `tanpi(x)` from the C library.
+/// `tan(pi * x)`: the C library's `tanpi`, else GNU R's `Rtanpi`.
 #[inline]
 pub fn tanpi(x: f64) -> f64 {
-    unsafe { libm::tanpi(x) }
+    match c23::get(&c23::TANPI, c"tanpi") {
+        // SAFETY: the C library's `double tanpi(double)`.
+        Some(f) => unsafe { f(x) },
+        None => r_tanpi(x),
+    }
 }
 
-/// `atanpi(x)` from the C library.
+/// `atan(x) / pi`: the C library's `atanpi`, else what GNU R's pcauchy.c
+/// computes without it.
 #[inline]
 pub fn atanpi(x: f64) -> f64 {
-    unsafe { libm::atanpi(x) }
+    match c23::get(&c23::ATANPI, c"atanpi") {
+        // SAFETY: the C library's `double atanpi(double)`.
+        Some(f) => unsafe { f(x) },
+        None => x.atan() / std::f64::consts::PI,
+    }
+}
+
+/// GNU R's `cospi` for C libraries without one: exact for x = k/2.
+// R: nmath/cospi.c:cospi
+pub fn r_cospi(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    if !x.is_finite() {
+        return f64::NAN;
+    }
+    let x = (x.abs()) % 2.0;
+    if x % 1.0 == 0.5 {
+        return 0.0;
+    }
+    if x == 1.0 {
+        return -1.0;
+    }
+    if x == 0.0 {
+        return 1.0;
+    }
+    (std::f64::consts::PI * x).cos()
+}
+
+/// GNU R's `sinpi` for C libraries without one: exact for x = k/2.
+// R: nmath/cospi.c:sinpi
+pub fn r_sinpi(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    if !x.is_finite() {
+        return f64::NAN;
+    }
+    let mut x = x % 2.0;
+    if x <= -1.0 {
+        x += 2.0;
+    } else if x > 1.0 {
+        x -= 2.0;
+    }
+    if x == 0.0 || x == 1.0 {
+        return 0.0;
+    }
+    if x == 0.5 {
+        return 1.0;
+    }
+    if x == -0.5 {
+        return -1.0;
+    }
+    (std::f64::consts::PI * x).sin()
 }
 
 /// R: nmath/cospi.c:Rtanpi -- R's own tan(pi * x), used by `tanpi()` in
