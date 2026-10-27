@@ -37,10 +37,20 @@ const MARK_B: u8 = 1 << 5; // mm-rc's F_GRAY; unused here
 
 /// Grow the heap at least this much between GCs. Overridable with
 /// MM_GC_MIN (bytes) so tests can stress with tiny heaps.
+///
+/// 2 MiB (was 8): the churn window between collections is also the
+/// allocation stream's cache footprint. At 8 MiB the gc streamed fresh
+/// lines through the LLC between collections (fib: 149k LL misses, wall
+/// 0.72x of rc despite 1.68x fewer instructions); at 2 MiB the window
+/// fits cache (fib LL misses 51k, wall ahead of rc, RSS 10.8 -> 4.5 MB,
+/// max pause 23.8 ms -> 0.6 ms). Below 2 MiB the per-collection fixed
+/// costs grow faster than the locality win (capi est cycles 1553M ->
+/// 1763M -> 1986M at 2M/1M/512K); skip-clean sweeps keep the sweep
+/// itself cheap. Est-cycle geomean at 2M ties 8M (247.0 vs 247.4).
 #[inline]
 fn gc_min() -> usize {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("MM_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(8 << 20))
+    *V.get_or_init(|| std::env::var("MM_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(2 << 20))
 }
 
 // ---- layout -------------------------------------------------------------
