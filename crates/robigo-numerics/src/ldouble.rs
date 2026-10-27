@@ -679,19 +679,16 @@ mod tests {
 /// Property tests: the software 80-bit implementation must agree with
 /// the x87 hardware bit for bit on every operation. Run on x86_64, where
 /// both are available; the counts are controlled by
-/// `ROBIGO_LDPROP_N` (default 100_000 random inputs per operation and
+/// `ROBIGO_LDPROP_N` (default 1_000_000 random inputs per operation and
 /// generator).
 #[cfg(all(test, target_arch = "x86_64"))]
 mod x87_vs_soft {
+    use super::LDouble;
     use super::imp;
     use super::soft;
-    use super::LDouble;
 
     fn n_random() -> u64 {
-        std::env::var("ROBIGO_LDPROP_N")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(100_000)
+        std::env::var("ROBIGO_LDPROP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000)
     }
 
     struct Rng(u64);
@@ -736,19 +733,19 @@ mod x87_vs_soft {
             0 => rng.next() as u16, // fully random
             1 => 0x0000,            // denormal / zero
             2 => 0x0001,
-            3 => 0x7ffe,            // max exponent
-            4 => 0x7fff,            // inf / nan
+            3 => 0x7ffe,                       // max exponent
+            4 => 0x7fff,                       // inf / nan
             5 => 0x03ff + rng.below(8) as u16, // near 1
             6 => 0x3ffe + rng.below(4) as u16,
-            7 => 0x43ff + rng.below(8) as u16, // near 2^64
-            8 => 0x403e + rng.below(4) as u16, // near 2^63
-            9 => (rng.next() % 0x7fff) as u16, // random exponent
+            7 => 0x43ff + rng.below(8) as u16,  // near 2^64
+            8 => 0x403e + rng.below(4) as u16,  // near 2^63
+            9 => (rng.next() % 0x7fff) as u16,  // random exponent
             10 => 0xc000 + rng.below(2) as u16, // tiny denormal exponents unused; near-zero normals
             _ => 0x0000,
         };
         let mant = match rng.below(4) {
             0 => m,
-            1 => m | 0x8000_0000_0000_0000, // integer bit set
+            1 => m | 0x8000_0000_0000_0000,                           // integer bit set
             2 => 0x8000_0000_0000_0000 | (m & 0xffff_ffff_ffff_f000), // trailing zeros (ties)
             _ => 0x8000_0000_0000_0000 | (m & 1) | (m & 0xff00_0000_0000_0000),
         };
@@ -809,7 +806,7 @@ mod x87_vs_soft {
             2 => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x0000_0000_0000_0000, // denormals
             3 => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x7fe0_0000_0000_0000, // huge
             4 => (rng.next() & 0x8010_ffff_ffff_ffff) | 0x7ff0_0000_0000_0000, // NaN
-            5 => rng.next() & 0x7fff_ffff_ffff_ffff, // [0, 2)
+            5 => rng.next() & 0x7fff_ffff_ffff_ffff,                           // [0, 2)
             6 => (rng.next() & 0x8007_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000, // near 1
             _ => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x43e0_0000_0000_0000, // near 2^63
         };
@@ -819,12 +816,7 @@ mod x87_vs_soft {
     fn check_one(name: &str, i: u64, a: &LDouble, want: &LDouble, got: &LDouble, fails: &mut u64) {
         if bits(want) != bits(got) {
             if *fails < 5 {
-                eprintln!(
-                    "MISMATCH {name} #{i}: a={} -> x87={} soft={}",
-                    hex(a),
-                    hex(want),
-                    hex(got)
-                );
+                eprintln!("MISMATCH {name} #{i}: a={} -> x87={} soft={}", hex(a), hex(want), hex(got));
             }
             *fails += 1;
         }
@@ -833,13 +825,7 @@ mod x87_vs_soft {
     fn check_pair(name: &str, i: u64, a: &LDouble, b: &LDouble, want: &LDouble, got: &LDouble, fails: &mut u64) {
         if bits(want) != bits(got) {
             if *fails < 5 {
-                eprintln!(
-                    "MISMATCH {name} #{i}: a={} b={} -> x87={} soft={}",
-                    hex(a),
-                    hex(b),
-                    hex(want),
-                    hex(got)
-                );
+                eprintln!("MISMATCH {name} #{i}: a={} b={} -> x87={} soft={}", hex(a), hex(b), hex(want), hex(got));
             }
             *fails += 1;
         }
@@ -858,12 +844,64 @@ mod x87_vs_soft {
         for i in 0..n {
             let x = gen_f64(&mut rng);
             let a = imp::from_f64(x);
-            check_one("to_f64", i, &a, &LDouble::from_f64(imp::to_f64(&a)), &LDouble::from_f64(soft::to_f64(&a)), &mut fails);
+            check_one(
+                "to_f64",
+                i,
+                &a,
+                &LDouble::from_f64(imp::to_f64(&a)),
+                &LDouble::from_f64(soft::to_f64(&a)),
+                &mut fails,
+            );
+        }
+        // to_f64 of arbitrary 80-bit patterns (denormals included: they
+        // arise from arithmetic even though from_f64 never makes them —
+        // this is where a shift-by-64 bug once hid).
+        let mut rng = Rng::new(0x5EEE_0000_C0DE_0001);
+        for i in 0..n {
+            let a = gen_ld80(&mut rng);
+            let (want, got) = (imp::to_f64(&a), soft::to_f64(&a));
+            if want.to_bits() != got.to_bits() {
+                if fails < 5 {
+                    eprintln!(
+                        "MISMATCH to_f64(pattern) #{i}: a={} -> x87={:016x} soft={:016x}",
+                        hex(&a),
+                        want.to_bits(),
+                        got.to_bits()
+                    );
+                }
+                fails += 1;
+            }
+        }
+        for (i, a) in edges().iter().enumerate() {
+            let (want, got) = (imp::to_f64(a), soft::to_f64(a));
+            if want.to_bits() != got.to_bits() {
+                if fails < 5 {
+                    eprintln!(
+                        "MISMATCH to_f64(edge) #{i}: a={} -> x87={:016x} soft={:016x}",
+                        hex(a),
+                        want.to_bits(),
+                        got.to_bits()
+                    );
+                }
+                fails += 1;
+            }
         }
         let mut rng = Rng::new(0xDEADBEEFDEADBEEF);
         let ints = [
-            0i64, 1, -1, 2, -2, i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1,
-            0x7fff_ffff, -0x8000_0000, 1 << 62, -(1 << 62), 4611686018427387904,
+            0i64,
+            1,
+            -1,
+            2,
+            -2,
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+            0x7fff_ffff,
+            -0x8000_0000,
+            1 << 62,
+            -(1 << 62),
+            4611686018427387904,
         ];
         for (i, &x) in ints.iter().enumerate() {
             check_one("from_i64", i as u64, &imp::from_i64(x), &imp::from_i64(x), &soft::from_i64(x), &mut fails);
@@ -976,14 +1014,14 @@ mod x87_vs_soft {
         let mut nan = Vec::new();
         for se in [0x7fffu16, 0xffff] {
             for m in [
-                0x8000_0000_0000_0000u64,     // sNaN, no payload
-                0x8000_0000_0000_07a2,        // sNaN, NA payload
-                0x8000_1234_5678_9abc,        // sNaN
-                0xc000_0000_0000_0000,        // indefinite (qNaN)
-                0xc000_0000_0000_07a2,        // qNaN, NA payload
+                0x8000_0000_0000_0000u64, // sNaN, no payload
+                0x8000_0000_0000_07a2,    // sNaN, NA payload
+                0x8000_1234_5678_9abc,    // sNaN
+                0xc000_0000_0000_0000,    // indefinite (qNaN)
+                0xc000_0000_0000_07a2,    // qNaN, NA payload
                 0x8000_0000_0000_0000 | 0x4000_0000_0000_0001,
-                0xffff_ffff_ffff_ffff,        // qNaN all ones
-                0xbfff_ffff_ffff_ffff,        // qNaN
+                0xffff_ffff_ffff_ffff, // qNaN all ones
+                0xbfff_ffff_ffff_ffff, // qNaN
             ] {
                 nan.push(ld(se, m));
             }
@@ -1014,62 +1052,25 @@ mod x87_vs_soft {
         assert_eq!(fails, 0, "{fails} NaN mismatches");
     }
 
+    /// Regression: to_f64 of an 80-bit value just below 2^-1074 rounds to
+    /// the smallest denormal double (a shift-by-64 once made this return
+    /// the mantissa itself).
     #[test]
-    fn focused_failures() {
-        let a = ld(0x0001, 0xe500_0000_0000_0001);
-        let b = ld(0xc000, 0x8000_0000_0000_0000);
-        eprintln!("div: x87={} soft={}", hex(&imp::div(&a, &b)), hex(&soft::div(&a, &b)));
-        let a = ld(0x0001, 0x9800_0000_0000_0001);
-        let b = ld(0xbffe, 0x8000_0000_0000_0000);
-        eprintln!("mul: x87={} soft={}", hex(&imp::mul(&a, &b)), hex(&soft::mul(&a, &b)));
-        let a = ld(0x0000, 0);
-        let b = ld(0x0000, 0xffff_ffff_ffff_ffff);
-        eprintln!("addz: x87={} soft={}", hex(&imp::add(&a, &b)), hex(&soft::add(&a, &b)));
-    }
-
-    /// Print the x87 NaN result matrix (diagnostic).
-    #[test]
-    #[ignore]
-    fn nan_matrix_print() {
-        let qs = [ld(0x7fff, 0xc000_0000_0000_0001), ld(0xffff, 0xd000_0000_0000_0002)];
-        let ss = [ld(0x7fff, 0x8000_0000_0000_0003), ld(0xffff, 0x9000_0000_0000_0004)];
-        let plains = [ld(0x3fff, 0x8000_0000_0000_0000), ld(0x0000, 0)];
-        for a in qs.iter().chain(ss.iter()).chain(plains.iter()) {
-            for b in qs.iter().chain(ss.iter()) {
-                eprintln!(
-                    "add: a={} b={} -> {}",
-                    hex(a),
-                    hex(b),
-                    hex(&imp::add(a, b))
-                );
-            }
-        }
-        for a in qs.iter().chain(ss.iter()) {
-            eprintln!("sqrt: a={} -> {}", hex(a), hex(&imp::sqrt(a)));
-        }
-        // Discriminating pairs: does mantissa size or sign decide?
-        let big_pos_q = ld(0x7fff, 0xffff_ffff_ffff_ffff);
-        let small_neg_q = ld(0xffff, 0xc000_0000_0000_0001);
-        let big_pos_s = ld(0x7fff, 0xffff_0000_0000_0003);
-        let small_pos_q = ld(0x7fff, 0xc000_0000_0000_0001);
-        let pairs = [
-            (big_pos_q, small_neg_q),
-            (small_neg_q, big_pos_q),
-            (big_pos_s, small_pos_q),
-            (small_pos_q, big_pos_s),
-            (ld(0x7fff, 0xc000_0000_0000_0005), ld(0x7fff, 0xc000_0000_0000_0009)),
-            (ld(0x7fff, 0xc000_0000_0000_0009), ld(0x7fff, 0xc000_0000_0000_0005)),
-            (ld(0xffff, 0xc000_0000_0000_0005), ld(0x7fff, 0xc000_0000_0000_0009)),
-            // big qNaN vs unsupported: does the unsupported operand force indefinite?
-            (big_pos_q, ld(0x7fff, 0x0000_0000_0000_0001)),
-            (ld(0x7fff, 0x0000_0000_0000_0001), big_pos_q),
-            // equal-mantissa real NaN pair (tie): which sign/position wins?
-            (ld(0x7fff, 0xc000_0000_0000_07a2), ld(0xffff, 0xc000_0000_0000_07a2)),
-            (ld(0xffff, 0xc000_0000_0000_07a2), ld(0x7fff, 0xc000_0000_0000_07a2)),
-        ];
-        for (a, b) in pairs {
-            eprintln!("D: a={} b={} -> add {} mul {}", hex(&a), hex(&b), hex(&imp::add(&a, &b)), hex(&imp::mul(&a, &b)));
-        }
+    fn to_f64_subnormal_boundary() {
+        // se = 0xbbcc: sign, e2 = -1075; value = 0xa04e...·2^-1138 ≈
+        // 2^-1074.75 → -(2^-1074).
+        let a = ld(0xbbcc, 0xa04e_7458_ed4b_5e7f);
+        assert_eq!(soft::to_f64(&a).to_bits(), 0x8000_0000_0000_0001);
+        assert_eq!(imp::to_f64(&a).to_bits(), 0x8000_0000_0000_0001);
+        // exact tie (mant == 2^63) rounds to even: 0
+        let a = ld(0xbbcc, 0x8000_0000_0000_0000);
+        assert_eq!(soft::to_f64(&a).to_bits(), 0x8000_0000_0000_0000);
+        // one binade smaller: always 0
+        let a = ld(0xbbcb, 0xffff_ffff_ffff_ffff);
+        assert_eq!(soft::to_f64(&a).to_bits(), 0x8000_0000_0000_0000);
+        // just inside the normal range at the bottom
+        let a = ld(0x3c01, 0x8000_0000_0000_0000); // 2^-1022
+        assert_eq!(soft::to_f64(&a).to_bits(), 0x0010_0000_0000_0000);
     }
 
     /// The loop kernels over random and adversarial slices.
@@ -1092,12 +1093,7 @@ mod x87_vs_soft {
             let len = (rng.below(60) as usize).min(59);
             let xs: Vec<f64> = (0..len).map(|_| sample(&mut rng)).collect();
             let ys: Vec<f64> = (0..len).map(|_| sample(&mut rng)).collect();
-            for init in [
-                LDouble::ZERO,
-                imp::from_f64(0.25),
-                imp::from_f64(-1e300),
-                imp::from_i64(7),
-            ] {
+            for init in [LDouble::ZERO, imp::from_f64(0.25), imp::from_f64(-1e300), imp::from_i64(7)] {
                 let m = imp::div(&imp::from_f64(1.0), &imp::from_f64(3.0));
                 check_one("sum_from", i, &init, &imp::sum_from(&init, &xs), &soft::sum_from(&init, &xs), &mut fails);
                 check_one("prod_from", i, &init, &imp::prod_from(&init, &xs), &soft::prod_from(&init, &xs), &mut fails);
@@ -1113,15 +1109,54 @@ mod x87_vs_soft {
                 );
                 let mut o1 = vec![0.0f64; len];
                 let mut o2 = vec![0.0f64; len];
-                check_one("cumsum", i, &init, &imp::cumsum_from(&init, &xs, &mut o1), &soft::cumsum_from(&init, &xs, &mut o2), &mut fails);
-                if o1.iter().map(|v| v.to_bits()).collect::<Vec<_>>() != o2.iter().map(|v| v.to_bits()).collect::<Vec<_>>() && fails < 5 {
-                    eprintln!("MISMATCH cumsum out #{i}");
-                }
-                if o1 != o2 {
+                check_one(
+                    "cumsum",
+                    i,
+                    &init,
+                    &imp::cumsum_from(&init, &xs, &mut o1),
+                    &soft::cumsum_from(&init, &xs, &mut o2),
+                    &mut fails,
+                );
+                // Compare bits: NaN outputs with equal bits must not fail.
+                let bits_eq = |a: &[f64], b: &[f64]| a.iter().map(|v| v.to_bits()).eq(b.iter().map(|v| v.to_bits()));
+                if !bits_eq(&o1, &o2) {
+                    if fails < 5 {
+                        let j = o1.iter().zip(o2.iter()).position(|(a, b)| a.to_bits() != b.to_bits());
+                        eprintln!("MISMATCH cumsum out #{i} at {j:?}");
+                        if let Some(j) = j {
+                            eprintln!(
+                                "  x={:016x} prev={:016x} x87={:016x} soft={:016x}",
+                                xs[j].to_bits(),
+                                if j > 0 { o1[j - 1].to_bits() } else { init.to_f64().to_bits() },
+                                o1[j].to_bits(),
+                                o2[j].to_bits()
+                            );
+                        }
+                    }
                     fails += 1;
                 }
-                check_one("cumprod", i, &init, &imp::cumprod_from(&init, &xs, &mut o1), &soft::cumprod_from(&init, &xs, &mut o2), &mut fails);
-                if o1 != o2 {
+                check_one(
+                    "cumprod",
+                    i,
+                    &init,
+                    &imp::cumprod_from(&init, &xs, &mut o1),
+                    &soft::cumprod_from(&init, &xs, &mut o2),
+                    &mut fails,
+                );
+                if !bits_eq(&o1, &o2) {
+                    if fails < 5 {
+                        let j = o1.iter().zip(o2.iter()).position(|(a, b)| a.to_bits() != b.to_bits());
+                        eprintln!("MISMATCH cumprod out #{i} at {j:?}");
+                        if let Some(j) = j {
+                            eprintln!(
+                                "  x={:016x} prev={:016x} x87={:016x} soft={:016x}",
+                                xs[j].to_bits(),
+                                if j > 0 { o1[j - 1].to_bits() } else { init.to_f64().to_bits() },
+                                o1[j].to_bits(),
+                                o2[j].to_bits()
+                            );
+                        }
+                    }
                     fails += 1;
                 }
                 let mut acc1 = vec![LDouble::ZERO; len];

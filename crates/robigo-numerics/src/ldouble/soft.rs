@@ -30,10 +30,7 @@ const DENORM_UNIT_EXP: i32 = -16445;
 
 #[inline]
 fn split(x: &LDouble) -> (u16, u64) {
-    (
-        u16::from_le_bytes([x.0[8], x.0[9]]),
-        u64::from_le_bytes(x.0[..8].try_into().unwrap()),
-    )
+    (u16::from_le_bytes([x.0[8], x.0[9]]), u64::from_le_bytes(x.0[..8].try_into().unwrap()))
 }
 
 #[inline]
@@ -101,11 +98,7 @@ pub fn class(x: &LDouble) -> (Class, bool) {
             Class::SNan
         }
     } else if e == 0 {
-        if m == 0 {
-            Class::Zero
-        } else {
-            Class::Denormal
-        }
+        if m == 0 { Class::Zero } else { Class::Denormal }
     } else if m & 0x8000_0000_0000_0000 != 0 {
         Class::Normal
     } else {
@@ -116,10 +109,7 @@ pub fn class(x: &LDouble) -> (Class, bool) {
 
 #[inline]
 fn is_nan(c: Class) -> bool {
-    matches!(
-        c,
-        Class::QNan | Class::SNan | Class::PseudoNan | Class::Unnormal
-    )
+    matches!(c, Class::QNan | Class::SNan | Class::PseudoNan | Class::Unnormal)
 }
 
 /// The canonical encoding of a value: pseudo-denormals (exponent 0 with
@@ -157,7 +147,6 @@ fn canon(x: &LDouble) -> LDouble {
     }
 }
 
-
 /// The NaN x87 arithmetic returns for a two-operand instruction: any
 /// unsupported encoding (pseudo-NaN, unnormal) makes the result the real
 /// indefinite QNaN; otherwise the NaN with the larger significand wins
@@ -166,9 +155,7 @@ fn canon(x: &LDouble) -> LDouble {
 fn pick_nan(a: &LDouble, b: &LDouble) -> LDouble {
     let (ca, _) = class(a);
     let (cb, _) = class(b);
-    if matches!(ca, Class::PseudoNan | Class::Unnormal)
-        || matches!(cb, Class::PseudoNan | Class::Unnormal)
-    {
+    if matches!(ca, Class::PseudoNan | Class::Unnormal) || matches!(cb, Class::PseudoNan | Class::Unnormal) {
         return indefinite();
     }
     let (sa, ma) = split(a);
@@ -275,8 +262,18 @@ fn denormal_pack(s: bool, m: u128, e2: i32, sticky: bool) -> LDouble {
     let e = e2 - msb;
     let t = -(e + 16445);
     debug_assert!(t > 0);
-    if t >= 128 {
+    if t > 128 {
+        // Quotient < (2^128)·2^-129 < 0.5: below half the smallest
+        // denormal, always zero.
         return zero(s);
+    }
+    if t == 128 {
+        // Quotient = m·2^-128 ∈ [0.5, 1): the guard bit is bit 127.
+        // Rounds up to the smallest denormal unless it is an exact
+        // halfway (which goes to even, 0).
+        let g = m >> 127 != 0;
+        let st = sticky || m & ((1u128 << 127) - 1) != 0;
+        return if g && st { make(s, 0, 1) } else { zero(s) };
     }
     let st = sticky || t > 1 && m & ((1u128 << (t - 1)) - 1) != 0;
     let g = t > 0 && m & (1u128 << (t - 1)) != 0;
@@ -321,11 +318,7 @@ pub fn from_f64(x: f64) -> LDouble {
         // f64 denormal: a normal 80-bit value (2^-1074 > 2^-16382).
         pack(s, frac as u128, -1074, false)
     } else {
-        make(
-            s,
-            (e - 1023 + BIAS) as u16,
-            (1u64 << 63) | (frac << 11),
-        )
+        make(s, (e - 1023 + BIAS) as u16, (1u64 << 63) | (frac << 11))
     }
 }
 
@@ -348,14 +341,14 @@ pub fn to_f64(x: &LDouble) -> f64 {
         Class::Zero => return if s { -0.0 } else { 0.0 },
         Class::Inf => return if s { f64::NEG_INFINITY } else { f64::INFINITY },
         Class::QNan | Class::SNan => {
-            let q = if c == Class::SNan {
-                split(x).1 | 0x4000_0000_0000_0000
-            } else {
-                split(x).1
-            };
-            return f64::from_bits(
-                (s as u64) << 63 | 0x7ff0_0000_0000_0000 | q >> 11,
-            );
+            let q = if c == Class::SNan { split(x).1 | 0x4000_0000_0000_0000 } else { split(x).1 };
+            return f64::from_bits((s as u64) << 63 | 0x7ff0_0000_0000_0000 | q >> 11);
+        }
+        // Unsupported encodings (pseudo-NaN, unnormal) load as the real
+        // indefinite QNaN on x87; `fst qword` of that is the f64
+        // indefinite (negative quiet NaN).
+        Class::PseudoNan | Class::Unnormal => {
+            return f64::from_bits(0xfff8_0000_0000_0000);
         }
         _ => {}
     }
@@ -382,10 +375,18 @@ pub fn to_f64(x: &LDouble) -> f64 {
         return f64::from_bits(sign | (((e2 + 1023) as u64) << 52) | (f & ((1 << 52) - 1)));
     }
     // Subnormal f64: the grid is 2^-1074; value = mant·2^(e2-63).
-    let sh = -(e2 - 63 + 1074); // = 63 - e2 - 1074 >= 11
+    let sh = -(e2 - 63 + 1074); // = -(e2 + 1011) >= 12
     debug_assert!(sh >= 1);
     if sh > 64 {
+        // Below half the smallest denormal (value < 2^-1075): ±0.
         return f64::from_bits(sign);
+    }
+    if sh == 64 {
+        // value ∈ [2^-1075, 2^-1074): rounds to ±0 or ±(2^-1074); the
+        // exact tie mant == 2^63 goes to even (0).
+        let g = mant >> 63 != 0;
+        let st = mant & 0x7fff_ffff_ffff_ffff != 0;
+        return f64::from_bits(sign | (g && st) as u64);
     }
     let g = (mant >> (sh - 1)) & 1 != 0;
     let st = sh > 1 && mant & ((1u64 << (sh - 1)) - 1) != 0;
@@ -428,11 +429,7 @@ fn addsub(a: &LDouble, b: &LDouble, sub: bool) -> LDouble {
     }
     let (ma, ea) = norm(a);
     let (mb, eb) = norm(b);
-    if (ea, ma) < (eb, mb) {
-        add_core(mb, eb, ma, ea, sb, sa != sb)
-    } else {
-        add_core(ma, ea, mb, eb, sa, sa != sb)
-    }
+    if (ea, ma) < (eb, mb) { add_core(mb, eb, ma, ea, sb, sa != sb) } else { add_core(ma, ea, mb, eb, sa, sa != sb) }
 }
 
 /// Add/subtract two normalized nonzero significands; `(ma, ea)` is the
@@ -449,11 +446,7 @@ fn add_core(ma: u64, ea: i32, mb: u64, eb: i32, s: bool, sub: bool) -> LDouble {
         // smaller operand is below half an ulp: the exact sum rounds to
         // the larger operand either way.
         if de == 65 && ma == 1u64 << 63 && sub && ea >= E_MIN && mb > 1u64 << 63 {
-            return if ea - 1 >= E_MIN {
-                make(s, (ea - 1 + BIAS) as u16, u64::MAX)
-            } else {
-                make(s, 0, u64::MAX)
-            };
+            return if ea - 1 >= E_MIN { make(s, (ea - 1 + BIAS) as u16, u64::MAX) } else { make(s, 0, u64::MAX) };
         }
         return make(s, (ea + BIAS) as u16, ma);
     }
@@ -463,28 +456,17 @@ fn add_core(ma: u64, ea: i32, mb: u64, eb: i32, s: bool, sub: bool) -> LDouble {
     // happens once, in `pack`.
     let (r, e) = if de == 64 {
         let big = (ma as u128) << 64;
-        if sub {
-            (big - mb as u128, ea - 127)
-        } else {
-            (big + mb as u128, ea - 127)
-        }
+        if sub { (big - mb as u128, ea - 127) } else { (big + mb as u128, ea - 127) }
     } else {
         let big = (ma as u128) << 63;
         let small = (mb as u128) << (63 - de);
-        if sub {
-            (big - small, ea - 126)
-        } else {
-            (big + small, ea - 126)
-        }
+        if sub { (big - small, ea - 126) } else { (big + small, ea - 126) }
     };
     if r == 0 {
         return zero(false); // exact cancellation: +0 in round-to-nearest
     }
     pack(s, r, e, false)
 }
-
-
-
 
 pub fn add(a: &LDouble, b: &LDouble) -> LDouble {
     addsub(a, b, false)
@@ -695,7 +677,13 @@ pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
     }
     if ca == Class::Inf || cb == Class::Inf {
         let ord = if ca == Class::Inf && cb == Class::Inf {
-            return if sa == sb { 0 } else if sa { -1 } else { 1 };
+            return if sa == sb {
+                0
+            } else if sa {
+                -1
+            } else {
+                1
+            };
         } else if ca == Class::Inf {
             if sa { -1 } else { 1 }
         } else {
@@ -709,11 +697,7 @@ pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
     if sa != sb {
         return if sa { -1 } else { 1 };
     }
-    let mag = if ea != eb {
-        ea.cmp(&eb)
-    } else {
-        ma.cmp(&mb)
-    };
+    let mag = if ea != eb { ea.cmp(&eb) } else { ma.cmp(&mb) };
     let dir = if sa { mag.reverse() } else { mag };
     match dir {
         Less => -1,
