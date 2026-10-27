@@ -5,6 +5,46 @@ numeric-policy seam. Metric: (1) bit agreement with x87 over property
 tests, operations covered; (2) instructions per operation; (3) policy
 kernels implemented and benchmarked.
 
+## 2026-10-28: runtime policy kernels, inherited WIP reviewed
+
+- why: the runtime had no fast-mode reduction kernels or common policy API.
+- what: `policy::Accumulator` selects `LDouble` or `f64` statically after
+  one entry-point match. Exact delegates to the existing kernels without
+  changing them. Fast reductions use four lanes; prefix scans are sequential.
+  The trait preserves accumulator precision across chunks and columns.
+- inherited WIP: kept the four-lane reduction idea. Rejected its global
+  atomic because interpreters must be independent, and its `add_each` API
+  because an f64 buffer rounds exact state between columns. Replaced its
+  benchmark: the 16-element add_each input was divided by 8192, setup was
+  included in instruction counts, and mean/prod/dev/cumprod were missing.
+- result: **0 -> 9** policy operations measured. All eight existing slice
+  kernels and corrected mean have fast implementations. Kept. Release
+  numerics tests: 36 passed, including 4096 generated vectors with mixed
+  exponents, cancellation and large offsets, all prefixes, and row sums.
+  Bounds include conditioning and exclude intermediate overflow/underflow;
+  range-limit tests explicitly cover differences outside those conditions.
+- measurement: x86_64, Rust 1.99, 8192 elements, 300 iterations under
+  callgrind, matched empty-operation process/setup counts subtracted.
+  Wall time is the minimum of five runs of 10000 iterations, ns/element,
+  on the shared VM; instruction counts are the gate. Disassembly contains
+  `addpd`, `subpd`, and `mulpd` for the fast loops. Reproduce with
+  `scripts/ldouble-callgrind.sh` after building the examples under the
+  shared build lock. `ldouble_baseline` is the independent direct-kernel
+  reference measured before implementation; its instruction costs match
+  the policy exact kernels within 0.05%.
+
+| kernel | exact ins/element | fast ins/element | speedup | exact ns/element | fast ns/element | speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| sum | 4.002 | 1.192 | 3.36x | 1.654 | 0.229 | 7.24x |
+| prod | 4.002 | 1.192 | 3.36x | 1.769 | 0.253 | 6.98x |
+| mean | 10.012 | 3.323 | 3.01x | 3.589 | 0.476 | 7.54x |
+| cumsum | 6.005 | 2.753 | 2.18x | 1.540 | 1.078 | 1.43x |
+| cumprod | 6.005 | 2.753 | 2.18x | 1.669 | 1.049 | 1.59x |
+| dev | 6.003 | 1.693 | 3.55x | 1.665 | 0.228 | 7.29x |
+| sqdev | 7.003 | 2.629 | 2.66x | 1.837 | 0.232 | 7.91x |
+| cross | 10.006 | 3.381 | 2.96x | 1.726 | 0.231 | 7.47x |
+| add_each | 7.003 | 2.754 | 2.54x | 3.043 | 0.253 | 12.04x |
+
 ## 2026-10-27: soft powl — glibc 2.41's x86_64 powl, ported
 
 - why: `LDouble::powl` called glibc's assembly; off x86_64 (aarch64,

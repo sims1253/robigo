@@ -33,6 +33,7 @@ pub mod ldouble;
 pub mod nbinom;
 pub mod norm;
 pub mod pgamma;
+pub mod policy;
 pub mod polygamma;
 pub mod rand;
 pub mod rng;
