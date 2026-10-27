@@ -47,7 +47,8 @@ references and bindings, exactly GNU R's post-4.0 REFCNT), so
 `MAYBE_SHARED`-style decisions are exact while Rust locals cost nothing.
 The sweeper skips blocks where nothing died (per-block live counts from
 the mark phase, alternating mark colors so survivor headers are never
-rewritten), and the collection floor is 2 MiB so the churn window
+rewritten; immortal objects are counted per block at creation and never
+marked at all), and the collection floor is 2 MiB so the churn window
 between collections — the allocator's streaming cache footprint — stays
 inside the LLC (see "The cache study" below).
 
@@ -84,17 +85,17 @@ penalties — the conclusion below survives 14/250).
 
 | workload | rc Ir (M) | gc Ir (M) | rc/gc |
 |---|---:|---:|---:|
-| binarytrees | 856 | 407 | **2.10×** |
-| fib | 497 | 307 | **1.62×** |
-| lapply | 66 | 51 | 1.29× |
-| listgrowth | 43 | 34 | 1.28× |
-| strings | 293 | 312 | 0.94× |
-| cycles | 163 | 38 | **4.35×** |
-| capi | 1998 | 1365 | 1.46× |
-| *geometric mean* | | | *1.65×* |
+| binarytrees | 856 | 404 | **2.12×** |
+| fib | 497 | 294 | **1.69×** |
+| lapply | 66 | 50 | 1.33× |
+| listgrowth | 43 | 33 | 1.30× |
+| strings | 293 | 311 | 0.94× |
+| cycles | 163 | 36 | **4.52×** |
+| capi | 1998 | 1334 | 1.50× |
+| *geometric mean* | | | *1.69×* |
 
-(gc at the 2 MiB floor, from `results/locality-final.json`; at the old
-8 MiB floor the geomean was 1.70× — more frequent collections cost
+(gc at the 2 MiB floor, `results/skipclean-immortal-count.json`; at the
+old 8 MiB floor the geomean was 1.70× — more frequent collections cost
 instructions and buy locality.)
 
 ### The cache study (why the wall times disagreed)
@@ -108,16 +109,16 @@ between collections**:
 
 | workload | rc D1m | gc D1m | rc LLm | gc LLm | rc est cyc (M) | gc est cyc (M) | rc/gc |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| binarytrees | 7.2M | 6.0M | 0.6M | 3.9M | 988 | 862 | 1.15× |
-| fib | **12k** | 6.0M | **10k** | 51k | 498 | 372 | 1.34× |
-| lapply | 330k | 1.0M | 185k | 250k | 88 | 86 | 1.02× |
-| listgrowth | 456k | 418k | 138k | 112k | 61 | 49 | 1.25× |
-| strings | 1.8M | 3.0M | 301k | 330k | 341 | 375 | 0.91× |
-| cycles | 2.9M | 0.7M | 62k | 51k | 199 | 50 | 3.97× |
-| capi | 11.9M | 18.4M | **24k** | 53k | 2119 | 1554 | 1.36× |
-| *geometric mean* | | | | | | | *1.38×* |
+| binarytrees | 7.2M | 5.7M | 0.6M | 3.9M | 988 | 852 | 1.16× |
+| fib | **12k** | 5.4M | **10k** | 51k | 498 | 352 | 1.41× |
+| lapply | 330k | 973k | 185k | 250k | 88 | 85 | 1.04× |
+| listgrowth | 456k | 400k | 138k | 112k | 61 | 48 | 1.27× |
+| strings | 1.8M | 2.7M | 301k | 323k | 341 | 370 | 0.92× |
+| cycles | 2.9M | 0.7M | 62k | 51k | 199 | 48 | 4.15× |
+| capi | 11.9M | 16.9M | **24k** | 53k | 2119 | 1508 | 1.41× |
+| *geometric mean* | | | | | | | *1.42×* |
 
-(At a contended-machine 14/250 miss model the geomean is 1.24× — the
+(At a contended-machine 14/250 miss model the geomean is 1.28× — the
 ordering is robust to the penalty constants.) At the old 8 MiB floor the
 picture was worse for the gc (fib: 5.4M D1 misses, 149k LL misses;
 binarytrees est cycles a dead heat at 0.99×; lapply 0.92×, strings 0.93×
@@ -126,15 +127,14 @@ workloads shaped like the evaluator**. On a contended machine (shared
 LLC, memory-bandwidth pressure) LL misses cost well above 100 cycles,
 which is exactly where rc's wall wins came from.
 
-Two gc changes fix the locality deficit, measured at every step
-(`results/floor-dial-*.json`):
+Three gc changes fix the locality deficit, measured at every step
+(`results/floor-dial-*.json`, `results/skipclean-immortal-count.json`):
 
 1. **Skip-clean sweeps**: each block counts the objects the mark phase
-   found live (`Block::marked`, immortal included, manager-owned tables
-   marked as roots); the sweeper skips blocks where nothing died, and
-   mark colors alternate so survivors' headers are never touched just to
-   clear bits. A collection now costs work proportional to the *garbage*,
-   not to the heap.
+   found live (`Block::marked`); the sweeper skips blocks where nothing
+   died, and mark colors alternate so survivors' headers are never
+   touched just to clear bits. A collection now costs work proportional
+   to the *garbage*, not to the heap.
 2. **A 2 MiB collection floor** (was 8 MiB): the churn window between
    collections is the allocator's streaming footprint; 2 MiB keeps it
    inside the LLC. The dial over floors {8M, 2M, 1M, 512K}: fib LL
@@ -142,46 +142,63 @@ Two gc changes fix the locality deficit, measured at every step
    (capi est cycles 1424M → 1553M → 1763M → 1986M); **2 MiB is the
    knee** — est-cycle geomean ties 8 MiB (247.0M vs 247.4M) while wall,
    RSS and pauses improve sharply.
+3. **Immortal block counts** (skip-clean's accounting made exact): the
+   first version counted *encounters* of immortal objects during
+   marking, but every immortal is reached several times per collection
+   (intern tables, cons tags, env bindings holding cached ints, the
+   conservative stack), so hot blocks overcounted, never skipped — and
+   an overcount that happened to cancel a dead neighbour retained it.
+   Blocks now count their immortals once at creation
+   (`Block::immortals`); marking skips immortals entirely (a flags load
+   and a branch) and the intern tables are no longer marked at all
+   (9k+ dead mark calls per collection on fib). Measured effect: every
+   workload improved on every counter — gc Ir −0.3…−4.4% (fib 307 →
+   294M, binarytrees 407 → 404M, capi 1365 → 1334M), est-cycle geomean
+   rc/gc 1.38× → 1.42×, and collection-heavy workloads drop the most.
 
 ### Wall time (what users feel), after the fix
 
-Interleaved reps, 9 per variant, load 3.3–4.5 during the run
-(`results/locality-final.json`; this box multiplies walls by 1.5–4×
-under load, so read the ordering, not the milliseconds):
+Interleaved reps, 5 per variant, load ~3.1 during the run
+(`results/skipclean-immortal-count.json`; this box multiplies walls by
+1.5–4× under load, so read the ordering, not the milliseconds):
 
 | workload | rc min/med | gc min/med | rc/gc (med) |
 |---|---|---|---|
-| binarytrees | 136 / 161 | 130 / 140 | 1.15× (gc) |
-| fib | 43 / 52 | **34 / 43** | **1.21× (gc)** |
-| lapply | 8 / 9 | 10 / 11 | 0.82× (rc) |
-| listgrowth | 6 / 17 | 7 / 10 | 1.70× (gc) |
-| strings | 40 / 59 | 47 / 61 | 0.97× (tie) |
-| cycles | 18 / 35 | **4 / 6** | **5.8× (gc)** |
-| capi | 358 / 549 | 417 / 469 | 1.17× (gc) |
+| binarytrees | 168 / 317 | 146 / 196 | 1.62× (gc) |
+| fib | 52 / 55 | **33 / 36** | **1.53× (gc)** |
+| lapply | 9 / 9 | 9 / 10 | 0.90× (rc, noise) |
+| listgrowth | 7 / 7 | 5 / 6 | 1.17× (gc) |
+| strings | 53 / 104 | 62 / 87 | 1.20× (gc) |
+| cycles | 21 / 31 | **4 / 6** | **5.2× (gc)** |
+| capi | 292 / 304 | 301 / 311 | 0.98× (tie) |
 
 At load ~2 (the quieter dial samples, `results/floor-dial-wall.json`)
 the gc margins on the churn workloads are larger: fib 34 vs 47 ms, capi
 293 vs 323 ms, cycles 4 vs 18 ms. Before the fix the gc lost fib
 0.72× / capi 0.99× / strings 0.63×; after it, the gc wins fib, cycles,
-capi and binarytrees outright at both sampled loads, and lapply/strings
-stay within noise. The deterministic counters above carry the
-conclusion.
+binarytrees and (on medians) strings, and capi/lapply are ties within
+noise. The deterministic counters above carry the conclusion.
 
-Peak RSS and longest pause after the fix (same run):
+Peak RSS and longest pause after the fix (same run; pauses are maxima
+and jump with machine load — the rc 32 ms binarytrees figure below is a
+load spike, earlier samples read 5–9 ms):
 
 | workload | rc RSS | gc RSS | rc pause | gc pause | rc cols | gc cols |
 |---|---:|---:|---:|---:|---:|---:|
-| binarytrees | 22.6 MB | 61.4 MB | 8.7 ms | 21.0 ms | 13 | 5 |
-| fib | 2.5 MB | 4.6 MB | — | 0.6 ms | 0 | 69 |
-| lapply | 13.2 MB | 16.5 MB | — | 1.9 ms | 0 | 3 |
-| listgrowth | 10.4 MB | 8.0 MB | — | 8.7 ms | 0 | 2 |
-| strings | 16.8 MB | 18.4 MB | — | 8.2 ms | 0 | 2 |
-| cycles | 5.0 MB | 4.9 MB | 22.9 ms | 2.0 ms | 22 | 9 |
-| capi | 3.3 MB | 4.5 MB | 11.6 ms | 4.4 ms | 234 | 195 |
+| binarytrees | 22.6 MB | 61.5 MB | 8.7 ms* | 13.2 ms | 13 | 5 |
+| fib | 2.5 MB | 4.5 MB | — | 0.4 ms | 0 | 69 |
+| lapply | 13.2 MB | 16.6 MB | — | 1.4 ms | 0 | 3 |
+| listgrowth | 10.4 MB | 8.0 MB | — | 0.5 ms | 0 | 2 |
+| strings | 16.8 MB | 18.5 MB | — | 3.4 ms | 0 | 2 |
+| cycles | 4.9 MB | 4.9 MB | 1.8 ms | 0.3 ms | 22 | 9 |
+| capi | 3.3 MB | 4.5 MB | 2.6 ms | 3.4 ms | 234 | 195 |
+
+\* measured 32 ms in this loaded run; 5–9 ms in the quieter ones
+(`results/locality-final.json`, `results/skipclean-default.json`).
 
 The 2 MiB floor cut gc RSS by half on the churn workloads (fib
-10.9 → 4.6, capi 10.8 → 4.5, cycles 11.1 → 4.9 MB) and its pauses by
-4–40× (fib 23.8 → 0.6 ms). binarytrees stays the gc's weak spot: a
+10.9 → 4.5, capi 10.8 → 4.5, cycles 11.1 → 4.9 MB) and its pauses by
+4–60× (fib 23.8 → 0.4 ms). binarytrees stays the gc's weak spot: a
 10.6 MB live tree × 1.5 growth plus partial-death fragmentation — an
 RSS/pause dial (incremental marking), not a manager defect.
 
@@ -253,8 +270,8 @@ settled it:
    churn window (fits LLC) plus sweeps that cost work proportional to
    garbage made the gc win wall time on fib (34 vs 47 ms), capi (293 vs
    323) and cycles (4 vs 18), halve RSS on churn workloads, and cut
-   pauses 4–40× — while est cycles still favor it 1.38× (1.24× even at
-   a contended-machine 14/250 miss model) and Ir 1.65×.
+   pauses 4–40× — while est cycles still favor it 1.42× (1.28× even at
+   a contended-machine 14/250 miss model) and Ir 1.69×.
 3. **rc could not be improved where it is weak.** The purple-trigger
    dial (factor 1/4/8) is worse everywhere (factor 1: cycles RSS
    5 → 35 MB; 4/8: more collections, more instructions, longer
@@ -267,9 +284,9 @@ settled it:
    be counted references and *every* C-held temporary counted correctly
    or copy-on-modify silently corrupts.
 5. **What remains against the gc** is binarytrees-shaped: a big live
-   set re-marked every collection (LL misses 4.4M vs rc's 0.6M; est
-   cycles still favor the gc 1.06×, but only just), 61 MB RSS vs rc's
-   23, and 15–40 ms stop-the-world pauses. The known fixes are
+   set re-marked every collection (LL misses 3.9M vs rc's 0.6M; est
+   cycles still favor the gc 1.16×, but only just), 61 MB RSS vs rc's
+   23, and 13–40 ms stop-the-world pauses. The known fixes are
    incremental/opportunistic marking and heap-growth tuning —
    mark-region supports both; switching to rc is not one of them.
 6. **One borrowing from rc regardless:** the API lesson, not the

@@ -4,6 +4,42 @@ Track: `docs/workstreams.md` § memory. Work lives in `experiments/memory/`
 (its own Cargo workspace, excluded from the root workspace). The full
 write-up, numbers and recommendation: `experiments/memory/README.md`.
 
+## 2026-10-27: immortal block counts — skip-clean's accounting made exact (verification of the locality branch)
+
+- why: re-verifying the resumed branch's skip-clean sweeps line by line
+  found that `mark_obj` counted every *encounter* of an immortal
+  object (`marked += 1`, no per-round guard). Every immortal is
+  reached several times per collection — the intern-table roots,
+  traced references (cons tags, env bindings holding cached ints) and
+  the conservative stack scan all hit the same objects — so blocks of
+  cached ints/symbols systematically overcounted, read as dirty, and
+  never skipped: the optimization was disabled on exactly the hot
+  blocks of fib/capi-shaped loads. Worse, an overcount that happened
+  to cancel a dead neighbour's count (`marked == live_objects` by
+  accident) made the sweep skip the block and retain the neighbour
+  forever — a latent leak the checksum cross-check cannot see.
+- fix (kept): `Block::immortals`, counted once at creation
+  (`Heap::note_immortal` beside every `set_flags(IMMORTAL)` site);
+  `mark_obj` returns on immortals without counting (a flags load and a
+  branch); the skip test becomes `marked + immortals == live_objects`;
+  the intern-table root-marking loops are gone (9216+ dead mark calls
+  per collection on fib). A missed `note_immortal` can only cost a
+  walk (safe); an immortal block can never empty, so counts never go
+  stale. New regression test: dead mortal ints die next to a
+  double-rooted immortal, and a quiet heap's second collection walks
+  zero blocks.
+- result (`results/skipclean-immortal-count.json`, 5 interleaved reps,
+  load ~3.1, before = `results/locality-final.json`): every workload
+  improved on every deterministic counter — gc Ir fib 307→294M
+  (−4.4%), binarytrees 407→404M, lapply 51→50M, listgrowth 34→33M,
+  strings 312→311M, cycles 38→36M, capi 1365→1334M (−2.3%); D1m down
+  1–10% everywhere (binarytrees 6.0M→5.7M, capi 18.4M→16.9M). rc/gc
+  geomeans: Ir 1.65×→1.69×, est cycles 1.38×→1.42× (1.24×→1.28× at a
+  contended 14/250). rc counters reproduce its baseline exactly (the
+  shared heap's layout change is rc-invisible), checksums still agree
+  on all 7 workloads. Wall at this load: gc ahead on medians for
+  binarytrees/fib/strings/cycles/listgrowth, ties on capi/lapply.
+
 ## 2026-10-27: the locality study — the wall-time disagreement was cache behaviour; gc fixed, recommendation reaffirmed
 
 - why: the bake-off recommended the gc on Ir (1.70× geomean) but rc won
