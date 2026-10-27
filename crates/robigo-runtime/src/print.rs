@@ -273,7 +273,9 @@ impl Printer {
                 let just = if pp.right { Justify::Right } else { Justify::Left };
                 (x.data[..n_pr].iter().map(|e| encode_string(e, w, quote, just, &pp)).collect(), w, true)
             }
-            Value::Raw(x) => (x.data[..n_pr].iter().map(|b| format!("{:02x}", b)).collect(), 2 + pp.gap, true),
+            // R: printvector.c printRawVector — the gap is part of the field
+            // width for the line-break test, unlike character vectors.
+            Value::Raw(x) => (x.data[..n_pr].iter().map(|b| format!("{:02x}", b)).collect(), 2 + pp.gap, false),
             _ => return,
         };
         let mut width;
