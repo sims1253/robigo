@@ -33,6 +33,8 @@ pub static DEFS: &[Builtin] = &[
     internal("tempdir", do_tempdir, 1),
     internal("tempfile", do_tempfile, 3),
     internal("file.exists", do_fileexists, 1),
+    internal("list.files", do_listfiles, 8),
+    internal("list.dirs", do_listdirs, 3),
     internal("file.remove", do_fileremove, 1),
     internal("file.rename", do_filerename, 2),
     internal("file.create", do_filecreate, 2),
@@ -64,7 +66,7 @@ fn do_capabilities(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
         ("http/ftp", false),
         ("sockets", false),
         ("libxml", false),
-        ("fifo", false),
+        ("fifo", true),
         ("cledit", false),
         ("iconv", true),
         ("NLS", false),
@@ -1186,4 +1188,232 @@ fn do_normalizepath(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
 fn do_pathexpand(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let f = str_vec(&arg(&args, 0), "invalid 'path' argument")?;
     Ok(Value::strs(f.iter().map(|p| p.as_ref().map(|p| std::rc::Rc::from(expand_file_name(p).as_str()))).collect()))
+}
+
+// ----------------------------------------------------------------------
+// list.files / list.dirs
+
+/// R's `R_PATH_MAX` (Unix `PATH_MAX`); `path_buffer_append` warns when a
+/// path plus its terminator grows past it.
+const R_PATH_MAX: usize = 4096;
+
+/// `R_IsDirPath` (connections.c): `stat` follows symlinks.
+fn is_dir_path(path: &str) -> bool {
+    std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+/// glibc's `struct dirent` (Linux LP64: `d_name` at byte offset 19).
+#[repr(C)]
+struct Dirent {
+    d_ino: u64,
+    d_off: u64,
+    d_reclen: u16,
+    d_type: u8,
+    d_name: [u8; 256],
+}
+
+unsafe extern "C" {
+    fn opendir(name: *const c_char) -> *mut std::ffi::c_void;
+    fn readdir(dirp: *mut std::ffi::c_void) -> *mut Dirent;
+    fn closedir(dirp: *mut std::ffi::c_void) -> c_int;
+}
+
+/// The entry names of a directory in readdir order, `"."` and `".."`
+/// included (R: platform.c R_readdir; `std::fs::read_dir` hides them).
+/// `None` when the path is not an openable directory.
+fn read_dir_raw(path: &str) -> Option<Vec<String>> {
+    let c = CString::new(path.as_bytes()).ok()?;
+    // SAFETY: opendir/readdir/closedir are called with the returned
+    // handle only, single-threaded; d_name is NUL-terminated by readdir.
+    let dir = unsafe { opendir(c.as_ptr()) };
+    if dir.is_null() {
+        return None;
+    }
+    let mut names = Vec::new();
+    loop {
+        let de = unsafe { readdir(dir) };
+        if de.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*de).d_name.as_ptr().cast()) };
+        names.push(name.to_string_lossy().into_owned());
+    }
+    unsafe { closedir(dir) };
+    Some(names)
+}
+
+/// `path_buffer_append`'s "over-long path" warning (Unix).
+fn warn_over_long(i: &mut Interp, newlen: usize) -> RResult<()> {
+    if newlen > R_PATH_MAX {
+        i.warning("over-long path")?;
+    }
+    Ok(())
+}
+
+/// `list_files`' recursion: `dir` is the parent path ending in a
+/// separator, `offset` the byte where an entry's name starts in a full
+/// path (0 for `full.names`, else the name alone).
+// R: platform.c list_files
+#[allow(clippy::too_many_arguments)]
+fn list_files(
+    i: &mut Interp,
+    names: &[String],
+    dir: &str,
+    offset: usize,
+    out: &mut Vec<String>,
+    reg: Option<&super::grep::TreBoolMatch>,
+    allfiles: bool,
+    recursive: bool,
+    idirs: bool,
+    allowdots: bool,
+) -> RResult<()> {
+    for name in names {
+        if !allfiles && name.starts_with('.') {
+            continue; // R_HiddenFile
+        }
+        let full = format!("{}{}", dir, name);
+        warn_over_long(i, full.len() + 1)?;
+        let not_dot = name != "." && name != "..";
+        if recursive {
+            if is_dir_path(&full) {
+                if not_dot {
+                    if idirs && reg.is_none_or(|r| r.is_match(name)) {
+                        out.push(full[offset..].to_string());
+                    }
+                    // Recurse when the directory can be opened; its
+                    // children append to the entry path plus a separator.
+                    if let Some(children) = read_dir_raw(&full) {
+                        list_files(
+                            i,
+                            &children,
+                            &format!("{}/", full),
+                            offset,
+                            out,
+                            reg,
+                            allfiles,
+                            recursive,
+                            idirs,
+                            allowdots,
+                        )?;
+                    }
+                }
+                continue;
+            }
+        }
+        if (not_dot || allowdots) && reg.is_none_or(|r| r.is_match(name)) {
+            out.push(full[offset..].to_string());
+        }
+    }
+    Ok(())
+}
+
+/// `.Internal(list.files(path, pattern, all.files, full.names, recursive,
+/// ignore.case, include.dirs, no..))`
+// R: platform.c do_listfiles
+fn do_listfiles(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let d = match arg(&args, 0) {
+        Value::Str(s) => s.data.clone(),
+        _ => return Err(Flow::error("invalid 'path' argument")),
+    };
+    let p = arg(&args, 1);
+    let mut pattern: Option<String> = None;
+    match &p {
+        Value::Null => {}
+        Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => {
+            pattern = Some(s.data[0].as_deref().unwrap().to_string());
+        }
+        Value::Str(s) if s.data.is_empty() => {}
+        _ => return Err(Flow::error("invalid 'pattern' argument")),
+    }
+    let allfiles = super::character::as_bool2(&arg(&args, 2), call)?;
+    let fullnames = as_logical(&arg(&args, 3));
+    if fullnames == NA_LOGICAL {
+        return Err(Flow::error("invalid 'full.names' argument"));
+    }
+    let fullnames = fullnames != 0;
+    let recursive = super::character::as_bool2(&arg(&args, 4), call)?;
+    let igcase = as_logical(&arg(&args, 5));
+    if igcase == NA_LOGICAL {
+        return Err(Flow::error("invalid 'ignore.case' argument"));
+    }
+    let idirs = super::character::as_bool2(&arg(&args, 6), call)?;
+    let nodots = as_logical(&arg(&args, 7));
+    if nodots == NA_LOGICAL {
+        return Err(Flow::error("invalid 'no..' argument"));
+    }
+    let allowdots = nodots == 0;
+    let reg = match &pattern {
+        Some(p) => Some(
+            super::grep::TreBoolMatch::compile(p, igcase != 0)
+                .map_err(|_| Flow::error("invalid 'pattern' regular expression"))?,
+        ),
+        None => None,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for path in d.iter().flatten() {
+        let expanded = expand_file_name(path);
+        // search_setup: skip paths that do not name an openable directory.
+        let Some(names) = read_dir_raw(&expanded) else { continue };
+        // Unix search_setup always appends the separator.
+        let dir = format!("{}/", expanded);
+        let offset = if fullnames { 0 } else { dir.len() };
+        list_files(i, &names, &dir, offset, &mut out, reg.as_ref(), allfiles, recursive, idirs, allowdots)?;
+    }
+    out.sort_by(|a, b| super::sort::scollate(a, b));
+    Ok(Value::strs_from(out))
+}
+
+/// `list_dirs`' recursion.
+// R: platform.c list_dirs
+fn list_dirs(
+    i: &mut Interp,
+    names: &[String],
+    dir: &str,
+    offset: usize,
+    out: &mut Vec<String>,
+    recursive: bool,
+) -> RResult<()> {
+    for name in names {
+        let full = format!("{}{}", dir, name);
+        warn_over_long(i, full.len() + 1)?;
+        if is_dir_path(&full) && name != "." && name != ".." {
+            out.push(full[offset..].to_string());
+            if recursive {
+                if let Some(children) = read_dir_raw(&full) {
+                    list_dirs(i, &children, &format!("{}/", full), offset, out, recursive)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `.Internal(list.dirs(path, full.names, recursive))`
+// R: platform.c do_listdirs
+fn do_listdirs(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let d = match arg(&args, 0) {
+        Value::Str(s) => s.data.clone(),
+        _ => return Err(Flow::error("invalid 'directory' argument")),
+    };
+    let fullnames = as_logical(&arg(&args, 1));
+    if fullnames == NA_LOGICAL {
+        return Err(Flow::error("invalid 'full.names' argument"));
+    }
+    let fullnames = fullnames != 0;
+    let recursive = super::character::as_bool2(&arg(&args, 2), call)?;
+    let mut out: Vec<String> = Vec::new();
+    for path in d.iter().flatten() {
+        let expanded = expand_file_name(path);
+        let Some(names) = read_dir_raw(&expanded) else { continue };
+        let dir = format!("{}/", expanded);
+        let offset = if fullnames { 0 } else { dir.len() };
+        // list.dirs(recursive=TRUE) includes the initial directory itself
+        // (the expanded path without the separator search_setup added).
+        if recursive {
+            out.push(if fullnames { expanded.clone() } else { String::new() });
+        }
+        list_dirs(i, &names, &dir, offset, &mut out, recursive)?;
+    }
+    out.sort_by(|a, b| super::sort::scollate(a, b));
+    Ok(Value::strs_from(out))
 }
