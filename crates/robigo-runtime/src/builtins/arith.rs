@@ -1047,7 +1047,7 @@ fn math1<F: Fn(f64) -> f64>(
     if matches!(x, Value::Cplx(_)) {
         return complex_math1(i, call, x, name);
     }
-    if !x.is_numeric_type() {
+    if !r_is_numeric(x) {
         return Err(Flow::error_call(call.clone(), "non-numeric argument to mathematical function"));
     }
     // NaN in gives the same NaN out (keeping NA's payload); a new NaN
@@ -1198,6 +1198,12 @@ fn do_log1arg(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, base:
     let x = args.pop().unwrap().value;
     let b = Value::real(base);
     if x.is_object() {
+        // DispatchGroup("Math") on log2/log10 itself first, then on the
+        // rewritten `log(x, base)` call.
+        let dargs = vec![Arg::new(None, x.clone())];
+        if let Some(r) = i.try_dispatch_group("Math", name, call, &dargs, env)? {
+            return Ok(r);
+        }
         let dargs = vec![Arg::new(None, x.clone()), Arg::new(None, b.clone())];
         if let Some(r) = i.try_dispatch_group("Math", "log", call, &dargs, env)? {
             return Ok(r);
@@ -1508,16 +1514,15 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     if ev.is_empty() {
         return Err(missing_x_err(call));
     }
-    if ev.len() > 2 {
-        // matchArgs_NR signals the first unused argument.
-        let extra = ev.last().unwrap();
-        let shown = match &extra.value {
-            v if v.is_missing_arg() => String::new(),
-            v => crate::deparse::deparse_one_line(v),
-        };
-        let name = extra.tag.map(|t| format!("{} = ", t.name())).unwrap_or_default();
-        return Err(Flow::error_call(call.clone(), format!("unused argument ({}{})", name, shown)));
+    if ev.len() == 1 {
+        // R's n == 1 branch never calls matchArgs_NR: the tag must be
+        // missing or exactly "x", and the value present.
+        let a = &ev[0];
+        if a.value.is_missing_arg() || a.tag.is_some_and(|t| &*t.name() != "x") {
+            return Err(missing_x_err(call));
+        }
     }
+    // matchArgs_NR: signals the first unused argument onward.
     let m = super::match_args(ev, &["x", "base"], call)?;
     let x = m.vals[0].clone().unwrap_or_else(Value::missing_arg);
     if x.is_missing_arg() {
