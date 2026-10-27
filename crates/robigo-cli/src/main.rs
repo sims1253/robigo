@@ -1,7 +1,9 @@
-use std::io::{BufRead, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 use robigo_runtime::Interp;
+
+mod echo;
 
 /// mimalloc, calling its plain entry points for word-aligned layouts (all
 /// mimalloc blocks are word-aligned); the `mimalloc` crate always takes the
@@ -94,6 +96,240 @@ fn main() -> ExitCode {
     }
 }
 
+/// R's save actions (`SA_TYPE`, R: src/include/R_ext/RStartup.h).
+#[derive(PartialEq, Clone, Copy)]
+enum SaveAction {
+    Save,
+    NoSave,
+    Ask,
+}
+
+/// The command line the way R's option processing leaves it
+/// (R: src/main/CommandLineArgs.c:R_common_command_line followed by the
+/// argument loop of src/unix/system.c:Rf_initialize_R).
+struct CommandLine {
+    startup: robigo_runtime::startup::StartupOptions,
+    quiet: bool,   // Rp->R_Quiet
+    no_echo: bool, // Rp->R_NoEcho
+    save: SaveAction,
+    verbose: bool,
+    force_interactive: bool,
+    exprs: Vec<String>,   // -e EXPR, in order
+    file: Option<String>, // -f FILE / --file=FILE ('-' is stdin)
+    /// robigo's `Rscript FILE` mode: the positional file name. R itself
+    /// would print `ARGUMENT ... __ignored__` and read the console
+    /// instead; `Rscript` execs `R --no-echo --no-restore --file=FILE`.
+    script: Option<String>,
+    script_args: Vec<String>,
+    /// What `commandArgs()` returns (R: `R_set_command_line_arguments`
+    /// stores the argv before option processing).
+    command_args: Vec<String>,
+}
+
+impl Default for CommandLine {
+    fn default() -> Self {
+        CommandLine {
+            startup: robigo_runtime::startup::StartupOptions::default(),
+            quiet: false,
+            no_echo: false,
+            save: SaveAction::Ask,
+            verbose: false,
+            force_interactive: false,
+            exprs: Vec::new(),
+            file: None,
+            script: None,
+            script_args: Vec::new(),
+            command_args: Vec::new(),
+        }
+    }
+}
+
+/// `R_ShowMessage` during startup (R: unix/sys-std.c:Rstd_ShowMessage):
+/// the message and a newline. The messages R builds here usually end in
+/// a newline themselves, so a blank line follows; the console is not set
+/// up yet, and `Rstd_WriteConsoleEx` writes to stdout.
+fn show_message(msg: &str) {
+    println!("{}", msg);
+}
+
+/// R's `R_Suicide` during option processing (R: unix/sys-std.c:Rstd_Suicide
+/// before `R_Consolefile` is set, so the message goes to stdout).
+fn suicide(msg: &str) -> ! {
+    println!("Fatal error: {}", msg);
+    std::process::exit(2);
+}
+
+/// The first pass, `R_common_command_line` (R: CommandLineArgs.c):
+/// consume the options R shares with every front end, keep the rest for
+/// [`initialize_r_arguments`]. `kept` receives the arguments that
+/// survive, in order.
+fn common_command_line(cl: &mut CommandLine, args: &[String], kept: &mut Vec<String>) {
+    let mut processing = true;
+    for a in args {
+        if processing && a.starts_with('-') && a.len() > 1 {
+            match a.as_str() {
+                "--save" => cl.save = SaveAction::Save,
+                "--no-save" => cl.save = SaveAction::NoSave,
+                "--restore" | "--no-restore" | "--no-restore-data" | "--no-restore-history" => {}
+                "--silent" | "--quiet" | "-q" => cl.quiet = true,
+                "--vanilla" => {
+                    cl.save = SaveAction::NoSave;
+                    cl.startup.no_environ = true;
+                    cl.startup.no_site_file = true;
+                    cl.startup.no_init_file = true;
+                }
+                "--no-environ" => cl.startup.no_environ = true,
+                "--no-site-file" => cl.startup.no_site_file = true,
+                "--no-init-file" => cl.startup.no_init_file = true,
+                "--verbose" => cl.verbose = true,
+                "--no-echo" | "--slave" | "-s" => {
+                    cl.quiet = true;
+                    cl.no_echo = true;
+                    cl.save = SaveAction::NoSave;
+                }
+                "--args" => {
+                    kept.push(a.clone());
+                    processing = false;
+                }
+                "-save" | "-nosave" | "-restore" | "-norestore" | "-noreadline" | "-quiet" | "-nsize" | "-vsize"
+                | "-V" | "-n" | "-v" => {
+                    show_message(&format!("WARNING: option '{}' no longer supported", a));
+                }
+                _ if a.starts_with("--min-nsize")
+                    || a.starts_with("--min-vsize")
+                    || a.starts_with("--max-ppsize")
+                    || a.starts_with("--max-connections")
+                    || a.starts_with("--encoding") =>
+                {
+                    // Options with a value; accepted and ignored (robigo
+                    // has no nsize/vsize limits and one input encoding).
+                }
+                _ => kept.push(a.clone()), // unknown -option: warned about next
+            }
+        } else {
+            kept.push(a.clone());
+        }
+    }
+}
+
+/// The second pass, the argument loop of `Rf_initialize_R` (R:
+/// unix/system.c): `-f`, `--file=`, `-e` and `--args`, and R's warnings
+/// for everything it does not know. robigo's `Rscript FILE` mode takes
+/// the first remaining positional argument as the script to run.
+fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
+    let mut i = 0;
+    while i < kept.len() {
+        let a = kept[i].clone();
+        if a.starts_with('-') && a.len() > 1 {
+            match a.as_str() {
+                "--no-readline" => {}
+                "-f" => {
+                    i += 1;
+                    match kept.get(i) {
+                        Some(f) => cl.file = Some(f.clone()),
+                        None => {
+                            // The message of the R shell wrapper, which
+                            // validates -f before exec'ing R (R:
+                            // scripts/R.sh.in).
+                            eprintln!("ERROR: option '-f' requires a filename argument");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ if a.starts_with("--file=") => cl.file = Some(a[7..].to_string()),
+                "-e" => {
+                    i += 1;
+                    match kept.get(i) {
+                        Some(e) => cl.exprs.push(e.clone()),
+                        None => {
+                            eprintln!("ERROR: option '-e' requires a non-empty argument");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "--args" => break,
+                "--interactive" => {
+                    cl.force_interactive = true;
+                    break;
+                }
+                _ => show_message(&format!("WARNING: unknown option '{}'\n", a)),
+            }
+        } else if cl.file.is_none() && cl.exprs.is_empty() && cl.script.is_none() {
+            // robigo's Rscript mode: `robigo [options] FILE [args]`, the
+            // way Rscript runs `R --no-echo --no-restore --file=FILE`.
+            cl.script = Some(a);
+            cl.script_args = kept[i + 1..].to_vec();
+            cl.no_echo = true;
+            return;
+        } else {
+            show_message(&format!("ARGUMENT '{}' __ignored__\n", a));
+        }
+        i += 1;
+    }
+}
+
+/// What `commandArgs()` reports: the arguments of the R process, the way
+/// the front end passed them (R: CommandLineArgs.c:do_commandArgs sees
+/// the `argv` `R_set_command_line_arguments` copied). `Rscript` execs
+/// `R --no-echo --no-restore [options] --file=FILE [--args ...]`
+/// (R: unix/Rscript.c), which is what robigo's positional file stands
+/// for; with `-f` robigo is `R` itself and the argv passes through.
+fn command_args(argv0: &str, args: &[String], cl: &CommandLine) -> Vec<String> {
+    let mut out = vec![argv0.to_string()];
+    // Rscript mode (a positional file, or `-e`): the argv Rscript would
+    // have exec'd `R` with (R: unix/Rscript.c). `i0` is the index (in
+    // `args`) of the last argument Rscript copies; the file name is the
+    // next one, and any arguments after it follow `--args`.
+    if cl.script.is_some() || !cl.exprs.is_empty() {
+        out.push("--no-echo".into());
+        out.push("--no-restore".into());
+        let mut e_mode = false;
+        let mut i0: isize = -1;
+        let mut k = 0usize;
+        while k < args.len() {
+            if args[k] == "-e" {
+                e_mode = true;
+                out.push("-e".into());
+                if let Some(e) = args.get(k + 1) {
+                    out.push(e.clone());
+                }
+                i0 = k as isize + 1;
+                k += 2;
+                continue;
+            }
+            if e_mode {
+                // Once in e_mode, only additional -e options are to be
+                // processed; any remaining --options belong to the
+                // expressions (PR#18102).
+                break;
+            }
+            if !args[k].starts_with("--") {
+                break; // the file
+            }
+            if args[k] == "--verbose" || args[k].starts_with("--default-packages=") {
+                // Consumed by Rscript itself, not passed to R.
+                i0 = k as isize;
+                k += 1;
+                continue;
+            }
+            out.push(args[k].clone());
+            i0 = k as isize;
+            k += 1;
+        }
+        if !e_mode && i0 + 1 < args.len() as isize {
+            out.push(format!("--file={}", args[(i0 + 1) as usize]));
+        }
+        if i0 + 2 < args.len() as isize {
+            out.push("--args".into());
+            out.extend(args[(i0 + 2) as usize..].iter().cloned());
+        }
+    } else {
+        // `-f`/`--file=` and the console: `R`'s own argv.
+        out.extend(args.iter().cloned());
+    }
+    out
+}
+
 fn real_main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("parse") {
@@ -105,46 +341,27 @@ fn real_main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    // robigo's own help (R has none; the options end at the first
+    // positional argument, like Rscript's).
+    let opts_end = args.iter().position(|a| !(a.starts_with('-') && a.len() > 1)).unwrap_or(args.len());
+    if args[..opts_end].iter().any(|a| a == "-h" || a == "--help") {
+        print!("{}", USAGE);
+        return ExitCode::SUCCESS;
+    }
     let mut load_base = true;
-    let mut startup = robigo_runtime::startup::StartupOptions::default();
-    let mut exprs: Vec<String> = Vec::new();
-    let mut file: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--no-base" => load_base = false,
-            "--vanilla" => {
-                startup.no_environ = true;
-                startup.no_site_file = true;
-                startup.no_init_file = true;
-            }
-            "--no-environ" => startup.no_environ = true,
-            "--no-site-file" => startup.no_site_file = true,
-            "--no-init-file" => startup.no_init_file = true,
-            "--no-echo" | "--quiet" | "-q" | "--slave" | "--no-restore" => {}
-            "-e" => {
-                i += 1;
-                match args.get(i) {
-                    Some(e) => exprs.push(e.clone()),
-                    None => {
-                        eprintln!("{}", USAGE);
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            "-h" | "--help" => {
-                print!("{}", USAGE);
-                return ExitCode::SUCCESS;
-            }
-            _ if file.is_none() => {
-                file = Some(args[i].clone());
-                // Remaining args belong to the script (commandArgs()).
-                args.truncate(i + 1);
-                break;
-            }
-            _ => {}
-        }
-        i += 1;
+    // robigo's own option, not R's: do not load the base library.
+    if let Some(pos) = args.iter().position(|a| a == "--no-base") {
+        load_base = false;
+        args.remove(pos);
+    }
+    let mut cl = CommandLine::default();
+    let mut kept = Vec::new();
+    common_command_line(&mut cl, &args, &mut kept);
+    initialize_r_arguments(&mut cl, kept);
+    let argv0 = std::env::args().next().unwrap_or_else(|| "robigo".into());
+    cl.command_args = command_args(&argv0, &args, &cl);
+    if !cl.exprs.is_empty() && cl.file.is_some() {
+        suicide("cannot use -e with -f or --file");
     }
 
     #[cfg(feature = "profile")]
@@ -152,6 +369,7 @@ fn real_main() -> ExitCode {
     let mut interp = Interp::new();
     // Keep a margin for builtins that recurse in Rust and for error handling.
     interp.set_stack_limit(STACK_SIZE - (32 << 20));
+    interp.cli_args = Some(cl.command_args.clone());
     if load_base {
         if let Err(msg) = robigo_runtime::bootstrap::load_base(&mut interp) {
             eprintln!("robigo: failed to load base library: {}", msg);
@@ -163,31 +381,65 @@ fn real_main() -> ExitCode {
             // SAFETY: single-threaded at this point.
             unsafe { std::env::set_var("R_DEFAULT_PACKAGES", "NULL") };
         }
-        if !robigo_runtime::startup::run(&mut interp, startup) {
+        if !robigo_runtime::startup::run(&mut interp, cl.startup) {
             return finish(&mut interp, false);
         }
     }
 
-    if !exprs.is_empty() {
-        let src = exprs.join("\n");
-        let ok = interp.run_source(&src, true);
-        return finish(&mut interp, ok);
-    }
-    if let Some(path) = file {
-        let src = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("robigo: cannot open file '{}': {}", path, e);
-                return ExitCode::from(2);
+    // What feeds the console: the expressions of `-e` (a temporary file
+    // for R), the file of `-f`/`--file=`/a positional script, or stdin.
+    let script_path = cl.script.clone();
+    let console_input = if !cl.exprs.is_empty() {
+        let mut cmdlines = cl.exprs.join("\n");
+        cmdlines.push('\n');
+        Some((Box::new(std::io::Cursor::new(cmdlines)) as Box<dyn Read>, "<text>".to_string()))
+    } else if let Some(path) = script_path.or(cl.file.clone()) {
+        let read: Box<dyn Read> = if path == "-" {
+            Box::new(BufReader::new(std::io::stdin()))
+        } else {
+            match std::fs::File::open(&path) {
+                Ok(f) => Box::new(BufReader::new(f)),
+                Err(e) => {
+                    let reason = e.to_string();
+                    let reason = reason.split(" (os error").next().unwrap_or("").to_string();
+                    suicide(&format!("cannot open file '{}': {}", path, reason));
+                }
             }
         };
-        interp.source_name = path.clone();
-        let ok = interp.run_source(&src, true);
+        Some((read, path))
+    } else {
+        None
+    };
+    if let Some((read, name)) = console_input {
+        // R: system.c — a file (or `-e`) console implies `--no-save`
+        // unless `--save` was given.
+        if cl.save != SaveAction::Save {
+            cl.save = SaveAction::NoSave;
+        }
+        interp.source_name = name.clone();
+        let mut input = echo::ConsoleInput::new(read);
+        let echo = !cl.no_echo;
+        let ok = echo::repl_console(&mut interp, &mut input, echo);
         if robigo_runtime::typeprof::enabled() {
             let g = interp.global.clone();
             robigo_runtime::typeprof::record_frame(None, &g);
             robigo_runtime::typeprof::write();
         }
+        return finish(&mut interp, ok);
+    }
+    // No file and no `-e`: interactive when the terminal is one or
+    // `--interactive` was given, otherwise stdin is read as a
+    // non-interactive console (R: system.c's `R_isatty(0)` test).
+    let tty = std::io::stdin().is_terminal();
+    if !cl.force_interactive && !tty {
+        if cl.save != SaveAction::Save && cl.save != SaveAction::NoSave {
+            // R: system.c — `R_Suicide` once the console is set up, so
+            // this one goes to stderr.
+            eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
+            std::process::exit(2);
+        }
+        let mut input = echo::ConsoleInput::new(Box::new(BufReader::new(std::io::stdin())));
+        let ok = echo::repl_console(&mut interp, &mut input, !cl.no_echo);
         return finish(&mut interp, ok);
     }
     repl(&mut interp)

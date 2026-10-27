@@ -373,8 +373,14 @@ fn version_list() -> Value {
     ])
 }
 
-/// `commandArgs()`: the arguments the way `Rscript` passes them to R.
-fn do_command_args(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+/// `commandArgs()`: the arguments of the R process, the way the front
+/// end passed them (R: CommandLineArgs.c:do_commandArgs over the copy
+/// `R_set_command_line_arguments` made). The command line front end
+/// computes them; without one (`--no-base`), reconstruct Rscript's.
+fn do_command_args(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    if let Some(args) = &i.cli_args {
+        return Ok(Value::strs_from(args.clone()));
+    }
     let argv: Vec<String> = std::env::args().collect();
     let mut out: Vec<String> = Vec::new();
     out.push(argv.first().cloned().unwrap_or_else(|| "robigo".into()));
