@@ -31,7 +31,12 @@ dump_const <- function(x) {
 }
 
 dump_arg <- function(name, value, missing) {
-  prefix <- if (!is.null(name) && !is.na(name) && nzchar(name)) paste0(name, "=") else ""
+  # Tag and formal names can hold any byte (string tags like "\n"=1,
+  # backtick symbols); escape controls so the one-line-per-expression
+  # format stays unambiguous. Identity for clean names.
+  prefix <- if (!is.null(name) && !is.na(name) && nzchar(name))
+    paste0(encodeString(name, quote = ""), "=")
+  else ""
   if (missing) paste0(prefix, "<missing>") else paste0(prefix, dump_expr(value))
 }
 
@@ -39,7 +44,7 @@ is_missing_arg <- function(x) is.symbol(x) && identical(as.character(x), "")
 
 dump_expr <- function(e) {
   if (is.symbol(e)) {
-    return(paste0("`", as.character(e), "`"))
+    return(paste0("`", encodeString(as.character(e), quote = ""), "`"))
   }
   if (is.call(e)) {
     if (identical(e[[1L]], as.name("function"))) {

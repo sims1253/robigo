@@ -46,6 +46,10 @@ pub struct Parser<'a> {
 }
 
 const BP_QUESTION: u8 = 2;
+/// The `%prec LOW` boundary of gram.y: bodies of `function`, `if`, `for`,
+/// `while` and `repeat` end before `?`, the only operator below it
+/// (`function() 1 ? 2` is `(function() 1) ? 2`).
+const BP_LOW: u8 = BP_QUESTION + 1;
 const BP_EQ_ASSIGN: u8 = 4;
 const BP_LEFT_ASSIGN: u8 = 6;
 const BP_TILDE: u8 = 10;
@@ -485,7 +489,7 @@ impl<'a> Parser<'a> {
                 })();
                 self.ctx.pop();
                 let (var, seq) = header?;
-                let body = self.expr(0)?;
+                let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(Expr::call(
                     "for",
@@ -496,12 +500,13 @@ impl<'a> Parser<'a> {
             }
             Tok::While => {
                 let cond = self.paren_cond()?;
-                let body = self.expr(0)?;
+                // `%prec LOW` in gram.y: the body ends before `?`.
+                let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(Expr::call("while", span, vec![Arg::positional(cond), Arg::positional(body)], full))
             }
             Tok::Repeat => {
-                let body = self.expr(0)?;
+                let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(Expr::call("repeat", span, vec![Arg::positional(body)], full))
             }
@@ -525,7 +530,7 @@ impl<'a> Parser<'a> {
 
     fn if_expr(&mut self, span: Span) -> Result<Expr, ParseError> {
         let cond = self.paren_cond()?;
-        let then = self.expr(0)?;
+        let then = self.expr(BP_LOW)?;
         // Look for `else`. Outside of the top level, it may follow newlines.
         let save = self.pos;
         if self.cur_ctx() != Ctx::TopLevel {
@@ -533,7 +538,7 @@ impl<'a> Parser<'a> {
         }
         if matches!(self.raw_peek().tok, Tok::Else) {
             self.bump();
-            let other = self.expr(0)?;
+            let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
             return Ok(Expr::call(
                 "if",
@@ -552,7 +557,8 @@ impl<'a> Parser<'a> {
         let formals = self.formals();
         self.ctx.pop();
         let formals = formals?;
-        let body = self.expr(0)?;
+        // `%prec LOW` in gram.y: the body ends before `?`.
+        let body = self.expr(BP_LOW)?;
         let full = span.to(body.span());
         Ok(Expr::Function { formals, body: Box::new(body), span: full })
     }

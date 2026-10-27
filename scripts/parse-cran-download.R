@@ -7,6 +7,7 @@ args <- commandArgs(trailingOnly = TRUE)
 dest <- normalizePath(args[[1L]], mustWork = FALSE)
 dir.create(dest, recursive = TRUE, showWarnings = FALSE)
 lib <- args[[2L]]
+options(repos = c(CRAN = "https://cloud.r-project.org"), timeout = 600)
 
 pkgs <- rownames(installed.packages(lib.loc = lib))
 pkgs <- setdiff(pkgs, rownames(installed.packages(lib.loc = .Library)))

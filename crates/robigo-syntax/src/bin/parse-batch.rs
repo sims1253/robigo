@@ -46,12 +46,35 @@ fn main() {
     let mut bytes_out: Vec<u8> = Vec::new();
     for line in manifest.lines() {
         let Some((id, rest)) = line.split_once('\t') else { continue };
+        // Columns: path, enc, sha256-prefix. The enc is exactly the
+        // second field; a trailing hash must not bleed into it.
         let (path, enc) = match rest.split_once('\t') {
-            Some((p, e)) => (p, e),
+            Some((p, rest2)) => (p, rest2.split('\t').next().unwrap_or("u")),
             None => (rest, "u"),
         };
         let Ok(raw) = std::fs::read(Path::new(path)) else {
             continue;
+        };
+        // R's oracle parses files through a text connection, whose newline
+        // translation turns CR and CRLF into LF before the parser sees a
+        // single byte; do the same here so both sides parse one stream.
+        let raw = if raw.contains(&b'\r') {
+            let mut t = Vec::with_capacity(raw.len());
+            let mut i = 0;
+            while i < raw.len() {
+                if raw[i] == b'\r' {
+                    t.push(b'\n');
+                    if i + 1 < raw.len() && raw[i + 1] == b'\n' {
+                        i += 1;
+                    }
+                } else {
+                    t.push(raw[i]);
+                }
+                i += 1;
+            }
+            t
+        } else {
+            raw
         };
         let src = if enc == "l" { transcode_latin1(&raw) } else { String::from_utf8_lossy(&raw).into_owned() };
         n += 1;
