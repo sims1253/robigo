@@ -46,8 +46,8 @@ write-up, numbers and recommendation: `experiments/memory/README.md`.
   (binarytrees 13→36/79), more instructions, longer capi pauses. rc's
   weak spots (binarytrees 2.02× Ir, cycles 4.35× Ir) are
   design-inherent; keep factor 2.
-- result (after both fixes): gc wins est cycles 1.32× (1.18× at a
-  contended-machine 14/250 model), Ir 1.63×, and wall time on
+- result (after both fixes): gc wins est cycles 1.38× (1.24× at a
+  contended-machine 14/250 model), Ir 1.65×, and wall time on
   fib/capi/cycles; ties elsewhere (binarytrees remains rc's cache-miss
   win and the gc's RSS/pause weak spot: 61 MB, 15–40 ms marks).
   **Kept**: recommendation = mark-region gc, 2 MiB floor, skip-clean

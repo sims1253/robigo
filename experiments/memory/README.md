@@ -84,17 +84,18 @@ penalties — the conclusion below survives 14/250).
 
 | workload | rc Ir (M) | gc Ir (M) | rc/gc |
 |---|---:|---:|---:|
-| binarytrees | 856 | 424 | **2.02×** |
-| fib | 497 | 306 | **1.63×** |
-| lapply | 66 | 55 | 1.21× |
+| binarytrees | 856 | 407 | **2.10×** |
+| fib | 497 | 307 | **1.62×** |
+| lapply | 66 | 51 | 1.29× |
 | listgrowth | 43 | 34 | 1.28× |
-| strings | 293 | 313 | 0.94× |
+| strings | 293 | 312 | 0.94× |
 | cycles | 163 | 38 | **4.35×** |
-| capi | 1998 | 1364 | 1.47× |
-| *geometric mean* | | | *1.63×* |
+| capi | 1998 | 1365 | 1.46× |
+| *geometric mean* | | | *1.65×* |
 
-(gc numbers at the 2 MiB floor; at the old 8 MiB floor the geomean was
-1.70× — more frequent collections cost instructions and buy locality.)
+(gc at the 2 MiB floor, from `results/locality-final.json`; at the old
+8 MiB floor the geomean was 1.70× — more frequent collections cost
+instructions and buy locality.)
 
 ### The cache study (why the wall times disagreed)
 
@@ -107,21 +108,23 @@ between collections**:
 
 | workload | rc D1m | gc D1m | rc LLm | gc LLm | rc est cyc (M) | gc est cyc (M) | rc/gc |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| binarytrees | 7.2M | 6.8M | 0.6M | 4.4M | 988 | 930 | 1.06× |
-| fib | **12k** | 6.4M | **10k** | 51k | 498 | 375 | 1.33× |
-| lapply | 330k | 1.3M | 185k | 250k | 88 | 93 | 0.95× |
-| listgrowth | 456k | 1.2M | 138k | 112k | 61 | 57 | 1.08× |
-| strings | 1.8M | 3.1M | 301k | 334k | 341 | 377 | 0.90× |
-| cycles | 2.9M | 0.9M | 62k | 51k | 199 | 52 | 3.85× |
-| capi | 12.9M | 18.4M | **24k** | 53k | 2130 | 1553 | 1.37× |
-| *geometric mean* | | | | | | | *1.32×* |
+| binarytrees | 7.2M | 6.0M | 0.6M | 3.9M | 988 | 862 | 1.15× |
+| fib | **12k** | 6.0M | **10k** | 51k | 498 | 372 | 1.34× |
+| lapply | 330k | 1.0M | 185k | 250k | 88 | 86 | 1.02× |
+| listgrowth | 456k | 418k | 138k | 112k | 61 | 49 | 1.25× |
+| strings | 1.8M | 3.0M | 301k | 330k | 341 | 375 | 0.91× |
+| cycles | 2.9M | 0.7M | 62k | 51k | 199 | 50 | 3.97× |
+| capi | 11.9M | 18.4M | **24k** | 53k | 2119 | 1554 | 1.36× |
+| *geometric mean* | | | | | | | *1.38×* |
 
-At the old 8 MiB floor the picture was worse for the gc (fib: 5.4M D1
-misses, 149k LL misses; binarytrees est cycles a dead heat at 0.99×;
-lapply 0.92×, strings 0.93× for rc) — **the misses ate the entire 1.7×
-instruction advantage on the workloads shaped like the evaluator**. On a
-contended machine (shared LLC, memory-bandwidth pressure) LL misses cost
-well above 100 cycles, which is exactly where rc's wall wins came from.
+(At a contended-machine 14/250 miss model the geomean is 1.24× — the
+ordering is robust to the penalty constants.) At the old 8 MiB floor the
+picture was worse for the gc (fib: 5.4M D1 misses, 149k LL misses;
+binarytrees est cycles a dead heat at 0.99×; lapply 0.92×, strings 0.93×
+for rc) — **the misses ate the entire 1.7× instruction advantage on the
+workloads shaped like the evaluator**. On a contended machine (shared
+LLC, memory-bandwidth pressure) LL misses cost well above 100 cycles,
+which is exactly where rc's wall wins came from.
 
 Two gc changes fix the locality deficit, measured at every step
 (`results/floor-dial-*.json`):
@@ -142,39 +145,42 @@ Two gc changes fix the locality deficit, measured at every step
 
 ### Wall time (what users feel), after the fix
 
-Interleaved reps on the shared box, load 1.9–3.7 during these samples
-(min of 9; medians and spread in `results/locality-final.json`):
+Interleaved reps, 9 per variant, load 3.3–4.5 during the run
+(`results/locality-final.json`; this box multiplies walls by 1.5–4×
+under load, so read the ordering, not the milliseconds):
 
-| workload | rc ms | gc ms (2 MiB floor) | rc/gc |
-|---|---:|---:|---:|
-| binarytrees | 123 | 128 | 0.96× |
-| fib | 47 | **34** | **1.38× (gc)** |
-| lapply | 9 | 11 | 0.82× |
-| listgrowth | 7 | 5 | 1.40× |
-| strings | 46 | 49 | 0.94× |
-| cycles | 18 | **4** | **4.5× (gc)** |
-| capi | 323 | **293** | **1.10× (gc)** |
+| workload | rc min/med | gc min/med | rc/gc (med) |
+|---|---|---|---|
+| binarytrees | 136 / 161 | 130 / 140 | 1.15× (gc) |
+| fib | 43 / 52 | **34 / 43** | **1.21× (gc)** |
+| lapply | 8 / 9 | 10 / 11 | 0.82× (rc) |
+| listgrowth | 6 / 17 | 7 / 10 | 1.70× (gc) |
+| strings | 40 / 59 | 47 / 61 | 0.97× (tie) |
+| cycles | 18 / 35 | **4 / 6** | **5.8× (gc)** |
+| capi | 358 / 549 | 417 / 469 | 1.17× (gc) |
 
-Before the fix the gc lost fib 0.72× / capi 0.99× / strings 0.63×; after
-it the gc wins the three evaluator-shaped workloads outright and the
-rest are ties within measurement noise. Wall on this box has 1.5–2×
-spread between min and max under load; the deterministic counters above
-carry the conclusion.
+At load ~2 (the quieter dial samples, `results/floor-dial-wall.json`)
+the gc margins on the churn workloads are larger: fib 34 vs 47 ms, capi
+293 vs 323 ms, cycles 4 vs 18 ms. Before the fix the gc lost fib
+0.72× / capi 0.99× / strings 0.63×; after it, the gc wins fib, cycles,
+capi and binarytrees outright at both sampled loads, and lapply/strings
+stay within noise. The deterministic counters above carry the
+conclusion.
 
-Peak RSS and longest pause after the fix:
+Peak RSS and longest pause after the fix (same run):
 
 | workload | rc RSS | gc RSS | rc pause | gc pause | rc cols | gc cols |
 |---|---:|---:|---:|---:|---:|---:|
-| binarytrees | 22.6 MB | 61.4 MB | 5.1 ms | 15–40 ms | 13 | 5 |
-| fib | 2.4 MB | 4.5 MB | — | 0.6 ms | 0 | 69 |
-| lapply | 13.2 MB | 16.5 MB | — | 2.5 ms | 0 | 3 |
-| listgrowth | 10.4 MB | 8.2 MB | — | 0.8 ms | 0 | 2 |
-| strings | 16.5 MB | 18.4 MB | — | 3.2 ms | 0 | 2 |
-| cycles | 5.0 MB | 5.0 MB | 4.7 ms | 0.2 ms | 22 | 9 |
-| capi | 3.4 MB | 4.5 MB | 1.2 ms | 8.7 ms | 234 | 195 |
+| binarytrees | 22.6 MB | 61.4 MB | 8.7 ms | 21.0 ms | 13 | 5 |
+| fib | 2.5 MB | 4.6 MB | — | 0.6 ms | 0 | 69 |
+| lapply | 13.2 MB | 16.5 MB | — | 1.9 ms | 0 | 3 |
+| listgrowth | 10.4 MB | 8.0 MB | — | 8.7 ms | 0 | 2 |
+| strings | 16.8 MB | 18.4 MB | — | 8.2 ms | 0 | 2 |
+| cycles | 5.0 MB | 4.9 MB | 22.9 ms | 2.0 ms | 22 | 9 |
+| capi | 3.3 MB | 4.5 MB | 11.6 ms | 4.4 ms | 234 | 195 |
 
 The 2 MiB floor cut gc RSS by half on the churn workloads (fib
-10.9 → 4.5, capi 10.8 → 4.5, cycles 11.1 → 5.0 MB) and its pauses by
+10.9 → 4.6, capi 10.8 → 4.5, cycles 11.1 → 4.9 MB) and its pauses by
 4–40× (fib 23.8 → 0.6 ms). binarytrees stays the gc's weak spot: a
 10.6 MB live tree × 1.5 growth plus partial-death fragmentation — an
 RSS/pause dial (incremental marking), not a manager defect.
@@ -190,7 +196,7 @@ RSS/pause dial (incremental marking), not a manager defect.
   share is mark (proportional to the live tree) plus a sweep that since
   skip-clean only pays for blocks with garbage. The remaining
   *locality* cost is the mark's pointer chase over the live set
-  (4.4M LL misses vs rc's 0.6M on this workload).
+  (3.9M LL misses vs rc's 0.6M on this workload).
 - The remaining rc overhead is *design-inherent*: every handle read is
   an incref/decref pair (`check_tree` costs 2.4× its gc twin), every
   container decrement feeds the purple buffer, and every death walks
@@ -247,8 +253,8 @@ settled it:
    churn window (fits LLC) plus sweeps that cost work proportional to
    garbage made the gc win wall time on fib (34 vs 47 ms), capi (293 vs
    323) and cycles (4 vs 18), halve RSS on churn workloads, and cut
-   pauses 4–40× — while est cycles still favor it 1.32× (1.18× even at
-   a contended-machine 14/250 miss model) and Ir 1.63×.
+   pauses 4–40× — while est cycles still favor it 1.38× (1.24× even at
+   a contended-machine 14/250 miss model) and Ir 1.65×.
 3. **rc could not be improved where it is weak.** The purple-trigger
    dial (factor 1/4/8) is worse everywhere (factor 1: cycles RSS
    5 → 35 MB; 4/8: more collections, more instructions, longer
