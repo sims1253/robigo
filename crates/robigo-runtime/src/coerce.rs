@@ -518,7 +518,10 @@ pub fn to_cplx(v: &Value, w: &mut CoerceWarnings) -> Vec<Complex> {
             x.data.iter().map(|e| if e.len() == 1 && e.is_atomic() { to_cplx(e, w)[0] } else { Complex::NA }).collect()
         }
         _ => {
-            to_real(v, w).into_iter().map(|d| if is_na_real(d) { Complex::NA } else { Complex::new(d, 0.0) }).collect()
+            // RealFromReal/Logical/Integer (R: coerce.c): the value with a
+            // zero imaginary part — NA keeps its payload, so arithmetic
+            // propagates it exactly like C's would.
+            to_real(v, w).into_iter().map(|d| Complex::new(d, 0.0)).collect()
         }
     }
 }
