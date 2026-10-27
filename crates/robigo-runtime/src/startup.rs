@@ -261,7 +261,7 @@ fn call_first(interp: &mut Interp, name: &str, env: &Env) -> bool {
         Some((Value::Closure(_), _)) => {
             let call = Value::call_sym(name, vec![]);
             let global = interp.global.clone();
-            interp.eval_toplevel(&call, &global, true)
+            interp.eval_toplevel(&call, &global, true).is_some()
         }
         _ => true,
     }

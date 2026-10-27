@@ -1,0 +1,9 @@
+[package]
+name = "mm-rc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mm-core = { path = "../mm-core" }
+mm-heap = { path = "../mm-heap" }
