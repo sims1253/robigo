@@ -2,11 +2,50 @@
 
 use crate::ast::{Const, ParseError, Span};
 
+/// A symbol name: a source slice, or an owned string when escapes made
+/// it differ from the source (backtick names only).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Tok {
+pub enum SymStr<'a> {
+    Src(&'a str),
+    Own(String),
+}
+
+impl<'a> SymStr<'a> {
+    /// The source slice, when the name is verbatim from the source.
+    pub fn src(&self) -> Option<&'a str> {
+        match self {
+            SymStr::Src(s) => Some(s),
+            SymStr::Own(_) => None,
+        }
+    }
+}
+
+impl<'a> std::fmt::Display for SymStr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self)
+    }
+}
+
+impl<'a> std::ops::Deref for SymStr<'a> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            SymStr::Src(s) => s,
+            SymStr::Own(s) => s,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tok<'a> {
     Const(Const),
     Str(Vec<u8>),
-    Sym(String),
+    /// Identifiers borrow the source: they are contiguous slices, and a
+    /// borrowed token makes the parser's peeks copies instead of heap
+    /// allocations (GNU R interns symbols; this is the cheap analogue).
+    /// Backtick names with escapes are the exception (their bytes differ
+    /// from the source), so they stay owned.
+    Sym(SymStr<'a>),
     Function,
     Lambda,
     If,
@@ -45,8 +84,8 @@ pub enum Tok {
     Minus,
     Star,
     Slash,
-    /// `%op%`, including `%%`, `%/%` and `%in%`
-    Special(String),
+    /// `%op%`, including `%%`, `%/%` and `%in%` (a source slice)
+    Special(&'a str),
     Pipe,
     PipeBind,
     Colon,
@@ -66,8 +105,8 @@ pub enum Tok {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token {
-    pub tok: Tok,
+pub struct Token<'a> {
+    pub tok: Tok<'a>,
     pub span: Span,
 }
 
@@ -152,8 +191,10 @@ impl<'a> Lexer<'a> {
     /// eager, so the first lexical error becomes an `Invalid` token — the
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
-    pub fn tokenize(mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {
-        let mut out = Vec::new();
+    pub fn tokenize(mut self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+        // R sources average ~5 bytes per token; pre-sizing avoids the
+        // reallocation churn of growing one Vec per source.
+        let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
         loop {
             let t = match self.next_token() {
                 Ok(t) => t,
@@ -173,7 +214,7 @@ impl<'a> Lexer<'a> {
         Ok((out, self.warnings))
     }
 
-    fn next_token(&mut self) -> Result<Token, ParseError> {
+    fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
         // Skip horizontal whitespace and comments.
         loop {
             match self.byte_at(self.pos) {
@@ -205,7 +246,16 @@ impl<'a> Lexer<'a> {
             }
             '`' => {
                 self.pos += 1;
-                let name = String::from_utf8_lossy(&self.string_body('`', start, true)?).into_owned();
+                let body = self.string_body('`', start, true)?;
+                // Without escapes the name is the source between the
+                // backticks, verbatim; with them it is the unescaped
+                // bytes (e.g. `\`` is a name that is one backtick).
+                let raw = &self.src[start + 1..self.pos - 1];
+                let name = if raw.contains('\\') {
+                    SymStr::Own(String::from_utf8_lossy(&body).into_owned())
+                } else {
+                    SymStr::Src(raw)
+                };
                 if name.is_empty() {
                     // `SymbolValue` installs the name right in the lexer
                     // (`// R: gram.y:SymbolValue`, `names.c:install`), and
@@ -288,7 +338,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn ident(&mut self) -> Tok {
+    fn ident(&mut self) -> Tok<'a> {
         let start = self.pos;
         loop {
             match self.byte_at(self.pos) {
@@ -315,7 +365,7 @@ impl<'a> Lexer<'a> {
                 [b'r', b'e', b'a', b'l', b'_'] => Tok::Const(Const::DblNa),
                 [b'c', b'h', b'a', b'r', b'a', b'c', b't', b'e', b'r', b'_'] => Tok::Const(Const::Str(None)),
                 [b'c', b'o', b'm', b'p', b'l', b'e', b'x', b'_'] => Tok::Const(Const::CplxNa),
-                _ => Tok::Sym(s.to_string()),
+                _ => Tok::Sym(SymStr::Src(s)),
             },
             [b'f', b'u', b'n', b'c', b't', b'i', b'o', b'n'] => Tok::Function,
             [b'i', b'f'] => Tok::If,
@@ -326,14 +376,14 @@ impl<'a> Lexer<'a> {
             [b'r', b'e', b'p', b'e', b'a', b't'] => Tok::Repeat,
             [b'b', b'r', b'e', b'a', b'k'] => Tok::Break,
             [b'n', b'e', b'x', b't'] => Tok::Next,
-            _ => Tok::Sym(s.to_string()),
+            _ => Tok::Sym(SymStr::Src(s)),
         }
     }
 
     /// Numeric literals, a port of `NumericValue` in gram.y (`// R:
     /// gram.y:NumericValue`). Malformed numbers become the `ERROR` token,
     /// reported as "unexpected input".
-    fn number(&mut self) -> Result<Tok, ParseError> {
+    fn number(&mut self) -> Result<Tok<'a>, ParseError> {
         let start = self.pos;
         let mut c = self.byte_at(self.pos);
         self.pos += 1;
@@ -690,7 +740,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn operator(&mut self, start: usize) -> Result<Tok, ParseError> {
+    fn operator(&mut self, start: usize) -> Result<Tok<'a>, ParseError> {
         let (b0, b1, b2) = (self.byte_at(self.pos), self.byte_at(self.pos + 1), self.byte_at(self.pos + 2));
         // Longest match first, as R's lexer does.
         let (tok, len) = match b0 {
@@ -752,7 +802,7 @@ impl<'a> Lexer<'a> {
                     if rest.as_bytes()[1 + end] == b'%' {
                         let op = &rest[..end + 2];
                         self.pos += op.len();
-                        return Ok(Tok::Special(op.to_string()));
+                        return Ok(Tok::Special(op));
                     }
                 }
                 return Err(self.err("unexpected input", start, false));

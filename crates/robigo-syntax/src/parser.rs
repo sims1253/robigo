@@ -24,7 +24,8 @@
 //! | `(` `[` `[[` (postfix)  |       | 38      |
 
 use crate::ast::*;
-use crate::lexer::{Lexer, Tok, Token};
+use crate::ast::Name;
+use crate::lexer::{Lexer, SymStr, Tok, Token};
 use crate::line_col;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -39,9 +40,14 @@ enum Ctx {
 
 pub struct Parser<'a> {
     src: &'a str,
-    toks: Vec<Token>,
+    toks: Vec<Token<'a>>,
     pos: usize,
     ctx: Vec<Ctx>,
+    /// One `Name` per distinct string per parse, as GNU R's interned
+    /// symbols: repeated identifiers and the few operator names are
+    /// refcount copies instead of allocations. FNV-1a: names are short,
+    /// and SipHash would dominate the lookup.
+    interned: std::collections::HashMap<&'a str, Name, FnvBuild>,
     pub warnings: Vec<String>,
 }
 
@@ -57,6 +63,29 @@ const BP_NOT: u8 = 16;
 const BP_CMP: u8 = 18;
 const BP_UNARY: u8 = 30;
 const BP_POSTFIX: u8 = 38;
+
+/// FNV-1a: the interner's keys are short names, where SipHash's setup
+/// cost would dominate the lookup.
+struct Fnv(u64);
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= b as u64;
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct FnvBuild;
+impl std::hash::BuildHasher for FnvBuild {
+    type Hasher = Fnv;
+    fn build_hasher(&self) -> Fnv {
+        Fnv(0xcbf29ce484222325)
+    }
+}
 
 /// `_R_USE_PIPEBIND_` (`xxpipebind` in gram.y caches it after the first
 /// lookup).
@@ -86,19 +115,41 @@ pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>)
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
-        Ok(Parser { src, toks, pos: 0, ctx: vec![Ctx::TopLevel], warnings })
+        Ok(Parser { src, toks, pos: 0, ctx: vec![Ctx::TopLevel], interned: Default::default(), warnings })
+    }
+
+    fn intern(&mut self, s: &'a str) -> Name {
+        if let Some(rc) = self.interned.get(s) {
+            return rc.clone();
+        }
+        let rc: Name = s.into();
+        self.interned.insert(s, rc.clone());
+        rc
+    }
+
+    /// A name that may not be a source slice (escaped backticks, string
+    /// tags): own it, uncached.
+    fn name_of(&self, s: &str) -> Name {
+        s.into()
+    }
+
+    fn sym_name(&mut self, s: &SymStr<'a>) -> Name {
+        match s.src() {
+            Some(src) => self.intern(src),
+            None => self.name_of(s),
+        }
     }
 
     fn cur_ctx(&self) -> Ctx {
         *self.ctx.last().unwrap()
     }
 
-    fn raw_peek(&self) -> &Token {
+    fn raw_peek(&self) -> &Token<'a> {
         &self.toks[self.pos]
     }
 
     /// Next token, skipping newlines when they are insignificant.
-    fn peek(&mut self) -> &Token {
+    fn peek(&mut self) -> &Token<'a> {
         if self.cur_ctx() == Ctx::Paren {
             self.skip_newlines();
         }
@@ -114,7 +165,7 @@ impl<'a> Parser<'a> {
     /// Consume the next token. Tokens are only read again after a
     /// `bump` when backtracking over newlines (see `if_expr`), so the token
     /// is moved out, leaving a newline in its place.
-    fn bump(&mut self) -> Token {
+    fn bump(&mut self) -> Token<'a> {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {
             return self.toks[self.pos].clone();
         }
@@ -161,7 +212,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn unexpected(&self, t: &Token) -> ParseError {
+    fn unexpected(&self, t: &Token<'_>) -> ParseError {
         if let Tok::Invalid(e) = &t.tok {
             // The lexer's own error fires when the parser asks for the
             // token, before any grammar complaint about it.
@@ -181,7 +232,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, want: Tok) -> Result<Token, ParseError> {
+    fn expect(&mut self, want: Tok<'a>) -> Result<Token<'a>, ParseError> {
         let t = self.peek().clone();
         if t.tok == want { Ok(self.bump()) } else { Err(self.unexpected(&t)) }
     }
@@ -255,25 +306,33 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         let mut lhs = self.prefix()?;
         loop {
-            let t = self.peek().clone();
-            let Some((lbp, rbp)) = infix_bp(&t.tok) else {
-                // Postfix: call, index.
-                if matches!(t.tok, Tok::LParen | Tok::LBracket | Tok::LBB) && BP_POSTFIX > min_bp {
+            // Read the lookahead's binding powers (Copy) before any
+            // mutable call, so the token itself can be taken by value
+            // below: `bump` already moves it out of the stream.
+            let (lbp, rbp, postfixable) = {
+                let t = self.peek();
+                match infix_bp(&t.tok) {
+                    Some((l, r)) => (l, r, false),
+                    None => (0, 0, matches!(t.tok, Tok::LParen | Tok::LBracket | Tok::LBB)),
+                }
+            };
+            if postfixable {
+                if BP_POSTFIX > min_bp {
                     lhs = self.postfix(lhs)?;
                     continue;
                 }
                 break;
-            };
+            }
             if lbp <= min_bp {
                 break;
             }
-            self.bump();
+            let t = self.bump();
             lhs = match &t.tok {
                 Tok::Dollar | Tok::At => {
                     let name = self.member_name()?;
                     let op = if t.tok == Tok::Dollar { "$" } else { "@" };
                     let span = lhs.span().to(name.span());
-                    Expr::call(op, t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
+                    Expr::call(self.intern(op), t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
                 }
                 Tok::NsGet(op) => {
                     let pkg = match lhs {
@@ -282,7 +341,7 @@ impl<'a> Parser<'a> {
                     };
                     let name = self.member_name()?;
                     let span = pkg.span().to(name.span());
-                    Expr::call(op, t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
+                    Expr::call(self.intern(op), t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
                 }
                 Tok::Pipe => {
                     let rhs = self.expr(rbp)?;
@@ -305,16 +364,16 @@ impl<'a> Parser<'a> {
                         });
                     }
                     let span = lhs.span().to(rhs.span());
-                    Expr::call("=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
+                    Expr::call(self.intern("=>"), t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
                 }
                 _ => {
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
-                        Tok::RightAssign(op) => ((if *op == "->" { "<-" } else { "<<-" }).to_string(), rhs, lhs),
+                        Tok::RightAssign(op) => (if *op == "->" { "<-" } else { "<<-" }, rhs, lhs),
                         _ => (binary_name(&t.tok), lhs, rhs),
                     };
-                    let e = Expr::call(&name, t.span, vec![Arg::positional(a), Arg::positional(b)], span);
+                    let e = Expr::call(self.intern(name), t.span, vec![Arg::positional(a), Arg::positional(b)], span);
                     if matches!(t.tok, Tok::Cmp(_)) {
                         // Comparisons do not associate: `a < b < c` is an error.
                         let next = self.peek().clone();
@@ -335,7 +394,7 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::Sym(s) => {
                 self.bump();
-                Ok(Expr::Sym(s, t.span))
+                Ok(Expr::Sym(self.sym_name(&s), t.span))
             }
             Tok::Str(s) => {
                 self.bump();
@@ -432,7 +491,7 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
             Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(s)), span)),
-            Tok::Sym(s) => Ok(Expr::Sym(s, span)),
+            Tok::Sym(s) => Ok(Expr::Sym(self.sym_name(&s), span)),
             Tok::Placeholder => Ok(Expr::Placeholder(span)),
             Tok::LParen => {
                 self.ctx.push(Ctx::Paren);
@@ -440,7 +499,7 @@ impl<'a> Parser<'a> {
                 let close = inner.and_then(|e| self.expect(Tok::RParen).map(|c| (e, c)));
                 self.ctx.pop();
                 let (inner, close) = close?;
-                Ok(Expr::call("(", span, vec![Arg::positional(inner)], span.to(close.span)))
+                Ok(Expr::call(self.intern("("), span, vec![Arg::positional(inner)], span.to(close.span)))
             }
             Tok::LBrace => {
                 self.ctx.push(Ctx::Brace);
@@ -452,22 +511,22 @@ impl<'a> Parser<'a> {
                 let operand = self.expr(BP_UNARY)?;
                 let name = if t.tok == Tok::Minus { "-" } else { "+" };
                 let full = span.to(operand.span());
-                Ok(Expr::call(name, span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.intern(name), span, vec![Arg::positional(operand)], full))
             }
             Tok::Not => {
                 let operand = self.expr(BP_NOT)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call("!", span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.intern("!"), span, vec![Arg::positional(operand)], full))
             }
             Tok::Tilde => {
                 let operand = self.expr(BP_TILDE)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call("~", span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.intern("~"), span, vec![Arg::positional(operand)], full))
             }
             Tok::Question => {
                 let operand = self.expr(BP_QUESTION)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call("?", span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.intern("?"), span, vec![Arg::positional(operand)], full))
             }
             Tok::Function | Tok::Lambda => self.function(span),
             Tok::If => self.if_expr(span),
@@ -478,7 +537,7 @@ impl<'a> Parser<'a> {
                     let var = match self.peek().clone() {
                         Token { tok: Tok::Sym(s), span } => {
                             self.bump();
-                            Expr::Sym(s, span)
+                            Expr::Sym(self.sym_name(&s), span)
                         }
                         other => return Err(self.unexpected(&other)),
                     };
@@ -492,7 +551,7 @@ impl<'a> Parser<'a> {
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(Expr::call(
-                    "for",
+                    self.intern("for"),
                     span,
                     vec![Arg::positional(var), Arg::positional(seq), Arg::positional(body)],
                     full,
@@ -503,15 +562,15 @@ impl<'a> Parser<'a> {
                 // `%prec LOW` in gram.y: the body ends before `?`.
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call("while", span, vec![Arg::positional(cond), Arg::positional(body)], full))
+                Ok(Expr::call(self.intern("while"), span, vec![Arg::positional(cond), Arg::positional(body)], full))
             }
             Tok::Repeat => {
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call("repeat", span, vec![Arg::positional(body)], full))
+                Ok(Expr::call(self.intern("repeat"), span, vec![Arg::positional(body)], full))
             }
-            Tok::Break => Ok(Expr::call("break", span, vec![], span)),
-            Tok::Next => Ok(Expr::call("next", span, vec![], span)),
+            Tok::Break => Ok(Expr::call(self.intern("break"), span, vec![], span)),
+            Tok::Next => Ok(Expr::call(self.intern("next"), span, vec![], span)),
             _ => Err(self.unexpected(&t)),
         }
     }
@@ -541,7 +600,7 @@ impl<'a> Parser<'a> {
             let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
             return Ok(Expr::call(
-                "if",
+                self.intern("if"),
                 span,
                 vec![Arg::positional(cond), Arg::positional(then), Arg::positional(other)],
                 full,
@@ -549,7 +608,7 @@ impl<'a> Parser<'a> {
         }
         self.pos = save;
         let full = span.to(then.span());
-        Ok(Expr::call("if", span, vec![Arg::positional(cond), Arg::positional(then)], full))
+        Ok(Expr::call(self.intern("if"), span, vec![Arg::positional(cond), Arg::positional(then)], full))
     }
 
     fn function(&mut self, span: Span) -> Result<Expr, ParseError> {
@@ -577,7 +636,7 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.unexpected(&t)),
             };
             self.bump();
-            if out.iter().any(|f| f.name == name) {
+            if out.iter().any(|f| *f.name == *name) {
                 return Err(ParseError {
                     message: format!("repeated formal argument '{}'", name),
                     offset: t.span.start as usize,
@@ -594,7 +653,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            out.push(Formal { name, default });
+            out.push(Formal { name: self.sym_name(&name), default });
             let t = self.peek().clone();
             match t.tok {
                 Tok::Comma => {
@@ -618,7 +677,7 @@ impl<'a> Parser<'a> {
             let t = self.raw_peek().clone();
             if matches!(t.tok, Tok::RBrace) {
                 self.bump();
-                return Ok(Expr::call("{", open, stmts, open.to(t.span)));
+                return Ok(Expr::call(self.intern("{"), open, stmts, open.to(t.span)));
             }
             if matches!(t.tok, Tok::Eof) {
                 return Err(self.unexpected(&t));
@@ -666,7 +725,7 @@ impl<'a> Parser<'a> {
                             if name.is_empty() {
                                 return Err(self.zero_length_name_error());
                             }
-                            Expr::Sym(String::from_utf8_lossy(&name).into_owned(), sp)
+                            Expr::Sym(self.name_of(&String::from_utf8_lossy(&name)), sp)
                         }
                         other => other,
                     };
@@ -675,7 +734,8 @@ impl<'a> Parser<'a> {
                 Some(n) => {
                     let mut all = vec![Arg::positional(lhs)];
                     all.extend(args);
-                    Expr::call(n, open.span, all, span)
+                    let name = self.intern(n);
+                    Expr::call(name, open.span, all, span)
                 }
             })
         })();
@@ -696,9 +756,9 @@ impl<'a> Parser<'a> {
             } else {
                 // `name = value`, where name is a symbol, string or NULL.
                 let name = match &t.tok {
-                    Tok::Sym(s) => Some(s.clone()),
-                    Tok::Str(s) => Some(String::from_utf8_lossy(s).into_owned()),
-                    Tok::Const(Const::Null) => Some("NULL".to_string()),
+                    Tok::Sym(s) => Some(self.sym_name(s)),
+                    Tok::Str(s) => Some(self.name_of(&String::from_utf8_lossy(s))),
+                    Tok::Const(Const::Null) => Some(self.intern("NULL")),
                     _ => None,
                 };
                 let named = name.is_some() && {
@@ -762,25 +822,25 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
     })
 }
 
-fn binary_name(t: &Tok) -> String {
+fn binary_name<'x>(t: &Tok<'x>) -> &'x str {
     match t {
-        Tok::Question => "?".into(),
-        Tok::EqAssign => "=".into(),
-        Tok::LeftAssign(op) => (*op).into(),
-        Tok::Tilde => "~".into(),
-        Tok::Or => "|".into(),
-        Tok::Or2 => "||".into(),
-        Tok::And => "&".into(),
-        Tok::And2 => "&&".into(),
-        Tok::Cmp(op) => (*op).into(),
-        Tok::Plus => "+".into(),
-        Tok::Minus => "-".into(),
-        Tok::Star => "*".into(),
-        Tok::Slash => "/".into(),
-        Tok::Special(op) => op.clone(),
-        Tok::PipeBind => "=>".into(),
-        Tok::Colon => ":".into(),
-        Tok::Caret => "^".into(),
+        Tok::Question => "?",
+        Tok::EqAssign => "=",
+        Tok::LeftAssign(op) => *op,
+        Tok::Tilde => "~",
+        Tok::Or => "|",
+        Tok::Or2 => "||",
+        Tok::And => "&",
+        Tok::And2 => "&&",
+        Tok::Cmp(op) => *op,
+        Tok::Plus => "+",
+        Tok::Minus => "-",
+        Tok::Star => "*",
+        Tok::Slash => "/",
+        Tok::Special(op) => *op,
+        Tok::PipeBind => "=>",
+        Tok::Colon => ":",
+        Tok::Caret => "^",
         _ => unreachable!("not a binary operator: {:?}", t),
     }
 }
@@ -857,7 +917,7 @@ fn is_special_symbol(name: &str) -> bool {
 /// chain; `None` is "not an extraction chain over the placeholder".
 fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Option<Result<Expr, ()>> {
     let Expr::Sym(name, name_span) = fun else { return None };
-    if !matches!(name.as_str(), "$" | "@" | "[[" | "[") || args.is_empty() {
+    if !matches!(&**name, "$" | "@" | "[[" | "[") || args.is_empty() {
         return None;
     }
     let first = args[0].value.as_ref()?;
@@ -877,5 +937,5 @@ fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Op
     let mut new_args = args.to_vec();
     new_args[0].value = Some(replaced);
     let span = lhs.span().to(args.last().and_then(|a| a.value.as_ref()).map(|v| v.span()).unwrap_or(*name_span));
-    Some(Ok(Expr::call(name, *name_span, new_args, span)))
+    Some(Ok(Expr::call(name.clone(), *name_span, new_args, span)))
 }
