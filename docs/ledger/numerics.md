@@ -5,6 +5,88 @@ numeric-policy seam. Metric: (1) bit agreement with x87 over property
 tests, operations covered; (2) instructions per operation; (3) policy
 kernels implemented and benchmarked.
 
+## 2026-10-28: interpreter policy wired through reduction callers
+
+- why: fast kernels are useful only when real R operations select them,
+  while separate interpreter instances must retain independent policies.
+- what: `Interp::numerics`, initialized once from `ROBIGO_NUMERICS=fast`
+  with exact as the default. Summary helpers, matrix reductions, and the
+  existing covariance/correlation algorithms select typed accumulators at
+  entry. Scalar correction and missing-value passes use that same type.
+  The mode is not baked into the current VM or JIT; future specialization
+  must add it to the compiled-code cache key.
+- result: all 9 policy operations wired into their runtime consumers.
+  Exact output unchanged; kept. The real-mean algorithm moved unchanged
+  into the policy module. An oracle check confirmed GNU R's corrected
+  mean of `c(1e16, 1, -1e16)` is `0.3336588541666667`, including its
+  extended-precision rounding, rather than a rounded mathematical 1/3.
+- verification: `cargo test -p robigo-numerics` (36 tests + doctest),
+  `cargo test --release -p robigo-numerics -p robigo-runtime -p robigo-cli`
+  (36 + 21 + 7 unit tests, 2 runtime integration tests, doctest, and all
+  three conformance checks including the ratchet and tier agreement),
+  `cargo fmt --check`. Four new runtime tests cover independent modes,
+  missing values and names, chunk/column state, and covariance use modes.
+  End-to-end scripts compared exact stdout/stderr/status with both the
+  saved pre-change binary and GNU R, and fast results within tolerance,
+  under AST, VM, and JIT. Unset, exact, unrecognized, and fast environment
+  values were exercised. Numerics cross-checks build for aarch64 and
+  wasm32; wasm retains the existing unrelated libm import warning.
+- filtered FastR check: `TestBuiltin_(sum|prod|mean|cumsum|cumprod|colSums|colMeans|rowSums|rowMeans|cov|cor)/`,
+  `--jobs 1`: **347/348 pass, 0 regressions**. The one stderr mismatch,
+  `TestBuiltin_rowMeans/90be0e7fdd75d32b`, also fails on the saved baseline.
+  Full corpora remain CI's job.
+- exact performance gate: `scripts/perf.py` with `--suite robigo`,
+  `--filter 'robigo/(vecarith|vecops|matrix|lm)$'`, `--metric instr`,
+  `--jobs 1`. Compare: **0 slower above 0.5%, 0 broken**. Counts below
+  include startup; the maximum change is +0.186%.
+
+| benchmark | before instructions | after instructions |
+|---|---:|---:|
+| lm | 762,390,958 | 763,806,774 |
+| matrix | 757,202,174 | 758,307,297 |
+| vecarith | 4,465,393,944 | 4,466,439,199 |
+| vecops | 2,540,056,974 | 2,540,981,758 |
+
+## 2026-10-28: runtime policy kernels, inherited WIP reviewed
+
+- why: the runtime had no fast-mode reduction kernels or common policy API.
+- what: `policy::Accumulator` selects `LDouble` or `f64` statically after
+  one entry-point match. Exact delegates to the existing kernels without
+  changing them. Fast reductions use four lanes; prefix scans are sequential.
+  The trait preserves accumulator precision across chunks and columns.
+- inherited WIP: kept the four-lane reduction idea. Rejected its global
+  atomic because interpreters must be independent, and its `add_each` API
+  because an f64 buffer rounds exact state between columns. Replaced its
+  benchmark: the 16-element add_each input was divided by 8192, setup was
+  included in instruction counts, and mean/prod/dev/cumprod were missing.
+- result: **0 -> 9** policy operations measured. All eight existing slice
+  kernels and corrected mean have fast implementations. Kept. Release
+  numerics tests: 36 passed, including 4096 generated vectors with mixed
+  exponents, cancellation and large offsets, all prefixes, and row sums.
+  Bounds include conditioning and exclude intermediate overflow/underflow;
+  range-limit tests explicitly cover differences outside those conditions.
+- measurement: x86_64, Rust 1.99, 8192 elements, 300 iterations under
+  callgrind, matched empty-operation process/setup counts subtracted.
+  Wall time is the minimum of five runs of 10000 iterations, ns/element,
+  on the shared VM; instruction counts are the gate. Disassembly contains
+  `addpd`, `subpd`, and `mulpd` for the fast loops. Reproduce with
+  `scripts/ldouble-callgrind.sh` after building the examples under the
+  shared build lock. `ldouble_baseline` is the independent direct-kernel
+  reference measured before implementation; its instruction costs match
+  the policy exact kernels within 0.05%.
+
+| kernel | exact ins/element | fast ins/element | speedup | exact ns/element | fast ns/element | speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| sum | 4.002 | 1.192 | 3.36x | 1.654 | 0.229 | 7.24x |
+| prod | 4.002 | 1.192 | 3.36x | 1.769 | 0.253 | 6.98x |
+| mean | 10.012 | 3.323 | 3.01x | 3.589 | 0.476 | 7.54x |
+| cumsum | 6.005 | 2.753 | 2.18x | 1.540 | 1.078 | 1.43x |
+| cumprod | 6.005 | 2.753 | 2.18x | 1.669 | 1.049 | 1.59x |
+| dev | 6.003 | 1.693 | 3.55x | 1.665 | 0.228 | 7.29x |
+| sqdev | 7.003 | 2.629 | 2.66x | 1.837 | 0.232 | 7.91x |
+| cross | 10.006 | 3.381 | 2.96x | 1.726 | 0.231 | 7.47x |
+| add_each | 7.003 | 2.754 | 2.54x | 3.043 | 0.253 | 12.04x |
+
 ## 2026-10-27: soft powl — glibc 2.41's x86_64 powl, ported
 
 - why: `LDouble::powl` called glibc's assembly; off x86_64 (aarch64,
@@ -70,4 +152,8 @@ kernels implemented and benchmarked.
   polynomial (its error curve is smooth; sample with the /tmp/opencode
   probes) to close the last 0.109% divergence of soft powl.
 - callgrind measurement of the software ops; make them fast.
-- numeric-policy seam (exact/fast) for the ldouble kernels + benchmark.
+- extend the policy to the remaining numeric sites (`%%`, `%*%`, formatting
+  scaling, and long-double nmath operations), using the same interpreter
+  setting; measure and gate each operation separately.
+- add the policy to compiler cache keys when native kernels specialize on
+  the mode; current generated code calls the runtime builtins.

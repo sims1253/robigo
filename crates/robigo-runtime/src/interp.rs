@@ -31,6 +31,8 @@ pub struct Context {
 }
 
 pub struct Interp {
+    /// Numeric kernels read this at entry; specialized code must key on it.
+    pub numerics: robigo_numerics::policy::NumericPolicy,
     pub global: Env,
     pub base: Env,
     pub base_ns: Env,
@@ -124,6 +126,10 @@ impl Interp {
         // global environment, as in GNU R.
         let base_ns = Env::alias(&base, Some(global.clone()), "namespace:base");
         let mut interp = Interp {
+            numerics: match std::env::var("ROBIGO_NUMERICS").as_deref() {
+                Ok("fast") => robigo_numerics::policy::NumericPolicy::Fast,
+                _ => robigo_numerics::policy::NumericPolicy::Exact,
+            },
             global,
             base,
             base_ns,

@@ -149,6 +149,31 @@ on x86_64, software 80-bit elsewhere; never a silent `f64` fallback) or
 *fast* (`f64`, SIMD, reassociation). The mode is a runtime setting and
 part of the compiled-code cache key. Lives in `robigo-numerics`.
 
+`Interp::numerics` owns the mode for each interpreter. It starts in exact
+mode unless `ROBIGO_NUMERICS=fast` is set when that interpreter is created;
+unset, `exact`, and unrecognized values select exact. Embedders can set the
+field directly. The environment is read once, never inside a kernel.
+
+`robigo_numerics::policy::Accumulator` supplies the reduction kernels for
+`LDouble` and `f64`. Callers match the mode at operation entry, then run the
+same generic algorithm with a statically selected accumulator. Exact state
+stays in `LDouble` across chunks, missing-value runs, and matrix columns,
+with conversion to `f64` only at the original GNU R conversion sites. Fast
+reductions use four lanes that LLVM can vectorize; prefix scans remain
+sequential. There is no per-element mode branch. Current coverage is
+`sum`, `prod`, `mean`, `cumsum`, `cumprod`, column and row sums and means,
+and the Rust covariance/correlation routines. Other numeric sites listed
+above still use their existing exact implementations.
+
+Fast mode uses binary64's exponent range, so cancellation, overflow,
+underflow, infinities, NaN payloads, and signed zero can differ as well as
+rounding. Operation-specific error bounds and their finite-input conditions
+are in `crates/robigo-numerics/src/policy.rs`; generated tests check those
+bounds against exact kernels. `scripts/ldouble-callgrind.sh` measures each
+kernel's instructions and wall time. The VM and JIT currently call these
+builtins at runtime and do not specialize them by mode. Future compiled
+kernels must include `NumericPolicy` in their cache key.
+
 ## Text
 
 Number formatting (`formatReal`, `scientific`, `encodeReal`), `sprintf`,

@@ -5,7 +5,6 @@ pub mod ldouble;
 
 use std::rc::Rc;
 
-use self::ldouble::F80;
 use super::{internal, prim};
 use crate::attrib::get_attrib;
 use crate::coerce::int_to_str;
@@ -15,6 +14,10 @@ use crate::format::string_from_real;
 use crate::interp::Interp;
 use crate::sym::{Sym, s};
 use crate::value::*;
+use robigo_numerics::{
+    ldouble::LDouble,
+    policy::{self, Accumulator, NumericPolicy},
+};
 
 pub static DEFS: &[Builtin] = &[
     prim("sum", do_sum, -1),
@@ -223,17 +226,24 @@ fn isum(x: &[i32], narm: bool) -> Result<Option<i64>, ()> {
     Ok(if updated { Some(s) } else { None })
 }
 
-fn rsum(x: &[f64], narm: bool) -> Option<f64> {
+fn rsum(policy: NumericPolicy, x: &[f64], narm: bool) -> Option<f64> {
+    match policy {
+        NumericPolicy::Exact => rsum_with::<LDouble>(x, narm),
+        NumericPolicy::Fast => rsum_with::<f64>(x, narm),
+    }
+}
+
+fn rsum_with<A: Accumulator>(x: &[f64], narm: bool) -> Option<f64> {
     let (s, updated) = if !narm {
-        (F80::ZERO.sum_slice(x), !x.is_empty())
+        (A::ZERO.sum_from(x), !x.is_empty())
     } else {
         // Sum the runs between NaNs, continuing the same accumulator.
-        let mut s = F80::ZERO;
+        let mut s = A::ZERO;
         let mut updated = false;
         for run in x.split(|v| v.is_nan()) {
             if !run.is_empty() {
                 updated = true;
-                s = s.sum_slice(run);
+                s = s.sum_from(run);
             }
         }
         (s, updated)
@@ -241,14 +251,21 @@ fn rsum(x: &[f64], narm: bool) -> Option<f64> {
     if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
-fn csum(x: &[Complex], narm: bool) -> Option<Complex> {
-    let (mut sr, mut si) = (F80::ZERO, F80::ZERO);
+fn csum(policy: NumericPolicy, x: &[Complex], narm: bool) -> Option<Complex> {
+    match policy {
+        NumericPolicy::Exact => csum_with::<LDouble>(x, narm),
+        NumericPolicy::Fast => csum_with::<f64>(x, narm),
+    }
+}
+
+fn csum_with<A: Accumulator>(x: &[Complex], narm: bool) -> Option<Complex> {
+    let (mut sr, mut si) = (A::ZERO, A::ZERO);
     let mut updated = false;
     for z in x {
         if !narm || (!z.re.is_nan() && !z.im.is_nan()) {
             updated = true;
-            sr = sr.add(F80::from_f64(z.re));
-            si = si.add(F80::from_f64(z.im));
+            sr = sr.add(A::from_f64(z.re));
+            si = si.add(A::from_f64(z.im));
         }
     }
     if updated { Some(Complex::new(sr.to_f64(), si.to_f64())) } else { None }
@@ -324,12 +341,19 @@ fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
     if updated { Some(s) } else { None }
 }
 
-fn iprod(x: &[i32], narm: bool) -> Option<f64> {
-    let mut s = F80::ONE;
+fn iprod(policy: NumericPolicy, x: &[i32], narm: bool) -> Option<f64> {
+    match policy {
+        NumericPolicy::Exact => iprod_with::<LDouble>(x, narm),
+        NumericPolicy::Fast => iprod_with::<f64>(x, narm),
+    }
+}
+
+fn iprod_with<A: Accumulator>(x: &[i32], narm: bool) -> Option<f64> {
+    let mut s = A::ONE;
     let mut updated = false;
     for &v in x {
         if v != NA_INTEGER {
-            s = s.mul(F80::from_i64(v as i64));
+            s = s.mul(A::from_i64(v as i64));
             updated = true;
         } else if !narm {
             return Some(NA_REAL);
@@ -341,16 +365,23 @@ fn iprod(x: &[i32], narm: bool) -> Option<f64> {
     if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
-fn rprod(x: &[f64], narm: bool) -> Option<f64> {
+fn rprod(policy: NumericPolicy, x: &[f64], narm: bool) -> Option<f64> {
+    match policy {
+        NumericPolicy::Exact => rprod_with::<LDouble>(x, narm),
+        NumericPolicy::Fast => rprod_with::<f64>(x, narm),
+    }
+}
+
+fn rprod_with<A: Accumulator>(x: &[f64], narm: bool) -> Option<f64> {
     let (s, updated) = if !narm {
-        (F80::ONE.prod_slice(x), !x.is_empty())
+        (A::ONE.prod_from(x), !x.is_empty())
     } else {
-        let mut s = F80::ONE;
+        let mut s = A::ONE;
         let mut updated = false;
         for run in x.split(|v| v.is_nan()) {
             if !run.is_empty() {
                 updated = true;
-                s = s.prod_slice(run);
+                s = s.prod_from(run);
             }
         }
         (s, updated)
@@ -358,14 +389,21 @@ fn rprod(x: &[f64], narm: bool) -> Option<f64> {
     if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
-fn cprod(x: &[Complex], narm: bool) -> Option<Complex> {
-    let (mut sr, mut si) = (F80::ONE, F80::ZERO);
+fn cprod(policy: NumericPolicy, x: &[Complex], narm: bool) -> Option<Complex> {
+    match policy {
+        NumericPolicy::Exact => cprod_with::<LDouble>(x, narm),
+        NumericPolicy::Fast => cprod_with::<f64>(x, narm),
+    }
+}
+
+fn cprod_with<A: Accumulator>(x: &[Complex], narm: bool) -> Option<Complex> {
+    let (mut sr, mut si) = (A::ONE, A::ZERO);
     let mut updated = false;
     for z in x {
         if !narm || (!z.re.is_nan() && !z.im.is_nan()) {
             updated = true;
             let (tr, ti) = (sr, si);
-            let (xr, xi) = (F80::from_f64(z.re), F80::from_f64(z.im));
+            let (xr, xi) = (A::from_f64(z.re), A::from_f64(z.im));
             sr = tr.mul(xr).sub(ti.mul(xi));
             si = tr.mul(xi).add(ti.mul(xr));
         }
@@ -568,7 +606,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                                 zcum.re = il_cum as f64;
                             }
                         }
-                        if let Some(t) = rsum(&x.data, narm) {
+                        if let Some(t) = rsum(i.numerics, &x.data, narm) {
                             updated = true;
                             zcum.re = add_sse(zcum.re, t);
                         }
@@ -582,7 +620,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                         } else if ans_type == VType::Real {
                             ans_type = VType::Cplx;
                         }
-                        if let Some(z) = csum(&x.data, narm) {
+                        if let Some(z) = csum(i.numerics, &x.data, narm) {
                             updated = true;
                             zcum.re = add_sse(zcum.re, z.re);
                             zcum.im = add_sse(zcum.im, z.im);
@@ -593,8 +631,8 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                 SumOp::Prod => match a {
                     Value::Lgl(_) | Value::Int(_) | Value::Real(_) => {
                         let t = match a {
-                            Value::Real(x) => rprod(&x.data, narm),
-                            _ => iprod(int_slice(a), narm),
+                            Value::Real(x) => rprod(i.numerics, &x.data, narm),
+                            _ => iprod(i.numerics, int_slice(a), narm),
                         };
                         if let Some(t) = t {
                             updated = true;
@@ -604,7 +642,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                     }
                     Value::Cplx(x) => {
                         ans_type = VType::Cplx;
-                        if let Some(z) = cprod(&x.data, narm) {
+                        if let Some(z) = cprod(i.numerics, &x.data, narm) {
                             updated = true;
                             let (zr, zi) = (zcum.re, zcum.im);
                             zcum.re = zr * z.re - zi * z.im;
@@ -799,36 +837,43 @@ fn check_values(all: bool, na_rm: Lgl, x: &[Lgl]) -> Lgl {
 // mean
 
 // R: summary.c:do_summary (mean branch)
-fn do_mean(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_mean(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+    match i.numerics {
+        NumericPolicy::Exact => mean_with::<LDouble>(call, args),
+        NumericPolicy::Fast => mean_with::<f64>(call, args),
+    }
+}
+
+fn mean_with<A: Accumulator>(call: &Value, args: Vec<Arg>) -> RResult<Value> {
     check_arity_internal(&args, 1, "mean", call)?;
     let x = &args[0].value;
     Ok(match x {
         Value::Lgl(v) | Value::Int(v) => {
             let n = v.data.len();
-            let mut s = F80::ZERO;
+            let mut s = A::ZERO;
             for &xi in &v.data {
                 if xi == NA_INTEGER {
                     return Ok(Value::real(NA_REAL));
                 }
-                s = s.add(F80::from_i64(xi as i64));
+                s = s.add(A::from_i64(xi as i64));
             }
-            Value::real(s.div(F80::from_i64(n as i64)).to_f64())
+            Value::real(s.div(A::from_i64(n as i64)).to_f64())
         }
-        Value::Real(v) => Value::real(real_mean(&v.data)),
+        Value::Real(v) => Value::real(policy::mean_with::<A>(&v.data)),
         Value::Cplx(v) => {
-            let n = F80::from_i64(v.data.len() as i64);
-            let (mut s, mut si) = (F80::ZERO, F80::ZERO);
+            let n = A::from_i64(v.data.len() as i64);
+            let (mut s, mut si) = (A::ZERO, A::ZERO);
             for z in &v.data {
-                s = s.add(F80::from_f64(z.re));
-                si = si.add(F80::from_f64(z.im));
+                s = s.add(A::from_f64(z.re));
+                si = si.add(A::from_f64(z.im));
             }
             s = s.div(n);
             si = si.div(n);
             if s.to_f64().is_finite() && si.to_f64().is_finite() {
-                let (mut t, mut ti) = (F80::ZERO, F80::ZERO);
+                let (mut t, mut ti) = (A::ZERO, A::ZERO);
                 for z in &v.data {
-                    t = t.add(F80::from_f64(z.re).sub(s));
-                    ti = ti.add(F80::from_f64(z.im).sub(si));
+                    t = t.add(A::from_f64(z.re).sub(s));
+                    ti = ti.add(A::from_f64(z.im).sub(si));
                 }
                 s = s.add(t.div(n));
                 si = si.add(ti.div(n));
@@ -837,35 +882,6 @@ fn do_mean(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult
         }
         other => return Err(Flow::error(format!("invalid 'type' ({}) of argument", type_to_char(other)))),
     })
-}
-
-// R: summary.c:real_mean
-fn real_mean(x: &[f64]) -> f64 {
-    let n = F80::from_i64(x.len() as i64);
-    let mut s = F80::ZERO.sum_slice(x);
-    let finite_s = s.to_f64().is_finite();
-    if finite_s {
-        s = s.div(n);
-    } else {
-        // `s += dx[k]/n`: the division is in double precision.
-        let nd = x.len() as f64;
-        s = F80::ZERO;
-        for &v in x {
-            let q = if v.is_nan() { f64::from_bits(v.to_bits() | (1u64 << 51)) } else { v / nd };
-            s = s.add(F80::from_f64(q));
-        }
-    }
-    if finite_s && s.to_f64().is_finite() {
-        let t = s.sum_dev(x);
-        s = s.add(t.div(n));
-    } else if s.to_f64().is_finite() {
-        let mut t = F80::ZERO;
-        for &v in x {
-            t = t.add(F80::from_f64(v).sub(s).div(n));
-        }
-        s = s.add(t);
-    }
-    s.to_f64()
 }
 
 /// checkArity for `.Internal`s.
@@ -1286,14 +1302,20 @@ fn do_cum(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: CumOp) ->
     }
     match op {
         CumOp::Sum => {
-            let sum = F80::ZERO.cumsum_slice(&x[..n], &mut s[..n]);
-            if sum.is_nan() {
+            let nan = match i.numerics {
+                NumericPolicy::Exact => LDouble::ZERO.cumsum_from(x, &mut s).is_nan(),
+                NumericPolicy::Fast => 0.0.cumsum_from(x, &mut s).is_nan(),
+            };
+            if nan {
                 handle_nan(x, &mut s);
             }
         }
         CumOp::Prod => {
-            let prod = F80::ONE.cumprod_slice(&x[..n], &mut s[..n]);
-            if prod.is_nan() {
+            let nan = match i.numerics {
+                NumericPolicy::Exact => LDouble::ONE.cumprod_from(x, &mut s).is_nan(),
+                NumericPolicy::Fast => 1.0.cumprod_from(x, &mut s).is_nan(),
+            };
+            if nan {
                 handle_nan(x, &mut s);
             }
         }
@@ -1404,4 +1426,65 @@ fn as_rbool(v: &Value, call: &Value) -> RResult<bool> {
         return Err(Flow::error_call(call.clone(), "NA in coercion to boolean"));
     }
     Ok(l != 0)
+}
+
+#[cfg(test)]
+mod numeric_policy_tests {
+    use super::*;
+
+    fn interp(policy: NumericPolicy) -> Interp {
+        let mut i = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        i.numerics = policy;
+        i
+    }
+    fn real(v: Value) -> f64 {
+        crate::coerce::as_real(&v)
+    }
+    fn args(x: &[f64]) -> Vec<Arg> {
+        vec![Arg::pos(Value::reals(x.to_vec()))]
+    }
+
+    #[test]
+    fn interpreters_select_independent_summary_kernels() {
+        let mut exact = interp(NumericPolicy::Exact);
+        let mut fast = interp(NumericPolicy::Fast);
+        let x = [1e16, 1.0, -1e16];
+        for (i, expected) in [(&mut exact, 1.0), (&mut fast, 0.0)] {
+            let env = i.global.clone();
+            assert_eq!(real(do_sum(i, &Value::Null, args(&x), &env).ok().expect("builtin succeeds")), expected);
+            // GNU R 4.5.0's corrected mean, including its 80-bit rounding.
+            let expected_mean = if i.numerics == NumericPolicy::Exact { 0.3336588541666667 } else { 0.0 };
+            assert_eq!(real(do_mean(i, &Value::Null, args(&x), &env).ok().expect("builtin succeeds")), expected_mean);
+            let v = do_cumsum(i, &Value::Null, args(&x), &env).ok().expect("builtin succeeds");
+            let Value::Real(v) = v else { panic!() };
+            assert_eq!(v.data, [1e16, 1e16, expected]);
+            let mut a = args(&[1e16, 1.0, NA_REAL, -1e16]);
+            a.push(Arg::new(Some(s::NA_RM), Value::lgl(true)));
+            assert_eq!(real(do_sum(i, &Value::Null, a, &env).ok().expect("builtin succeeds")), expected);
+        }
+        assert_eq!(exact.numerics, NumericPolicy::Exact);
+        assert_eq!(fast.numerics, NumericPolicy::Fast);
+    }
+
+    #[test]
+    fn fast_cumulative_missing_values_and_names_survive() {
+        let mut i = interp(NumericPolicy::Fast);
+        let env = i.global.clone();
+        let mut x = Value::reals(vec![1.0, f64::NAN, 2.0, NA_REAL, 3.0]);
+        let names = Value::strs_from(vec!["a", "b", "c", "d", "e"]);
+        x.set_attr_raw(s::NAMES, names.clone());
+        for op in [CumOp::Sum, CumOp::Prod] {
+            let v = do_cum(&mut i, &Value::Null, vec![Arg::pos(x.clone())], &env, op).ok().expect("builtin succeeds");
+            assert_eq!(crate::coerce::to_str(&v.names().unwrap()), crate::coerce::to_str(&names));
+            let Value::Real(v) = v else { panic!() };
+            assert_eq!(v.data[0], 1.0);
+            assert!(v.data[1].is_nan() && !is_na_real(v.data[1]));
+            assert!(v.data[2].is_nan() && !is_na_real(v.data[2]));
+            assert!(is_na_real(v.data[3]) && is_na_real(v.data[4]));
+        }
+        let x = [1e300, 1e300, 1e-300, 1e-300];
+        assert!(real(do_prod(&mut i, &Value::Null, args(&x), &env).ok().expect("builtin succeeds")).is_nan());
+        i.numerics = NumericPolicy::Exact;
+        assert!(real(do_prod(&mut i, &Value::Null, args(&x), &env).ok().expect("builtin succeeds")).is_finite());
+    }
 }

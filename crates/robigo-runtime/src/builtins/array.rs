@@ -1020,9 +1020,16 @@ fn do_aperm(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 // colSums and friends
 
 /// R: array.c:do_colsum. `op`: 0 colSums, 1 colMeans, 2 rowSums,
-/// 3 rowMeans. Sums are R's `LDOUBLE` (x87 long double) accumulators.
-fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
-    use crate::nmath::ldouble::LDouble;
+/// 3 rowMeans. Exact uses R's `LDOUBLE`; fast uses binary64 accumulators.
+fn colsum(policy: robigo_numerics::policy::NumericPolicy, args: &[Arg], op: u8) -> RResult<Value> {
+    use robigo_numerics::{ldouble::LDouble, policy::NumericPolicy};
+    match policy {
+        NumericPolicy::Exact => colsum_with::<LDouble>(args, op),
+        NumericPolicy::Fast => colsum_with::<f64>(args, op),
+    }
+}
+
+fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], op: u8) -> RResult<Value> {
     let x = arg(args, 0);
     let n = super::io::as_vec_size(&arg(args, 1))?;
     let p = super::io::as_vec_size(&arg(args, 2))?;
@@ -1055,10 +1062,10 @@ fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
                 Value::Real(r) => {
                     let col = &r.data[n * j..n * (j + 1)];
                     if keep_na {
-                        (LDouble::ZERO.sum_from(col), n)
+                        (A::ZERO.sum_from(col), n)
                     } else {
                         let nan = col.iter().filter(|v| v.is_nan()).count();
-                        (runs(col).fold(LDouble::ZERO, |s, run| s.sum_from(run)), n - nan)
+                        (runs(col).fold(A::ZERO, |s, run| s.sum_from(run)), n - nan)
                     }
                 }
                 Value::Int(v) | Value::Lgl(v) => {
@@ -1073,24 +1080,24 @@ fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
                             break;
                         }
                     }
-                    (if na { LDouble::from_f64(NA_REAL) } else { LDouble::from_i64(sum) }, cnt)
+                    (if na { A::from_f64(NA_REAL) } else { A::from_i64(sum) }, cnt)
                 }
                 _ => unreachable!(),
             };
             // colMeans: NaN for cnt = 0.
-            let sum = if op == 1 { sum / LDouble::from_i64(cnt as i64) } else { sum };
+            let sum = if op == 1 { sum / A::from_i64(cnt as i64) } else { sum };
             ans.push(sum.to_f64());
         }
         return Ok(Value::reals(ans));
     }
-    let mut rans = vec![LDouble::ZERO; n];
+    let mut rans = vec![A::ZERO; n];
     let mut cnt = vec![0usize; if !keep_na && op == 3 { n } else { 0 }];
     for j in 0..p {
         match &x {
             Value::Real(r) => {
                 let col = &r.data[n * j..n * (j + 1)];
                 if keep_na {
-                    LDouble::add_each(&mut rans, col);
+                    A::add_each(&mut rans, col);
                 } else {
                     for (i, &v) in col.iter().enumerate() {
                         if !v.is_nan() {
@@ -1106,12 +1113,12 @@ fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
                 for (i, &e) in v.data[n * j..n * (j + 1)].iter().enumerate() {
                     if keep_na {
                         if e != NA_INTEGER {
-                            rans[i] += LDouble::from_i64(e as i64);
+                            rans[i] += A::from_i64(e as i64);
                         } else {
-                            rans[i] = LDouble::from_f64(NA_REAL);
+                            rans[i] = A::from_f64(NA_REAL);
                         }
                     } else if e != NA_INTEGER {
-                        rans[i] += LDouble::from_i64(e as i64);
+                        rans[i] += A::from_i64(e as i64);
                         if op == 3 {
                             cnt[i] += 1;
                         }
@@ -1123,26 +1130,26 @@ fn colsum(args: &[Arg], op: u8) -> RResult<Value> {
     }
     if op == 3 {
         for (i, r) in rans.iter_mut().enumerate() {
-            *r /= LDouble::from_i64(if keep_na { p } else { cnt[i] } as i64);
+            *r /= A::from_i64(if keep_na { p } else { cnt[i] } as i64);
         }
     }
     Ok(Value::reals(rans.iter().map(|r| r.to_f64()).collect()))
 }
 
-fn do_colsums(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(&args, 0)
+fn do_colsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    colsum(i.numerics, &args, 0)
 }
 
-fn do_colmeans(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(&args, 1)
+fn do_colmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    colsum(i.numerics, &args, 1)
 }
 
-fn do_rowsums(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(&args, 2)
+fn do_rowsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    colsum(i.numerics, &args, 2)
 }
 
-fn do_rowmeans(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(&args, 3)
+fn do_rowmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    colsum(i.numerics, &args, 3)
 }
 
 // ----------------------------------------------------------------------
@@ -1846,5 +1853,42 @@ fn elements(x: &Value, idx: &[usize]) -> Value {
         Value::List(v) => Value::list(idx.iter().map(|&k| v.data[k].clone()).collect()),
         Value::Raw(v) => Value::raws(idx.iter().map(|&k| v.data[k]).collect()),
         _ => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod numeric_policy_tests {
+    use super::*;
+    use robigo_numerics::policy::NumericPolicy;
+
+    fn run(p: NumericPolicy, x: &[f64], n: usize, cols: usize, op: u8, narm: bool) -> Vec<f64> {
+        let args = vec![
+            Arg::pos(Value::reals(x.to_vec())),
+            Arg::pos(Value::int(n as i32)),
+            Arg::pos(Value::int(cols as i32)),
+            Arg::pos(Value::lgl(narm)),
+        ];
+        let Value::Real(r) = colsum(p, &args, op).ok().expect("builtin succeeds") else { panic!() };
+        r.data.clone()
+    }
+    #[test]
+    fn policy_preserves_column_and_row_accumulators() {
+        for (p, expected) in [(NumericPolicy::Exact, 1.0), (NumericPolicy::Fast, 0.0)] {
+            let x = [1e16, 1.0, -1e16];
+            assert_eq!(run(p, &x, 3, 1, 0, false), [expected]);
+            assert_eq!(run(p, &x, 3, 1, 1, false), [expected / 3.0]);
+            assert_eq!(run(p, &x, 1, 3, 2, false), [expected]);
+            assert_eq!(run(p, &x, 1, 3, 3, false), [expected / 3.0]);
+            let x = [1e16, 1.0, NA_REAL, -1e16];
+            for op in 0..4 {
+                let (n, cols) = if op < 2 { (4, 1) } else { (1, 4) };
+                let out = run(p, &x, n, cols, op, true);
+                assert_eq!(out, [if op % 2 == 0 { expected } else { expected / 3.0 }]);
+                assert!(run(p, &x, n, cols, op, false)[0].is_nan());
+            }
+            assert!(run(p, &[NA_REAL], 1, 1, 3, true)[0].is_nan());
+            assert_eq!(run(p, &[], 0, 2, 0, false), [0.0, 0.0]);
+            assert_eq!(run(p, &[], 2, 0, 2, false), [0.0, 0.0]);
+        }
     }
 }
