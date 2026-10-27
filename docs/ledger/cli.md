@@ -107,6 +107,13 @@ and status against the recorded GNU R (first differing stream):
   multi-byte character panicked the console; R's `R_ParseContext` ring
   works in bytes, so the context is sliced as bytes (lossy). No corpus
   case has a BOM; kept for robustness.
+- **fastr guard**: the full local run was killed externally (SIGTERM at
+  ~37 min); shard 1/16 (1,980 cases, ~14.5k corpus-wide contain `;`, so
+  the chunking path is well covered) ran clean: 1785/1980, 0
+  regressions, 1 new pass (`library/base/TestSimpleParsing/87fcf921a5cdcda3`,
+  `1234.0L` — the per-statement lexer warnings). CI runs the whole corpus
+  on the PR.
+
 
 ### More parser-track notes
 
