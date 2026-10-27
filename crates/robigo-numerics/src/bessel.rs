@@ -1660,7 +1660,7 @@ fn k_bessel(x: f64, alpha: f64, nb: i32, ize: i32, bk: &mut [f64], ncalc: &mut i
 /// `if_NA_Math2_set` / `if_NA_Math3_set`
 fn na_set(xs: &[f64]) -> Option<f64> {
     if xs.iter().any(|&v| is_na(v)) {
-        Some(crate::value::NA_REAL)
+        Some(crate::NA_REAL)
     } else if xs.iter().any(|v| v.is_nan()) {
         Some(ML_NAN)
     } else {

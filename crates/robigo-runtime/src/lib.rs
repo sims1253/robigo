@@ -15,7 +15,7 @@ pub mod interp;
 pub mod jit;
 pub mod lang;
 pub mod native;
-pub mod nmath;
+pub use robigo_numerics as nmath;
 pub mod print;
 pub mod serialize;
 pub mod startup;

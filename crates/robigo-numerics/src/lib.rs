@@ -17,6 +17,10 @@
 
 use std::cell::RefCell;
 
+/// R's `NA_real_`: a NaN whose low word is 1954.
+pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
+
+pub mod arith;
 pub mod bessel;
 pub mod beta;
 pub mod binom;
@@ -287,7 +291,7 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
     ML_NAN
 }
 
-use crate::builtins::arith::myfmod;
+use crate::arith::myfmod;
 
 /// R: main/arithmetic.c:R_pow_di
 pub fn r_pow_di(mut x: f64, mut n: i32) -> f64 {
@@ -296,7 +300,7 @@ pub fn r_pow_di(mut x: f64, mut n: i32) -> f64 {
         return x;
     }
     if n == i32::MIN {
-        return crate::value::NA_REAL;
+        return crate::NA_REAL;
     }
     if n != 0 {
         if !x.is_finite() {

@@ -22,7 +22,7 @@ use crate::sym::{Sym, s};
 pub type Lgl = i32;
 pub const NA_LOGICAL: Lgl = i32::MIN;
 pub const NA_INTEGER: i32 = i32::MIN;
-pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
+pub use robigo_numerics::NA_REAL;
 pub const TRUE: Lgl = 1;
 pub const FALSE: Lgl = 0;
 

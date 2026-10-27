@@ -847,6 +847,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "robigo-numerics"
+version = "0.0.1"
+
+[[package]]
 name = "robigo-runtime"
 version = "0.0.1"
 dependencies = [
@@ -858,6 +862,7 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "regex-automata",
+ "robigo-numerics",
  "robigo-syntax",
  "smallvec",
 ]

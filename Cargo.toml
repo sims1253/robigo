@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/robigo-syntax", "crates/robigo-runtime", "crates/robigo-cli"]
+members = ["crates/robigo-syntax", "crates/robigo-numerics", "crates/robigo-runtime", "crates/robigo-cli"]
 
 [workspace.package]
 version = "0.0.1"
@@ -11,6 +11,7 @@ authors = ["Maximilian Scholz"]
 
 [workspace.dependencies]
 robigo-syntax = { path = "crates/robigo-syntax" }
+robigo-numerics = { path = "crates/robigo-numerics" }
 robigo-runtime = { path = "crates/robigo-runtime" }
 
 [profile.release]

@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 robigo-syntax.workspace = true
+robigo-numerics.workspace = true
 smallvec = "1"
 # Native code for hot loops (src/jit.rs).
 cranelift-codegen = "0.137"
