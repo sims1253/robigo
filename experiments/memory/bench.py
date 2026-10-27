@@ -85,9 +85,14 @@ def main():
     if args.command == "table":
         rows = {}
         for f in args.files:
-            for r in json.loads(pathlib.Path(f).read_text())["results"]:
-                key = (r["workload"], r["variant"])
-                rows[key] = r  # later files win
+            doc = json.loads(pathlib.Path(f).read_text())
+            # a bare {"results": ...} or the {"runs": [...]} format the
+            # run command appends to; later files and later runs win
+            runs = doc["runs"] if "runs" in doc else [doc]
+            for run in runs:
+                for r in run["results"]:
+                    key = (r["workload"], r["variant"])
+                    rows[key] = r  # later runs win
         workloads = sorted({k[0] for k in rows})
         print(f"| workload | variant | wall ms | Ir (M) | rss MB | max pause µs | collections | heap MB |")
         print("|---|---|---|---|---|---|---|---|")
