@@ -2,12 +2,25 @@
 
 robigo is a reimplementation of the R language runtime in Rust. Its goal is to
 behave exactly like GNU R 4.5.0: same printed output, same error and
-warning messages, same semantics. Read this before changing code.
+warning messages, same semantics, and to be the fastest R there is. Read
+this before changing code, then:
+
+- `docs/architecture.md`: the target architecture and crate boundaries.
+- `docs/verification.md`: every check (tests, corpora, benchmarks, CI).
+- `docs/workstreams.md`: the tracks agents work on and the protocol for
+  parallel work (worktrees, ownership, ratchets, ledgers).
+- `docs/design.md`: history and rationale.
+
+Rules of thumb: anything that can be verified is solved, so measure before
+and after every change. Effort and churn are never arguments; if a design
+is faster for more work, it wins.
 
 ## Layout
 
 - `crates/robigo-syntax` — lexer and parser. Produces R-shaped syntax trees.
   Checked against GNU R's `parse()` (`tests/parse`, `scripts/oracle-parse.R`).
+- `crates/robigo-numerics` — GNU R's nmath (special functions, d/p/q/r,
+  RNG), x87 long double, `%%`/`%/%`. Plain `f64` functions, no R objects.
 - `crates/robigo-runtime` — the runtime.
   - `value.rs` object model (`Value`, `Vector<T>`, attributes, NA encodings),
     `env.rs` environments, `sym.rs` interned symbols.
@@ -23,6 +36,9 @@ warning messages, same semantics. Read this before changing code.
 - `crates/robigo-cli` — the `robigo` binary and the conformance test runner.
 - `rlib/` — vendored GNU R 4.5.0 R sources (do not edit; see its README).
 - `tests/r/**/*.R` — conformance scripts with GNU R's recorded output.
+- `tests/corpora/` — large test corpora (FastR's snippets, GNU R's own tests
+  and help-page examples) with GNU R's recorded output; `scripts/corpus.py`.
+- `benchmarks/` — benchmark suites; `scripts/perf.py`.
 
 ## The porting contract
 
@@ -82,7 +98,15 @@ copy_most_attrib}`, `interp.call_value(f, args, env)` to call an R function.
 
 ## Testing
 
+See `docs/verification.md` for everything; in short:
+
+- `scripts/build.sh` builds the release binary into `.robigo/bin/robigo`
+  (worktrees share cargo's target directory; this keeps yours separate).
 - `cargo test` runs unit tests, the parser oracle and the conformance suite.
+- `scripts/corpus.py run fastr --filter 'TestBuiltin_paste'` runs a slice of
+  a corpus; `scripts/corpus.py show fastr ID` diffs one case.
+- `scripts/perf.py run --metric instr --filter shootout/` measures
+  instruction counts against GNU R.
 - Conformance scripts: `tests/r/<area>/<name>.R`. Record GNU R's output
   with `scripts/regen-expected.sh tests/r/<area>/<name>.R` (writes `.Rout`,
   `.Rerr`, `.Rstatus`; GNU R runs with `R_DEFAULT_PACKAGES=NULL`, so only
@@ -99,4 +123,7 @@ copy_most_attrib}`, `interp.call_value(f, args, env)` to call an R function.
 ## Machine
 
 2 cores, shared `~/.cache/cargo-target` (see `~/.cargo/config.toml`).
-Builds are slow; prefer `cargo build -p robigo-cli` over full rebuilds.
+Builds are slow and other agents build too: one build at a time
+(`scripts/build.sh` takes a lock), build only the crates you need
+(`cargo test -p robigo-numerics`), run corpora with `--filter`, and leave
+the full runs to CI. `cargo fmt` before committing (CI checks it).

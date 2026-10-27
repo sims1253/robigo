@@ -1,0 +1,82 @@
+# Benchmark suites for scripts/perf.py.
+#
+# A suite is either a directory of programs in this repository (each *.R
+# runs like `Rscript FILE`) or a pinned commit of an external repository
+# whose benchmarks define `execute(param)` (or `execute()`, then run
+# `param` times), as in Ř's RBenchmarking. External sources are fetched by
+# `scripts/perf.py fetch`, not vendored (RBenchmarking has no license).
+
+[suites.robigo]
+dir = "benchmarks/suite"
+default_packages = "utils,stats"
+
+[suites.rbench]
+repo = "https://github.com/reactorlabs/RBenchmarking"
+commit = "a92447b37a03e96f8da1e18eb3cd8ab3b46fbf89"
+default_packages = "utils,stats"
+# Parameters: rebench.conf's, scaled so GNU R needs ~0.1-0.5 s per program.
+benchmarks = [
+  {name = "awf/Mandelbrot", dir = "Benchmarks/areWeFast", file = "mandelbrot.r", param = 14},
+  {name = "awf/Bounce", dir = "Benchmarks/areWeFast", file = "bounce.r", param = 1},
+  {name = "awf/Bounce_nonames", dir = "Benchmarks/areWeFast", file = "bounce_nonames.r", param = 4},
+  {name = "awf/Bounce_nonames_simple", dir = "Benchmarks/areWeFast", file = "bounce_nonames_simple.r", param = 3},
+  {name = "awf/Storage", dir = "Benchmarks/areWeFast", file = "storage.r", param = 4},
+  {name = "shootout/binarytrees", dir = "Benchmarks/shootout/binarytrees", file = "binarytrees.r", param = 7},
+  {name = "shootout/binarytrees_2", dir = "Benchmarks/shootout/binarytrees", file = "binarytrees_2.r", param = 7},
+  {name = "shootout/binarytrees_naive", dir = "Benchmarks/shootout/binarytrees", file = "binarytrees_naive.r", param = 7},
+  {name = "shootout/fannkuchredux", dir = "Benchmarks/shootout/fannkuch", file = "fannkuchredux.r", param = 7},
+  {name = "shootout/fannkuchredux_naive", dir = "Benchmarks/shootout/fannkuch", file = "fannkuchredux_naive.r", param = 7},
+  {name = "shootout/fasta", dir = "Benchmarks/shootout/fasta", file = "fasta.r", param = 5031},
+  {name = "shootout/fasta_2", dir = "Benchmarks/shootout/fasta", file = "fasta_2.r", param = 5178},
+  {name = "shootout/fasta_3", dir = "Benchmarks/shootout/fasta", file = "fasta_3.r", param = 4159},
+  {name = "shootout/fasta_naive", dir = "Benchmarks/shootout/fasta", file = "fasta_naive.r", param = 4918},
+  {name = "shootout/fasta_naive_2", dir = "Benchmarks/shootout/fasta", file = "fasta_naive_2.r", param = 3274},
+  {name = "shootout/fastaredux", dir = "Benchmarks/shootout/fastaredux", file = "fastaredux.r", param = 6422},
+  {name = "shootout/fastaredux_naive", dir = "Benchmarks/shootout/fastaredux", file = "fastaredux_naive.r", param = 6798},
+  {name = "shootout/knucleotide", dir = "Benchmarks/shootout/knucleotide", file = "knucleotide.r", param = 2000},
+  {name = "shootout/knucleotide_brute", dir = "Benchmarks/shootout/knucleotide", file = "knucleotide_brute.r", param = 2000},
+  {name = "shootout/knucleotide_brute_2", dir = "Benchmarks/shootout/knucleotide", file = "knucleotide_brute_2.r", param = 2000},
+  {name = "shootout/knucleotide_brute_3", dir = "Benchmarks/shootout/knucleotide", file = "knucleotide_brute_3.r", param = 2000},
+  {name = "shootout/mandelbrot_ascii", dir = "Benchmarks/shootout/mandelbrot", file = "mandelbrot_ascii.r", param = 215},
+  {name = "shootout/mandelbrot_naive_ascii", dir = "Benchmarks/shootout/mandelbrot", file = "mandelbrot_naive_ascii.r", param = 70},
+  {name = "shootout/mandelbrot_noout", dir = "Benchmarks/shootout/mandelbrot", file = "mandelbrot_noout.r", param = 261},
+  {name = "shootout/mandelbrot_noout_naive", dir = "Benchmarks/shootout/mandelbrot", file = "mandelbrot_noout_naive.r", param = 230},
+  {name = "shootout/nbody", dir = "Benchmarks/shootout/nbody", file = "nbody.r", param = 1775},
+  {name = "shootout/nbody_2", dir = "Benchmarks/shootout/nbody", file = "nbody_2.r", param = 921},
+  {name = "shootout/nbody_3", dir = "Benchmarks/shootout/nbody", file = "nbody_3.r", param = 1061},
+  {name = "shootout/nbody_naive", dir = "Benchmarks/shootout/nbody", file = "nbody_naive.r", param = 1190},
+  {name = "shootout/nbody_naive_2", dir = "Benchmarks/shootout/nbody", file = "nbody_naive_2.r", param = 938},
+  {name = "shootout/pidigits", dir = "Benchmarks/shootout/pidigits", file = "pidigits.r", param = 12},
+  {name = "shootout/regexdna", dir = "Benchmarks/shootout/regexdna", file = "regexdna.r", param = 500000},
+  {name = "shootout/reversecomplement", dir = "Benchmarks/shootout/reversecomplement", file = "reversecomplement.r", param = 150000},
+  {name = "shootout/reversecomplement_2", dir = "Benchmarks/shootout/reversecomplement", file = "reversecomplement_2.r", param = 150000},
+  {name = "shootout/reversecomplement_naive", dir = "Benchmarks/shootout/reversecomplement", file = "reversecomplement_naive.r", param = 50000},
+  {name = "shootout/spectralnorm", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm.r", param = 207},
+  {name = "shootout/spectralnorm_alt", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm_alt.r", param = 1083},
+  {name = "shootout/spectralnorm_alt_2", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm_alt_2.r", param = 335},
+  {name = "shootout/spectralnorm_alt_3", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm_alt_3.r", param = 61},
+  {name = "shootout/spectralnorm_math", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm_math.r", param = 267},
+  {name = "shootout/spectralnorm_naive", dir = "Benchmarks/shootout/spectralnorm", file = "spectralnorm_naive.r", param = 72},
+  {name = "simple/listFor", dir = "Benchmarks/simple", file = "list-for.r", param = 115598},
+  {name = "simple/listWhile", dir = "Benchmarks/simple", file = "list-while.r", param = 168104},
+  {name = "simple/bytecodes", dir = "Benchmarks/simple", file = "bytecodes.r", param = 92386},
+  {name = "simple/emptyFor", dir = "Benchmarks/simple", file = "empty-for.r", param = 9486765},
+  {name = "simple/emptyWhile", dir = "Benchmarks/simple", file = "empty-while.r", param = 3194774},
+  {name = "simple/lapply", dir = "Benchmarks/simple", file = "lapply.r", param = 98905},
+  {name = "simple/lapplyDots", dir = "Benchmarks/simple", file = "lapply-dots.r", param = 72236},
+  {name = "simple/matrixFor", dir = "Benchmarks/simple", file = "matrix-for.r", param = 777},
+  {name = "simple/profiler-microbenchmark", dir = "Benchmarks/simple", file = "profiler-microbenchmark.r", param = 173878},
+  {name = "simple/profiler-rsa", dir = "Benchmarks/simple", file = "profiler-rsa.r", param = 7281},
+  {name = "simple/profiler-shared", dir = "Benchmarks/simple", file = "profiler-shared.r", param = 1},
+  {name = "simple/scalarFor", dir = "Benchmarks/simple", file = "scalar-for.r", param = 1896873},
+  {name = "simple/superWhile", dir = "Benchmarks/simple", file = "super-while.r", param = 343780},
+  {name = "simple/vectorFor", dir = "Benchmarks/simple", file = "vector-for.r", param = 2106051},
+  {name = "simple/vectorWhile", dir = "Benchmarks/simple", file = "vector-while.r", param = 1324708},
+  {name = "simple/scalarWhile", dir = "Benchmarks/simple", file = "scalar-while.r", param = 1707922},
+  {name = "real/convolution", dir = "Benchmarks/RealThing", file = "convolution.r", param = 291},
+  {name = "real/convolution_v", dir = "Benchmarks/RealThing", file = "convolution_v.r", param = 583},
+  {name = "real/convolution_slow", dir = "Benchmarks/RealThing", file = "convolution_slow.r", param = 300},
+  {name = "real/volcano", dir = "Benchmarks/RealThing", file = "volcano.r", param = 1},
+  {name = "real/flexclust", dir = "Benchmarks/RealThing", file = "flexclust.r", param = 1},
+  {name = "real/flexclust_no_s4", dir = "Benchmarks/RealThing", file = "flexclust_no_s4.r", param = 1},
+]

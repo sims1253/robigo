@@ -2,3 +2,5 @@
 *.swp
 .Rhistory
 /.claude/
+/.robigo/
+scripts/__pycache__/
