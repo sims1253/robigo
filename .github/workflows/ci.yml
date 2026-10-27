@@ -38,6 +38,9 @@ jobs:
         run: cargo build --release --workspace
       - name: Unit tests, parser oracle, conformance (all tiers)
         run: cargo test --release --workspace
+      - name: Parse corpus ratchet
+        run: |
+          python3 scripts/parse-corpus.py check fastr gnur-tests gnur-examples | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the binary for later jobs
         run: |
           mkdir -p dist

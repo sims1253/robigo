@@ -21,6 +21,7 @@ builds and copies under a lock; the harnesses below use
 |---|---|---|
 | unit tests | `cargo test --release -p <crate>` | crate-level tests |
 | parser oracle | `cargo test --release -p robigo-syntax` | parse trees against GNU R's `parse()` |
+| parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | corpora | `scripts/corpus.py run NAME` | below |
 

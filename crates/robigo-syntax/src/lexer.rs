@@ -5,7 +5,7 @@ use crate::ast::{Const, ParseError, Span};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     Const(Const),
-    Str(String),
+    Str(Vec<u8>),
     Sym(String),
     Function,
     Lambda,
@@ -56,6 +56,12 @@ pub enum Tok {
     At,
     /// `::` or `:::`
     NsGet(&'static str),
+    /// The pipe placeholder `_`.
+    Placeholder,
+    /// A lexical error (`raiseLexError`/`ERROR` token in gram.y): the
+    /// parser reports it when it reaches this token, as GNU R's parser
+    /// does by asking the lexer for one token at a time.
+    Invalid(Box<ParseError>),
     Eof,
 }
 
@@ -113,13 +119,51 @@ impl<'a> Lexer<'a> {
     }
 
     fn err(&self, message: impl Into<String>, offset: usize, incomplete: bool) -> ParseError {
-        ParseError { message: message.into(), offset, end: self.pos.max(offset + 1), incomplete }
+        ParseError {
+            message: message.into(),
+            offset,
+            end: self.pos.max(offset + 1),
+            incomplete,
+            at_eof: false,
+            with_pos_suffix: false,
+            fixed_line_col: None,
+        }
     }
 
+    /// An error raised from the lexer (`raiseLexError` in gram.y): the
+    /// position is the last character still consumed, and the message is
+    /// reported with a `(<input>:<line>:<col>)` suffix.
+    fn lex_err(&mut self, message: impl Into<String>) -> ParseError {
+        let at = self.pos.saturating_sub(1);
+        ParseError {
+            message: message.into(),
+            offset: at,
+            end: self.pos.max(at + 1),
+            incomplete: false,
+            at_eof: false,
+            with_pos_suffix: true,
+            fixed_line_col: None,
+        }
+    }
+
+    /// Tokenize the whole source. GNU R interleaves lexing with parsing:
+    /// a lexical error fires only when the parser asks for that token, so
+    /// a syntax error earlier in the input wins. The token stream here is
+    /// eager, so the first lexical error becomes an `Invalid` token — the
+    /// parser reports it when it reaches it, giving the same error
+    /// (message and position) as GNU R.
     pub fn tokenize(mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {
         let mut out = Vec::new();
         loop {
-            let t = self.next_token()?;
+            let t = match self.next_token() {
+                Ok(t) => t,
+                Err(e) => {
+                    let span = Span { start: e.offset as u32, end: e.end.max(e.offset + 1) as u32 };
+                    out.push(Token { tok: Tok::Invalid(Box::new(e)), span });
+                    out.push(Token { tok: Tok::Eof, span });
+                    break;
+                }
+            };
             let eof = t.tok == Tok::Eof;
             out.push(t);
             if eof {
@@ -157,20 +201,36 @@ impl<'a> Lexer<'a> {
             '.' if matches!(self.peek_char_at(1), Some('0'..='9')) => self.number()?,
             '"' | '\'' => {
                 self.pos += 1;
-                Tok::Str(self.string_body(c, start)?)
+                Tok::Str(self.string_body(c, start, false)?)
             }
             '`' => {
                 self.pos += 1;
-                Tok::Sym(self.string_body('`', start)?)
+                let name = String::from_utf8_lossy(&self.string_body('`', start, true)?).into_owned();
+                if name.is_empty() {
+                    // `SymbolValue` installs the name right in the lexer
+                    // (`// R: gram.y:SymbolValue`, `names.c:install`), and
+                    // `install("")` errors without a position.
+                    return Err(ParseError {
+                        message: "attempt to use zero-length variable name".into(),
+                        offset: start,
+                        end: start + 2,
+                        incomplete: false,
+                        at_eof: false,
+                        with_pos_suffix: false,
+                        fixed_line_col: Some((0, 0)),
+                    });
+                }
+                Tok::Sym(name)
             }
             'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) && self.raw_string_ahead() => {
                 Tok::Str(self.raw_string(start)?)
             }
             c if is_ident_start(c) => self.ident(),
-            // The pipe placeholder; identifiers cannot start with `_`.
-            '_' if !self.peek_char_at(1).is_some_and(is_ident_char) => {
+            // The pipe placeholder: always, even before identifier
+            // characters (gram.y: `if (c == '_') return Placeholder(c);`).
+            '_' => {
                 self.pos += 1;
-                Tok::Sym("_".to_string())
+                Tok::Placeholder
             }
             _ => self.operator(start)?,
         };
@@ -183,10 +243,10 @@ impl<'a> Lexer<'a> {
         while self.byte_at(i) == b'-' {
             i += 1;
         }
-        matches!(self.byte_at(i), b'(' | b'[' | b'{')
+        matches!(self.byte_at(i), b'(' | b'[' | b'{' | b'|')
     }
 
-    fn raw_string(&mut self, start: usize) -> Result<String, ParseError> {
+    fn raw_string(&mut self, start: usize) -> Result<Vec<u8>, ParseError> {
         let quote = self.bytes[self.pos + 1];
         self.pos += 2;
         let mut dashes = 0;
@@ -198,12 +258,17 @@ impl<'a> Lexer<'a> {
             b'(' => b')',
             b'[' => b']',
             b'{' => b'}',
-            _ => return Err(self.err("malformed raw string literal", start, false)),
+            b'|' => b'|',
+            _ => {
+                self.pos += 1; // the offending delimiter is consumed
+                return Err(self.lex_err("malformed raw string literal"));
+            }
         };
         self.pos += 1;
         let body_start = self.pos;
         loop {
             if self.pos >= self.bytes.len() {
+                self.pos = start;
                 return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
             }
             if self.bytes[self.pos] == close {
@@ -214,7 +279,7 @@ impl<'a> Lexer<'a> {
                     j += 1;
                 }
                 if n == dashes && self.byte_at(j) == quote {
-                    let body = self.src[body_start..self.pos].to_string();
+                    let body = self.bytes[body_start..self.pos].to_vec();
                     self.pos = j + 1;
                     return Ok(body);
                 }
@@ -265,116 +330,179 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Numeric literals, a port of `NumericValue` in gram.y (`// R:
+    /// gram.y:NumericValue`). Malformed numbers become the `ERROR` token,
+    /// reported as "unexpected input".
     fn number(&mut self) -> Result<Tok, ParseError> {
         let start = self.pos;
-        let b = self.bytes;
-        let mut is_hex = false;
-        let value: f64;
-        let mut has_dot = false;
-        let mut has_exp = false;
-        if b[self.pos] == b'0' && matches!(self.byte_at(self.pos + 1), b'x' | b'X') {
-            is_hex = true;
-            self.pos += 2;
-            let mut mantissa: f64 = 0.0;
-            let mut ndigits = 0;
-            let mut frac_digits = 0i32;
-            while self.pos < b.len() {
-                let ch = b[self.pos];
-                if let Some(d) = (ch as char).to_digit(16) {
-                    mantissa = mantissa * 16.0 + d as f64;
-                    ndigits += 1;
-                    if has_dot {
-                        frac_digits += 1;
-                    }
-                    self.pos += 1;
-                } else if ch == b'.' && !has_dot {
-                    has_dot = true;
-                    self.pos += 1;
-                } else {
+        let mut c = self.byte_at(self.pos);
+        self.pos += 1;
+        // `seendot`: 0 none, 1 before any exponent, 2 only after one.
+        let mut seendot = if c == b'.' { 1 } else { 0 };
+        let mut seenexp = false;
+        let mut last = c;
+        let mut count = 1usize;
+        let mut ended_with_l = false;
+        loop {
+            c = self.byte_at(self.pos);
+            if !(c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'x' | b'X' | b'L')) {
+                break;
+            }
+            self.pos += 1; // the `while` condition consumes in C
+            count += 1;
+            if c == b'L' {
+                // "must be at the end. Won't allow 1Le3."
+                ended_with_l = true;
+                break;
+            }
+            if c == b'x' || c == b'X' {
+                if count > 2 || last != b'0' {
+                    self.pos -= 1; // `xxungetc` in the final else
                     break;
                 }
-            }
-            if ndigits == 0 {
-                return Err(self.err("unexpected symbol", start, false));
-            }
-            let mut exp: i32 = 0;
-            if matches!(self.byte_at(self.pos), b'p' | b'P') {
-                has_exp = true;
-                self.pos += 1;
-                let mut sign = 1;
-                if self.byte_at(self.pos) == b'-' {
-                    sign = -1;
+                let mut nd = 0;
+                loop {
+                    c = self.byte_at(self.pos);
                     self.pos += 1;
-                } else if self.byte_at(self.pos) == b'+' {
-                    self.pos += 1;
+                    if !(c.is_ascii_hexdigit() || c == b'.') {
+                        break;
+                    }
+                    if c == b'.' {
+                        if seendot == 1 {
+                            return Err(self.error_token(start));
+                        }
+                        seendot = 1;
+                    }
+                    nd += 1;
                 }
-                let mut e: i32 = 0;
-                while self.byte_at(self.pos).is_ascii_digit() {
-                    e = e.saturating_mul(10).saturating_add((self.byte_at(self.pos) - b'0') as i32);
-                    self.pos += 1;
+                if nd == 0 {
+                    return Err(self.error_token(start));
                 }
-                exp = sign * e;
-            }
-            value = mantissa * 2f64.powi(exp - 4 * frac_digits);
-        } else {
-            while self.byte_at(self.pos).is_ascii_digit() {
-                self.pos += 1;
-            }
-            if self.byte_at(self.pos) == b'.' {
-                has_dot = true;
-                self.pos += 1;
-                while self.byte_at(self.pos).is_ascii_digit() {
+                if c == b'p' || c == b'P' {
+                    seenexp = true;
+                    let d = self.byte_at(self.pos);
                     self.pos += 1;
-                }
-            }
-            if matches!(self.byte_at(self.pos), b'e' | b'E') {
-                let save = self.pos;
-                self.pos += 1;
-                if matches!(self.byte_at(self.pos), b'+' | b'-') {
-                    self.pos += 1;
-                }
-                if self.byte_at(self.pos).is_ascii_digit() {
-                    has_exp = true;
+                    if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                        return Err(self.error_token(start));
+                    }
+                    if d == b'+' || d == b'-' {
+                        let d2 = self.byte_at(self.pos);
+                        self.pos += 1;
+                        if !d2.is_ascii_digit() {
+                            return Err(self.error_token(start));
+                        }
+                    }
+                    // The first digit is validated and consumed above; count
+                    // it, then scan the rest.
+                    let mut nd = 1;
                     while self.byte_at(self.pos).is_ascii_digit() {
                         self.pos += 1;
+                        nd += 1;
                     }
-                } else {
-                    // R accepts `1e` as 1 and treats a dangling sign as an
-                    // operator; we stay conservative and roll back.
-                    self.pos = save;
+                    let _ = nd;
+                    c = self.byte_at(self.pos);
+                    self.pos += 1; // the `for` increment consumes in C
                 }
+                if c == b'L' {
+                    ended_with_l = true;
+                } else {
+                    self.pos -= 1; // terminator is not part of the literal
+                }
+                break;
             }
-            let text = &self.src[start..self.pos];
-            value = text.parse::<f64>().map_err(|_| self.err("malformed number", start, false))?;
+            if c == b'e' || c == b'E' {
+                if seenexp {
+                    self.pos -= 1;
+                    break;
+                }
+                seenexp = true;
+                seendot = if seendot == 1 { seendot } else { 2 };
+                let d = self.byte_at(self.pos);
+                self.pos += 1;
+                if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                    return Err(self.error_token(start));
+                }
+                if d == b'+' || d == b'-' {
+                    let d2 = self.byte_at(self.pos);
+                    self.pos += 1;
+                    if !d2.is_ascii_digit() {
+                        return Err(self.error_token(start));
+                    }
+                }
+                c = d; // the validated digit is pushed at the loop bottom
+                last = c;
+                continue;
+            }
+            if c == b'.' {
+                if seendot > 0 {
+                    self.pos -= 1;
+                    break;
+                }
+                seendot = 1;
+            }
+            last = c;
         }
-        let text_end = self.pos;
-        match self.byte_at(self.pos) {
-            b'L' => {
-                self.pos += 1;
-                let text = &self.src[start..text_end];
-                if value.fract() == 0.0 && value.abs() <= i32::MAX as f64 {
-                    if has_dot && !is_hex && !has_exp {
-                        self.warnings.push(format!("integer literal {}L contains unnecessary decimal point", text));
-                    }
-                    Ok(Tok::Const(Const::Int(Some(value as i32))))
-                } else if value.fract() != 0.0 {
-                    self.warnings.push(format!("integer literal {}L contains decimal; using numeric value", text));
-                    Ok(Tok::Const(Const::Dbl(value)))
+        let c = self.byte_at(self.pos);
+        let mut is_complex = false;
+        if c == b'i' && !ended_with_l {
+            self.pos += 1;
+            is_complex = true;
+        }
+        // `yytext` includes a trailing `L` but not `i`.
+        let text_end = self.pos - if is_complex || ended_with_l { 1 } else { 0 };
+        let text = &self.src[start..text_end];
+        if is_complex {
+            return Ok(Tok::Const(Const::Cplx(0.0, self.parse_number(text))));
+        }
+        if ended_with_l {
+            let text_l = &self.src[start..self.pos];
+            let value = self.parse_number(text);
+            let as_int = value as i32;
+            if value != as_int as f64 {
+                if seendot == 1 && !seenexp {
+                    self.warnings.push(format!("integer literal {} contains decimal; using numeric value", text_l));
                 } else {
-                    self.warnings.push(format!("non-integer value {}L qualified with L; using numeric value", text));
-                    Ok(Tok::Const(Const::Dbl(value)))
+                    self.warnings.push(format!("non-integer value {} qualified with L; using numeric value", text_l));
                 }
+                return Ok(Tok::Const(Const::Dbl(value)));
             }
-            b'i' => {
-                self.pos += 1;
-                Ok(Tok::Const(Const::Cplx(0.0, value)))
+            if seendot == 1 && !seenexp {
+                self.warnings.push(format!("integer literal {} contains unnecessary decimal point", text_l));
             }
-            _ => Ok(Tok::Const(Const::Dbl(value))),
+            return Ok(Tok::Const(Const::Int(Some(as_int))));
+        }
+        Ok(Tok::Const(Const::Dbl(self.parse_number(text))))
+    }
+
+    /// The `ERROR` token of gram.y's lexer, as `yyerror` reports it:
+    /// "unexpected input" at the token's start (used for malformed
+    /// numbers and for `<<` without the `-`).
+    fn error_token(&self, start: usize) -> ParseError {
+        ParseError {
+            message: "unexpected input".into(),
+            offset: start,
+            end: self.pos.max(start + 1),
+            incomplete: false,
+            at_eof: false,
+            with_pos_suffix: false,
+            fixed_line_col: None,
         }
     }
 
-    fn string_body(&mut self, quote: char, start: usize) -> Result<String, ParseError> {
-        let mut out = String::new();
+    /// `R_atof` = `R_strtod5(str, NULL, '.', FALSE, FALSE)`: the decimal
+    /// case is the x87-exact port below, the hexadecimal case is
+    /// `hex_to_f64`.
+    fn parse_number(&self, text: &str) -> f64 {
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            return hex_to_f64(hex);
+        }
+        decimal_to_f64(text)
+    }
+
+    /// String constants and backtick symbols, a port of `StringValue` in
+    /// gram.y (`// R: gram.y:StringValue`). Produces raw bytes.
+    fn string_body(&mut self, quote: char, start: usize, for_symbol: bool) -> Result<Vec<u8>, ParseError> {
+        let mut out: Vec<u8> = Vec::new();
         let mut byte_escape = false;
         let mut unicode_escape = false;
         loop {
@@ -382,10 +510,10 @@ impl<'a> Lexer<'a> {
             // copied whole: their bytes are all >= 0x80).
             let run = self.bytes[self.pos..]
                 .iter()
-                .position(|&b| b == b'\\' || b == quote as u8)
+                .position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
                 .unwrap_or(self.bytes.len() - self.pos);
             if run > 0 {
-                out.push_str(&self.src[self.pos..self.pos + run]);
+                out.extend_from_slice(&self.bytes[self.pos..self.pos + run]);
                 self.pos += run;
             }
             let Some(c) = self.peek_char() else {
@@ -394,122 +522,172 @@ impl<'a> Lexer<'a> {
             self.pos += c.len_utf8();
             if c == quote {
                 if byte_escape && unicode_escape {
-                    return Err(self.err(
-                        "mixing Unicode and octal/hex escapes in a string is not allowed",
-                        start,
-                        false,
-                    ));
+                    // Position: the closing quote, the last character read.
+                    return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
                 return Ok(out);
             }
-            if c != '\\' {
-                out.push(c);
+            // A raw newline acts as an escaped newline: both are kept
+            // (the Bravington fix in gram.y's StringValue).
+            if c != '\\' && c != '\n' {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                 continue;
             }
-            let esc_start = self.pos - 1;
-            let Some(e) = self.peek_char() else {
-                return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
-            };
-            self.pos += e.len_utf8();
-            match e {
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                'r' => out.push('\r'),
-                '0'..='7' => {
-                    byte_escape = true;
-                    let mut v = e.to_digit(8).unwrap();
-                    for _ in 0..2 {
-                        match self.peek_char() {
-                            Some(d @ '0'..='7') => {
-                                v = v * 8 + d.to_digit(8).unwrap();
-                                self.pos += 1;
-                            }
-                            _ => break,
-                        }
-                    }
-                    if v == 0 {
-                        return Err(self.err("nul character not allowed", esc_start, false));
-                    }
-                    out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
-                }
-                'a' => out.push('\u{7}'),
-                'b' => out.push('\u{8}'),
-                'f' => out.push('\u{c}'),
-                'v' => out.push('\u{b}'),
-                '\\' => out.push('\\'),
-                '"' => out.push('"'),
-                '\'' => out.push('\''),
-                '`' => out.push('`'),
-                ' ' => out.push(' '),
-                '\n' => out.push('\n'),
-                'x' => {
-                    byte_escape = true;
-                    let mut v = 0u32;
-                    let mut n = 0;
-                    while n < 2 {
-                        match self.peek_char().and_then(|d| d.to_digit(16)) {
-                            Some(d) => {
-                                v = v * 16 + d;
-                                self.pos += 1;
-                                n += 1;
-                            }
-                            None => break,
-                        }
-                    }
-                    if n == 0 {
-                        return Err(self.err("'\\x' used without hex digits in character string", esc_start, false));
-                    }
-                    if v == 0 {
-                        return Err(self.err("nul character not allowed", esc_start, false));
-                    }
-                    out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
-                }
-                'u' | 'U' => {
-                    unicode_escape = true;
-                    let max = if e == 'u' { 4 } else { 8 };
-                    let braced = self.peek_char() == Some('{');
-                    if braced {
-                        self.pos += 1;
-                    }
-                    let mut v = 0u32;
-                    let mut n = 0;
-                    while n < max {
-                        match self.peek_char().and_then(|d| d.to_digit(16)) {
-                            Some(d) => {
-                                v = v * 16 + d;
-                                self.pos += 1;
-                                n += 1;
-                            }
-                            None => break,
-                        }
-                    }
-                    if braced {
-                        if self.peek_char() != Some('}') {
-                            return Err(self.err("invalid \\u{xxxx} sequence", esc_start, false));
-                        }
-                        self.pos += 1;
-                    }
-                    if n == 0 {
-                        return Err(self.err(
-                            format!("'\\{}' used without hex digits in character string", e),
-                            esc_start,
-                            false,
-                        ));
-                    }
-                    match char::from_u32(v) {
-                        Some(ch) if v != 0 => out.push(ch),
-                        _ => return Err(self.err("invalid unicode escape", esc_start, false)),
-                    }
-                }
-                other => {
-                    return Err(self.err(
-                        format!("'\\{}' is an unrecognized escape in character string", other),
-                        esc_start,
-                        false,
-                    ));
-                }
+            if c == '\n' {
+                out.push(b'\n');
+                continue;
+            }
+            if let Some(ch) =
+                self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)?
+            {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             }
         }
+    }
+
+    /// One escape sequence after the backslash. `Ok(None)` means the escape
+    /// pushed its own bytes (octal/hex/unicode); an error is a
+    /// `raiseLexError` with the position of the last character consumed.
+    #[allow(clippy::too_many_arguments)]
+    fn read_escape(
+        &mut self,
+        quote: char,
+        start: usize,
+        for_symbol: bool,
+        out: &mut Vec<u8>,
+        byte_escape: &mut bool,
+        unicode_escape: &mut bool,
+    ) -> Result<Option<char>, ParseError> {
+        let _ = quote;
+        let Some(e) = self.peek_char() else {
+            return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
+        };
+        self.pos += e.len_utf8();
+        Ok(match e {
+            'n' => Some('\n'),
+            't' => Some('\t'),
+            'r' => Some('\r'),
+            'a' => Some('\u{7}'),
+            'b' => Some('\u{8}'),
+            'f' => Some('\u{c}'),
+            'v' => Some('\u{b}'),
+            '\\' => Some('\\'),
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            '`' => Some('`'),
+            ' ' => Some(' '),
+            '\n' => Some('\n'),
+            '0'..='7' => {
+                let mut v = e.to_digit(8).unwrap();
+                for _ in 0..2 {
+                    match self.peek_char() {
+                        Some(d @ '0'..='7') => {
+                            v = v * 8 + d.to_digit(8).unwrap();
+                            self.pos += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                if v == 0 {
+                    return Err(self.lex_err("nul character not allowed"));
+                }
+                if v > 0xff {
+                    return Err(self.lex_err(format!("\\{:o} exceeds maximum allowed octal value \\377", v)));
+                }
+                *byte_escape = true;
+                out.push(v as u8);
+                None
+            }
+            'x' => {
+                let mut v = 0u32;
+                let mut n = 0;
+                while n < 2 {
+                    match self.peek_char().and_then(|d| d.to_digit(16)) {
+                        Some(d) => {
+                            v = v * 16 + d;
+                            self.pos += 1;
+                            n += 1;
+                        }
+                        None => break,
+                    }
+                }
+                if n == 0 {
+                    return Err(self.lex_err("'\\x' used without hex digits in character string"));
+                }
+                if v == 0 {
+                    return Err(self.lex_err("nul character not allowed"));
+                }
+                *byte_escape = true;
+                out.push(v as u8);
+                None
+            }
+            'u' | 'U' => {
+                if for_symbol {
+                    let name = if e == 'u' { "u" } else { "U" };
+                    // Position: the `u`/`U` itself.
+                    return Err(ParseError {
+                        message: format!("\\{} sequences not supported inside backticks", placeholder_seq(name)),
+                        offset: self.pos - 1,
+                        end: self.pos,
+                        incomplete: false,
+                        at_eof: false,
+                        with_pos_suffix: true,
+                        fixed_line_col: None,
+                    });
+                }
+                let max = if e == 'u' { 4 } else { 8 };
+                let braced = self.peek_char() == Some('{');
+                if braced {
+                    self.pos += 1;
+                }
+                let mut v = 0u32;
+                let mut n = 0;
+                while n < max {
+                    match self.peek_char().and_then(|d| d.to_digit(16)) {
+                        Some(d) => {
+                            v = v * 16 + d;
+                            self.pos += 1;
+                            n += 1;
+                        }
+                        None => break,
+                    }
+                }
+                if n == 0 {
+                    // The character that failed to be a digit is pushed
+                    // back first; the position is the escape letter.
+                    return Err(self.lex_err(format!("'\\{}' used without hex digits in character string", e)));
+                }
+                if braced {
+                    if self.peek_char() != Some('}') {
+                        if e == 'u' {
+                            // GNU R formats this with an uninitialized
+                            // `(line %d)` argument; the value is not
+                            // reproducible. Report the deterministic part.
+                            return Err(self.lex_err("invalid \\u{xxxx} sequence"));
+                        }
+                        return Err(self.lex_err("invalid \\U{xxxxxxxx} sequence"));
+                    }
+                    self.pos += 1;
+                }
+                if v == 0 {
+                    return Err(self.lex_err("nul character not allowed"));
+                }
+                if v > 0x10FFFF {
+                    let form = if braced { "\\U{xxxxxxxx}" } else { "\\Uxxxxxxxx" };
+                    return Err(self.lex_err(format!("invalid {} value {:6x}", form, v)));
+                }
+                *unicode_escape = true;
+                let ch = char::from_u32(v).unwrap_or('\u{fffd}');
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                None
+            }
+            other => {
+                return Err(self.lex_err(format!("'\\{}' is an unrecognized escape in character string", other)));
+            }
+        })
     }
 
     fn operator(&mut self, start: usize) -> Result<Tok, ParseError> {
@@ -518,6 +696,10 @@ impl<'a> Lexer<'a> {
         let (tok, len) = match b0 {
             b'<' => match (b1, b2) {
                 (b'<', b'-') => (Tok::LeftAssign("<<-"), 3),
+                // `<<` without the `-` is the lexer's ERROR token
+                // (`// R: gram.y:yylex`, case '<'): bison then reports
+                // "unexpected input" at its start.
+                (b'<', _) => return Err(self.error_token(start)),
                 (b'-', _) => (Tok::LeftAssign("<-"), 2),
                 (b'=', _) => (Tok::Cmp("<="), 2),
                 _ => (Tok::Cmp("<"), 1),
@@ -542,8 +724,8 @@ impl<'a> Lexer<'a> {
             b'!' => (Tok::Not, 1),
             b'&' if b1 == b'&' => (Tok::And2, 2),
             b'&' => (Tok::And, 1),
-            b'|' if b1 == b'|' => (Tok::Or2, 2),
             b'|' if b1 == b'>' => (Tok::Pipe, 2),
+            b'|' if b1 == b'|' => (Tok::Or2, 2),
             b'|' => (Tok::Or, 1),
             b'*' if b1 == b'*' => (Tok::Caret, 2),
             b'*' => (Tok::Star, 1),
@@ -580,4 +762,393 @@ impl<'a> Lexer<'a> {
         self.pos += len;
         Ok(tok)
     }
+}
+
+/// `"\uxxxx"`/`"\Uxxxxxxxx"` in the backtick error message.
+fn placeholder_seq(name: &str) -> &str {
+    if name == "u" { "uxxxx" } else { "Uxxxxxxxx" }
+}
+
+/// The hexadecimal case of `R_strtod5` (`// R: util.c:R_strtod5`). `hex` is
+/// the literal after `0x`/`0X`, digits with at most one `.`, then an
+/// optional `p`/`P` exponent (already validated by the scanner: at least
+/// one hex digit, and the exponent, if present, has at least one digit
+/// after an optional sign). The C code accumulates the mantissa in an
+/// x87 `LDOUBLE` and scales by powers of two; the port keeps a 64-bit
+/// significand that rounds to nearest even exactly where the 80-bit
+/// accumulator would, does the scaling as exponent arithmetic (a power of
+/// two never rounds in either format over the grammar's exponent range),
+/// and rounds to `f64` once, as the C conversion does.
+fn hex_to_f64(hex: &str) -> f64 {
+    let (mantissa_text, exp_text) = match hex.find(['p', 'P']) {
+        Some(i) => (&hex[..i], Some(&hex[i + 1..])),
+        None => (hex, None),
+    };
+    // The binary exponent: optional sign, digits, the accumulated value
+    // capped once it passes MAX_EXPONENT_PREFIX.
+    let mut expn: i32 = 0;
+    if let Some(t) = exp_text {
+        let (sign, digits) = match t.strip_prefix('-') {
+            Some(d) => (-1, d),
+            None => (1, t.strip_prefix('+').unwrap_or(t)),
+        };
+        let mut n: i64 = 0;
+        for d in digits.bytes() {
+            n = if n < 9999 { n * 10 + (d - b'0') as i64 } else { n };
+        }
+        expn = sign * n.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    }
+    // Mantissa: value = m * 2^scale, m a 64-bit significand. `ans = 16*ans
+    // + d` adds d at the units place of an x87 80-bit accumulator: it is
+    // exact while the integer fits 64 bits; the first append past that
+    // rounds to nearest even (the digit still has nibble weight then);
+    // after that the accumulator's exponent is nonzero and every further
+    // digit is below half an ulp, so it is dropped without a trace.
+    let mut m: u64 = 0;
+    let mut scale: i32 = 0;
+    let mut exph: i32 = -1; // -1: no `.` yet; else 4 per fractional digit
+    for c in mantissa_text.bytes() {
+        if c == b'.' {
+            exph = 0;
+            continue;
+        }
+        let d = (c as char).to_digit(16).unwrap() as u128;
+        let bl = 64 - m.leading_zeros() as i32;
+        if scale == 0 && bl <= 60 {
+            m = (m << 4) | d as u64;
+        } else if scale == 0 {
+            // bl(m) in 61..=64: (bl + 4) - 64 bits must go.
+            let shift = (bl - 60) as u32;
+            let v = ((m as u128) << 4) | d;
+            let rem = v & ((1u128 << shift) - 1);
+            let half = 1u128 << (shift - 1);
+            let mut hi = v >> shift;
+            if rem > half || (rem == half && (hi & 1) == 1) {
+                hi += 1;
+            }
+            if hi >> 64 != 0 {
+                hi >>= 1;
+                scale += 1;
+            }
+            m = hi as u64;
+            scale += shift as i32;
+        } else {
+            scale += 4;
+        }
+        if exph >= 0 {
+            exph += 4;
+        }
+    }
+    // Scaling (`if (ans != 0.0)`): `fac` is a long double built from a
+    // `double p2 = 2.0` that is squared by repeated multiplication, so
+    // powers beyond 2^1024 have already overflowed `p2` to infinity — a
+    // division by such a `fac` underflows to 0 and a multiplication
+    // overflows to Inf, whatever the true value (that is R's behavior,
+    // and the spec).
+    if m != 0 {
+        if exph > 0 {
+            if expn - exph < -122 {
+                // PR#17199: divide by 2^exph now, keep expn.
+                if exph >= 1024 {
+                    return 0.0;
+                }
+                scale -= exph;
+            } else {
+                expn -= exph;
+            }
+        }
+        if expn >= 1024 {
+            return f64::INFINITY;
+        }
+        if expn <= -1024 {
+            return 0.0;
+        }
+        scale += expn;
+    }
+    ld_to_f64(m, scale)
+}
+
+/// Round `m * 2^e` (m's bits the significand, as an x87 80-bit value) to
+/// `f64` in one round-to-nearest-even step: 53 significant bits in the
+/// normal range, the `2^-1074` grid below it, infinity past `2^1024`.
+fn ld_to_f64(m: u64, e: i32) -> f64 {
+    if m == 0 {
+        return 0.0;
+    }
+    let bl = 64 - m.leading_zeros() as i32;
+    let e2 = e + bl - 1; // floor(log2(value))
+    if e2 >= -1022 {
+        if e2 > 1024 {
+            // Whole binade beyond the largest double.
+            return f64::INFINITY;
+        }
+        let drop = bl - 53;
+        let q: u64 = if drop <= 0 {
+            m
+        } else {
+            let rem = m & ((1u64 << drop) - 1);
+            let half = 1u64 << (drop - 1);
+            let q = m >> drop;
+            if rem > half || (rem == half && (q & 1) == 1) { q + 1 } else { q }
+        };
+        // value = q * 2^(e + drop) (with drop = 0 when nothing was
+        // dropped); q rounds up to 2^53 at most, which overflows to
+        // infinity exactly when the value would.
+        (q as f64) * pow2_exact(e + drop.max(0))
+    } else {
+        if e2 < -1075 {
+            return 0.0;
+        }
+        // Subnormal: round value/2^-1074 = m * 2^(e+1074) to an integer,
+        // ties to even.
+        // Subnormal: round value/2^-1074 = m * 2^(e+1074) to an integer,
+        // ties to even. The shift can go either way (the PR#17199 path
+        // can leave e far below -1074), so compute in u128.
+        let s = e + 1074;
+        let v = m as u128;
+        let k: u64 = (if s >= 0 {
+            v << s.min(64)
+        } else {
+            let d = (-s) as u32;
+            let rem = v & ((1u128 << d) - 1);
+            let half = 1u128 << (d - 1);
+            let k = v >> d;
+            if rem > half || (rem == half && (k & 1) == 1) { k + 1 } else { k }
+        }) as u64;
+        (k as f64) * f64::from_bits(1) // 2^-1074
+    }
+}
+
+/// 2^k for k in [-1074, 1023], exact.
+fn pow2_exact(k: i32) -> f64 {
+    if k >= -1022 {
+        f64::from_bits(((k + 1023) as u64) << 52)
+    } else {
+        f64::from_bits(1) * f64::from_bits(((k + 1074 + 1023) as u64) << 52)
+    }
+}
+
+/// An x87 80-bit floating-point number, positive or zero, for
+/// `R_strtod5`'s `LDOUBLE` arithmetic (`// R: util.c:R_strtod5`, the
+/// decimal case). Every operation rounds to a 64-bit significand with
+/// round-to-nearest-even, gradual underflow and saturating overflow, as
+/// the 80-bit format does; only the final conversion to `f64` rounds to
+/// 53 bits. The double rounding is observable — 17-digit literals can
+/// come out 1 ulp away from a correctly-rounded parse — so exactness
+/// here is what makes robigo's trees match GNU R's.
+#[derive(Clone, Copy)]
+struct LD {
+    m: u128, // value = m * 2^e; m == 0 is zero
+    e: i32,
+}
+
+impl LD {
+    fn zero() -> LD {
+        LD { m: 0, e: 0 }
+    }
+    fn small(x: u64) -> LD {
+        LD { m: x as u128, e: 0 }
+    }
+    fn is_inf(&self) -> bool {
+        self.e >= LD_INF_E
+    }
+}
+
+const LD_INF_E: i32 = 1 << 24;
+
+/// Round `m * 2^e` to the 80-bit format.
+fn ld_norm(m: u128, mut e: i32) -> LD {
+    if m == 0 {
+        return LD::zero();
+    }
+    let bl = 128 - m.leading_zeros() as i32;
+    let e2 = e + bl - 1;
+    if e2 > 16383 {
+        return LD { m: 1, e: LD_INF_E };
+    }
+    if e2 < -16445 {
+        return LD::zero();
+    }
+    // 64 significand bits above the subnormal boundary, fewer below it.
+    let keep = if e2 >= -16382 { 64 } else { e2 + 16446 };
+    let drop = bl - keep;
+    if drop <= 0 {
+        return LD { m, e };
+    }
+    let rem = m & ((1u128 << drop) - 1);
+    let half = 1u128 << (drop - 1);
+    let mut q = m >> drop;
+    if rem > half || (rem == half && (q & 1) == 1) {
+        q += 1;
+    }
+    e += drop;
+    if 128 - q.leading_zeros() as i32 > keep {
+        q >>= 1;
+        e += 1;
+    }
+    LD { m: q, e }
+}
+
+fn ld_mul(a: LD, b: LD) -> LD {
+    if a.is_inf() || b.is_inf() {
+        // 0 * inf cannot arise in R_strtod5 (the ans != 0 guard).
+        return LD { m: 1, e: LD_INF_E };
+    }
+    if a.m == 0 || b.m == 0 {
+        return LD::zero();
+    }
+    ld_norm(a.m * b.m, a.e + b.e)
+}
+
+/// `a / b`, correctly rounded to 64 significand bits.
+fn ld_div(a: LD, b: LD) -> LD {
+    if a.is_inf() {
+        return a;
+    }
+    if b.is_inf() || a.m == 0 {
+        return LD::zero();
+    }
+    debug_assert!(b.m != 0);
+    // Normalize both mantissas into [2^63, 2^64).
+    let sa = 64 - (128 - a.m.leading_zeros() as i32);
+    let ma = a.m << sa;
+    let ea = a.e - sa;
+    let sb = 64 - (128 - b.m.leading_zeros() as i32);
+    let mb = b.m << sb;
+    let eb = b.e - sb;
+    // quotient = (ma / mb) * 2^(ea - eb); compute 65 bits plus remainder.
+    let num = ma << 64;
+    let q1 = num / mb;
+    let rem = num % mb;
+    let (mut q, mut e) = if q1 >> 64 != 0 {
+        // quotient in [1, 2): round quotient * 2^63 to an integer.
+        let mut q = q1 >> 1;
+        if q1 & 1 == 1 && (rem != 0 || q & 1 == 1) {
+            q += 1;
+        }
+        (q, ea - eb - 63)
+    } else {
+        // quotient in [1/2, 1): round quotient * 2^64 to an integer.
+        let mut q = q1;
+        if 2 * rem > mb || (2 * rem == mb && q & 1 == 1) {
+            q += 1;
+        }
+        (q, ea - eb - 64)
+    };
+    if 128 - q.leading_zeros() as i32 > 64 {
+        q >>= 1;
+        e += 1;
+    }
+    // q is already rounded to 64 bits; ld_norm only adds the format's
+    // overflow/underflow saturation.
+    ld_norm(q, e)
+}
+
+/// `a + d` for a digit `d`: the accumulator `ans = 10*ans + digit` adds
+/// the digit at the units place, so it is lost to rounding once the
+/// ulp exceeds twice the digit (no tie is possible then).
+fn ld_add_digit(a: LD, d: u32) -> LD {
+    if a.m == 0 {
+        return LD::small(d as u64);
+    }
+    let bl = 128 - a.m.leading_zeros() as i32;
+    if a.e + bl - 64 >= 5 {
+        // half-ulp = 2^(e+bl-65) >= 16 > 9 >= d.
+        return a;
+    }
+    // The sum is an integer of at most 69 bits; round it as the 80-bit
+    // add would.
+    debug_assert!(a.e >= 0 && a.e <= 4);
+    ld_norm((a.m << a.e) + d as u128, 0)
+}
+
+/// The decimal case of `R_strtod5`: `text` is digits with at most one
+/// `.`, then an optional `e`/`E` exponent (both already validated by the
+/// scanner; no sign, no `0x` prefix — R's parser handles those).
+fn decimal_to_f64(text: &str) -> f64 {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut ans = LD::zero();
+    let mut ndigits = 0usize;
+    let mut expn: i32 = 0;
+    let ten = LD::small(10);
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        ans = ld_add_digit(ld_mul(ans, ten), (bytes[i] - b'0') as u32);
+        ndigits += 1;
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            ans = ld_add_digit(ld_mul(ans, ten), (bytes[i] - b'0') as u32);
+            ndigits += 1;
+            expn -= 1;
+            i += 1;
+        }
+    }
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        let sign = match bytes.get(i) {
+            Some(b'-') => {
+                i += 1;
+                -1
+            }
+            Some(b'+') => {
+                i += 1;
+                1
+            }
+            _ => 1,
+        };
+        let mut v: i64 = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            v = if v < 9999 { v * 10 + (bytes[i] - b'0') as i64 } else { v };
+            i += 1;
+        }
+        expn += sign * v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    }
+    // "avoid unnecessary underflow for large negative exponents"
+    if expn + (ndigits as i32) < -300 {
+        for _ in 0..ndigits {
+            ans = ld_div(ans, ten);
+        }
+        expn += ndigits as i32;
+    }
+    let mut p10 = ten;
+    let mut fac = LD::small(1);
+    if expn < -307 {
+        // use underflow, not overflow
+        let mut n = -expn;
+        while n != 0 {
+            if n & 1 == 1 {
+                fac = ld_div(fac, p10);
+            }
+            n >>= 1;
+            p10 = ld_mul(p10, p10);
+        }
+        ans = ld_mul(ans, fac);
+    } else if expn < 0 {
+        // positive powers are exact (in the 64-bit significand)
+        let mut n = -expn;
+        while n != 0 {
+            if n & 1 == 1 {
+                fac = ld_mul(fac, p10);
+            }
+            n >>= 1;
+            p10 = ld_mul(p10, p10);
+        }
+        ans = ld_div(ans, fac);
+    } else if ans.m != 0 {
+        let mut n = expn;
+        while n != 0 {
+            if n & 1 == 1 {
+                fac = ld_mul(fac, p10);
+            }
+            n >>= 1;
+            p10 = ld_mul(p10, p10);
+        }
+        ans = ld_mul(ans, fac);
+    }
+    // (double) ans; the explicit `ans > DBL_MAX` check of the C code
+    // gives the same infinity, values at the rounding boundary included.
+    ld_to_f64(ans.m as u64, ans.e)
 }

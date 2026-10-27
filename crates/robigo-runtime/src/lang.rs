@@ -17,7 +17,13 @@ pub fn const_to_value(c: &Const) -> Value {
         Const::Cplx(re, im) => Value::cplx(Complex::new(*re, *im)),
         Const::CplxNa => Value::cplx(Complex::NA),
         Const::Str(None) => Value::str_na(),
-        Const::Str(Some(s)) => Value::str(s),
+        // GNU R keeps escaped bytes as a "bytes"-encoded CHARSXP; until the
+        // value model carries encodings, such bytes become their Latin-1
+        // characters so no information is lost in the common case.
+        Const::Str(Some(s)) => match std::str::from_utf8(s) {
+            Ok(text) => Value::str(text),
+            Err(_) => Value::str(&s.iter().map(|&b| b as char).collect::<String>()),
+        },
     }
 }
 
@@ -32,6 +38,8 @@ pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
     match e {
         Expr::Const(c, _) => const_to_value(c),
         Expr::Sym(name, _) => Value::Sym(Sym::new(name)),
+        // The pipe placeholder is the string constant `"_"` in GNU R's trees.
+        Expr::Placeholder(_) => Value::str("_"),
         Expr::Call { fun, args, .. } => {
             let args = args
                 .iter()

@@ -615,16 +615,19 @@ fn parse_cmd(args: &[String]) -> ExitCode {
         eprint!("{}", USAGE);
         return ExitCode::from(2);
     };
-    let src = std::fs::read_to_string(path).expect("read file");
+    let src = String::from_utf8_lossy(&std::fs::read(path).expect("read file")).into_owned();
     match robigo_syntax::parse_program(&src) {
         Ok(exprs) => {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
             for e in &exprs {
-                println!("{}", robigo_syntax::dump::dump(e));
+                out.write_all(&robigo_syntax::dump::dump(e)).unwrap();
+                out.write_all(b"\n").unwrap();
             }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            let (line, col) = robigo_syntax::line_col(&src, e.offset);
+            let (line, col) = robigo_syntax::error_line_col(&src, &e);
             eprintln!("{}:{}:{}: {}", path, line, col, e.message);
             ExitCode::FAILURE
         }

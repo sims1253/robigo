@@ -1,1 +1,1 @@
-ERROR
+ERROR 1 6 The pipe operator requires a function call as RHS (<input>:1:6)
