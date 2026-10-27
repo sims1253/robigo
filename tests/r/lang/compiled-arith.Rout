@@ -1,0 +1,21 @@
+force a 
+force b 
+[1] 3
+force x 
+force y 
+[1] 12
+force p 
+force q 
+[1] TRUE
+[1] NA
+[1] 55
+[1]   NA   NA   NA   NA   -4    1 1024  NaN
+[1]  TRUE FALSE
+[1] 2 0 2
+[1] "object 'undefined_variable_xyz' not found"
+[1] TRUE
+[1] "plus 2 1"
+[1] 3
+[1] 2 3 4
+[1] 25
+[1] Inf  NA

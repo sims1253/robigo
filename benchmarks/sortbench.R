@@ -1,0 +1,6 @@
+set.seed(1)
+x <- sin(1:1e6)
+o <- order(x)
+print(x[o[1:3]])
+s <- sort(as.character(round(x[1:1e5] * 1e4)))
+print(s[1:3])

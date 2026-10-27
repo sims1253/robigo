@@ -1,0 +1,29 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+### Name: shQuote
+### Title: Quote Strings for Use in OS Shells
+### Aliases: shQuote
+### Keywords: utilities
+
+### ** Examples
+
+test <- "abc$def`gh`i\\j"
+cat(shQuote(test), "\n")
+## Not run: system(paste("echo", shQuote(test)))
+test <- "don't do it!"
+cat(shQuote(test), "\n")
+
+tryit <- paste("use the", sQuote("-c"), "switch\nlike this")
+cat(shQuote(tryit), "\n")
+## Not run: system(paste("echo", shQuote(tryit)))
+cat(shQuote(tryit, type = "csh"), "\n")
+
+## Windows-only example, assuming cmd.exe:
+perlcmd <- 'print "Hello World\\n";'
+## Not run: 
+##D shell(shQuote(paste("perl -e", 
+##D                     shQuote(perlcmd, type = "cmd")),
+##D               type = "cmd2"))
+## End(Not run)
+
+
+

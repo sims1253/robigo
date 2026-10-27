@@ -1,0 +1,15 @@
+Warning message:
+In gamma(c(-1, 2)) : NaNs produced
+Warning message:
+In beta(-1, 2) : NaNs produced
+Warning message:
+In choose(5, 2.5) : 'k' (2.50) must be integer, rounded to 2
+Warning message:
+In lchoose(5, 1.5) : 'k' (1.50) must be integer, rounded to 2
+Warning message:
+In choose(10, k) : 'k' (2.40) must be integer, rounded to 2
+Warning message:
+In digamma(c(0, 1)) : NaNs produced
+Warning messages:
+1: In psigamma(1, 101) : deriv = 101 > 100 (= n_max)
+2: In psigamma(1, 101) : NaNs produced

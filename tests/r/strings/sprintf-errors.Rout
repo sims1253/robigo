@@ -1,0 +1,21 @@
+[1] "invalid format '%d'; use format %f, %e, %g or %a for numeric objects"
+[1] "too few arguments"
+[1] "invalid format '%d'; use format %s for character objects"
+[1] "invalid format '%f'; use format %s for character objects"
+[1] "arguments cannot be recycled to the same length"
+[1] "unrecognised format specification '%y'"
+[1] "unrecognised format specification '%'"
+[1] "'fmt' is not a character vector"
+[1] "too few arguments"
+[1] "invalid format '%d'; use format %f, %e, %g or %a for numeric objects"
+[1] "reference to non-existent argument 5"
+[1] "at most one asterisk '*' is supported in each conversion specification"
+[1] "invalid type of argument[1]: 'symbol'"
+[1] "invalid format '%d'; use format %f, %e, %g or %a for numeric objects"
+[1] "invalid format '%ld'; use format %d, %i, %o, %x or %X for integer objects"
+warning: one argument not used by format '%s' 
+[1] "a"
+warning: 2 arguments not used by format '%s' 
+[1] "a"
+warning: one argument not used by format 
+[1] "a" "a"

@@ -1,0 +1,13 @@
+library(stats)
+library(utils)
+d <- data.frame(y = c(1, 3, 2, 5, 4, 6), x = c(1, 2, 3, 4, 5, 6), g = factor(c("a", "b", "c", "a", "b", "c")), z = c(TRUE, FALSE, TRUE, TRUE, FALSE, FALSE))
+mf <- model.frame(y ~ x + g, d)
+print(mf)
+str(attributes(mf)$terms)
+print(model.matrix(y ~ x + g, d))
+print(model.matrix(~ g - 1, d))
+print(model.matrix(~ x:g + z, d))
+print(model.matrix(~ poly(x, 2), d))
+d2 <- d; d2$x[2] <- NA
+print(nrow(model.frame(y ~ x, d2)))
+print(model.frame(y ~ x, d, subset = x > 2))

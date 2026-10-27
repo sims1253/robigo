@@ -1,0 +1,17 @@
+[1] "caught: oops"
+[1] "warned: careful"
+finally ran
+[1] 10
+f()
+handling: w1 
+[1] "value"
+[1] NaN
+[1] "try-error"
+Error in try(stop("visible error"), silent = TRUE) : visible error
+[1] TRUE
+saw custom condition
+[1] "after signal"
+[1] "caught custom"
+[1] "my error"
+[1] "done"
+[1] "rethrown: deep"

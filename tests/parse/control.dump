@@ -1,0 +1,19 @@
+(`if` `a` `b`)
+(`if` `a` `b` `c`)
+(`if` `a` `b` (`if` `c` `d` `e`))
+(`<-` `x` (`if` `a` dbl:1 (`+` dbl:2 dbl:3)))
+(`for` `i` (`:` dbl:1 dbl:10) (`print` `i`))
+(`for` `i` (`seq_len` `n`) (`{` (`<-` `x` (`+` `x` `i`)) `y`))
+(`while` lgl:TRUE (`break`))
+(`repeat` (`{` (`next`)))
+(`{` (`if` `a` `b` `c`))
+(`{` (`if` `a` (`{` `b`) (`if` `c` (`{` `d`) `e`)))
+(`<-` `f` (`function` (pairlist x=<missing>) (`{` (`if` `x` (`return` dbl:1)) dbl:2) NULL))
+(`(` (`if` `a` `b` `c`))
+(`{`)
+(`{`)
+(`{` `a` `b`)
+`a`
+`b`
+`c`
+(`function` (pairlist x=<missing>) (`if` `x` dbl:1 dbl:2) NULL)

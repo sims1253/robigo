@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/robigo-syntax", "crates/robigo-numerics", "crates/robigo-runtime", "crates/robigo-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/sims1253/robigo"
+authors = ["Maximilian Scholz"]
+
+[workspace.dependencies]
+robigo-syntax = { path = "crates/robigo-syntax" }
+robigo-numerics = { path = "crates/robigo-numerics" }
+robigo-runtime = { path = "crates/robigo-runtime" }
+
+[profile.release]
+debug = "line-tables-only"
+panic = "unwind"
+
+[profile.bench]
+inherits = "release"

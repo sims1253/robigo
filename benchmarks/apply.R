@@ -1,0 +1,5 @@
+xs <- lapply(1:20000, function(i) c(i, i^2, sqrt(i)))
+s <- vapply(xs, function(v) sum(v), numeric(1))
+print(sum(s))
+m <- matrix(sin(1:250000), 500)
+print(dim(m %*% t(m)))

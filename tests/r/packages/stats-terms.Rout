@@ -1,0 +1,137 @@
+[1] "x"
+[1] 1
+[1] 1
+[1] 1
+  x
+y 0
+x 1
+list(y, x)
+[1] "a"   "b"   "a:b"
+[1] 1 1 2
+[1] 1
+[1] 1
+  a b a:b
+y 0 0   0
+a 1 0   1
+b 0 1   1
+list(y, a, b)
+[1] "a"   "b:c"
+[1] 1 2
+[1] 0
+[1] 0
+  a b:c
+a 1   0
+b 0   2
+c 0   2
+list(a, b, c)
+[1] "a"   "b"   "c"   "a:b" "a:c" "b:c"
+[1] 1 1 1 2 2 2
+[1] 1
+[1] 1
+  a b c a:b a:c b:c
+y 0 0 0   0   0   0
+a 1 0 0   1   1   0
+b 0 1 0   1   0   1
+c 0 0 1   0   1   1
+list(y, a, b, c)
+[1] "a"   "a:b"
+[1] 1 2
+[1] 1
+[1] 1
+  a a:b
+y 0   0
+a 1   2
+b 0   1
+list(y, a, b)
+[1] "b:a"
+[1] 2
+[1] 1
+[1] 1
+  b:a
+y   0
+b   2
+a   2
+list(y, b, a)
+[1] "b"   "a:b"
+[1] 1 2
+[1] 1
+[1] 1
+  b a:b
+y 0   0
+a 0   1
+b 1   2
+list(y, a, b)
+[1] "poly(x, 2)"
+[1] 1
+[1] 1
+[1] 1
+           poly(x, 2)
+log(y)              0
+poly(x, 2)          1
+offset(z)           0
+list(log(y), poly(x, 2), offset(z))
+[1] "x"
+[1] 1
+[1] 0
+[1] 1
+  x
+y 0
+x 1
+list(y, x)
+[1] "x"      "I(x^2)" "x:z"   
+[1] 1 1 2
+[1] 1
+[1] 1
+       x I(x^2) x:z
+y      0      0   0
+x      1      0   2
+I(x^2) 0      1   0
+z      0      0   1
+list(y, x, I(x^2), z)
+[1] "s(x)" "s(z)" "w"   
+[1] 1 1 1
+[1] 1
+[1] 1
+     s(x) s(z) w
+y       0    0 0
+s(x)    1    0 0
+s(z)    0    1 0
+w       0    0 1
+list(y, s(x), s(z), w)
+y ~ a + b
+attr(,"variables")
+list(y, a, b)
+attr(,"factors")
+  a b
+y 0 0
+a 1 0
+b 0 1
+attr(,"term.labels")
+[1] "a" "b"
+attr(,"order")
+[1] 1 1
+attr(,"intercept")
+[1] 1
+attr(,"response")
+[1] 1
+attr(,".Environment")
+<environment: R_GlobalEnv>
+y ~ x + z
+log(y) ~ x
+y ~ x
+attr(,"variables")
+list(y, x)
+attr(,"factors")
+  x
+y 0
+x 1
+attr(,"term.labels")
+[1] "x"
+attr(,"order")
+[1] 1
+attr(,"intercept")
+[1] 1
+attr(,"response")
+[1] 1
+attr(,".Environment")
+<environment: R_GlobalEnv>

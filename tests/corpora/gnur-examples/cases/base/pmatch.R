@@ -1,0 +1,19 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+### Name: pmatch
+### Title: Partial String Matching
+### Aliases: pmatch
+### Keywords: character
+
+### ** Examples
+
+pmatch("", "")                             # returns NA
+pmatch("m",   c("mean", "median", "mode")) # returns NA
+pmatch("med", c("mean", "median", "mode")) # returns 2
+
+pmatch(c("", "ab", "ab"), c("abc", "ab"), duplicates.ok = FALSE)
+pmatch(c("", "ab", "ab"), c("abc", "ab"), duplicates.ok = TRUE)
+## compare
+charmatch(c("", "ab", "ab"), c("abc", "ab"))
+
+
+

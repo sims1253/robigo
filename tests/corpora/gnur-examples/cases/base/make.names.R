@@ -1,0 +1,21 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+### Name: make.names
+### Title: Make Syntactically Valid Names
+### Aliases: make.names
+### Keywords: character
+
+### ** Examples
+
+make.names(c("a and b", "a-and-b"), unique = TRUE)
+# "a.and.b"  "a.and.b.1"
+make.names(c("a and b", "a_and_b"), unique = TRUE)
+# "a.and.b"  "a_and_b"
+make.names(c("a and b", "a_and_b"), unique = TRUE, allow_ = FALSE)
+# "a.and.b"  "a.and.b.1"
+make.names(c("", "X"), unique = TRUE)
+# "X.1" "X" currently; R up to 3.0.2 gave "X" "X.1"
+
+state.name[make.names(state.name) != state.name] # those 10 with a space
+
+
+

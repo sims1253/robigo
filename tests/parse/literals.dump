@@ -1,0 +1,47 @@
+dbl:1
+int:1
+dbl:1.5
+dbl:0.5
+dbl:5
+dbl:1000
+dbl:0.001
+int:1000
+dbl:16
+int:16
+dbl:1020
+dbl:3
+cplx:0,1
+cplx:0,2.5
+dbl:100000
+dbl:123456789012
+int:2147483647
+lgl:NA
+int:NA
+dbl:NA
+str:NA
+cplx:NA
+NULL
+lgl:TRUE
+lgl:FALSE
+`T`
+dbl:Inf
+dbl:NaN
+str:"double"
+str:"single"
+str:"esc\n\t\\\"'"
+str:"q'q"
+str:"AA"
+str:"é😀☺"
+str:"multi\nline"
+str:"raw \\n string"
+str:"brackets"
+str:"braces"
+str:"dashes"
+str:"single raw"
+str:"ünïcödé"
+dbl:0.10000000000000001
+(`/` dbl:1 dbl:3)
+dbl:1e-300
+dbl:1.7976931348623157e+308
+dbl:4.9406564584124654e-324
+dbl:3.1415926535897931

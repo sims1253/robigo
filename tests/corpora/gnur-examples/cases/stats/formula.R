@@ -1,0 +1,28 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+### Name: formula
+### Title: Model Formulae
+### Aliases: formula formula.default formula.formula formula.terms
+###   formula.data.frame DF2formula as.formula print.formula [.formula
+### Keywords: models
+
+### ** Examples
+
+class(fo <- y ~ x1*x2) # "formula"
+fo
+typeof(fo)  # R internal : "language"
+terms(fo)
+
+environment(fo)
+environment(as.formula("y ~ x"))
+environment(as.formula("y ~ x", env = new.env()))
+
+
+## Create a formula for a model with a large number of variables:
+xnam <- paste0("x", 1:25)
+(fmla <- as.formula(paste("y ~ ", paste(xnam, collapse= "+"))))
+## Equivalent with reformulate():
+fmla2 <- reformulate(xnam, response = "y")
+stopifnot(identical(fmla, fmla2))
+
+
+

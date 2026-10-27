@@ -1,0 +1,48 @@
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "NO"
+$id
+[1] 70
+
+$info
+[1] "yes"
+
+"~"()
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+[1] "a" "b"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "a"
+
+[[2]]
+NULL
+
+<NA> 
+  NA 
+   a <NA> 
+   1   NA 
+[1] 1
+[[1]]
+NULL
+
+[1] 1 2 3
+[1] 2 3
+[1] NA

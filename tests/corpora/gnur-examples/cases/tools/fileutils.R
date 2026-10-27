@@ -1,0 +1,17 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+library(tools)
+### Name: fileutils
+### Title: File Utilities
+### Aliases: file_ext file_path_as_absolute file_path_sans_ext
+###   list_files_with_exts list_files_with_type
+### Keywords: file
+
+### ** Examples
+## No test: 
+##D dir <- file.path(R.home(), "library", "stats")
+##D list_files_with_exts(file.path(dir, "demo"), "R")
+##D list_files_with_type(file.path(dir, "demo"), "demo") # the same
+##D file_path_sans_ext(list.files(file.path(R.home("modules"))))
+## End(No test)
+
+

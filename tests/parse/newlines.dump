@@ -1,0 +1,11 @@
+(`<-` `x` dbl:5)
+(`<-` `y` (`+` dbl:1 dbl:2))
+(`f` `a` `b` `c`)
+(`<-` `z` (`(` (`+` dbl:1 dbl:2)))
+(`<-` `w` (`c` dbl:1 dbl:2 dbl:3))
+(`<-` `v` (`[` `x` dbl:1))
+(`function` (pairlist x=<missing>) `x` NULL)
+(`if` `a` `b`)
+(`for` `i` (`:` dbl:1 dbl:3) (`print` `i`))
+`x`
+(`$` `a` `b`)

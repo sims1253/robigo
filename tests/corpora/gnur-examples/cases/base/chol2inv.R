@@ -1,0 +1,13 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
+### Name: chol2inv
+### Title: Inverse from Cholesky (or QR) Decomposition
+### Aliases: chol2inv
+### Keywords: algebra array
+
+### ** Examples
+
+cma <- chol(ma  <- cbind(1, 1:3, c(1,3,7)))
+ma %*% chol2inv(cma)
+
+
+

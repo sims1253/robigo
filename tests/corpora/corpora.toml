@@ -1,0 +1,42 @@
+# Test corpora (see README.md). Each table is one corpus in a directory of
+# the same name. Keys:
+#   description       one line
+#   mode              "script" (like Rscript FILE) or "echo" (like R -f FILE,
+#                     the transcript R CMD check compares)
+#   default_packages  R_DEFAULT_PACKAGES for GNU R and robigo
+#   timeout           seconds per case
+#   support           directory whose files are linked into each case's
+#                     working directory
+
+# Default packages: GNU R's, without `methods` until robigo can load it
+# (goalpost G6). Then add it back here and re-record: today every case would
+# fail on robigo's startup warning, hiding all other progress. Cases that
+# need S4 attach methods themselves (help pages of methods and stats4 call
+# library()).
+[fastr]
+description = "FastR's unit-test snippets (31k one-liners over builtins, S4, parser, ...), GPL-3"
+mode = "script"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 30
+commit = "f9d9199e51b371f076b19456933ee395d28360bf"
+path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutput.test"
+# FastR-only features (Java interop, FastR's own functions).
+exclude_prefix = ["library.fastr.", "rffi."]
+
+[gnur-tests]
+description = "GNU R 4.5.0's own regression tests (tests/*.R), as `make check` runs them"
+mode = "echo"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 600
+support = "support"
+# Need the network, a build tree, or are driven by Makefile rules.
+exclude = ["internet.R", "internet2.R", "libcurl.R", "download.file.R", "CRANtools.R", "demos.R", "demos2.R",
+           "no-segfault.R", "isas-tests.R", "gct-foot.R", "misc-devel.R", "reg-tests-1-gct.R"]
+
+[gnur-examples]
+description = "The examples of every help page in GNU R 4.5.0's base and recommended-free packages"
+mode = "echo"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 120
+packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datasets", "tools", "splines",
+            "stats4", "grid", "parallel", "compiler"]
