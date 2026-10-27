@@ -29,14 +29,14 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 const SAT: u32 = 0x7fff_f000; // saturated => effectively immortal (R: NAMEDMAX)
-const PURPLE_CAP: usize = 1024;
+const PURPLE_MIN: usize = 4096;
 
 const F_GRAY: u8 = 1 << 5;
 const F_WHITE: u8 = 1 << 6;
 
 // ---- layout -------------------------------------------------------------
 // +0 type u8, +1 flags u8, +2 gp u16, +4 refcnt u32, +8 attrs *mut u8
-// +16 gc_refs u32, +20 pad
+// +16 gc_refs u32, +20 edge_start u32 (borrowed while collecting)
 // vectors   +24 len u32, +28 cap u32, payload +32
 // cons      +24 car, +32 cdr, +40 tag
 // env       +24 enclosure, +32 overflow chain, +40 count u32, +48..128 inline
@@ -45,7 +45,22 @@ const F_WHITE: u8 = 1 << 6;
 // symbol    +24 name, +32 hash u32 (immortal)
 
 const OFF_GCREFS: usize = 16;
+/// Borrowed by the cycle collector: index into its edge list where this
+/// object's outgoing edges start (the collector is the only writer).
+const OFF_EDGESTART: usize = 20;
 const OFF_FIELDS: usize = 24;
+
+/// Collect when the candidate roots are on the order of the live set: a
+/// fixed small cap (the first snapshot's 1024) collects constantly and
+/// pays the per-collection fixed cost (root validation, buffer vectors)
+/// thousands of times per workload. Parked objects are garbage waiting
+/// for the collection that validates the buffer — counting them would
+/// let the trigger chase its own tail (nothing ever collects, everything
+/// parks). MM_RC_FACTOR overrides the divisor for experiments.
+fn purple_limit_factor() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("MM_RC_FACTOR").ok().and_then(|s| s.parse().ok()).unwrap_or(2))
+}
 
 const ENV_SLOTS: usize = 5;
 
@@ -162,6 +177,10 @@ fn hash_bytes(b: &[u8]) -> u64 {
 pub struct RcMemFields {
     heap: Heap,
     purple: Vec<*mut u8>,
+    /// cached purple_limit(): recomputed at each collection, so the hot
+    /// maybe_purple path is one comparison (recomputing it per call cost
+    /// a OnceLock load and a division on every container decrement)
+    purple_trigger: usize,
     free_queue: Vec<*mut u8>,
     /// objects that died by count while still in the purple buffer: their
     /// memory must not be reused (or freed to the OS) before the next
@@ -259,14 +278,11 @@ unsafe fn decref(p: *mut u8) {
             return;
         }
         (*mm).free_queue.push(p);
-    } else if c == 1 && t == CHARSXP && f & flags::INTERNED != 0 {
-        // only the intern table's own reference is left
-        let mm = m();
-        if mm.is_null() {
-            return;
-        }
-        (*mm).chars_table_release(p);
     } else if is_container(t) && f & (flags::BUFFERED | flags::IN_COLLECTOR) == 0 {
+        // interned CHARSXPs at count 1 (the intern table's own reference
+        // left) are pruned lazily at the next collection, like a weak
+        // table: releasing eagerly cost a table remove + free + re-intern
+        // per recycled string
         let mm = m();
         if mm.is_null() {
             return;
@@ -359,7 +375,8 @@ impl RcMemFields {
     fn init() -> RcMemFields {
         RcMemFields {
             heap: Heap::new(),
-            purple: Vec::with_capacity(PURPLE_CAP + 1),
+            purple: Vec::with_capacity(PURPLE_MIN + 1),
+            purple_trigger: PURPLE_MIN,
             free_queue: Vec::new(),
             dead_parked: Vec::new(),
             protect_stack: Vec::new(),
@@ -516,8 +533,13 @@ impl RcMemFields {
 
     // -- free / cycle machinery ---------------------------------------------
 
+    fn purple_limit(&self) -> usize {
+        let live = self.live_objects.saturating_sub(self.dead_parked.len() as u64) as usize;
+        PURPLE_MIN.max(live / purple_limit_factor())
+    }
+
     fn maybe_purple(&mut self, p: *mut u8) {
-        if !self.collecting && self.purple.len() >= PURPLE_CAP {
+        if !self.collecting && self.purple.len() >= self.purple_trigger {
             self.collect_cycles();
         }
         unsafe {
@@ -535,8 +557,8 @@ impl RcMemFields {
         }
         let size = object_size(p);
         self.stats.frees += 1;
-        self.stats.live_bytes = self.live_bytes - size as u64;
-        self.stats.live_objects = self.live_objects - 1;
+        // stats() re-reads live_bytes/live_objects from the manager, so
+        // only the authoritative counters need updating
         self.live_bytes -= size as u64;
         self.live_objects -= 1;
         if size > MAX_SMALL {
@@ -555,10 +577,8 @@ impl RcMemFields {
                     self.free_object(p);
                     continue;
                 }
-                let attrs = rd_ptr(p, 8);
-                if !attrs.is_null() {
-                    decref(attrs);
-                }
+                // for_each_child releases attrs together with the fields
+                // and payload slots (it yields the attrs pointer first)
                 let mut sink = |c: *mut u8| decref(c);
                 for_each_child(p, &mut sink);
                 if f & flags::BUFFERED != 0 {
@@ -585,139 +605,191 @@ impl RcMemFields {
         }
     }
 
-    fn chars_table_release(&mut self, p: *mut u8) {
-        let hash = unsafe { rd_u32(p, OFF_FIELDS) } as u64;
-        if let Some(bucket) = self.chars.get_mut(&hash) {
-            bucket.retain(|&q| q != p);
-            if bucket.is_empty() {
-                self.chars.remove(&hash);
-            }
+    /// Drop interned-char entries whose only remaining reference is the
+    /// table's own (they became garbage since the last collection; the
+    /// object is still allocated, so the entry cannot alias a reused
+    /// address). Their reference goes now and the objects die with the
+    /// free-queue drain below.
+    fn prune_chars(&mut self) {
+        let mut dead: Vec<*mut u8> = Vec::new();
+        self.chars.retain(|_, bucket| {
+            bucket.retain(|&q| {
+                let table_only = unsafe { get_refcnt(q) == 1 };
+                if table_only {
+                    dead.push(q);
+                }
+                !table_only
+            });
+            !bucket.is_empty()
+        });
+        for q in dead {
+            unsafe { decref(q) };
         }
-        unsafe { decref(p) }; // the table's reference
     }
 
     /// Bacon–Rajan synchronous cycle collection over the purple roots.
+    ///
+    /// Phase 1 walks the purple-reachable subgraph once and records every
+    /// candidate's outgoing edges in a side list (`edges`, delimited by a
+    /// sentinel; leaf children are tagged with bit 0). Phases 2–4 iterate
+    /// that list instead of re-reading the objects' child pointers: the
+    /// first snapshot re-walked children four to five times per node, all
+    /// of them cold pointer chases, and that was most of its cost.
     fn collect_cycles(&mut self) {
         if self.collecting {
             return;
         }
         self.collecting = true;
         let t0 = Instant::now();
+        self.prune_chars();
         self.drain_frees();
-        let roots: Vec<*mut u8> = std::mem::take(&mut self.purple);
-        let mut live_roots: Vec<*mut u8> = Vec::new();
-        for &p in &roots {
+        let mut roots: Vec<*mut u8> = std::mem::take(&mut self.purple);
+        let mut live = 0usize;
+        for i in 0..roots.len() {
+            let p = roots[i];
             unsafe {
-                if get_refcnt(p) == 0 || get_refcnt(p) >= SAT {
+                let c = get_refcnt(p);
+                if c == 0 || c >= SAT {
                     continue; // freed (stale entry) or effectively immortal
                 }
-                let f = get_flags(p);
-                set_flags(p, f & !flags::BUFFERED);
+                set_flags(p, get_flags(p) & !flags::BUFFERED);
             }
-            live_roots.push(p);
+            roots[live] = p;
+            live += 1;
         }
+        roots.truncate(live);
 
-        // Phase 1: the purple-reachable subgraph; snapshot refcounts.
-        let mut set: Vec<*mut u8> = Vec::new();
-        let mut dfs: Vec<*mut u8> = live_roots.clone();
+        // Phase 1: the candidate subgraph S and its edges (one cold walk).
+        // nodes[] is in expansion order; each node's edge_start is stored
+        // in its header pad, so later phases find a node's edges without a
+        // pointer-to-index map.
+        const SENTINEL: usize = 1; // leaf-tagged null: end of a node's edges
+        let mut nodes: Vec<*mut u8> = Vec::with_capacity(roots.len() * 2 + 16);
+        let mut edges: Vec<usize> = Vec::with_capacity(roots.len() * 4 + 16);
+        let mut dfs: Vec<*mut u8> = roots.clone();
         while let Some(p) = dfs.pop() {
             unsafe {
                 let f = get_flags(p);
                 if f & F_GRAY != 0 {
-                    continue;
+                    continue; // already expanded
                 }
                 set_flags(p, f | F_GRAY);
                 set_gc_refs(p, get_refcnt(p));
-                set.push(p);
+                wr_u32(p, OFF_EDGESTART, edges.len() as u32);
+                nodes.push(p);
                 let mut push = |c: *mut u8| {
-                    if rc_relevant(c) {
+                    let relevant = rc_relevant(c);
+                    // bit 0 tags a non-container leaf (16-byte aligned
+                    // heap pointers always have it clear)
+                    edges.push(c as usize | (!relevant as usize));
+                    if relevant {
                         dfs.push(c);
                     }
                 };
                 for_each_child(p, &mut push);
+                edges.push(SENTINEL);
             }
         }
+        drop(dfs);
 
-        // Phase 2: subtract the internal edges.
-        for &p in &set {
+        // Phase 2: subtract the S-internal edges. Every untagged edge
+        // target was pushed to the dfs above, so it is in S and gray by
+        // now — no membership test needed.
+        for &p in &nodes {
             unsafe {
-                let mut sub = |c: *mut u8| {
-                    if get_flags(c) & F_GRAY != 0 {
-                        set_gc_refs(c, get_gc_refs(c) - 1);
+                let start = rd_u32(p, OFF_EDGESTART) as usize;
+                for j in start..edges.len() {
+                    let c = edges[j];
+                    if c == SENTINEL {
+                        break;
                     }
-                };
-                for_each_child(p, &mut sub);
+                    if c & 1 == 0 {
+                        let q = c as *mut u8;
+                        set_gc_refs(q, get_gc_refs(q) - 1);
+                    }
+                }
             }
         }
 
-        // Phase 3: scan. Anchored objects (positive snapshot) paint their
-        // reachable set black; the rest turn white.
-        let mut black: Vec<*mut u8> = Vec::new();
-        let mut scan: Vec<*mut u8> = live_roots.clone();
+        // Phase 3: scan from the roots. Anchored objects (positive
+        // snapshot) paint their reachable set black; the rest turn white.
+        // Paint can blacken an already-white node (it became reachable
+        // from an anchored object after its own scan), so paint tests for
+        // either color.
+        let mut scan: Vec<*mut u8> = roots;
+        let mut paint: Vec<*mut u8> = Vec::new();
         while let Some(p) = scan.pop() {
             unsafe {
                 let f = get_flags(p);
                 if f & F_GRAY == 0 {
-                    continue;
+                    continue; // classified already
                 }
                 if get_gc_refs(p) > 0 {
-                    black.push(p);
-                    while let Some(q) = black.pop() {
+                    paint.push(p);
+                    while let Some(q) = paint.pop() {
                         let fq = get_flags(q);
                         if fq & (F_GRAY | F_WHITE) == 0 {
                             continue;
                         }
                         set_flags(q, fq & !(F_GRAY | F_WHITE));
-                        let mut paint = |c: *mut u8| {
-                            if rc_relevant(c) {
-                                black.push(c);
+                        let start = rd_u32(q, OFF_EDGESTART) as usize;
+                        for j in start..edges.len() {
+                            let c = edges[j];
+                            if c == SENTINEL {
+                                break;
                             }
-                        };
-                        for_each_child(q, &mut paint);
+                            if c & 1 == 0 {
+                                paint.push(c as *mut u8);
+                            }
+                        }
                     }
                 } else {
                     set_flags(p, (f & !F_GRAY) | F_WHITE);
-                    let mut push = |c: *mut u8| {
-                        if rc_relevant(c) {
-                            scan.push(c);
+                    let start = rd_u32(p, OFF_EDGESTART) as usize;
+                    for j in start..edges.len() {
+                        let c = edges[j];
+                        if c == SENTINEL {
+                            break;
                         }
-                    };
-                    for_each_child(p, &mut push);
+                        if c & 1 == 0 {
+                            scan.push(c as *mut u8);
+                        }
+                    }
                 }
             }
         }
 
-        // Phase 4: collect the whites; release their child references by
-        // ordinary decrements so survivors keep exact counts.
+        // Phase 4: collect the whites. Their child references are
+        // released by ordinary decrements (shared children that are still
+        // live keep exact counts), then they die with the drain.
         let mut whites: Vec<*mut u8> = Vec::new();
-        let mut wstack: Vec<*mut u8> = live_roots.clone();
-        while let Some(p) = wstack.pop() {
+        for &p in &nodes {
             unsafe {
-                let f = get_flags(p);
-                if f & F_WHITE == 0 {
-                    continue;
+                if get_flags(p) & F_WHITE != 0 {
+                    set_flags(p, get_flags(p) | flags::IN_COLLECTOR);
+                    whites.push(p);
                 }
-                set_flags(p, (f & !(F_WHITE | F_GRAY)) | flags::IN_COLLECTOR);
-                whites.push(p);
-                let mut push = |c: *mut u8| {
-                    if rc_relevant(c) {
-                        wstack.push(c);
+            }
+        }
+        for &p in &whites {
+            unsafe {
+                let start = rd_u32(p, OFF_EDGESTART) as usize;
+                for j in start..edges.len() {
+                    let c = edges[j];
+                    if c == SENTINEL {
+                        break;
                     }
-                };
-                for_each_child(p, &mut push);
-            }
-        }
-        for &p in &whites {
-            unsafe {
-                let mut dec = |c: *mut u8| decref(c);
-                for_each_child(p, &mut dec);
-                let a = rd_ptr(p, 8);
-                if !a.is_null() {
-                    decref(a);
+                    if c & 1 == 0 {
+                        decref(c as *mut u8);
+                    } else if c != SENTINEL {
+                        decref((c & !1usize) as *mut u8); // leaf child
+                    }
                 }
+                // attrs are part of the edge list (for_each_child yields
+                // them first); nothing left to release
             }
         }
-        for &p in &whites {
+        for p in whites {
             self.free_queue.push(p);
         }
         self.drain_frees();
@@ -730,6 +802,7 @@ impl RcMemFields {
         self.stats.collect_total_ns += dt;
         self.stats.collect_max_pause_ns = self.stats.collect_max_pause_ns.max(dt);
         self.last_pause_ns = dt;
+        self.purple_trigger = self.purple_limit();
         self.collecting = false;
     }
 }
@@ -818,8 +891,8 @@ impl Mem for RcMem {
     }
 
     fn char_intern(&mut self, bytes: &[u8]) -> RcSexp {
-        // key by the hash the object caches (u32): `chars_table_release`
-        // looks the entry up with the cached value, so both must agree
+        // key by the hash the object caches (u32) so the object, the
+        // bucket and a lazy prune all agree on one key
         let hash = hash_bytes(bytes) as u32 as u64;
         if let Some(bucket) = self.chars.get(&hash) {
             for &q in bucket {
