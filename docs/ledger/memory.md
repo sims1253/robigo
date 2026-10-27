@@ -4,6 +4,56 @@ Track: `docs/workstreams.md` § memory. Work lives in `experiments/memory/`
 (its own Cargo workspace, excluded from the root workspace). The full
 write-up, numbers and recommendation: `experiments/memory/README.md`.
 
+## 2026-10-27: the locality study — the wall-time disagreement was cache behaviour; gc fixed, recommendation reaffirmed
+
+- why: the bake-off recommended the gc on Ir (1.70× geomean) but rc won
+  wall time on exactly the evaluator-shaped workloads (fib 0.72×,
+  lapply 0.80×, strings 0.63×) on a busy shared box. The decision for
+  robigo-core must rest on experienced time, so the disagreement had to
+  be explained deterministically and, if it was the design's fault,
+  fixed.
+- measurement added: every workload × manager under callgrind
+  `--cache-sim=yes` (bench.py): Ir, D1mr/D1mw, LLmr/LLmw, estimated
+  cycles `Ir + 10·D1m + 100·LLm` (recomputable at other penalties with
+  `table --d1/--ll`); wall reps interleaved per variant pair with
+  min/median/max/spread and `getloadavg` recorded around every run.
+- finding (baseline, 8 MiB gc floor): rc recycles cache-hot slots, the
+  gc streams fresh memory between collections — fib: 12k D1 misses
+  (rc) vs 5.4M (gc); est cycles: binarytrees a dead heat (0.99×),
+  lapply 0.92× and strings 0.93× for rc; geomean gc advantage 1.70×
+  (Ir) → 1.36× (est cycles). That is rc's wall win, measured
+  deterministically.
+- fix 1 — skip-clean sweeps (kept): per-block `marked` counters from
+  the mark phase (immortal objects and the manager's symbol/int tables
+  counted as roots), sweep skips blocks where nothing died; mark colors
+  alternate so survivor headers are never rewritten. A collection now
+  costs work proportional to garbage, not to the heap. Found and fixed
+  on the way: the sweep never added small-block survivors to the
+  `live_objects` total (large-only; stats read ~0 without large
+  objects) — the two gc tests asserted against that undercount and now
+  assert above a captured bootstrap floor.
+- fix 2 — 2 MiB collection floor (kept, was 8 MiB): the churn window is
+  the allocator's streaming footprint; dial over {8M, 2M, 1M, 512K}:
+  fib LL misses 149k→51k→29k→19k but per-collection fixed costs grow
+  (capi est cycles 1424M→1553M→1763M→1986M). At the 2 MiB knee the
+  est-cycle geomean ties 8 MiB (247.0M vs 247.4M) while wall flips to
+  the gc on the evaluator shapes (fib 87→34ms vs rc 47; capi 359→293
+  vs rc 323; cycles 7→4 vs rc 18), RSS halves on churn workloads (fib
+  10.9→4.5 MB) and pauses drop 4–40× (fib 23.8→0.6 ms).
+- reverse direction, improving rc where it is weak (rejected): the
+  purple-trigger dial MM_RC_FACTOR ∈ {1,4,8} is worse everywhere —
+  factor 1: cycles RSS 5→35 MB, 61 ms pauses; 4/8: more collections
+  (binarytrees 13→36/79), more instructions, longer capi pauses. rc's
+  weak spots (binarytrees 2.02× Ir, cycles 4.35× Ir) are
+  design-inherent; keep factor 2.
+- result (after both fixes): gc wins est cycles 1.32× (1.18× at a
+  contended-machine 14/250 model), Ir 1.53×, and wall time on
+  fib/capi/cycles; ties elsewhere (binarytrees remains rc's cache-miss
+  win and the gc's RSS/pause weak spot: 61 MB, 15–40 ms marks).
+  **Kept**: recommendation = mark-region gc, 2 MiB floor, skip-clean
+  sweeps; the hybrid worth having is borrowed-read APIs + incremental
+  marking, not rc.
+
 ## 2026-10-27: the bake-off result — recommend the mark-region gc
 
 - why: G2 decides `robigo-core`'s memory manager by measurement; both
@@ -19,6 +69,8 @@ write-up, numbers and recommendation: `experiments/memory/README.md`.
   binarytrees/capi (small trial-deletion batches vs monolithic marks).
   **Kept**: recommendation = (b) mark-region + conservative stack scan +
   copy-on-modify counts; keep rc compiling as the checksum control.
+  (Superseded in detail by the locality study above: the "cache-friendlier
+  rc" observation is quantified there and the gc's side of it fixed.)
 
 ## 2026-10-27: optimizing both managers before comparing
 
