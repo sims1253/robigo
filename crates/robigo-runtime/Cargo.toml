@@ -17,6 +17,9 @@ cranelift-jit = "0.137"
 cranelift-module = "0.137"
 cranelift-native = "0.137"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Raw LZMA2 streams for lazy-load databases (R: connections.c R_decompress3),
+# the same C library GNU R links against.
+liblzma = "0.4"
 # Regular expressions for grep/sub/regexpr/strsplit (see builtins/grep.rs):
 # regex-automata for POSIX ERE (leftmost-longest via a DFA), fancy-regex for
 # perl = TRUE (look-around, back-references) and EREs with back-references.
