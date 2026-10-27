@@ -33,6 +33,18 @@ support = "support"
 exclude = ["internet.R", "internet2.R", "libcurl.R", "download.file.R", "CRANtools.R", "demos.R", "demos2.R",
            "no-segfault.R", "isas-tests.R", "gct-foot.R", "misc-devel.R", "reg-tests-1-gct.R"]
 
+# Each case of the C API corpus is an R driver (cases/<name>.R) plus its C
+# source (support/<name>.c), compiled by build.sh with R CMD SHLIB before
+# the cases run (the .so files are gitignored). GNU R's recorded output is
+# robigo-capi's (G2) target; robigo fails every case today.
+[capi]
+description = "C API cases: small shared libraries exercising libR's symbols, driven from R"
+mode = "script"
+default_packages = "NULL"
+timeout = 60
+support = "support"
+build = "build.sh"
+
 [gnur-examples]
 description = "The examples of every help page in GNU R 4.5.0's base and recommended-free packages"
 mode = "echo"
