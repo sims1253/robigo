@@ -177,10 +177,6 @@ fn hash_bytes(b: &[u8]) -> u64 {
 pub struct RcMemFields {
     heap: Heap,
     purple: Vec<*mut u8>,
-    /// cached purple_limit(): recomputed at each collection, so the hot
-    /// maybe_purple path is one comparison (recomputing it per call cost
-    /// a OnceLock load and a division on every container decrement)
-    purple_trigger: usize,
     free_queue: Vec<*mut u8>,
     /// objects that died by count while still in the purple buffer: their
     /// memory must not be reused (or freed to the OS) before the next
@@ -376,7 +372,6 @@ impl RcMemFields {
         RcMemFields {
             heap: Heap::new(),
             purple: Vec::with_capacity(PURPLE_MIN + 1),
-            purple_trigger: PURPLE_MIN,
             free_queue: Vec::new(),
             dead_parked: Vec::new(),
             protect_stack: Vec::new(),
@@ -423,10 +418,9 @@ impl RcMemFields {
         }
         let p = self.heap.alloc(size);
         unsafe {
-            *(p as *mut u8) = type_;
-            *(p.add(1) as *mut u8) = 0;
-            *(p.add(2) as *mut u16) = 0;
-            set_refcnt(p, 1); // the handle we return
+            // one u64 covers type/flags/gp/refcnt=1 (little-endian layout),
+            // the second the attrs pointer: fewer stores on the hot path
+            *(p as *mut u64) = (1u64 << 32) | type_ as u64;
             wr_ptr(p, 8, self.nil_p);
             set_gc_refs(p, 0);
         }
@@ -539,7 +533,11 @@ impl RcMemFields {
     }
 
     fn maybe_purple(&mut self, p: *mut u8) {
-        if !self.collecting && self.purple.len() >= self.purple_trigger {
+        // purple_limit() per call looks expensive (a division), but a
+        // trigger cached at the last collection goes stale as the live set
+        // grows and fires collections far too often - measured +25% total
+        // instructions on binarytrees
+        if !self.collecting && self.purple.len() >= self.purple_limit() {
             self.collect_cycles();
         }
         unsafe {
@@ -802,7 +800,6 @@ impl RcMemFields {
         self.stats.collect_total_ns += dt;
         self.stats.collect_max_pause_ns = self.stats.collect_max_pause_ns.max(dt);
         self.last_pause_ns = dt;
-        self.purple_trigger = self.purple_limit();
         self.collecting = false;
     }
 }

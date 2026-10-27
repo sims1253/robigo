@@ -177,6 +177,7 @@ impl Heap {
         base as *mut Block
     }
 
+    #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         debug_assert!(size >= 16);
         if size > MAX_SMALL {
@@ -189,7 +190,10 @@ impl Heap {
         let ci = class_index(size);
         let g = size.div_ceil(16) as u32;
         loop {
-            let cs = unsafe { &mut *(&mut self.classes[ci] as *mut ClassState) };
+            // ci < SIZES.len() by construction (size <= MAX_SMALL); the
+            // checked index both emitted a panic edge that kept alloc from
+            // being inlined and (unlike the old raw cast) borrowed self
+            let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
             if !cs.cur.is_null() {
                 let b = unsafe { &mut *cs.cur };
                 if !b.freelist.is_null() {
@@ -293,7 +297,10 @@ impl Heap {
     }
 
     /// Resolve a possibly-interior pointer to the start of the object it
-    /// points into (conservative stack scanning).
+    /// points into (conservative stack scanning). Bit-scan down from the
+    /// pointed-to granule instead of walking granule by granule: a stack
+    /// word that merely lands inside the heap range (a double, a tag)
+    /// must not cost a thousand-iteration walk.
     pub fn resolve(&self, w: usize) -> Option<*mut u8> {
         let c = self.chunk_of(w)?;
         if c.large {
@@ -306,6 +313,9 @@ impl Heap {
         }
         let b = baddr as *mut Block;
         unsafe {
+            if (*b).live_objects == 0 {
+                return None; // nothing allocated in this block
+            }
             let data = (*b).data_ptr() as usize;
             if w < data {
                 return None;
@@ -314,15 +324,18 @@ impl Heap {
             if g >= (*b).granules as usize {
                 return None;
             }
-            let mut i = g;
+            let mut word = g >> 6;
             loop {
-                if (*b).start_test(i) {
-                    return Some((data + i * 16) as *mut u8);
+                let bit = if word == g >> 6 { g & 63 } else { 63 };
+                let m = (*b).starts[word] & if bit == 63 { u64::MAX } else { (1u64 << (bit + 1)) - 1 };
+                if m != 0 {
+                    let start = word * 64 + (63 - m.leading_zeros()) as usize;
+                    return Some((data + start * 16) as *mut u8);
                 }
-                if i == 0 {
+                if word == 0 {
                     return None;
                 }
-                i -= 1;
+                word -= 1;
             }
         }
     }

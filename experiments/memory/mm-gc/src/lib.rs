@@ -345,10 +345,10 @@ impl GcMem {
         }
         let p = self.heap.alloc(size);
         unsafe {
-            *(p as *mut u8) = type_;
-            *(p.add(1) as *mut u8) = 0;
-            *(p.add(2) as *mut u16) = 0;
-            *(p.add(4) as *mut u32) = 0; // no heap references yet
+            // one u64 covers type/flags/gp/com (little-endian layout; com
+            // starts at 0: no heap references yet), the second the attrs
+            // pointer: fewer stores on the hot path
+            *(p as *mut u64) = type_ as u64;
             wr_ptr(p, 8, self.nil_p);
         }
         self.alloc_since_gc += size;
@@ -640,7 +640,7 @@ impl GcMem {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        self.gc_threshold = ((live_bytes as usize) * 2).max(gc_min());
+        self.gc_threshold = ((live_bytes as usize) * 3 / 2).max(gc_min());
     }
 
     fn collect_internal(&mut self) -> u64 {
@@ -648,9 +648,11 @@ impl GcMem {
         let g = self as *mut GcMem;
         unsafe {
             // precise roots: the protection stack and the global frame
-            let prot: Vec<*mut u8> = self.protect_stack.clone();
-            for p in prot {
-                mark_obj(g, p);
+            // (iterate in place; the old clone was a per-collection Vec
+            // allocation for no reason)
+            let prot = std::slice::from_raw_parts(self.protect_stack.as_ptr(), self.protect_stack.len());
+            for i in 0..prot.len() {
+                mark_obj(g, *prot.get_unchecked(i));
             }
             mark_obj(g, self.global_env);
             mm_gc_spill(scan_and_mark, g as *mut u8);
@@ -1265,6 +1267,27 @@ mod tests {
         assert_eq!(r, 6765 + s(20));
         m.collect();
         assert!(m.stats().live_objects < 500);
+    }
+
+    #[test]
+    fn fresh_objects_are_unshared() {
+        // copy-on-modify decisions read this: a freshly allocated object
+        // must have no external references (a regression once made every
+        // `x[i] <- v` duplicate)
+        let mut m = GcMem::new();
+        m.set_stack_top(&m as *const _ as usize);
+        let v = m.alloc_real(10);
+        assert_eq!(m.external_refs(&v), 0);
+        let c = m.char_intern(b"fresh");
+        assert_eq!(m.external_refs(&c), 0);
+        let e = m.env_new(&m.global_env());
+        assert_eq!(m.external_refs(&e), 0);
+        let one = m.int_scalar(1); // cached, immortal: treated as unshared
+        assert_eq!(m.external_refs(&one), 0);
+        // a binding is one external reference
+        let s = m.symbol_intern(b"k");
+        m.env_define(&m.global_env(), &s, &v);
+        assert_eq!(m.external_refs(&v), 1);
     }
 
     #[test]
