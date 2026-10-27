@@ -6,7 +6,7 @@
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 fn reals(v: &Value) -> Vec<f64> {
@@ -202,7 +202,9 @@ pub fn compcases(a: &[Arg]) -> RResult<Value> {
                     if !u.is_null() {
                         if len < 0 {
                             len = u.len() as i64;
-                        } else if Some(len as i32) != crate::coerce::to_int(&u, &mut Default::default()).first().copied() {
+                        } else if Some(len as i32)
+                            != crate::coerce::to_int(&u, &mut Default::default()).first().copied()
+                        {
                             return Err(bad());
                         }
                     }
@@ -522,7 +524,13 @@ pub fn acf(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
                 for v in 0..ns {
                     for lag in 0..=nl {
                         let a = acf[lag + d1 * u + d2 * v] / (se[u] * se[v]);
-                        acf[lag + d1 * u + d2 * v] = if a > 1.0 { 1.0 } else if a < -1.0 { -1.0 } else { a };
+                        acf[lag + d1 * u + d2 * v] = if a > 1.0 {
+                            1.0
+                        } else if a < -1.0 {
+                            -1.0
+                        } else {
+                            a
+                        };
                     }
                 }
             }

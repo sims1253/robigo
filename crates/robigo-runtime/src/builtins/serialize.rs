@@ -150,7 +150,8 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
         return Err(Flow::error("bad offset/length argument"));
     }
     let (off, len) = (key[0] as usize, key[1] as usize);
-    let mut f = std::fs::File::open(&*file).map_err(|_| Flow::error(format!("cannot open file '{}': No such file or directory", file)))?;
+    let mut f = std::fs::File::open(&*file)
+        .map_err(|_| Flow::error(format!("cannot open file '{}': No such file or directory", file)))?;
     use std::io::Seek;
     f.seek(std::io::SeekFrom::Start(off as u64)).map_err(|_| Flow::error("seek failed"))?;
     let mut buf = vec![0u8; len];

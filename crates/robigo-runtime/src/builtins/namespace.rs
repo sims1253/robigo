@@ -5,7 +5,7 @@ use super::{arg, internal, special};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -120,15 +120,15 @@ fn get_ns_value(i: &mut Interp, call: &Value, ns: &Value, name: &Value, exported
         Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
         _ => return Err(Flow::error_call(call.clone(), "bad value returned by `getNamespaceName'")),
     };
-    Err(Flow::error_call(
-        call.clone(),
-        format!("'{}' is not an exported object from 'namespace:{}'", name, nsname),
-    ))
+    Err(Flow::error_call(call.clone(), format!("'{}' is not an exported object from 'namespace:{}'", name, nsname)))
 }
 
 fn do_colon2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), format!("{} arguments passed to '::' which requires 2", args.len())));
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("{} arguments passed to '::' which requires 2", args.len()),
+        ));
     }
     i.visible = true;
     // R reports errors without a call here, "to avoid changing the error message".
@@ -137,7 +137,10 @@ fn do_colon2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_colon3(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), format!("{} arguments passed to ':::' which requires 2", args.len())));
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("{} arguments passed to ':::' which requires 2", args.len()),
+        ));
     }
     i.visible = true;
     get_ns_value(i, call, &args[0].value, &args[1].value, false)

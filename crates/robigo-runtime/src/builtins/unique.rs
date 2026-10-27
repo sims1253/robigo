@@ -7,17 +7,17 @@
 //! from NA), strings compare by content and list elements by
 //! `identical()`.
 
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use super::internal;
 use super::seq::gather_all;
 use super::summary::{as_bool2, check_arity_internal, sexptype};
-use super::internal;
 use crate::attrib::get_attrib;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 pub static DEFS: &[Builtin] = &[
     internal("duplicated", do_duplicated, 4),
@@ -56,11 +56,7 @@ fn real_key(x: f64) -> u64 {
 }
 
 fn cplx_key(z: Complex) -> (u64, u64) {
-    if is_na_real(z.re) || is_na_real(z.im) {
-        (NA_BITS, NA_BITS)
-    } else {
-        (real_key(z.re), real_key(z.im))
-    }
+    if is_na_real(z.re) || is_na_real(z.im) { (NA_BITS, NA_BITS) } else { (real_key(z.re), real_key(z.im)) }
 }
 
 #[derive(Clone)]
@@ -688,11 +684,7 @@ fn do_charmatch(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
                     }
                 }
             }
-            if imatch == NA_INTEGER {
-                no_match
-            } else {
-                imatch
-            }
+            if imatch == NA_INTEGER { no_match } else { imatch }
         })
         .collect();
     Ok(Value::ints(out))
@@ -866,11 +858,7 @@ fn do_merge(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
     }
     let flag = |v: &Value, name: &str| {
         let b = if v.is_empty() { NA_LOGICAL } else { crate::coerce::as_logical(v) };
-        if b == NA_LOGICAL {
-            Err(Flow::error(format!("'{}' must be TRUE or FALSE", name)))
-        } else {
-            Ok(b != 0)
-        }
+        if b == NA_LOGICAL { Err(Flow::error(format!("'{}' must be TRUE or FALSE", name))) } else { Ok(b != 0) }
     };
     let all_x = flag(&args[2].value, "all.x")?;
     let all_y = flag(&args[3].value, "all.y")?;
@@ -1184,11 +1172,7 @@ fn rowsum_matches(i: &mut Interp, g: &Value, ug: &Value, env: &Env) -> RResult<V
 
 fn int_add(acc: i32, x: i32) -> i32 {
     let d = acc as f64 + x as f64;
-    if d < i32::MIN as f64 || d > i32::MAX as f64 {
-        NA_INTEGER
-    } else {
-        acc + x
-    }
+    if d < i32::MIN as f64 || d > i32::MAX as f64 { NA_INTEGER } else { acc + x }
 }
 
 // R: unique.c:rowsum

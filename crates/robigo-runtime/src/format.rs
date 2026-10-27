@@ -55,8 +55,8 @@ const KP_MAX: i32 = 27;
 /// GNU R's `tbl[]`: declared `long double`, but initialized with `double`
 /// literals, so 1e23 to 1e27 are the nearest doubles, not exact powers.
 const TBL: [f64; 28] = [
-    1e00, 1e01, 1e02, 1e03, 1e04, 1e05, 1e06, 1e07, 1e08, 1e09, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17,
-    1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27,
+    1e00, 1e01, 1e02, 1e03, 1e04, 1e05, 1e06, 1e07, 1e08, 1e09, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+    1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27,
 ];
 
 fn tbl(i: i32) -> LDouble {
@@ -217,11 +217,7 @@ pub fn format_real(x: &[f64], digits: usize, scipen: i32, nsmall: usize, na_widt
 
 fn pad_left(s: &str, w: usize) -> String {
     let n = s.chars().count();
-    if n >= w {
-        s.to_string()
-    } else {
-        format!("{}{}", " ".repeat(w - n), s)
-    }
+    if n >= w { s.to_string() } else { format!("{}{}", " ".repeat(w - n), s) }
 }
 
 /// `EncodeReal0`.
@@ -326,11 +322,7 @@ pub fn format_integer(x: &[i32], na_width: usize) -> usize {
 }
 
 pub fn encode_integer(x: i32, w: usize, na: &str) -> String {
-    if x == NA_INTEGER {
-        pad_left(na, w)
-    } else {
-        pad_left(&x.to_string(), w)
-    }
+    if x == NA_INTEGER { pad_left(na, w) } else { pad_left(&x.to_string(), w) }
 }
 
 pub fn format_logical(x: &[Lgl], na_width: usize) -> usize {

@@ -89,11 +89,7 @@ impl<'a> Lexer<'a> {
     #[inline]
     fn peek_char(&self) -> Option<char> {
         let b = *self.bytes.get(self.pos)?;
-        if b < 0x80 {
-            Some(b as char)
-        } else {
-            self.src[self.pos..].chars().next()
-        }
+        if b < 0x80 { Some(b as char) } else { self.src[self.pos..].chars().next() }
     }
 
     fn peek_char_at(&self, offset: usize) -> Option<char> {
@@ -141,7 +137,8 @@ impl<'a> Lexer<'a> {
                 b'#' => {
                     // To the end of the line (a newline byte never occurs
                     // inside a multi-byte character).
-                    self.pos += self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
+                    self.pos +=
+                        self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
                 }
                 0xc2 if self.byte_at(self.pos + 1) == 0xa0 => self.pos += 2, // U+00A0
                 _ => break,
@@ -166,10 +163,7 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 Tok::Sym(self.string_body('`', start)?)
             }
-            'r' | 'R'
-                if matches!(self.peek_char_at(1), Some('"') | Some('\''))
-                    && self.raw_string_ahead() =>
-            {
+            'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) && self.raw_string_ahead() => {
                 Tok::Str(self.raw_string(start)?)
             }
             c if is_ident_start(c) => self.ident(),
@@ -360,15 +354,11 @@ impl<'a> Lexer<'a> {
                 let text = &self.src[start..text_end];
                 if value.fract() == 0.0 && value.abs() <= i32::MAX as f64 {
                     if has_dot && !is_hex && !has_exp {
-                        self.warnings
-                            .push(format!("integer literal {}L contains unnecessary decimal point", text));
+                        self.warnings.push(format!("integer literal {}L contains unnecessary decimal point", text));
                     }
                     Ok(Tok::Const(Const::Int(Some(value as i32))))
                 } else if value.fract() != 0.0 {
-                    self.warnings.push(format!(
-                        "integer literal {}L contains decimal; using numeric value",
-                        text
-                    ));
+                    self.warnings.push(format!("integer literal {}L contains decimal; using numeric value", text));
                     Ok(Tok::Const(Const::Dbl(value)))
                 } else {
                     self.warnings.push(format!("non-integer value {}L qualified with L; using numeric value", text));
@@ -467,11 +457,7 @@ impl<'a> Lexer<'a> {
                         }
                     }
                     if n == 0 {
-                        return Err(self.err(
-                            "'\\x' used without hex digits in character string",
-                            esc_start,
-                            false,
-                        ));
+                        return Err(self.err("'\\x' used without hex digits in character string", esc_start, false));
                     }
                     if v == 0 {
                         return Err(self.err("nul character not allowed", esc_start, false));

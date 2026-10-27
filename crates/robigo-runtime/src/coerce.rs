@@ -273,11 +273,7 @@ pub fn real_to_int(x: f64, warn: &mut bool) -> i32 {
 }
 
 pub fn int_to_real(x: i32) -> f64 {
-    if x == NA_INTEGER {
-        NA_REAL
-    } else {
-        x as f64
-    }
+    if x == NA_INTEGER { NA_REAL } else { x as f64 }
 }
 
 pub fn lgl_to_str(x: Lgl) -> RStr {
@@ -377,17 +373,9 @@ pub fn to_lgl(v: &Value, w: &mut CoerceWarnings) -> Vec<Lgl> {
         }
         Value::Str(x) => x.data.iter().map(|s| s.as_deref().map(str_to_logical).unwrap_or(NA_LOGICAL)).collect(),
         Value::Raw(x) => x.data.iter().map(|&b| (b != 0) as Lgl).collect(),
-        Value::List(x) => x
-            .data
-            .iter()
-            .map(|e| {
-                if e.len() == 1 && e.is_atomic() {
-                    to_lgl(e, w)[0]
-                } else {
-                    NA_LOGICAL
-                }
-            })
-            .collect(),
+        Value::List(x) => {
+            x.data.iter().map(|e| if e.len() == 1 && e.is_atomic() { to_lgl(e, w)[0] } else { NA_LOGICAL }).collect()
+        }
         _ => vec![],
     }
 }
@@ -455,11 +443,9 @@ pub fn to_int(v: &Value, w: &mut CoerceWarnings) -> Vec<i32> {
             })
             .collect(),
         Value::Raw(x) => x.data.iter().map(|&b| b as i32).collect(),
-        Value::List(x) => x
-            .data
-            .iter()
-            .map(|e| if e.len() == 1 && e.is_atomic() { to_int(e, w)[0] } else { NA_INTEGER })
-            .collect(),
+        Value::List(x) => {
+            x.data.iter().map(|e| if e.len() == 1 && e.is_atomic() { to_int(e, w)[0] } else { NA_INTEGER }).collect()
+        }
         _ => vec![],
     }
 }
@@ -501,11 +487,9 @@ pub fn to_real(v: &Value, w: &mut CoerceWarnings) -> Vec<f64> {
             })
             .collect(),
         Value::Raw(x) => x.data.iter().map(|&b| b as f64).collect(),
-        Value::List(x) => x
-            .data
-            .iter()
-            .map(|e| if e.len() == 1 && e.is_atomic() { to_real(e, w)[0] } else { NA_REAL })
-            .collect(),
+        Value::List(x) => {
+            x.data.iter().map(|e| if e.len() == 1 && e.is_atomic() { to_real(e, w)[0] } else { NA_REAL }).collect()
+        }
         _ => vec![],
     }
 }
@@ -530,15 +514,12 @@ pub fn to_cplx(v: &Value, w: &mut CoerceWarnings) -> Vec<Complex> {
                 },
             })
             .collect(),
-        Value::List(x) => x
-            .data
-            .iter()
-            .map(|e| if e.len() == 1 && e.is_atomic() { to_cplx(e, w)[0] } else { Complex::NA })
-            .collect(),
-        _ => to_real(v, w)
-            .into_iter()
-            .map(|d| if is_na_real(d) { Complex::NA } else { Complex::new(d, 0.0) })
-            .collect(),
+        Value::List(x) => {
+            x.data.iter().map(|e| if e.len() == 1 && e.is_atomic() { to_cplx(e, w)[0] } else { Complex::NA }).collect()
+        }
+        _ => {
+            to_real(v, w).into_iter().map(|d| if is_na_real(d) { Complex::NA } else { Complex::new(d, 0.0) }).collect()
+        }
     }
 }
 

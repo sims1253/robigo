@@ -346,7 +346,16 @@ fn cov_na_1(o: &mut Out, n: usize, ncx: usize, x: &[f64], has_na: &[bool], cor: 
 
 /// COV_SDEV: standard deviations of the columns (complete cases or
 /// columns without NAs), replacing the means.
-fn sdev(x: &[f64], n: usize, nc: usize, means: &mut [f64], ind: Option<&[i32]>, has_na: Option<&[bool]>, n1: usize, kendall: bool) {
+fn sdev(
+    x: &[f64],
+    n: usize,
+    nc: usize,
+    means: &mut [f64],
+    ind: Option<&[i32]>,
+    has_na: Option<&[bool]>,
+    n1: usize,
+    kendall: bool,
+) {
     let ok = |k: usize| ind.is_none_or(|ind| ind[k] != 0);
     for i in 0..nc {
         if has_na.is_some_and(|h| h[i]) {
@@ -382,7 +391,15 @@ fn sdev(x: &[f64], n: usize, nc: usize, means: &mut [f64], ind: Option<&[i32]>, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cor_from_sd2(o: &mut Out, ncx: usize, ncy: usize, xm: &[f64], ym: &[f64], na_x: Option<&[bool]>, na_y: Option<&[bool]>) {
+fn cor_from_sd2(
+    o: &mut Out,
+    ncx: usize,
+    ncy: usize,
+    xm: &[f64],
+    ym: &[f64],
+    na_x: Option<&[bool]>,
+    na_y: Option<&[bool]>,
+) {
     for i in 0..ncx {
         if na_x.is_some_and(|h| h[i]) {
             continue;
@@ -403,7 +420,17 @@ fn cor_from_sd2(o: &mut Out, ncx: usize, ncy: usize, xm: &[f64], ym: &[f64], na_
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cov_complete2(o: &mut Out, n: usize, ncx: usize, ncy: usize, x: &[f64], y: &[f64], ind: &[i32], cor: bool, kendall: bool) {
+fn cov_complete2(
+    o: &mut Out,
+    n: usize,
+    ncx: usize,
+    ncy: usize,
+    x: &[f64],
+    y: &[f64],
+    ind: &[i32],
+    cor: bool,
+    kendall: bool,
+) {
     let nobs = ind.iter().filter(|&&v| v != 0).count();
     if nobs <= 1 {
         return fill_na(o, ncx, ncy);

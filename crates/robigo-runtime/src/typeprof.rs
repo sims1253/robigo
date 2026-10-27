@@ -92,14 +92,8 @@ pub fn record_frame(function_body: Option<&Value>, env: &Env) {
         },
         Some(_) => return,
     };
-    let bindings: Vec<(String, Value)> = env
-        .0
-        .frame()
-        .borrow()
-        .entries
-        .iter()
-        .map(|b| (b.sym.name().to_string(), b.value.clone()))
-        .collect();
+    let bindings: Vec<(String, Value)> =
+        env.0.frame().borrow().entries.iter().map(|b| (b.sym.name().to_string(), b.value.clone())).collect();
     PROFILE.with(|p| {
         let mut p = p.borrow_mut();
         *p.calls.entry(key.clone()).or_default() += 1;
@@ -138,7 +132,8 @@ pub fn write() {
     let Some(path) = std::env::var_os("ROBIGO_TYPE_PROFILE") else { return };
     let text = PROFILE.with(|p| {
         let p = p.borrow();
-        let mut out = String::from("{\n  \"producer\": \"robigo\",\n  \"snapshot_kind\": \"scope_exit\",\n  \"scopes\": [\n");
+        let mut out =
+            String::from("{\n  \"producer\": \"robigo\",\n  \"snapshot_kind\": \"scope_exit\",\n  \"scopes\": [\n");
         let mut first_scope = true;
         for ((file, line, col), bindings) in &p.scopes {
             if !first_scope {

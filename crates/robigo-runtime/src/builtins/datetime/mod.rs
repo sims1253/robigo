@@ -19,7 +19,7 @@ use crate::coerce::{as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 use tz::Tm;
 
@@ -373,7 +373,9 @@ impl LtBuilder {
     fn makelt(&mut self, tm: &Tm, valid: bool, frac_secs: f64) {
         if valid {
             self.sec.push(tm.sec as f64 + frac_secs);
-            for (j, v) in [tm.min, tm.hour, tm.mday, tm.mon, tm.year, tm.wday, tm.yday, tm.isdst].into_iter().enumerate() {
+            for (j, v) in
+                [tm.min, tm.hour, tm.mday, tm.mon, tm.year, tm.wday, tm.yday, tm.isdst].into_iter().enumerate()
+            {
                 self.ints[j].push(v);
             }
         } else {
@@ -555,7 +557,11 @@ fn tm_from_comps(comps: &[Value], nlen: &[usize], i: usize) -> (f64, Tm) {
 }
 
 fn any_na(tm: &Tm) -> bool {
-    tm.min == NA_INTEGER || tm.hour == NA_INTEGER || tm.mday == NA_INTEGER || tm.mon == NA_INTEGER || tm.year == NA_INTEGER
+    tm.min == NA_INTEGER
+        || tm.hour == NA_INTEGER
+        || tm.mday == NA_INTEGER
+        || tm.mon == NA_INTEGER
+        || tm.year == NA_INTEGER
 }
 
 // ----------------------------------------------------------------------
@@ -585,7 +591,8 @@ fn do_as_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> 
             b.zone.push(rstr(&tz));
             b.gmtoff.push(0);
         } else {
-            let p: Rc<str> = if valid && ptm.isdst >= 0 { tz::tzname()[ptm.isdst.min(1) as usize].clone() } else { Rc::from("") };
+            let p: Rc<str> =
+                if valid && ptm.isdst >= 0 { tz::tzname()[ptm.isdst.min(1) as usize].clone() } else { Rc::from("") };
             b.zone.push(Some(p));
             b.gmtoff.push(if valid { ptm.gmtoff as i32 } else { NA_INTEGER });
         }
@@ -696,7 +703,11 @@ fn do_format_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env)
     for i in 0..big_n {
         let secs = reals_of(&comps[0])[i % nlen[0]];
         let fsecs = secs.floor();
-        tm.sec = if secs.is_finite() && fsecs >= i32::MIN as f64 && fsecs <= i32::MAX as f64 { fsecs as i32 } else { NA_INTEGER };
+        tm.sec = if secs.is_finite() && fsecs >= i32::MIN as f64 && fsecs <= i32::MAX as f64 {
+            fsecs as i32
+        } else {
+            NA_INTEGER
+        };
         let g = |k: usize| ints_of(&comps[k])[i % nlen[k]];
         tm.min = g(1);
         tm.hour = g(2);
@@ -831,10 +842,8 @@ fn do_format_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env)
 /// `glibc_fix`: set mon and mday which glibc does not always set, using
 /// the current date where needed.
 fn glibc_fix(tm: &mut Tm, invalid: &mut bool) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let tm0 = tz::localtime_r(now).unwrap_or_default();
     if tm.year == NA_INTEGER {
         tm.year = tm0.year;
@@ -1233,7 +1242,17 @@ fn balance_posixlt(interp: &mut Interp, x: Value, fill_only: bool, do_class: boo
             // Set correct {yday, wday}
             mkdate00(&mut tm);
         }
-        b.makelt(&tm, valid, if valid { secs - fsecs } else if secs.is_finite() { NA_REAL } else { secs });
+        b.makelt(
+            &tm,
+            valid,
+            if valid {
+                secs - fsecs
+            } else if secs.is_finite() {
+                NA_REAL
+            } else {
+                secs
+            },
+        );
         if have_10 {
             let p: Rc<str> = if valid && tm.isdst >= 0 {
                 zone_i.clone().unwrap_or_else(|| tz::tzname()[tm.isdst.min(1) as usize].clone())

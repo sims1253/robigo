@@ -127,11 +127,7 @@ pub fn pow1p(x: f64, y: f64) -> f64 {
             _ => {}
         }
     }
-    if (x + 1.0) - 1.0 == x || x.abs() > 0.5 || x.is_nan() {
-        (1.0 + x).powf(y)
-    } else {
-        (y * log1p(x)).exp()
-    }
+    if (x + 1.0) - 1.0 == x || x.abs() > 0.5 || x.is_nan() { (1.0 + x).powf(y) } else { (y * log1p(x)).exp() }
 }
 
 /// R: nmath/dbinom.c:dbinom_raw
@@ -147,11 +143,7 @@ pub fn dbinom_raw(x: f64, n: f64, p: f64, q: f64, give_log: bool) -> f64 {
             return r_d__1(give_log);
         }
         return if p > q {
-            if give_log {
-                n * q.ln()
-            } else {
-                q.powf(n)
-            }
+            if give_log { n * q.ln() } else { q.powf(n) }
         } else if give_log {
             n * log1p(-p)
         } else {
@@ -160,11 +152,7 @@ pub fn dbinom_raw(x: f64, n: f64, p: f64, q: f64, give_log: bool) -> f64 {
     }
     if x == n {
         return if p > q {
-            if give_log {
-                n * log1p(-q)
-            } else {
-                pow1p(-q, n)
-            }
+            if give_log { n * log1p(-q) } else { pow1p(-q, n) }
         } else if give_log {
             n * p.ln()
         } else {

@@ -210,10 +210,8 @@ fn parse_tzfile(data: &[u8]) -> Option<TzFile> {
     }
     let mut f = TzFile::default();
     let tb = take(&mut pos, num_transitions * trans_width)?;
-    f.transitions = tb
-        .chunks(trans_width)
-        .map(|c| if trans_width == 4 { decode32(c) as i64 } else { decode64(c) })
-        .collect();
+    f.transitions =
+        tb.chunks(trans_width).map(|c| if trans_width == 4 { decode32(c) as i64 } else { decode64(c) }).collect();
     f.type_idxs = take(&mut pos, num_transitions)?.to_vec();
     if f.type_idxs.iter().any(|&t| t as usize >= num_types) {
         return None;
@@ -284,7 +282,17 @@ struct TzRule {
 
 impl Default for TzRule {
     fn default() -> Self {
-        TzRule { name: Rc::from(""), typ: RuleType::J0, m: 0, n: 0, d: 0, secs: 0, offset: 0, change: 0, computed_for: 0 }
+        TzRule {
+            name: Rc::from(""),
+            typ: RuleType::J0,
+            m: 0,
+            n: 0,
+            d: 0,
+            secs: 0,
+            offset: 0,
+            change: 0,
+            computed_for: 0,
+        }
     }
 }
 
@@ -1068,7 +1076,18 @@ fn isdst_differ(a: i32, b: i32) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ydhms_diff(year1: i64, yday1: i64, hour1: i64, min1: i64, sec1: i64, year0: i64, yday0: i64, hour0: i64, min0: i64, sec0: i64) -> i64 {
+fn ydhms_diff(
+    year1: i64,
+    yday1: i64,
+    hour1: i64,
+    min1: i64,
+    sec1: i64,
+    year0: i64,
+    yday0: i64,
+    hour0: i64,
+    min0: i64,
+    sec0: i64,
+) -> i64 {
     // Compute intervening leap days correctly even if year is negative.
     let a4 = (year1 >> 2) + (TM_YEAR_BASE >> 2) - ((year1 & 3) == 0) as i64;
     let b4 = (year0 >> 2) + (TM_YEAR_BASE >> 2) - ((year0 & 3) == 0) as i64;
@@ -1132,8 +1151,7 @@ fn mktime_internal(tp: &mut Tm, offset: &mut i64) -> Result<i64, ()> {
     let negative_mon_remainder = (mon_remainder < 0) as i32;
     let mon_years = mon / 12 - negative_mon_remainder;
     let year = year_requested + mon_years as i64;
-    let mon_yday =
-        MON_YDAY[leapyear(year) as usize][(mon_remainder + 12 * negative_mon_remainder) as usize] as i64 - 1;
+    let mon_yday = MON_YDAY[leapyear(year) as usize][(mon_remainder + 12 * negative_mon_remainder) as usize] as i64 - 1;
     let yday = mon_yday + mday;
 
     let off = *offset;

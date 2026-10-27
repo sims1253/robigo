@@ -15,7 +15,13 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         use libmimalloc_sys::*;
         // SAFETY: plain calls into mimalloc with the requested layout.
-        let p = unsafe { if layout.align() <= WORD { mi_malloc(layout.size()) } else { mi_malloc_aligned(layout.size(), layout.align()) } };
+        let p = unsafe {
+            if layout.align() <= WORD {
+                mi_malloc(layout.size())
+            } else {
+                mi_malloc_aligned(layout.size(), layout.align())
+            }
+        };
         p as *mut u8
     }
 
@@ -23,7 +29,13 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
         use libmimalloc_sys::*;
         // SAFETY: as in `alloc`.
-        let p = unsafe { if layout.align() <= WORD { mi_zalloc(layout.size()) } else { mi_zalloc_aligned(layout.size(), layout.align()) } };
+        let p = unsafe {
+            if layout.align() <= WORD {
+                mi_zalloc(layout.size())
+            } else {
+                mi_zalloc_aligned(layout.size(), layout.align())
+            }
+        };
         p as *mut u8
     }
 
@@ -38,7 +50,13 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
         use libmimalloc_sys::*;
         let p = ptr as *mut std::ffi::c_void;
         // SAFETY: `ptr` was allocated by mimalloc with `layout`.
-        let q = unsafe { if layout.align() <= WORD { mi_realloc(p, new_size) } else { mi_realloc_aligned(p, new_size, layout.align()) } };
+        let q = unsafe {
+            if layout.align() <= WORD {
+                mi_realloc(p, new_size)
+            } else {
+                mi_realloc_aligned(p, new_size, layout.align())
+            }
+        };
         q as *mut u8
     }
 }

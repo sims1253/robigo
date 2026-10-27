@@ -79,4 +79,3 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
         _ => Ok(Value::Null),
     }
 }
-

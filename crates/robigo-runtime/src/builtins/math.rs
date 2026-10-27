@@ -6,7 +6,7 @@
 //! the Math group (`gamma`, `lgamma`, `digamma`, `trigamma`).
 
 use super::{internal, special};
-use crate::coerce::{as_integer, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_integer};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -15,7 +15,7 @@ use crate::nmath::binom as nb;
 use crate::nmath::dist as nd;
 use crate::nmath::norm as nn;
 use crate::nmath::pgamma as npg;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -143,13 +143,7 @@ fn copy_all_attrs(from: &Value, to: &mut Value) {
 
 /// R: arithmetic.c:math2 (and math2_1/math2_2: `f` closes over the int
 /// flags).
-fn math2(
-    i: &mut Interp,
-    call: Option<&Value>,
-    sa: &Value,
-    sb: &Value,
-    f: &dyn Fn(f64, f64) -> f64,
-) -> RResult<Value> {
+fn math2(i: &mut Interp, call: Option<&Value>, sa: &Value, sb: &Value, f: &dyn Fn(f64, f64) -> f64) -> RResult<Value> {
     if !is_numeric(sa) || !is_numeric(sb) {
         return Err(error_at(call, MSG_NONNUM_MATH));
     }
@@ -301,11 +295,7 @@ fn math4(
 
 /// R: arithmetic.c:math2B / math3B for the Bessel functions. `args` are
 /// (x, nu) or (x, nu, expo).
-fn bessel(
-    i: &mut Interp,
-    args: &[Arg],
-    f: &dyn Fn(&[f64], &[f64], &[f64]) -> (Vec<f64>, bool),
-) -> RResult<Value> {
+fn bessel(i: &mut Interp, args: &[Arg], f: &dyn Fn(&[f64], &[f64], &[f64]) -> (Vec<f64>, bool)) -> RResult<Value> {
     if args.iter().any(|a| !is_numeric(&a.value)) {
         return Err(Flow::error(MSG_NONNUM_MATH));
     }
@@ -406,7 +396,10 @@ fn x_sym() -> Sym {
 
 /// R: arithmetic.c:match_round_gen_args -- formals (x, ...); `x` first.
 fn match_round_gen_args(args: Vec<Arg>, call: &Value) -> RResult<Vec<Arg>> {
-    if !args.is_empty() && args[0].tag.is_none() && args.get(1).is_none_or(|a| a.tag != Some(x_sym())) && args.len() <= 2
+    if !args.is_empty()
+        && args[0].tag.is_none()
+        && args.get(1).is_none_or(|a| a.tag != Some(x_sym()))
+        && args.len() <= 2
     {
         return Ok(args);
     }
@@ -428,10 +421,7 @@ fn match_math2_dflt_args(args: Vec<Arg>, call: &Value) -> RResult<(Value, Value)
         return Ok((args[0].value.clone(), args[1].value.clone()));
     }
     let m = super::match_args(args, &["x", "digits"], call)?;
-    Ok((
-        m.vals[0].clone().unwrap_or_else(Value::missing_arg),
-        m.vals[1].clone().unwrap_or_else(Value::missing_arg),
-    ))
+    Ok((m.vals[0].clone().unwrap_or_else(Value::missing_arg), m.vals[1].clone().unwrap_or_else(Value::missing_arg)))
 }
 
 /// R: arithmetic.c:do_Math2 (round = 10001, signif = 10004)
@@ -567,7 +557,16 @@ fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
             return Complex::new(NA_REAL, NA_REAL);
         }
         let y = csn.re;
-        dr = Complex::new(if y.is_nan() { y } else if y >= 0.0 { nmath::M_PI_2 } else { -nmath::M_PI_2 }, 0.0);
+        dr = Complex::new(
+            if y.is_nan() {
+                y
+            } else if y >= 0.0 {
+                nmath::M_PI_2
+            } else {
+                -nmath::M_PI_2
+            },
+            0.0,
+        );
     } else {
         let q = unsafe { __divdc3(csn.re, csn.im, ccs.re, ccs.im) };
         let t = unsafe { catan(q) };

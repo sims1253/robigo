@@ -60,11 +60,7 @@ pub fn pnorm(x: f64, mu: f64, sigma: f64, lower_tail: bool, log_p: bool) -> f64 
         return if x < mu { r_dt_0(lower_tail, log_p) } else { r_dt_1(lower_tail, log_p) };
     }
     let (cum, ccum) = pnorm_both(p, if lower_tail { 0 } else { 1 }, log_p);
-    if lower_tail {
-        cum
-    } else {
-        ccum
-    }
+    if lower_tail { cum } else { ccum }
 }
 
 /// R: nmath/pnorm.c:pnorm_both. Returns (cum, ccum); `i_tail` in
@@ -188,10 +184,7 @@ pub fn pnorm_both(x: f64, i_tail: i32, log_p: bool) -> (f64, f64) {
         }
         let temp = (xnum + C[7]) / (xden + D[7]);
         do_del(y, temp, &mut cum, &mut ccum);
-    } else if (log_p && y < 1e170)
-        || (lower && -38.4674 < x && x < 8.2924)
-        || (upper && -8.2924 < x && x < 38.4674)
-    {
+    } else if (log_p && y < 1e170) || (lower && -38.4674 < x && x < 8.2924) || (upper && -8.2924 < x && x < 38.4674) {
         let xsq = 1.0 / (x * x);
         let mut xnum = P[5] * xsq;
         let mut xden = xsq;
@@ -286,7 +279,8 @@ pub fn qnorm(p: f64, mu: f64, sigma: f64, lower_tail: bool, log_p: bool) -> f64 
                     + 1.0);
         } else if r <= 27.0 {
             r += -5.0;
-            val = (((((((r * 2.01033439929228813265e-7 + 2.71155556874348757815e-5) * r + 0.0012426609473880784386)
+            val = (((((((r * 2.01033439929228813265e-7 + 2.71155556874348757815e-5) * r
+                + 0.0012426609473880784386)
                 * r
                 + 0.026532189526576123093)
                 * r
@@ -297,7 +291,8 @@ pub fn qnorm(p: f64, mu: f64, sigma: f64, lower_tail: bool, log_p: bool) -> f64 
                 + 5.4637849111641143699)
                 * r
                 + 6.6579046435011037772)
-                / (((((((r * 2.04426310338993978564e-15 + 1.4215117583164458887e-7) * r + 1.8463183175100546818e-5)
+                / (((((((r * 2.04426310338993978564e-15 + 1.4215117583164458887e-7) * r
+                    + 1.8463183175100546818e-5)
                     * r
                     + 7.868691311456132591e-4)
                     * r
@@ -324,7 +319,8 @@ pub fn qnorm(p: f64, mu: f64, sigma: f64, lower_tail: bool, log_p: bool) -> f64 
                             x2 = s2 - (M_2PI * x2).ln()
                                 + 2.0
                                     * log1p(
-                                        -(1.0 - (1.0 - (5.0 - 9.0 / (8.0 + x2)) / (6.0 + x2)) / (4.0 + x2)) / (2.0 + x2),
+                                        -(1.0 - (1.0 - (5.0 - 9.0 / (8.0 + x2)) / (6.0 + x2)) / (4.0 + x2))
+                                            / (2.0 + x2),
                                     );
                         }
                     }

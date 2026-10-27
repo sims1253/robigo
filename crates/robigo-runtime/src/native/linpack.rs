@@ -124,7 +124,16 @@ fn sign(a: f64, b: f64) -> f64 {
 /// `x` is `ldx` by `p`; `work` has `2 * p` elements.
 // R: appl/dqrdc2.f
 #[allow(clippy::too_many_arguments)]
-pub fn dqrdc2(x: &mut [f64], ldx: usize, n: usize, p: usize, tol: f64, qraux: &mut [f64], jpvt: &mut [i32], work: &mut [f64]) -> usize {
+pub fn dqrdc2(
+    x: &mut [f64],
+    ldx: usize,
+    n: usize,
+    p: usize,
+    tol: f64,
+    qraux: &mut [f64],
+    jpvt: &mut [i32],
+    work: &mut [f64],
+) -> usize {
     let at = |i: usize, j: usize| i + j * ldx; // 0-based (i, j)
     // work(j,1) = work[j], work(j,2) = work[p + j]
     if n > 0 {
@@ -392,7 +401,16 @@ pub enum Util {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn dqrutl(what: Util, x: &mut [f64], n: usize, k: usize, qraux: &[f64], y: &mut [f64], ny: usize, out: &mut [f64]) -> i32 {
+pub fn dqrutl(
+    what: Util,
+    x: &mut [f64],
+    n: usize,
+    k: usize,
+    qraux: &[f64],
+    y: &mut [f64],
+    ny: usize,
+    out: &mut [f64],
+) -> i32 {
     let mut info = 0;
     for j in 0..ny {
         let ycol: Vec<f64> = y[j * n..(j + 1) * n].to_vec();
@@ -406,18 +424,27 @@ pub fn dqrutl(what: Util, x: &mut [f64], n: usize, k: usize, qraux: &[f64], y: &
                 info = dqrsl(x, n, n, k, qraux, &ycol, &mut o, 10000);
             }
             Util::Coef => {
-                let mut o =
-                    Qrsl { qty: Some(&mut y[j * n..(j + 1) * n]), b: Some(&mut out[j * k..(j + 1) * k]), ..Default::default() };
+                let mut o = Qrsl {
+                    qty: Some(&mut y[j * n..(j + 1) * n]),
+                    b: Some(&mut out[j * k..(j + 1) * k]),
+                    ..Default::default()
+                };
                 info = dqrsl(x, n, n, k, qraux, &ycol, &mut o, 100);
             }
             Util::Rsd => {
-                let mut o =
-                    Qrsl { qty: Some(&mut y[j * n..(j + 1) * n]), rsd: Some(&mut out[j * n..(j + 1) * n]), ..Default::default() };
+                let mut o = Qrsl {
+                    qty: Some(&mut y[j * n..(j + 1) * n]),
+                    rsd: Some(&mut out[j * n..(j + 1) * n]),
+                    ..Default::default()
+                };
                 info = dqrsl(x, n, n, k, qraux, &ycol, &mut o, 10);
             }
             Util::Xb => {
-                let mut o =
-                    Qrsl { qty: Some(&mut y[j * n..(j + 1) * n]), xb: Some(&mut out[j * n..(j + 1) * n]), ..Default::default() };
+                let mut o = Qrsl {
+                    qty: Some(&mut y[j * n..(j + 1) * n]),
+                    xb: Some(&mut out[j * n..(j + 1) * n]),
+                    ..Default::default()
+                };
                 info = dqrsl(x, n, n, k, qraux, &ycol, &mut o, 1);
             }
         }

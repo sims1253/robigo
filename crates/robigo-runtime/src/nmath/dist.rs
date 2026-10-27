@@ -37,11 +37,7 @@ pub fn punif(x: f64, a: f64, b: f64, lower_tail: bool, log_p: bool) -> f64 {
     if x <= a {
         return r_dt_0(lower_tail, log_p);
     }
-    if lower_tail {
-        r_d_val((x - a) / (b - a), log_p)
-    } else {
-        r_d_val((b - x) / (b - a), log_p)
-    }
+    if lower_tail { r_d_val((x - a) / (b - a), log_p) } else { r_d_val((b - x) / (b - a), log_p) }
 }
 
 /// R: nmath/qunif.c
@@ -75,11 +71,7 @@ pub fn dexp(x: f64, scale: f64, give_log: bool) -> f64 {
     if x < 0.0 {
         return r_d__0(give_log);
     }
-    if give_log {
-        (-x / scale) - scale.ln()
-    } else {
-        (-x / scale).exp() / scale
-    }
+    if give_log { (-x / scale) - scale.ln() } else { (-x / scale).exp() / scale }
 }
 
 /// R: nmath/pexp.c
@@ -94,15 +86,7 @@ pub fn pexp(x: f64, scale: f64, lower_tail: bool, log_p: bool) -> f64 {
         return r_dt_0(lower_tail, log_p);
     }
     let x = -(x / scale);
-    if lower_tail {
-        if log_p {
-            r_log1_exp(x)
-        } else {
-            -expm1(x)
-        }
-    } else {
-        r_d_exp(x, log_p)
-    }
+    if lower_tail { if log_p { r_log1_exp(x) } else { -expm1(x) } } else { r_d_exp(x, log_p) }
 }
 
 /// R: nmath/qexp.c
@@ -131,11 +115,7 @@ pub fn dcauchy(x: f64, location: f64, scale: f64, give_log: bool) -> f64 {
         return ML_NAN;
     }
     let y = (x - location) / scale;
-    if give_log {
-        -(M_PI * scale * (1.0 + y * y)).ln()
-    } else {
-        1.0 / (M_PI * scale * (1.0 + y * y))
-    }
+    if give_log { -(M_PI * scale * (1.0 + y * y)).ln() } else { 1.0 / (M_PI * scale * (1.0 + y * y)) }
 }
 
 /// R: nmath/pcauchy.c (HAVE_ATANPI)
@@ -158,11 +138,7 @@ pub fn pcauchy(x: f64, location: f64, scale: f64, lower_tail: bool, log_p: bool)
     }
     if x.abs() > 1.0 {
         let y = atanpi(1.0 / x);
-        if x > 0.0 {
-            r_d_clog(y, log_p)
-        } else {
-            r_d_val(-y, log_p)
-        }
+        if x > 0.0 { r_d_clog(y, log_p) } else { r_d_val(-y, log_p) }
     } else {
         r_d_val(0.5 + atanpi(x), log_p)
     }
@@ -222,11 +198,7 @@ pub fn dlogis(x: f64, location: f64, scale: f64, give_log: bool) -> f64 {
     let x = ((x - location) / scale).abs();
     let e = (-x).exp();
     let f = 1.0 + e;
-    if give_log {
-        -(x + (scale * f * f).ln())
-    } else {
-        e / (scale * f * f)
-    }
+    if give_log { -(x + (scale * f * f).ln()) } else { e / (scale * f * f) }
 }
 
 /// R: nmath/plogis.c:log1pexp
@@ -277,11 +249,7 @@ pub fn qlogis(p: f64, location: f64, scale: f64, lower_tail: bool, log_p: bool) 
         return location;
     }
     let p = if log_p {
-        if lower_tail {
-            p - r_log1_exp(p)
-        } else {
-            r_log1_exp(p) - p
-        }
+        if lower_tail { p - r_log1_exp(p) } else { r_log1_exp(p) - p }
     } else {
         (if lower_tail { p / (1.0 - p) } else { (1.0 - p) / p }).ln()
     };
@@ -357,11 +325,7 @@ pub fn dweibull(x: f64, shape: f64, scale: f64, give_log: bool) -> f64 {
     }
     let tmp1 = (x / scale).powf(shape - 1.0);
     let tmp2 = tmp1 * (x / scale);
-    if give_log {
-        -tmp2 + (shape * tmp1 / scale).ln()
-    } else {
-        shape * tmp1 * (-tmp2).exp() / scale
-    }
+    if give_log { -tmp2 + (shape * tmp1 / scale).ln() } else { shape * tmp1 * (-tmp2).exp() / scale }
 }
 
 /// R: nmath/pweibull.c
@@ -376,15 +340,7 @@ pub fn pweibull(x: f64, shape: f64, scale: f64, lower_tail: bool, log_p: bool) -
         return r_dt_0(lower_tail, log_p);
     }
     let x = -(x / scale).powf(shape);
-    if lower_tail {
-        if log_p {
-            r_log1_exp(x)
-        } else {
-            -expm1(x)
-        }
-    } else {
-        r_d_exp(x, log_p)
-    }
+    if lower_tail { if log_p { r_log1_exp(x) } else { -expm1(x) } } else { r_d_exp(x, log_p) }
 }
 
 /// R: nmath/qweibull.c
@@ -417,11 +373,7 @@ pub fn dgeom(x: f64, p: f64, give_log: bool) -> f64 {
     }
     let x = r_forceint(x);
     let prob = dbinom_raw(0.0, x, p, 1.0 - p, give_log);
-    if give_log {
-        p.ln() + prob
-    } else {
-        p * prob
-    }
+    if give_log { p.ln() + prob } else { p * prob }
 }
 
 /// R: nmath/pgeom.c

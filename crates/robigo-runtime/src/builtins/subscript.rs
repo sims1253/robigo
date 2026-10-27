@@ -386,10 +386,7 @@ pub fn vector_index_path(
             if i > 0 {
                 return Err(Flow::error_call(call.clone(), format!("recursive indexing failed at level {}\n", i + 1)));
             } else {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    "attempt to select more than one element in vectorIndex",
-                ));
+                return Err(Flow::error_call(call.clone(), "attempt to select more than one element in vectorIndex"));
             }
         }
         let names = get_attrib(&x, s::NAMES);
@@ -621,7 +618,8 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult
     }
     if min <= -1.0 {
         if max < 1.0 && !isna {
-            let drop = s.iter().filter(|d| d.is_finite() && **d <= -1.0 && -**d < nx as f64 + 1.0).map(|&d| (-d) as i64);
+            let drop =
+                s.iter().filter(|d| d.is_finite() && **d <= -1.0 && -**d < nx as f64 + 1.0).map(|&d| (-d) as i64);
             return Ok(negative_positions(drop, nx));
         }
         return Err(ecall(call, "only 0's may be mixed with negative subscripts"));
@@ -640,13 +638,7 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult
 /// R's `stringSubscript`: match against names; unmatched names get new
 /// positions past the end when stretching is allowed (assignment).
 // R: subscript.c:stringSubscript
-fn string_subscript(
-    s: &[RStr],
-    nx: i64,
-    names: Option<&[RStr]>,
-    stretch: &mut i64,
-    call: ECall,
-) -> RResult<Subscript> {
+fn string_subscript(s: &[RStr], nx: i64, names: Option<&[RStr]>, stretch: &mut i64, call: ECall) -> RResult<Subscript> {
     let ns = s.len();
     let canstretch = *stretch > 0;
     let nnames = nx;

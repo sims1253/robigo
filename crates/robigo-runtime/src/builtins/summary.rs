@@ -13,7 +13,7 @@ use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::format::string_from_real;
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -83,10 +83,7 @@ pub fn as_logical2(v: &Value, checking: bool, call: &Value) -> RResult<Lgl> {
             return Ok(NA_LOGICAL);
         }
         if checking && v.len() > 1 {
-            return Err(Flow::error_call(
-                call.clone(),
-                format!("'length = {}' in coercion to 'logical(1)'", v.len()),
-            ));
+            return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", v.len())));
         }
         return Ok(crate::coerce::as_logical(v));
     }
@@ -132,11 +129,7 @@ fn quiet(x: f64) -> f64 {
 }
 
 fn int2real(i: i32) -> f64 {
-    if i == NA_INTEGER {
-        NA_REAL
-    } else {
-        i as f64
-    }
+    if i == NA_INTEGER { NA_REAL } else { i as f64 }
 }
 
 fn int_slice(v: &Value) -> &[i32] {
@@ -245,11 +238,7 @@ fn rsum(x: &[f64], narm: bool) -> Option<f64> {
         }
         (s, updated)
     };
-    if updated {
-        Some(s.to_f64_clamped())
-    } else {
-        None
-    }
+    if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
 fn csum(x: &[Complex], narm: bool) -> Option<Complex> {
@@ -262,11 +251,7 @@ fn csum(x: &[Complex], narm: bool) -> Option<Complex> {
             si = si.add(F80::from_f64(z.im));
         }
     }
-    if updated {
-        Some(Complex::new(sr.to_f64(), si.to_f64()))
-    } else {
-        None
-    }
+    if updated { Some(Complex::new(sr.to_f64(), si.to_f64())) } else { None }
 }
 
 /// imin/imax: `Some(NA)` if an NA is seen with !narm.
@@ -283,11 +268,7 @@ fn iminmax(x: &[i32], narm: bool, max: bool) -> Option<i32> {
             return Some(NA_INTEGER);
         }
     }
-    if updated {
-        Some(s)
-    } else {
-        None
-    }
+    if updated { Some(s) } else { None }
 }
 
 fn rminmax(x: &[f64], narm: bool, max: bool) -> Option<f64> {
@@ -306,11 +287,7 @@ fn rminmax(x: &[f64], narm: bool, max: bool) -> Option<f64> {
             updated = true;
         }
     }
-    if updated {
-        Some(s)
-    } else {
-        None
-    }
+    if updated { Some(s) } else { None }
 }
 
 /// Byte-wise string comparison (the C locale's strcoll).
@@ -328,11 +305,7 @@ fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
                     _ if !updated => true,
                     Some(cur) => {
                         let o = scollate(cur, sv);
-                        if max {
-                            o == std::cmp::Ordering::Less
-                        } else {
-                            o == std::cmp::Ordering::Greater
-                        }
+                        if max { o == std::cmp::Ordering::Less } else { o == std::cmp::Ordering::Greater }
                     }
                     None => false,
                 };
@@ -348,11 +321,7 @@ fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
             }
         }
     }
-    if updated {
-        Some(s)
-    } else {
-        None
-    }
+    if updated { Some(s) } else { None }
 }
 
 fn iprod(x: &[i32], narm: bool) -> Option<f64> {
@@ -369,11 +338,7 @@ fn iprod(x: &[i32], narm: bool) -> Option<f64> {
             return Some(NA_REAL);
         }
     }
-    if updated {
-        Some(s.to_f64_clamped())
-    } else {
-        None
-    }
+    if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
 fn rprod(x: &[f64], narm: bool) -> Option<f64> {
@@ -390,11 +355,7 @@ fn rprod(x: &[f64], narm: bool) -> Option<f64> {
         }
         (s, updated)
     };
-    if updated {
-        Some(s.to_f64_clamped())
-    } else {
-        None
-    }
+    if updated { Some(s.to_f64_clamped()) } else { None }
 }
 
 fn cprod(x: &[Complex], narm: bool) -> Option<Complex> {
@@ -409,11 +370,7 @@ fn cprod(x: &[Complex], narm: bool) -> Option<Complex> {
             si = tr.mul(xi).add(ti.mul(xr));
         }
     }
-    if updated {
-        Some(Complex::new(sr.to_f64(), si.to_f64()))
-    } else {
-        None
-    }
+    if updated { Some(Complex::new(sr.to_f64(), si.to_f64())) } else { None }
 }
 
 fn op_name(op: SumOp) -> &'static str {
@@ -784,17 +741,20 @@ fn do_logic3(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, all: bool)
                     i.warningcall(call, format!("coercing argument of type '{}' to logical", type_to_char(t)))?;
                 }
                 match t {
-                    Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_) | Value::List(_) => {
-                        match i.coerce(t, VType::Lgl)? {
-                            Value::Lgl(x) => x.data.clone(),
-                            _ => vec![],
-                        }
-                    }
+                    Value::Int(_)
+                    | Value::Real(_)
+                    | Value::Cplx(_)
+                    | Value::Str(_)
+                    | Value::Raw(_)
+                    | Value::List(_) => match i.coerce(t, VType::Lgl)? {
+                        Value::Lgl(x) => x.data.clone(),
+                        _ => vec![],
+                    },
                     other => {
                         return Err(Flow::error(format!(
                             "cannot coerce type '{}' to vector of type 'logical'",
                             type_to_char(other)
-                        )))
+                        )));
                     }
                 }
             }
@@ -1016,7 +976,8 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
                 }
             }
             let r = get(xs[0]);
-            let mut ra: Vec<f64> = if r.len() == len { r.to_vec() } else { r.iter().copied().cycle().take(len).collect() };
+            let mut ra: Vec<f64> =
+                if r.len() == len { r.to_vec() } else { r.iter().copied().cycle().take(len).collect() };
             let update = |slot: &mut f64, tmp: f64| {
                 let better = if max { tmp > *slot } else { tmp < *slot };
                 if (narm && slot.is_nan()) || (!slot.is_nan() && !tmp.is_nan() && better) || (!narm && tmp.is_nan()) {
@@ -1063,11 +1024,7 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
                         (Some(t2), Some(tv)) => {
                             tv != t2 && {
                                 let o = scollate(tv, t2);
-                                if max {
-                                    o == std::cmp::Ordering::Greater
-                                } else {
-                                    o == std::cmp::Ordering::Less
-                                }
+                                if max { o == std::cmp::Ordering::Greater } else { o == std::cmp::Ordering::Less }
                             }
                         }
                         _ => false,
@@ -1348,11 +1305,7 @@ fn do_cum(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: CumOp) ->
                     break;
                 }
                 m = if op == CumOp::Max {
-                    if m > x[k] {
-                        m
-                    } else {
-                        x[k]
-                    }
+                    if m > x[k] { m } else { x[k] }
                 } else if m < x[k] {
                     m
                 } else {
@@ -1439,7 +1392,7 @@ fn any_na(i: &mut Interp, call: &Value, x: &Value, recursive: &Value, env: &Env)
             return Err(Flow::error(format!(
                 "anyNA() applied to non-(list or vector) of type '{}'",
                 type_to_char(other)
-            )))
+            )));
         }
     })
 }

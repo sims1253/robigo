@@ -30,8 +30,8 @@ pub mod lapack;
 pub mod math;
 pub mod misc;
 pub mod namespace;
-pub mod parsing;
 pub mod options;
+pub mod parsing;
 pub mod paste;
 pub mod printint;
 pub mod random;
@@ -203,10 +203,7 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
     let nf = formals.len();
     // Positional arguments only, no more than the formals before `...`: all
     // three passes reduce to assigning them in order.
-    if args.len() <= nf
-        && args.iter().all(|a| a.tag.is_none())
-        && !formals[..args.len()].contains(&"...")
-    {
+    if args.len() <= nf && args.iter().all(|a| a.tag.is_none()) && !formals[..args.len()].contains(&"...") {
         let mut vals: Vec<Option<Value>> = Vec::with_capacity(nf);
         // (Explicitly empty arguments are missing.)
         vals.extend(args.into_iter().map(|a| Some(a.value).filter(|v| !v.is_missing_arg())));
@@ -377,11 +374,8 @@ mod tests {
     #[test]
     fn no_duplicate_registrations() {
         let mut seen = std::collections::HashSet::new();
-        let dups: Vec<_> = super::all_builtins()
-            .into_iter()
-            .filter(|b| !seen.insert((b.internal, b.name)))
-            .map(|b| b.name)
-            .collect();
+        let dups: Vec<_> =
+            super::all_builtins().into_iter().filter(|b| !seen.insert((b.internal, b.name))).map(|b| b.name).collect();
         assert!(dups.is_empty(), "builtins registered twice: {:?}", dups);
     }
 }

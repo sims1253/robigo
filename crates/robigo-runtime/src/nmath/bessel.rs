@@ -919,8 +919,7 @@ pub fn bessel_i(x: f64, alpha: f64, expo: f64) -> f64 {
             + (if alpha == na {
                 0.0
             } else {
-                bessel_k(x, -alpha, expo) * (if ize == 1 { 2.0 } else { 2.0 * (-2.0 * x).exp() }) / M_PI
-                    * sinpi(-alpha)
+                bessel_k(x, -alpha, expo) * (if ize == 1 { 2.0 } else { 2.0 * (-2.0 * x).exp() }) / M_PI * sinpi(-alpha)
             });
     }
     let nb = 1 + na as i32;
@@ -1713,12 +1712,7 @@ fn math2b(a: &[f64], b: &[f64], max_nu: Option<f64>, f: fn(f64, f64, &mut [f64])
     (y, naflag)
 }
 
-fn math3b(
-    a: &[f64],
-    b: &[f64],
-    c: &[f64],
-    f: fn(f64, f64, f64, &mut [f64]) -> f64,
-) -> (Vec<f64>, bool) {
+fn math3b(a: &[f64], b: &[f64], c: &[f64], f: fn(f64, f64, f64, &mut [f64]) -> f64) -> (Vec<f64>, bool) {
     let (na, nb, nc) = (a.len(), b.len(), c.len());
     if na == 0 || nb == 0 || nc == 0 {
         return (vec![], false);

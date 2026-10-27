@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::{AttrBox, Value};
 
 pub const BIND_LOCKED: u8 = 1;

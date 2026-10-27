@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use super::{arg, internal, lgl_arg};
-use crate::conditions::{handler_stack_from_value, handler_stack_value, HandlerEntry, HandlerNode, RestartNode};
+use crate::conditions::{HandlerEntry, HandlerNode, RestartNode, handler_stack_from_value, handler_stack_value};
 use crate::env::Env;
 use crate::error::{Flow, RError, RResult};
 use crate::interp::Interp;
@@ -146,14 +146,7 @@ fn do_dflt_warn(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
 
 /// Build an R `restart` object.
 pub fn make_restart(name: &str, exit: Value) -> Value {
-    let mut v = Vector::new(vec![
-        Value::str(name),
-        exit,
-        Value::Null,
-        Value::str(""),
-        Value::Null,
-        Value::lgl(true),
-    ]);
+    let mut v = Vector::new(vec![Value::str(name), exit, Value::Null, Value::str(""), Value::Null, Value::lgl(true)]);
     v.attrs = Some(Box::new(Attrs(vec![
         (s::NAMES, Value::strs_from(["name", "exit", "handler", "description", "test", "interactive"])),
         (s::CLASS, Value::str("restart")),
@@ -198,7 +191,12 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
         Value::Null => {
             // "abort": jump to top level quietly.
             i.restarts = None;
-            Err(Flow::Error(Box::new(RError { message: String::new(), call: Some(Value::Null), signaled: true, classes: vec![] })))
+            Err(Flow::Error(Box::new(RError {
+                message: String::new(),
+                call: Some(Value::Null),
+                signaled: true,
+                classes: vec![],
+            })))
         }
         Value::Env(e) => {
             let mut cur = i.restarts.clone();

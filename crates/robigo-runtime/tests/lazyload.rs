@@ -3,8 +3,8 @@
 
 use std::io::Read;
 
-use robigo_runtime::value::Value;
 use robigo_runtime::Interp;
+use robigo_runtime::value::Value;
 
 const BASE: &str = "/usr/lib/R/library/base/R/base";
 
@@ -25,7 +25,8 @@ fn read_installed_base_rdb() {
     let idx = gunzip(&format!("{}.rdx", BASE));
     let map = robigo_runtime::serialize::unserialize(&mut interp, &idx, Value::Null).ok().expect("unserialize .rdx");
     let names = map.names().unwrap();
-    let names: Vec<String> = robigo_runtime::coerce::to_str(&names).into_iter().map(|s| s.unwrap().to_string()).collect();
+    let names: Vec<String> =
+        robigo_runtime::coerce::to_str(&names).into_iter().map(|s| s.unwrap().to_string()).collect();
     assert_eq!(names, vec!["variables", "references", "compressed"]);
     let Value::List(l) = &map else { panic!() };
     let vars = &l.data[0];

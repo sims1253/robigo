@@ -212,8 +212,7 @@ pub fn qt(p: f64, ndf: f64, lower_tail: bool, log_p: bool) -> f64 {
         } else if !p_ok && x < -M_LN2 * DBL_MANT_DIG as f64 {
             q = ndf.sqrt() * (-x).exp();
         } else {
-            y = ((1.0 / (((ndf + 6.0) / (ndf * y) - 0.089 * d - 0.822) * (ndf + 2.0) * 3.0) + 0.5 / (ndf + 4.0))
-                * y
+            y = ((1.0 / (((ndf + 6.0) / (ndf * y) - 0.089 * d - 0.822) * (ndf + 2.0) * 3.0) + 0.5 / (ndf + 4.0)) * y
                 - 1.0)
                 * (ndf + 1.0)
                 / (ndf + 2.0)

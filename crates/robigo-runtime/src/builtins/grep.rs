@@ -41,7 +41,7 @@ use crate::coerce::as_logical;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -96,11 +96,13 @@ fn esc_str(s: &str) -> String {
 }
 
 // glibc's character classes in a UTF-8 locale, as class items.
-const CLS_SPACE: &str = r"\t\n\x{B}\x{C}\r\x{20}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}";
+const CLS_SPACE: &str =
+    r"\t\n\x{B}\x{C}\r\x{20}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}";
 const CLS_BLANK: &str = r"\t\x{20}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{205F}\x{3000}";
 const CLS_CNTRL: &str = r"\x{0}-\x{1F}\x{7F}-\x{9F}\x{2028}\x{2029}";
 const CLS_PRINT: &str = r"[^\x{0}-\x{1F}\x{7F}-\x{9F}\x{2028}\x{2029}\p{Cn}]";
-const CLS_GRAPH: &str = r"[^\x{0}-\x{20}\x{7F}-\x{9F}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}\p{Cn}]";
+const CLS_GRAPH: &str =
+    r"[^\x{0}-\x{20}\x{7F}-\x{9F}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}\p{Cn}]";
 const CLS_PUNCT: &str = r"[^\x{0}-\x{20}\x{7F}-\x{9F}\x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}\p{Cn}\p{Alphabetic}\p{Nd}]";
 
 /// Class items for a POSIX class name (TRE's `tre_ctype`, via glibc's
@@ -614,7 +616,14 @@ pub fn tre_translate(pat: &str, icase: bool, notbol: bool, literal: bool) -> Tre
         if icase {
             p = format!("(?i:{})", p);
         }
-        return Ok(TreOut { pattern: p, nsub: 0, has_backref: false, has_bol: false, has_minimal: false, has_lookaround: false });
+        return Ok(TreOut {
+            pattern: p,
+            nsub: 0,
+            has_backref: false,
+            has_bol: false,
+            has_minimal: false,
+            has_lookaround: false,
+        });
     }
     let mut p = TreParser {
         re: pat.chars().collect(),
@@ -1180,12 +1189,7 @@ fn meta_regex(pattern: &str) -> Result<MetaRegex, regex_automata::meta::BuildErr
 /// A TRE program: leftmost-longest matching via regex-automata, or
 /// fancy-regex for patterns with back-references.
 enum TreProg {
-    Auto {
-        meta: MetaRegex,
-        dfa: Option<DFA>,
-        cache: RefCell<Option<DfaCache>>,
-        cap: Option<MetaRegex>,
-    },
+    Auto { meta: MetaRegex, dfa: Option<DFA>, cache: RefCell<Option<DfaCache>>, cap: Option<MetaRegex> },
     Fancy(fancy_regex::Regex),
 }
 
@@ -1207,11 +1211,7 @@ impl TreProg {
                 .build(&t.pattern)
                 .ok()
         };
-        let cap = if want_caps && t.nsub > 0 {
-            meta_regex(&format!(r"(?:{})\z", t.pattern)).ok()
-        } else {
-            None
-        };
+        let cap = if want_caps && t.nsub > 0 { meta_regex(&format!(r"(?:{})\z", t.pattern)).ok() } else { None };
         Ok(TreProg::Auto { meta, dfa, cache: RefCell::new(None), cap })
     }
 
@@ -1656,11 +1656,7 @@ fn grep_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, grepl: bool) -> 
     check_arity_internal(&args, 8, if grepl { "grepl" } else { "grep" })?;
     let pat = &args[0].value;
     let text = &args[1].value;
-    let mut o = Opts {
-        icase: as_bool2(&args[2].value, call)?,
-        perl: false,
-        fixed: false,
-    };
+    let mut o = Opts { icase: as_bool2(&args[2].value, call)?, perl: false, fixed: false };
     let value = as_bool2(&args[3].value, call)?;
     o.perl = as_bool2(&args[4].value, call)?;
     o.fixed = as_bool2(&args[5].value, call)?;
@@ -2099,8 +2095,7 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let itype = if use_bytes { "bytes" } else { "chars" };
     let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
     let pstr = p.data[0].clone().unwrap();
-    let t = tre_translate(&pstr, icase, false, fixed)
-        .map_err(|r| Flow::error(format!("regcomp error: '{}'", r)))?;
+    let t = tre_translate(&pstr, icase, false, fixed).map_err(|r| Flow::error(format!("regcomp error: '{}'", r)))?;
     let prog = TreProg::new(&t, true).map_err(|e| unsupported(&pstr, &e))?;
     let nmatch = t.nsub + 1;
     let mut out = Vec::with_capacity(tv.data.len());
@@ -2167,9 +2162,29 @@ mod tests {
     #[test]
     fn tre_compiles() {
         for p in [
-            "a|b", "^a$", "[[:alpha:]]+", "[^[:space:]]", "\\w+\\s\\d", "(a)(b)?", "a{2,3}", "x*?", ")", "*a",
-            "[]a]", "[a-]", "\\<a\\>", "\\bfoo\\b", "\\.", "[[:punct:]]", "[[:print:][:graph:]]", "(?i)abc", "a.b",
-            "\\x41\\x{263A}", "[\\d]", "(|a)", "()",
+            "a|b",
+            "^a$",
+            "[[:alpha:]]+",
+            "[^[:space:]]",
+            "\\w+\\s\\d",
+            "(a)(b)?",
+            "a{2,3}",
+            "x*?",
+            ")",
+            "*a",
+            "[]a]",
+            "[a-]",
+            "\\<a\\>",
+            "\\bfoo\\b",
+            "\\.",
+            "[[:punct:]]",
+            "[[:print:][:graph:]]",
+            "(?i)abc",
+            "a.b",
+            "\\x41\\x{263A}",
+            "[\\d]",
+            "(|a)",
+            "()",
         ] {
             compiles(p);
         }

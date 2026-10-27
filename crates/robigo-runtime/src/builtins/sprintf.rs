@@ -138,11 +138,8 @@ fn fmt_hex_float(x: f64, prec: Option<usize>, upper: bool, alt: bool) -> String 
     let bits = x.to_bits();
     let bexp = ((bits >> 52) & 0x7ff) as i64;
     let mut mant = bits & ((1u64 << 52) - 1);
-    let (mut lead, exp) = if bexp == 0 {
-        if mant == 0 { (0u64, 0i64) } else { (0u64, -1022i64) }
-    } else {
-        (1u64, bexp - 1023)
-    };
+    let (mut lead, exp) =
+        if bexp == 0 { if mant == 0 { (0u64, 0i64) } else { (0u64, -1022i64) } } else { (1u64, bexp - 1023) };
     let mut ndig = 13usize;
     if let Some(p) = prec {
         if p < 13 {
@@ -517,10 +514,7 @@ fn do_sprintf(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> 
                             None => fmt_s,
                         };
                         if fmtp.len() > MAXLINE {
-                            return Err(Flow::error(format!(
-                                "'fmt' length exceeds maximal format length {}",
-                                MAXLINE
-                            )));
+                            return Err(Flow::error(format!("'fmt' length exceeds maximal format length {}", MAXLINE)));
                         }
                         // Minimal coercion, only for the first row.
                         if ns == 0 {
@@ -528,9 +522,10 @@ fn do_sprintf(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> 
                             match spec {
                                 Some(b'd' | b'i' | b'o' | b'x' | b'X') => {
                                     if let Value::Real(v) = &a[nthis] {
-                                        let exactly_integer = v.data.iter().all(|&r| {
-                                            is_na_real(r) || (r.is_finite() && (r as i32) as f64 == r)
-                                        });
+                                        let exactly_integer = v
+                                            .data
+                                            .iter()
+                                            .all(|&r| is_na_real(r) || (r.is_finite() && (r as i32) as f64 == r));
                                         if exactly_integer {
                                             a[nthis] = crate::coerce::coerce_quiet(&a[nthis], VType::Int);
                                         }
@@ -683,10 +678,7 @@ fn format_one(this: &Value, i: usize, fmtp: &mut String, interp: &mut Interp) ->
             let ss: &str = v.data[i].as_deref().unwrap_or("NA");
             if fmtp.as_bytes().get(1) != Some(&b's') {
                 if ss.len() > MAXLINE {
-                    interp.warning(format!(
-                        "likely truncation of character string to {} characters",
-                        MAXLINE - 1
-                    ))?;
+                    interp.warning(format!("likely truncation of character string to {} characters", MAXLINE - 1))?;
                 }
                 let mut out = my_sprintf(fmtp, CArg::Str(ss))?;
                 if out.len() > MAXLINE {

@@ -22,7 +22,11 @@ fn main() {
         let canon = f.canonicalize().unwrap();
         println!("cargo:rerun-if-changed={}", canon.display());
         let name = canon.strip_prefix(root.canonicalize().unwrap()).unwrap();
-        out.push_str(&format!("    ({:?}, include_str!({:?})),\n", name.display().to_string(), canon.display().to_string()));
+        out.push_str(&format!(
+            "    ({:?}, include_str!({:?})),\n",
+            name.display().to_string(),
+            canon.display().to_string()
+        ));
     }
     out.push_str("]\n");
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("base_sources.rs");

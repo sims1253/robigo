@@ -108,10 +108,10 @@ fn check(root: &Path, script: &Path) -> Outcome {
     let rel = script.strip_prefix(root).unwrap().display().to_string();
     let base = script.with_extension("");
     let read = |ext: &str| std::fs::read(format!("{}.{}", base.display(), ext)).ok();
-    let exp_out = read("Rout").unwrap_or_else(|| panic!("no recorded output for {} (run scripts/regen-expected.sh)", rel));
+    let exp_out =
+        read("Rout").unwrap_or_else(|| panic!("no recorded output for {} (run scripts/regen-expected.sh)", rel));
     let exp_err = read("Rerr").unwrap_or_default();
-    let exp_status: i32 =
-        read("Rstatus").and_then(|s| String::from_utf8_lossy(&s).trim().parse().ok()).unwrap_or(0);
+    let exp_status: i32 = read("Rstatus").and_then(|s| String::from_utf8_lossy(&s).trim().parse().ok()).unwrap_or(0);
     let (out, err, status, timed_out) = run_rr(script);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
@@ -157,11 +157,13 @@ fn conformance() {
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..2 {
-            s.spawn(|| loop {
-                let next = jobs.lock().unwrap().pop();
-                let Some(p) = next else { break };
-                let o = check(&root, &p);
-                results.lock().unwrap().push(o);
+            s.spawn(|| {
+                loop {
+                    let next = jobs.lock().unwrap().pop();
+                    let Some(p) = next else { break };
+                    let o = check(&root, &p);
+                    results.lock().unwrap().push(o);
+                }
             });
         }
     });
@@ -196,7 +198,13 @@ fn conformance() {
         } else if listed.contains(&r.rel) {
             regressions.push(r);
         }
-        let mark = if passed { "ok  " } else if r.stdout_ok { "ok* " } else { "FAIL" };
+        let mark = if passed {
+            "ok  "
+        } else if r.stdout_ok {
+            "ok* "
+        } else {
+            "FAIL"
+        };
         eprintln!("{} {}", mark, r.rel);
         if show_diff && !r.diff.is_empty() {
             eprint!("{}", r.diff);
@@ -220,8 +228,11 @@ fn conformance() {
         let mut all: BTreeSet<String> = listed.clone();
         all.extend(pass.iter().cloned());
         let body: String = all.iter().map(|s| format!("{}\n", s)).collect();
-        std::fs::write(&passing_file, format!("# Conformance ratchet: scripts that must keep matching GNU R.\n{}", body))
-            .unwrap();
+        std::fs::write(
+            &passing_file,
+            format!("# Conformance ratchet: scripts that must keep matching GNU R.\n{}", body),
+        )
+        .unwrap();
     }
     if !regressions.is_empty() {
         let mut msg = format!("{} ratcheted script(s) regressed:\n", regressions.len());

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 const WORDSIZE: usize = 32;
@@ -580,10 +580,7 @@ pub fn termsform(i: &mut Interp, args: &[Arg]) -> RResult<Value> {
 
     // Step 1: the variables
     st.extract_vars(x)?;
-    let variables = Value::lang(
-        Value::sym("list"),
-        st.varlist.iter().map(|v| Arg::pos(v.clone())).collect(),
-    );
+    let variables = Value::lang(Value::sym("list"), st.varlist.iter().map(|v| Arg::pos(v.clone())).collect());
     let mut nvar = st.varlist.len();
     st.nwords = nvar / WORDSIZE + 1;
 
@@ -651,10 +648,7 @@ pub fn termsform(i: &mut Interp, args: &[Arg]) -> RResult<Value> {
     let factors = if nterm > 0 {
         let mut m = Value::ints(pattern);
         m.set_attr_raw(s::DIM, Value::ints(vec![nvar as i32, nterm as i32]));
-        m.set_attr_raw(
-            s::DIMNAMES,
-            Value::list(vec![Value::strs_from(&varnames), Value::strs_from(&termlabs)]),
-        );
+        m.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs_from(&varnames), Value::strs_from(&termlabs)]));
         m
     } else {
         Value::ints(vec![])
@@ -707,7 +701,10 @@ pub fn termsform(i: &mut Interp, args: &[Arg]) -> RResult<Value> {
 
 // R: model.c:updateform
 pub fn updateform(old: &Value, new: &Value) -> RResult<Value> {
-    if !matches!(old, Value::Lang(_)) || (!matches!(new, Value::Lang(_)) && !is_call_to(old, "~")) || !is_call_to(new, "~") {
+    if !matches!(old, Value::Lang(_))
+        || (!matches!(new, Value::Lang(_)) && !is_call_to(old, "~"))
+        || !is_call_to(new, "~")
+    {
         return Err(Flow::error("formula expected"));
     }
     let Value::Lang(nl) = new else { unreachable!() };
@@ -1058,13 +1055,20 @@ pub fn modelmatrix(i: &mut Interp, args: &[Arg], rho: &Env) -> RResult<Value> {
             }
         }
         if dk > i32::MAX as f64 {
-            return Err(Flow::error(format!("term {} would require {} columns", j + 1, robigo_syntax::cfmt::fmt_g(dk, 0, false, false))));
+            return Err(Flow::error(format!(
+                "term {} would require {} columns",
+                j + 1,
+                robigo_syntax::cfmt::fmt_g(dk, 0, false, false)
+            )));
         }
         count[j] = dk as usize;
         dnc += dk;
     }
     if dnc > i32::MAX as f64 {
-        return Err(Flow::error(format!("matrix would require {} columns", robigo_syntax::cfmt::fmt_g(dnc, 0, false, false))));
+        return Err(Flow::error(format!(
+            "matrix would require {} columns",
+            robigo_syntax::cfmt::fmt_g(dnc, 0, false, false)
+        )));
     }
     let nc = dnc as usize;
 

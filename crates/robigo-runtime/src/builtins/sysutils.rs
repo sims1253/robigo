@@ -11,7 +11,7 @@ use crate::coerce::{as_integer, as_logical, as_real};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 use super::io::{expand_file_name, os_error_message};
@@ -280,11 +280,7 @@ struct RUsage {
 }
 
 fn cstr(p: *const c_char) -> Option<String> {
-    if p.is_null() {
-        None
-    } else {
-        Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
-    }
+    if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
 }
 
 fn str_vec(v: &Value, msg: &str) -> RResult<Vec<RStr>> {
@@ -428,9 +424,8 @@ fn do_getenv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         _ => return Err(Flow::error("wrong type for argument")),
     };
     if x.is_empty() {
-        let all: Vec<String> = std::env::vars_os()
-            .map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.to_string_lossy()))
-            .collect();
+        let all: Vec<String> =
+            std::env::vars_os().map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.to_string_lossy())).collect();
         return Ok(Value::strs_from(all));
     }
     Ok(Value::strs(
@@ -549,11 +544,7 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
     }
     let pw = |uid: u32| -> String {
         let p = unsafe { getpwuid(uid) };
-        if p.is_null() {
-            "unknown".into()
-        } else {
-            cstr(unsafe { (*p).pw_name }).unwrap_or_else(|| "unknown".into())
-        }
+        if p.is_null() { "unknown".into() } else { cstr(unsafe { (*p).pw_name }).unwrap_or_else(|| "unknown".into()) }
     };
     let vals = vec![
         cstr(u.sysname.as_ptr()).unwrap_or_default(),
@@ -947,7 +938,8 @@ fn wildcard_match(p: &[char], t: &[char]) -> bool {
                 return false;
             }
             let set = &p[1..close];
-            let (neg, set) = if set.first() == Some(&'!') || set.first() == Some(&'^') { (true, &set[1..]) } else { (false, set) };
+            let (neg, set) =
+                if set.first() == Some(&'!') || set.first() == Some(&'^') { (true, &set[1..]) } else { (false, set) };
             let mut found = false;
             let mut k = 0;
             while k < set.len() {
@@ -1013,11 +1005,7 @@ fn glob_nocheck(pattern: &str) -> Vec<String> {
         cur = next;
     }
     cur.retain(|p| std::fs::symlink_metadata(p).is_ok());
-    if cur.is_empty() {
-        vec![pattern.to_string()]
-    } else {
-        cur
-    }
+    if cur.is_empty() { vec![pattern.to_string()] } else { cur }
 }
 
 fn do_unlink(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

@@ -36,11 +36,7 @@ pub fn dnbinom(x: f64, size: f64, prob: f64, give_log: bool) -> f64 {
         )
     } else {
         let p = if give_log {
-            if x < size {
-                log1p(-x / (size + x))
-            } else {
-                (size / (size + x)).ln()
-            }
+            if x < size { log1p(-x / (size + x)) } else { (size / (size + x)).ln() }
         } else {
             size / (size + x)
         };
@@ -81,11 +77,7 @@ pub fn dnbinom_mu(x: f64, size: f64, mu: f64, give_log: bool) -> f64 {
         r_d_exp(x * p - mu - lgamma1p(x) + log1p(x * (x - 1.0) / (2.0 * size)), give_log)
     } else {
         let p = if give_log {
-            if x < size {
-                log1p(-x / (size + x))
-            } else {
-                (size / (size + x)).ln()
-            }
+            if x < size { log1p(-x / (size + x)) } else { (size / (size + x)).ln() }
         } else {
             size / (size + x)
         };

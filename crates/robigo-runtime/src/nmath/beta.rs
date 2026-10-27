@@ -153,15 +153,7 @@ fn fmt_g_prec(x: f64, prec: usize) -> String {
 /// R: nmath/qbeta.c:qbeta_raw. Returns `[qbeta(), 1 - qbeta()]` (on log
 /// scale when `log_q_cut == +Inf`).
 #[allow(unused_assignments)]
-pub fn qbeta_raw(
-    alpha: f64,
-    p: f64,
-    q: f64,
-    lower_tail: bool,
-    log_p: bool,
-    log_q_cut: f64,
-    n_n: i32,
-) -> [f64; 2] {
+pub fn qbeta_raw(alpha: f64, p: f64, q: f64, lower_tail: bool, log_p: bool, log_q_cut: f64, n_n: i32) -> [f64; 2] {
     let give_log_q = log_q_cut == ML_POSINF;
     let mut use_log_x = give_log_q;
     let mut warned = false;
@@ -268,8 +260,11 @@ pub fn qbeta_raw(
                 t = r * r_pow_di(1.0 + t * (-t + y), 3);
                 let s = 4.0 * pp + r - 2.0;
                 if t == 0.0 || (t < 0.0 && s >= t) {
-                    let l1ma =
-                        if swap_tail { r_dt_log(alpha, lower_tail, log_p) } else { r_dt_clog(alpha, lower_tail, log_p) };
+                    let l1ma = if swap_tail {
+                        r_dt_log(alpha, lower_tail, log_p)
+                    } else {
+                        r_dt_clog(alpha, lower_tail, log_p)
+                    };
                     let xx = (l1ma + qq.ln() + logbeta) / qq;
                     if xx <= 0.0 {
                         xinbta = -expm1(xx);
@@ -295,8 +290,7 @@ pub fn qbeta_raw(
                 }
             }
 
-            if (swap_tail && u >= -log_q_cut.exp())
-                || (!swap_tail && u >= -(4.0 * log_q_cut).exp() && pp / qq < 1000.0)
+            if (swap_tail && u >= -log_q_cut.exp()) || (!swap_tail && u >= -(4.0 * log_q_cut).exp() && pp / qq < 1000.0)
             {
                 swap_tail = !swap_tail;
                 if swap_tail {
@@ -644,17 +638,13 @@ mod tests {
         assert_eq!(pbeta(1e-320, 1e-5, 0.5, true, false), 0.99995077031517055);
         assert_eq!(
             take_warnings(),
-            vec!["bgrat(a=20.5, b=1e-05, x=1, y=9.99989e-321): z=1.99998e-319, b*z == 0 underflow, hence inaccurate pbeta()"]
+            vec![
+                "bgrat(a=20.5, b=1e-05, x=1, y=9.99989e-321): z=1.99998e-319, b*z == 0 underflow, hence inaccurate pbeta()"
+            ]
         );
         assert_eq!(pbeta(0.1, 20.0, 100000.0, false, true), f64::NEG_INFINITY);
-        assert_eq!(
-            take_warnings(),
-            vec!["pbeta(*, log.p=TRUE) -> bpser(a=100000, b=20, x=0.9,...) underflow to -Inf"]
-        );
+        assert_eq!(take_warnings(), vec!["pbeta(*, log.p=TRUE) -> bpser(a=100000, b=20, x=0.9,...) underflow to -Inf"]);
         assert_eq!(qbeta(0.05, 1.0, 0.001, true, false), 0.99999999999999989);
-        assert_eq!(
-            take_warnings(),
-            vec!["qbeta(a, *) =: x0 with |pbeta(x0,*) - alpha| = 0.014598 is not accurate"]
-        );
+        assert_eq!(take_warnings(), vec!["qbeta(a, *) =: x0 with |pbeta(x0,*) - alpha| = 0.014598 is not accurate"]);
     }
 }

@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use super::{internal, prim};
-use crate::coerce::{as_integer, as_logical, coerce_vector, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_integer, as_logical, coerce_vector};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -65,11 +65,7 @@ pub fn ri18n_wcwidth(c: char) -> usize {
     if let Some(w) = table_search(TABLE_WCWIDTH, c) {
         return w as usize;
     }
-    if ZERO_WIDTH.binary_search_by(|&(a, b)| range_cmp(a, b, c)).is_ok() {
-        0
-    } else {
-        1
-    }
+    if ZERO_WIDTH.binary_search_by(|&(a, b)| range_cmp(a, b, c)).is_ok() { 0 } else { 1 }
 }
 
 fn range_cmp(first: u32, last: u32, c: u32) -> std::cmp::Ordering {
@@ -124,10 +120,7 @@ pub(crate) fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()>
 /// R: coerce.c:asBool2 (`asLogical2` with checking).
 pub(crate) fn as_bool2(v: &Value, call: &Value) -> RResult<bool> {
     if v.is_atomic() && v.len() > 1 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("'length = {}' in coercion to 'logical(1)'", v.len()),
-        ));
+        return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", v.len())));
     }
     let l = as_logical(v);
     if l == NA_LOGICAL {
@@ -518,8 +511,8 @@ fn do_endswith(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 
 const VOWELS: &[u32] = &[
     0x61, 0x65, 0x69, 0x6f, 0x75, 0xe0, 0xe1, 0x2e, 0xe3, 0xe4, 0xe5, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
-    0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0x101, 0x103, 0x105, 0x113, 0x115, 0x117, 0x118,
-    0x11b, 0x129, 0x12b, 0x12d, 0x12f, 0x131, 0x14d, 0x14f, 0x151, 0x169, 0x16b, 0x16d, 0x16f, 0x171, 0x173,
+    0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0x101, 0x103, 0x105, 0x113, 0x115, 0x117, 0x118, 0x11b,
+    0x129, 0x12b, 0x12d, 0x12f, 0x131, 0x14d, 0x14f, 0x151, 0x169, 0x16b, 0x16d, 0x16f, 0x171, 0x173,
 ];
 
 fn c_isspace(c: char) -> bool {
@@ -527,8 +520,7 @@ fn c_isspace(c: char) -> bool {
 }
 
 fn w_isspace(c: char) -> bool {
-    c_isspace(c)
-        || matches!(c as u32, 0x1680 | 0x2000..=0x2006 | 0x2008..=0x200A | 0x2028 | 0x2029 | 0x205F | 0x3000)
+    c_isspace(c) || matches!(c as u32, 0x1680 | 0x2000..=0x2006 | 0x2008..=0x200A | 0x2028 | 0x2029 | 0x205F | 0x3000)
 }
 
 /// R: character.c:stripchars / wstripchars (on a vector of chars).
@@ -756,7 +748,8 @@ fn case_map(args: &[Arg], upper: bool) -> RResult<Value> {
         .iter()
         .map(|e| {
             e.as_ref().map(|s| {
-                let t: String = if upper { s.chars().map(simple_upper).collect() } else { s.chars().map(simple_lower).collect() };
+                let t: String =
+                    if upper { s.chars().map(simple_upper).collect() } else { s.chars().map(simple_lower).collect() };
                 Rc::from(t.as_str())
             })
         })
@@ -1155,7 +1148,7 @@ fn parse_enc(e: &str) -> Option<Enc> {
 /// Whether the C library's iconv knows the conversion; R reports a failing
 /// `iconv_open` as an unsupported conversion. "" is the native encoding.
 fn system_iconv_supports(from: &str, to: &str) -> bool {
-    use std::ffi::{c_char, c_void, CString};
+    use std::ffi::{CString, c_char, c_void};
     unsafe extern "C" {
         fn iconv_open(tocode: *const c_char, fromcode: *const c_char) -> *mut c_void;
         fn iconv_close(cd: *mut c_void) -> i32;
@@ -1216,9 +1209,7 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
                     Value::Null => v.push(None),
                     Value::Raw(r) => v.push(Some(r.data.clone())),
                     _ => {
-                        return Err(Flow::error(
-                            "'x' must be a character vector or a list of NULL or raw vectors",
-                        ));
+                        return Err(Flow::error("'x' must be a character vector or a list of NULL or raw vectors"));
                     }
                 }
             }
@@ -1357,9 +1348,8 @@ fn do_utf8toint(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         _ => return Err(Flow::error("argument must be a character vector of length 1")),
     };
     if x.data.len() > 1 {
-        interp.warning(
-            "argument should be a character vector of length 1\nall but the first element will be ignored",
-        )?;
+        interp
+            .warning("argument should be a character vector of length 1\nall but the first element will be ignored")?;
     }
     match &x.data[0] {
         None => Ok(Value::int(NA_INTEGER)),
@@ -1368,11 +1358,7 @@ fn do_utf8toint(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
 }
 
 fn int_to_char(v: i32) -> Option<char> {
-    if v < 0 || (0xD800..=0xDFFF).contains(&v) || v > 0x10FFFF {
-        None
-    } else {
-        char::from_u32(v as u32)
-    }
+    if v < 0 || (0xD800..=0xDFFF).contains(&v) || v > 0x10FFFF { None } else { char::from_u32(v as u32) }
 }
 
 // R: raw.c:do_intToUtf8
@@ -1392,9 +1378,7 @@ fn do_inttoutf8(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
     if multiple != 0 {
         if s_pair != 0 {
-            interp.warning(
-                "allow_surrogate_pairs = TRUE is incompatible with multiple = TRUE and will be ignored",
-            )?;
+            interp.warning("allow_surrogate_pairs = TRUE is incompatible with multiple = TRUE and will be ignored")?;
         }
         let out: Vec<RStr> = xv
             .data
@@ -1464,9 +1448,8 @@ fn do_chartoraw(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         _ => return Err(Flow::error("argument must be a character vector of length 1")),
     };
     if x.data.len() > 1 {
-        interp.warning(
-            "argument should be a character vector of length 1\nall but the first element will be ignored",
-        )?;
+        interp
+            .warning("argument should be a character vector of length 1\nall but the first element will be ignored")?;
     }
     let bytes = match &x.data[0] {
         None => b"NA".to_vec(),
@@ -1489,9 +1472,7 @@ fn do_rawtochar(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         if b.contains(&0) {
             return Err(Flow::error(format!(
                 "embedded nul in string: '{}'",
-                b.iter()
-                    .map(|&c| if c == 0 { "\\0".to_string() } else { (c as char).to_string() })
-                    .collect::<String>()
+                b.iter().map(|&c| if c == 0 { "\\0".to_string() } else { (c as char).to_string() }).collect::<String>()
             )));
         }
         match std::str::from_utf8(b) {

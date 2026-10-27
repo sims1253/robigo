@@ -57,16 +57,8 @@ pub struct Formal {
 pub enum Expr {
     Const(Const, Span),
     Sym(String, Span),
-    Call {
-        fun: Box<Expr>,
-        args: Vec<Arg>,
-        span: Span,
-    },
-    Function {
-        formals: Vec<Formal>,
-        body: Box<Expr>,
-        span: Span,
-    },
+    Call { fun: Box<Expr>, args: Vec<Arg>, span: Span },
+    Function { formals: Vec<Formal>, body: Box<Expr>, span: Span },
 }
 
 impl Expr {

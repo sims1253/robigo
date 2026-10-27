@@ -8,7 +8,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 const REFSXP: u32 = 255;
@@ -194,11 +194,7 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     fn ref_index(&mut self, flags: u32) -> RResult<usize> {
         let i = flags >> 8;
-        if i == 0 {
-            Ok(self.int()? as usize)
-        } else {
-            Ok(i as usize)
-        }
+        if i == 0 { Ok(self.int()? as usize) } else { Ok(i as usize) }
     }
 
     pub fn read_item(&mut self) -> RResult<Value> {
@@ -333,11 +329,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 for _ in 0..n {
                     out.push(self.int()?);
                 }
-                if ty == LGLSXP {
-                    Value::lgls(out)
-                } else {
-                    Value::ints(out)
-                }
+                if ty == LGLSXP { Value::lgls(out) } else { Value::ints(out) }
             }
             REALSXP => {
                 let n = self.length()?;
@@ -378,11 +370,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 for _ in 0..n {
                     out.push(self.read_item()?);
                 }
-                if ty == VECSXP {
-                    Value::list(out)
-                } else {
-                    Value::expr_vec(out)
-                }
+                if ty == VECSXP { Value::list(out) } else { Value::expr_vec(out) }
             }
             BCODESXP => {
                 let nreps = self.int()?;
@@ -406,7 +394,12 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             OBJSXP => Value::list(vec![]),
             NILSXP => Value::Null,
-            _ => return Err(Flow::error(format!("ReadItem: unknown type {}, perhaps written by later version of R", ty))),
+            _ => {
+                return Err(Flow::error(format!(
+                    "ReadItem: unknown type {}, perhaps written by later version of R",
+                    ty
+                )));
+            }
         };
         let mut v = v;
         if hasattr {
@@ -469,7 +462,15 @@ impl<'a, 'i> Reader<'a, 'i> {
                     Value::Pairlist(p) => p.items.iter().cloned().collect(),
                     _ => Rc::from(Vec::new()),
                 };
-                let mut v = Value::Closure(Rc::new(Closure { formals, body: cdr, env, attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() }));
+                let mut v = Value::Closure(Rc::new(Closure {
+                    formals,
+                    body: cdr,
+                    env,
+                    attrs: None,
+                    code: Default::default(),
+                    inline: Default::default(),
+                    defaults: Default::default(),
+                }));
                 set_attr_pairlist(&mut v, head_attr);
                 Ok(v)
             }
@@ -482,8 +483,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
-                let mut items: Vec<Arg> =
-                    nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
+                let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended.
                 if !cdr.is_null() {
                     if let Value::Pairlist(p) = &cdr {
@@ -715,7 +715,7 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
             return Err(Flow::error(format!(
                 "cannot read workspace version {} written by R; need R 3.5.0 or newer",
                 version
-            )))
+            )));
         }
     }
     r.read_item()
@@ -894,7 +894,13 @@ impl Writer {
                 self.item(&p.expr);
             }
             Value::Builtin(b) => {
-                self.flags(if b.kind == BuiltinKind::Special { SPECIALSXP } else { BUILTINSXP }, 0, false, false, false);
+                self.flags(
+                    if b.kind == BuiltinKind::Special { SPECIALSXP } else { BUILTINSXP },
+                    0,
+                    false,
+                    false,
+                    false,
+                );
                 self.int(b.name.len() as i32);
                 self.out.extend_from_slice(b.name.as_bytes());
             }

@@ -1,7 +1,7 @@
 //! Deparsing: R objects back to source text. Port of GNU R's deparse.c.
 
-use crate::format::{encode_element_for_deparse, NumFormat};
-use crate::sym::{s, Sym};
+use crate::format::{NumFormat, encode_element_for_deparse};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub const DEFAULT_CUTOFF: usize = 60;
@@ -124,8 +124,25 @@ fn is_user_binop(name: &str) -> bool {
 }
 
 const RESERVED: &[&str] = &[
-    "if", "else", "repeat", "while", "function", "for", "next", "break", "TRUE", "FALSE", "NULL", "Inf", "NaN", "NA",
-    "NA_integer_", "NA_real_", "NA_character_", "NA_complex_", "in",
+    "if",
+    "else",
+    "repeat",
+    "while",
+    "function",
+    "for",
+    "next",
+    "break",
+    "TRUE",
+    "FALSE",
+    "NULL",
+    "Inf",
+    "NaN",
+    "NA",
+    "NA_integer_",
+    "NA_real_",
+    "NA_character_",
+    "NA_complex_",
+    "in",
 ];
 
 /// R's `isValidName`: syntactic, non-reserved name.
@@ -1099,8 +1116,7 @@ fn parenthesize_caller(op: &Value) -> bool {
                 }
                 match ppinfo(&name) {
                     Some(info) => {
-                        !(info.prec >= PREC_SUBSET
-                            || matches!(info.kind, PP::Funcall | PP::Paren | PP::Curly))
+                        !(info.prec >= PREC_SUBSET || matches!(info.kind, PP::Funcall | PP::Paren | PP::Curly))
                     }
                     None => false,
                 }

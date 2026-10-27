@@ -211,11 +211,7 @@ pub fn fmax2(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return x + y;
     }
-    if x < y {
-        y
-    } else {
-        x
-    }
+    if x < y { y } else { x }
 }
 
 /// R: nmath/fmin2.c
@@ -224,29 +220,17 @@ pub fn fmin2(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return x + y;
     }
-    if x < y {
-        x
-    } else {
-        y
-    }
+    if x < y { x } else { y }
 }
 
 #[inline]
 pub fn imax2(x: i32, y: i32) -> i32 {
-    if x < y {
-        y
-    } else {
-        x
-    }
+    if x < y { y } else { x }
 }
 
 #[inline]
 pub fn imin2(x: i32, y: i32) -> i32 {
-    if x < y {
-        x
-    } else {
-        y
-    }
+    if x < y { x } else { y }
 }
 
 /// R: nmath/fsign.c
@@ -254,11 +238,7 @@ pub fn fsign(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return x + y;
     }
-    if y >= 0.0 {
-        x.abs()
-    } else {
-        -x.abs()
-    }
+    if y >= 0.0 { x.abs() } else { -x.abs() }
 }
 
 /// R: main/arithmetic.c:R_pow
@@ -403,11 +383,7 @@ pub fn fmt_g(x: f64) -> String {
     let (mant, exp) = e.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let strip = |s: &str| -> String {
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            s.to_string()
-        }
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() }
     };
     if exp < -4 || exp >= p as i32 {
         format!("{}e{}{:02}", strip(mant), if exp < 0 { '-' } else { '+' }, exp.abs())
@@ -423,173 +399,93 @@ pub fn fmt_g(x: f64) -> String {
 
 #[inline]
 pub fn r_d__0(log_p: bool) -> f64 {
-    if log_p {
-        ML_NEGINF
-    } else {
-        0.0
-    }
+    if log_p { ML_NEGINF } else { 0.0 }
 }
 
 #[inline]
 pub fn r_d__1(log_p: bool) -> f64 {
-    if log_p {
-        0.0
-    } else {
-        1.0
-    }
+    if log_p { 0.0 } else { 1.0 }
 }
 
 #[inline]
 pub fn r_dt_0(lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d__0(log_p)
-    } else {
-        r_d__1(log_p)
-    }
+    if lower_tail { r_d__0(log_p) } else { r_d__1(log_p) }
 }
 
 #[inline]
 pub fn r_dt_1(lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d__1(log_p)
-    } else {
-        r_d__0(log_p)
-    }
+    if lower_tail { r_d__1(log_p) } else { r_d__0(log_p) }
 }
 
 #[inline]
 pub fn r_d_half(log_p: bool) -> f64 {
-    if log_p {
-        -M_LN2
-    } else {
-        0.5
-    }
+    if log_p { -M_LN2 } else { 0.5 }
 }
 
 #[inline]
 pub fn r_d_lval(p: f64, lower_tail: bool) -> f64 {
-    if lower_tail {
-        p
-    } else {
-        0.5 - p + 0.5
-    }
+    if lower_tail { p } else { 0.5 - p + 0.5 }
 }
 
 #[inline]
 pub fn r_d_cval(p: f64, lower_tail: bool) -> f64 {
-    if lower_tail {
-        0.5 - p + 0.5
-    } else {
-        p
-    }
+    if lower_tail { 0.5 - p + 0.5 } else { p }
 }
 
 #[inline]
 pub fn r_d_val(x: f64, log_p: bool) -> f64 {
-    if log_p {
-        x.ln()
-    } else {
-        x
-    }
+    if log_p { x.ln() } else { x }
 }
 
 #[inline]
 pub fn r_d_qiv(p: f64, log_p: bool) -> f64 {
-    if log_p {
-        p.exp()
-    } else {
-        p
-    }
+    if log_p { p.exp() } else { p }
 }
 
 #[inline]
 pub fn r_d_exp(x: f64, log_p: bool) -> f64 {
-    if log_p {
-        x
-    } else {
-        x.exp()
-    }
+    if log_p { x } else { x.exp() }
 }
 
 #[inline]
 pub fn r_d_log(p: f64, log_p: bool) -> f64 {
-    if log_p {
-        p
-    } else {
-        p.ln()
-    }
+    if log_p { p } else { p.ln() }
 }
 
 #[inline]
 pub fn r_d_clog(p: f64, log_p: bool) -> f64 {
-    if log_p {
-        log1p(-p)
-    } else {
-        0.5 - p + 0.5
-    }
+    if log_p { log1p(-p) } else { 0.5 - p + 0.5 }
 }
 
 /// `R_Log1_Exp(x)`: log(1 - exp(x)).
 #[inline]
 pub fn r_log1_exp(x: f64) -> f64 {
-    if x > -M_LN2 {
-        (-expm1(x)).ln()
-    } else {
-        log1p(-x.exp())
-    }
+    if x > -M_LN2 { (-expm1(x)).ln() } else { log1p(-x.exp()) }
 }
 
 #[inline]
 pub fn r_d_lexp(x: f64, log_p: bool) -> f64 {
-    if log_p {
-        r_log1_exp(x)
-    } else {
-        log1p(-x)
-    }
+    if log_p { r_log1_exp(x) } else { log1p(-x) }
 }
 
 #[inline]
 pub fn r_dt_val(x: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d_val(x, log_p)
-    } else {
-        r_d_clog(x, log_p)
-    }
+    if lower_tail { r_d_val(x, log_p) } else { r_d_clog(x, log_p) }
 }
 
 #[inline]
 pub fn r_dt_cval(x: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d_clog(x, log_p)
-    } else {
-        r_d_val(x, log_p)
-    }
+    if lower_tail { r_d_clog(x, log_p) } else { r_d_val(x, log_p) }
 }
 
 #[inline]
 pub fn r_dt_qiv(p: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if log_p {
-        if lower_tail {
-            p.exp()
-        } else {
-            -expm1(p)
-        }
-    } else {
-        r_d_lval(p, lower_tail)
-    }
+    if log_p { if lower_tail { p.exp() } else { -expm1(p) } } else { r_d_lval(p, lower_tail) }
 }
 
 #[inline]
 pub fn r_dt_civ(p: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if log_p {
-        if lower_tail {
-            -expm1(p)
-        } else {
-            p.exp()
-        }
-    } else {
-        r_d_cval(p, lower_tail)
-    }
+    if log_p { if lower_tail { -expm1(p) } else { p.exp() } } else { r_d_cval(p, lower_tail) }
 }
 
 #[inline]
@@ -604,29 +500,17 @@ pub fn r_dt_cexp(x: f64, lower_tail: bool, log_p: bool) -> f64 {
 
 #[inline]
 pub fn r_dt_log(p: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d_log(p, log_p)
-    } else {
-        r_d_lexp(p, log_p)
-    }
+    if lower_tail { r_d_log(p, log_p) } else { r_d_lexp(p, log_p) }
 }
 
 #[inline]
 pub fn r_dt_clog(p: f64, lower_tail: bool, log_p: bool) -> f64 {
-    if lower_tail {
-        r_d_lexp(p, log_p)
-    } else {
-        r_d_log(p, log_p)
-    }
+    if lower_tail { r_d_lexp(p, log_p) } else { r_d_log(p, log_p) }
 }
 
 #[inline]
 pub fn r_dt_log_(p: f64, lower_tail: bool) -> f64 {
-    if lower_tail {
-        p
-    } else {
-        r_log1_exp(p)
-    }
+    if lower_tail { p } else { r_log1_exp(p) }
 }
 
 /// `R_Q_P01_check(p)`: true when p is out of range (caller returns NaN).
@@ -665,20 +549,12 @@ pub fn r_q_p01_boundaries(p: f64, left: f64, right: f64, lower_tail: bool, log_p
 
 #[inline]
 pub fn r_d_fexp(f: f64, x: f64, log_p: bool) -> f64 {
-    if log_p {
-        -0.5 * f.ln() + x
-    } else {
-        x.exp() / f.sqrt()
-    }
+    if log_p { -0.5 * f.ln() + x } else { x.exp() / f.sqrt() }
 }
 
 #[inline]
 pub fn r_d_rtxp(rf: f64, x: f64, log_p: bool) -> f64 {
-    if log_p {
-        -rf.ln() + x
-    } else {
-        x.exp() / rf
-    }
+    if log_p { -rf.ln() + x } else { x.exp() / rf }
 }
 
 #[inline]

@@ -20,14 +20,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlagsData, Type, Value as CValue};
+use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Type, Value as CValue, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
-use crate::builtins::arith::{myfloor, myfmod, r_pow, ArithOp, RelOp};
-use crate::compile::{Code, Leaf, Math1, Op, RangeKind, Reg, Slot, NO_GUARD};
+use crate::builtins::arith::{ArithOp, RelOp, myfloor, myfmod, r_pow};
+use crate::compile::{Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot};
 use crate::sym::Sym;
 use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL};
 
@@ -75,7 +75,6 @@ pub struct SlotInfo {
     /// For vectors: written in place.
     pub writable: bool,
 }
-
 
 /// A view of a vector's data passed to native code.
 #[repr(C)]
@@ -330,11 +329,7 @@ extern "C" fn h_imod(x: i32, y: i32) -> i32 {
     }
 }
 extern "C" fn h_iidiv(x: i32, y: i32) -> i32 {
-    if x == NA_INTEGER || y == NA_INTEGER || y == 0 {
-        NA_INTEGER
-    } else {
-        (x as f64 / y as f64).floor() as i32
-    }
+    if x == NA_INTEGER || y == NA_INTEGER || y == 0 { NA_INTEGER } else { (x as f64 / y as f64).floor() as i32 }
 }
 extern "C" fn h_exp(x: f64) -> f64 {
     x.exp()
@@ -514,9 +509,10 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Index { .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
-        Op::Jump { target } | Op::JumpIf { target, .. } | Op::JumpIfNot { target, .. } | Op::AndOrShort { target, .. } => {
-            inside(*target)
-        }
+        Op::Jump { target }
+        | Op::JumpIf { target, .. }
+        | Op::JumpIfNot { target, .. }
+        | Op::AndOrShort { target, .. } => inside(*target),
         Op::ForStep { body, .. } => inside(*body),
         Op::ForRange { kind, .. } => *kind != RangeKind::SeqAlong,
         Op::SetIndex { two, .. } => !*two,
@@ -1563,7 +1559,14 @@ impl Gen<'_, '_> {
     /// The body of a pure closure called at op `call` with argument values
     /// `args`, translated in place; its result. Anything its fast paths do
     /// not cover leaves native code at the call, which the VM then makes.
-    fn inline_body(&mut self, call: usize, code: &Code, formal_slots: &[Option<Slot>], ct: &CalleeTy, args: &[(CValue, JType)]) -> CValue {
+    fn inline_body(
+        &mut self,
+        call: usize,
+        code: &Code,
+        formal_slots: &[Option<Slot>],
+        ct: &CalleeTy,
+        args: &[(CValue, JType)],
+    ) -> CValue {
         let len = code.ops.len();
         let res = self.b.declare_var(cl_type(ct.result));
         let after = self.b.create_block();
@@ -1673,11 +1676,7 @@ impl Gen<'_, '_> {
 
     /// The block for op `pc` (the exit block at the region's end).
     fn target(&self, pc: usize) -> Block {
-        if pc == self.start + self.blocks.len() - 1 {
-            self.exit
-        } else {
-            self.block(pc)
-        }
+        if pc == self.start + self.blocks.len() - 1 { self.exit } else { self.block(pc) }
     }
 }
 

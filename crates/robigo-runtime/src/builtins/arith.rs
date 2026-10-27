@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use super::{arg, prim, special};
 use crate::attrib::{copy_most_attrib, get_attrib};
-use crate::coerce::{as_logical, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -208,11 +208,7 @@ pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
 }
 
 pub fn int_to_real(x: i32) -> f64 {
-    if x == NA_INTEGER {
-        NA_REAL
-    } else {
-        x as f64
-    }
+    if x == NA_INTEGER { NA_REAL } else { x as f64 }
 }
 
 // ----------------------------------------------------------------------
@@ -319,7 +315,9 @@ fn check_recycling(interp: &mut Interp, call: &Value, nx: usize, ny: usize) -> R
 fn scalar_arith(op: ArithOp, x: &Value, y: &Value) -> Option<Value> {
     let a = match x {
         Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0],
-        Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() && matches!(y, Value::Real(_)) => int_to_real(v.data[0]),
+        Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() && matches!(y, Value::Real(_)) => {
+            int_to_real(v.data[0])
+        }
         _ => return None,
     };
     let b = match y {
@@ -676,7 +674,8 @@ fn cpow(x: Complex, y: Complex) -> Complex {
 pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
     match x {
         Value::Lgl(v) => {
-            let data: Vec<i32> = v.data.iter().map(|&e| if e == NA_INTEGER || op == ArithOp::Plus { e } else { -e }).collect();
+            let data: Vec<i32> =
+                v.data.iter().map(|&e| if e == NA_INTEGER || op == ArithOp::Plus { e } else { -e }).collect();
             let mut out = Value::ints(data);
             if let Some(a) = &v.attrs {
                 out.set_attrs(Some(a.clone()));
@@ -812,10 +811,7 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     if !ok(&x) || !ok(&y) {
         return Err(Flow::error_call(
             call.clone(),
-            format!(
-                "comparison ({}) is possible only for atomic and list types",
-                op.name()
-            ),
+            format!("comparison ({}) is possible only for atomic and list types", op.name()),
         ));
     }
     let (nx, ny) = (x.len(), y.len());
@@ -995,8 +991,9 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
     check_recycling(i, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
     if let (Value::Raw(a), Value::Raw(b)) = (&x, &y) {
-        let out: Vec<u8> =
-            (0..n).map(|k| if and { a.data[k % nx] & b.data[k % ny] } else { a.data[k % nx] | b.data[k % ny] }).collect();
+        let out: Vec<u8> = (0..n)
+            .map(|k| if and { a.data[k % nx] & b.data[k % ny] } else { a.data[k % nx] | b.data[k % ny] })
+            .collect();
         let mut val = Value::raws(out);
         apply_bin_attrs(&mut val, attrs);
         return Ok(val);
@@ -1051,9 +1048,15 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
     let dimnames = x.get_attr(s::DIMNAMES);
     let mut val = match &x {
         Value::Null => Value::lgls(vec![]),
-        Value::Lgl(v) => Value::lgls(v.data.iter().map(|&e| if e == NA_LOGICAL { e } else { (e == 0) as Lgl }).collect()),
-        Value::Int(v) => Value::lgls(v.data.iter().map(|&e| if e == NA_INTEGER { NA_LOGICAL } else { (e == 0) as Lgl }).collect()),
-        Value::Real(v) => Value::lgls(v.data.iter().map(|&e| if e.is_nan() { NA_LOGICAL } else { (e == 0.0) as Lgl }).collect()),
+        Value::Lgl(v) => {
+            Value::lgls(v.data.iter().map(|&e| if e == NA_LOGICAL { e } else { (e == 0) as Lgl }).collect())
+        }
+        Value::Int(v) => {
+            Value::lgls(v.data.iter().map(|&e| if e == NA_INTEGER { NA_LOGICAL } else { (e == 0) as Lgl }).collect())
+        }
+        Value::Real(v) => {
+            Value::lgls(v.data.iter().map(|&e| if e.is_nan() { NA_LOGICAL } else { (e == 0.0) as Lgl }).collect())
+        }
         Value::Cplx(v) => Value::lgls(
             v.data.iter().map(|e| if e.is_na() { NA_LOGICAL } else { (e.re == 0.0 && e.im == 0.0) as Lgl }).collect(),
         ),
@@ -1077,17 +1080,11 @@ pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: 
     let _ = i;
     let ok = matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) | Value::Null);
     if !ok || (matches!(v, Value::Str(_))) {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("invalid '{}' type in 'x {} y'", which, op),
-        ));
+        return Err(Flow::error_call(call.clone(), format!("invalid '{}' type in 'x {} y'", which, op)));
     }
     if v.len() != 1 {
         if v.len() > 1 {
-            return Err(Flow::error_call(
-                call.clone(),
-                format!("'length = {}' in coercion to 'logical(1)'", v.len()),
-            ));
+            return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", v.len())));
         }
         return Ok(NA_LOGICAL);
     }
@@ -1131,11 +1128,23 @@ fn do_or2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 // ----------------------------------------------------------------------
 // Math group (do_math1)
 
-fn math1<F: Fn(f64) -> f64>(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, name: &str, f: F) -> RResult<Value> {
+fn math1<F: Fn(f64) -> f64>(
+    i: &mut Interp,
+    call: &Value,
+    mut args: Vec<Arg>,
+    env: &Env,
+    name: &str,
+    f: F,
+) -> RResult<Value> {
     if args.len() != 1 {
         return Err(Flow::error_call(
             call.clone(),
-            format!("{} argument{} passed to '{}' which requires 1", args.len(), if args.len() == 1 { "" } else { "s" }, name),
+            format!(
+                "{} argument{} passed to '{}' which requires 1",
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                name
+            ),
         ));
     }
     if args[0].value.is_object() {
@@ -1200,7 +1209,13 @@ macro_rules! math_fn {
 math_fn!(do_floor, "floor", f64::floor);
 math_fn!(do_ceiling, "ceiling", f64::ceil);
 math_fn!(do_sqrt, "sqrt", f64::sqrt);
-math_fn!(do_sign, "sign", |x: f64| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 });
+math_fn!(do_sign, "sign", |x: f64| if x > 0.0 {
+    1.0
+} else if x < 0.0 {
+    -1.0
+} else {
+    0.0
+});
 math_fn!(do_exp, "exp", f64::exp);
 math_fn!(do_expm1, "expm1", f64::exp_m1);
 math_fn!(do_log1p, "log1p", f64::ln_1p);
@@ -1303,7 +1318,10 @@ pub use crate::nmath::{gammafn, lgammafn};
 
 fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if args.len() != 1 {
-        return Err(Flow::error_call(call.clone(), format!("{} arguments passed to 'abs' which requires 1", args.len())));
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("{} arguments passed to 'abs' which requires 1", args.len()),
+        ));
     }
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "abs", call, &args, env)? {

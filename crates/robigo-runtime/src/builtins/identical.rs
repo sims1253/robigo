@@ -38,11 +38,7 @@ fn real_eq(x: f64, y: f64, f: IdFlags) -> bool {
         }
         return x.to_bits() == y.to_bits();
     }
-    if f.num_eq {
-        x == y
-    } else {
-        x.to_bits() == y.to_bits()
-    }
+    if f.num_eq { x == y } else { x.to_bits() == y.to_bits() }
 }
 
 fn attrs_identical(a: &Value, b: &Value, f: IdFlags) -> bool {
@@ -93,16 +89,25 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
         }
         (Value::Pairlist(x), Value::Pairlist(y)) => {
             x.items.len() == y.items.len()
-                && x.items.iter().zip(y.items.iter()).all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
+                && x.items
+                    .iter()
+                    .zip(y.items.iter())
+                    .all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
         }
         (Value::Lang(x), Value::Lang(y)) => {
             identical_flags(&x.fun, &y.fun, f)
                 && x.args.len() == y.args.len()
-                && x.args.iter().zip(y.args.iter()).all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
+                && x.args
+                    .iter()
+                    .zip(y.args.iter())
+                    .all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
         }
         (Value::Closure(x), Value::Closure(y)) => {
             x.formals.len() == y.formals.len()
-                && x.formals.iter().zip(y.formals.iter()).all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
+                && x.formals
+                    .iter()
+                    .zip(y.formals.iter())
+                    .all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
                 && identical_flags(&x.body, &y.body, f)
                 && (f.ignore_env || x.env.ptr_eq(&y.env))
         }
@@ -122,11 +127,7 @@ fn do_identical(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             return d;
         }
         let l = crate::coerce::as_logical(&v);
-        if l == NA_LOGICAL {
-            d
-        } else {
-            l != 0
-        }
+        if l == NA_LOGICAL { d } else { l != 0 }
     };
     let f = IdFlags {
         num_eq: b(2, true),

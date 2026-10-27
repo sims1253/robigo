@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use super::character::{as_bool2, check_arity_internal};
 use super::internal;
-use super::sprintf::{c_format, CArg};
-use crate::coerce::{as_integer, as_logical, coerce_vector, CoerceWarnings};
+use super::sprintf::{CArg, c_format};
+use crate::coerce::{CoerceWarnings, as_integer, as_logical, coerce_vector};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::format::{self, rstrlen};

@@ -6,12 +6,12 @@
 use std::collections::HashSet;
 
 use super::internal;
-use crate::coerce::{as_integer, as_logical, as_real, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_integer, as_logical, as_real};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::nmath::rand as nr;
-use crate::nmath::rng::{time_to_seed, N01Kind, NeedTaocp1997Init, RngKind, SampleKind};
+use crate::nmath::rng::{N01Kind, NeedTaocp1997Init, RngKind, SampleKind, time_to_seed};
 use crate::sym::Sym;
 use crate::value::*;
 
@@ -336,11 +336,7 @@ fn do_setseed(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
 
 /// `asInteger` with its coercion warning.
 fn scalar_integer(v: &Value, w: &mut CoerceWarnings) -> i32 {
-    if v.is_atomic() && !v.is_empty() {
-        crate::coerce::to_int(&crate::coerce::first_elt(v), w)[0]
-    } else {
-        NA_INTEGER
-    }
+    if v.is_atomic() && !v.is_empty() { crate::coerce::to_int(&crate::coerce::first_elt(v), w)[0] } else { NA_INTEGER }
 }
 
 // ----------------------------------------------------------------------
@@ -610,9 +606,7 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
             return Err(Flow::error("invalid 'size' argument"));
         }
         if !replace && k > n {
-            return Err(Flow::error(
-                "cannot take a sample larger than the population when 'replace = FALSE'",
-            ));
+            return Err(Flow::error("cannot take a sample larger than the population when 'replace = FALSE'"));
         }
         let mut w = CoerceWarnings::default();
         let mut p = crate::coerce::to_real(prob, &mut w);
@@ -643,9 +637,7 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
             return Err(Flow::error("invalid 'size' argument"));
         }
         if !replace && k as f64 > dn {
-            return Err(Flow::error(
-                "cannot take a sample larger than the population when 'replace = FALSE'",
-            ));
+            return Err(Flow::error("cannot take a sample larger than the population when 'replace = FALSE'"));
         }
         let rng = &mut i.rng;
         if dn > i32::MAX as f64 || k > i32::MAX as i64 {

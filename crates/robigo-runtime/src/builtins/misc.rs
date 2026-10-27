@@ -8,11 +8,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::{arg, check_arity, internal, prim, special};
-use crate::coerce::{as_integer, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_integer};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -162,7 +162,15 @@ fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, wh
                 3 => Value::reals(r.iter().map(|d| d.abs()).collect()),
                 _ => Value::reals(
                     r.iter()
-                        .map(|d| if d.is_nan() { *d } else if *d >= 0.0 { 0.0 } else { std::f64::consts::PI })
+                        .map(|d| {
+                            if d.is_nan() {
+                                *d
+                            } else if *d >= 0.0 {
+                                0.0
+                            } else {
+                                std::f64::consts::PI
+                            }
+                        })
                         .collect(),
                 ),
             }
@@ -289,7 +297,9 @@ fn do_pack_bits(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(match width {
         8 => Value::raws(bits.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |a, (k, b)| a | (b << k))).collect()),
         32 => Value::ints(
-            bits.chunks(32).map(|c| c.iter().enumerate().fold(0u32, |a, (k, b)| a | ((*b as u32) << k)) as i32).collect(),
+            bits.chunks(32)
+                .map(|c| c.iter().enumerate().fold(0u32, |a, (k, b)| a | ((*b as u32) << k)) as i32)
+                .collect(),
         ),
         _ => Value::reals(
             bits.chunks(64)
@@ -312,11 +322,7 @@ fn bitwise2(args: &[Arg], f: fn(i32, i32) -> Option<i32>) -> RResult<Value> {
     let out: Vec<i32> = (0..n)
         .map(|k| {
             let (p, q) = (x[k % x.len()], y[k % y.len()]);
-            if p == NA_INTEGER || q == NA_INTEGER {
-                NA_INTEGER
-            } else {
-                f(p, q).unwrap_or(NA_INTEGER)
-            }
+            if p == NA_INTEGER || q == NA_INTEGER { NA_INTEGER } else { f(p, q).unwrap_or(NA_INTEGER) }
         })
         .collect();
     Ok(Value::ints(out))

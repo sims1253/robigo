@@ -2,7 +2,7 @@
 //! code, called by `qr()` and friends through `.Fortran(.F_xxx, ...)`).
 
 use super::linpack::{self, Util};
-use super::{dotc_result, int_arg, real_arg, NativeFn};
+use super::{NativeFn, dotc_result, int_arg, real_arg};
 use crate::env::Env;
 use crate::error::RResult;
 use crate::interp::Interp;

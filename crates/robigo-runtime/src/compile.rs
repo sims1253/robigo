@@ -21,7 +21,7 @@ use std::rc::Rc;
 use robigo_syntax::Span;
 
 use crate::builtins::arith::{ArithOp, RelOp};
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub type Reg = u16;
@@ -98,111 +98,314 @@ pub enum RangeKind {
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    Const { dst: Reg, k: u32 },
+    Const {
+        dst: Reg,
+        k: u32,
+    },
     /// Attribute-free scalar constants, unboxed.
-    ConstD { dst: Reg, x: f64 },
-    ConstI { dst: Reg, x: i32 },
-    ConstL { dst: Reg, x: Lgl },
-    GetVar { dst: Reg, sym: Sym, slot: Slot },
+    ConstD {
+        dst: Reg,
+        x: f64,
+    },
+    ConstI {
+        dst: Reg,
+        x: i32,
+    },
+    ConstL {
+        dst: Reg,
+        x: Lgl,
+    },
+    GetVar {
+        dst: Reg,
+        sym: Sym,
+        slot: Slot,
+    },
     /// Assign to a symbol in the current frame (`<-`/`=`).
-    SetVar { src: Reg, sym: Sym, slot: Slot },
-    Arith { op: ArithOp, dst: Reg, a: Reg, b: Reg, call: u32 },
-    Neg { dst: Reg, a: Reg, call: u32 },
-    Rel { op: RelOp, dst: Reg, a: Reg, b: Reg, call: u32 },
-    Not { dst: Reg, a: Reg, call: u32 },
+    SetVar {
+        src: Reg,
+        sym: Sym,
+        slot: Slot,
+    },
+    Arith {
+        op: ArithOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        call: u32,
+    },
+    Neg {
+        dst: Reg,
+        a: Reg,
+        call: u32,
+    },
+    Rel {
+        op: RelOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        call: u32,
+    },
+    Not {
+        dst: Reg,
+        a: Reg,
+        call: u32,
+    },
     /// Jump unless `cond` is TRUE, with `if`/`while` condition semantics.
-    JumpIfNot { cond: Reg, target: u32, call: u32 },
+    JumpIfNot {
+        cond: Reg,
+        target: u32,
+        call: u32,
+    },
     /// Jump if `cond` is TRUE (the test at the bottom of a `while` loop).
-    JumpIf { cond: Reg, target: u32, call: u32 },
-    Jump { target: u32 },
+    JumpIf {
+        cond: Reg,
+        target: u32,
+        call: u32,
+    },
+    Jump {
+        target: u32,
+    },
     /// Prepare iteration over the value in `seq`.
-    ForInit { seq: Reg, call: u32 },
+    ForInit {
+        seq: Reg,
+        call: u32,
+    },
     /// Assign the next element to `var` and jump to `body`; fall through
     /// when the sequence is exhausted.
-    ForStep { seq: Reg, idx: Reg, var: Sym, slot: Slot, body: u32, call: u32 },
+    ForStep {
+        seq: Reg,
+        idx: Reg,
+        var: Sym,
+        slot: Slot,
+        body: u32,
+        call: u32,
+    },
     /// `x[i]` / `x[[i]]` (`two`) for a variable `x`: an in-range scalar
     /// index into a plain vector is read directly; anything else
     /// evaluates the call `consts[k]` with the interpreter.
-    Index { dst: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    Index {
+        dst: Reg,
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        two: bool,
+        k: u32,
+    },
     /// The object case of a general `x[i]` / `x[[i]]` (call `consts[k]`),
     /// after `x` was evaluated into register `x` and before `i` is: if `x`
     /// is an object, call `[`/`[[` (which may dispatch) with `x`'s value and
     /// a promise of the index, and jump to `end`.
-    SubsetObj { dst: Reg, x: Reg, two: bool, k: u32, end: u32 },
+    SubsetObj {
+        dst: Reg,
+        x: Reg,
+        two: bool,
+        k: u32,
+        end: u32,
+    },
     /// The rest of a general `x[i]` / `x[[i]]` (`two`): an in-range scalar
     /// index into a plain vector is read directly, otherwise `[`/`[[` is
     /// called with both values.
-    Subset { dst: Reg, x: Reg, i: Reg, two: bool, k: u32 },
+    Subset {
+        dst: Reg,
+        x: Reg,
+        i: Reg,
+        two: bool,
+        k: u32,
+    },
     /// `x[i] <- val` / `x[[i]] <- val` with `val` already evaluated: an
     /// in-range scalar index into a plain local vector of a compatible type
     /// is updated in place; anything else runs the complex assignment
     /// `consts[k]` with that value.
-    SetIndex { val: Reg, x: Sym, slot: Slot, i: Leaf, two: bool, k: u32 },
+    SetIndex {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        two: bool,
+        k: u32,
+    },
     /// `x[i, j]` for a variable `x`: an element of a plain matrix by
     /// in-range scalar indices is read directly; anything else evaluates
     /// the call `consts[k]`.
-    Index2 { dst: Reg, x: Sym, slot: Slot, i: Leaf, j: Leaf, k: u32 },
+    Index2 {
+        dst: Reg,
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        j: Leaf,
+        k: u32,
+    },
     /// `x[i, j] <- val`: in place for a plain local matrix and in-range
     /// scalar indices, otherwise the complex assignment `consts[k]`.
-    SetIndex2 { val: Reg, x: Sym, slot: Slot, i: Leaf, j: Leaf, k: u32 },
+    SetIndex2 {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        j: Leaf,
+        k: u32,
+    },
     /// `x$name <- val` (name `consts[name]`): in place for an existing
     /// element of a plain local list, otherwise the complex assignment
     /// `consts[k]`.
-    SetDollar { val: Reg, x: Sym, slot: Slot, name: u32, k: u32 },
+    SetDollar {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        name: u32,
+        k: u32,
+    },
     /// Call the base builtin `consts[f]` with the evaluated arguments
     /// `arglists[args]`; `consts[call]` is the call.
-    CallBuiltin { dst: Reg, f: u32, args: u32, call: u32 },
+    CallBuiltin {
+        dst: Reg,
+        f: u32,
+        args: u32,
+        call: u32,
+    },
     /// `sqrt(a)` etc. on an attribute-free scalar; otherwise the builtin.
-    Math1 { f: Math1, dst: Reg, a: Reg, call: u32 },
+    Math1 {
+        f: Math1,
+        dst: Reg,
+        a: Reg,
+        call: u32,
+    },
     /// The `x` (`!is_y`) or `y` operand of `&&`/`||` as a logical(1),
     /// with R's checks.
-    AndOrArg { dst: Reg, a: Reg, and: bool, is_y: bool, call: u32 },
+    AndOrArg {
+        dst: Reg,
+        a: Reg,
+        and: bool,
+        is_y: bool,
+        call: u32,
+    },
     /// Short-circuit: for `&&` (`and`) jump to `target` with `dst` FALSE
     /// if `x` is FALSE; for `||` with TRUE if `x` is TRUE.
-    AndOrShort { x: Reg, dst: Reg, and: bool, target: u32 },
+    AndOrShort {
+        x: Reg,
+        dst: Reg,
+        and: bool,
+        target: u32,
+    },
     /// Combine the logical operands of `&&`/`||`.
-    AndOr { dst: Reg, x: Reg, y: Reg, and: bool },
+    AndOr {
+        dst: Reg,
+        x: Reg,
+        y: Reg,
+        and: bool,
+    },
     /// Set up `seq` for a `for` loop over `a:b`, `seq_len(a)` or
     /// `seq_along(a)`: an integer range when possible, else the vector the
     /// builtin returns.
-    ForRange { kind: RangeKind, a: Reg, b: Reg, seq: Reg, call: u32 },
+    ForRange {
+        kind: RangeKind,
+        a: Reg,
+        b: Reg,
+        seq: Reg,
+        call: u32,
+    },
     /// Evaluate `consts[k]` with the AST interpreter.
-    Eval { dst: Reg, k: u32 },
+    Eval {
+        dst: Reg,
+        k: u32,
+    },
     /// The call `consts[k]` to the special builtin `consts[f]`, evaluated
     /// as `Eval` would without looking the function up.
-    CallSpecial { dst: Reg, f: u32, k: u32 },
+    CallSpecial {
+        dst: Reg,
+        f: u32,
+        k: u32,
+    },
     /// `x$name` (call `consts[call]`) with `x` evaluated into register `x`
     /// and the name as a string `consts[name]`.
-    Dollar { dst: Reg, x: Reg, name: u32, call: u32 },
+    Dollar {
+        dst: Reg,
+        x: Reg,
+        name: u32,
+        call: u32,
+    },
     /// `missing(sym)` (call `consts[call]`).
-    Missing { dst: Reg, sym: Sym, call: u32 },
+    Missing {
+        dst: Reg,
+        sym: Sym,
+        call: u32,
+    },
     /// `switch(x, ...)` with `x` evaluated into register `x`: jump to the
     /// alternative `switches[table]` selects (call `consts[call]` for
     /// messages).
-    Switch { x: Reg, table: u32, call: u32 },
+    Switch {
+        x: Reg,
+        table: u32,
+        call: u32,
+    },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
     /// continue at `skip`.
-    Guard { sym: Sym, dst: Reg, k: u32, skip: u32, g: u32 },
-    Null { dst: Reg },
-    Return { src: Reg },
+    Guard {
+        sym: Sym,
+        dst: Reg,
+        k: u32,
+        skip: u32,
+        g: u32,
+    },
+    Null {
+        dst: Reg,
+    },
+    Return {
+        src: Reg,
+    },
     /// Call the function `f` (not a base primitive), with the arguments of
     /// call site `site` as promises; falls back to `eval` for builtins.
-    Call { dst: Reg, f: Sym, site: u32 },
+    Call {
+        dst: Reg,
+        f: Sym,
+        site: u32,
+    },
     /// `a op b` with operands read directly (constants, variables, or
     /// registers holding evaluated subexpressions), guarding `sym` itself
     /// unless `g` is [`NO_GUARD`] (then a `Guard` op precedes it).
-    ArithL { op: ArithOp, dst: Reg, a: Leaf, b: Leaf, call: u32, sym: Sym, g: u32 },
-    RelL { op: RelOp, dst: Reg, a: Leaf, b: Leaf, call: u32, sym: Sym, g: u32 },
+    ArithL {
+        op: ArithOp,
+        dst: Reg,
+        a: Leaf,
+        b: Leaf,
+        call: u32,
+        sym: Sym,
+        g: u32,
+    },
+    RelL {
+        op: RelOp,
+        dst: Reg,
+        a: Leaf,
+        b: Leaf,
+        call: u32,
+        sym: Sym,
+        g: u32,
+    },
     /// `a:b`: an unmaterialized `RVal::Range` for integer-valued scalar
     /// ends, otherwise the builtin.
-    Colon { dst: Reg, a: Reg, b: Reg, call: u32 },
+    Colon {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        call: u32,
+    },
     /// `f(a)` for a [`Builtin1`]; the builtin itself (`call`) when the
     /// fast path does not apply.
-    Builtin1 { f: Builtin1, dst: Reg, a: Reg, call: u32 },
+    Builtin1 {
+        f: Builtin1,
+        dst: Reg,
+        a: Reg,
+        call: u32,
+    },
     /// Set result visibility.
-    Visible { on: bool },
+    Visible {
+        on: bool,
+    },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
-    LoopEnter { brk: u32, nxt: u32 },
+    LoopEnter {
+        brk: u32,
+        nxt: u32,
+    },
     LoopExit,
 }
 
@@ -425,7 +628,11 @@ fn is_pure(e: &Value, depth: usize) -> bool {
                 return matches!(&l.args[0].value, Value::Sym(s) if is_var(*s));
             }
             let ok_head = arith_op(&n).is_some() || rel_op(&n).is_some() || matches!(&*n, "(" | ":");
-            ok_head && !l.args.is_empty() && l.args.len() <= 2 && plain_args(l, l.args.len()) && l.args.iter().all(|a| is_pure(&a.value, depth + 1))
+            ok_head
+                && !l.args.is_empty()
+                && l.args.len() <= 2
+                && plain_args(l, l.args.len())
+                && l.args.iter().all(|a| is_pure(&a.value, depth + 1))
         }
         _ => false,
     }
@@ -630,7 +837,14 @@ impl Compiler {
         } else {
             None
         };
-        self.call_sites.push(CallSite { call: whole.clone(), codes, memo: Default::default(), leaf_args, fslot: None, force });
+        self.call_sites.push(CallSite {
+            call: whole.clone(),
+            codes,
+            memo: Default::default(),
+            leaf_args,
+            fslot: None,
+            force,
+        });
         let site = (self.call_sites.len() - 1) as u32;
         self.emit(Op::Call { dst, f, site });
     }
@@ -883,7 +1097,8 @@ impl Compiler {
                 self.patch(g, end);
                 let t = &mut self.switches[table as usize];
                 t.names = alts.iter().map(|a| a.tag).collect();
-                t.by_name = (0..alts.len()).map(|k| code[k..].iter().flatten().next().copied().unwrap_or(null)).collect();
+                t.by_name =
+                    (0..alts.len()).map(|k| code[k..].iter().flatten().next().copied().unwrap_or(null)).collect();
                 t.default = alts.iter().zip(&code).find(|(a, _)| a.tag.is_none()).and_then(|(_, c)| *c);
                 t.by_number = code;
                 t.null = null;

@@ -16,7 +16,7 @@ use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::format::{encode_integer, encode_logical, encode_real0, format_real};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -63,16 +63,37 @@ const EOF: i32 = -1;
 pub enum ConnKind {
     /// stdin (0), stdout (1) or stderr (2).
     Terminal,
-    File { raw: bool, fp: Option<File>, rbuf: Vec<u8>, rpos: usize, temp: bool },
+    File {
+        raw: bool,
+        fp: Option<File>,
+        rbuf: Vec<u8>,
+        rpos: usize,
+        temp: bool,
+    },
     /// `textConnection(object, "r")`: the lines joined with newlines.
-    TextIn { data: Vec<u8>, cur: usize },
+    TextIn {
+        data: Vec<u8>,
+        cur: usize,
+    },
     /// `textConnection(name, "w")`: lines go to a character vector bound
     /// to `namesym` in `env` (or kept internally for `NULL`).
-    TextOut { namesym: Option<Sym>, env: Env, data: Vec<RStr>, lastline: Vec<u8> },
+    TextOut {
+        namesym: Option<Sym>,
+        env: Env,
+        data: Vec<RStr>,
+        lastline: Vec<u8>,
+    },
     /// `gzfile()`: read by decompressing the whole file when opened
     /// (uncompressed files are read as they are), written by compressing
     /// the buffered output when closed.
-    Gz { level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
+    Gz {
+        level: u32,
+        data: Vec<u8>,
+        cur: usize,
+        out: Vec<u8>,
+        writing: bool,
+        append: bool,
+    },
 }
 
 pub struct Connection {
@@ -187,11 +208,7 @@ impl ConnState {
         if n >= self.sink_number {
             return 0;
         }
-        if self.sink_split[self.sink_number - n] {
-            self.sink_cons[self.sink_number - n - 1]
-        } else {
-            0
-        }
+        if self.sink_split[self.sink_number - n] { self.sink_cons[self.sink_number - n - 1] } else { 0 }
     }
 }
 
@@ -312,7 +329,11 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
         let raw = match std::fs::read(&name) {
             Ok(d) => d,
             Err(e) => {
-                i.warning(format!("cannot open compressed file '{}', probable reason '{}'", name, os_error_message(&e)))?;
+                i.warning(format!(
+                    "cannot open compressed file '{}', probable reason '{}'",
+                    name,
+                    os_error_message(&e)
+                ))?;
                 return Ok(false);
             }
         };
@@ -476,7 +497,8 @@ fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                 let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level));
                 let ok = enc.write_all(out).is_ok();
                 let bytes = enc.finish().ok().filter(|_| ok);
-                let file = std::fs::OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(&name);
+                let file =
+                    std::fs::OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(&name);
                 con.status = match (bytes, file) {
                     (Some(b), Ok(mut f)) => {
                         if f.write_all(&b).is_ok() {
@@ -920,7 +942,11 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         return Err(Flow::error_call(call.clone(), "NA in coercion to boolean"));
     }
     let mut raw = raw != 0;
-    if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://") || url.starts_with("ftps://") {
+    if url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("ftp://")
+        || url.starts_with("ftps://")
+    {
         return Err(Flow::error("robigo: URL connections are not implemented yet"));
     }
     let ncon = i.conns.next_connection()?;
@@ -1041,7 +1067,14 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     }
     let ncon = i.conns.next_connection()?;
     let mode = if open.is_empty() { "rb".to_string() } else { open.clone() };
-    let kind = ConnKind::Gz { level: compress as u32, data: Vec::new(), cur: 0, out: Vec::new(), writing: false, append: false };
+    let kind = ConnKind::Gz {
+        level: compress as u32,
+        data: Vec::new(),
+        cur: 0,
+        out: Vec::new(),
+        writing: false,
+        append: false,
+    };
     let mut con = Connection::new("gzfile", &file, &mode, kind);
     con.blocking = true;
     con.canseek = false;
@@ -1487,9 +1520,7 @@ fn do_getconnection(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
 }
 
 fn do_getallconnections(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::ints(
-        (0..NCONNECTIONS).filter(|&k| i.conns.table[k].is_some()).map(|k| k as i32).collect(),
-    ))
+    Ok(Value::ints((0..NCONNECTIONS).filter(|&k| i.conns.table[k].is_some()).map(|k| k as i32).collect()))
 }
 
 fn do_pushback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

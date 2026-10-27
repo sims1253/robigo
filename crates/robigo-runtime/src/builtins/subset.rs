@@ -11,10 +11,10 @@ use std::rc::Rc;
 use super::subscript::*;
 use super::{check_arity, prim, special};
 use crate::attrib::{get_attrib, set_attrib};
-use crate::env::{Env, BIND_ACTIVE};
+use crate::env::{BIND_ACTIVE, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -101,9 +101,7 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
                 _ => return Err(Flow::error("'...' used in an incorrect context")),
             },
             v if v.is_missing_arg() => out.push(Arg::new(a.tag, Value::missing_arg())),
-            Value::Sym(sym) if r_is_missing(interp, *sym, env, 0) => {
-                out.push(Arg::new(a.tag, Value::missing_arg()))
-            }
+            Value::Sym(sym) if r_is_missing(interp, *sym, env, 0) => out.push(Arg::new(a.tag, Value::missing_arg())),
             v => {
                 let r = interp.eval(v, env)?;
                 out.push(Arg::new(a.tag, r));
@@ -431,7 +429,9 @@ fn mask_subset(x: &Value, m: &[i32]) -> Option<Value> {
             _ => return None,
         }
         match x.get_attr(s::SRCREF) {
-            Some(Value::List(sr)) if sr.data.len() == m.len() => result.set_attr_raw(s::SRCREF, Value::list(keep(&sr.data, m))),
+            Some(Value::List(sr)) if sr.data.len() == m.len() => {
+                result.set_attr_raw(s::SRCREF, Value::list(keep(&sr.data, m)))
+            }
             Some(Value::List(_)) => return None,
             _ => {}
         }
@@ -862,11 +862,7 @@ enum PMatch {
 // R: subset.c:pstrmatch
 fn pstrmatch(target: &str, input: &str) -> PMatch {
     if !input.is_empty() && target.starts_with(input) {
-        if target.len() == input.len() {
-            PMatch::Exact
-        } else {
-            PMatch::Partial
-        }
+        if target.len() == input.len() { PMatch::Exact } else { PMatch::Partial }
     } else {
         PMatch::No
     }
@@ -876,8 +872,7 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
     let input = char_of(input).to_string();
-    let warn_partial =
-        |interp: &mut Interp| matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
+    let warn_partial = |interp: &mut Interp| matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
     if let Value::List(_) | Value::Expr(_) = x {
         // The names are scanned in place (no copies per call).
         let names = get_attrib(x, s::NAMES);
@@ -907,7 +902,9 @@ pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) 
     let warn = warn_partial(interp);
     let candidates: Option<Vec<(Option<String>, usize)>> = match x {
         Value::Null => Some(vec![]),
-        Value::Pairlist(p) => Some(p.items.iter().enumerate().map(|(i, a)| (a.tag.map(|t| t.name().to_string()), i)).collect()),
+        Value::Pairlist(p) => {
+            Some(p.items.iter().enumerate().map(|(i, a)| (a.tag.map(|t| t.name().to_string()), i)).collect())
+        }
         Value::Lang(l) => Some(
             std::iter::once((None, 0))
                 .chain(l.args.iter().enumerate().map(|(i, a)| (a.tag.map(|t| t.name().to_string()), i + 1)))

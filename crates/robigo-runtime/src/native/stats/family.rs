@@ -22,7 +22,10 @@ fn like(x: &Value, data: Vec<f64>) -> Value {
 
 fn x_d_omx(x: f64) -> RResult<f64> {
     if !(0.0..=1.0).contains(&x) {
-        return Err(Flow::error(format!("Value {} out of range (0, 1)", robigo_syntax::cfmt::fmt_g(x, 6, false, false))));
+        return Err(Flow::error(format!(
+            "Value {} out of range (0, 1)",
+            robigo_syntax::cfmt::fmt_g(x, 6, false, false)
+        )));
     }
     Ok(x / (1.0 - x))
 }

@@ -5,12 +5,12 @@
 use std::rc::Rc;
 
 use super::{arg, internal, special};
-use crate::deparse::{deparse_lines, DEFAULTDEPARSE};
+use crate::deparse::{DEFAULTDEPARSE, deparse_lines};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::lang::expr_to_value;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -114,10 +114,7 @@ fn do_str2lang(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let src = s.data[0].as_deref().unwrap_or("NA");
     let exprs = parse_text(src, "<text>")?;
     if exprs.len() != 1 {
-        return Err(Flow::error(format!(
-            "parsing result not of length one, but {}",
-            exprs.len()
-        )));
+        return Err(Flow::error(format!("parsing result not of length one, but {}", exprs.len())));
     }
     Ok(exprs.into_iter().next().unwrap())
 }

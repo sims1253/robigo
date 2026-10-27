@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::{Context, Interp};
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 /// R's `R_data_class2`: the class vector used for S3 dispatch, including
@@ -245,9 +245,7 @@ impl Interp {
                     call_env: callenv.clone(),
                     def_env: defenv.clone(),
                 };
-                return self
-                    .dispatch_method(&f, dot_class, &info, call, promargs, rho)
-                    .map(Some);
+                return self.dispatch_method(&f, dot_class, &info, call, promargs, rho).map(Some);
             }
         }
         let method = Sym::dotted(generic, "default");
@@ -357,7 +355,9 @@ impl Interp {
     /// original call arguments where they correspond one-to-one.
     pub fn forced_promargs(&self, call: &Value, args: &[Arg], _env: &Env) -> Vec<Arg> {
         let exprs: Option<Vec<Value>> = match call {
-            Value::Lang(l) if l.args.len() == args.len() && !l.args.iter().any(|a| a.value.as_sym() == Some(s::DOTS)) => {
+            Value::Lang(l)
+                if l.args.len() == args.len() && !l.args.iter().any(|a| a.value.as_sym() == Some(s::DOTS)) =>
+            {
                 Some(l.args.iter().map(|a| a.value.clone()).collect())
             }
             _ => None,
@@ -420,9 +420,7 @@ impl Interp {
             if !l.ptr_eq(r) {
                 let lname = lmeth.as_ref().map(|m| m.name().to_string()).unwrap_or_default();
                 let rname = rmeth.as_ref().map(|m| m.name().to_string()).unwrap_or_default();
-                if rname == "Ops.difftime"
-                    && matches!(lname.as_str(), "+.POSIXt" | "-.POSIXt" | "+.Date" | "-.Date")
-                {
+                if rname == "Ops.difftime" && matches!(lname.as_str(), "+.POSIXt" | "-.POSIXt" | "+.Date" | "-.Date") {
                     rsxp = None;
                 } else if lname == "Ops.difftime" && matches!(rname.as_str(), "+.POSIXt" | "+.Date") {
                     lsxp = None;
@@ -447,11 +445,7 @@ impl Interp {
             .iter()
             .map(|a| {
                 let t = class_of(&a.value);
-                if t.iter().any(|c| *c == dispatch_class_name) {
-                    Some(lmeth.name())
-                } else {
-                    Some(Rc::from(""))
-                }
+                if t.iter().any(|c| *c == dispatch_class_name) { Some(lmeth.name()) } else { Some(Rc::from("")) }
             })
             .collect();
         let vars = vec![

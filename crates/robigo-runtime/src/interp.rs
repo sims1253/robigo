@@ -1,15 +1,15 @@
 //! The evaluator: `eval`, promises, argument matching and closure
 //! application. Mirrors GNU R's eval.c and match.c.
 
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::io::Write;
-use smallvec::SmallVec;
 use std::rc::Rc;
 
 use crate::conditions::{HandlerStack, RestartStack};
-use crate::env::{Env, BIND_ACTIVE, BIND_MISSING_DEFAULT};
+use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 /// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
@@ -381,7 +381,9 @@ impl Interp {
                 if let Some(b) = frame.get(sym) {
                     match &b.value {
                         // Locked bindings read as usual; active ones need the slow path.
-                        Value::Closure(_) | Value::Builtin(_) if b.flags & BIND_ACTIVE == 0 => return Some(b.value.clone()),
+                        Value::Closure(_) | Value::Builtin(_) if b.flags & BIND_ACTIVE == 0 => {
+                            return Some(b.value.clone());
+                        }
                         Value::Promise(_) | Value::Closure(_) | Value::Builtin(_) => return None,
                         v if v.is_missing_arg() => return None,
                         _ => {}
@@ -753,10 +755,7 @@ impl Interp {
         };
         let nf = clo.formals.len();
         let np = promargs.len();
-        if np <= nf
-            && promargs.iter().all(|a| a.tag.is_none())
-            && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS))
-        {
+        if np <= nf && promargs.iter().all(|a| a.tag.is_none()) && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
             // Positional arguments only and no `...`: matching assigns them
             // in order (the fast path of `match_args`, without its copies).
             for (k, f) in clo.formals.iter().enumerate() {
@@ -801,15 +800,17 @@ impl Interp {
             generic: false,
             builtin: false,
         });
-        let code = if crate::vm::enabled() { clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone() } else { None };
+        let code = if crate::vm::enabled() {
+            clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone()
+        } else {
+            None
+        };
         let r = match code {
             Some(code) => crate::vm::run_closure(self, &code, &newenv, clo),
             None => self.eval(&clo.body, &newenv),
         };
         let r = match r {
-            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => {
-                Ok(v)
-            }
+            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
             r => r,
         };
         self.end_context(r)

@@ -316,7 +316,9 @@ pub fn stirlerr(n: f64) -> f64 {
         if n > 7.3 {
             return (S0
                 - (S1
-                    - (S2 - (S3 - (S4 - (S5 - (S6 - (S7 - (S8 - (S9 - S10 / nn) / nn) / nn) / nn) / nn) / nn) / nn) / nn)
+                    - (S2
+                        - (S3 - (S4 - (S5 - (S6 - (S7 - (S8 - (S9 - S10 / nn) / nn) / nn) / nn) / nn) / nn) / nn)
+                            / nn)
                         / nn)
                     / nn)
                 / n;
@@ -327,7 +329,11 @@ pub fn stirlerr(n: f64) -> f64 {
                     - (S2
                         - (S3
                             - (S4
-                                - (S5 - (S6 - (S7 - (S8 - (S9 - (S10 - (S11 - S12 / nn) / nn) / nn) / nn) / nn) / nn) / nn)
+                                - (S5
+                                    - (S6
+                                        - (S7 - (S8 - (S9 - (S10 - (S11 - S12 / nn) / nn) / nn) / nn) / nn)
+                                            / nn)
+                                        / nn)
                                     / nn)
                                 / nn)
                             / nn)
@@ -344,7 +350,12 @@ pub fn stirlerr(n: f64) -> f64 {
                                 - (S5
                                     - (S6
                                         - (S7
-                                            - (S8 - (S9 - (S10 - (S11 - (S12 - (S13 - S14 / nn) / nn) / nn) / nn) / nn) / nn)
+                                            - (S8
+                                                - (S9
+                                                    - (S10
+                                                        - (S11 - (S12 - (S13 - S14 / nn) / nn) / nn) / nn)
+                                                        / nn)
+                                                    / nn)
                                                 / nn)
                                             / nn)
                                         / nn)
@@ -366,7 +377,11 @@ pub fn stirlerr(n: f64) -> f64 {
                                         - (S8
                                             - (S9
                                                 - (S10
-                                                    - (S11 - (S12 - (S13 - (S14 - (S15 - S16 / nn) / nn) / nn) / nn) / nn)
+                                                    - (S11
+                                                        - (S12
+                                                            - (S13 - (S14 - (S15 - S16 / nn) / nn) / nn)
+                                                                / nn)
+                                                            / nn)
                                                         / nn)
                                                     / nn)
                                                 / nn)
@@ -412,11 +427,7 @@ pub fn beta(a: f64, b: f64) -> f64 {
     } else if !a.is_finite() || !b.is_finite() {
         return 0.0;
     }
-    if a + b < XMAX {
-        (1.0 / gammafn(a + b)) * gammafn(a) * gammafn(b)
-    } else {
-        lbeta(a, b).exp()
-    }
+    if a + b < XMAX { (1.0 / gammafn(a + b)) * gammafn(a) * gammafn(b) } else { lbeta(a, b).exp() }
 }
 
 /// R: nmath/lbeta.c:lbeta

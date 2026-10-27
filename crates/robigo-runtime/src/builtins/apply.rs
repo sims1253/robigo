@@ -11,7 +11,7 @@ use crate::coerce::{as_logical, coerce_quiet};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -67,7 +67,8 @@ fn check_arg_is_symbol(x: &Value) -> RResult<Value> {
 /// the promise `X[[i]]`. (Called only when there are elements: `FUN` is
 /// evaluated as by the first call.)
 fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<Option<Rc<Closure>>> {
-    if xx.is_object() || !matches!(xx, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_)) {
+    if xx.is_object() || !matches!(xx, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_))
+    {
         return Ok(None);
     }
     if matches!(rho.get_local(s::DOTS), Some(Value::Dots(d)) if !d.is_empty()) {
@@ -76,7 +77,9 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     let Value::Lang(l) = fcall else { return Ok(None) };
     let Value::Sym(f) = &l.fun else { return Ok(None) };
     match i.find_fun(*f, rho)? {
-        Value::Closure(c) if c.formals.len() == 1 && c.formals[0].tag != Some(s::DOTS) && crate::vm::inlinable(&c) => Ok(Some(c)),
+        Value::Closure(c) if c.formals.len() == 1 && c.formals[0].tag != Some(s::DOTS) && crate::vm::inlinable(&c) => {
+            Ok(Some(c))
+        }
         _ => Ok(None),
     }
 }
@@ -94,7 +97,15 @@ fn element2(xx: &Value, k: usize) -> Value {
 }
 
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
-fn call_fun(i: &mut Interp, fast: &Option<Rc<Closure>>, xx: &Value, k: usize, fcall: &Value, isym: Sym, rho: &Env) -> RResult<Value> {
+fn call_fun(
+    i: &mut Interp,
+    fast: &Option<Rc<Closure>>,
+    xx: &Value,
+    k: usize,
+    fcall: &Value,
+    isym: Sym,
+    rho: &Env,
+) -> RResult<Value> {
     if let Some(c) = fast {
         if let Some(v) = crate::vm::call_inline(i, c, &[element2(xx, k)]) {
             return Ok(v);
@@ -233,7 +244,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                         return Err(Flow::error(format!(
                             "dimnames(<value>) is neither NULL nor list of length {}",
                             rnk_v
-                        )))
+                        )));
                     }
                 }
             } else {
@@ -378,11 +389,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let all = all != NA_LOGICAL && all != 0;
     let use_nms = as_logical(&i.eval(&arg(&args, 3), rho)?);
     let use_nms = use_nms != NA_LOGICAL && use_nms != 0;
-    let syms: Vec<Sym> = env
-        .symbols()
-        .into_iter()
-        .filter(|sy| all || !sy.with_name(|n| n.starts_with('.')))
-        .collect();
+    let syms: Vec<Sym> = env.symbols().into_iter().filter(|sy| all || !sy.with_name(|n| n.starts_with('.'))).collect();
     let mut vals = Vec::with_capacity(syms.len());
     for sy in &syms {
         let v = env.get_local(*sy).unwrap_or(Value::Null);
@@ -470,8 +477,10 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
             if counters[j] > lengths[j] {
                 counters[j] = 1;
             }
-            let inner = Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]);
-            let outer = Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(inner), Arg::pos(Value::int(counters[j] as i32))]);
+            let inner =
+                Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]);
+            let outer =
+                Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(inner), Arg::pos(Value::int(counters[j] as i32))]);
             let tag = vnames.as_ref().and_then(|n| n[j].as_deref().filter(|s| !s.is_empty()).map(Sym::new));
             fargs.push(Arg::new(tag, outer));
         }

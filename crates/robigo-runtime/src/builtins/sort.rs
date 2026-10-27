@@ -14,7 +14,7 @@ use super::{internal, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -216,19 +216,11 @@ pub fn sort_vector(s: &mut Value, decreasing: bool) -> RResult<()> {
     match s {
         Value::Lgl(v) | Value::Int(v) => {
             let d = &mut std::rc::Rc::make_mut(v).data;
-            if decreasing {
-                shell_sort2(d, |a, b| a < b)
-            } else {
-                shell_sort2(d, |a, b| a > b)
-            }
+            if decreasing { shell_sort2(d, |a, b| a < b) } else { shell_sort2(d, |a, b| a > b) }
         }
         Value::Real(v) => {
             let d = &mut std::rc::Rc::make_mut(v).data;
-            if decreasing {
-                shell_sort2(d, |a, b| a < b)
-            } else {
-                shell_sort2(d, |a, b| a > b)
-            }
+            if decreasing { shell_sort2(d, |a, b| a < b) } else { shell_sort2(d, |a, b| a > b) }
         }
         Value::Cplx(v) => {
             let d = &mut std::rc::Rc::make_mut(v).data;
@@ -363,15 +355,11 @@ fn do_psort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         Value::Lgl(v) | Value::Int(v) => {
             psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &i32, b: &i32| icmp(*a, *b, true))
         }
-        Value::Real(v) => {
-            psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &f64, b: &f64| rcmp(*a, *b, true))
+        Value::Real(v) => psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &f64, b: &f64| rcmp(*a, *b, true)),
+        Value::Cplx(v) => {
+            psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &Complex, b: &Complex| ccmp(*a, *b, true))
         }
-        Value::Cplx(v) => psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &Complex, b: &Complex| {
-            ccmp(*a, *b, true)
-        }),
-        Value::Str(v) => {
-            psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &RStr, b: &RStr| scmp(a, b, true))
-        }
+        Value::Str(v) => psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &RStr, b: &RStr| scmp(a, b, true)),
         _ => {}
     }
     Ok(ans)
@@ -644,8 +632,9 @@ where
     Ok(())
 }
 
-const SINCS: [usize; 17] =
-    [1073790977, 268460033, 67121153, 16783361, 4197377, 1050113, 262913, 65921, 16577, 4193, 1073, 281, 77, 23, 8, 1, 0];
+const SINCS: [usize; 17] = [
+    1073790977, 268460033, 67121153, 16783361, 4197377, 1050113, 262913, 65921, 16577, 4193, 1073, 281, 77, 23, 8, 1, 0,
+];
 
 /// `sort2_with_index` of orderVector1 (lo = 0, hi = n - 1).
 fn shell_sort_index<F>(indx: &mut [usize], less: &mut F) -> RResult<()>
@@ -917,11 +906,7 @@ fn do_sorted_fpass(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) ->
     }
     let nalast = if nalast == NA_INTEGER { 1 } else { nalast };
     let wanted = if decr != 0 {
-        if nalast != 0 {
-            -1
-        } else {
-            -2
-        }
+        if nalast != 0 { -1 } else { -2 }
     } else if nalast != 0 {
         1
     } else {
@@ -952,7 +937,13 @@ fn do_wrap_meta(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
     let x = args[0].value.clone();
     if !matches!(
         x,
-        Value::Int(_) | Value::Real(_) | Value::Lgl(_) | Value::Cplx(_) | Value::Raw(_) | Value::Str(_) | Value::List(_)
+        Value::Int(_)
+            | Value::Real(_)
+            | Value::Lgl(_)
+            | Value::Cplx(_)
+            | Value::Raw(_)
+            | Value::Str(_)
+            | Value::List(_)
     ) {
         return Ok(x);
     }
@@ -992,11 +983,7 @@ fn dtwiddle(x: f64, order: i32, nalast: i32, dround: u32) -> u64 {
 /// `icheck`.
 fn icheck(x: i32, order: i32, nalast: i32) -> i64 {
     if nalast != 1 {
-        if x != NA_INTEGER {
-            x as i64 * order as i64
-        } else {
-            x as i64
-        }
+        if x != NA_INTEGER { x as i64 * order as i64 } else { x as i64 }
     } else if x != NA_INTEGER {
         x as i64 * order as i64 - 1
     } else {
@@ -1105,14 +1092,7 @@ fn key_runs(keys: &[u64]) -> Vec<usize> {
 
 /// Sort `o[s..e]` (row indices) stably by column `x`, returning the run
 /// lengths of equal keys.
-fn radix_group(
-    x: &Value,
-    o: &mut [usize],
-    order: i32,
-    nalast: i32,
-    retgrp: bool,
-    sort_str: bool,
-) -> Vec<usize> {
+fn radix_group(x: &Value, o: &mut [usize], order: i32, nalast: i32, retgrp: bool, sort_str: bool) -> Vec<usize> {
     let n = o.len();
     let runs_by = |o: &[usize], eq: &dyn Fn(usize, usize) -> bool| -> Vec<usize> {
         let mut runs = Vec::new();
@@ -1245,7 +1225,8 @@ fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
     }
     let mut ans: Vec<i32> = o.iter().map(|&k| k as i32 + 1).collect();
     // NA rows, computed in row order once (`o` is a permutation).
-    let na_rows: Vec<bool> = if nalast == 0 { (0..n).map(|k| keys.iter().any(|x| is_na_at(x, k))).collect() } else { vec![] };
+    let na_rows: Vec<bool> =
+        if nalast == 0 { (0..n).map(|k| keys.iter().any(|x| is_na_at(x, k))).collect() } else { vec![] };
     let has_na_row = |k: usize| na_rows[k];
     if nalast == 0 && na_rows.contains(&true) {
         if retgrp {

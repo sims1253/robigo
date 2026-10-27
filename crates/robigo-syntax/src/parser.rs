@@ -132,11 +132,7 @@ impl<'a> Parser<'a> {
 
     fn expect(&mut self, want: Tok) -> Result<Token, ParseError> {
         let t = self.peek().clone();
-        if t.tok == want {
-            Ok(self.bump())
-        } else {
-            Err(self.unexpected(&t))
-        }
+        if t.tok == want { Ok(self.bump()) } else { Err(self.unexpected(&t)) }
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr>, ParseError> {
@@ -259,9 +255,7 @@ impl<'a> Parser<'a> {
                 if let Some(new) = substitute_extraction_placeholder(&fun, &args, &lhs) {
                     return Ok(new);
                 }
-                let placeholder = args
-                    .iter()
-                    .position(|a| matches!(&a.value, Some(Expr::Sym(s, _)) if s == "_"));
+                let placeholder = args.iter().position(|a| matches!(&a.value, Some(Expr::Sym(s, _)) if s == "_"));
                 let full = lhs.span().to(span);
                 if let Some(i) = placeholder {
                     if args[i].name.is_none() {

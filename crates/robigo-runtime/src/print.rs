@@ -5,7 +5,7 @@ use crate::env::Env;
 use crate::error::RResult;
 use crate::format::*;
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 const TAGBUFLEN: usize = 256;
@@ -37,7 +37,13 @@ impl Interp {
 }
 
 pub fn print_value(interp: &mut Interp, v: &Value, env: &Env) -> RResult<()> {
-    let mut p = Printer { pp: interp.print_params(), tagbuf: String::new(), env: env.clone(), out: String::new(), call_args: vec![] };
+    let mut p = Printer {
+        pp: interp.print_params(),
+        tagbuf: String::new(),
+        env: env.clone(),
+        out: String::new(),
+        call_args: vec![],
+    };
     p.value_rec(interp, v)?;
     p.flush(interp);
     Ok(())
@@ -45,7 +51,13 @@ pub fn print_value(interp: &mut Interp, v: &Value, env: &Env) -> RResult<()> {
 
 impl Printer {
     pub fn new(interp: &Interp, env: &Env) -> Printer {
-        Printer { pp: interp.print_params(), tagbuf: String::new(), env: env.clone(), out: String::new(), call_args: vec![] }
+        Printer {
+            pp: interp.print_params(),
+            tagbuf: String::new(),
+            env: env.clone(),
+            out: String::new(),
+            call_args: vec![],
+        }
     }
 
     pub fn flush(&mut self, interp: &mut Interp) {
@@ -141,7 +153,8 @@ impl Printer {
                             _ => None,
                         });
                         if let Some(names) = rowname {
-                            let title = dn.as_ref().and_then(|dn| dn.get_attr(s::NAMES)).and_then(|n| n.str1()).flatten();
+                            let title =
+                                dn.as_ref().and_then(|dn| dn.get_attr(s::NAMES)).and_then(|n| n.str1()).flatten();
                             if let Some(t) = title {
                                 self.p(&t);
                                 self.p("\n");
@@ -153,7 +166,17 @@ impl Printer {
                     }
                     Some(Value::Int(d)) if d.data.len() == 2 => {
                         let (rl, cl, rn, cn) = matrix_dimnames(v);
-                        self.matrix(v, d.data[0] as usize, d.data[1] as usize, rl, cl, rn, cn, self.pp.quote, self.pp.right);
+                        self.matrix(
+                            v,
+                            d.data[0] as usize,
+                            d.data[1] as usize,
+                            rl,
+                            cl,
+                            rn,
+                            cn,
+                            self.pp.quote,
+                            self.pp.right,
+                        );
                     }
                     Some(Value::Int(d)) if d.data.len() > 2 => {
                         self.array(interp, v, &d.data)?;
@@ -283,10 +306,7 @@ impl Printer {
         }
         self.p("\n");
         if n_pr < n {
-            self.p(&format!(
-                " [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n",
-                n - n_pr
-            ));
+            self.p(&format!(" [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n", n - n_pr));
         }
     }
 
@@ -364,10 +384,7 @@ impl Printer {
         }
         self.p("\n");
         if n_pr < n {
-            self.p(&format!(
-                " [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n",
-                n - n_pr
-            ));
+            self.p(&format!(" [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n", n - n_pr));
         }
     }
 
@@ -504,7 +521,7 @@ impl Printer {
                     Value::Cplx(x) => {
                         let f = format_complex(&x.data[range], pp.digits, pp.scipen, 0, pp.na_width);
                         cplx_fmt[j] = f;
-                        f.0 .0 + f.1 .0 + 2
+                        f.0.0 + f.1.0 + 2
                     }
                     Value::Str(x) => format_string(&x.data[range], qc, &pp),
                     Value::Raw(_) => 2,
@@ -681,7 +698,9 @@ impl Printer {
                         Some(lab) => {
                             let lab_s = lab[l - 1].as_deref().unwrap_or("NA").to_string();
                             match &dnn {
-                                Some(n) => header.push_str(&format!(", {} = {}", n[j].as_deref().unwrap_or("NA"), lab_s)),
+                                Some(n) => {
+                                    header.push_str(&format!(", {} = {}", n[j].as_deref().unwrap_or("NA"), lab_s))
+                                }
                                 None => header.push_str(&format!(", {}", lab_s)),
                             }
                         }
@@ -798,10 +817,7 @@ impl Printer {
             }
             self.p("\n");
             if n_pr < ns {
-                self.p(&format!(
-                    " [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n",
-                    ns - n_pr
-                ));
+                self.p(&format!(" [ reached 'max' / getOption(\"max.print\") -- omitted {} entries ]\n", ns - n_pr));
             }
         } else {
             if names.is_some() {

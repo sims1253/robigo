@@ -8,7 +8,7 @@ use crate::coerce::*;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -91,10 +91,7 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
         Value::List(l) | Value::Expr(l) if t != VType::Str => {
             for e in &l.data {
                 if !(e.is_atomic() && e.len() == 1) && !e.is_null() {
-                    return Err(Flow::error(format!(
-                        "'list' object cannot be coerced to type '{}'",
-                        t.name()
-                    )));
+                    return Err(Flow::error(format!("'list' object cannot be coerced to type '{}'", t.name())));
                 }
             }
         }
@@ -125,7 +122,10 @@ fn do_as_logical(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Val
     as_atomic(i, c, a, e, "as.logical", VType::Lgl)
 }
 fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
-    if !a.is_empty() && !a[0].value.is_numeric_type() && !matches!(a[0].value, Value::Raw(_) | Value::Str(_) | Value::Cplx(_) | Value::Null | Value::List(_)) {
+    if !a.is_empty()
+        && !a[0].value.is_numeric_type()
+        && !matches!(a[0].value, Value::Raw(_) | Value::Str(_) | Value::Cplx(_) | Value::Null | Value::List(_))
+    {
         return Err(Flow::error(format!("cannot coerce type '{}' to vector of type 'raw'", a[0].value.type_name())));
     }
     let r = as_atomic(i, c, a, e, "as.raw", VType::Raw)?;
@@ -169,7 +169,9 @@ fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
         _ => return Err(Flow::error_call(call.clone(), "'value' must be non-null character string")),
     };
     let t = match &*mode {
-        "real" | "single" => return Err(Flow::error_call(call.clone(), "use of 'real' is defunct: use 'double' instead")),
+        "real" | "single" => {
+            return Err(Flow::error_call(call.clone(), "use of 'real' is defunct: use 'double' instead"));
+        }
         m => VType::from_name(m).ok_or_else(|| Flow::error_call(call.clone(), "invalid value"))?,
     };
     if x.vtype() == Some(t) {
@@ -200,7 +202,8 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
             return match &x {
                 Value::Sym(_) => Ok(x),
                 _ => {
-                    let s = as_string(&x).ok_or_else(|| Flow::error("invalid type/length (symbol/0) in vector allocation"))?;
+                    let s = as_string(&x)
+                        .ok_or_else(|| Flow::error("invalid type/length (symbol/0) in vector allocation"))?;
                     Ok(Value::Sym(Sym::new(&s)))
                 }
             };
@@ -212,7 +215,11 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 .into_iter()
                 .enumerate()
                 .map(|(k, v)| {
-                    let tag = names.as_ref().and_then(|n| n.get(k).cloned().flatten()).filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
+                    let tag = names
+                        .as_ref()
+                        .and_then(|n| n.get(k).cloned().flatten())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| Sym::new(&s));
                     Arg::new(tag, v)
                 })
                 .collect();
@@ -349,7 +356,10 @@ is_fn!(is_pairlist, "is.pairlist", |x| matches!(x, Value::Pairlist(_) | Value::N
 is_fn!(is_expression, "is.expression", |x| matches!(x, Value::Expr(_)));
 is_fn!(is_raw, "is.raw", |x| matches!(x, Value::Raw(_)));
 is_fn!(is_object, "is.object", |x| x.is_object());
-is_fn!(is_s4, "isS4", |x| { let _ = x; false });
+is_fn!(is_s4, "isS4", |x| {
+    let _ = x;
+    false
+});
 is_fn!(is_array, "is.array", |x| x.get_attr(s::DIM).is_some_and(|d| !d.is_empty()));
 is_fn!(is_atomic, "is.atomic", |x| x.is_atomic());
 is_fn!(is_recursive, "is.recursive", |x| matches!(
@@ -398,7 +408,9 @@ fn copy_dim_and_names(from: &Value, to: &mut Value) {
             if let Some(dn) = from.get_attr(s::DIMNAMES) {
                 to.set_attr_raw(s::DIMNAMES, dn);
             }
-        } else if let Some(n) = crate::attrib::get_attrib(from, s::NAMES).as_str_vec().map(|_| crate::attrib::get_attrib(from, s::NAMES)) {
+        } else if let Some(n) =
+            crate::attrib::get_attrib(from, s::NAMES).as_str_vec().map(|_| crate::attrib::get_attrib(from, s::NAMES))
+        {
             to.set_attr_raw(s::NAMES, n);
         }
     }
@@ -435,10 +447,7 @@ fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         Value::Pairlist(p) => p.items.iter().map(|_| FALSE).collect(),
         Value::Null => vec![],
         other => {
-            i.warningcall(
-                call,
-                format!("is.na() applied to non-(list or vector) of type '{}'", other.type_name()),
-            )?;
+            i.warningcall(call, format!("is.na() applied to non-(list or vector) of type '{}'", other.type_name()))?;
             vec![FALSE]
         }
     };
@@ -468,7 +477,7 @@ fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
             return Err(Flow::error_call(
                 call.clone(),
                 format!("default method not implemented for type '{}'", other.type_name()),
-            ))
+            ));
         }
     };
     let mut r = Value::lgls(out);
@@ -495,7 +504,7 @@ fn do_isfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
             return Err(Flow::error_call(
                 call.clone(),
                 format!("default method not implemented for type '{}'", other.type_name()),
-            ))
+            ));
         }
     };
     let mut r = Value::lgls(out);
@@ -522,7 +531,7 @@ fn do_isinfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
             return Err(Flow::error_call(
                 call.clone(),
                 format!("default method not implemented for type '{}'", other.type_name()),
-            ))
+            ));
         }
     };
     let mut r = Value::lgls(out);
@@ -563,7 +572,11 @@ fn do_docall(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         .into_iter()
         .enumerate()
         .map(|(k, v)| {
-            let tag = names.as_ref().and_then(|n| n.get(k).cloned().flatten()).filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
+            let tag = names
+                .as_ref()
+                .and_then(|n| n.get(k).cloned().flatten())
+                .filter(|s| !s.is_empty())
+                .map(|s| Sym::new(&s));
             Arg::new(tag, v)
         })
         .collect();
@@ -591,5 +604,13 @@ fn do_asfunction(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
             Arg::new(tag, v.clone())
         })
         .collect();
-    Ok(Value::Closure(Rc::new(Closure { formals: formals.into(), body: items[n - 1].clone(), env: envir, attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() })))
+    Ok(Value::Closure(Rc::new(Closure {
+        formals: formals.into(),
+        body: items[n - 1].clone(),
+        env: envir,
+        attrs: None,
+        code: Default::default(),
+        inline: Default::default(),
+        defaults: Default::default(),
+    })))
 }

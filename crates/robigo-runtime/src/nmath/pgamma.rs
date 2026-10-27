@@ -199,11 +199,7 @@ fn dpois_wrap(x_plus_1: f64, lambda: f64, give_log: bool) -> f64 {
         r_d_exp(-lambda - lgammafn(x_plus_1), give_log)
     } else {
         let d = dpois_raw(x_plus_1, lambda, give_log);
-        if give_log {
-            d + (x_plus_1 / lambda).ln()
-        } else {
-            d * (x_plus_1 / lambda)
-        }
+        if give_log { d + (x_plus_1 / lambda).ln() } else { d * (x_plus_1 / lambda) }
     }
 }
 
@@ -232,11 +228,7 @@ fn pgamma_smallx(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
         } else {
             f2 = x.powf(alph) / lgamma1p(alph).exp();
         }
-        if log_p {
-            f1 + f2
-        } else {
-            f1 * f2
-        }
+        if log_p { f1 + f2 } else { f1 * f2 }
     } else {
         let lf2 = alph * x.ln() - lgamma1p(alph);
         if log_p {
@@ -260,11 +252,7 @@ fn pd_upper_series(x: f64, mut y: f64, log_p: bool) -> f64 {
             break;
         }
     }
-    if log_p {
-        sum.ln()
-    } else {
-        sum
-    }
+    if log_p { sum.ln() } else { sum }
 }
 
 fn pd_lower_cf(y: f64, d: f64) -> f64 {
@@ -443,11 +431,7 @@ pub fn pgamma_raw(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
         let sum = pd_upper_series(x, alph, log_p);
         let d = dpois_wrap(alph, x, log_p);
         res = if !lower_tail {
-            if log_p {
-                r_log1_exp(d + sum)
-            } else {
-                1.0 - d * sum
-            }
+            if log_p { r_log1_exp(d + sum) } else { 1.0 - d * sum }
         } else if log_p {
             sum + d
         } else {
@@ -468,11 +452,7 @@ pub fn pgamma_raw(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
             sum = if log_p { log1p(s) } else { 1.0 + s };
         }
         res = if !lower_tail {
-            if log_p {
-                sum + d
-            } else {
-                sum * d
-            }
+            if log_p { sum + d } else { sum * d }
         } else if log_p {
             r_log1_exp(d + sum)
         } else {
@@ -481,11 +461,7 @@ pub fn pgamma_raw(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
     } else {
         res = ppois_asymp(alph - 1.0, x, !lower_tail, log_p);
     }
-    if !log_p && res < DBL_MIN / DBL_EPSILON {
-        pgamma_raw(x, alph, lower_tail, true).exp()
-    } else {
-        res
-    }
+    if !log_p && res < DBL_MIN / DBL_EPSILON { pgamma_raw(x, alph, lower_tail, true).exp() } else { res }
 }
 
 /// R: nmath/pgamma.c:pgamma
@@ -538,11 +514,7 @@ pub fn dgamma(x: f64, shape: f64, scale: f64, give_log: bool) -> f64 {
         };
     }
     let pr = dpois_raw(shape - 1.0, x / scale, give_log);
-    if give_log {
-        pr - scale.ln()
-    } else {
-        pr / scale
-    }
+    if give_log { pr - scale.ln() } else { pr / scale }
 }
 
 /// R: nmath/qgamma.c:qchisq_appr

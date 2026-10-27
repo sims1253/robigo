@@ -507,7 +507,16 @@ fn as_xlen(v: &Value) -> i64 {
 }
 
 // R: scan.c:scanVector
-fn scan_vector(i: &mut Interp, d: &mut Scan, ty: Ty, maxitems: i64, maxlines: i64, flush: bool, strip: bool, blskip: bool) -> RResult<Value> {
+fn scan_vector(
+    i: &mut Interp,
+    d: &mut Scan,
+    ty: Ty,
+    maxitems: i64,
+    maxlines: i64,
+    flush: bool,
+    strip: bool,
+    blskip: bool,
+) -> RResult<Value> {
     let mut col = Col::new(ty);
     let (mut n, mut nprev, mut linesread): (i64, i64, i64) = (0, 0, 0);
     let mut bch = 1;

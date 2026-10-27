@@ -6,10 +6,10 @@ use std::rc::Rc;
 
 use super::{internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
-use crate::env::{Env, BIND_ACTIVE, BIND_MISSING_DEFAULT};
+use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -242,7 +242,15 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
-    Ok(Value::Closure(Rc::new(Closure { formals, body, env: env.clone(), attrs: None, code: Default::default(), inline: Default::default(), defaults: Default::default() })))
+    Ok(Value::Closure(Rc::new(Closure {
+        formals,
+        body,
+        env: env.clone(),
+        attrs: None,
+        code: Default::default(),
+        inline: Default::default(),
+        defaults: Default::default(),
+    })))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -332,7 +340,9 @@ fn replacement_sym(f: Sym) -> Sym {
 fn assign_fun(head: &Value) -> RResult<Value> {
     match head {
         Value::Sym(s) => Ok(Value::Sym(replacement_sym(*s))),
-        Value::Str(v) if v.data.len() == 1 => Ok(Value::Sym(Sym::new(&format!("{}<-", v.data[0].as_deref().unwrap_or(""))))),
+        Value::Str(v) if v.data.len() == 1 => {
+            Ok(Value::Sym(Sym::new(&format!("{}<-", v.data[0].as_deref().unwrap_or("")))))
+        }
         Value::Lang(l) => {
             let ns = l.fun_sym().map(|s| s.name());
             if matches!(ns.as_deref(), Some("::") | Some(":::")) && l.args.len() == 2 {
@@ -396,12 +406,7 @@ pub(crate) fn complex_assign_pre(
                 break Sym::new(v.data[0].as_ref().unwrap());
             }
             Value::Null => return Err(Flow::error_call(call.clone(), "invalid (NULL) left side of assignment")),
-            _ => {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    "target of assignment expands to non-language object",
-                ))
-            }
+            _ => return Err(Flow::error_call(call.clone(), "target of assignment expands to non-language object")),
         }
     };
     if env.ptr_eq(&interp.base) {
@@ -507,9 +512,11 @@ fn complex_assign_inner(
         match pre {
             // Already evaluated indices reach the replacement function as
             // forced promises.
-            Some(vals) if i == 0 => args.extend(l.args.iter().skip(1).zip(vals.iter()).map(|(a, v)| {
-                Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.clone()))))
-            })),
+            Some(vals) if i == 0 => {
+                args.extend(l.args.iter().skip(1).zip(vals.iter()).map(|(a, v)| {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.clone()))))
+                }))
+            }
             _ => args.extend(l.args.iter().skip(1).cloned()),
         }
         args.push(Arg::new(Some(s::VALUE), new_value));
@@ -530,11 +537,7 @@ fn complex_assign_inner(
         Value::Promise(p) => p.value().unwrap(),
         v => v,
     };
-    if superassign {
-        interp.super_assign(target, final_value, env)
-    } else {
-        interp.define(target, final_value, env)
-    }
+    if superassign { interp.super_assign(target, final_value, env) } else { interp.define(target, final_value, env) }
 }
 
 fn is_inplace_special(name: &str) -> bool {
@@ -1070,11 +1073,8 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             None => return Err(Flow::error("generic function not specified")),
         },
     };
-    let generic: Rc<str> = if !generic_arg.is_null() {
-        crate::coerce::as_string(&generic_arg).unwrap_or(generic)
-    } else {
-        generic
-    };
+    let generic: Rc<str> =
+        if !generic_arg.is_null() { crate::coerce::as_string(&generic_arg).unwrap_or(generic) } else { generic };
     // .Class
     let klass: Vec<Rc<str>> = match get(&method_env, s::DOT_CLASS) {
         Some(v) => match interp.force(v)? {
@@ -1181,7 +1181,10 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
                 let named = mpromargs.iter().any(|p| p.tag == Some(tag));
                 let p = Promise::new(Value::Sym(tag), method_env.clone());
                 let _ = v;
-                newargs.push(Arg::new(if named || newargs.len() > 0 && used_dots { Some(tag) } else { None }, Value::Promise(Rc::new(p))));
+                newargs.push(Arg::new(
+                    if named || newargs.len() > 0 && used_dots { Some(tag) } else { None },
+                    Value::Promise(Rc::new(p)),
+                ));
             }
             _ => {}
         }

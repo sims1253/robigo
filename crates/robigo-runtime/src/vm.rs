@@ -18,12 +18,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::builtins::arith::{int_to_real, myfmod, r_pow, real_op, ArithOp, RelOp};
-use crate::compile::{compile_body, compile_loop, Builtin1, CallSite, Code, GuardMemo, Reg, NO_GUARD, Leaf, Math1, Op, RangeKind, Slot};
+use crate::builtins::arith::{ArithOp, RelOp, int_to_real, myfmod, r_pow, real_op};
+use crate::compile::{
+    Builtin1, CallSite, Code, GuardMemo, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot, compile_body, compile_loop,
+};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 #[derive(Clone)]
@@ -34,7 +36,11 @@ pub enum RVal {
     L(Lgl),
     /// The integer sequence `start, start + step, ...` of length `n` a
     /// `for` loop steps through (only ever in a sequence register).
-    Range { start: i64, step: i64, n: u64 },
+    Range {
+        start: i64,
+        step: i64,
+        n: u64,
+    },
 }
 
 impl RVal {
@@ -560,11 +566,7 @@ fn range_first(start: i64, step: i64, n: u64, len: usize) -> Option<usize> {
 }
 
 fn gather_range<T: Clone>(d: &[T], first: usize, step: i64, n: usize) -> Vec<T> {
-    if step == 1 {
-        d[first..first + n].to_vec()
-    } else {
-        (0..n).map(|k| d[first - k].clone()).collect()
-    }
+    if step == 1 { d[first..first + n].to_vec() } else { (0..n).map(|k| d[first - k].clone()).collect() }
 }
 
 /// `x[a:b]` for an attribute-free vector and an in-range range.
@@ -739,7 +741,9 @@ fn append_element(x: &mut Value, val: &RVal, two: bool) -> bool {
         (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
             Rc::make_mut(v).data.push(s.data[0].clone())
         }
-        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => Rc::make_mut(v).data.push(val.to_value()),
+        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => {
+            Rc::make_mut(v).data.push(val.to_value())
+        }
         _ => return false,
     }
     true
@@ -910,7 +914,14 @@ fn subset_with_index(interp: &mut Interp, call: &Value, x: Sym, ival: Value, two
 
 /// Call `[`/`[[` for `call` (`x[i]`) with the value of `x` and that of the
 /// index, or (`None`) a promise to evaluate it.
-fn subset_values(interp: &mut Interp, call: &Value, xval: Value, ival: Option<Value>, two: bool, env: &Env) -> RResult<Value> {
+fn subset_values(
+    interp: &mut Interp,
+    call: &Value,
+    xval: Value,
+    ival: Option<Value>,
+    two: bool,
+    env: &Env,
+) -> RResult<Value> {
     let Value::Lang(l) = call else { unreachable!() };
     let i = match ival {
         Some(v) => Promise::forced(l.args[1].value.clone(), v),
@@ -1012,7 +1023,10 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
         }
         // A new frame (another call) directly below the memoized search-path
         // environment: only its own bindings can differ.
-        if m.search != 0 && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search) && !env.local_may_bind_fun(sym) {
+        if m.search != 0
+            && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search)
+            && !env.local_may_bind_fun(sym)
+        {
             return m.ok;
         }
         // A new frame of a closure defined in the memoized call frame.
@@ -1027,7 +1041,15 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
     // path, or a closure frame whose parent is.
     if env.is_search() {
         let ok = if m.epoch == epoch && m.search == env.id() { m.ok } else { interp.resolves_to_base(sym, env) };
-        memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: env.id(), ok, outer: 0, outer_version: 0 });
+        memo.set(GuardMemo {
+            epoch,
+            env: env.id(),
+            version: env.fn_version(),
+            search: env.id(),
+            ok,
+            outer: 0,
+            outer_version: 0,
+        });
         return ok;
     }
     if env.local_may_bind_fun(sym) {
@@ -1038,7 +1060,15 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
         match &*parent {
             Some(p) if p.is_search() => {
                 let ok = if m.epoch == epoch && m.search == p.id() { m.ok } else { interp.resolves_to_base(sym, p) };
-                memo.set(GuardMemo { epoch, env: env.id(), version: env.fn_version(), search: p.id(), ok, outer: 0, outer_version: 0 });
+                memo.set(GuardMemo {
+                    epoch,
+                    env: env.id(),
+                    version: env.fn_version(),
+                    search: p.id(),
+                    ok,
+                    outer: 0,
+                    outer_version: 0,
+                });
                 return ok;
             }
             Some(_) => {}
@@ -1106,7 +1136,10 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
     // through their names (it requires them to have no defaults).
     let key = Rc::as_ptr(&code) as usize;
     let same_formals = |f: &[Arg]| {
-        f.len() == clo.formals.len() && f.iter().zip(clo.formals.iter()).all(|(a, b)| a.tag == b.tag && a.value.is_missing_arg() == b.value.is_missing_arg())
+        f.len() == clo.formals.len()
+            && f.iter()
+                .zip(clo.formals.iter())
+                .all(|(a, b)| a.tag == b.tag && a.value.is_missing_arg() == b.value.is_missing_arg())
     };
     if let Some(r) = INLINES.with(|c| c.borrow().get(&key).filter(|(f, _)| same_formals(f)).map(|(_, i)| i.clone())) {
         return r;
@@ -1155,7 +1188,13 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     let free_vars = code.vars.iter().any(|v| !formals.contains(v));
-    Some(Rc::new(Inline { code, formal_slots, guard_syms, guards_key: std::cell::Cell::new((u64::MAX, 0, 0)), free_vars }))
+    Some(Rc::new(Inline {
+        code,
+        formal_slots,
+        guard_syms,
+        guards_key: std::cell::Cell::new((u64::MAX, 0, 0)),
+        free_vars,
+    }))
 }
 
 /// Run an inlinable closure body (see [`inline_info`]) with argument values
@@ -1392,7 +1431,14 @@ pub(crate) fn call_inline(interp: &mut Interp, clo: &Closure, args: &[Value]) ->
 /// The call at call site `site` (of `f`) as a call native code can run
 /// inline: a pure closure without free variables (see [`inline_info`])
 /// called with plain arguments.
-fn inline_call(interp: &mut Interp, code: &Code, f: Sym, site: u32, env: &Env, vars: &Vars<'_>) -> Option<crate::jit::InlineCall> {
+fn inline_call(
+    interp: &mut Interp,
+    code: &Code,
+    f: Sym,
+    site: u32,
+    env: &Env,
+    vars: &Vars<'_>,
+) -> Option<crate::jit::InlineCall> {
     let cs = &code.call_sites[site as usize];
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
@@ -1473,7 +1519,12 @@ fn jit_enter(
             match r {
                 Ok(l) => {
                     if crate::jit::trace() {
-                        eprintln!("jit: compiled loop at {} ({} variables, {} registers)", enter, l.slots.len(), l.reg_idx.len());
+                        eprintln!(
+                            "jit: compiled loop at {} ({} variables, {} registers)",
+                            enter,
+                            l.slots.len(),
+                            l.reg_idx.len()
+                        );
                     }
                     let l = Rc::new(l);
                     cache.insert(key, JitSlot::Ready(l.clone()));
@@ -1533,11 +1584,15 @@ fn jit_enter(
                 return None;
             }
             let view = match &mut vars.slots[s.slot as usize] {
-                SlotVal::Dirty(RVal::V(Value::Real(x))) | SlotVal::Clean(RVal::V(Value::Real(x))) if s.ty == JType::VecD => {
+                SlotVal::Dirty(RVal::V(Value::Real(x))) | SlotVal::Clean(RVal::V(Value::Real(x)))
+                    if s.ty == JType::VecD =>
+                {
                     let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut f64 };
                     crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
                 }
-                SlotVal::Dirty(RVal::V(Value::Int(x))) | SlotVal::Clean(RVal::V(Value::Int(x))) if s.ty == JType::VecI => {
+                SlotVal::Dirty(RVal::V(Value::Int(x))) | SlotVal::Clean(RVal::V(Value::Int(x)))
+                    if s.ty == JType::VecI =>
+                {
                     let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut i32 };
                     crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
                 }
@@ -1706,7 +1761,8 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Va
         }
         slots.set_len(code.vars.len());
     }
-    let mut vars = Vars { slots: &mut slots, any: false, dirty: false, vclean: false, touched: 0, epoch: crate::env::r_epoch() };
+    let mut vars =
+        Vars { slots: &mut slots, any: false, dirty: false, vclean: false, touched: 0, epoch: crate::env::r_epoch() };
     // Valid in the first flush generation (see `run_with`).
     let init = pre as u32;
     let mut small = std::mem::MaybeUninit::<[u32; 128]>::uninit();
@@ -1727,7 +1783,12 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Va
     run_with(interp, code, env, &mut regs, &mut vars, checked)
 }
 
-fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut vars: &mut Vars<'_>,
+fn run_with(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    mut vars: &mut Vars<'_>,
     // The `flush!()` generation in which each guard last held: only R code
     // (always run after a flush) can rebind functions, so a guard that held
     // in the current generation needs no new check.
@@ -2001,7 +2062,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
             Op::Not { dst, a, call } => {
                 regs[*dst as usize] = match scalar(&regs[*a as usize]) {
                     Some(Num::D(x)) => RVal::L(if x.is_nan() { NA_LOGICAL } else { (x == 0.0) as Lgl }),
-                    Some(Num::I(x)) | Some(Num::L(x)) => RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl }),
+                    Some(Num::I(x)) | Some(Num::L(x)) => {
+                        RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl })
+                    }
                     None => {
                         flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
@@ -2108,7 +2171,10 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                         flush!();
                         let Value::Lang(l) = call else { unreachable!() };
                         let args = vec![
-                            Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv)))),
+                            Arg::new(
+                                l.args[0].tag,
+                                Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv))),
+                            ),
                             Arg::new(l.args[1].tag, Value::strs(vec![input.clone()])),
                         ];
                         let b = crate::builtins::lookup_primitive("$").expect("$ builtin");
@@ -2122,10 +2188,11 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 if vars.dirty {
                     tryop!(vars.flush(interp, env, &code.vars));
                 }
-                regs[*dst as usize] = match crate::builtins::lang::missing_sym(interp, &code.consts[*call as usize], *sym, env) {
-                    Ok(b) => RVal::L(b as Lgl),
-                    Err(e) => return signal(interp, Err(e)),
-                };
+                regs[*dst as usize] =
+                    match crate::builtins::lang::missing_sym(interp, &code.consts[*call as usize], *sym, env) {
+                        Ok(b) => RVal::L(b as Lgl),
+                        Err(e) => return signal(interp, Err(e)),
+                    };
                 interp.visible = true;
             }
             Op::Switch { x, table, call } => {
@@ -2211,12 +2278,15 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 let mut fast = None;
                 for attempt in 0..2 {
                     fast = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
-                        (Some(a), Some(b)) => {
-                            read_var(&mut vars, env, *x, *slot).and_then(|xv| matrix_element(xv, a as usize, b as usize))
-                        }
+                        (Some(a), Some(b)) => read_var(&mut vars, env, *x, *slot)
+                            .and_then(|xv| matrix_element(xv, a as usize, b as usize)),
                         _ => None,
                     };
-                    if fast.is_some() || attempt == 1 || vars.get(*slot as usize).is_some() || !unforced_promise(env, *x) {
+                    if fast.is_some()
+                        || attempt == 1
+                        || vars.get(*slot as usize).is_some()
+                        || !unforced_promise(env, *x)
+                    {
                         break;
                     }
                     // `x` is an argument not yet forced: force it (`[`
@@ -2412,11 +2482,7 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 let (x1, x2) = (*x1, *x2);
                 // R: logic.c:do_logic2
                 let ans = if *and {
-                    if x1 == NA_LOGICAL {
-                        if x2 == NA_LOGICAL || x2 != 0 { NA_LOGICAL } else { x2 }
-                    } else {
-                        x2
-                    }
+                    if x1 == NA_LOGICAL { if x2 == NA_LOGICAL || x2 != 0 { NA_LOGICAL } else { x2 } } else { x2 }
                 } else if x1 == NA_LOGICAL {
                     if x2 == NA_LOGICAL || x2 == 0 { NA_LOGICAL } else { x2 }
                 } else {
@@ -2472,7 +2538,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                 // unless it reads variables that pending writes may affect).
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.leaf_args) {
                     if leaves.len() == clo.formals.len() {
-                        if let Some(info) = clo.inline.get_or_init(|| inline_info(clo)).clone().filter(|i| !(i.free_vars && vars.dirty)) {
+                        if let Some(info) =
+                            clo.inline.get_or_init(|| inline_info(clo)).clone().filter(|i| !(i.free_vars && vars.dirty))
+                        {
                             let mut args: SmallVec<[RVal; 4]> = SmallVec::new();
                             for l in leaves {
                                 args.push(match l {
@@ -2515,7 +2583,9 @@ fn run_with(interp: &mut Interp, code: &Code, env: &Env, regs: &mut [RVal], mut 
                     // through their bytecode, left to right, as evalList.
                     (Value::Builtin(b), Value::Lang(l))
                         if b.kind == crate::value::BuiltinKind::Builtin
-                            && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
+                            && l.args
+                                .iter()
+                                .all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
                     {
                         // (As `eval` of the call would: cached variables
                         // are stale if an argument assigns one.)

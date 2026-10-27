@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::coerce::{coerce_quiet, to_str};
 use crate::error::{Flow, RResult};
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub fn is_one_dim_array(v: &Value) -> bool {
@@ -207,11 +207,7 @@ fn dim_gets(mut v: Value, val: Value) -> RResult<Value> {
         total *= x as i64;
     }
     if total != v.len() as i64 {
-        return Err(Flow::error(format!(
-            "dims [product {}] do not match the length of object [{}]",
-            total,
-            v.len()
-        )));
+        return Err(Flow::error(format!("dims [product {}] do not match the length of object [{}]", total, v.len())));
     }
     v.set_attr_raw(s::DIMNAMES, Value::Null);
     v.set_attr_raw(s::DIM, Value::ints(d));
@@ -246,11 +242,7 @@ fn dimnames_gets(mut v: Value, val: Value) -> RResult<Value> {
     let d = d.unwrap_or_default();
     let k = d.len();
     if k < items.len() {
-        return Err(Flow::error(format!(
-            "length of 'dimnames' [{}] must match that of 'dims' [{}]",
-            items.len(),
-            k
-        )));
+        return Err(Flow::error(format!("length of 'dimnames' [{}] must match that of 'dims' [{}]", items.len(), k)));
     }
     if items.is_empty() {
         v.set_attr_raw(s::DIMNAMES, Value::Null);
@@ -341,10 +333,7 @@ fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
             v.set_attr_raw(s::ROW_NAMES, val.clone());
             Ok(v)
         }
-        _ => Err(Flow::error(format!(
-            "row names must be 'character' or 'integer', not '{}'",
-            val.type_name()
-        ))),
+        _ => Err(Flow::error(format!("row names must be 'character' or 'integer', not '{}'", val.type_name()))),
     }
 }
 

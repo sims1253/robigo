@@ -87,11 +87,7 @@ pub fn phyper(x: f64, nr: f64, nb: f64, n: f64, lower_tail: bool, log_p: bool) -
         return r_dt_0(lower_tail, log_p);
     }
     let pd = pdhyper(x, nr, nb, n, log_p);
-    if log_p {
-        r_dt_log_(d + pd, lower_tail)
-    } else {
-        r_d_lval(d * pd, lower_tail)
-    }
+    if log_p { r_dt_log_(d + pd, lower_tail) } else { r_d_lval(d * pd, lower_tail) }
 }
 
 /// R: nmath/qhyper.c:qhyper
@@ -247,13 +243,13 @@ pub fn rhyper(rng: &mut Rng, nn1in: f64, nn2in: f64, kkin: f64) -> f64 {
             - afc((n1 as f64 - xl) as i32)
             - afc((k as f64 - xl) as i32)
             - afc((n2 as f64 - k as f64 + xl) as i32))
-            .exp();
+        .exp();
         let kr = (a
             - afc((xr - 1.0) as i32)
             - afc((n1 as f64 - xr + 1.0) as i32)
             - afc((k as f64 - xr + 1.0) as i32)
             - afc((n2 as f64 - k as f64 + xr - 1.0) as i32))
-            .exp();
+        .exp();
         let lamdl = -(xl * (n2 as f64 - k as f64 + xl) / (n1 as f64 - xl + 1.0) / (k as f64 - xl + 1.0)).ln();
         let lamdr = -((n1 as f64 - xr + 1.0) * (k as f64 - xr + 1.0) / xr / (n2 as f64 - k as f64 + xr)).ln();
         let p1 = d + d;
@@ -268,10 +264,7 @@ pub fn rhyper(rng: &mut Rng, nn1in: f64, nn2in: f64, kkin: f64) -> f64 {
             n_uv += 1;
             if n_uv >= 10000 {
                 // REprintf in C (printed directly to stderr, not a warning)
-                eprint!(
-                    "rhyper(*, n1={}, n2={}, k={}): branch III: giving up after {} rejections",
-                    nn1, nn2, kk, n_uv
-                );
+                eprint!("rhyper(*, n1={}, n2={}, k={}): branch III: giving up after {} rejections", nn1, nn2, kk, n_uv);
                 return ML_NAN;
             }
             if u < p1 {

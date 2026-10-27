@@ -57,10 +57,8 @@ fn parse_trees_match_gnu_r() {
 }
 
 /// Files in GNU R's `src/library` whose parse we knowingly do not match.
-const KNOWN_DIVERGENCES: &[(&str, &str)] = &[(
-    "graphics/demo/Hershey.R",
-    "\\xc1 escapes produce a Latin-1 byte; robigo strings are always valid UTF-8",
-)];
+const KNOWN_DIVERGENCES: &[(&str, &str)] =
+    &[("graphics/demo/Hershey.R", "\\xc1 escapes produce a Latin-1 byte; robigo strings are always valid UTF-8")];
 
 /// Parse a large external corpus (e.g. GNU R's own `src/library`) and compare
 /// against dumps from `scripts/oracle-parse-corpus.R`. Run with
@@ -96,9 +94,7 @@ fn external_corpus_matches_gnu_r() {
             let e: Vec<&str> = expected.lines().collect();
             let o: Vec<&str> = ours.lines().collect();
             if e != o {
-                let first = (0..e.len().max(o.len()))
-                    .find(|&i| e.get(i) != o.get(i))
-                    .unwrap();
+                let first = (0..e.len().max(o.len())).find(|&i| e.get(i) != o.get(i)).unwrap();
                 let clip = |s: Option<&&str>| s.map(|s| s.chars().take(300).collect::<String>()).unwrap_or_default();
                 failed.push(format!(
                     "{} (expr {}):\n    R:  {}\n    robigo: {}",

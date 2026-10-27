@@ -46,7 +46,9 @@ fn day_of_the_week(tm: &mut Tm) {
     let year = tm.year as i64;
     let corr_year = 1900 + year - (tm.mon < 2) as i64;
     let q = corr_year / 4;
-    let wday = -473 + 365 * (year - 70) + q - q / 25 + ((q % 25) < 0) as i64 + (q / 25) / 4
+    let wday = -473 + 365 * (year - 70) + q - q / 25
+        + ((q % 25) < 0) as i64
+        + (q / 25) / 4
         + MON_YDAY[0][tm.mon.clamp(0, 12) as usize] as i64
         + tm.mday as i64
         - 1;

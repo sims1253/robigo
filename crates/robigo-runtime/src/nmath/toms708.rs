@@ -8,11 +8,7 @@ use super::*;
 /// log(1 - exp(x)); toms708.c redefines R_Log1_Exp in terms of rexpm1().
 #[inline]
 fn r_log1_exp(x: f64) -> f64 {
-    if x > -M_LN2 {
-        (-rexpm1(x)).ln()
-    } else {
-        log1p(-x.exp())
-    }
+    if x > -M_LN2 { (-rexpm1(x)).ln() } else { log1p(-x.exp()) }
 }
 
 #[inline]
@@ -181,11 +177,8 @@ pub fn bratio(a: f64, b: f64, x: f64, y: f64, log_p: bool) -> (f64, f64, i32) {
             label = Label::L131;
         }
     } else {
-        lambda = if (a + b).is_finite() {
-            if a > b { (a + b) * y - b } else { a - (a + b) * x }
-        } else {
-            a * y - b * x
-        };
+        lambda =
+            if (a + b).is_finite() { if a > b { (a + b) * y - b } else { a - (a + b) * x } } else { a * y - b * x };
         do_swap = lambda < 0.0;
         if do_swap {
             lambda = -lambda;
@@ -541,11 +534,7 @@ fn bup(a: f64, b: f64, x: f64, y: f64, n: i32, eps: f64, give_log: bool) -> f64 
         mu = 0;
         d = 1.0;
     }
-    let mut ret_val = if give_log {
-        brcmp1(mu, a, b, x, y, true) - a.ln()
-    } else {
-        brcmp1(mu, a, b, x, y, false) / a
-    };
+    let mut ret_val = if give_log { brcmp1(mu, a, b, x, y, true) - a.ln() } else { brcmp1(mu, a, b, x, y, false) / a };
     if n == 1 || (give_log && ret_val == ML_NEGINF) || (!give_log && ret_val == 0.0) {
         return ret_val;
     }
@@ -697,11 +686,7 @@ fn brcomp(a: f64, b: f64, x: f64, y: f64, log_p: bool) -> f64 {
                 gam1(apb) + 1.0
             };
             let c = (gam1(a) + 1.0) * (gam1(b) + 1.0) / zz;
-            return if log_p {
-                e_z + (a0 * c).ln() - log1p(a0 / b0)
-            } else {
-                e_z * (a0 * c) / (a0 / b0 + 1.0)
-            };
+            return if log_p { e_z + (a0 * c).ln() - log1p(a0 / b0) } else { e_z * (a0 * c) / (a0 / b0 + 1.0) };
         }
         let mut u = gamln1(a0);
         let n = (b0 - 1.0) as i32;
@@ -722,11 +707,7 @@ fn brcomp(a: f64, b: f64, x: f64, y: f64, log_p: bool) -> f64 {
         } else {
             gam1(apb) + 1.0
         };
-        if log_p {
-            a0.ln() + z + log1p(gam1(b0)) - t.ln()
-        } else {
-            a0 * z.exp() * (gam1(b0) + 1.0) / t
-        }
+        if log_p { a0.ln() + z + log1p(gam1(b0)) - t.ln() } else { a0 * z.exp() * (gam1(b0) + 1.0) / t }
     } else {
         let (h, x0, y0, lambda);
         if a <= b {
@@ -777,11 +758,7 @@ fn brcmp1(mu: i32, a: f64, b: f64, x: f64, y: f64, give_log: bool) -> f64 {
         let mut b0 = max(a, b);
         if b0 >= 8.0 {
             let u = gamln1(a0) + algdiv(a0, b0);
-            return if give_log {
-                a0.ln() + esum(mu, z - u, true)
-            } else {
-                a0 * esum(mu, z - u, false)
-            };
+            return if give_log { a0.ln() + esum(mu, z - u, true) } else { a0 * esum(mu, z - u, false) };
         } else if b0 <= 1.0 {
             let ans = esum(mu, z, give_log);
             if ans == (if give_log { ML_NEGINF } else { 0.0 }) {
@@ -799,11 +776,7 @@ fn brcmp1(mu: i32, a: f64, b: f64, x: f64, y: f64, give_log: bool) -> f64 {
             } else {
                 (gam1(a) + 1.0) * (gam1(b) + 1.0) / zz
             };
-            return if give_log {
-                ans + a0.ln() + c - log1p(a0 / b0)
-            } else {
-                ans * (a0 * c) / (a0 / b0 + 1.0)
-            };
+            return if give_log { ans + a0.ln() + c - log1p(a0 / b0) } else { ans * (a0 * c) / (a0 / b0 + 1.0) };
         }
         let mut u = gamln1(a0);
         let n = (b0 - 1.0) as i32;
@@ -1211,7 +1184,8 @@ fn rlog1(x: f64) -> f64 {
 }
 
 const ERF_C: f64 = 0.564189583547756;
-const ERF_A: [f64; 5] = [7.7105849500132e-5, -0.00133733772997339, 0.0323076579225834, 0.0479137145607681, 0.128379167095513];
+const ERF_A: [f64; 5] =
+    [7.7105849500132e-5, -0.00133733772997339, 0.0323076579225834, 0.0479137145607681, 0.128379167095513];
 const ERF_B: [f64; 3] = [0.00301048631703895, 0.0538971687740286, 0.375795757275549];
 const ERF_P: [f64; 8] = [
     -1.36864857382717e-7,
@@ -1336,8 +1310,8 @@ fn gam1(a: f64) -> f64 {
         ];
         const S1: f64 = 0.273076135303957;
         const S2: f64 = 0.0559398236957378;
-        let top = (((((((R[8] * t + R[7]) * t + R[6]) * t + R[5]) * t + R[4]) * t + R[3]) * t + R[2]) * t + R[1]) * t
-            + R[0];
+        let top =
+            (((((((R[8] * t + R[7]) * t + R[6]) * t + R[5]) * t + R[4]) * t + R[3]) * t + R[2]) * t + R[1]) * t + R[0];
         let bot = (S2 * t + S1) * t + 1.0;
         let w = top / bot;
         if d > 0.0 { t * w / a } else { a * (w + 0.5 + 0.5) }
@@ -1412,7 +1386,8 @@ fn psi(x: f64) -> f64 {
         4138.10161269013,
         1305.60269827897,
     ];
-    const Q1: [f64; 6] = [44.8452573429826, 520.752771467162, 2210.0079924783, 3641.27349079381, 1908.310765963, 6.91091682714533e-6];
+    const Q1: [f64; 6] =
+        [44.8452573429826, 520.752771467162, 2210.0079924783, 3641.27349079381, 1908.310765963, 6.91091682714533e-6];
     const P2: [f64; 4] = [-2.12940445131011, -7.01677227766759, -4.48616543918019, -0.648157123766197];
     const Q2: [f64; 4] = [32.2703493791143, 89.2920700481861, 54.6117738103215, 7.77788548522962];
 
@@ -1543,11 +1518,7 @@ fn betaln(a0: f64, b0: f64) -> f64 {
         let h = a / b;
         let u = -(a - 0.5) * (h / (h + 1.0)).ln();
         let v = b * alnrel(h);
-        if u > v {
-            b.ln() * -0.5 + E + w - v - u
-        } else {
-            b.ln() * -0.5 + E + w - u - v
-        }
+        if u > v { b.ln() * -0.5 + E + w - v - u } else { b.ln() * -0.5 + E + w - u - v }
     }
 }
 

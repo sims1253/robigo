@@ -205,11 +205,7 @@ impl Sym {
     #[inline]
     pub fn ddval(self) -> Option<usize> {
         let d = INTERNER.with(|i| i.borrow().ddvals[self.0 as usize]);
-        if d > 0 {
-            Some(d as usize)
-        } else {
-            None
-        }
+        if d > 0 { Some(d as usize) } else { None }
     }
 }
 

@@ -8,7 +8,7 @@ use crate::coerce::{as_integer, as_logical, coerce_quiet};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -152,7 +152,16 @@ fn is_numeric(v: &Value) -> bool {
 fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let vals = arg(&args, 0);
     let t = match vals.vtype() {
-        Some(t @ (VType::Lgl | VType::Int | VType::Real | VType::Cplx | VType::Str | VType::Raw | VType::Expr | VType::List)) => t,
+        Some(
+            t @ (VType::Lgl
+            | VType::Int
+            | VType::Real
+            | VType::Cplx
+            | VType::Str
+            | VType::Raw
+            | VType::Expr
+            | VType::List),
+        ) => t,
         _ => {
             return Err(Flow::error(format!("'data' must be of a vector type, was '{}'", vals.type_name())));
         }
@@ -211,12 +220,16 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     if lendat > 0 {
         let nrc = nr * nc;
         if lendat_i > 1 && nrc % lendat_i != 0 {
-            if (lendat_i > nr && (lendat_i / nr) * nr != lendat_i) || (lendat_i < nr && (nr / lendat_i) * lendat_i != nr) {
+            if (lendat_i > nr && (lendat_i / nr) * nr != lendat_i)
+                || (lendat_i < nr && (nr / lendat_i) * lendat_i != nr)
+            {
                 i.warning(format!(
                     "data length [{}] is not a sub-multiple or multiple of the number of rows [{}]",
                     lendat, nr
                 ))?;
-            } else if (lendat_i > nc && (lendat_i / nc) * nc != lendat_i) || (lendat_i < nc && (nc / lendat_i) * lendat_i != nc) {
+            } else if (lendat_i > nc && (lendat_i / nc) * nc != lendat_i)
+                || (lendat_i < nc && (nc / lendat_i) * lendat_i != nc)
+            {
                 i.warning(format!(
                     "data length [{}] is not a sub-multiple or multiple of the number of columns [{}]",
                     lendat, nc
@@ -266,7 +279,16 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 fn do_array(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let vals = arg(&args, 0);
     let t = match vals.vtype() {
-        Some(t @ (VType::Lgl | VType::Int | VType::Real | VType::Cplx | VType::Str | VType::Raw | VType::Expr | VType::List)) => t,
+        Some(
+            t @ (VType::Lgl
+            | VType::Int
+            | VType::Real
+            | VType::Cplx
+            | VType::Str
+            | VType::Raw
+            | VType::Expr
+            | VType::List),
+        ) => t,
         _ => {
             return Err(Flow::error(format!("'data' must be of a vector type, was '{}'", vals.type_name())));
         }
@@ -551,15 +573,7 @@ fn cmul(a: Complex, b: Complex) -> Complex {
     Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
 }
 
-fn cprod(
-    op: u8,
-    x: &[Complex],
-    nrx: usize,
-    ncx: usize,
-    y: &[Complex],
-    nry: usize,
-    ncy: usize,
-) -> Vec<Complex> {
+fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usize, ncy: usize) -> Vec<Complex> {
     let (zr, zc, inner) = match op {
         0 => (nrx, ncy, ncx),
         1 => (ncx, ncy, nrx),
@@ -1135,7 +1149,17 @@ fn do_rowmeans(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 // backsolve, max.col
 
 /// Reference BLAS `dtrsm('L', uplo, trans, 'N', k, ncb, 1, r, nrr, b, k)`.
-pub fn dtrsm_left(upper: bool, trans: bool, unit: bool, k: usize, ncb: usize, a: &[f64], lda: usize, b: &mut [f64], ldb: usize) {
+pub fn dtrsm_left(
+    upper: bool,
+    trans: bool,
+    unit: bool,
+    k: usize,
+    ncb: usize,
+    a: &[f64],
+    lda: usize,
+    b: &mut [f64],
+    ldb: usize,
+) {
     for j in 0..ncb {
         let col = &mut b[j * ldb..j * ldb + k];
         if !trans {
@@ -1212,10 +1236,7 @@ fn do_backsolve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let bb = reals_of(&b);
     for i in 0..k {
         if rr[i * (nrr + 1)] == 0.0 {
-            return Err(Flow::error(format!(
-                "singular matrix in 'backsolve'. First zero in diagonal [{}]",
-                i + 1
-            )));
+            return Err(Flow::error(format!("singular matrix in 'backsolve'. First zero in diagonal [{}]", i + 1)));
         }
     }
     let mut ans = vec![0.0; k * ncb];
@@ -1522,14 +1543,13 @@ fn cbind(
             let k = u.len();
             if !warned && k > 0 && (k > rows || rows % k != 0) {
                 warned = true;
-                i.warning(format!(
-                    "number of rows of result is not a multiple of vector length (arg {})",
-                    na + 1
-                ))?;
+                i.warning(format!("number of rows of result is not a multiple of vector length (arg {})", na + 1))?;
             }
             let dn = get_attrib(u, s::NAMES);
             if k >= lenmin
-                && (tags[na].is_some() || deparse_level == 2 || (deparse_level == 1 && matches!(exprs[na], Value::Sym(_))))
+                && (tags[na].is_some()
+                    || deparse_level == 2
+                    || (deparse_level == 1 && matches!(exprs[na], Value::Sym(_))))
             {
                 have_cnames = true;
             }
@@ -1652,10 +1672,7 @@ fn rbind(
             if mcols == -1 {
                 mcols = d[1] as i64;
             } else if mcols != d[1] as i64 {
-                return Err(Flow::error(format!(
-                    "number of columns of matrices must match (see arg {})",
-                    na + 1
-                )));
+                return Err(Flow::error(format!("number of columns of matrices must match (see arg {})", na + 1)));
             }
             rows += d[0] as usize;
         } else if u.len() >= lenmin {
@@ -1683,14 +1700,13 @@ fn rbind(
             let k = u.len();
             if !warned && k > 0 && (k > cols || cols % k != 0) {
                 warned = true;
-                i.warning(format!(
-                    "number of columns of result is not a multiple of vector length (arg {})",
-                    na + 1
-                ))?;
+                i.warning(format!("number of columns of result is not a multiple of vector length (arg {})", na + 1))?;
             }
             let dn = get_attrib(u, s::NAMES);
             if k >= lenmin
-                && (tags[na].is_some() || deparse_level == 2 || (deparse_level == 1 && matches!(exprs[na], Value::Sym(_))))
+                && (tags[na].is_some()
+                    || deparse_level == 2
+                    || (deparse_level == 1 && matches!(exprs[na], Value::Sym(_))))
             {
                 have_rnames = true;
             }
@@ -1788,7 +1804,16 @@ fn do_asplit(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     let n2 = crate::coerce::as_integer(&d2).max(0) as usize;
     let havednc = !dnc.is_null() && !dnc.is_empty();
     let keepdim = crate::coerce::as_logical(&drop) == 0;
-    if !matches!(x, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::List(_) | Value::Raw(_)) {
+    if !matches!(
+        x,
+        Value::Lgl(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::Cplx(_)
+            | Value::Str(_)
+            | Value::List(_)
+            | Value::Raw(_)
+    ) {
         return Err(Flow::error(format!("unimplemented type '{}' in 'asplit'\n", x.type_name())));
     }
     let mut pieces = Vec::with_capacity(n2);

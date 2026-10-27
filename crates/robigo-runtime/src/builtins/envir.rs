@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use super::{arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
-use crate::env::{Env, BIND_ACTIVE};
+use crate::env::{BIND_ACTIVE, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::{Context, Interp};
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -76,10 +76,17 @@ pub fn as_character_factor(v: &Value) -> Value {
         Value::Int(x) => x.data.clone(),
         _ => vec![],
     };
-    let out: Vec<RStr> = codes
-        .iter()
-        .map(|&c| if c == NA_INTEGER || c < 1 || c as usize > levels.len() { None } else { levels[c as usize - 1].clone() })
-        .collect();
+    let out: Vec<RStr> =
+        codes
+            .iter()
+            .map(|&c| {
+                if c == NA_INTEGER || c < 1 || c as usize > levels.len() {
+                    None
+                } else {
+                    levels[c as usize - 1].clone()
+                }
+            })
+            .collect();
     let mut r = Value::strs(out);
     if let Some(n) = v.get_attr(s::NAMES) {
         r.set_attr_raw(s::NAMES, n);
@@ -366,7 +373,10 @@ fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => {
             if v.is_missing_arg() {
-                return Err(Flow::error_call(call.clone(), format!("argument \"{}\" is missing, with no default", name)));
+                return Err(Flow::error_call(
+                    call.clone(),
+                    format!("argument \"{}\" is missing, with no default", name),
+                ));
             }
             Ok(v)
         }
@@ -484,12 +494,8 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
-    let mut names: Vec<String> = e
-        .symbols()
-        .into_iter()
-        .map(|s| s.name().to_string())
-        .filter(|n| all || !n.starts_with('.'))
-        .collect();
+    let mut names: Vec<String> =
+        e.symbols().into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
         names.sort();
     }
@@ -530,7 +536,12 @@ fn do_list2env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
                     i.define(Sym::new(nm.as_deref().unwrap_or("NA")), v, &env)?;
                 }
             }
-            _ => return Err(Flow::error_call(call.clone(), "names(x) must be a character vector of the same length as x")),
+            _ => {
+                return Err(Flow::error_call(
+                    call.clone(),
+                    "names(x) must be a character vector of the same length as x",
+                ));
+            }
         }
     }
     Ok(Value::Env(env))
@@ -771,7 +782,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             return Err(Flow::error_call(
                 call.clone(),
                 format!("invalid 'envir' argument of type '{}'", envir.type_name()),
-            ))
+            ));
         }
     };
     // eval establishes a function-like context so that return() and

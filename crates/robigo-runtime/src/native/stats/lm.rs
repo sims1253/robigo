@@ -38,7 +38,20 @@ pub fn cdqrls(i: &mut Interp, x: &Value, y: &Value, tol: &Value, chk: &Value) ->
     let mut pivot: Vec<i32> = (1..=p as i32).collect();
     let mut qraux = vec![0.0; p];
     let mut work = vec![0.0; 2 * p];
-    let rank = linpack::dqrls(&mut qr, n, p, &yv.data, ny, rtol, &mut coef, &mut rsd, &mut effects, &mut pivot, &mut qraux, &mut work);
+    let rank = linpack::dqrls(
+        &mut qr,
+        n,
+        p,
+        &yv.data,
+        ny,
+        rtol,
+        &mut coef,
+        &mut rsd,
+        &mut effects,
+        &mut pivot,
+        &mut qraux,
+        &mut work,
+    );
     let pivoted = pivot.iter().enumerate().any(|(k, &v)| v != k as i32 + 1);
     // qr, residuals and effects keep the attributes of x and y.
     let with_attrs = |data: Vec<f64>, from: &Value| {

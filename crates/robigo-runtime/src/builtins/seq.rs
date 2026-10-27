@@ -5,11 +5,11 @@ use std::rc::Rc;
 use super::summary::check_arity_internal;
 use super::{check_arity, internal, prim, special};
 use crate::attrib::get_attrib;
-use crate::coerce::{as_integer, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, as_integer};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -72,8 +72,7 @@ pub fn xlengthgets(x: &Value, len: usize) -> Value {
     let idx: Vec<Option<usize>> = (0..len).map(|k| if k < n { Some(k) } else { None }).collect();
     let mut out = gather(x, &idx);
     if let Value::Str(nm) = get_attrib(x, s::NAMES) {
-        let nn: Vec<RStr> =
-            (0..len).map(|k| if k < n { nm.data[k].clone() } else { Some(Rc::from("")) }).collect();
+        let nn: Vec<RStr> = (0..len).map(|k| if k < n { nm.data[k].clone() } else { Some(Rc::from("")) }).collect();
         out.set_attr_raw(s::NAMES, Value::strs(nn));
     }
     out
@@ -234,14 +233,9 @@ pub fn seq_colon(n1: f64, n2: f64, call: &Value) -> RResult<Value> {
     }
     if use_int {
         let s1 = n1 as i64;
-        if n1 <= n2 {
-            compact_intrange(s1, s1 + n - 1, call)
-        } else {
-            compact_intrange(s1, s1 - n + 1, call)
-        }
+        if n1 <= n2 { compact_intrange(s1, s1 + n - 1, call) } else { compact_intrange(s1, s1 - n + 1, call) }
     } else {
-        let v: Vec<f64> =
-            (0..n).map(|k| if n1 <= n2 { n1 + k as f64 } else { n1 - k as f64 }).collect();
+        let v: Vec<f64> = (0..n).map(|k| if n1 <= n2 { n1 + k as f64 } else { n1 - k as f64 }).collect();
         Ok(Value::reals(v))
     }
 }
@@ -630,7 +624,9 @@ fn rep4_value(x: &Value, times: &[i64], len: usize, each: usize, nt: usize) -> V
 /// `Err(())` means "invalid".
 fn counts_of(v: &Value) -> Result<Vec<i64>, ()> {
     match v {
-        Value::Int(x) => x.data.iter().map(|&t| if t == NA_INTEGER || t < 0 { Err(()) } else { Ok(t as i64) }).collect(),
+        Value::Int(x) => {
+            x.data.iter().map(|&t| if t == NA_INTEGER || t < 0 { Err(()) } else { Ok(t as i64) }).collect()
+        }
         _ => {
             let r = match crate::coerce::coerce_quiet(v, VType::Real) {
                 Value::Real(x) => x.data.clone(),
@@ -778,11 +774,7 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 
 fn factor_class_levels(s1: &Value, a: &mut Value) {
     if s1.inherits("factor") {
-        let cls = if s1.inherits("ordered") {
-            Value::strs_from(["ordered", "factor"])
-        } else {
-            Value::str("factor")
-        };
+        let cls = if s1.inherits("ordered") { Value::strs_from(["ordered", "factor"]) } else { Value::str("factor") };
         a.set_attr_raw(s::CLASS, cls);
         a.set_attr_raw(s::LEVELS, get_attrib(s1, s::LEVELS));
     }
@@ -800,11 +792,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     let s1 = &args[0].value;
     let ncopy = &args[1].value;
     if !ncopy.is_vector() {
-        return Err(Flow::error(format!(
-            "invalid type ({}) for '{}' (must be a vector)",
-            ncopy.type_name(),
-            "times"
-        )));
+        return Err(Flow::error(format!("invalid type ({}) for '{}' (must be a vector)", ncopy.type_name(), "times")));
     }
     if !s1.is_vector() && !s1.is_null() {
         return Err(Flow::error(format!("attempt to replicate an object of type '{}'", s1.type_name())));
@@ -833,11 +821,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             if !snc.is_finite() || snc <= -1.0 || (ns > 0 && snc >= XLEN_MAX + 1.0) {
                 return Err(bad());
             }
-            if ns == 0 {
-                1
-            } else {
-                snc as i64 as usize
-            }
+            if ns == 0 { 1 } else { snc as i64 as usize }
         } else {
             let k = as_integer(ncopy);
             if k == NA_INTEGER || k < 0 {

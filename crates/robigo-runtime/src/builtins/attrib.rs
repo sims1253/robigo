@@ -6,7 +6,7 @@ use crate::attrib::*;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -385,7 +385,12 @@ fn do_inherits(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let x = arg(&args, 0);
     let what = match arg(&args, 1) {
         Value::Str(w) => w.data.clone(),
-        _ => return Err(Flow::error_call(call.clone(), "'what' must be a character vector or an object with a nameOfClass() method")),
+        _ => {
+            return Err(Flow::error_call(
+                call.clone(),
+                "'what' must be a character vector or an object with a nameOfClass() method",
+            ));
+        }
     };
     let which = crate::coerce::as_logical(&arg(&args, 2));
     if which == NA_LOGICAL {

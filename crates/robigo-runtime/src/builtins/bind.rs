@@ -211,11 +211,7 @@ fn combine_atomic(leaves: &[&Value], mode: VType) -> Value {
             for l in leaves {
                 match l {
                     Value::Lgl(v) | Value::Int(v) => out.extend(v.data.iter().map(|&i| {
-                        if i == NA_INTEGER {
-                            Complex::new(NA_REAL, 0.0)
-                        } else {
-                            Complex::new(i as f64, 0.0)
-                        }
+                        if i == NA_INTEGER { Complex::new(NA_REAL, 0.0) } else { Complex::new(i as f64, 0.0) }
                     })),
                     Value::Real(v) => out.extend(v.data.iter().map(|&x| Complex::new(x, 0.0))),
                     Value::Cplx(v) => out.extend_from_slice(&v.data),
@@ -419,11 +415,7 @@ pub fn c_default(args: &[Arg], recurse: bool, usenames: bool) -> Value {
             for a in args {
                 list_answer(&a.value, recurse, &mut out);
             }
-            if mode == VType::Expr {
-                Value::expr_vec(out)
-            } else {
-                Value::list(out)
-            }
+            if mode == VType::Expr { Value::expr_vec(out) } else { Value::list(out) }
         }
         _ => {
             let mut leaves = Vec::new();
@@ -517,11 +509,7 @@ fn do_unlist(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
             for a in &items {
                 list_answer(&a.value, recurse, &mut out);
             }
-            if mode == VType::Expr {
-                Value::expr_vec(out)
-            } else {
-                Value::list(out)
-            }
+            if mode == VType::Expr { Value::expr_vec(out) } else { Value::list(out) }
         }
         _ => {
             let mut leaves = Vec::new();
@@ -689,6 +677,8 @@ fn do_vector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         "expression" => Value::expr_vec(vec![Value::Null; n]),
         "pairlist" => Value::pairlist(vec![Arg::pos(Value::Null); n]),
         "any" => Value::lgls(vec![FALSE; n]),
-        other => return Err(Flow::error_call(call.clone(), format!("vector: cannot make a vector of mode '{}'.", other))),
+        other => {
+            return Err(Flow::error_call(call.clone(), format!("vector: cannot make a vector of mode '{}'.", other)));
+        }
     })
 }

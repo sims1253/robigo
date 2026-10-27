@@ -14,11 +14,7 @@ pub fn rnorm(rng: &mut Rng, mu: f64, sigma: f64) -> f64 {
     if mu.is_nan() || !sigma.is_finite() || sigma < 0.0 {
         return ML_NAN;
     }
-    if sigma == 0.0 || !mu.is_finite() {
-        mu
-    } else {
-        mu + sigma * rng.norm_rand()
-    }
+    if sigma == 0.0 || !mu.is_finite() { mu } else { mu + sigma * rng.norm_rand() }
 }
 
 /// R: nmath/runif.c
@@ -300,8 +296,7 @@ pub fn rpois(rng: &mut Rng, mu: f64) -> f64 {
             del = del * (1.0 - 4.8 * del * del);
             let v = difmuk / fk;
             if v.abs() <= 0.25 {
-                px = fk * v * v * (((((((A7 * v + A6) * v + A5) * v + A4) * v + A3) * v + A2) * v + A1) * v + A0)
-                    - del;
+                px = fk * v * v * (((((((A7 * v + A6) * v + A5) * v + A4) * v + A3) * v + A2) * v + A1) * v + A0) - del;
             } else {
                 px = fk * (1.0 + v).ln() - difmuk - del;
             }
@@ -489,11 +484,7 @@ pub fn rbeta(rng: &mut Rng, aa: f64, bb: f64) -> f64 {
         let v = beta * (u1 / (1.0 - u1)).ln();
         let w = if v <= EXPMAX {
             let w = aa_ * v.exp();
-            if !w.is_finite() {
-                DBL_MAX
-            } else {
-                w
-            }
+            if !w.is_finite() { DBL_MAX } else { w }
         } else {
             DBL_MAX
         };
@@ -533,11 +524,7 @@ pub fn rbeta(rng: &mut Rng, aa: f64, bb: f64) -> f64 {
                 break;
             }
         }
-        if aa == a {
-            a / (a + w)
-        } else {
-            w / (a + w)
-        }
+        if aa == a { a / (a + w) } else { w / (a + w) }
     } else {
         let beta = ((alpha - 2.0) / (2.0 * a * b - alpha)).sqrt();
         let gamma = a + 1.0 / beta;
@@ -562,11 +549,7 @@ pub fn rbeta(rng: &mut Rng, aa: f64, bb: f64) -> f64 {
                 break;
             }
         }
-        if aa != a {
-            b / (b + w)
-        } else {
-            w / (b + w)
-        }
+        if aa != a { b / (b + w) } else { w / (b + w) }
     }
 }
 
@@ -583,11 +566,7 @@ pub fn rcauchy(rng: &mut Rng, location: f64, scale: f64) -> f64 {
     if location.is_nan() || !scale.is_finite() || scale < 0.0 {
         return ML_NAN;
     }
-    if scale == 0.0 || !location.is_finite() {
-        location
-    } else {
-        location + scale * (M_PI * rng.unif_rand()).tan()
-    }
+    if scale == 0.0 || !location.is_finite() { location } else { location + scale * (M_PI * rng.unif_rand()).tan() }
 }
 
 /// R: nmath/rf.c
@@ -688,11 +667,7 @@ pub fn rnchisq(rng: &mut Rng, df: f64, lambda: f64) -> f64 {
         return ML_NAN;
     }
     if lambda == 0.0 {
-        if df == 0.0 {
-            0.0
-        } else {
-            rgamma(rng, df / 2.0, 2.0)
-        }
+        if df == 0.0 { 0.0 } else { rgamma(rng, df / 2.0, 2.0) }
     } else {
         let mut r = rpois(rng, lambda / 2.0);
         if r > 0.0 {

@@ -12,7 +12,7 @@ use crate::coerce::{as_integer, as_logical, as_real, coerce_quiet};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 use super::array::dtrsm_left;
@@ -75,7 +75,19 @@ fn dlaswp(a: &mut [f64], lda: usize, c0: usize, ncols: usize, k1: usize, k2: usi
 /// DGEMM('N','N', m, n, k, -1, A, B, 1, C): C -= A %*% B on sub-blocks
 /// given by (row, col) offsets into the same column-major array.
 #[allow(clippy::too_many_arguments)]
-fn dgemm_minus(a: &mut [f64], lda: usize, m: usize, n: usize, k: usize, ar: usize, ac: usize, br: usize, bc: usize, cr: usize, cc: usize) {
+fn dgemm_minus(
+    a: &mut [f64],
+    lda: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+    ar: usize,
+    ac: usize,
+    br: usize,
+    bc: usize,
+    cr: usize,
+    cc: usize,
+) {
     for j in 0..n {
         for l in 0..k {
             let temp = -a[(br + l) + (bc + j) * lda];
@@ -365,11 +377,7 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
         }
     }
     let ainvnm = est.est;
-    if ainvnm != 0.0 {
-        (1.0 / ainvnm) / anorm
-    } else {
-        0.0
-    }
+    if ainvnm != 0.0 { (1.0 / ainvnm) / anorm } else { 0.0 }
 }
 
 /// DLACN2: Higham's estimate of the 1-norm of a matrix, by reverse
@@ -729,10 +737,7 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let mut ipiv = vec![0usize; n];
     let info = dgetrf(&mut avals, n, n, n, &mut ipiv);
     if info > 0 {
-        return Err(Flow::error(format!(
-            "Lapack routine dgesv: system is exactly singular: U[{},{}] = 0",
-            info, info
-        )));
+        return Err(Flow::error(format!("Lapack routine dgesv: system is exactly singular: U[{},{}] = 0", info, info)));
     }
     dgetrs(&avals, n, &ipiv, &mut b, p);
     let ok = avals.iter().all(|v| v.is_finite());
@@ -884,10 +889,7 @@ fn do_la_chol2inv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
     let info = dpotri_upper(&mut ans, sz);
     if info > 0 {
-        return Err(Flow::error(format!(
-            "element ({}, {}) is zero, so the inverse cannot be computed",
-            info, info
-        )));
+        return Err(Flow::error(format!("element ({}, {}) is zero, so the inverse cannot be computed", info, info)));
     }
     for j in 0..sz {
         for i in j + 1..sz {

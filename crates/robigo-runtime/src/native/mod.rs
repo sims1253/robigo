@@ -251,8 +251,27 @@ fn is_internal_alias(r: &Routine) -> bool {
     let n = &*r.name;
     let dist = n.strip_prefix(['d', 'p', 'q', 'r']).unwrap_or("");
     [
-        "beta", "binom", "cauchy", "chisq", "exp", "f", "gamma", "geom", "hyper", "lnorm", "logis", "nbinom",
-        "nbinom_mu", "norm", "pois", "t", "unif", "weibull", "nchisq", "signrank", "wilcox",
+        "beta",
+        "binom",
+        "cauchy",
+        "chisq",
+        "exp",
+        "f",
+        "gamma",
+        "geom",
+        "hyper",
+        "lnorm",
+        "logis",
+        "nbinom",
+        "nbinom_mu",
+        "norm",
+        "pois",
+        "t",
+        "unif",
+        "weibull",
+        "nchisq",
+        "signrank",
+        "wilcox",
     ]
     .contains(&dist)
 }
@@ -265,11 +284,8 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
             return interp.invoke_builtin(b, call, args, &env);
         }
     }
-    let port = PORTS
-        .iter()
-        .filter(|(p, _)| *p == &*r.package)
-        .flat_map(|(_, t)| t.iter())
-        .find(|(n, _)| *n == &*r.name);
+    let port =
+        PORTS.iter().filter(|(p, _)| *p == &*r.package).flat_map(|(_, t)| t.iter()).find(|(n, _)| *n == &*r.name);
     match port {
         Some((_, f)) => f(interp, call, args, env),
         None => Err(Flow::error_call(

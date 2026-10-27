@@ -14,9 +14,7 @@ use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
 
-pub static DEFS: &[Builtin] = &[
-    internal("options", do_options, -1).custom_vis(),
-];
+pub static DEFS: &[Builtin] = &[internal("options", do_options, -1).custom_vis()];
 
 const R_MIN_WIDTH_OPT: i32 = 10;
 const R_MAX_WIDTH_OPT: i32 = 10000;
@@ -156,11 +154,7 @@ fn check_true_false(v: &Value, name: &str) -> RResult<()> {
 }
 
 fn int_from_real(x: f64) -> i32 {
-    if x.is_nan() || x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 {
-        NA_INTEGER
-    } else {
-        x as i32
-    }
+    if x.is_nan() || x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 { NA_INTEGER } else { x as i32 }
 }
 
 /// R: options.c:FixupScipen
@@ -173,7 +167,10 @@ fn fixup_scipen(i: &mut Interp, v: &Value) -> RResult<i32> {
             let x = r.data[0];
             let d = int_from_real(x);
             if d == NA_INTEGER && !x.is_nan() {
-                return Err(Flow::error(format!("setting scipen={} is out of range", robigo_syntax::cfmt::fmt_g(x, 6, false, false))));
+                return Err(Flow::error(format!(
+                    "setting scipen={} is out of range",
+                    robigo_syntax::cfmt::fmt_g(x, 6, false, false)
+                )));
             }
             d
         }

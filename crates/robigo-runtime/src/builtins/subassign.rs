@@ -11,21 +11,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::subscript::*;
-use super::subset::{dispatch_or_eval_sp, fix_subset3_arg, tag_of, Dispatched};
+use super::subset::{Dispatched, dispatch_or_eval_sp, fix_subset3_arg, tag_of};
 use super::{check_arity, special};
 use crate::attrib::get_attrib;
-use crate::coerce::{to_cplx, to_int, to_lgl, to_list, to_real, to_str, CoerceWarnings};
+use crate::coerce::{CoerceWarnings, to_cplx, to_int, to_lgl, to_list, to_real, to_str};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
-pub static DEFS: &[Builtin] = &[
-    special("[<-", do_subassign, -1),
-    special("[[<-", do_subassign2, -1),
-    special("$<-", do_subassign3, 3),
-];
+pub static DEFS: &[Builtin] =
+    &[special("[<-", do_subassign, -1), special("[[<-", do_subassign2, -1), special("$<-", do_subassign3, 3)];
 
 // ----------------------------------------------------------------------
 // handing the object back on error
@@ -131,11 +128,7 @@ fn rebuilt_attrs(x: &Value, names: Option<Value>) -> AttrBox {
             }
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(Box::new(Attrs(out)))
-    }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out))) }
 }
 
 /// R's `PairToVectorList`.
@@ -180,11 +173,7 @@ fn elt_mut(x: &mut Value, i: usize) -> &mut Value {
         Value::Pairlist(p) => &mut Rc::make_mut(p).items[i].value,
         Value::Lang(l) => {
             let l = Rc::make_mut(l);
-            if i == 0 {
-                &mut l.fun
-            } else {
-                &mut l.args[i - 1].value
-            }
+            if i == 0 { &mut l.fun } else { &mut l.args[i - 1].value }
         }
         _ => unreachable!("elt_mut on a non-list"),
     }
@@ -282,7 +271,7 @@ fn type_fix(interp: &mut Interp, x: &Value, y: Value, level: u8) -> RResult<Type
                 "incompatible types (from {} to {}) in subassignment type fix",
                 type_char(tx),
                 type_char(ty)
-            )))
+            )));
         }
     }
     let nx = x_to.unwrap_or(tx);
@@ -297,10 +286,7 @@ fn check_bounds(interp: &mut Interp, len: usize, newlen: i64) -> RResult<()> {
     }
     if let Some(v) = interp.get_option("check.bounds") {
         if crate::coerce::as_logical(&v) == TRUE {
-            interp.warning(format!(
-                "assignment outside vector/list limits (extending from {} to {})",
-                len, newlen
-            ))?;
+            interp.warning(format!("assignment outside vector/list limits (extending from {} to {})", len, newlen))?;
         }
     }
     Ok(())
@@ -427,14 +413,9 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
             work = Some(match (&y, y.vtype()) {
                 (_, Some(t)) => Value::empty_of(t),
                 (Value::Pairlist(_), _) => return Err(not_subsettable(&Value::Null, None)),
-                (Value::Lang(_), _) => {
-                    return Err(Flow::error("unimplemented type 'NULL' in 'coercePairList'\n"))
-                }
+                (Value::Lang(_), _) => return Err(Flow::error("unimplemented type 'NULL' in 'coercePairList'\n")),
                 _ => {
-                    return Err(Flow::error(format!(
-                        "invalid type/length ({}/0) in vector allocation",
-                        y.type_name()
-                    )))
+                    return Err(Flow::error(format!("invalid type/length ({}/0) in vector allocation", y.type_name())));
                 }
             });
         }
@@ -868,11 +849,7 @@ fn assign2_level(
         Ok(())
     } else if matches!(x, Value::Null | Value::Pairlist(_) | Value::Lang(_)) {
         if nsubs == 1 {
-            if y.is_null() {
-                list_remove(x, &subs[0], ind)
-            } else {
-                simple_list_assign(x, &subs[0], y, ind)
-            }
+            if y.is_null() { list_remove(x, &subs[0], ind) } else { simple_list_assign(x, &subs[0], y, ind) }
         } else if dim_of(x).map(|d| d.len()).unwrap_or(0) != nsubs {
             Err(Flow::error("[[ ]] improper number of subscripts"))
         } else {

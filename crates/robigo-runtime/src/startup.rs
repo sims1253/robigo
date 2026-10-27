@@ -305,9 +305,8 @@ pub fn run(interp: &mut Interp, opts: StartupOptions) -> bool {
     if !opts.no_init_file {
         let user = match std::env::var("R_PROFILE_USER") {
             Ok(p) => (!p.is_empty()).then(|| read_profile(&p)).flatten(),
-            Err(_) => read_profile(".Rprofile").or_else(|| {
-                std::env::var("HOME").ok().and_then(|h| read_profile(&format!("{}/.Rprofile", h)))
-            }),
+            Err(_) => read_profile(".Rprofile")
+                .or_else(|| std::env::var("HOME").ok().and_then(|h| read_profile(&format!("{}/.Rprofile", h)))),
         };
         if let Some(src) = user {
             if !load_profile(interp, &src, ".Rprofile", &global) {

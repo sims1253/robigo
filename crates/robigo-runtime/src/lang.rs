@@ -2,7 +2,7 @@
 
 use robigo_syntax::{Const, Expr};
 
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub fn const_to_value(c: &Const) -> Value {
@@ -48,10 +48,7 @@ pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
             let formals: Vec<Arg> = formals
                 .iter()
                 .map(|f| {
-                    Arg::new(
-                        Some(Sym::new(&f.name)),
-                        f.default.as_ref().map(rec).unwrap_or_else(Value::missing_arg),
-                    )
+                    Arg::new(Some(Sym::new(&f.name)), f.default.as_ref().map(rec).unwrap_or_else(Value::missing_arg))
                 })
                 .collect();
             let body = rec(body);

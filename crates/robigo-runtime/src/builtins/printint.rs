@@ -8,10 +8,8 @@ use crate::interp::Interp;
 use crate::print::Printer;
 use crate::value::*;
 
-pub static DEFS: &[Builtin] = &[
-    internal("print.default", do_printdefault, 3).invisible(),
-    internal("prmatrix", do_prmatrix, 6).invisible(),
-];
+pub static DEFS: &[Builtin] =
+    &[internal("print.default", do_printdefault, 3).invisible(), internal("prmatrix", do_prmatrix, 6).invisible()];
 
 fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let x = arg(&args, 0);

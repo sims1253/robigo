@@ -2,7 +2,7 @@
 //! (port of GNU R's src/library/utils/src/io.c).
 
 use super::NativeFn;
-use crate::builtins::scan::{strtoi, Scan, EOF, NO_COMCHAR};
+use crate::builtins::scan::{EOF, NO_COMCHAR, Scan, strtoi};
 use crate::coerce::{as_integer, as_logical, is_blank, r_strtod5};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -54,10 +54,7 @@ fn objectsize(v: &Value) -> usize {
     let charsxp = |s: &str| vec_cells(byte2vec(s.len() + 1));
     /// A pairlist node chain: TAG + CAR + node per element.
     fn pairlist(items: &[Arg]) -> usize {
-        items
-            .iter()
-            .map(|a| a.tag.map(|_| SEXPREC).unwrap_or(0) + objectsize(&a.value) + SEXPREC)
-            .sum()
+        items.iter().map(|a| a.tag.map(|_| SEXPREC).unwrap_or(0) + objectsize(&a.value) + SEXPREC).sum()
     }
     let attrs = |v: &Value| -> usize {
         match v.attrs() {
@@ -83,7 +80,9 @@ fn objectsize(v: &Value) -> usize {
             }
             cnt + vec_cells(x.data.len()) + attrs(v)
         }
-        Value::List(x) | Value::Expr(x) => x.data.iter().map(objectsize).sum::<usize>() + vec_cells(x.data.len()) + attrs(v),
+        Value::List(x) | Value::Expr(x) => {
+            x.data.iter().map(objectsize).sum::<usize>() + vec_cells(x.data.len()) + attrs(v)
+        }
         Value::Pairlist(p) => pairlist(&p.items),
         Value::Lang(l) => objectsize(&l.fun) + SEXPREC + pairlist(&l.args) + attrs(v),
         Value::Closure(c) => {
@@ -455,7 +454,9 @@ pub fn typeconvert(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
     let as_is = as_logical(&arg(a, 2));
     let as_is = as_is != NA_LOGICAL && as_is != 0;
     let dec = match arg(a, 3) {
-        Value::Str(s) if !s.data.is_empty() => s.data[0].as_deref().unwrap_or(".").as_bytes().first().copied().unwrap_or(0),
+        Value::Str(s) if !s.data.is_empty() => {
+            s.data[0].as_deref().unwrap_or(".").as_bytes().first().copied().unwrap_or(0)
+        }
         _ => b'.',
     };
     let (i_exact, exact) = match str1(&arg(a, 4)).as_deref() {
@@ -465,7 +466,8 @@ pub fn typeconvert(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
         Some(t) => return Err(Flow::error(format!("invalid 'numerals' string: \"{}\"", t))),
     };
     let try_logical = as_logical(&arg(a, 5));
-    let mut p = Possible { logical: try_logical != NA_LOGICAL && try_logical != 0, integer: true, real: true, complex: true };
+    let mut p =
+        Possible { logical: try_logical != NA_LOGICAL && try_logical != 0, integer: true, real: true, complex: true };
     let is_na = |e: &RStr| match e {
         None => true,
         Some(t) => t.is_empty() || d.is_na_string(t, 1) || is_blank(t),
@@ -560,7 +562,10 @@ pub fn typeconvert(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
     let mut rval = match rval {
         Some(v) => v,
         None if as_is => Value::strs(
-            cvec.data.iter().map(|e| if e.as_deref().is_some_and(|t| d.is_na_string(t, 1)) { None } else { e.clone() }).collect(),
+            cvec.data
+                .iter()
+                .map(|e| if e.as_deref().is_some_and(|t| d.is_na_string(t, 1)) { None } else { e.clone() })
+                .collect(),
         ),
         None => {
             // A factor with the non-NA values as levels, sorted.
@@ -763,7 +768,10 @@ pub fn writetable(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
             }
         } else {
             if !x.is_atomic() {
-                return Err(Flow::error(format!("unimplemented type '{}' in 'write.table, matrix method'\n", x.type_name())));
+                return Err(Flow::error(format!(
+                    "unimplemented type '{}' in 'write.table, matrix method'\n",
+                    x.type_name()
+                )));
             }
             if x.len() != nr * nc {
                 return Err(Flow::error("corrupt matrix -- dims do not match length"));

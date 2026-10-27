@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::env::Env;
-use crate::sym::{s, Sym};
+use crate::sym::{Sym, s};
 
 pub type Lgl = i32;
 pub const NA_LOGICAL: Lgl = i32::MIN;
@@ -170,7 +170,13 @@ impl Promise {
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
-        Promise { expr, env: RefCell::new(None), value: RefCell::new(Some(value)), forcing: Cell::new(false), code: None }
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(Some(value)),
+            forcing: Cell::new(false),
+            code: None,
+        }
     }
 
     pub fn value(&self) -> Option<Value> {
@@ -463,11 +469,7 @@ impl Value {
 
     /// A pairlist; empty becomes `NULL` like in R.
     pub fn pairlist(items: Vec<Arg>) -> Value {
-        if items.is_empty() {
-            Value::Null
-        } else {
-            Value::Pairlist(Rc::new(Pairlist { items, attrs: None }))
-        }
+        if items.is_empty() { Value::Null } else { Value::Pairlist(Rc::new(Pairlist { items, attrs: None })) }
     }
 
     /// A zero-length vector of the given type.
@@ -500,10 +502,7 @@ impl Value {
     }
 
     pub fn is_atomic(&self) -> bool {
-        matches!(
-            self,
-            Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_)
-        )
+        matches!(self, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_))
     }
 
     pub fn is_vector_list(&self) -> bool {
@@ -807,9 +806,7 @@ fn tags_to_names(items: &[Arg]) -> Option<Value> {
     if items.iter().all(|a| a.tag.is_none()) {
         return None;
     }
-    Some(Value::strs(
-        items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect(),
-    ))
+    Some(Value::strs(items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect()))
 }
 
 impl Lang {

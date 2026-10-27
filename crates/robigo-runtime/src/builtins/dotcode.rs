@@ -103,7 +103,9 @@ fn do_get_registered_routines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env
     let lists: Vec<Value> = kinds
         .iter()
         .map(|k| {
-            Value::list(dll.routines.iter().filter(|r| r.interface == *k).map(|r| native::symbol_object(dll, r)).collect())
+            Value::list(
+                dll.routines.iter().filter(|r| r.interface == *k).map(|r| native::symbol_object(dll, r)).collect(),
+            )
         })
         .collect();
     let mut v = Value::list(lists);
@@ -167,7 +169,12 @@ fn do_isloaded(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 
 /// Resolve `.NAME` and drop `PACKAGE`/`NAOK`/`DUP`/`ENCODING` arguments.
 // R: dotcode.c:resolveNativeRoutine, pkgtrim, naokfind
-fn resolve(i: &mut Interp, call: &Value, mut args: Vec<Arg>, interface: Interface) -> RResult<(std::rc::Rc<native::Routine>, Vec<Arg>)> {
+fn resolve(
+    i: &mut Interp,
+    call: &Value,
+    mut args: Vec<Arg>,
+    interface: Interface,
+) -> RResult<(std::rc::Rc<native::Routine>, Vec<Arg>)> {
     let mut package = String::new();
     let tag_is = |a: &Arg, n: &str| a.tag.is_some_and(|t| t.with_name(|x| x == n));
     if let Some(k) = args.iter().position(|a| tag_is(a, "PACKAGE")) {
@@ -208,10 +215,12 @@ fn resolve(i: &mut Interp, call: &Value, mut args: Vec<Arg>, interface: Interfac
                 }
             }
         }
-        Value::List(_) if name.inherits("NativeSymbolInfo") => match name.list_get("address").as_ref().and_then(native::routine_of) {
-            Some(r) => r,
-            None => return Err(Flow::error_call(call.clone(), "NULL value passed as symbol address")),
-        },
+        Value::List(_) if name.inherits("NativeSymbolInfo") => {
+            match name.list_get("address").as_ref().and_then(native::routine_of) {
+                Some(r) => r,
+                None => return Err(Flow::error_call(call.clone(), "NULL value passed as symbol address")),
+            }
+        }
         Value::ExtPtr(_) => match native::routine_of(&name) {
             Some(r) => r,
             None => return Err(Flow::error_call(call.clone(), "NULL value passed as symbol address")),
@@ -240,12 +249,7 @@ fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, 
     if r.nargs >= 0 && args.len() as i32 != r.nargs && interface != Interface::External {
         return Err(Flow::error_call(
             call.clone(),
-            format!(
-                "Incorrect number of arguments ({}), expecting {} for '{}'",
-                args.len(),
-                r.nargs,
-                r.name
-            ),
+            format!("Incorrect number of arguments ({}), expecting {} for '{}'", args.len(), r.nargs, r.name),
         ));
     }
     native::invoke(i, call, &r, args, env)
