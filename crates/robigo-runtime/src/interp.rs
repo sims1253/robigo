@@ -68,6 +68,9 @@ pub struct Interp {
     pub fun_cache_epoch: u64,
     /// Name of the script being run (for type profiles).
     pub source_name: String,
+    /// The arguments `commandArgs()` reports, set by the command line
+    /// front end (R: `R_set_command_line_arguments`).
+    pub cli_args: Option<Vec<String>>,
     /// The connection table and sink state (connections.c).
     pub conns: crate::builtins::io::ConnState,
 }
@@ -146,6 +149,7 @@ impl Interp {
             fun_cache: HashMap::default(),
             fun_cache_epoch: u64::MAX,
             source_name: "<text>".to_string(),
+            cli_args: None,
             conns: Default::default(),
         };
         interp.ns_registry.set_parent(Some(interp.empty.clone()));
@@ -995,7 +999,7 @@ impl Interp {
         let file = self.source_name.clone();
         for e in &exprs {
             let v = crate::lang::expr_to_value_src(e, Some((&file, src)));
-            if !self.eval_toplevel(&v, env, true) {
+            if self.eval_toplevel(&v, env, true).is_none() {
                 return false;
             }
         }
@@ -1003,7 +1007,9 @@ impl Interp {
     }
 
     /// Evaluate one top-level expression and print it if visible.
-    pub fn eval_toplevel(&mut self, e: &Value, env: &Env, _echo: bool) -> bool {
+    /// Returns the value (`None` if evaluation failed), which the
+    /// console REPL stores in `.Last.value`.
+    pub fn eval_toplevel(&mut self, e: &Value, env: &Env, _echo: bool) -> Option<Value> {
         self.frames.clear();
         self.handlers = None;
         self.restarts = None;
@@ -1016,14 +1022,15 @@ impl Interp {
                     if let Err(f) = self.print_value_toplevel(&v, env) {
                         self.report_toplevel_flow(f);
                         self.print_warnings();
-                        return false;
+                        let _ = self.out.flush();
+                        return None;
                     }
                 }
-                true
+                Some(v)
             }
             Err(f) => {
                 self.report_toplevel_flow(f);
-                false
+                None
             }
         };
         self.print_warnings();
@@ -1050,6 +1057,12 @@ impl Interp {
                 let _ = writeln!(self.err, "Error: no function to return from, jumping to top level");
             }
         }
+    }
+
+    /// Report a top-level failure the way the console does; public for
+    /// the REPL in `robigo-cli`.
+    pub fn report_toplevel(&mut self, f: Flow) {
+        self.report_toplevel_flow(f)
     }
 
     fn print_value_toplevel(&mut self, v: &Value, env: &Env) -> RResult<()> {
