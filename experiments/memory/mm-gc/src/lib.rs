@@ -238,6 +238,10 @@ pub struct GcMem {
     gc_threshold: usize,
     /// which mark color the current collection uses (MARK_A / MARK_B)
     cur_mark: u8,
+    /// blocks skipped / bitmap-walked by sweeps so far (skip-clean
+    /// accounting; tests assert on them)
+    sweeps_skipped: u64,
+    sweeps_walked: u64,
     stack_top: usize,
     pub stats: Stats,
     live_bytes: u64,
@@ -254,10 +258,12 @@ unsafe fn mark_obj(g: *mut GcMem, p: *mut u8) {
     }
     let f = get_flags(p);
     if f & flags::IMMORTAL != 0 {
-        // immortal objects never die, so their block's `marked` must count
-        // them or blocks full of cached ints would look forever dirty
-        let b = (p as usize & !(BLOCK - 1)) as *mut Block;
-        (*b).marked = (*b).marked.wrapping_add(1);
+        // immortals never die and are never swept; their blocks carry a
+        // creation-time count (Block::immortals) instead, so marking does
+        // nothing here — not even a count. Counting encounters here would
+        // overcount: the intern tables, traced references (cons tags, env
+        // bindings holding cached ints) and the conservative stack all
+        // reach the same objects.
         return;
     }
     let cur = (*g).cur_mark;
@@ -348,6 +354,8 @@ impl GcMem {
             alloc_since_gc: 0,
             gc_threshold: gc_min(),
             cur_mark: MARK_B, // the first collect() flips it to MARK_A
+            sweeps_skipped: 0,
+            sweeps_walked: 0,
             stack_top: 0,
             stats: Stats::default(),
             live_bytes: 0,
@@ -359,13 +367,16 @@ impl GcMem {
         unsafe {
             mem.nil_p = mem.alloc_object(NILSXP, 32);
             set_flags(mem.nil_p, flags::IMMORTAL);
+            mem.heap.note_immortal(mem.nil_p);
             mem.na_string = mem.char_alloc(b"NA");
             set_flags(mem.na_string, flags::IMMORTAL);
+            mem.heap.note_immortal(mem.na_string);
             let nil = GcSexp(mem.nil_p);
             mem.global_env = mem.env_alloc(&nil);
             for v in -1024i32..8192 {
                 let p = mem.int_alloc(v);
                 set_flags(p, flags::IMMORTAL);
+                mem.heap.note_immortal(p);
                 mem.int_cache[(v + 1024) as usize] = p;
             }
         }
@@ -523,6 +534,7 @@ impl GcMem {
         let cur = self.cur_mark;
         let mut dbg_skipped = 0u64;
         let mut dbg_walked = 0u64;
+        // (running totals land in self.sweeps_{skipped,walked} below)
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + mm_heap::DATA_OFF) as *mut u8;
@@ -551,11 +563,13 @@ impl GcMem {
                         }
                         continue;
                     }
-                    if (*b).live_objects == (*b).marked && (*b).live_objects > 0 {
+                    if (*b).live_objects > 0 && (*b).marked + (*b).immortals == (*b).live_objects {
                         // nothing in this block died since the last
-                        // collection: skip the whole bitmap walk. This is
-                        // what makes small, frequent collections cheap —
-                        // the long-lived heap costs nothing per sweep.
+                        // collection (mortals marked + immortals that
+                        // never die = the whole live set): skip the
+                        // bitmap walk. This is what makes small, frequent
+                        // collections cheap — the long-lived heap costs
+                        // nothing per sweep.
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
                         dbg_skipped += 1;
@@ -687,6 +701,8 @@ impl GcMem {
         }
 
         self.stats.frees += freed;
+        self.sweeps_skipped += dbg_skipped;
+        self.sweeps_walked += dbg_walked;
         self.live_bytes = live_bytes;
         self.live_objects = live_objects;
         self.stats.live_bytes = live_bytes;
@@ -716,18 +732,12 @@ impl GcMem {
                 mark_obj(g, *prot.get_unchecked(i));
             }
             mark_obj(g, self.global_env);
-            // the interned-symbol table and the small-int cache are roots
-            // the manager itself owns: marking them counts their blocks'
-            // immortal objects, so those blocks read as clean in the sweep
-            // instead of being bitmap-walked (and header-read) every round
-            for i in 0..self.int_cache.len() {
-                mark_obj(g, *self.int_cache.as_ptr().add(i));
-            }
-            for bucket in self.syms.values() {
-                for &s in bucket {
-                    mark_obj(g, s);
-                }
-            }
+            // The intern tables (int_cache, syms) hold only immortal
+            // objects, which marking skips entirely: their blocks' live
+            // counts come from Block::immortals (set at creation), so the
+            // tables need no root marking at all — 9k+ mark calls per
+            // collection that a previous version paid just to keep those
+            // blocks eligible for the skip-clean sweep.
             mm_gc_spill(scan_and_mark, g as *mut u8);
             self.prune_chars();
         }
@@ -890,12 +900,14 @@ impl Mem for GcMem {
         let nm = self.char_alloc(name);
         unsafe {
             set_flags(nm, flags::IMMORTAL); // symbols never die
+            self.heap.note_immortal(nm);
         }
         let p = self.alloc_object(SYMSXP, 32);
         unsafe {
             wr_ptr(p, OFF_FIELDS, nm);
             wr_u32(p, OFF_FIELDS + 8, hash as u32);
             set_flags(p, flags::IMMORTAL);
+            self.heap.note_immortal(p);
         }
         self.syms.entry(hash).or_default().push(p);
         GcSexp(p)
@@ -1265,6 +1277,38 @@ mod tests {
         m.collect();
         unsafe { *d.add(99999) = 42.0 };
         assert_eq!(unsafe { *m.real_data(&v).add(99999) }, 42.0);
+    }
+
+    #[test]
+    fn immortal_blocks_skip_and_dead_neighbours_die() {
+        let mut m = GcMem::new();
+        m.set_stack_top(&m as *const _ as usize);
+        let base = m.stats().live_objects;
+        // a cached int is double-rooted (int-cache table + protection
+        // stack) — mark_obj must not count either: immortals are counted
+        // per block at creation, never at mark time, or an overcount in a
+        // block could cancel a dead neighbour and retain it forever
+        let five = m.int_scalar(5);
+        m.protect(&five);
+        // mortal ints share the cached ints' size class and (bump
+        // allocation continues the bootstrap's half-full block) their
+        // block; all are garbage
+        for i in 0..900 {
+            let v = m.int_scalar(9000 + i); // outside the cache: mortal
+            m.discard(v);
+        }
+        m.collect();
+        assert!(
+            m.stats().live_objects < base + 64,
+            "dead ints leaked next to a double-rooted immortal: {} (base {base})",
+            m.stats().live_objects
+        );
+        // and a heap where nothing dies must not be walked at all: the
+        // second collect finds every block at marked + immortals == live
+        let (sk, wa) = (m.sweeps_skipped, m.sweeps_walked);
+        m.collect();
+        assert_eq!(m.sweeps_walked - wa, 0, "a quiet heap must not be bitmap-walked");
+        assert!(m.sweeps_skipped - sk > 0, "the immortal bootstrap blocks must skip their sweep");
     }
 
     #[test]
