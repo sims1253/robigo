@@ -511,6 +511,8 @@ impl GcMem {
 
         let chunks: Vec<mm_heap::Chunk> = self.heap.chunks.clone();
         let cur = self.cur_mark;
+        let mut dbg_skipped = 0u64;
+        let mut dbg_walked = 0u64;
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + mm_heap::DATA_OFF) as *mut u8;
@@ -546,6 +548,7 @@ impl GcMem {
                         // the long-lived heap costs nothing per sweep.
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
+                        dbg_skipped += 1;
                         (*b).marked = 0;
                         chunk_dead = false;
                         continue;
@@ -582,6 +585,12 @@ impl GcMem {
                     }
                     (*b).marked = 0;
                     (*b).live_objects = live;
+                    dbg_walked += 1;
+                    // count the block's survivors (the totals fed the
+                    // threshold and stats; live_bytes was always counted,
+                    // live_objects only for large chunks — an undercount
+                    // the skip-clean path exposed)
+                    live_objects += live as u64;
                     if live == 0 {
                         if (*b).owner == OWNER_EMPTY {
                             // already in the empty pool: must not be pushed
@@ -673,6 +682,12 @@ impl GcMem {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
+        if std::env::var("MM_GC_DEBUG").is_ok() {
+            eprintln!(
+                "sweep: skipped={} walked={} live_objects={live_objects} live_bytes={live_bytes} freed={freed}",
+                dbg_skipped, dbg_walked
+            );
+        }
         self.gc_threshold = ((live_bytes as usize) * 3 / 2).max(gc_min());
     }
 
@@ -1246,6 +1261,7 @@ mod tests {
     fn cycles_collected() {
         let mut m = GcMem::new();
         m.set_stack_top(&m as *const _ as usize);
+        let base = m.stats().live_objects; // bootstrap: immortal ints, symbols, nil, ...
         let nil = m.nil();
         for _ in 0..10_000 {
             let e = m.env_new(&m.global_env());
@@ -1255,7 +1271,9 @@ mod tests {
         }
         m.collect();
         let s = m.stats();
-        assert!(s.live_objects < 500, "live objects: {}", s.live_objects);
+        // the cycle garbage must die; the bootstrap floor plus a handful of
+        // stack-stale survivors is all that may remain
+        assert!(s.live_objects < base + 500, "live objects: {} (base {base})", s.live_objects);
     }
 
     #[test]
@@ -1313,8 +1331,9 @@ mod tests {
             if n < 2 { n } else { n + s(n - 1) + s(n - 2) }
         }
         assert_eq!(r, 6765 + s(20));
+        let base = m.stats().live_objects;
         m.collect();
-        assert!(m.stats().live_objects < 500);
+        assert!(m.stats().live_objects < base + 500);
     }
 
     #[test]

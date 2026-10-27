@@ -40,7 +40,8 @@ pub fn class_index(size: usize) -> usize {
 }
 
 #[repr(C, align(65536))]
-pub struct Block {    pub magic: u64,
+pub struct Block {
+    pub magic: u64,
     pub class: u8,
     pub owner: u8,
     /// ever been on a class block list; guards chunk deallocation (a stale
