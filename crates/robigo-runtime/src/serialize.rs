@@ -686,6 +686,85 @@ fn unescape_ascii(w: &str) -> Vec<u8> {
     out
 }
 
+/// R: serialize.c R_SerializeInfo — the header of a stream as a named list.
+pub fn serialize_info(data: &[u8]) -> RResult<Value> {
+    if data.len() < 2 {
+        return Err(Flow::error("unknown input format"));
+    }
+    let format = match (data[0], data[1]) {
+        (b'X', b'\n') => Format::Xdr,
+        (b'B', b'\n') => Format::Binary,
+        (b'A', b'\n') | (b'\n', b'A') => Format::Ascii,
+        _ => return Err(Flow::error("unknown input format")),
+    };
+    let mut pos = if data[0] == b'\n' { 3 } else { 2 };
+    if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
+        pos += 1;
+    }
+    // The header is a few integers; read them directly in the stream's format.
+    let mut next_int = move || -> RResult<i32> {
+        match format {
+            Format::Ascii => {
+                while pos < data.len() && data[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                let start = pos;
+                while pos < data.len() && !data[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                String::from_utf8_lossy(&data[start..pos]).parse().map_err(|_| Flow::error("read error"))
+            }
+            Format::Xdr => {
+                let b = data.get(pos..pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
+                pos += 4;
+                Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+            }
+            Format::Binary => {
+                let b = data.get(pos..pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
+                pos += 4;
+                Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            }
+        }
+    };
+    let version = next_int()?;
+    let writer = next_int()?;
+    let min_reader = next_int()?;
+    let decode = |v: i32| -> Value {
+        if v < 0 {
+            return Value::strs(vec![None]);
+        }
+        Value::str(&format!("{}.{}.{}", (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff))
+    };
+    let mut items = vec![
+        ("version", Value::int(version)),
+        ("writer_version", decode(writer)),
+        ("min_reader_version", decode(min_reader)),
+        (
+            "format",
+            Value::str(match format {
+                Format::Xdr => "xdr",
+                Format::Binary => "binary",
+                Format::Ascii => "ascii",
+            }),
+        ),
+    ];
+    if version == 3 {
+        let nelen = next_int()?;
+        if nelen < 0 || nelen as usize > 200 {
+            return Err(Flow::error("invalid length of encoding name"));
+        }
+        let enc = match format {
+            Format::Ascii => String::from_utf8_lossy(&data[pos..]).into_owned(),
+            _ => data
+                .get(pos..pos + nelen as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .ok_or_else(|| Flow::error("error reading from connection"))?,
+        };
+        items.push(("native_encoding", Value::str(&enc)));
+    }
+    Ok(Value::named_list(items))
+}
+
 /// Unserialize a complete stream (header included).
 pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Value> {
     if data.len() < 2 {
@@ -703,18 +782,33 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     }
     let mut r = Reader { data, pos, format, refs: Vec::new(), interp, hook };
     let version = r.int()?;
-    let _writer = r.int()?;
-    let _min = r.int()?;
+    let writer = r.int()?;
+    let min_reader = r.int()?;
+    // R: serialize.c R_Unserialize — exact error texts, decoding the packed
+    // versions (major << 16) | (minor << 8) | status.
+    let triple = |v: i32| format!("{}.{}.{}", (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
     match version {
         2 => {}
         3 => {
             let nelen = r.int()?;
-            r.string_bytes(nelen.max(0) as usize)?;
+            if nelen < 0 || nelen > 200 {
+                return Err(Flow::error("invalid length of encoding name"));
+            }
+            r.string_bytes(nelen as usize)?;
         }
         _ => {
+            if min_reader < 0 {
+                return Err(Flow::error(format!(
+                    "cannot read unreleased workspace version {} written by experimental R {}",
+                    version,
+                    triple(writer)
+                )));
+            }
             return Err(Flow::error(format!(
-                "cannot read workspace version {} written by R; need R 3.5.0 or newer",
-                version
+                "cannot read workspace version {} written by R {}; need R {} or newer",
+                version,
+                triple(writer),
+                triple(min_reader)
             )));
         }
     }
@@ -733,14 +827,53 @@ pub struct Writer {
     pub out: Vec<u8>,
     /// Reference table shared by symbols and environments, as in R.
     refs: Vec<RefKey>,
+    /// 2 or 3 (R: stream->version); decides the header layout.
+    pub version: i32,
+    /// Native binary format writes little-endian on this platform.
+    little_endian: bool,
+}
+
+/// R: serialize.c defaultSerializeVersion — 3, or `R_DEFAULT_SERIALIZE_VERSION`.
+pub fn default_serialize_version() -> i32 {
+    match std::env::var("R_DEFAULT_SERIALIZE_VERSION").ok().and_then(|v| v.parse::<i32>().ok()) {
+        v @ (Some(2) | Some(3)) => v.unwrap(),
+        _ => 3,
+    }
+}
+
+/// Write the stream header (R: serialize.c R_Serialize).
+fn write_header(w: &mut Writer) {
+    // R_VERSION = 4.5.0, packed (major << 16) | (minor << 8) | status.
+    match w.version {
+        2 => {
+            w.int(2);
+            w.int((4 << 16) | (5 << 8));
+            w.int((2 << 16) | (3 << 8));
+        }
+        _ => {
+            w.int(3);
+            w.int((4 << 16) | (5 << 8));
+            w.int((3 << 16) | (5 << 8));
+            w.int(5);
+            w.out.extend_from_slice(b"UTF-8");
+        }
+    }
 }
 
 impl Writer {
     fn int(&mut self, i: i32) {
-        self.out.extend_from_slice(&i.to_be_bytes());
+        if self.little_endian {
+            self.out.extend_from_slice(&i.to_le_bytes());
+        } else {
+            self.out.extend_from_slice(&i.to_be_bytes());
+        }
     }
     fn real(&mut self, x: f64) {
-        self.out.extend_from_slice(&x.to_be_bytes());
+        if self.little_endian {
+            self.out.extend_from_slice(&x.to_le_bytes());
+        } else {
+            self.out.extend_from_slice(&x.to_be_bytes());
+        }
     }
     fn flags(&mut self, ty: u32, levs: u32, obj: bool, attr: bool, tag: bool) {
         let mut f = ty | (levs << 12);
@@ -972,15 +1105,25 @@ impl Writer {
     }
 }
 
-/// Serialize to an XDR version-3 stream.
-pub fn serialize(v: &Value) -> Vec<u8> {
-    let mut w = Writer { out: Vec::new(), refs: Vec::new() };
+/// Serialize to an XDR stream of `version` (2 or 3).
+pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
+    let mut w = Writer { out: Vec::new(), refs: Vec::new(), version, little_endian: false };
     w.out.extend_from_slice(b"X\n");
-    w.int(3);
-    w.int((4 << 16) | (5 << 8)); // writer: R 4.5.0
-    w.int((3 << 16) | (5 << 8)); // minimal reader: R 3.5.0
-    w.int(5);
-    w.out.extend_from_slice(b"UTF-8");
+    write_header(&mut w);
     w.item(v);
     w.out
+}
+
+/// Serialize to a native binary ("B") stream of `version` (2 or 3).
+pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
+    let mut w = Writer { out: Vec::new(), refs: Vec::new(), version, little_endian: true };
+    w.out.extend_from_slice(b"B\n");
+    write_header(&mut w);
+    w.item(v);
+    w.out
+}
+
+/// Serialize to an XDR version-3 stream.
+pub fn serialize(v: &Value) -> Vec<u8> {
+    serialize_version(v, 3)
 }

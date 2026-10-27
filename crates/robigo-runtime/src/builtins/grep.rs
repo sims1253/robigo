@@ -1264,6 +1264,22 @@ impl TreProg {
     }
 }
 
+/// A POSIX ERE compiled for a boolean match, as R's `list.files` needs
+/// (platform.c: tre_regcomp REG_EXTENDED, then `tre_regexec(...) == 0`).
+/// Compile errors come back as the reason string.
+pub struct TreBoolMatch(TreProg);
+
+impl TreBoolMatch {
+    pub fn compile(pat: &str, icase: bool) -> Result<TreBoolMatch, String> {
+        let t = tre_translate(pat, icase, false, false).map_err(|e| e.to_string())?;
+        Ok(TreBoolMatch(TreProg::new(&t, false)?))
+    }
+
+    pub fn is_match(&self, s: &str) -> bool {
+        self.0.exec(s, false).is_some()
+    }
+}
+
 enum Kind {
     Fixed(String),
     Tre { std: TreProg, notbol: Option<TreProg> },

@@ -57,3 +57,35 @@ fn read_installed_base_rdb() {
     }
     assert_eq!(ok, 5);
 }
+
+/// The datasets database is compressed with R_decompress3 type 'Z' (raw
+/// LZMA2), unlike base's zlib (R_decompress1).
+#[test]
+fn read_installed_datasets_rdb_lzma2() {
+    const DATASETS: &str = "/usr/lib/R/library/datasets/data/Rdata";
+    if !std::path::Path::new(&format!("{}.rdx", DATASETS)).exists() {
+        eprintln!("GNU R not installed; skipping");
+        return;
+    }
+    let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+    let idx = gunzip(&format!("{}.rdx", DATASETS));
+    let map = robigo_runtime::serialize::unserialize(&mut interp, &idx, Value::Null).ok().expect("unserialize .rdx");
+    let Value::List(l) = &map else { panic!() };
+    let compressed = robigo_runtime::coerce::as_integer(&l.data[2]);
+    assert_eq!(compressed, 3);
+    let var_names: Vec<String> = robigo_runtime::coerce::to_str(&l.data[0].names().unwrap())
+        .into_iter()
+        .map(|s| s.unwrap().to_string())
+        .collect();
+    let Value::List(keys) = &l.data[0] else { panic!() };
+    let mut rdb = Vec::new();
+    std::fs::File::open(format!("{}.rdb", DATASETS)).unwrap().read_to_end(&mut rdb).unwrap();
+    for name in ["mtcars", "iris", "AirPassengers"] {
+        let k = var_names.iter().position(|n| n == name).expect(name);
+        let key = robigo_runtime::coerce::to_int(&keys.data[k], &mut Default::default());
+        let (off, len) = (key[0] as usize, key[1] as usize);
+        let data =
+            robigo_runtime::builtins::serialize::decompress(&rdb[off..off + len], compressed).ok().expect("LZMA2");
+        assert!(robigo_runtime::serialize::unserialize(&mut interp, &data, Value::Null).is_ok(), "{}", name);
+    }
+}
