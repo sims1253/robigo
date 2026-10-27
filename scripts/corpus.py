@@ -158,6 +158,9 @@ def run_case(name, conf, case_id, src, runtime, robigo=None):
         with open(file, "wb") as f:
             f.write(src)
         env["HOME"] = tmp
+        # R's tempdir() goes here too, so it is removed with the case even
+        # when the process is killed on a timeout.
+        env["TMPDIR"] = tmp
         cmd = [a.format(file=file, robigo=robigo or "") for a in mode[runtime]]
         try:
             p = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, timeout=conf.get("timeout", 60))
