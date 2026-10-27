@@ -183,32 +183,74 @@ fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     i.coerce(&x, t)
 }
 
-fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // DispatchOrEval: as.vector is an internal generic.
+    if let Some(r) = i.try_dispatch("as.vector", call, &args, env)? {
+        return Ok(r);
+    }
     let x = arg(&args, 0);
     let mode = match arg(&args, 1) {
         Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
-        _ => return Err(Flow::error_call(call.clone(), "invalid 'mode' argument")),
+        // R: error_return(R_MSG_mode) — plain error against the context.
+        _ => return Err(Flow::error("invalid 'mode' argument")),
     };
     as_vector(i, x, &mode, call)
 }
 
 pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<Value> {
+    // R: coerce.c:do_asvector + ascommon. "function"/"closure" makes a
+    // zero-formal closure with x as the body (asFunction/makeClosure).
     if mode == "function" || mode == "closure" {
-        return Err(Flow::error_call(call.clone(), "cannot coerce to function"));
+        return Ok(match &x {
+            Value::Closure(_) | Value::Builtin(_) => x,
+            _ => Value::Closure(Rc::new(Closure {
+                formals: Vec::new().into(),
+                body: x.clone(),
+                env: i.global.clone(),
+                attrs: None,
+                code: Default::default(),
+                inline: Default::default(),
+                defaults: Default::default(),
+            })),
+        });
     }
     let t = match mode {
         "any" => None,
         "name" | "symbol" => {
+            // R: coerceToSymbol for atomic vectors (first element, or
+            // "invalid data of mode 'x' (too short)"); vectorizable
+            // lists fail in allocVector(SYMSXP, n) with the length.
             return match &x {
                 Value::Sym(_) => Ok(x),
-                _ => {
-                    let s = as_string(&x)
-                        .ok_or_else(|| Flow::error("invalid type/length (symbol/0) in vector allocation"))?;
+                v if v.is_atomic() && !v.is_empty() => {
+                    let s = as_string(v).expect("non-empty atomic has a first element");
                     Ok(Value::Sym(Sym::new(&s)))
                 }
+                v if v.is_atomic() => Err(Flow::error(format!("invalid data of mode '{}' (too short)", v.type_name()))),
+                Value::Null => Err(Flow::error("invalid type/length (symbol/0) in vector allocation")),
+                Value::List(l) if l.data.iter().all(|e| e.is_atomic() && e.len() == 1) => {
+                    Err(Flow::error(format!("invalid type/length (symbol/{}) in vector allocation", l.data.len())))
+                }
+                Value::List(_) => Err(Flow::error("'list' object cannot be coerced to type 'symbol'")),
+                _ => Err(Flow::error_call(
+                    call.clone(),
+                    format!("cannot coerce type '{}' to vector of type 'symbol'", x.type_name()),
+                )),
             };
         }
         "pairlist" => {
+            // R: coerce.c:coercePairList — language objects whose
+            // elements are not all scalars cannot be coerced.
+            if let Value::Lang(l) = &x {
+                let fn_scalar = l.fun.is_atomic() && l.fun.len() == 1;
+                let all_scalar = fn_scalar && l.args.iter().all(|a| a.value.is_atomic() && a.value.len() == 1);
+                if !all_scalar {
+                    return Err(Flow::error(format!(
+                        "'{}' object cannot be coerced to type 'pairlist'",
+                        x.type_name()
+                    )));
+                }
+            }
             let items = to_list(&x);
             let names = crate::attrib::names_vec(&x);
             let args = items
@@ -225,7 +267,14 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 .collect();
             return Ok(Value::pairlist(args));
         }
-        m => Some(VType::from_name(m).ok_or_else(|| Flow::error_call(call.clone(), "invalid 'mode' argument"))?),
+        // R's str2type + do_asvector's valid-type switch: modes like
+        // "NULL", "environment", "language" or "single" are invalid
+        // (plain error against the context).
+        m => Some(
+            VType::from_name(m)
+                .filter(|t| !matches!(t, VType::Null))
+                .ok_or_else(|| Flow::error("invalid 'mode' argument"))?,
+        ),
     };
     match t {
         None => match &x {
@@ -237,14 +286,14 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 r.clear_attrs();
                 Ok(r)
             }
-            Value::List(_) | Value::Expr(_) => Ok(x),
-            Value::Pairlist(_) | Value::Lang(_) => {
-                let mut l = Value::list(to_list(&x));
-                if let Some(n) = x.names() {
-                    l.set_attr_raw(s::NAMES, n);
-                }
-                Ok(l)
-            }
+            // ascommon: lists, expressions, pairlists and language
+            // objects pass through unchanged for mode "any".
+            Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_) => Ok(x),
+            Value::Null => Ok(x),
+            Value::Env(_) | Value::Closure(_) | Value::Builtin(_) => Err(Flow::error_call(
+                call.clone(),
+                format!("cannot coerce type '{}' to vector of type 'any'", x.type_name()),
+            )),
             _ => Ok(x),
         },
         Some(t) => {
@@ -258,17 +307,12 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
             }
             match t {
                 VType::List => {
+                    // R: as.vector(x, "list") on an atomic drops dim and
+                    // dimnames (as.list(matrix) is a flat list) but keeps
+                    // names.
                     let mut l = Value::list(to_list(&x));
                     if let Some(n) = x.names() {
                         l.set_attr_raw(s::NAMES, n);
-                    }
-                    if x.is_atomic() {
-                        if let Some(d) = x.get_attr(s::DIM) {
-                            l.set_attr_raw(s::DIM, d);
-                        }
-                        if let Some(d) = x.get_attr(s::DIMNAMES) {
-                            l.set_attr_raw(s::DIMNAMES, d);
-                        }
                     }
                     Ok(l)
                 }
@@ -281,11 +325,10 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 }
                 _ => {
                     if matches!(x, Value::Env(_) | Value::Closure(_) | Value::Builtin(_)) {
-                        return Err(Flow::error(format!(
-                            "cannot coerce type '{}' to vector of type '{}'",
-                            x.type_name(),
-                            t.name()
-                        )));
+                        return Err(Flow::error_call(
+                            call.clone(),
+                            format!("cannot coerce type '{}' to vector of type '{}'", x.type_name(), t.name()),
+                        ));
                     }
                     if let Value::List(l) = &x {
                         for e in &l.data {
