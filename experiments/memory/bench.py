@@ -118,6 +118,12 @@ def main():
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--skip-ir", action="store_true", help="no callgrind pass at all")
     ap.add_argument("--skip-cache", action="store_true", help="callgrind without --cache-sim (Ir only)")
+    ap.add_argument(
+        "--variant",
+        default=None,
+        choices=VARIANTS,
+        help="time only this variant (skips the checksum cross-check)",
+    )
     ap.add_argument("--workloads", default=",".join(WORKLOADS))
     ap.add_argument("--json", default=None, help="append results to this file")
     ap.add_argument("files", nargs="*", help="results files for 'table'")
@@ -185,27 +191,28 @@ def main():
         return 0
 
     workloads = [w for w in args.workloads.split(",") if w]
+    variants = [args.variant] if args.variant else VARIANTS
     results = []
     load0 = os.getloadavg()
     print(f"# load before: {load0[0]:.2f} {load0[1]:.2f} {load0[2]:.2f}", file=sys.stderr)
     for w in workloads:
         checks = {}
-        walls = {v: [] for v in VARIANTS}
+        walls = {v: [] for v in variants}
         best = {}
         # interleaved: variant pairs inside each rep, so rc and gc see the
         # same machine load
         for _ in range(max(1, args.reps)):
-            for v in VARIANTS:
+            for v in variants:
                 r = run_once(v, w, args.scale)
                 checks[v] = r["check"]
                 walls[v].append(r["wall_ms"])
                 cur = best.get(v)
                 if cur is None or r["rss_mb"] < cur["rss_mb"]:
                     best[v] = r
-        if checks["rc"] != checks["gc"]:
+        if len(variants) == 2 and checks["rc"] != checks["gc"]:
             print(f"REFUSED: {w} checksum mismatch rc={checks['rc']} gc={checks['gc']}", file=sys.stderr)
             return 1
-        for v in VARIANTS:
+        for v in variants:
             ws = sorted(walls[v])
             b = best[v]
             results.append(
@@ -229,7 +236,7 @@ def main():
                 }
             )
         if not args.skip_ir:
-            for v in VARIANTS:
+            for v in variants:
                 c = callgrind_run(v, w, args.scale, cache=not args.skip_cache)
                 for r in results:
                     if r["workload"] == w and r["variant"] == v:
