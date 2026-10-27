@@ -100,4 +100,22 @@ and status against the recorded GNU R (first differing stream):
   (chunking, lone `;`, comments cut by the chunk loop, `.Last.value`,
   unexpected end of input, error-option continuation, lexer warnings);
   recorded from GNU R, all pass, ratchet 157 -> 165.
+- **Rscript's `--default-packages=`**: consumed and exported by the
+  Rscript-style invocation (positional file or `-e`), left as an unknown
+  option warned about in `R` mode (`-f`/console), as in R.
+- **BOM/multi-byte parse errors**: a parse-error end offset inside a
+  multi-byte character panicked the console; R's `R_ParseContext` ring
+  works in bytes, so the context is sliced as bytes (lossy). No corpus
+  case has a BOM; kept for robustness.
+
+### More parser-track notes
+
+- A parse error whose token span lands inside a multi-byte character
+  (UTF-8 BOM at file start) produces a different context in robigo
+  (`"\\uFFFD"` vs R's whole character) — the token span should end at the
+  character boundary, and R's lexer rejects invalid multi-byte input with
+  `invalid multibyte character in parser` (robigo's lossy conversion
+  accepts it; n1–n4 probes in the ledger's spirit: invalid UTF-8, NUL
+  bytes — no panics, transcripts differ).
+
 
