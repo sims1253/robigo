@@ -343,6 +343,8 @@ pub struct CoerceWarnings {
     pub na_introduced: bool,
     pub int_range: bool,
     pub imag_discarded: bool,
+    /// WARN_RAW: out-of-range values become 0 in raw coercion.
+    pub raw_out_of_range: bool,
 }
 
 impl CoerceWarnings {
@@ -356,6 +358,9 @@ impl CoerceWarnings {
         }
         if self.imag_discarded {
             interp.warning("imaginary parts discarded in coercion")?;
+        }
+        if self.raw_out_of_range {
+            interp.warning("out-of-range values treated as 0 in coercion to raw")?;
         }
         Ok(())
     }
@@ -589,11 +594,13 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
 pub fn to_raw(v: &Value, w: &mut CoerceWarnings) -> Vec<u8> {
     match v {
         Value::Raw(x) => x.data.clone(),
+        // R: coerce.c:coerceToRaw — NA, negative and >255 values become 0
+        // with WARN_RAW (a separate warning from WARN_NA).
         _ => to_int(v, w)
             .into_iter()
             .map(|i| {
                 if i == NA_INTEGER || !(0..=255).contains(&i) {
-                    w.na_introduced = true;
+                    w.raw_out_of_range = true;
                     0
                 } else {
                     i as u8
