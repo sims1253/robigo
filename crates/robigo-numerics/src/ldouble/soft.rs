@@ -14,6 +14,10 @@
 //! Value semantics follow the x87 description in the Intel SDM; `powl`
 //! (in [`powl`]) ports glibc 2.41's x86_64 `powl`.
 
+mod pow;
+
+pub use pow::powl;
+
 use super::LDouble;
 
 /// Exponent bias of the 80-bit format.
@@ -135,16 +139,6 @@ fn with_sign(x: &LDouble, s: bool) -> LDouble {
 fn quiet(x: &LDouble) -> LDouble {
     let (se, m) = split(x);
     join(se, m | 0x4000_0000_0000_0000)
-}
-
-/// Unsupported encodings load as the real indefinite QNaN (x87 raises
-/// invalid on `fld` of them and uses that value).
-#[inline]
-fn canon(x: &LDouble) -> LDouble {
-    match class(x).0 {
-        Class::PseudoNan | Class::Unnormal => indefinite(),
-        _ => *x,
-    }
 }
 
 /// The NaN x87 arithmetic returns for a two-operand instruction: any

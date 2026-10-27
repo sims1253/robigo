@@ -1175,4 +1175,214 @@ mod x87_vs_soft {
         }
         assert_eq!(fails, 0, "{fails} loop mismatches");
     }
+
+    /// The ulp distance between two LDouble values (magnitude classes and
+    /// signs must match; NaNs must both be NaN).
+    fn ulp_dist(a: &LDouble, b: &LDouble) -> i64 {
+        let (sa, ma) = (u16::from_le_bytes([a.0[8], a.0[9]]), u64::from_le_bytes(a.0[..8].try_into().unwrap()));
+        let (sb, mb) = (u16::from_le_bytes([b.0[8], b.0[9]]), u64::from_le_bytes(b.0[..8].try_into().unwrap()));
+        if sa & 0x8000 != sb & 0x8000 && !(ma == 0 && mb == 0) && (sa & 0x7fff) != 0x7fff {
+            return i64::MAX / 2;
+        }
+        let (ea, eb) = ((sa & 0x7fff) as i64, (sb & 0x7fff) as i64);
+        if ea == 0x7fff || eb == 0x7fff {
+            // inf/nan: equal encodings handled by the caller's exact check
+            return if ea == 0x7fff && eb == 0x7fff && (ma == mb || (ma | mb) & 0x8000_0000_0000_0000 != 0) {
+                0
+            } else {
+                i64::MAX / 2
+            };
+        }
+        // decode to a common linear grid: value = m · 2^(e2 - 63)
+        let dec = |se: u16, m: u64| -> (i128, i64) {
+            let e = (se & 0x7fff) as i64;
+            let s = if se & 0x8000 != 0 { -1 } else { 1 };
+            if e == 0 {
+                if m == 0 {
+                    return (0, 0);
+                }
+                (s * m as i128, -16446)
+            } else {
+                (s * (m as i128) << 0, e - 16383 - 63)
+            }
+        };
+        let (va, ka) = dec(sa, ma);
+        let (vb, kb) = dec(sb, mb);
+        // ulp of the larger magnitude
+        let ulp_exp = ka.max(kb);
+        let da = va >> (ulp_exp - ka);
+        let db = vb >> (ulp_exp - kb);
+        let d = (da - db).abs();
+        d.min(i64::MAX as i128 / 2) as i64
+    }
+
+    /// soft::powl vs glibc's powl (through the x87 asm path). The port is
+    /// bit-exact except where glibc's own f2xm1/fyl2xp1 microcode deviates
+    /// from the correctly rounded result in the final bit (see
+    /// ldouble/soft/pow.rs); such cases must stay within 1 ulp and rare.
+    #[test]
+    fn powl_smoke() {
+        for (x, y) in [
+            (10.0, -340.0),
+            (10.0, -30.0),
+            (10.0, -4.0),
+            (10.0, 3.0),
+            (10.0, -3.0),
+            (2.0, 0.5),
+            (2.0, 10.0),
+            (3.5, 7.1),
+            (0.5, 0.25),
+            (1.5, -100.5),
+        ] {
+            let (a, b) = (imp::from_f64(x), imp::from_f64(y));
+            let (want, got) = (imp::powl(&a, &b), soft::powl(&a, &b));
+            eprintln!(
+                "powl({x}, {y}): glibc={} soft={} {}",
+                hex(&want),
+                hex(&got),
+                if bits(&want) == bits(&got) { "==" } else { "!=" }
+            );
+        }
+    }
+
+    #[test]
+    fn powl_matches_glibc() {
+        let n = n_random();
+        let mut far = 0u64; // differences of more than 1 ulp: never ok
+        let mut last_bit = 0u64; // 1-ulp differences (glibc's own error)
+        let mut total = 0u64;
+        let mut rng = Rng::new(0x5AFE_0B5E_0DD0_011);
+        let mut shown = 0u64;
+        fn note(
+            kind: &str,
+            i: u64,
+            a: &LDouble,
+            b: &LDouble,
+            want: &LDouble,
+            got: &LDouble,
+            dist: i64,
+            shown: &mut u64,
+        ) {
+            if *shown >= 12 {
+                return;
+            }
+            *shown += 1;
+            if dist > 1 {
+                eprintln!(
+                    "FAR powl {kind} #{i}: x={} y={} -> glibc={} soft={} dist={dist}",
+                    hex(a),
+                    hex(b),
+                    hex(want),
+                    hex(got)
+                );
+            } else {
+                eprintln!("ulp powl {kind} #{i}: x={} y={} -> glibc={} soft={}", hex(a), hex(b), hex(want), hex(got));
+            }
+        }
+        // R's only Linux use of powl (format.c): powl(10, kp) — exact bytes.
+        for kp in -340i64..=340 {
+            let (x, y) = (imp::from_f64(10.0), imp::from_i64(kp));
+            let (want, got) = (imp::powl(&x, &y), soft::powl(&x, &y));
+            total += 1;
+            if bits(&want) != bits(&got) {
+                let d = ulp_dist(&want, &got);
+                if d > 1 {
+                    far += 1;
+                } else {
+                    last_bit += 1;
+                }
+                note("pow10", kp as u64, &x, &y, &want, &got, d, &mut shown);
+            }
+        }
+        // Special values, all pairs.
+        let mut sp = vec![
+            LDouble::ZERO,
+            ld(0x8000, 0),
+            imp::from_f64(1.0),
+            imp::from_f64(-1.0),
+            imp::from_f64(10.0),
+            imp::from_f64(-10.0),
+            imp::from_f64(f64::INFINITY),
+            imp::from_f64(f64::NEG_INFINITY),
+            imp::from_f64(f64::NAN),
+            imp::from_f64(2.0),
+            imp::from_f64(0.5),
+            imp::from_f64(3.0),
+            imp::from_f64(-3.0),
+            imp::from_f64(1.5),
+            imp::from_f64(-1.5),
+            imp::from_f64(f64::MIN_POSITIVE),
+        ];
+        sp.push(ld(0x43ff, 0x8000_0000_0000_0000)); // 2^64
+        sp.push(ld(0x43fe, 0xffff_ffff_ffff_ffff)); // just below 2^64
+        sp.push(ld(0x43ff, 0x8000_0000_0000_0001)); // just above
+        sp.push(ld(0xc3ff, 0x8000_0000_0000_0001));
+        sp.push(ld(0x43ef, 0x8000_0000_0000_0003)); // odd integer below 2^64
+        sp.push(ld(0x0001, 0x8000_0000_0000_0000)); // min normal
+        for a in &sp {
+            for b in &sp {
+                let (want, got) = (imp::powl(a, b), soft::powl(a, b));
+                total += 1;
+                if bits(&want) != bits(&got) {
+                    let d = ulp_dist(&want, &got);
+                    if d > 1 {
+                        far += 1;
+                    } else {
+                        last_bit += 1;
+                    }
+                    note("special", 0, a, b, &want, &got, d, &mut shown);
+                }
+            }
+        }
+        // Random pairs from the interesting regions.
+        let gen_x = |rng: &mut Rng| -> LDouble {
+            match rng.below(10) {
+                0 => ld((rng.next() as u16 & 0x7fff).max(1) | 0x3f00, rng.next() | 0x8000_0000_0000_0000),
+                1 => ld(0x3fff, rng.next() | 0x8000_0000_0000_0000), // [1,2)
+                2 => ld(0x4000, rng.next() | 0x8000_0000_0000_0000), // [2,4)
+                3 => ld(0xbfff, rng.next() | 0x8000_0000_0000_0000), // [-2,-1)
+                4 => ld(0x0001, rng.next() | 0x8000_0000_0000_0000), // min normals
+                5 => ld(0x7ffe, rng.next() | 0x8000_0000_0000_0000), // near max
+                6 => ld(0x0000, rng.next()),                         // denormals
+                7 => imp::from_f64(gen_f64(rng)),
+                8 => ld(0x4004, rng.next() | 0x8000_0000_0000_0000), // ~10
+                _ => ld(0x3ffd, rng.next() | 0x8000_0000_0000_0000), // ~0.5
+            }
+        };
+        let gen_y = |rng: &mut Rng| -> LDouble {
+            match rng.below(12) {
+                0 => imp::from_i64(rng.next() as i64 % 7),                   // small ints
+                1 => imp::from_i64(rng.next() as i64 % 7 - 6),               // small neg ints
+                2 => imp::from_i64(rng.next() as i64),                       // big ints
+                3 => imp::from_f64((rng.next() as f64) / 65536.0 - 32768.0), // real
+                4 => imp::from_f64(0.5),
+                5 => imp::from_f64(-0.5),
+                6 => imp::from_f64(gen_f64(rng)),
+                7 => imp::from_f64(1e-30), // tiny: |y| < 2^-79 saturation
+                8 => imp::from_f64(-1e-30),
+                9 => imp::from_f64(1e25),                             // huge
+                10 => ld(0x43ff, rng.next() | 0x8000_0000_0000_0000), // ~2^64: odd check
+                _ => ld(0x43fe, rng.next() | 0x8000_0000_0000_0000),  // ~2^63
+            }
+        };
+        for i in 0..n / 4 {
+            let a = gen_x(&mut rng);
+            let b = gen_y(&mut rng);
+            let (want, got) = (imp::powl(&a, &b), soft::powl(&a, &b));
+            total += 1;
+            if bits(&want) != bits(&got) {
+                let d = ulp_dist(&want, &got);
+                if d > 1 {
+                    far += 1;
+                } else {
+                    last_bit += 1;
+                }
+                note("rand", i, &a, &b, &want, &got, d, &mut shown);
+            }
+        }
+        eprintln!("powl: {total} cases, {last_bit} within 1 ulp, {far} far");
+        assert_eq!(far, 0, "{far} powl results differ by more than 1 ulp");
+        let rate = last_bit as f64 / total as f64;
+        assert!(rate < 0.03, "powl divergence rate too high: {last_bit}/{total}");
+    }
 }
