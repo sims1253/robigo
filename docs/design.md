@@ -241,7 +241,7 @@ for unmodified R code, which is what a runtime needs.
 
 ### 4.2 Where performance stands
 
-`benchmarks/run.py` times robigo against `Rscript` (GNU R 4.5.0 with its
+`scripts/perf.py` (formerly `benchmarks/run.py`) times robigo against `Rscript` (GNU R 4.5.0 with its
 bytecode JIT, `R_DEFAULT_PACKAGES=utils,stats`) on a 2-vCPU QEMU VM; best of
 three wall times in seconds, startup included (GNU R 0.086 s, robigo
 0.073 s with these packages). Ratios below 1 mean robigo is faster.
