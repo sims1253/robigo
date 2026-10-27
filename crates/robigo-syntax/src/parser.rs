@@ -59,6 +59,69 @@ pub fn parse_program(src: &str) -> Result<Vec<Expr>, ParseError> {
     p.program()
 }
 
+/// The outcome of `R_Parse1Buffer` with `gend = 0`: the status of a
+/// buffer as the console REPL polls it (R: gram.c:R_Parse1,
+/// R_Parse1Buffer).
+#[derive(Debug)]
+pub enum ConsoleStatus {
+    /// `PARSE_NULL`: only blank lines and closed comments.
+    Null,
+    /// `PARSE_OK`: one complete statement. The buffers the REPL builds
+    /// end at the first `;` or newline, so there is at most one.
+    Ok(Expr),
+    /// `PARSE_INCOMPLETE`: more input is needed.
+    Incomplete,
+    /// `PARSE_ERROR`.
+    Error(ParseError),
+}
+
+/// Does `buf` hold one complete, terminated statement? The grammar's
+/// `prog` rules are `'\n' | expr '\n' | expr ';'` (R: gram.y): an
+/// expression the input simply ran out on is incomplete, and so is a
+/// comment no newline closed (`EndOfFile = 2` promotes `Status = 0` to
+/// `PARSE_INCOMPLETE`). Also returns the lexer's warnings, which R's
+/// lexer signals while it builds the expression.
+pub fn parse_console(buf: &str) -> (ConsoleStatus, Vec<String>) {
+    let mut lexer = Lexer::new(buf);
+    let (tokens, warnings) = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                if e.incomplete { ConsoleStatus::Incomplete } else { ConsoleStatus::Error(e) },
+                Vec::new(),
+            );
+        }
+    };
+    // The lexer reached a comment the input ended before closing: R
+    // promotes a successful parse to PARSE_INCOMPLETE for it (the error
+    // case reports itself below).
+    let ended_in_comment = lexer.ended_in_comment;
+    let mut p = Parser { src: buf, toks: tokens, pos: 0, ctx: vec![Ctx::TopLevel], warnings: Vec::new() };
+    let status = match p.program() {
+        Ok(exprs) => {
+            if ended_in_comment {
+                ConsoleStatus::Incomplete
+            } else if buf.ends_with('\n') || buf.ends_with(';') {
+                match exprs.into_iter().next() {
+                    Some(e) => ConsoleStatus::Ok(e),
+                    None => ConsoleStatus::Null,
+                }
+            } else {
+                // Nothing terminated the statement (or the blank line).
+                ConsoleStatus::Incomplete
+            }
+        }
+        Err(e) => {
+            if e.incomplete {
+                ConsoleStatus::Incomplete
+            } else {
+                ConsoleStatus::Error(e)
+            }
+        }
+    };
+    (status, warnings)
+}
+
 /// Like [`parse_program`] but also returns lexer/parser warnings.
 pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>), ParseError> {
     let mut p = Parser::new(src)?;
@@ -68,7 +131,8 @@ pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>)
 
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str) -> Result<Self, ParseError> {
-        let (toks, warnings) = Lexer::new(src).tokenize()?;
+        let mut lexer = Lexer::new(src);
+        let (toks, warnings) = lexer.tokenize()?;
         Ok(Parser { src, toks, pos: 0, ctx: vec![Ctx::TopLevel], warnings })
     }
 
@@ -138,11 +202,18 @@ impl<'a> Parser<'a> {
     pub fn program(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut out = Vec::new();
         loop {
-            while matches!(self.raw_peek().tok, Tok::Newline | Tok::Semi) {
+            // Blank lines are empty statements; a lone `;` is not (R's
+            // grammar has `prog: '\n' | expr ';' | expr '\n'`, so
+            // "1;;2" fails at the second semicolon).
+            while matches!(self.raw_peek().tok, Tok::Newline) {
                 self.pos += 1;
             }
             if matches!(self.raw_peek().tok, Tok::Eof) {
                 break;
+            }
+            if matches!(self.raw_peek().tok, Tok::Semi) {
+                let t = self.raw_peek().clone();
+                return Err(self.unexpected(&t));
             }
             let e = self.expr(0)?;
             out.push(e);

@@ -71,6 +71,9 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<String>,
+    /// True when the input ended inside a comment no newline closed
+    /// (R: gram.y's `EndOfFile = 2`).
+    pub ended_in_comment: bool,
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -83,7 +86,7 @@ fn is_ident_char(c: char) -> bool {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new() }
+        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new(), ended_in_comment: false }
     }
 
     #[inline]
@@ -116,7 +119,7 @@ impl<'a> Lexer<'a> {
         ParseError { message: message.into(), offset, end: self.pos.max(offset + 1), incomplete }
     }
 
-    pub fn tokenize(mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {
+    pub fn tokenize(&mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {
         let mut out = Vec::new();
         loop {
             let t = self.next_token()?;
@@ -126,7 +129,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        Ok((out, self.warnings))
+        Ok((out, std::mem::take(&mut self.warnings)))
     }
 
     fn next_token(&mut self) -> Result<Token, ParseError> {
@@ -136,9 +139,17 @@ impl<'a> Lexer<'a> {
                 b' ' | b'\t' | b'\r' | 0x0c => self.pos += 1,
                 b'#' => {
                     // To the end of the line (a newline byte never occurs
-                    // inside a multi-byte character).
-                    self.pos +=
-                        self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
+                    // inside a multi-byte character). A comment that the
+                    // input ends before closing is remembered: the console
+                    // parser reports PARSE_INCOMPLETE for it (R: gram.y
+                    // SkipComment sets EndOfFile = 2).
+                    match self.bytes[self.pos..].iter().position(|&b| b == b'\n') {
+                        Some(n) => self.pos += n,
+                        None => {
+                            self.pos = self.bytes.len();
+                            self.ended_in_comment = true;
+                        }
+                    }
                 }
                 0xc2 if self.byte_at(self.pos + 1) == 0xa0 => self.pos += 2, // U+00A0
                 _ => break,
@@ -352,16 +363,21 @@ impl<'a> Lexer<'a> {
             b'L' => {
                 self.pos += 1;
                 let text = &self.src[start..text_end];
+                // R picks the message by how the literal was written
+                // (gram.y:NumericValue): a dot without an exponent, or
+                // a value that is not an integer at all.
+                let dot_without_exp = has_dot && !has_exp;
                 if value.fract() == 0.0 && value.abs() <= i32::MAX as f64 {
-                    if has_dot && !is_hex && !has_exp {
+                    if dot_without_exp {
                         self.warnings.push(format!("integer literal {}L contains unnecessary decimal point", text));
                     }
                     Ok(Tok::Const(Const::Int(Some(value as i32))))
-                } else if value.fract() != 0.0 {
-                    self.warnings.push(format!("integer literal {}L contains decimal; using numeric value", text));
-                    Ok(Tok::Const(Const::Dbl(value)))
                 } else {
-                    self.warnings.push(format!("non-integer value {}L qualified with L; using numeric value", text));
+                    if dot_without_exp {
+                        self.warnings.push(format!("integer literal {}L contains decimal; using numeric value", text));
+                    } else {
+                        self.warnings.push(format!("non-integer value {}L qualified with L; using numeric value", text));
+                    }
                     Ok(Tok::Const(Const::Dbl(value)))
                 }
             }

@@ -1,0 +1,343 @@
+//! R's non-interactive console: how `R -f FILE` reads a file as console
+//! input and prints the transcript that `R CMD check` compares. `Rscript
+//! FILE` is the same loop with prompt and echo suppressed, and `R -e`
+//! feeds the expressions through it as a temporary file.
+//!
+//! Ports:
+//! - `R: unix/sys-std.c:Rstd_ReadConsole` (the `!R_Interactive` branch):
+//!   the prompt, the echo of each line exactly as read, the newline
+//!   appended to a final line without one, and reads capped at
+//!   `CONSOLE_BUFFER_SIZE` bytes.
+//! - `R: main/main.c:Rf_ReplIteration` and `R_ReplConsole`: how much
+//!   input each parse sees (up to the first `;` or newline, wherever it
+//!   lies), the parse statuses, the prompts (`>` and `+`), and the
+//!   `unexpected end of input` when the input ends mid-statement.
+//! - `R: main/main.c:check_session_exit`: an error ends the session
+//!   unless `options(error =)` or `options(catch.script.errors = TRUE)`
+//!   says otherwise.
+//! - `R: main/main.c:end_Rmainloop`: the final newline.
+//! - `R: main/source.c:parseError` (with `linenum == 0`) and
+//!   `source.c:getParseContext`: the context a parse error reports.
+
+use std::io::Read;
+
+use robigo_runtime::lang::expr_to_value_src;
+use robigo_runtime::value::{Value, TRUE};
+use robigo_runtime::{Interp, Sym};
+
+/// `CONSOLE_BUFFER_SIZE` (R: src/include/Defn.h): reads return at most
+/// this many bytes, so longer lines are read (and echoed) in pieces.
+pub const CONSOLE_BUFFER_SIZE: usize = 4096;
+
+/// `PARSE_CONTEXT_SIZE` (R: gram.c): the parse error context holds the
+/// last this many characters.
+const PARSE_CONTEXT_SIZE: usize = 50;
+
+/// The parse statuses of `R_Parse1Buffer` the REPL distinguishes.
+enum Status {
+    Null,
+    Ok(Vec<robigo_syntax::Expr>),
+    Incomplete,
+    Error(robigo_syntax::ParseError),
+}
+
+/// Console input with one byte of pushback, like the `FILE *` R reads
+/// from (`fgets` peeks at the next byte only through the stream's own
+/// buffer, which `feof` and the final-newline rule depend on).
+pub struct ConsoleInput {
+    inner: Box<dyn Read>,
+    pending: Option<u8>,
+}
+
+impl ConsoleInput {
+    pub fn new(inner: Box<dyn Read>) -> ConsoleInput {
+        ConsoleInput { inner, pending: None }
+    }
+
+    fn getc(&mut self) -> Option<u8> {
+        if let Some(b) = self.pending.take() {
+            return Some(b);
+        }
+        let mut byte = [0u8; 1];
+        match self.inner.read(&mut byte) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(byte[0]),
+        }
+    }
+
+    fn ungetc(&mut self, b: u8) {
+        self.pending = Some(b);
+    }
+}
+
+/// Like `R_PromptString` (R: main.c): the `prompt` or `continue` option
+/// (re-read every line, so R code can change them), or nothing in
+/// no-echo mode.
+fn prompt_string(interp: &Interp, echo: bool, continue_line: bool) -> String {
+    if !echo {
+        return String::new();
+    }
+    let option = |name: &str, default: &str| -> String {
+        match interp.get_option(name) {
+            Some(Value::Str(v)) if !v.data.is_empty() => {
+                v.data[0].as_deref().map(str::to_string).unwrap_or_else(|| default.to_string())
+            }
+            _ => default.to_string(),
+        }
+    };
+    if continue_line {
+        option("continue", "+ ")
+    } else {
+        option("prompt", "> ")
+    }
+}
+
+/// A chunk written to the console: like R's `fputs` to `stdout` (not via
+/// the connection sink, which `Rprintf` would use).
+fn out(s: &str) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(s.as_bytes());
+    let _ = stdout.flush();
+}
+
+/// One `R_ReadConsole` call (R: unix/sys-std.c:Rstd_ReadConsole, the
+/// non-interactive branch): the prompt is printed and flushed, a line is
+/// read and echoed. Returns `None` on end of input.
+fn read_console(input: &mut ConsoleInput, echo: bool, prompt: &str) -> Option<String> {
+    if echo {
+        out(prompt);
+    }
+    // `fgets(buf, CONSOLE_BUFFER_SIZE, ifp)`: up to 4095 bytes, stopping
+    // after a newline.
+    let mut bytes: Vec<u8> = Vec::new();
+    while bytes.len() < CONSOLE_BUFFER_SIZE - 1 {
+        let Some(b) = input.getc() else { break };
+        bytes.push(b);
+        if b == b'\n' {
+            break;
+        }
+    }
+    if bytes.is_empty() {
+        return None;
+    }
+    // Remove CR in CRLF ending.
+    if bytes.len() >= 2 && bytes.ends_with(b"\r\n") {
+        let n = bytes.len();
+        bytes.truncate(n - 2);
+        bytes.push(b'\n');
+    }
+    // At end of input, a line not terminated by `\n` gets one (so the
+    // transcript ends with a newline).
+    if !bytes.ends_with(b"\n") {
+        if let Some(b) = input.getc() {
+            input.ungetc(b);
+        } else {
+            bytes.push(b'\n');
+        }
+    }
+    let line = String::from_utf8_lossy(&bytes).into_owned();
+    if echo {
+        out(&line);
+    }
+    Some(line)
+}
+
+/// `R_Parse1Buffer` with `gend = 0` (R: robigo-syntax's `parse_console`,
+/// following gram.c:R_Parse1Buffer): does the buffer hold a complete
+/// statement, is it incomplete, or is it an error? The lexer's warnings
+/// become R warnings raised while the expression is parsed.
+fn parse_status(buf: &str) -> (Status, Vec<String>) {
+    match robigo_syntax::parse_console(buf) {
+        (robigo_syntax::ConsoleStatus::Null, w) => (Status::Null, w),
+        (robigo_syntax::ConsoleStatus::Ok(e), w) => (Status::Ok(vec![e]), w),
+        (robigo_syntax::ConsoleStatus::Incomplete, w) => (Status::Incomplete, w),
+        (robigo_syntax::ConsoleStatus::Error(e), w) => (Status::Error(e), w),
+    }
+}
+
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// The last `PARSE_CONTEXT_SIZE` characters before `end`, tab-expanded
+/// like `tabExpand` and split into lines like `getParseContext` (R:
+/// main/source.c), which also drops an empty line after a newline.
+fn parse_context(buf: &str, end: usize) -> Vec<String> {
+    let end = end.min(buf.len());
+    let start = floor_char_boundary(buf, end.saturating_sub(PARSE_CONTEXT_SIZE));
+    let mut context = String::new();
+    for c in buf[start..end].chars() {
+        if c == '\t' {
+            // Fill with spaces to the next multiple of 8.
+            loop {
+                context.push(' ');
+                if context.len() % 8 == 0 {
+                    break;
+                }
+            }
+        } else {
+            context.push(c);
+        }
+    }
+    let mut lines: Vec<String> = context.split('\n').map(str::to_string).collect();
+    if let Some(last) = lines.last() {
+        if last.is_empty() {
+            lines.pop();
+        }
+    }
+    lines
+}
+
+/// A parse error as `parseError(R_NilValue, 0)` reports it (R:
+/// main/source.c): plain, with one line of context, or with the last
+/// two lines.
+fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
+    let lines = parse_context(buf, e.end);
+    match lines.len() {
+        0 => e.message.clone(),
+        1 => format!("{} in \"{}\"", e.message, lines[0]),
+        _ => format!("{} in:\n\"{}\n{}\"", e.message, lines[lines.len() - 2], lines[lines.len() - 1]),
+    }
+}
+
+/// `R_ReplConsole` over `input`: read a line, echo it, parse and
+/// evaluate one statement at a time until end of input or an error.
+/// Returns `false` when the session must halt with "Execution halted"
+/// (whatever failed has been written already).
+// R: main.c:R_ReplConsole, Rf_ReplIteration, end_Rmainloop
+pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -> bool {
+    let mut line = String::new(); // state->buf
+    let mut bufp = 0; // state->bufp
+    let mut iob = String::new(); // R_ConsoleIob
+    let mut prompt_type = 1; // 1: `> `, 2: `+ `
+    let mut status = Status::Null; // state->status
+    let mut warnings: Vec<String> = Vec::new();
+    let global = interp.global.clone();
+    loop {
+        if bufp >= line.len() {
+            let prompt = prompt_string(interp, echo, prompt_type == 2);
+            match read_console(input, echo, &prompt) {
+                Some(l) => {
+                    line = l;
+                    bufp = 0;
+                }
+                None => {
+                    // R_ReplConsole: end of input while a statement is
+                    // still open is an error.
+                    if matches!(status, Status::Incomplete) {
+                        let _ = writeln!(interp.err, "Error: unexpected end of input");
+                        return false;
+                    }
+                    // end_Rmainloop: no trailing newline in no-echo mode.
+                    if echo {
+                        out("\n");
+                    }
+                    return true;
+                }
+            }
+        }
+        // Feed the console buffer up to the first `;` or newline, like
+        // Rf_ReplIteration's copy loop (which does not look inside
+        // strings or comments).
+        while bufp < line.len() {
+            let c = line[bufp..].chars().next().unwrap();
+            bufp += c.len_utf8();
+            iob.push(c);
+            if c == ';' || c == '\n' {
+                break;
+            }
+        }
+        let (st, warns) = parse_status(&iob);
+        status = st;
+        warnings = warns;
+        match status {
+            Status::Null => {
+                iob.clear();
+                prompt_type = 1;
+            }
+            Status::Incomplete => prompt_type = 2,
+            Status::Error(ref e) => {
+                let msg = parse_error_message(&iob, e);
+                let _ = writeln!(interp.err, "Error: {}", msg);
+                return false;
+            }
+            Status::Ok(ref exprs) => {
+                // The real parse (R's `gencode = 1`) signals the lexer's
+                // warnings while building the expression; with
+                // `options(warn = 2)` they are errors and stop the
+                // script before it evaluates anything.
+                let mut parse_failed = None;
+                for w in &warnings {
+                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
+                        parse_failed = Some(f);
+                        break;
+                    }
+                }
+                if let Some(f) = parse_failed {
+                    interp.report_toplevel(f);
+                    interp.print_warnings();
+                    return false;
+                }
+                // Rf_ReplIteration's PARSE_OK branch.
+                let v = expr_to_value_src(&exprs[0], Some(("<text>", &iob)));
+                let value = interp.eval_toplevel(&v, &global, true);
+                if let Some(v) = &value {
+                    // SET_SYMVALUE(R_LastvalueSymbol, value)
+                    global.force_set(Sym::new(".Last.value"), v.clone());
+                }
+                iob.clear();
+                prompt_type = 1;
+                if value.is_none() {
+                    // check_session_exit: continue when the error option
+                    // says so (R: main.c:check_session_exit).
+                    let catches = interp
+                        .get_option("error")
+                        .map(|o| !o.is_null())
+                        .unwrap_or(false)
+                        || robigo_runtime::coerce::as_logical(
+                            &interp.get_option("catch.script.errors").unwrap_or(Value::Null),
+                        ) == TRUE;
+                    if !catches {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(buf: &str, end: usize) -> Vec<String> {
+        parse_context(buf, end)
+    }
+
+    #[test]
+    fn parse_context_lines() {
+        assert_eq!(context("parse error here", 11), ["parse error"]);
+        assert_eq!(context("else 2", 4), ["else"]);
+        // A newline at the end does not add an empty line.
+        assert_eq!(context("if (TRUE) {\n", 12), ["if (TRUE) {"]);
+        assert_eq!(context("a {\nxyz", 7), ["a {", "xyz"]);
+    }
+
+    #[test]
+    fn parse_error_formats() {
+        let e = robigo_syntax::ParseError { message: "unexpected symbol".into(), offset: 6, end: 11, incomplete: false };
+        assert_eq!(parse_error_message("parse error here", &e), "unexpected symbol in \"parse error\"");
+        let e2 = robigo_syntax::ParseError { message: "unexpected 'else'".into(), offset: 0, end: 4, incomplete: false };
+        assert_eq!(parse_error_message("else 2", &e2), "unexpected 'else' in \"else\"");
+    }
+
+    #[test]
+    fn tab_expansion() {
+        assert_eq!(context("a\there", 6), ["a       here"]);
+    }
+}

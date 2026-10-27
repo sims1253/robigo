@@ -11,7 +11,7 @@ pub mod lexer;
 pub mod parser;
 
 pub use ast::{Arg, Const, Expr, Formal, ParseError, Span};
-pub use parser::{parse_program, parse_program_with_warnings};
+pub use parser::{parse_console, parse_program, parse_program_with_warnings, ConsoleStatus};
 
 /// Convert a byte offset into a 1-based (line, column) pair.
 pub fn line_col(src: &str, offset: usize) -> (usize, usize) {
