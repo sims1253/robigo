@@ -130,7 +130,12 @@ def run_case(name, conf, case_id, src, runtime, robigo=None):
     for k, v in conf.get("env", {}).items():
         env[k] = v
     support = conf.get("support")
-    with tempfile.TemporaryDirectory(prefix="robigo-case-") as tmp:
+    # A working directory whose path depends only on the case, so output
+    # that shows it (getwd(), normalizePath()) is the same in every run.
+    tmp = os.path.join(tempfile.gettempdir(), "robigo-corpus", name, hashlib.sha1(case_id.encode()).hexdigest()[:12])
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    try:
         if support:
             sdir = os.path.join(cdir(name), support)
             for fn in os.listdir(sdir):
@@ -147,6 +152,8 @@ def run_case(name, conf, case_id, src, runtime, robigo=None):
             return p.stdout, p.stderr, p.returncode
         except subprocess.TimeoutExpired as e:
             return e.stdout or b"", (e.stderr or b"") + b"\n<robigo-corpus: timeout>\n", -1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def enc(b):
@@ -251,9 +258,18 @@ def cmd_record(a):
         cid, src = c
         runs = [run_case(a.name, conf, cid, src, "gnur") for _ in range(a.repeat)]
         o, e, s = runs[0]
-        stable = all(normalize(r[0]) == normalize(o) and normalize(r[1]) == normalize(e) and r[2] == s for r in runs)
         rec = {"id": cid, "sha": sha(src), "out": enc(o), "err": enc(e), "status": s}
-        if not stable:
+        # Lines that differ between runs (timings, dates) are masked; if the
+        # runs differ in more than single lines, the case is unstable.
+        for key, idx in (("out", 0), ("err", 1)):
+            lines = [normalize(r[idx]).split(b"\n") for r in runs]
+            if any(len(l) != len(lines[0]) for l in lines):
+                rec["unstable"] = True
+                continue
+            mask = sorted({i for l in lines[1:] for i, (x, y) in enumerate(zip(lines[0], l)) if x != y})
+            if mask:
+                rec["mask_" + key] = mask
+        if any(r[2] != s for r in runs):
             rec["unstable"] = True
         return rec
 
@@ -264,15 +280,28 @@ def cmd_record(a):
         exp[r["id"]] = r
     write_expected(a.name, exp)
     unstable = sum(1 for r in recs if r.get("unstable"))
-    print(f"recorded {len(recs)} case(s) of {a.name} with {ver}; {unstable} unstable (excluded from scoring)")
+    partly = sum(1 for r in recs if not r.get("unstable") and ("mask_out" in r or "mask_err" in r))
+    print(f"recorded {len(recs)} case(s) of {a.name} with {ver}; {partly} with varying lines masked, "
+          f"{unstable} unstable (excluded from scoring)")
+
+
+def masked(b, mask):
+    b = normalize(b)
+    if not mask:
+        return b
+    lines = b.split(b"\n")
+    for i in mask:
+        if i < len(lines):
+            lines[i] = b"<masked>"
+    return b"\n".join(lines)
 
 
 def classify(exp, o, e, s):
     """Which of stdout/stderr/status differ."""
     kinds = []
-    if normalize(o) != normalize(dec(exp["out"])):
+    if masked(o, exp.get("mask_out")) != masked(dec(exp["out"]), exp.get("mask_out")):
         kinds.append("stdout")
-    if normalize(e) != normalize(dec(exp["err"])):
+    if masked(e, exp.get("mask_err")) != masked(dec(exp["err"]), exp.get("mask_err")):
         kinds.append("stderr")
     if s != exp["status"]:
         kinds.append("status")
@@ -445,7 +474,9 @@ for (p in pkgs) {
     tools::Rd2ex(db[[f]], tf, commentDontrun = TRUE, commentDonttest = TRUE)
     if (!file.exists(tf)) next
     ex <- readLines(tf, encoding = "UTF-8")
-    pre <- if (p %in% attached) character() else sprintf("library(%s)", p)
+    # As R CMD check's cleanEx() before each example (share/R/examples-header.R).
+    pre <- c('RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)',
+             if (!(p %in% attached)) sprintf("library(%s)", p))
     writeLines(c(pre, ex), file.path(out, p, sub("\\.Rd$", ".R", basename(f))), useBytes = TRUE)
   }
 }
