@@ -116,6 +116,8 @@ def main():
     ap.add_argument("command", choices=["run", "table"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--reps", type=int, default=5)
+    ap.add_argument("--d1", type=int, default=CYC_D1, help="cycles charged per D1 miss (table est cycles)")
+    ap.add_argument("--ll", type=int, default=CYC_LL, help="cycles charged per LL miss (table est cycles)")
     ap.add_argument("--skip-ir", action="store_true", help="no callgrind pass at all")
     ap.add_argument("--skip-cache", action="store_true", help="callgrind without --cache-sim (Ir only)")
     ap.add_argument(
@@ -146,6 +148,13 @@ def main():
             v = r.get(k)
             return f"{v / div:.1f}" if v is not None else "-"
 
+        def cyc(r):
+            if r.get("ir") is None or r.get("d1mr") is None:
+                return "-"
+            c = r["ir"] + args.d1 * (r["d1mr"] + r["d1mw"]) + args.ll * (r["llmr"] + r["llmw"])
+            return f"{c / 1e6:.1f}"
+
+        print(f"# est cycles = Ir + {args.d1}*D1m + {args.ll}*LLm")
         print("| workload | variant | wall min | wall med | wall max | Ir (M) | D1mr (k) | D1mw (k) | LLmr (k) | LLmw (k) | est cyc (M) | rss MB | max pause µs | collections | heap MB |")
         print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for w in workloads:
@@ -157,7 +166,7 @@ def main():
                     f"| {w} | {v} "
                     f"| {r['wall_ms_min']:.1f} | {r['wall_ms_median']:.1f} | {r['wall_ms_max']:.1f} "
                     f"| {num(r, 'ir', 1e6)} | {num(r, 'd1mr', 1e3)} | {num(r, 'd1mw', 1e3)} "
-                    f"| {num(r, 'llmr', 1e3)} | {num(r, 'llmw', 1e3)} | {num(r, 'est_cycles', 1e6)} "
+                    f"| {num(r, 'llmr', 1e3)} | {num(r, 'llmw', 1e3)} | {cyc(r)} "
                     f"| {r['rss_mb']:.1f} | {r['max_pause_us']:.0f} "
                     f"| {r['collections']} | {r['heap_mb']:.1f} |"
                 )
@@ -173,6 +182,13 @@ def main():
             def ratio(a, b, k):
                 return f"{a[k] / b[k]:.3f}" if a.get(k) and b.get(k) else "-"
 
+            def cyc_ratio():
+                if rc.get("ir") is None or gc.get("ir") is None or rc.get("d1mr") is None:
+                    return "-"
+                ca = rc["ir"] + args.d1 * (rc["d1mr"] + rc["d1mw"]) + args.ll * (rc["llmr"] + rc["llmw"])
+                cb = gc["ir"] + args.d1 * (gc["d1mr"] + gc["d1mw"]) + args.ll * (gc["llmr"] + gc["llmw"])
+                return f"{ca / cb:.3f}"
+
             d1 = (
                 f"{(rc['d1mr'] + rc['d1mw']) / (gc['d1mr'] + gc['d1mw']):.3f}"
                 if rc.get("d1mr") is not None and gc.get("d1mr") is not None
@@ -186,7 +202,7 @@ def main():
             print(
                 f"| {w} | {ratio(rc, gc, 'wall_ms_median')} "
                 f"| {ratio(rc, gc, 'ir')} | {d1} | {ll} "
-                f"| {ratio(rc, gc, 'est_cycles')} | {ratio(rc, gc, 'rss_mb')} |"
+                f"| {cyc_ratio()} | {ratio(rc, gc, 'rss_mb')} |"
             )
         return 0
 
