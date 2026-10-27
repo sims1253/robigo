@@ -25,6 +25,7 @@
 
 use crate::ast::*;
 use crate::lexer::{Lexer, Tok, Token};
+use crate::line_col;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ctx {
@@ -52,6 +53,18 @@ const BP_NOT: u8 = 16;
 const BP_CMP: u8 = 18;
 const BP_UNARY: u8 = 30;
 const BP_POSTFIX: u8 = 38;
+
+/// `_R_USE_PIPEBIND_` (`xxpipebind` in gram.y caches it after the first
+/// lookup).
+fn pipebind_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("_R_USE_PIPEBIND_").is_ok_and(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "FALSE" && v != "false" && v != "0"
+        })
+    })
+}
 
 /// Parse a whole program into top-level expressions.
 pub fn parse_program(src: &str) -> Result<Vec<Expr>, ParseError> {
@@ -107,26 +120,55 @@ impl<'a> Parser<'a> {
         t
     }
 
+    /// The user-visible name of an unexpected token, a port of the
+    /// `yytname_translations` table in gram.y's `yyerror` (`// R:
+    /// gram.y:yyerror`). `**` reports as `'^'` because the lexer replaces
+    /// it; a misused `_` reports as plain "input".
     fn token_text(&self, t: &Token) -> String {
         match &t.tok {
-            Tok::Eof => "end of input".to_string(),
-            Tok::Newline => "end of line".to_string(),
+            Tok::Const(Const::Null) => "'NULL'".to_string(),
+            Tok::Function => "'function'".to_string(),
+            Tok::Lambda => "'\\'".to_string(),
+            Tok::If => "'if'".to_string(),
+            Tok::Else => "'else'".to_string(),
+            Tok::For => "'for'".to_string(),
+            Tok::In => "'in'".to_string(),
+            Tok::While => "'while'".to_string(),
+            Tok::Repeat => "'repeat'".to_string(),
+            Tok::Break => "'break'".to_string(),
+            Tok::Next => "'next'".to_string(),
+            Tok::EqAssign => "'='".to_string(),
+            Tok::RightAssign("->") => "'->'".to_string(),
+            Tok::RightAssign("->>") => "'->>'".to_string(),
+            Tok::RightAssign(_) => "'->'".to_string(),
+            Tok::LBracket => "'['".to_string(),
+            Tok::LBB => "'[['".to_string(),
+            Tok::Pipe => "'|>'".to_string(),
+            Tok::PipeBind => "'=>'".to_string(),
+            Tok::Caret => "'^'".to_string(),
+            Tok::Placeholder => "input".to_string(),
             Tok::Str(_) => "string constant".to_string(),
-            Tok::Const(Const::Null) => "NULL_CONST".to_string(),
             Tok::Const(_) => "numeric constant".to_string(),
             Tok::Sym(_) => "symbol".to_string(),
-            Tok::Special(_) => "SPECIAL".to_string(),
-            Tok::LeftAssign(_) | Tok::RightAssign(_) => "assignment".to_string(),
+            Tok::LeftAssign(_) => "assignment".to_string(),
+            Tok::Newline => "end of line".to_string(),
+            Tok::Eof => "end of input".to_string(),
             _ => format!("'{}'", &self.src[t.span.start as usize..t.span.end as usize]),
         }
     }
 
     fn unexpected(&self, t: &Token) -> ParseError {
         ParseError {
+            // `PLACEHOLDER` is reported as "unexpected input", a deliberate
+            // quirk of gram.y ("cheat to avoid changing the parse error
+            // message for mis-use of _").
             message: format!("unexpected {}", self.token_text(t)),
             offset: t.span.start as usize,
             end: t.span.end as usize,
             incomplete: matches!(t.tok, Tok::Eof),
+            at_eof: matches!(t.tok, Tok::Eof),
+            with_pos_suffix: false,
+            fixed_line_col: None,
         }
     }
 
@@ -145,17 +187,54 @@ impl<'a> Parser<'a> {
                 break;
             }
             let e = self.expr(0)?;
-            out.push(e);
             let t = self.raw_peek().clone();
+            // `checkForPlaceholder` in gram.y runs when a statement
+            // completes; a syntax error on the terminator wins over it.
             match t.tok {
                 Tok::Newline | Tok::Semi => {
+                    if contains_placeholder(&e) {
+                        return Err(self.statement_check_error());
+                    }
+                    out.push(e);
                     self.pos += 1;
                 }
-                Tok::Eof => break,
+                Tok::Eof => {
+                    if contains_placeholder(&e) {
+                        return Err(self.statement_check_error());
+                    }
+                    out.push(e);
+                    break;
+                }
                 _ => return Err(self.unexpected(&t)),
             }
         }
         Ok(out)
+    }
+
+    /// The position of a `checkForPlaceholder` failure: the terminator
+    /// already peeked at (`;` at its own column; a newline at column 0 of
+    /// its own line; end of input likewise).
+    fn statement_check_error(&self) -> ParseError {
+        let t = self.raw_peek();
+        let (line, col) = match t.tok {
+            Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
+            Tok::Semi => line_col(self.src, t.span.start as usize),
+            _ => {
+                // End of input: GNU R's lexer appends a virtual newline, so
+                // the statement ends on the last line at column 0.
+                let line = self.src.matches('\n').count() + if self.src.ends_with('\n') || self.src.is_empty() { 0 } else { 1 };
+                (line.max(1), 0)
+            }
+        };
+        ParseError {
+            message: "invalid use of pipe placeholder".into(),
+            offset: t.span.start as usize,
+            end: (t.span.end as usize).max(t.span.start as usize + 1),
+            incomplete: false,
+            at_eof: false,
+            with_pos_suffix: true,
+            fixed_line_col: Some((line, col)),
+        }
     }
 
     /// Parse an expression whose operators all bind tighter than `min_bp`.
@@ -196,6 +275,24 @@ impl<'a> Parser<'a> {
                     let rhs = self.expr(rbp)?;
                     self.pipe(lhs, rhs, t.span)?
                 }
+                Tok::PipeBind => {
+                    let rhs = self.expr(rbp)?;
+                    // `// R: gram.y:xxpipebind`: `=>` is disabled unless
+                    // `_R_USE_PIPEBIND_` asks for it.
+                    if !pipebind_enabled() {
+                        return Err(ParseError {
+                            message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it".into(),
+                            offset: t.span.start as usize,
+                            end: t.span.end as usize,
+                            incomplete: false,
+                            at_eof: false,
+                            with_pos_suffix: true,
+                            fixed_line_col: None,
+                        });
+                    }
+                    let span = lhs.span().to(rhs.span());
+                    Expr::call("=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
+                }
                 _ => {
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
@@ -230,6 +327,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Expr::Const(Const::Str(Some(s)), t.span))
             }
+            Tok::Const(Const::Null) => {
+                // `x$NULL` keeps the symbol.
+                self.bump();
+                Ok(Expr::Sym("NULL".to_string(), t.span))
+            }
             Tok::LParen => {
                 // `x$(name)` is not valid R, but `x@.Data` etc. are symbols.
                 Err(self.unexpected(&t))
@@ -238,36 +340,64 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn pipe(&mut self, lhs: Expr, rhs: Expr, op_span: Span) -> Result<Expr, ParseError> {
+    fn pipe(&mut self, lhs: Expr, rhs: Expr, _op_span: Span) -> Result<Expr, ParseError> {
+        let rhs_span = rhs.span();
+        // `// R: gram.y:xxpipe`
         let err = |msg: &str| ParseError {
             message: msg.to_string(),
-            offset: op_span.start as usize,
-            end: op_span.end as usize,
+            offset: rhs_span.start as usize,
+            end: rhs_span.end as usize,
             incomplete: false,
+            at_eof: false,
+            with_pos_suffix: true,
+            fixed_line_col: None,
         };
         match rhs {
             Expr::Call { fun, mut args, span } => {
-                if let Expr::Sym(name, _) = fun.as_ref() {
-                    if name == "function" {
-                        return Err(err("function 'function' not supported in RHS call of a pipe"));
-                    }
+                // A placeholder as (or inside) the called function itself.
+                if contains_placeholder(&fun) {
+                    return Err(err("pipe placeholder cannot be used in the RHS function"));
                 }
-                if let Some(new) = substitute_extraction_placeholder(&fun, &args, &lhs) {
-                    return Ok(new);
+                // `x |> _$a[[1]]`: the placeholder may head a chain of
+                // extractions.
+                match substitute_extraction_placeholder(&fun, &args, &lhs) {
+                    Some(Ok(new)) => return Ok(new),
+                    Some(Err(())) => return Err(err("pipe placeholder may only appear once")),
+                    None => {}
                 }
-                let placeholder = args.iter().position(|a| matches!(&a.value, Some(Expr::Sym(s, _)) if s == "_"));
+                // A top-level placeholder argument: named ones are substituted.
+                let placeholder = args.iter().position(|a| matches!(&a.value, Some(Expr::Placeholder(_))));
                 let full = lhs.span().to(span);
                 if let Some(i) = placeholder {
                     if args[i].name.is_none() {
                         return Err(err("pipe placeholder can only be used as a named argument"));
                     }
+                    if args[i + 1..].iter().any(|a| matches!(&a.value, Some(Expr::Placeholder(_)))) {
+                        return Err(err("pipe placeholder may only appear once"));
+                    }
                     args[i].value = Some(lhs);
-                } else {
-                    args.insert(0, Arg::positional(lhs));
+                    return Ok(Expr::Call { fun, args, span: full });
                 }
+                // Syntactically special functions cannot be piped into
+                // (`check_rhs`, IS_SPECIAL_SYMBOL in names.c).
+                if let Expr::Sym(name, _) = fun.as_ref() {
+                    if is_special_symbol(name) {
+                        return Err(err(&format!("function '{}' not supported in RHS call of a pipe", name)));
+                    }
+                }
+                args.insert(0, Arg::positional(lhs));
                 Ok(Expr::Call { fun, args, span: full })
             }
-            Expr::Function { .. } => Err(err("function 'function' not supported in RHS call of a pipe")),
+            // `function(...)` as the RHS is a lang object with head
+            // `function`, a special symbol; its body could be a bare
+            // placeholder.
+            Expr::Function { body, .. } => {
+                if matches!(body.as_ref(), Expr::Placeholder(_)) {
+                    Err(err("pipe placeholder can only be used as a named argument"))
+                } else {
+                    Err(err("function 'function' not supported in RHS call of a pipe"))
+                }
+            }
             _ => Err(err("The pipe operator requires a function call as RHS")),
         }
     }
@@ -279,6 +409,7 @@ impl<'a> Parser<'a> {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
             Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(s)), span)),
             Tok::Sym(s) => Ok(Expr::Sym(s, span)),
+            Tok::Placeholder => Ok(Expr::Placeholder(span)),
             Tok::LParen => {
                 self.ctx.push(Ctx::Paren);
                 let inner = self.expr(0);
@@ -426,6 +557,9 @@ impl<'a> Parser<'a> {
                     offset: t.span.start as usize,
                     end: t.span.end as usize,
                     incomplete: false,
+                    at_eof: false,
+                    with_pos_suffix: true,
+                    fixed_line_col: None,
                 });
             }
             let default = if matches!(self.peek().tok, Tok::EqAssign) {
@@ -498,9 +632,13 @@ impl<'a> Parser<'a> {
             let span = lhs.span().to(close.span);
             Ok(match name {
                 None => {
-                    // `"f"(x)` calls the function named `f`.
+                    // `"f"(x)` calls the function named `f`; the pipe
+                    // placeholder stays the string constant it is
+                    // (`xxfuncall` in gram.y).
                     let fun = match lhs {
-                        Expr::Const(Const::Str(Some(name)), sp) => Expr::Sym(name, sp),
+                        Expr::Const(Const::Str(Some(name)), sp) => {
+                            Expr::Sym(String::from_utf8_lossy(&name).into_owned(), sp)
+                        }
                         other => other,
                     };
                     Expr::Call { fun: Box::new(fun), args, span }
@@ -529,7 +667,8 @@ impl<'a> Parser<'a> {
             } else {
                 // `name = value`, where name is a symbol, string or NULL.
                 let name = match &t.tok {
-                    Tok::Sym(s) | Tok::Str(s) => Some(s.clone()),
+                    Tok::Sym(s) => Some(s.clone()),
+                    Tok::Str(s) => Some(String::from_utf8_lossy(s).into_owned()),
                     Tok::Const(Const::Null) => Some("NULL".to_string()),
                     _ => None,
                 };
@@ -612,21 +751,97 @@ fn binary_name(t: &Tok) -> String {
     }
 }
 
-/// `x |> _$a[[1]]`: the placeholder may head a chain of extractions.
-fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Option<Expr> {
-    let is_extract = |name: &str| matches!(name, "$" | "@" | "[[" | "[");
+/// `checkForPlaceholder` in gram.y: the placeholder symbol anywhere in a
+/// call tree (GNU R's trees keep formals pairlists opaque, so function
+/// formals are not descended into).
+fn contains_placeholder(e: &Expr) -> bool {
+    match e {
+        Expr::Placeholder(_) => true,
+        Expr::Call { fun, args, .. } => {
+            contains_placeholder(fun) || args.iter().any(|a| a.value.as_ref().is_some_and(contains_placeholder))
+        }
+        Expr::Function { body, .. } => contains_placeholder(body),
+        _ => false,
+    }
+}
+
+/// The syntactically special functions of GNU R (`Spec_name` in names.c):
+/// they cannot be the function of a pipe's right-hand side.
+fn is_special_symbol(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "while"
+            | "repeat"
+            | "for"
+            | "break"
+            | "next"
+            | "return"
+            | "function"
+            | "("
+            | "{"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "^"
+            | "%%"
+            | "%/%"
+            | "%*%"
+            | ":"
+            | "::"
+            | ":::"
+            | "?"
+            | "|>"
+            | "~"
+            | "@"
+            | "=>"
+            | "=="
+            | "!="
+            | "<"
+            | ">"
+            | "<="
+            | ">="
+            | "&"
+            | "|"
+            | "&&"
+            | "||"
+            | "!"
+            | "<-"
+            | "<<-"
+            | "="
+            | "$"
+            | "["
+            | "[["
+            | "$<-"
+            | "[<-"
+            | "[[<-"
+    )
+}
+
+/// `findExtractorChainPHCell` in gram.y: `x |> _$a[[1]]`. `Ok` substitutes
+/// the placeholder with `lhs`; `Err` means a second placeholder in the
+/// chain; `None` is "not an extraction chain over the placeholder".
+fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Option<Result<Expr, ()>> {
     let Expr::Sym(name, name_span) = fun else { return None };
-    if !is_extract(name) || args.is_empty() {
+    if !matches!(name.as_str(), "$" | "@" | "[[" | "[") || args.is_empty() {
         return None;
     }
     let first = args[0].value.as_ref()?;
     let replaced = match first {
-        Expr::Sym(s, _) if s == "_" => lhs.clone(),
-        Expr::Call { fun: f, args: a, .. } => substitute_extraction_placeholder(f, a, lhs)?,
+        Expr::Placeholder(_) => lhs.clone(),
+        Expr::Call { fun: f, args: a, .. } => match substitute_extraction_placeholder(f, a, lhs) {
+            Some(Ok(e)) => e,
+            Some(Err(e)) => return Some(Err(e)),
+            None => return None,
+        },
         _ => return None,
     };
+    // On the way back out: no other placeholder in this level's arguments.
+    if args[1..].iter().any(|a| a.value.as_ref().is_some_and(contains_placeholder)) {
+        return Some(Err(()));
+    }
     let mut new_args = args.to_vec();
     new_args[0].value = Some(replaced);
     let span = lhs.span().to(args.last().and_then(|a| a.value.as_ref()).map(|v| v.span()).unwrap_or(*name_span));
-    Some(Expr::call(name, *name_span, new_args, span))
+    Some(Ok(Expr::call(name, *name_span, new_args, span)))
 }

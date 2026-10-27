@@ -37,7 +37,10 @@ pub enum Const {
     DblNa,
     Cplx(f64, f64),
     CplxNa,
-    Str(Option<String>),
+    /// String content as raw bytes: source text keeps its UTF-8 bytes, and
+    /// `\xNN`/`\NNN` escapes produce their single byte (a "bytes"-encoded
+    /// CHARSXP in GNU R, whatever the locale).
+    Str(Option<Vec<u8>>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +60,11 @@ pub struct Formal {
 pub enum Expr {
     Const(Const, Span),
     Sym(String, Span),
+    /// The pipe placeholder `_`, the string constant `"_"` in GNU R's
+    /// trees (`R_PlaceholderToken`). Kept distinct so that only real
+    /// placeholders trigger GNU R's post-statement check, and so pipes can
+    /// substitute them.
+    Placeholder(Span),
     Call { fun: Box<Expr>, args: Vec<Arg>, span: Span },
     Function { formals: Vec<Formal>, body: Box<Expr>, span: Span },
 }
@@ -64,7 +72,7 @@ pub enum Expr {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
-            Expr::Const(_, s) | Expr::Sym(_, s) => *s,
+            Expr::Const(_, s) | Expr::Sym(_, s) | Expr::Placeholder(s) => *s,
             Expr::Call { span, .. } | Expr::Function { span, .. } => *span,
         }
     }
@@ -101,6 +109,30 @@ pub struct ParseError {
     /// True when the input ended before the expression was complete; a REPL
     /// should read another line instead of reporting the error.
     pub incomplete: bool,
+    /// True when the position is the end-of-input token: GNU R's lexer
+    /// appends a virtual newline when the source does not end with one, so
+    /// the error sits on the following line at column 0.
+    pub at_eof: bool,
+    /// True for errors raised from parser actions (`raiseParseError` in
+    /// gram.y), whose message carries a `" (<input>:<line>:<col>)"` suffix.
+    pub with_pos_suffix: bool,
+    /// A position not derived from `offset`, as when GNU R reports the
+    /// statement terminator for pipe-placeholder misuse.
+    pub fixed_line_col: Option<(usize, usize)>,
+}
+
+impl ParseError {
+    pub fn new(message: impl Into<String>, offset: usize, end: usize) -> Self {
+        ParseError {
+            message: message.into(),
+            offset,
+            end,
+            incomplete: false,
+            at_eof: false,
+            with_pos_suffix: false,
+            fixed_line_col: None,
+        }
+    }
 }
 
 impl fmt::Display for ParseError {

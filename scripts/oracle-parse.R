@@ -1,8 +1,13 @@
 # Dump GNU R's parse trees in the canonical format of robigo_syntax::dump.
 #
 # Usage: Rscript --vanilla scripts/oracle-parse.R IN.R [OUT.dump]
-# Writes one line per top-level expression, or a single line "ERROR" when
-# the file does not parse.
+# Writes one line per top-level expression. When the file does not parse,
+# writes a single line
+#   ERROR <line> <col> <message>
+# with the 1-based character column (tabs advance to the next multiple of 8)
+# and GNU R's message; errors raised by parser actions keep their
+# "(<input>:<line>:<col>)" suffix, syntax errors from the grammar drop the
+# "<file>:<line>:<col>: " prefix and the source echo.
 
 dump_dbl <- function(x) {
   if (is.na(x) && !is.nan(x)) "NA"
@@ -63,17 +68,41 @@ dump_expr <- function(e) {
   dump_const(e)
 }
 
+# Canonical text for a parse failure: position + message, without the
+# source echo the interactive printer adds.
+dump_error <- function(e, infile) {
+  if (!is.null(e$lineno)) {
+    # Errors raised by parser actions (raiseParseError in gram.y): the
+    # position is carried as condition fields and the message already
+    # contains the "(<input>:<line>:<col>)" suffix.
+    paste("ERROR", e$lineno, e$colno, conditionMessage(e))
+  } else {
+    # Grammar errors (yyerror): "<file>:<line>:<col>: <message>" plus a
+    # source echo; keep the message only.
+    first <- strsplit(conditionMessage(e), "\n", fixed = TRUE)[[1L]][[1L]]
+    m <- regmatches(first, regexec("^(.*):([0-9]+):([0-9]+): (.*)$", first))[[1L]]
+    if (length(m) == 0L) {
+      # Should not happen; keep the raw text so the mismatch is visible.
+      paste("ERROR", "0", "0", first)
+    } else {
+      paste("ERROR", m[[3L]], m[[4L]], m[[5L]])
+    }
+  }
+}
+
 main <- function(args) {
   infile <- args[[1L]]
   outfile <- if (length(args) >= 2L) args[[2L]] else ""
-  exprs <- tryCatch(
-    withCallingHandlers(
-      parse(file = infile, keep.source = FALSE, encoding = "UTF-8"),
-      warning = function(w) invokeRestart("muffleWarning")
-    ),
-    error = function(e) NULL
+  lines <- tryCatch(
+    {
+      exprs <- withCallingHandlers(
+        parse(file = infile, keep.source = FALSE, encoding = "UTF-8"),
+        warning = function(w) invokeRestart("muffleWarning")
+      )
+      vapply(as.list(exprs), dump_expr, "")
+    },
+    error = function(e) dump_error(e, infile)
   )
-  lines <- if (is.null(exprs)) "ERROR" else vapply(as.list(exprs), dump_expr, "")
   writeLines(lines, if (nzchar(outfile)) outfile else stdout(), useBytes = TRUE)
 }
 
