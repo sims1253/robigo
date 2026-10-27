@@ -162,6 +162,15 @@ fn parse_status(buf: &str) -> (Status, Vec<String>) {
         Err(e) if e.incomplete => (Status::Incomplete, Vec::new()),
         Err(e) => (Status::Error(e), Vec::new()),
         Ok((exprs, warnings)) => {
+            // R's grammar only accepts a statement that is TERMINATED
+            // (`prog: '\n' | expr ';' | expr '\n'`); the REPL's own
+            // chunks are, except when a line longer than
+            // `CONSOLE_BUFFER_SIZE` is cut mid-line (R: PARSE_EOF from
+            // `R_Parse1`, which `R_ReplConsole` treats as more input
+            // pending).
+            if !buf.ends_with(';') && !buf.ends_with('\n') {
+                return (Status::Incomplete, warnings);
+            }
             if exprs.is_empty() {
                 // The grammar has no rule that can start a statement with
                 // a `;` (`1;;2` is an error at the second one);
@@ -459,6 +468,9 @@ mod tests {
         assert!(matches!(parse_status("1 +\n"), (Status::Incomplete, _)));
         assert!(matches!(parse_status("\"abc\n"), (Status::Incomplete, _)));
         assert!(matches!(parse_status("if (x) 1 else\n"), (Status::Incomplete, _)));
+        // A line longer than the console buffer is cut mid-line: a chunk
+        // without its terminating `;` or newline needs more input.
+        assert!(matches!(parse_status("1 + 1 + "), (Status::Incomplete, _)));
     }
 
     #[test]

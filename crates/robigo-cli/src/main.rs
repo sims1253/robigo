@@ -240,7 +240,13 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
                 "-e" => {
                     i += 1;
                     match kept.get(i) {
-                        Some(e) => cl.exprs.push(e.clone()),
+                        Some(e) => {
+                            cl.exprs.push(e.clone());
+                            // robigo's `-e` is `Rscript -e`: Rscript
+                            // execs R with `--no-echo` (R: unix/Rscript.c),
+                            // which also suppresses prompts and echo.
+                            cl.no_echo = true;
+                        }
                         None => {
                             eprintln!("ERROR: option '-e' requires a non-empty argument");
                             std::process::exit(1);
