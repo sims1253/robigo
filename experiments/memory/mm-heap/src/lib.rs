@@ -59,7 +59,17 @@ pub struct Block {
     /// Reset to 0 by the sweep that reads it. Large chunks use the same
     /// pseudo-header word harmlessly (the sweeper never reads it there).
     pub marked: u32,
-    _rsv: [u8; 20],
+    /// objects in this block that never die (set once, when the manager
+    /// flags the object immortal — before it can be shared). The sweeper
+    /// adds this to `marked`: immortals need no marking at all, and a
+    /// block skips its bitmap walk when mortals marked + immortals equals
+    /// `live_objects`. Counting them structurally (instead of marking
+    /// them) is what keeps the count exact: the same immortal is reached
+    /// from the intern tables, from traced references (cons tags, env
+    /// bindings holding cached ints) and from the conservative stack
+    /// scan, and each of those encounters must not count twice.
+    pub immortals: u32,
+    _rsv: [u8; 16],
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     pub data: [MaybeUninit<u8>; BLOCK - DATA_OFF],
@@ -70,6 +80,7 @@ pub struct Block {
 const _: () = assert!(std::mem::offset_of!(Block, starts) == 64);
 const _: () = assert!(std::mem::offset_of!(Block, data) == DATA_OFF);
 const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
+const _: () = assert!(std::mem::offset_of!(Block, immortals) == 44);
 
 impl Block {
     #[inline]
@@ -162,7 +173,8 @@ impl Heap {
                             freelist: std::ptr::null_mut(),
                             chunk_base: base as *mut u8,
                             marked: 0,
-                            _rsv: [0; 20],
+                            immortals: 0,
+                            _rsv: [0; 16],
                             starts: [0; START_WORDS],
                             data: [MaybeUninit::uninit(); BLOCK - DATA_OFF],
                         },
@@ -356,5 +368,18 @@ impl Heap {
     #[inline]
     pub fn block_of(&self, p: *const u8) -> *mut Block {
         (p as usize & !(BLOCK - 1)) as *mut Block
+    }
+
+    /// Count one more never-dying object in `p`'s block. Call exactly
+    /// once per object, when it is flagged immortal (before any other
+    /// reference to it can exist); immortals are never marked and never
+    /// swept, so this count is what stands in for them in the sweeper's
+    /// skip test.
+    pub fn note_immortal(&mut self, p: *mut u8) {
+        let b = self.block_of(p);
+        unsafe {
+            debug_assert_eq!((*b).magic, 0x524f4249474f4241, "immortal outside a small block");
+            (*b).immortals += 1;
+        }
     }
 }
