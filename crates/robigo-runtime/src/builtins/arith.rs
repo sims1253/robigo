@@ -811,7 +811,7 @@ fn do_relop(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: Rel
         }
     }
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), "operator needs two arguments"));
+        return Err(Flow::error("operator needs two arguments"));
     }
     let y = args.pop().unwrap().value;
     let x = args.pop().unwrap().value;
@@ -860,7 +860,17 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
         }
     }
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), "operator needs two arguments"));
+        // R's checkArity (logic.c:do_logic): the singular form has no
+        // 's' on 'argument'.
+        return Err(Flow::error_call(
+            call.clone(),
+            format!(
+                "{} argument{} passed to '{}' which requires 2",
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                name
+            ),
+        ));
     }
     let mut y = args.pop().unwrap().value;
     let mut x = args.pop().unwrap().value;
@@ -966,12 +976,13 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
     Ok(val)
 }
 
-/// `&&` / `||` operand: must be length-1 logical-coercible.
+/// `&&` / `||` operand: R's isNumber (logical, integer, double or
+/// complex — not raw, not NULL, not string) and length <= 1
+/// (R: logic.c:do_logic2, asLogical2 with checking).
 pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
     let _ = i;
-    let ok = matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) | Value::Null);
-    if !ok || (matches!(v, Value::Str(_))) {
-        return Err(Flow::error_call(call.clone(), format!("invalid '{}' type in 'x {} y'", which, op)));
+    if !matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_)) {
+        return Err(Flow::error_call(call.clone(), format!("invalid '{which}' type in 'x {op} y'")));
     }
     if v.len() != 1 {
         if v.len() > 1 {
@@ -983,6 +994,10 @@ pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: 
 }
 
 fn do_and2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: logic.c:do_logic2 — plain error, the operator's name only.
+    if args.len() != 2 {
+        return Err(Flow::error("'&&' operator requires 2 arguments"));
+    }
     let x = i.eval(&args[0].value, env)?;
     let a = scalar_logical(i, call, &x, "x", "&&")?;
     if a == FALSE {
@@ -1000,6 +1015,9 @@ fn do_and2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 }
 
 fn do_or2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if args.len() != 2 {
+        return Err(Flow::error("'||' operator requires 2 arguments"));
+    }
     let x = i.eval(&args[0].value, env)?;
     let a = scalar_logical(i, call, &x, "x", "||")?;
     if a == TRUE {
