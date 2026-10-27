@@ -181,15 +181,7 @@ fn parse_status(buf: &str) -> (Status, Vec<String>) {
                 // PARSE_NULL.
                 let t = first_semicolon(buf);
                 if t.0 < buf.len() {
-                    return (
-                        Status::Error(robigo_syntax::ParseError {
-                            message: "unexpected ';'".to_string(),
-                            offset: t.0,
-                            end: t.1,
-                            incomplete: false,
-                        }),
-                        warnings,
-                    );
+                    return (Status::Error(robigo_syntax::ParseError::new("unexpected ';'", t.0, t.1)), warnings);
                 }
                 return (Status::Null, warnings);
             }
@@ -428,13 +420,11 @@ mod tests {
 
     #[test]
     fn parse_error_formats() {
-        let e =
-            robigo_syntax::ParseError { message: "unexpected symbol".into(), offset: 6, end: 11, incomplete: false };
+        let e = robigo_syntax::ParseError::new("unexpected symbol", 6, 11);
         assert_eq!(parse_error_message("parse error here", &e), "unexpected symbol in \"parse error\"");
-        let e2 =
-            robigo_syntax::ParseError { message: "unexpected 'else'".into(), offset: 0, end: 4, incomplete: false };
+        let e2 = robigo_syntax::ParseError::new("unexpected 'else'", 0, 4);
         assert_eq!(parse_error_message("else 2", &e2), "unexpected 'else' in \"else\"");
-        let e3 = robigo_syntax::ParseError { message: "unexpected ')'".into(), offset: 14, end: 15, incomplete: false };
+        let e3 = robigo_syntax::ParseError::new("unexpected ')'", 14, 15);
         assert_eq!(parse_error_message("if (TRUE) {\n1\n)\n", &e3), "unexpected ')' in:\n\"1\n)\"");
     }
 

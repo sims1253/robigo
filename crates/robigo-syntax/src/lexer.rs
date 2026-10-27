@@ -460,14 +460,14 @@ impl<'a> Lexer<'a> {
             let as_int = value as i32;
             if value != as_int as f64 {
                 if seendot == 1 && !seenexp {
-                    self.warnings.push(format!("integer literal {}L contains decimal; using numeric value", text_l));
+                    self.warnings.push(format!("integer literal {} contains decimal; using numeric value", text_l));
                 } else {
-                    self.warnings.push(format!("non-integer value {}L qualified with L; using numeric value", text_l));
+                    self.warnings.push(format!("non-integer value {} qualified with L; using numeric value", text_l));
                 }
                 return Ok(Tok::Const(Const::Dbl(value)));
             }
             if seendot == 1 && !seenexp {
-                self.warnings.push(format!("integer literal {}L contains unnecessary decimal point", text_l));
+                self.warnings.push(format!("integer literal {} contains unnecessary decimal point", text_l));
             }
             return Ok(Tok::Const(Const::Int(Some(as_int))));
         }
