@@ -360,13 +360,16 @@ impl GcMem {
             wr_u32(p, OFF_FIELDS, len as u32);
             wr_u32(p, OFF_FIELDS + 4, cap as u32);
             match type_ {
+                // fill the whole capacity: `set_generic_elt`/`vector_push`
+                // read-and-decref the old slot, which must be a valid
+                // immortal pointer, never uninitialized memory
                 STRSXP => {
-                    for i in 0..len {
+                    for i in 0..cap {
                         wr_ptr(p, OFF_FIELDS + 8 + i * 8, self.na_string);
                     }
                 }
                 VECSXP => {
-                    for i in 0..len {
+                    for i in 0..cap {
                         wr_ptr(p, OFF_FIELDS + 8 + i * 8, self.nil_p);
                     }
                 }
@@ -467,6 +470,9 @@ impl GcMem {
         let mut to_list: Vec<(usize, *mut Block)> = Vec::new();
         let mut to_pool: Vec<*mut Block> = Vec::new();
         let mut dead_chunks: Vec<usize> = Vec::new();
+        // chunks whose every claimed block died this sweep (candidates to
+        // release together with their empty-pool blocks)
+        let mut dead_small_chunks: Vec<(usize, usize, usize)> = Vec::new();
 
         let chunks: Vec<mm_heap::Chunk> = self.heap.chunks.clone();
         for (idx, c) in chunks.iter().enumerate() {
@@ -484,15 +490,32 @@ impl GcMem {
                 }
                 continue;
             }
-            let mut chunk_recyclable = true;
+            let mut chunk_dead = true; // every claimed block empty after sweep?
+            let mut chunk_touched = false;
             for bi in 0..c.claimed as usize {
                 let b = (c.base + bi * BLOCK) as *mut Block;
                 unsafe {
+                    if (*b).class == CLASS_NONE {
+                        // untouched, or pooled by an earlier sweep (which
+                        // resets the class): nothing to sweep here. A pooled
+                        // block was used before and is empty now.
+                        if (*b).owner == OWNER_EMPTY {
+                            chunk_touched = true;
+                        }
+                        continue;
+                    }
+                    // Rebuild the starts bitmap from the survivors only: a
+                    // freed-but-unreallocated slot must never be swept again
+                    // (its fields hold freelist pointers) nor stay
+                    // resolvable. Same for the free list: exactly the dead
+                    // slots of this round.
+                    let old_starts = (*b).starts;
+                    (*b).starts = [0; mm_heap::START_WORDS];
+                    (*b).freelist = std::ptr::null_mut();
                     let mut live: u32 = 0;
-                    let mut has_free = false;
                     let csize = SIZES[(*b).class as usize] as u64;
                     for w in 0..mm_heap::START_WORDS {
-                        let mut s = (*b).starts[w];
+                        let mut s = old_starts[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = (*b).data_ptr().add(g * 16);
@@ -503,37 +526,55 @@ impl GcMem {
                                 }
                                 live += 1;
                                 live_bytes += csize;
+                                (*b).start_set(g);
                             } else {
                                 let mut dec = |c: *mut u8| com_decref(c);
                                 for_each_child(p, &mut dec);
                                 *((p as *mut *mut u8).add(1)) = (*b).freelist;
                                 (*b).freelist = p;
-                                has_free = true;
                                 freed += 1;
                             }
                             s &= s - 1;
                         }
                     }
                     (*b).live_objects = live;
-                    let pristine = live == 0 && (*b).freelist.is_null() && (*b).bump_next == 0;
-                    if pristine && (*b).sticky_listed == 0 && (*b).owner == OWNER_NONE {
-                        continue; // untouched: the chunk may be recyclable
-                    }
-                    chunk_recyclable = false;
-                    if pristine {
-                        if (*b).owner != OWNER_EMPTY {
-                            (*b).owner = OWNER_EMPTY;
-                            (*b).class = CLASS_NONE;
-                            (*b).clear_starts();
-                            to_pool.push(b);
+                    if live == 0 {
+                        if (*b).owner == OWNER_EMPTY {
+                            // already in the empty pool: must not be pushed
+                            // again (a duplicate would hand one block to two
+                            // size classes)
+                            chunk_touched = true;
+                            continue;
                         }
-                    } else if has_free && (*b).owner == OWNER_NONE {
+                        if (*b).bump_next == 0 && (*b).sticky_listed == 0
+                            && (*b).owner == OWNER_NONE
+                        {
+                            continue; // untouched: not our memory to pool
+                        }
+                        // fully dead: recycle to the heap-wide pool
+                        (*b).owner = OWNER_EMPTY;
+                        (*b).class = CLASS_NONE;
+                        (*b).bump_next = 0;
+                        (*b).sticky_listed = 0;
+                        (*b).starts = [0; mm_heap::START_WORDS];
+                        (*b).freelist = std::ptr::null_mut();
+                        to_pool.push(b);
+                        chunk_touched = true;
+                        continue;
+                    }
+                    chunk_dead = false;
+                    chunk_touched = true;
+                    // partially free and not on a list: make it findable
+                    if !(*b).freelist.is_null() && (*b).owner == OWNER_NONE {
                         to_list.push(((*b).class as usize, b));
                     }
                 }
             }
-            if chunk_recyclable {
-                dead_chunks.push(idx); // every block untouched: release
+            if chunk_dead && chunk_touched {
+                // every claimed block of the chunk is empty now (the rest
+                // were never touched): release the chunk, purging its
+                // pooled blocks from the pool below
+                dead_small_chunks.push((idx, c.base, c.end));
             }
         }
 
@@ -548,9 +589,24 @@ impl GcMem {
             unsafe { (*b).owner = OWNER_EMPTY }
             self.heap.empty_pool.push(b);
         }
-        // release dead large chunks and fully-unused chunks (highest first
-        // so removal indices stay valid)
-        for &idx in dead_chunks.iter().rev() {
+        // any pooled or listed block inside a released small chunk is
+        // dangling: purge it from every index
+        for &(_, base, end) in &dead_small_chunks {
+            self.heap
+                .empty_pool
+                .retain(|&b| !(b as usize >= base && (b as usize) < end));
+            for cs in &mut self.heap.classes {
+                cs.blocks
+                    .retain(|&b| !(b as usize >= base && (b as usize) < end));
+            }
+        }
+        // release dead large chunks and fully-dead small chunks (highest
+        // first so removal indices stay valid)
+        let mut release: Vec<usize> = dead_chunks.clone();
+        release.extend(dead_small_chunks.iter().map(|&(idx, _, _)| idx));
+        release.sort_unstable();
+        release.dedup();
+        for &idx in release.iter().rev() {
             let c = self.heap.chunks[idx];
             let total = c.end - c.base;
             unsafe {
@@ -565,6 +621,14 @@ impl GcMem {
         if !self.heap.chunks.is_empty() {
             self.heap.min_addr = self.heap.chunks.first().unwrap().base;
             self.heap.max_addr = self.heap.chunks.last().unwrap().end;
+        } else {
+            self.heap.min_addr = usize::MAX;
+            self.heap.max_addr = 0;
+        }
+        // cursors may point at pooled/released blocks; the lists are
+        // authoritative after a sweep
+        for cs in &mut self.heap.classes {
+            cs.cur = std::ptr::null_mut();
         }
 
         self.stats.frees += freed;
@@ -907,7 +971,11 @@ impl Mem for GcMem {
                     wr_ptr(e, OFF_FIELDS + 24 + i * 16, lsym);
                     wr_ptr(e, OFF_FIELDS + 24 + i * 16 + 8, lval);
                     wr_u32(e, OFF_FIELDS + 16, n - 1);
-                    return Some(GcSexp(val)); // binding reference transfers
+                    // the binding's heap reference disappears: the caller
+                    // gets an uncounted stack pointer, and copy-on-modify
+                    // decisions need the count to be exact *now*
+                    com_decref(val);
+                    return Some(GcSexp(val));
                 }
             }
             let mut prev: *mut u8 = std::ptr::null_mut();
@@ -921,9 +989,14 @@ impl Mem for GcMem {
                         wr_ptr(prev, OFF_FIELDS + 8, next);
                     }
                     let val = rd_ptr(cell, OFF_FIELDS);
-                    // Abandon the cell for the sweeper (its references
-                    // transferred; clear them so the sweep does not
-                    // decrement the caller's value).
+                    // the unlink creates a new chain edge to `next` (the
+                    // cell's count on it vanishes with the cell); the
+                    // binding's count on `val` transfers to the caller
+                    com_incref(next);
+                    com_decref(cell);
+                    com_decref(val);
+                    // clear the fields so the sweeper does not decrement
+                    // the transferred counts again when it frees the cell
                     wr_ptr(cell, OFF_FIELDS, self.nil_p);
                     wr_ptr(cell, OFF_FIELDS + 8, self.nil_p);
                     wr_ptr(cell, OFF_FIELDS + 16, self.nil_p);

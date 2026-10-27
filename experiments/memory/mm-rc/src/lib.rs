@@ -210,6 +210,15 @@ impl std::ops::DerefMut for RcMem {
 
 pub struct RcSexp(pub *mut u8);
 
+/// One new counted reference to `p`, as a handle (the constructor itself
+/// must not count: `RcSexp(p).clone()` returns an uncounted value because
+/// the temporary's Drop cancels the clone's incref).
+#[inline(always)]
+fn counted(p: *mut u8) -> RcSexp {
+    unsafe { incref(p) };
+    RcSexp(p)
+}
+
 impl Clone for RcSexp {
     #[inline]
     fn clone(&self) -> Self {
@@ -395,7 +404,12 @@ impl RcMemFields {
     }
     fn alloc_object(&mut self, type_: u8, size: usize) -> *mut u8 {
         if !self.free_queue.is_empty() {
+            // no cycle collection mid-drain: a cascade that trips the
+            // purple threshold here would free objects the outer drain
+            // has already popped (use-after-free)
+            self.collecting = true;
             self.drain_frees();
+            self.collecting = false;
         }
         let p = self.heap.alloc(size);
         unsafe {
@@ -422,13 +436,16 @@ impl RcMemFields {
             wr_u32(p, OFF_FIELDS, len as u32);
             wr_u32(p, OFF_FIELDS + 4, cap as u32);
             match type_ {
+                // fill the whole capacity: `set_generic_elt`/`vector_push`
+                // read-and-decref the old slot, which must be a valid
+                // immortal pointer, never uninitialized memory
                 STRSXP => {
-                    for i in 0..len {
+                    for i in 0..cap {
                         wr_ptr(p, OFF_FIELDS + 8 + i * 8, self.na_string);
                     }
                 }
                 VECSXP => {
-                    for i in 0..len {
+                    for i in 0..cap {
                         wr_ptr(p, OFF_FIELDS + 8 + i * 8, self.nil_p);
                     }
                 }
@@ -786,14 +803,16 @@ impl Mem for RcMem {
     }
 
     fn char_intern(&mut self, bytes: &[u8]) -> RcSexp {
-        let hash = hash_bytes(bytes) as u64;
+        // key by the hash the object caches (u32): `chars_table_release`
+        // looks the entry up with the cached value, so both must agree
+        let hash = hash_bytes(bytes) as u32 as u64;
         if let Some(bucket) = self.chars.get(&hash) {
             for &q in bucket {
                 unsafe {
                     if rd_u32(q, OFF_FIELDS + 4) as usize == bytes.len() {
                         let qb = q.add(OFF_FIELDS + 8);
                         if std::slice::from_raw_parts(qb, bytes.len()) == bytes {
-                            return RcSexp(q).clone();
+                            return counted(q);
                         }
                     }
                 }
@@ -802,9 +821,10 @@ impl Mem for RcMem {
         let p = self.char_alloc(bytes);
         unsafe {
             set_flags(p, get_flags(p) | flags::INTERNED);
+            incref(p); // the intern table's own reference
         }
         self.chars.entry(hash).or_default().push(p);
-        RcSexp(p) // table keeps its own +1 beyond this handle
+        RcSexp(p)
     }
 
     fn symbol_intern(&mut self, name: &[u8]) -> RcSexp {
@@ -869,7 +889,7 @@ impl Mem for RcMem {
     }
 
     fn generic_elt(&self, v: &RcSexp, i: usize) -> RcSexp {
-        RcSexp(unsafe { rd_ptr(v.0, OFF_FIELDS + 8 + i * 8) }).clone()
+        counted(unsafe { rd_ptr(v.0, OFF_FIELDS + 8 + i * 8) })
     }
     fn set_generic_elt(&mut self, v: &RcSexp, i: usize, val: &RcSexp) {
         unsafe {
@@ -903,13 +923,13 @@ impl Mem for RcMem {
     }
 
     fn car(&self, v: &RcSexp) -> RcSexp {
-        RcSexp(unsafe { rd_ptr(v.0, OFF_FIELDS) }).clone()
+        counted(unsafe { rd_ptr(v.0, OFF_FIELDS) })
     }
     fn cdr(&self, v: &RcSexp) -> RcSexp {
-        RcSexp(unsafe { rd_ptr(v.0, OFF_FIELDS + 8) }).clone()
+        counted(unsafe { rd_ptr(v.0, OFF_FIELDS + 8) })
     }
     fn tag(&self, v: &RcSexp) -> RcSexp {
-        RcSexp(unsafe { rd_ptr(v.0, OFF_FIELDS + 16) }).clone()
+        counted(unsafe { rd_ptr(v.0, OFF_FIELDS + 16) })
     }
     fn set_car(&mut self, v: &RcSexp, val: &RcSexp) {
         unsafe {
@@ -1014,11 +1034,13 @@ impl Mem for RcMem {
     }
 
     fn env_lookup(&mut self, env: &RcSexp, sym: &RcSexp) -> Option<RcSexp> {
-        unsafe { self.env_find(env.0, sym.0).map(|p| RcSexp(p).clone()) }
+        unsafe { self.env_find(env.0, sym.0).map(counted) }
     }
 
     fn global_env(&self) -> RcSexp {
-        RcSexp(self.global_env)
+        // counted: the manager keeps its own reference to the root; the
+        // temporary handles workloads pass around must not free it
+        counted(self.global_env)
     }
 
     fn attrs_set(&mut self, obj: &RcSexp, attrs: &RcSexp) {
@@ -1032,7 +1054,7 @@ impl Mem for RcMem {
         }
     }
     fn attrs_get(&self, obj: &RcSexp) -> RcSexp {
-        RcSexp(unsafe { rd_ptr(obj.0, 8) }).clone()
+        counted(unsafe { rd_ptr(obj.0, 8) })
     }
 
     fn external_refs(&self, h: &RcSexp) -> u32 {
@@ -1149,9 +1171,9 @@ impl Mem for RcMem {
     }
 
     fn protect(&mut self, h: &RcSexp) -> RcSexp {
-        unsafe { incref(h.0) };
+        unsafe { incref(h.0) }; // the protection stack's reference
         self.protect_stack.push(h.0);
-        RcSexp(h.0)
+        counted(h.0) // the returned handle owns its own count
     }
     fn unprotect(&mut self, n: usize) {
         for _ in 0..n {
@@ -1226,13 +1248,23 @@ mod tests {
         let (mut m, _g) = mk();
         let a = m.char_intern(b"hello");
         let b = m.char_intern(b"hello");
-        assert_eq!(a.0, b.0);
-        let old = a.0;
+        assert_eq!(a.0, b.0); // identical byte strings share one object
+        let base = m.stats().live_objects;
         drop(b);
         drop(a);
-        m.collect();
+        m.collect(); // drains the free queue
+        assert_eq!(
+            m.stats().live_objects,
+            base - 1,
+            "the char and its table entry must die"
+        );
+        // while a handle lives, the interned char stays alive
         let c = m.char_intern(b"hello");
-        assert_ne!(old, c.0); // the old one was freed with its table entry
+        let d = m.char_intern(b"hello");
+        m.collect();
+        assert_eq!(m.char_bytes(&c), b"hello");
+        drop(c);
+        drop(d);
     }
 
     #[test]

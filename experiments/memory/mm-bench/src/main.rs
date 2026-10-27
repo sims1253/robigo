@@ -382,7 +382,7 @@ unsafe extern "C" fn c_inner<M: Mem>(ctx: *mut u8, seed: i64) -> i64 {
     for i in 0..64 {
         sum += *d.add(i);
     }
-    let nb = m.char_bytes(&key).len() as i64 + m.generic_len(&pl) as i64;
+    let nb = m.char_bytes(&key).len() as i64 + m.string_len(&sv) as i64;
     m.unprotect(4);
     m.discard(v);
     m.discard(key);

@@ -128,7 +128,10 @@ impl Heap {
         }
     }
 
-    fn new_chunk(&mut self, large: bool, min_payload: usize) -> *mut u8 {
+    /// Returns (base, index into `self.chunks`): the chunk list is sorted
+    /// by address and mmap does not hand out monotonic addresses, so the
+    /// new chunk is not necessarily the last one.
+    fn new_chunk(&mut self, large: bool, min_payload: usize) -> (*mut u8, usize) {
         let total = if large {
             min_payload.div_ceil(BLOCK) * BLOCK
         } else {
@@ -140,8 +143,9 @@ impl Heap {
             handle_alloc_error(layout);
         }
         let base = base as usize;
+        let idx = self.chunks.partition_point(|c| c.base < base);
         self.chunks.insert(
-            self.chunks.partition_point(|c| c.base < base),
+            idx,
             Chunk {
                 base,
                 end: base + total,
@@ -177,7 +181,7 @@ impl Heap {
         self.min_addr = self.min_addr.min(base);
         self.max_addr = self.max_addr.max(base + total);
         self.reserved += total;
-        base as *mut u8
+        (base as *mut u8, idx)
     }
 
     fn fresh_block(&mut self) -> *mut Block {
@@ -189,9 +193,8 @@ impl Heap {
                 return b;
             }
         }
-        let base = self.new_chunk(false, 0) as usize;
-        let c = self.chunks.last_mut().unwrap();
-        c.claimed = 1;
+        let (base, idx) = self.new_chunk(false, 0);
+        self.chunks[idx].claimed = 1;
         base as *mut Block
     }
 
@@ -255,7 +258,8 @@ impl Heap {
     fn alloc_large(&mut self, size: usize) -> *mut u8 {
         // object header + payload live after a pseudo block header area
         let total_payload = size + DATA_OFF;
-        let base = self.new_chunk(true, total_payload) as usize;
+        let (base, _) = self.new_chunk(true, total_payload);
+        let base = base as usize;
         (base + DATA_OFF) as *mut u8
     }
 
