@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: vignette
 ### Title: View, List or Get R Source of Package Vignettes
 ### Aliases: vignette edit.vignette print.vignette vignettes

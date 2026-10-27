@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: TDist
 ### Title: The Student t Distribution
 ### Aliases: TDist dt pt qt rt

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: iconv
 ### Title: Convert Character Vector between Encodings
 ### Aliases: iconv iconvlist

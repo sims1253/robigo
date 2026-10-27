@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: shapiro.test
 ### Title: Shapiro-Wilk Normality Test
 ### Aliases: shapiro.test

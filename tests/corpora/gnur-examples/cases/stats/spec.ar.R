@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: spec.ar
 ### Title: Estimate Spectral Density of a Time Series from AR Fit
 ### Aliases: spec.ar

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(tools)
 ### Name: check_packages_in_dir
 ### Title: Check Source Packages and Their Reverse Dependencies

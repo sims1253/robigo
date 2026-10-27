@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: icuSetCollate
 ### Title: Setup Collation by ICU
 ### Aliases: icuSetCollate icuGetCollate R_ICU_LOCALE

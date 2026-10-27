@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pushBack
 ### Title: Push Text Back on to a Connection
 ### Aliases: pushBack pushBackLength clearPushBack

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: reorder.default
 ### Title: Reorder Levels of a Factor
 ### Aliases: reorder reorder.default

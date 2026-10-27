@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: smoothScatter
 ### Title: Scatterplots with Smoothed Densities Color Representation
 ### Aliases: smoothScatter

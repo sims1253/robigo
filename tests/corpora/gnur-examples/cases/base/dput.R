@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dput
 ### Title: Write an Object to a File or Recreate it
 ### Aliases: dput dget

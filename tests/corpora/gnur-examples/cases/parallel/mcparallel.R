@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(parallel)
 ### Name: mcparallel
 ### Title: Evaluate an R Expression Asynchronously in a Separate Process

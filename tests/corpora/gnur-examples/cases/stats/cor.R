@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cor
 ### Title: Correlation, Variance and Covariance (Matrices)
 ### Aliases: var cov cor cov2cor

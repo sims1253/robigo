@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Sys.which
 ### Title: Find Full Paths to Executables
 ### Aliases: Sys.which

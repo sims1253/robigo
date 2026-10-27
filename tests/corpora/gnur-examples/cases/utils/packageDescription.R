@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: packageDescription
 ### Title: Package Description
 ### Aliases: packageDescription packageVersion packageDate asDateBuilt

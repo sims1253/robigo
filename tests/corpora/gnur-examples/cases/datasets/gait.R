@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: gait
 ### Title: Hip and Knee Angle while Walking
 ### Aliases: gait

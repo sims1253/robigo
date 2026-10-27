@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: plot.acf
 ### Title: Plot Autocovariance and Autocorrelation Functions
 ### Aliases: plot.acf

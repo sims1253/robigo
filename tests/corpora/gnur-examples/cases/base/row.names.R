@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: row.names
 ### Title: Get and Set Row Names for Data Frames
 ### Aliases: row.names row.names.data.frame row.names.default row.names<-

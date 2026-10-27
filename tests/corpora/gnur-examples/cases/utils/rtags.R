@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rtags
 ### Title: An Etags-like Tagging Utility for R
 ### Aliases: rtags

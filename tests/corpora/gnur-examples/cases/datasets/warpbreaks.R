@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: warpbreaks
 ### Title: The Number of Breaks in Yarn during Weaving
 ### Aliases: warpbreaks

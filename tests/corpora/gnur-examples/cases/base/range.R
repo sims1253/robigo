@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: range
 ### Title: Range of Values
 ### Aliases: range range.default range.Date range.POSIXct .rangeNum

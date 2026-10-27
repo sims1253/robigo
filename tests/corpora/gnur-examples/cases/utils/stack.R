@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: stack
 ### Title: Stack or Unstack Vectors from a Data Frame or List
 ### Aliases: stack stack.default stack.data.frame unstack unstack.default

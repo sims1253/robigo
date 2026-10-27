@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: locales
 ### Title: Query or Set Aspects of the Locale
 ### Aliases: locales Sys.getlocale Sys.setlocale .LC.categories LC_ALL

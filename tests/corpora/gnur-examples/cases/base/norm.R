@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: norm
 ### Title: Compute the Norm of a Matrix
 ### Aliases: norm

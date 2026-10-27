@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Geometric
 ### Title: The Geometric Distribution
 ### Aliases: Geometric dgeom pgeom qgeom rgeom

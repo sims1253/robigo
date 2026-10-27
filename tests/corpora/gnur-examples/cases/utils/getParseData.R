@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: getParseData
 ### Title: Get Detailed Parse Information from Object
 ### Aliases: getParseData getParseText

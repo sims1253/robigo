@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: append
 ### Title: Vector Merging
 ### Aliases: append

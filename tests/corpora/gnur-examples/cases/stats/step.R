@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: step
 ### Title: Choose a model by AIC in a Stepwise Algorithm
 ### Aliases: step

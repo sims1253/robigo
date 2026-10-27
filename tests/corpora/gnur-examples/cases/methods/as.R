@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: as
 ### Title: Force an Object to Belong to a Class

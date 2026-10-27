@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: print.ts
 ### Title: Printing and Formatting of Time-Series Objects
 ### Aliases: .preformat.ts print.ts

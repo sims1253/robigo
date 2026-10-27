@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sys.source
 ### Title: Parse and Evaluate Expressions from a File
 ### Aliases: sys.source

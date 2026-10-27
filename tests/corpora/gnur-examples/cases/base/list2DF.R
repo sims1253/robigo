@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: list2DF
 ### Title: Create Data Frame From List
 ### Aliases: list2DF

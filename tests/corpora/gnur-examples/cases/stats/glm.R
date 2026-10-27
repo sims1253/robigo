@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: glm
 ### Title: Fitting Generalized Linear Models
 ### Aliases: glm glm.fit weights.glm

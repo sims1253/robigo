@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: format.pval
 ### Title: Format P Values
 ### Aliases: format.pval

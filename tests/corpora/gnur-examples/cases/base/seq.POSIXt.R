@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: seq.POSIXt
 ### Title: Generate Regular Sequences of Times
 ### Aliases: seq.POSIXt

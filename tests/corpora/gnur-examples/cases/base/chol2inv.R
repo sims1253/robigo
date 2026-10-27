@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: chol2inv
 ### Title: Inverse from Cholesky (or QR) Decomposition
 ### Aliases: chol2inv

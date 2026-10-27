@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: beavers
 ### Title: Body Temperature Series of Two Beavers
 ### Aliases: beavers beaver1 beaver2

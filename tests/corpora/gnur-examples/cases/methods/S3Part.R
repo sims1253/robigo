@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: S3Part
 ### Title: S4 Classes that Contain S3 Classes

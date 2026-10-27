@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: balancePOSIXlt
 ### Title: Balancing "Ragged" and Out-of-range POSIXlt Date-Times
 ### Aliases: balancePOSIXlt unCfillPOSIXlt

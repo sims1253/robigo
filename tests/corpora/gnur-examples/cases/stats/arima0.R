@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: arima0
 ### Title: ARIMA Modelling of Time Series - Preliminary Version
 ### Aliases: arima0 print.arima0 predict.arima0

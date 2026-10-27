@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: array2DF
 ### Title: Convert array to data frame
 ### Aliases: array2DF

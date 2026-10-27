@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: validUTF8
 ### Title: Check if a Character Vector is Validly Encoded
 ### Aliases: validUTF8 validEnc

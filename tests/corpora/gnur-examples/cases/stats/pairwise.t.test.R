@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pairwise.t.test
 ### Title: Pairwise t tests
 ### Aliases: pairwise.t.test

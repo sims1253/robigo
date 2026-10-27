@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: kernel
 ### Title: Smoothing Kernel Objects
 ### Aliases: kernel bandwidth.kernel df.kernel is.tskernel plot.tskernel

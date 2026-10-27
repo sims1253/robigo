@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SSbiexp
 ### Title: Self-Starting 'nls' Biexponential Model
 ### Aliases: SSbiexp

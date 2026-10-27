@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: c
 ### Title: Combine Values into a Vector or List
 ### Aliases: c c.default

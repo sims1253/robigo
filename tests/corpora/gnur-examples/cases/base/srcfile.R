@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: srcfile
 ### Title: References to Source Files and Code
 ### Aliases: srcfile srcfilecopy getSrcLines srcref srcfile-class

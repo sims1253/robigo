@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: discoveries
 ### Title: Yearly Numbers of Important Discoveries
 ### Aliases: discoveries

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: expand.grid
 ### Title: Create a Data Frame from All Combinations of Factor Variables
 ### Aliases: expand.grid

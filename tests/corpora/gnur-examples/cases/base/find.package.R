@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: find.package
 ### Title: Find Packages
 ### Aliases: find.package path.package packageNotFoundError

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: canCoerce
 ### Title: Can an Object be Coerced to a Certain S4 Class?

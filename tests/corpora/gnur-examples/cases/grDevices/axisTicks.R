@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: axisTicks
 ### Title: Compute Pretty Axis Tick Scales
 ### Aliases: axisTicks .axisPars

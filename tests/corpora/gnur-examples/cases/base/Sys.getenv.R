@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Sys.getenv
 ### Title: Get Environment Variables
 ### Aliases: Sys.getenv

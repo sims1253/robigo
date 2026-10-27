@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: capture.output
 ### Title: Send Output to a Character String or File
 ### Aliases: capture.output

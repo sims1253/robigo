@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: AirPassengers
 ### Title: Monthly Airline Passenger Numbers 1949-1960
 ### Aliases: AirPassengers

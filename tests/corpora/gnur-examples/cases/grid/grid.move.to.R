@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(grid)
 ### Name: grid.move.to
 ### Title: Move or Draw to a Specified Position

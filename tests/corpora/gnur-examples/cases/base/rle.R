@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rle
 ### Title: Run Length Encoding
 ### Aliases: rle inverse.rle print.rle

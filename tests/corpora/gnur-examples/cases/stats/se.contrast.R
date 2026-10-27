@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: se.contrast
 ### Title: Standard Errors for Contrasts in Model Terms
 ### Aliases: se.contrast se.contrast.aov se.contrast.aovlist

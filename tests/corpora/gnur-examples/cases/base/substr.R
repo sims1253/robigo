@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: substr
 ### Title: Substrings of a Character Vector
 ### Aliases: substr substring substr<- substring<-

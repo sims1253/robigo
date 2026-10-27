@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: friedman.test
 ### Title: Friedman Rank Sum Test
 ### Aliases: friedman.test friedman.test.default friedman.test.formula

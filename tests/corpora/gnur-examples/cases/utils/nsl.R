@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: nsl
 ### Title: Look up the IP Address by Hostname (on Unix-alikes)
 ### Aliases: nsl

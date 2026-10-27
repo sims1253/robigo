@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: poly
 ### Title: Compute Orthogonal Polynomials
 ### Aliases: poly polym predict.poly makepredictcall.poly

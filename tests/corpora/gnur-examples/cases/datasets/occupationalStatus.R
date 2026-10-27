@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: occupationalStatus
 ### Title: Occupational Status of Fathers and their Sons
 ### Aliases: occupationalStatus

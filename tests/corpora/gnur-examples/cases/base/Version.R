@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: R.Version
 ### Title: Version Information
 ### Aliases: R.Version R.version version R.version.string R_compiled_by

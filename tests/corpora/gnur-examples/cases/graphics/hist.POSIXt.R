@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: hist.POSIXt
 ### Title: Histogram of a Date or Date-Time Object
 ### Aliases: hist.POSIXt hist.Date

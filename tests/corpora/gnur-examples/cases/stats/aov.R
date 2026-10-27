@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: aov
 ### Title: Fit an Analysis of Variance Model
 ### Aliases: aov print.aov print.aovlist Error

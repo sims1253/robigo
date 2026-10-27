@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Harman23.cor
 ### Title: Harman Example 2.3
 ### Aliases: Harman23.cor

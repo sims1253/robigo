@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: read.DIF
 ### Title: Data Input from Spreadsheet
 ### Aliases: read.DIF

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: volcano
 ### Title: Topographic Information on Auckland's Maunga Whau Volcano
 ### Aliases: volcano

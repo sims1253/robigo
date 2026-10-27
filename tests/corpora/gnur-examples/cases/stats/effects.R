@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: effects
 ### Title: Effects from Fitted Model
 ### Aliases: effects effects.lm effects.glm

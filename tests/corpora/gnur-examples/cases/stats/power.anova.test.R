@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: power.anova.test
 ### Title: Power Calculations for Balanced One-Way Analysis of Variance
 ###   Tests

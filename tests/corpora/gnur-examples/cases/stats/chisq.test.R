@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: chisq.test
 ### Title: Pearson's Chi-squared Test for Count Data
 ### Aliases: chisq.test

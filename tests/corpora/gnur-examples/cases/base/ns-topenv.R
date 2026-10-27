@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ns-topenv
 ### Title: Top Level Environment
 ### Aliases: topenv

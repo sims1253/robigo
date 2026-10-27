@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: browseURL
 ### Title: Load URL into an HTML Browser
 ### Aliases: browseURL

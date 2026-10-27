@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Titanic
 ### Title: Survival of passengers on the Titanic
 ### Aliases: Titanic

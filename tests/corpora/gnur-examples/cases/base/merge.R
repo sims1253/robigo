@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: merge
 ### Title: Merge Two Data Frames
 ### Aliases: merge merge.default merge.data.frame

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dev
 ### Title: Control Multiple Devices
 ### Aliases: dev.cur dev.list dev.next dev.prev dev.off dev.set dev.new

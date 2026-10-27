@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: memCompress
 ### Title: In-memory Compression and Decompression
 ### Aliases: memCompress memDecompress

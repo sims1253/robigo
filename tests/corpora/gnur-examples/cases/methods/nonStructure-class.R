@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: nonStructure-class
 ### Title: A non-structure S4 Class for basic types

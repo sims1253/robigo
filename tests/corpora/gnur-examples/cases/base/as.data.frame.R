@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.data.frame
 ### Title: Coerce to a Data Frame
 ### Aliases: as.data.frame is.data.frame as.data.frame.AsIs

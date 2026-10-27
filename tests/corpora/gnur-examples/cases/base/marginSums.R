@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: marginSums
 ### Title: Compute Table Margins
 ### Aliases: marginSums margin.table

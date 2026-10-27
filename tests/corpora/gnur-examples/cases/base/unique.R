@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: unique
 ### Title: Extract Unique Elements
 ### Aliases: unique unique.default unique.data.frame unique.matrix

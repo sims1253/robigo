@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SSfpl
 ### Title: Self-Starting 'nls' Four-Parameter Logistic Model
 ### Aliases: SSfpl

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: model.frame
 ### Title: Extracting the Model Frame from a Formula or Fit
 ### Aliases: model.frame model.frame.default model.frame.lm model.frame.glm

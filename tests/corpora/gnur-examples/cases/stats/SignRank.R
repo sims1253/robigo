@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SignRank
 ### Title: Distribution of the Wilcoxon Signed Rank Statistic
 ### Aliases: SignRank dsignrank psignrank qsignrank rsignrank

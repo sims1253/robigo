@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: warnings
 ### Title: Print Warning Messages
 ### Aliases: warnings last.warning print.warnings [.warnings c.warnings

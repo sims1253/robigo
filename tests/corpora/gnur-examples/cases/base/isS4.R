@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: isS4
 ### Title: Test for an S4 object
 ### Aliases: isS4 asS4 S4 asS3

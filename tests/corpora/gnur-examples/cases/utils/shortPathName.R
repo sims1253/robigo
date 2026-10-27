@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: shortPathName
 ### Title: Express File Paths in Short Form on Windows
 ### Aliases: shortPathName

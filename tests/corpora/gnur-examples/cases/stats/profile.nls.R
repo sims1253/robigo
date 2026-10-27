@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: profile.nls
 ### Title: Method for Profiling 'nls' Objects
 ### Aliases: profile.nls

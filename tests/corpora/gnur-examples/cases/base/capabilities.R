@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: capabilities
 ### Title: Report Capabilities of this Build of R
 ### Aliases: capabilities

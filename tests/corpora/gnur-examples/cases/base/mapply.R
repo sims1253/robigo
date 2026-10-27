@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: mapply
 ### Title: Apply a Function to Multiple List or Vector Arguments
 ### Aliases: mapply .mapply

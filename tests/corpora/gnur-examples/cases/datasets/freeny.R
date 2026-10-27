@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: freeny
 ### Title: Freeny's Revenue Data
 ### Aliases: freeny freeny.x freeny.y

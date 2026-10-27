@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: octmode
 ### Title: Integer Numbers Displayed in Octal
 ### Aliases: as.octmode format.octmode print.octmode as.character.octmode

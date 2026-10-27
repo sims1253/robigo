@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(parallel)
 ### Name: RNGstreams
 ### Title: Implementation of Pierre L'Ecuyer's RngStreams

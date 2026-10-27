@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: all
 ### Title: Are All Values True?
 ### Aliases: all

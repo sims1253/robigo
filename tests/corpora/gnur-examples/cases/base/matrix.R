@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: matrix
 ### Title: Matrices
 ### Aliases: matrix as.matrix as.matrix.default as.matrix.data.frame

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Bessel
 ### Title: Bessel Functions
 ### Aliases: bessel Bessel besselI besselJ besselK besselY

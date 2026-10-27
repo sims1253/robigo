@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: row+colnames
 ### Title: Row and Column Names
 ### Aliases: rownames rownames<- colnames colnames<-

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sessionInfo
 ### Title: Collect Information About the Current R Session
 ### Aliases: sessionInfo osVersion toLatex.sessionInfo print.sessionInfo

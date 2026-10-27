@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: array
 ### Title: Multi-way Arrays
 ### Aliases: array as.array as.array.default is.array

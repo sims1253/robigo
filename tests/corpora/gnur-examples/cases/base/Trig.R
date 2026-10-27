@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Trig
 ### Title: Trigonometric Functions
 ### Aliases: Trig cos sin tan acos arccos asin arcsin atan arctan atan2

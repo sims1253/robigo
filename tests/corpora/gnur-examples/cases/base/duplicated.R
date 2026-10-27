@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: duplicated
 ### Title: Determine Duplicate Elements
 ### Aliases: duplicated duplicated.default duplicated.data.frame

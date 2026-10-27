@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: update
 ### Title: Update and Re-fit a Model Call
 ### Aliases: update update.default getCall getCall.default

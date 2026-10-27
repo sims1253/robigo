@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: lm.summaries
 ### Title: Accessing Linear Model Fits
 ### Aliases: family.lm formula.lm residuals.lm labels.lm

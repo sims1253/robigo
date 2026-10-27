@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: promptData
 ### Title: Generate Outline Documentation for a Data Set
 ### Aliases: promptData

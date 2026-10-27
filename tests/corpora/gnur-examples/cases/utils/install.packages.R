@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: install.packages
 ### Title: Install Packages from Repositories or Local Files
 ### Aliases: install.packages

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: news
 ### Title: Build and Query R or Package News Information
 ### Aliases: news print.news_db

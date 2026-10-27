@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: isSymmetric
 ### Title: Test if a Matrix or other Object is Symmetric (Hermitian)
 ### Aliases: isSymmetric isSymmetric.matrix

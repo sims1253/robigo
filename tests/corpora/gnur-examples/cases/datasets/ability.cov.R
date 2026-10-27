@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ability.cov
 ### Title: Ability and Intelligence Tests
 ### Aliases: ability.cov

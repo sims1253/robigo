@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: bindenv
 ### Title: Binding and Environment Locking, Active Bindings
 ### Aliases: bindenv lockEnvironment environmentIsLocked lockBinding

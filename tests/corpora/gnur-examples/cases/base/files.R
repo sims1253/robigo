@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: files
 ### Title: File Manipulation
 ### Aliases: files file.append file.copy file.create file.exists

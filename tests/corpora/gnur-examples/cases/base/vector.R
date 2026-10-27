@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: vector
 ### Title: Vectors - Creation, Coercion, etc
 ### Aliases: vector as.vector as.vector.data.frame as.vector.factor

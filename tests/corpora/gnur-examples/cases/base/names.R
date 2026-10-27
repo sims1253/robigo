@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: names
 ### Title: The Names of an Object
 ### Aliases: names names.default names<- names<-.default

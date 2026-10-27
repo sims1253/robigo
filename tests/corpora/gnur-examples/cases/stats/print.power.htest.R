@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: print.power.htest
 ### Title: Print Methods for Hypothesis Tests and Power Calculation Objects
 ### Aliases: print.htest print.power.htest

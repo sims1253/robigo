@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: setWindowTitle
 ### Title: Set the Window Title or the Status Bar of the RGui in Windows
 ### Aliases: setWindowTitle getWindowTitle getIdentification setStatusBar

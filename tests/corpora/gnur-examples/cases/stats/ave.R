@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ave
 ### Title: Group Averages Over Level Combinations of Factors
 ### Aliases: ave

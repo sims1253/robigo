@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: libPaths
 ### Title: Search Paths for Packages
 ### Aliases: .Library .Library.site .libPaths R_LIBS R_LIBS_SITE

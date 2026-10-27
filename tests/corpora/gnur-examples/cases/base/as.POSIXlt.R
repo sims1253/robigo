@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.POSIX*
 ### Title: Date-time Conversion Functions
 ### Aliases: as.POSIXct as.POSIXct.default as.POSIXct.POSIXlt

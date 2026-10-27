@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: list2env
 ### Title: From A List, Build or Add To an Environment
 ### Aliases: list2env

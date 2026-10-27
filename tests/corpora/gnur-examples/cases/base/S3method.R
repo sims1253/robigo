@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: S3method
 ### Title: Register S3 Methods
 ### Aliases: .S3method

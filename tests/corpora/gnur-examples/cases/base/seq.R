@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: seq
 ### Title: Sequence Generation
 ### Aliases: seq seq.default seq.int seq_along seq_len

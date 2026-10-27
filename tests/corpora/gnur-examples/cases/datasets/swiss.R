@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: swiss
 ### Title: Swiss Fertility and Socioeconomic Indicators (1888) Data
 ### Aliases: swiss

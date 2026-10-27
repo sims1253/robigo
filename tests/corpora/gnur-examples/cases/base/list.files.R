@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: list.files
 ### Title: List the Files in a Directory/Folder
 ### Aliases: list.files dir list.dirs

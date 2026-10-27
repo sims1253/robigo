@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: head
 ### Title: Return the First or Last Parts of an Object
 ### Aliases: head head.data.frame head.default head.function head.ftable

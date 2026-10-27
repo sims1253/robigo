@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: scale
 ### Title: Scaling and Centering of Matrix-like Objects
 ### Aliases: scale scale.default

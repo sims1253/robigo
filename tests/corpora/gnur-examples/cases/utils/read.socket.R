@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: read.socket
 ### Title: Read from or Write to a Socket
 ### Aliases: read.socket write.socket

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Binomial
 ### Title: The Binomial Distribution
 ### Aliases: Binomial dbinom pbinom qbinom rbinom

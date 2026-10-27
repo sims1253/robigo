@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sink
 ### Title: Send R Output to a File
 ### Aliases: sink sink.number

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: selfStart
 ### Title: Construct Self-starting Nonlinear Models
 ### Aliases: selfStart selfStart.default selfStart.formula

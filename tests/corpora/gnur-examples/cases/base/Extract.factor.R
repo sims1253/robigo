@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Extract.factor
 ### Title: Extract or Replace Parts of a Factor
 ### Aliases: [.factor [<-.factor [[.factor [[<-.factor

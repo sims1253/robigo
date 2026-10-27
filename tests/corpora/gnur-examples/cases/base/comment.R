@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: comment
 ### Title: Query or Set a '"comment"' Attribute
 ### Aliases: comment comment<-

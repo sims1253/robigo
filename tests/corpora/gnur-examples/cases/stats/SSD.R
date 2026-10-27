@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SSD
 ### Title: SSD Matrix and Estimated Variance Matrix in Multivariate Models
 ### Aliases: SSD estVar

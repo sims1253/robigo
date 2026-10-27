@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: page
 ### Title: Invoke a Pager on an R Object
 ### Aliases: page

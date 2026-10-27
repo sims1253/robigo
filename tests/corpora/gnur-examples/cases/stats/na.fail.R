@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: na.fail
 ### Title: Handle Missing Values in Objects
 ### Aliases: na.fail na.fail.default na.omit na.omit.data.frame

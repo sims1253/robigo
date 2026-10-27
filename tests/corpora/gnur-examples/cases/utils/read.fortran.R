@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: read.fortran
 ### Title: Read Fixed-Format Data in a Fortran-like Style
 ### Aliases: read.fortran

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sigma
 ### Title: Extract Residual Standard Deviation 'Sigma'
 ### Aliases: sigma sigma.default sigma.mlm sigma.glm

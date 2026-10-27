@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: integer
 ### Title: Integer Vectors
 ### Aliases: integer as.integer is.integer

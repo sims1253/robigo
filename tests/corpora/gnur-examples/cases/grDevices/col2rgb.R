@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: col2rgb
 ### Title: Color to RGB Conversion
 ### Aliases: col2rgb

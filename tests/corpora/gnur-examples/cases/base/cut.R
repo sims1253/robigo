@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cut
 ### Title: Convert Numeric to Factor
 ### Aliases: cut cut.default

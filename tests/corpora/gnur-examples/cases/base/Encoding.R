@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Encoding
 ### Title: Read or Set the Declared Encodings for a Character Vector
 ### Aliases: Encoding Encoding<- enc2native enc2utf8

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: var.test
 ### Title: F Test to Compare Two Variances
 ### Aliases: var.test var.test.default var.test.formula

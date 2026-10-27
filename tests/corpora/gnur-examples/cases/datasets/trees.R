@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: trees
 ### Title: Diameter, Height and Volume for Black Cherry Trees
 ### Aliases: trees

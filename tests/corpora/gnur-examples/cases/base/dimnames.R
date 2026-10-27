@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dimnames
 ### Title: Dimnames of an Object
 ### Aliases: dimnames dimnames<- dimnames.data.frame dimnames<-.data.frame

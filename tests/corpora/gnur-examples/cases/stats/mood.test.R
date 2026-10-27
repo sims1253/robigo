@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: mood.test
 ### Title: Mood Two-Sample Test of Scale
 ### Aliases: mood.test mood.test.default mood.test.formula

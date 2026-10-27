@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: plot.ppr
 ### Title: Plot Ridge Functions for Projection Pursuit Regression Fit
 ### Aliases: plot.ppr

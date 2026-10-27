@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: factor.scope
 ### Title: Compute Allowed Changes in Adding to or Dropping from a Formula
 ### Aliases: add.scope drop.scope factor.scope

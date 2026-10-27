@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: wilcox.test
 ### Title: Wilcoxon Rank Sum and Signed Rank Tests
 ### Aliases: wilcox.test wilcox.test.default wilcox.test.formula

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: bandwidth
 ### Title: Bandwidth Selectors for Kernel Density Estimation
 ### Aliases: bw.nrd0 bw.nrd bw.ucv bw.bcv bw.SJ

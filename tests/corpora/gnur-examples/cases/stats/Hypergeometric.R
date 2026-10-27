@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Hypergeometric
 ### Title: The Hypergeometric Distribution
 ### Aliases: Hypergeometric dhyper phyper qhyper rhyper

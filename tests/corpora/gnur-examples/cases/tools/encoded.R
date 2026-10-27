@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(tools)
 ### Name: encoded_text_to_latex
 ### Title: Translate non-ASCII Text to LaTeX Escapes

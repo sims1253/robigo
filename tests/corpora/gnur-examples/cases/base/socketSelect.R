@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: socketSelect
 ### Title: Wait on Socket Connections
 ### Aliases: socketSelect

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(splines)
 ### Name: predict.bSpline
 ### Title: Evaluate a Spline at New Values of x

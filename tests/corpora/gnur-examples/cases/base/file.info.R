@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: file.info
 ### Title: Extract File Information
 ### Aliases: file.info file.mode file.mtime file.size

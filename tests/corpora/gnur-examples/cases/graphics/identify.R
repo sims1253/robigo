@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: identify
 ### Title: Identify Points in a Scatter Plot
 ### Aliases: identify identify.default

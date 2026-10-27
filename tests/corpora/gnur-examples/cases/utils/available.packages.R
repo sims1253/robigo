@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: available.packages
 ### Title: List Available Packages at CRAN-like Repositories
 ### Aliases: available.packages R_AVAILABLE_PACKAGES_CACHE_CONTROL_MAX_AGE

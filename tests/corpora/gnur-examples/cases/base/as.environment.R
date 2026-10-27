@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.environment
 ### Title: Coerce to an Environment Object
 ### Aliases: as.environment

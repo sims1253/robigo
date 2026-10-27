@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(stats4)
 ### Name: update-methods
 ### Title: Methods for Function 'update' in Package 'stats4'

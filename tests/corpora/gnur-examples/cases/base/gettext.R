@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: gettext
 ### Title: Translate Text Messages
 ### Aliases: gettext ngettext bindtextdomain Sys.setLanguage

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: power.t.test
 ### Title: Power calculations for one and two sample t tests
 ### Aliases: power.t.test

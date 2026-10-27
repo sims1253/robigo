@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: list
 ### Title: Lists - Generic and Dotted Pairs
 ### Aliases: list pairlist alist as.list as.list.default as.list.data.frame

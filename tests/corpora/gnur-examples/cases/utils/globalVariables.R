@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: globalVariables
 ### Title: Declarations Used in Checking a Package
 ### Aliases: globalVariables suppressForeignCheck

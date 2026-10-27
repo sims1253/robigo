@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: NA
 ### Title: 'Not Available' / Missing Values
 ### Aliases: NA NA_integer_ NA_real_ NA_complex_ NA_character_ is.na

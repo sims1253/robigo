@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Sys.setenv
 ### Title: Set or Unset Environment Variables
 ### Aliases: Sys.setenv Sys.unsetenv

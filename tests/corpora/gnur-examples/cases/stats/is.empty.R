@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: is.empty.model
 ### Title: Test if a Model's Formula is Empty
 ### Aliases: is.empty.model

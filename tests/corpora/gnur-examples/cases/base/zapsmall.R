@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: zapsmall
 ### Title: Rounding of Numbers: Zapping Small Ones to Zero
 ### Aliases: zapsmall

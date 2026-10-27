@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: attach
 ### Title: Attach Set of R Objects to Search Path
 ### Aliases: attach .conflicts.OK

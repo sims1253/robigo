@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rapply
 ### Title: Recursively Apply a Function to a List
 ### Aliases: rapply

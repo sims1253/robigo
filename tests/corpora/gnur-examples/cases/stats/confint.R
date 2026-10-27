@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: confint
 ### Title: Confidence Intervals for Model Parameters
 ### Aliases: confint confint.default confint.lm confint.glm confint.nls

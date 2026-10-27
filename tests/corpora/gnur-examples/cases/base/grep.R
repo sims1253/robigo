@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: grep
 ### Title: Pattern Matching and Replacement
 ### Aliases: grep grepv grepl sub gsub regexpr gregexpr regexec gregexec

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: make.socket
 ### Title: Create a Socket Connection
 ### Aliases: make.socket print.socket

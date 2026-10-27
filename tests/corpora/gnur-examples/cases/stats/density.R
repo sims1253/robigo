@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: density
 ### Title: Kernel Density Estimation
 ### Aliases: density density.default

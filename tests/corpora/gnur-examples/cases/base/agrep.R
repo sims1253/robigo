@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: agrep
 ### Title: Approximate String Matching (Fuzzy Matching)
 ### Aliases: agrep agrepl 'fuzzy matching'

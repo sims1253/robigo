@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: source
 ### Title: Read R Code from a File, a Connection or Expressions
 ### Aliases: source withAutoprint

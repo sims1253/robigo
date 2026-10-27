@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: png
 ### Title: BMP, JPEG, PNG and TIFF graphics devices
 ### Aliases: png jpeg tiff bmp

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: read.fwf
 ### Title: Read Fixed Width Format Files
 ### Aliases: read.fwf

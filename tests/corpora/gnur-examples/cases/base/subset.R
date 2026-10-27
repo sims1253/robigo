@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: subset
 ### Title: Subsetting Vectors, Matrices and Data Frames
 ### Aliases: subset subset.default subset.matrix subset.data.frame

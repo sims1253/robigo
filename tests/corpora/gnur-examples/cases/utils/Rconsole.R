@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Rwin configuration
 ### Title: R for Windows Configuration
 ### Aliases: Rconsole Rdevga loadRconsole

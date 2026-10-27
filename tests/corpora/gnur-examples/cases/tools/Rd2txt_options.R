@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(tools)
 ### Name: Rd2txt_options
 ### Title: Set Formatting Options for Text Help

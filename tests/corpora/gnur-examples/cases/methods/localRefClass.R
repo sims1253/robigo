@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: LocalReferenceClasses
 ### Title: Localized Objects based on Reference Classes

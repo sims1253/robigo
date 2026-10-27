@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: get
 ### Title: Return the Value of a Named Object
 ### Aliases: get mget dynGet

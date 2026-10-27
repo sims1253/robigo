@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ps.options
 ### Title: Auxiliary Function to Set/View Defaults for Arguments of
 ###   postscript

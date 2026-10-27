@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pairs
 ### Title: Scatterplot Matrices
 ### Aliases: pairs pairs.default pairs.formula

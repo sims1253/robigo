@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ansari.test
 ### Title: Ansari-Bradley Test
 ### Aliases: ansari.test ansari.test.default ansari.test.formula

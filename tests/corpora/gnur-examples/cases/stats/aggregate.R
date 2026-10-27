@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: aggregate
 ### Title: Compute Summary Statistics of Data Subsets
 ### Aliases: aggregate aggregate.default aggregate.data.frame

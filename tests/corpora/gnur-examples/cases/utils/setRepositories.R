@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: setRepositories
 ### Title: Select Package Repositories
 ### Aliases: setRepositories R_REPOSITORIES R_BIOC_VERSION

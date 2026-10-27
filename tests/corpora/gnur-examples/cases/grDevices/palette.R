@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: palette
 ### Title: Set or View the Graphics Palette
 ### Aliases: palette palette.pals palette.colors

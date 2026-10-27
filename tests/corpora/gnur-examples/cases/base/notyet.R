@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: NotYet
 ### Title: Not Yet Implemented Functions and Unused Arguments
 ### Aliases: NotYetImplemented .NotYetImplemented NotYetUsed .NotYetUsed

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: attitude
 ### Title: The Chatterjee-Price Attitude Data
 ### Aliases: attitude

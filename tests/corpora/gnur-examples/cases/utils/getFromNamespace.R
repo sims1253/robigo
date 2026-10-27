@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: getFromNamespace
 ### Title: Utility Functions for Developing Namespaces
 ### Aliases: assignInNamespace assignInMyNamespace getFromNamespace

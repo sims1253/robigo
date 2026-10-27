@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: chooseOpsMethod
 ### Title: Choose the Appropriate Method for Ops
 ### Aliases: chooseOpsMethod chooseOpsMethod.default

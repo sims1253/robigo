@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SSasympOrig
 ### Title: Self-Starting 'nls' Asymptotic Model through the Origin
 ### Aliases: SSasympOrig

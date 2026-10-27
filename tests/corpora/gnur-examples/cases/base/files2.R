@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: files2
 ### Title: Manipulation of Directories and File Permissions
 ### Aliases: dir.create dir.exists Sys.chmod Sys.umask umask

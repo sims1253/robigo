@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: nottem
 ### Title: Average Monthly Temperatures at Nottingham, 1920-1939
 ### Aliases: nottem

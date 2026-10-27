@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: stripchart
 ### Title: 1-D Scatter Plots
 ### Aliases: stripchart stripchart.default stripchart.formula

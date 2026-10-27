@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: DateTimeClasses
 ### Title: Date-Time Classes
 ### Aliases: DateTimeClasses POSIXct POSIXlt POSIXt print.POSIXct

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: tsdiag
 ### Title: Diagnostic Plots for Time-Series Fits
 ### Aliases: tsdiag tsdiag.arima0 tsdiag.Arima tsdiag.StructTS

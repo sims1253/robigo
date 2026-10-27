@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: deriv
 ### Title: Symbolic and Algorithmic Derivatives of Simple Expressions
 ### Aliases: D deriv deriv.default deriv.formula deriv3 deriv3.default

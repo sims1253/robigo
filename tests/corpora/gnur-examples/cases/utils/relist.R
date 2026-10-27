@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: relist
 ### Title: Allow Re-Listing an unlist()ed Object
 ### Aliases: relist relist.default relist.list relist.factor relist.matrix

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: case+variable.names
 ### Title: Case and Variable Names of Fitted Models
 ### Aliases: case.names case.names.lm variable.names variable.names.lm

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: r2dtable
 ### Title: Random 2-way Tables with Given Marginals
 ### Aliases: r2dtable

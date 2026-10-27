@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: complex
 ### Title: Complex Numbers and Basic Functionality
 ### Aliases: complex as.complex is.complex Re Im Mod Arg Conj

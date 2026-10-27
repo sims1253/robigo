@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Encoding: UTF-8
 ### Name: startsWith
 ### Title: Does String Start or End With Another String?

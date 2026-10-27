@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: raw
 ### Title: Raw Vectors
 ### Aliases: raw as.raw is.raw

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: methods
 ### Title: List Methods for S3 Generic Functions or Classes
 ### Aliases: .S3methods methods format.MethodsFunction

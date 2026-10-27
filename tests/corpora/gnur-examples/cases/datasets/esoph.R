@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: esoph
 ### Title: Smoking, Alcohol and (O)esophageal Cancer
 ### Aliases: esoph

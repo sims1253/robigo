@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cumsum
 ### Title: Cumulative Sums, Products, and Extremes
 ### Aliases: cumsum cumprod cummin cummax

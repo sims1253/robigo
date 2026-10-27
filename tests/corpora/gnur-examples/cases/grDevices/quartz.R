@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: quartz
 ### Title: macOS Quartz Device
 ### Aliases: quartz quartz.options quartz.save

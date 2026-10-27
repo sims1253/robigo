@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: n2mfrow
 ### Title: Compute Default 'mfrow' From Number of Plots
 ### Aliases: n2mfrow

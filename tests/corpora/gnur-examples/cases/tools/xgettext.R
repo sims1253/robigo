@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(tools)
 ### Name: xgettext
 ### Title: Extract Translatable Messages from R Files in a Package

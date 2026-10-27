@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: strptime
 ### Title: Date-time Conversion Functions to and from Character
 ### Aliases: format.POSIXct format.POSIXlt strftime strptime

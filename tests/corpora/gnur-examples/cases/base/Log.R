@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: log
 ### Title: Logarithms and Exponentials
 ### Aliases: log logb log10 log2 log1p exp expm1

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: Methods_for_Nongenerics
 ### Title: Methods for Non-Generic Functions in Other Packages

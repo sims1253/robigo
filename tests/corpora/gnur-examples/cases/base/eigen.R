@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: eigen
 ### Title: Spectral Decomposition of a Matrix
 ### Aliases: eigen print.eigen

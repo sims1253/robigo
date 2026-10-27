@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rep
 ### Title: Replicate Elements of Vectors and Lists
 ### Aliases: rep rep.factor rep.int rep.POSIXct rep.POSIXlt rep.Date

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.Date
 ### Title: Date Conversion Functions to and from Character
 ### Aliases: format.Date as.character.Date as.Date as.Date.character

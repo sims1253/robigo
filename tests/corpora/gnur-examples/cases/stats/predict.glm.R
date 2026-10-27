@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: predict.glm
 ### Title: Predict Method for GLM Fits
 ### Aliases: predict.glm

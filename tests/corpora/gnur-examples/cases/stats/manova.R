@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: manova
 ### Title: Multivariate Analysis of Variance
 ### Aliases: manova

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dim
 ### Title: Dimensions of an Object
 ### Aliases: dim dim.data.frame dim<-

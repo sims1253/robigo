@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: write.table
 ### Title: Data Output
 ### Aliases: write.table write.csv write.csv2

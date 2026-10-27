@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: prompt
 ### Title: Produce Prototype of an R Documentation File
 ### Aliases: prompt prompt.default prompt.data.frame promptImport

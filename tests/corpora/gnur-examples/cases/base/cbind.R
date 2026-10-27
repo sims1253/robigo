@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cbind
 ### Title: Combine R Objects by Rows or Columns
 ### Aliases: cbind rbind cbind.data.frame rbind.data.frame

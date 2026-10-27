@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: groupGeneric
 ### Title: S3 Group Generic Functions
 ### Aliases: S3groupGeneric groupGeneric .Group Math Math.data.frame

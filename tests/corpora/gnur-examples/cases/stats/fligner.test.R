@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: fligner.test
 ### Title: Fligner-Killeen Test of Homogeneity of Variances
 ### Aliases: fligner.test fligner.test.default fligner.test.formula

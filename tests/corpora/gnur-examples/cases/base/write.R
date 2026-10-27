@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: write
 ### Title: Write Data to a File
 ### Aliases: write

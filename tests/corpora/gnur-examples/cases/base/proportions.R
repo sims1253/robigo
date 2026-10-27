@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: proportions
 ### Title: Express Table Entries as Fraction of Marginal Table
 ### Aliases: proportions prop.table

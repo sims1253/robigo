@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Encoding: UTF-8
 ### Name: ks.test
 ### Title: Kolmogorov-Smirnov Tests

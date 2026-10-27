@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dist
 ### Title: Distance Matrix Computation
 ### Aliases: dist print.dist format.dist labels.dist as.matrix.dist as.dist

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: QR.Auxiliaries
 ### Title: Reconstruct the Q, R, or X Matrices from a QR Object
 ### Aliases: qr.X qr.Q qr.R

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: plot.design
 ### Title: Plot Univariate Effects of a Design or Model
 ### Aliases: plot.design

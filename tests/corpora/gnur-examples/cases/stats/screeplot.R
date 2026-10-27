@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: screeplot
 ### Title: Scree Plots
 ### Aliases: screeplot screeplot.default

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: getS3method
 ### Title: Get an S3 Method
 ### Aliases: getS3method

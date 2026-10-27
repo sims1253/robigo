@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: screen
 ### Title: Creating and Controlling Multiple Screens on a Single Device
 ### Aliases: screen split.screen erase.screen close.screen

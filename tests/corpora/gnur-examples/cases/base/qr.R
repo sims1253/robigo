@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: qr
 ### Title: The QR Decomposition of a Matrix
 ### Aliases: qr qr.default qr.coef qr.qy qr.qty qr.resid qr.fitted qr.solve

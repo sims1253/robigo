@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: strrep
 ### Title: Repeat the Elements of a Character Vector
 ### Aliases: strrep

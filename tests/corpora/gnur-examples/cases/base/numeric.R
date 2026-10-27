@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: numeric
 ### Title: Numeric Vectors
 ### Aliases: numeric as.numeric is.numeric is.numeric.Date

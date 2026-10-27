@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: line
 ### Title: Robust Line Fitting
 ### Aliases: line residuals.tukeyline

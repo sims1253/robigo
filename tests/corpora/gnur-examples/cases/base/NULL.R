@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: NULL
 ### Title: The Null Object
 ### Aliases: NULL as.null as.null.default is.null

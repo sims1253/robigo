@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: expand.model.frame
 ### Title: Add new variables to a model frame
 ### Aliases: expand.model.frame

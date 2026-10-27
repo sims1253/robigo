@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rasterImage
 ### Title: Draw One or More Raster Images
 ### Aliases: rasterImage

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: formula
 ### Title: Model Formulae
 ### Aliases: formula formula.default formula.formula formula.terms

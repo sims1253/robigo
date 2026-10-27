@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: with
 ### Title: Evaluate an Expression in a Data Environment
 ### Aliases: with with.default within within.list within.data.frame

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: JohnsonJohnson
 ### Title: Quarterly Earnings per Johnson & Johnson Share
 ### Aliases: JohnsonJohnson

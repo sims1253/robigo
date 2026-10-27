@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: contrast
 ### Title: (Possibly Sparse) Contrast Matrices
 ### Aliases: contr.helmert contr.poly contr.sum contr.treatment contr.SAS

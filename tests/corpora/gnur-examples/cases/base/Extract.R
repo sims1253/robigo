@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Extract
 ### Title: Extract or Replace Parts of an Object
 ### Aliases: Extract Subscript [ [.listof [.simple.list [.Dlist [[ $

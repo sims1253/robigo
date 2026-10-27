@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: findLineNum
 ### Title: Find the Location of a Line of Source Code, or Set a Breakpoint
 ###   There

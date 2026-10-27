@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: smoothEnds
 ### Title: End Points Smoothing (for Running Medians)
 ### Aliases: smoothEnds

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: weighted.mean
 ### Title: Weighted Arithmetic Mean
 ### Aliases: weighted.mean weighted.mean.default

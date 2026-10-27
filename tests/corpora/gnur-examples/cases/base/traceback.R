@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: traceback
 ### Title: Get and Print Call Stacks
 ### Aliases: traceback .traceback .Traceback

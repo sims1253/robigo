@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: str
 ### Title: Compactly Display the Structure of an Arbitrary R Object
 ### Aliases: str str.default str.data.frame strOptions

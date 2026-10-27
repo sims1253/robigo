@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: power.prop.test
 ### Title: Power Calculations for Two-Sample Test for Proportions
 ### Aliases: power.prop.test

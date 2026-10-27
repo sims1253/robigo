@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: testInheritedMethods
 ### Title: Test for and Report about Selection of Inherited Methods

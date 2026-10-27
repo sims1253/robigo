@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: split
 ### Title: Divide into Groups and Reassemble
 ### Aliases: split split.default split.data.frame split<- split<-.default

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: C
 ### Title: Sets Contrasts for a Factor
 ### Aliases: C

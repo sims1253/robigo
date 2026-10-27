@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: t
 ### Title: Matrix Transpose
 ### Aliases: t t.default t.data.frame

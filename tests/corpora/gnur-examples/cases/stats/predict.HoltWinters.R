@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: predict.HoltWinters
 ### Title: Prediction Function for Fitted Holt-Winters Models
 ### Aliases: predict.HoltWinters

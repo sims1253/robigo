@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: kernapply
 ### Title: Apply Smoothing Kernel
 ### Aliases: kernapply kernapply.default kernapply.ts kernapply.tskernel

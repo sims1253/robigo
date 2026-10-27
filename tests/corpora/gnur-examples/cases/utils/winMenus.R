@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: winMenus
 ### Title: User Menus under MS Windows (RGui)
 ### Aliases: winMenuAdd winMenuAddItem winMenuDel winMenuDelItem

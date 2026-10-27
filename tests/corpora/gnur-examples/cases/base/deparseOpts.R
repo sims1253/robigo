@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: deparseOpts
 ### Title: Options for Expression Deparsing
 ### Aliases: .deparseOpts ..deparseOpts

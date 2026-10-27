@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: par
 ### Title: Set or Query Graphical Parameters
 ### Aliases: par .Pars 'graphical parameter' 'graphical parameters'

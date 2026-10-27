@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: isS3method
 ### Title: Is 'method' the Name of an S3 Method?
 ### Aliases: isS3method

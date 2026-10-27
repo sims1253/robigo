@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: object.size
 ### Title: Report the Space Allocated for an Object
 ### Aliases: object.size format.object_size print.object_size

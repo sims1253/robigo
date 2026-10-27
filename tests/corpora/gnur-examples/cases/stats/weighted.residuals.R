@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: weighted.residuals
 ### Title: Compute Weighted Residuals
 ### Aliases: weighted.residuals

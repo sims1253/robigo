@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: inheritedSlotNames
 ### Title: Names of Slots Inherited From a Super Class

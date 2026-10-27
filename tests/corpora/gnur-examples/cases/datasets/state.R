@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Encoding: UTF-8
 ### Name: state
 ### Title: US State Facts and Figures

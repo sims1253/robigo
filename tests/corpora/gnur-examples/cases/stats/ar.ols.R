@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ar.ols
 ### Title: Fit Autoregressive Models to Time Series by OLS
 ### Aliases: ar.ols

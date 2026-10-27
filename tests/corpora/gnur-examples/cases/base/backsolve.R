@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: backsolve
 ### Title: Solve an Upper or Lower Triangular System
 ### Aliases: backsolve forwardsolve

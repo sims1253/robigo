@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: CO2
 ### Title: Carbon Dioxide Uptake in Grass Plants
 ### Aliases: CO2

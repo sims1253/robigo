@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ls.diag
 ### Title: Compute Diagnostics for 'lsfit' Regression Results
 ### Aliases: ls.diag

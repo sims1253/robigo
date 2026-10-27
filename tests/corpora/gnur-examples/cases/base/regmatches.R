@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: regmatches
 ### Title: Extract or Replace Matched Substrings
 ### Aliases: regmatches regmatches<-

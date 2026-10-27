@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: table
 ### Title: Cross Tabulation and Table Creation
 ### Aliases: table summary.table print.summary.table as.data.frame.table

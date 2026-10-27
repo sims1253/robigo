@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: noquote
 ### Title: Class for 'no quote' Printing of Character Strings
 ### Aliases: noquote print.noquote as.matrix.noquote c.noquote [.noquote

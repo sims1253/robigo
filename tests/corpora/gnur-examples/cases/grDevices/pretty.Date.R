@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pretty.Date
 ### Title: Pretty Breakpoints for Date-Time Classes
 ### Aliases: pretty.Date pretty.POSIXt

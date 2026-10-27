@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Puromycin
 ### Title: Reaction Velocity of an Enzymatic Reaction
 ### Aliases: Puromycin

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cor.test
 ### Title: Test for Association/Correlation Between Paired Samples
 ### Aliases: cor.test cor.test.default cor.test.formula

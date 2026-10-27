@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: tracemem
 ### Title: Trace Copying of Objects
 ### Aliases: tracemem untracemem retracemem

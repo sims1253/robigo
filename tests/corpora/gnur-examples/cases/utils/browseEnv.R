@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: browseEnv
 ### Title: Browse Objects in Environment
 ### Aliases: browseEnv wsbrowser

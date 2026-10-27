@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: nargs
 ### Title: The Number of Arguments to a Function
 ### Aliases: nargs

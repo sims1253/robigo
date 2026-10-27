@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pos.to.env
 ### Title: Convert Positions in the Search Path to Environments
 ### Aliases: pos.to.env

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: model.matrix
 ### Title: Construct Design Matrices
 ### Aliases: model.matrix model.matrix.default model.matrix.lm

@@ -56,8 +56,10 @@ Status: **open** (start now), **later** (after the named goalpost,
   lazy-loads (`head(mtcars)` says "lazy-load database is corrupt" today),
   a missing package warns once (it warns twice), `options()` and
   `search()` match.
-- **Owns:** `crates/robigo-runtime/src/{startup,bootstrap,serialize}.rs`.
-- **Metric:** `fastr` cases whose stderr matches; `fastr` passes.
+- **Owns:** `crates/robigo-runtime/src/{startup,bootstrap,serialize}.rs`,
+  `builtins/io.rs` (connections).
+- **Metric:** `fastr` passes, especially `TestBuiltin_(serialize|unserialize)`
+  and `TestConnections` (~380 failing at the start).
 
 ### numerics: robigo-numerics — open
 
@@ -65,7 +67,9 @@ Status: **open** (start now), **later** (after the named goalpost,
   long double with results identical to the x87 code, so exact mode does
   not depend on x86_64. (2) The numeric-policy seam (exact / fast) for
   reductions and long-double sites. (3) nmath accuracy against GNU R.
-- **Owns:** `crates/robigo-numerics/`.
+- **Owns:** `crates/robigo-numerics/src/{ldouble,arith}.rs` and new
+  modules for the software long double and the policy (the d/p/q/r files
+  belong to conformance-distributions).
 - **Metric:** bit-identical results of the software long double against
   x87 over randomized and edge-case inputs (property tests, millions of
   cases); d/p/q/r functions bit-identical to GNU R's over parameter grids
@@ -113,17 +117,24 @@ Status: **open** (start now), **later** (after the named goalpost,
 
 ### conformance-*: base R semantics on the current runtime — open, one track per area
 
-Hill-climb `fastr` failures in one area. The semantics carry over when the
-runtime moves to `robigo-core` (G3); stats natives do not (GNU R's
-`stats.so` replaces them), so do not port native routines.
+Hill-climb `fastr` failures in one area (baseline 2026-10-27: 28,341 of
+31,374 pass; failing cases per area below). The semantics carry over when
+the runtime moves to `robigo-core` (G3). Native routines of the `stats`,
+`utils`, `graphics` and `grDevices` packages (`deriv`, splines, `cov`,
+...) come from GNU R's own shared libraries once robigo exports
+`libR.so` (G2): do not port them.
 
-| track | owns (`crates/robigo-runtime/src/`) | `fastr` filter |
-|---|---|---|
-| conformance-strings | `builtins/{character,paste,grep,sprintf,character_widths}.rs` | `TestBuiltin_(paste|substr|sprintf|grep|sub|regexpr|nchar|toupper|strsplit|chartr|format|trimws|startsWith|endsWith|encodeString)` |
-| conformance-vectors | `builtins/{subset,subassign,subscript,seq,bind,unique,sort,array}.rs` | `TestBuiltin_(seq|rep|order|sort|unique|duplicated|match|cbind|rbind|which|rev|array|matrix|dim|subset|c_)` and `TestSimpleVectors` |
-| conformance-arith | `builtins/{arith,math,summary,complex}.rs` | `TestBuiltin_(sum|prod|max|min|range|mean|round|signif|abs|sqrt|exp|log|cumsum|cumprod)` and `TestSimpleArithmetic` |
-| conformance-lang | `builtins/{lang,envir,eval}.rs`, `dispatch.rs`, `conditions.rs` | `TestBuiltin_(do.call|match.arg|sys|environment|eval|quote|substitute|switch|tryCatch|stop|warning|UseMethod)`, `functions/`, `S3` |
-| conformance-print | `print.rs`, `format.rs`, `deparse.rs` | `TestBuiltin_(print|format|deparse|dput|cat|toString)`, `TestSimplePrinting` |
+| track | owns | `fastr` filter | failing |
+|---|---|---|---|
+| conformance-values | `builtins/{arith,coerce,math}.rs`, `coerce.rs` | `TestSimpleValues|TestSimpleArithmetic|TestSimpleComparison|TestBuiltin_(operators|log|asvector|asraw|intToBits)` | ~690 |
+| conformance-distributions | `crates/robigo-numerics/src/` except `ldouble.rs`/`arith.rs`, `builtins/random.rs` | `TestDistributions|TestRandGenerationFunctions` | ~460 |
+| conformance-strings | `builtins/{character,paste,grep,sprintf,character_widths}.rs` | `TestBuiltin_(paste|substr|sprintf|grep|sub|regexpr|nchar|toupper|strsplit|chartr|format|trimws|startsWith|endsWith|encodeString|agrep|grepRaw|iconv)` | ~160 |
+| conformance-vectors | `builtins/{subset,subassign,subscript,seq,bind,unique,sort,array}.rs` | `TestBuiltin_(seq|rep|order|sort|unique|duplicated|match|cbind|rbind|which|rev|array|matrix|dim|subset|c_|crossprod)|TestSimpleVectors|TestSimpleMatrix|TestSimpleArrays` | ~150 |
+| conformance-lang | `builtins/{lang,envir,eval}.rs`, `dispatch.rs`, `conditions.rs` | `TestBuiltin_(do.call|match.arg|sys|environment|eval|quote|substitute|switch|tryCatch|stop|warning|UseMethod|get|exists|class)|functions/|TestEnvironments` | ~110 |
+| conformance-print | `print.rs`, `format.rs`, `deparse.rs` | `TestBuiltin_(print|format|deparse|dput|cat|toString|printdefault)|TestSimplePrinting` | ~80 |
+
+`serialize`/`unserialize` (~310 failing) and connections (~70) belong to
+the startup track.
 
 - **Metric:** `fastr` passes in the area's filter (`scripts/corpus.py run
   fastr --filter ...`), then the whole corpus on CI with no regressions.

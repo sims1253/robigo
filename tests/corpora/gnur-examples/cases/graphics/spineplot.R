@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: spineplot
 ### Title: Spine Plots and Spinograms
 ### Aliases: spineplot spineplot.default spineplot.formula

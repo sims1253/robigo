@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: xyTable
 ### Title: Multiplicities of (x,y) Points, e.g., for a Sunflower Plot
 ### Aliases: xyTable

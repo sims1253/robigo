@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: islands
 ### Title: Areas of the World's Major Landmasses
 ### Aliases: islands

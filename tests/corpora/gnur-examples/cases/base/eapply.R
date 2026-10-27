@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: eapply
 ### Title: Apply a Function Over Values in an Environment
 ### Aliases: eapply

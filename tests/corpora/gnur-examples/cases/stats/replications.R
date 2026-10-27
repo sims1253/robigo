@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: replications
 ### Title: Number of Replications of Terms
 ### Aliases: replications

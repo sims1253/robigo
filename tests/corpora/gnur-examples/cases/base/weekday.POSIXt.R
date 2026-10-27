@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: weekdays
 ### Title: Extract Parts of a POSIXt or Date Object
 ### Aliases: weekdays weekdays.POSIXt weekdays.Date months months.POSIXt

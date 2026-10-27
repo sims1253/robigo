@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: select.list
 ### Title: Select Items from a List
 ### Aliases: select.list

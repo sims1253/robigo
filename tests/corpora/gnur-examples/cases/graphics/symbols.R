@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: symbols
 ### Title: Draw Symbols (Circles, Squares, Stars, Thermometers, Boxplots)
 ### Aliases: symbols

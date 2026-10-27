@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: trans3d
 ### Title: 3D to 2D Transformation for Perspective Plots
 ### Aliases: trans3d

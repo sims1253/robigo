@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sys.parent
 ### Title: Functions to Access the Function Call Stack
 ### Aliases: sys.parent sys.call sys.calls sys.frame sys.frames sys.nframe

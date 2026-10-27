@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Type1Font
 ### Title: Type 1 and CID Fonts
 ### Aliases: Type1Font CIDFont

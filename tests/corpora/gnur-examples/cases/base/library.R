@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: library
 ### Title: Loading/Attaching and Listing of Packages
 ### Aliases: library require conflictRules .noGenerics format.libraryIQR

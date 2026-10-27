@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sequence
 ### Title: Create A Vector of Sequences
 ### Aliases: sequence sequence.default

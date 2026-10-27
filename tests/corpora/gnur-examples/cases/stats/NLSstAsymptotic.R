@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: NLSstAsymptotic
 ### Title: Fit the Asymptotic Regression Model
 ### Aliases: NLSstAsymptotic NLSstAsymptotic.sortedXyData

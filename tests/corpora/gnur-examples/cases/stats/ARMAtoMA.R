@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ARMAtoMA
 ### Title: Convert ARMA Process to Infinite MA Process
 ### Aliases: ARMAtoMA

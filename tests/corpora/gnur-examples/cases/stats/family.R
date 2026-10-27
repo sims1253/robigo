@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: family
 ### Title: Family Objects for Models
 ### Aliases: family binomial gaussian Gamma inverse.gaussian poisson quasi

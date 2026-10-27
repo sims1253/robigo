@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: setOldClass
 ### Title: Register Old-Style (S3) Classes and Inheritance

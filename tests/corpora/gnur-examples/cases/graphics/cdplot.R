@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cdplot
 ### Title: Conditional Density Plots
 ### Aliases: cdplot cdplot.default cdplot.formula

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: symnum
 ### Title: Symbolic Number Coding
 ### Aliases: symnum

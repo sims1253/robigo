@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Random
 ### Title: Random Number Generation
 ### Aliases: Random RNG RNGkind RNGversion set.seed .Random.seed

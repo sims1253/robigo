@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: changedFiles
 ### Title: Detect which Files Have Changed
 ### Aliases: fileSnapshot changedFiles print.changedFiles

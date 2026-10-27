@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Extract.data.frame
 ### Title: Extract or Replace Parts of a Data Frame
 ### Aliases: [.data.frame [[.data.frame [<-.data.frame [[<-.data.frame

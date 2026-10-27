@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: savehistory
 ### Title: Load or Save or Display the Commands History
 ### Aliases: loadhistory savehistory history timestamp

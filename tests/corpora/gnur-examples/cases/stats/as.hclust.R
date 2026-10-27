@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.hclust
 ### Title: Convert Objects to Class '"hclust"'
 ### Aliases: as.hclust as.hclust.default as.hclust.twins

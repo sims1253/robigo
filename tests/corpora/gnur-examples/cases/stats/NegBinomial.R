@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: NegBinomial
 ### Title: The Negative Binomial Distribution
 ### Aliases: NegBinomial dnbinom pnbinom qnbinom rnbinom

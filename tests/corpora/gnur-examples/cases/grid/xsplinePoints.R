@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(grid)
 ### Name: xsplinePoints
 ### Title: Return the points that would be used to draw an xspline (or a

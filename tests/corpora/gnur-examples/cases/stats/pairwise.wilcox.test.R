@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: pairwise.wilcox.test
 ### Title: Pairwise Wilcoxon Rank Sum Tests
 ### Aliases: pairwise.wilcox.test

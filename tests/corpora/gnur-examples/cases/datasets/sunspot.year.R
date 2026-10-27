@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sunspot.year
 ### Title: Yearly Sunspot Data, 1700-1988
 ### Aliases: sunspot.year

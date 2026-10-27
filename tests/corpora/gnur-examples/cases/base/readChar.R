@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: readChar
 ### Title: Transfer Character Strings To and From Connections
 ### Aliases: readChar writeChar

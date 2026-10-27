@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: crimtab
 ### Title: Student's 3000 Criminals Data
 ### Aliases: crimtab

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: StructTS
 ### Title: Fit Structural Time Series
 ### Aliases: StructTS print.StructTS predict.StructTS

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: oneway.test
 ### Title: Test for Equal Means in a One-Way Layout
 ### Aliases: oneway.test

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: identify.hclust
 ### Title: Identify Clusters in a Dendrogram
 ### Aliases: identify.hclust

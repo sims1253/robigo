@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Palettes
 ### Title: Color Palettes
 ### Aliases: rainbow heat.colors terrain.colors topo.colors cm.colors

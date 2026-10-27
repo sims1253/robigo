@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: identical
 ### Title: Test Objects for Exact Equality
 ### Aliases: identical

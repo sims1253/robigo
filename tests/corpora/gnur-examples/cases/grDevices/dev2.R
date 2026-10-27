@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dev2
 ### Title: Copy Graphics Between Multiple Devices
 ### Aliases: dev.copy dev.print dev.copy2eps dev.copy2pdf dev.control

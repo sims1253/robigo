@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: UKLungDeaths
 ### Title: Monthly Deaths from Lung Diseases in the UK
 ### Aliases: UKLungDeaths ldeaths fdeaths mdeaths

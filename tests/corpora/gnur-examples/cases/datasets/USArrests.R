@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: USArrests
 ### Title: Violent Crime Rates by US State
 ### Aliases: USArrests

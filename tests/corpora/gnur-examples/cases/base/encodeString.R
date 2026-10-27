@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: encodeString
 ### Title: Encode Character Vector as for Printing
 ### Aliases: encodeString

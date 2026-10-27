@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: scatter.smooth
 ### Title: Scatter Plot with Smooth Curve Fitted by 'loess'
 ### Aliases: scatter.smooth loess.smooth

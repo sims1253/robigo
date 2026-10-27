@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: image
 ### Title: Display a Color Image
 ### Aliases: image image.default

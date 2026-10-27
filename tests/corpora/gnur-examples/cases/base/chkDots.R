@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: chkDots
 ### Title: Warn About Extraneous Arguments in the "..." of Its Caller
 ### Aliases: chkDots

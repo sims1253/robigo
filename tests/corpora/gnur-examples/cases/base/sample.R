@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sample
 ### Title: Random Samples and Permutations
 ### Aliases: sample sample.int

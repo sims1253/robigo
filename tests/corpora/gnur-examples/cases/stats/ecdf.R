@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ecdf
 ### Title: Empirical Cumulative Distribution Function
 ### Aliases: ecdf plot.ecdf print.ecdf summary.ecdf quantile.ecdf

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: timezones
 ### Title: Time Zones
 ### Aliases: Sys.timezone OlsonNames timezone timezones 'time zone' 'time

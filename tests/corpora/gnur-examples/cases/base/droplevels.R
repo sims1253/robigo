@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: droplevels
 ### Title: Drop Unused Levels from Factors
 ### Aliases: droplevels droplevels.factor droplevels.data.frame

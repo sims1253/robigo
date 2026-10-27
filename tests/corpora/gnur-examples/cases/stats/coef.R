@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: coef
 ### Title: Extract Model Coefficients
 ### Aliases: coef coefficients coef.default coef.aov

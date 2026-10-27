@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(tools)
 ### Name: package_dependencies
 ### Title: Computations on the Dependency Hierarchy of Packages

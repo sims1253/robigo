@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: hsearch-utils
 ### Title: Help Search Utilities
 ### Aliases: hsearch_db hsearch_db_concepts hsearch_db_keywords

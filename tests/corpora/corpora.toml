@@ -14,7 +14,7 @@
 # need S4 attach methods themselves (help pages of methods and stats4 call
 # library()).
 [fastr]
-description = "FastR's unit-test snippets (33k one-liners over builtins, S4, parser, ...), GPL-3"
+description = "FastR's unit-test snippets (31k one-liners over builtins, S4, parser, ...), GPL-3"
 mode = "script"
 default_packages = "datasets,utils,grDevices,graphics,stats"
 timeout = 30

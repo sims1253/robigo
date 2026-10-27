@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: quit
 ### Title: Terminate an R Session
 ### Aliases: quit q .Last .Last.sys

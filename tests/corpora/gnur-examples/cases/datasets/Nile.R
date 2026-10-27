@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Nile
 ### Title: Flow of the River Nile
 ### Aliases: Nile

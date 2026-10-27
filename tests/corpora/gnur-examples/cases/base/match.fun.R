@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: match.fun
 ### Title: Extract a Function Specified by Name
 ### Aliases: match.fun

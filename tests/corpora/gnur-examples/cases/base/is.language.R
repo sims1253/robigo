@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: is.language
 ### Title: Is an Object a Language Object?
 ### Aliases: is.language language 'language object' 'language objects'

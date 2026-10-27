@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: summary.aov
 ### Title: Summarize an Analysis of Variance Model
 ### Aliases: summary.aov summary.aovlist print.summary.aov

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: KalmanLike
 ### Title: Kalman Filtering
 ### Aliases: KalmanLike KalmanRun KalmanSmooth KalmanForecast makeARIMA

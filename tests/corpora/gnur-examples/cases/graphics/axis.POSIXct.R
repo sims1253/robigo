@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: axis.POSIXct
 ### Title: Date and Date-time Plotting Functions
 ### Aliases: axis.POSIXct axis.Date

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Chisquare
 ### Title: The (non-central) Chi-Squared Distribution
 ### Aliases: Chisquare dchisq pchisq qchisq rchisq

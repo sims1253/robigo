@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: .checkMFClasses
 ### Title: Functions to Check the Type of Variables passed to Model Frames
 ### Aliases: .checkMFClasses .MFclass .getXlevels

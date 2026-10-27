@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: axis
 ### Title: Add an Axis to a Plot
 ### Aliases: axis

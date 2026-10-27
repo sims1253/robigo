@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: lm.fit
 ### Title: Fitter Functions for Linear Models
 ### Aliases: lm.fit lm.wfit .lm.fit

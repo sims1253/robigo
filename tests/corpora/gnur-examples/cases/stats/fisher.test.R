@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: fisher.test
 ### Title: Fisher's Exact Test for Count Data
 ### Aliases: fisher.test

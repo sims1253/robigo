@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Quotes
 ### Title: Quotes
 ### Aliases: Quotes backtick backquote ' " `

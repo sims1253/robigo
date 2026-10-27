@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: count.fields
 ### Title: Count the Number of Fields per Line
 ### Aliases: count.fields

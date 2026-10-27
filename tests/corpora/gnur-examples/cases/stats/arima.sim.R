@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: arima.sim
 ### Title: Simulate from an ARIMA Model
 ### Aliases: arima.sim

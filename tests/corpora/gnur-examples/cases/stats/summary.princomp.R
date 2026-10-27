@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: summary.princomp
 ### Title: Summary method for Principal Components Analysis
 ### Aliases: summary.princomp print.summary.princomp

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: order.dendrogram
 ### Title: Ordering or Labels of the Leaves in a Dendrogram
 ### Aliases: order.dendrogram labels.dendrogram

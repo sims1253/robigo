@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: extractAIC
 ### Title: Extract AIC from a Fitted Model
 ### Aliases: extractAIC

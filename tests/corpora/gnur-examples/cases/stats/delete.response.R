@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: delete.response
 ### Title: Modify Terms Objects
 ### Aliases: reformulate drop.terms delete.response [.terms

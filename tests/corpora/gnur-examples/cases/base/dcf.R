@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dcf
 ### Title: Read and Write Data in DCF Format
 ### Aliases: read.dcf write.dcf

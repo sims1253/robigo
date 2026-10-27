@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: x11
 ### Title: X Window System Graphics (X11)
 ### Aliases: x11 X11 X11.options

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: points
 ### Title: Add Points to a Plot
 ### Aliases: points points.default pch

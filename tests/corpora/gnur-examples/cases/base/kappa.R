@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: kappa
 ### Title: Compute or Estimate the Condition Number of a Matrix
 ### Aliases: rcond kappa kappa.default kappa.lm kappa.qr .kappa_tri

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: as.raster
 ### Title: Create a Raster Object
 ### Aliases: is.raster as.raster as.raster.logical as.raster.numeric

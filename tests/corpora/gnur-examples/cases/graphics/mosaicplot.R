@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: mosaicplot
 ### Title: Mosaic Plots
 ### Aliases: mosaicplot mosaicplot.default mosaicplot.formula

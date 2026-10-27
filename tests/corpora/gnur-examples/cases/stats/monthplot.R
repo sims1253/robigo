@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: monthplot
 ### Title: Plot a Seasonal or other Subseries from a Time Series
 ### Aliases: monthplot monthplot.default monthplot.ts monthplot.stl

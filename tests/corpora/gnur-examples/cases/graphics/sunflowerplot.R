@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sunflowerplot
 ### Title: Produce a Sunflower Scatter Plot
 ### Aliases: sunflowerplot sunflowerplot.default sunflowerplot.formula

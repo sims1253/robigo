@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: convertColor
 ### Title: Convert between Colour Spaces
 ### Aliases: convertColor colorspaces

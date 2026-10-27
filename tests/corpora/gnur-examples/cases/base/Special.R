@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Special
 ### Title: Special Functions of Mathematics
 ### Aliases: Special beta lbeta gamma lgamma psigamma digamma trigamma

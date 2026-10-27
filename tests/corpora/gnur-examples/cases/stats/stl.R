@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: stl
 ### Title: Seasonal Decomposition of Time Series by Loess
 ### Aliases: stl

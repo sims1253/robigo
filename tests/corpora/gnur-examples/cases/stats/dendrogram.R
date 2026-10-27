@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dendrogram
 ### Title: General Tree Structures
 ### Aliases: dendrogram as.dendrogram as.dendrogram.dendrogram

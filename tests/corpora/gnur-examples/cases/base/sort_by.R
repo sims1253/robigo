@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sort_by
 ### Title: Sorting Vectors or Data Frames by Other Vectors
 ### Aliases: sort_by sort_by.default sort_by.data.frame

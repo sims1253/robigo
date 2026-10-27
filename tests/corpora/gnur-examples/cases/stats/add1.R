@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: add1
 ### Title: Add or Drop All Possible Single Terms to a Model
 ### Aliases: add1 add1.default add1.lm add1.glm drop1 drop1.default

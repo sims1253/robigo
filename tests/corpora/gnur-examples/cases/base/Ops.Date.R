@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Ops.Date
 ### Title: Operators on the Date Class
 ### Aliases: +.Date -.Date Ops.Date

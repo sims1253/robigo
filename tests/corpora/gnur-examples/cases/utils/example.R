@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: example
 ### Title: Run an Examples Section from the Online Help
 ### Aliases: example

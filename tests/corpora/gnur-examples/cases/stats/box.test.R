@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Box.test
 ### Title: Box-Pierce and Ljung-Box Tests
 ### Aliases: Box.test

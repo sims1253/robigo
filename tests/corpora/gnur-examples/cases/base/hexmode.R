@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: hexmode
 ### Title: Integer Numbers Displayed in Hexadecimal
 ### Aliases: as.hexmode format.hexmode print.hexmode as.character.hexmode

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: model.tables
 ### Title: Compute Tables of Results from an 'aov' Model Fit
 ### Aliases: model.tables model.tables.aov model.tables.aovlist

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: parse
 ### Title: Parse R Expressions
 ### Aliases: parse str2lang str2expression

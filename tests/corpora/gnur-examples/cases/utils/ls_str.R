@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ls.str
 ### Title: List Objects and their Structure
 ### Aliases: ls.str lsf.str print.ls_str

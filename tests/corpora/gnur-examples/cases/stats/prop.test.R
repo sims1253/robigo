@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: prop.test
 ### Title: Test of Equal or Given Proportions
 ### Aliases: prop.test

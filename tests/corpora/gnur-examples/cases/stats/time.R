@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: time
 ### Title: Sampling Times of Time Series
 ### Aliases: time cycle frequency deltat time.default

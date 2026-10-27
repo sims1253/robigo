@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: findInterval
 ### Title: Find Interval Numbers or Indices
 ### Aliases: findInterval

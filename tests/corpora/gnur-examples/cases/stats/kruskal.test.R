@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: kruskal.test
 ### Title: Kruskal-Wallis Rank Sum Test
 ### Aliases: kruskal.test kruskal.test.default kruskal.test.formula

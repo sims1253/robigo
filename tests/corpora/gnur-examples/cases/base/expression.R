@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: expression
 ### Title: Unevaluated Expressions
 ### Aliases: expression is.expression as.expression as.expression.default

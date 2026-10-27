@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: summary.manova
 ### Title: Summary Method for Multivariate Analysis of Variance
 ### Aliases: summary.manova print.summary.manova

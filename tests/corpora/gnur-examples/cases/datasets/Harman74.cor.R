@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Harman74.cor
 ### Title: Harman Example 7.4
 ### Aliases: Harman74.cor

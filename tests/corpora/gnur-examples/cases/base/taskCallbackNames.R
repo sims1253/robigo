@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: taskCallbackNames
 ### Title: Query the Names of the Current Internal Top-Level Task Callbacks
 ### Aliases: getTaskCallbackNames

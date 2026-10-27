@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: mauchly.test
 ### Title: Mauchly's Test of Sphericity
 ### Aliases: mauchly.test mauchly.test.SSD mauchly.test.mlm

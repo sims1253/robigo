@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: serialize
 ### Title: Simple Serialization Interface
 ### Aliases: serialize unserialize

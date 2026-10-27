@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Exponential
 ### Title: The Exponential Distribution
 ### Aliases: Exponential dexp pexp qexp rexp

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: anscombe
 ### Title: Anscombe's Quartet of 'Identical' Simple Linear Regressions
 ### Aliases: anscombe

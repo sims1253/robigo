@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: logical
 ### Title: Logical Vectors
 ### Aliases: logical as.logical as.logical.factor is.logical TRUE FALSE T F

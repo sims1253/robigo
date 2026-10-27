@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: SSweibull
 ### Title: Self-Starting 'nls' Weibull Growth Curve Model
 ### Aliases: SSweibull

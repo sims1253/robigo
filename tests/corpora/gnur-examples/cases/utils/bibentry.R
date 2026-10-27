@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: bibentry
 ### Title: Bibliography Entries
 ### Aliases: bibentry print.bibentry format.bibentry sort.bibentry

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: utf8Conversion
 ### Title: Convert Integer Vectors to or from UTF-8-encoded Character
 ###   Vectors

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: windows
 ### Title: Windows Graphics Devices
 ### Aliases: windows win.graph win.metafile win.print print.SavedPlots

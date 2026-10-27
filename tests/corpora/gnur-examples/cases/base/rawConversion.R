@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rawConversion
 ### Title: Convert to or from (Bit/Packed) Raw Vectors
 ### Aliases: charToRaw rawToChar rawShift rawToBits intToBits packBits

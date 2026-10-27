@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: proj
 ### Title: Projections of Models
 ### Aliases: proj proj.default proj.lm proj.aov proj.aovlist

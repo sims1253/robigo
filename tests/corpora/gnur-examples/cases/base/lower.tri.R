@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: lower.tri
 ### Title: Lower and Upper Triangular Part of a Matrix
 ### Aliases: lower.tri upper.tri

@@ -31,7 +31,7 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 
 | corpus | cases | mode | source |
 |---|---|---|---|
-| `fastr` | 33,562 | script | FastR's unit-test snippets (GPL-3), one R expression each |
+| `fastr` | 31,374 | script | FastR's unit-test snippets (GPL-3), one R expression each |
 | `gnur-tests` | 59 | echo | GNU R's own `tests/*.R` |
 | `gnur-examples` | 1,153 | echo | the examples of every help page of base R's packages |
 

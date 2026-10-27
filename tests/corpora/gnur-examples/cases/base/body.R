@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: body
 ### Title: Access to and Manipulation of the Body of a Function
 ### Aliases: body body<-

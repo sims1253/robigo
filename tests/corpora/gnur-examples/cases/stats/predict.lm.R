@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: predict.lm
 ### Title: Predict method for Linear Model Fits
 ### Aliases: predict.lm

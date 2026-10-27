@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 library(methods)
 ### Name: classesToAM
 ### Title: Compute an Adjacency Matrix for Superclasses of Class

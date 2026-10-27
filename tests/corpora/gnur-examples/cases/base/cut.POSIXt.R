@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: cut.POSIXt
 ### Title: Convert a Date or Date-Time Object to a Factor
 ### Aliases: cut.POSIXt cut.Date

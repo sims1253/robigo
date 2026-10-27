@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: mode
 ### Title: The (Storage) Mode of an Object
 ### Aliases: mode mode<- storage.mode storage.mode<-

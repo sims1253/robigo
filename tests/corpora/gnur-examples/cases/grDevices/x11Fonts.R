@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: X11Fonts
 ### Title: X11 Fonts
 ### Aliases: X11Font X11Fonts

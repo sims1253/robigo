@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: data.matrix
 ### Title: Convert a Data Frame to a Numeric Matrix
 ### Aliases: data.matrix

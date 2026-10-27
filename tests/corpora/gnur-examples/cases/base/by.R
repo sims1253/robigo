@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: by
 ### Title: Apply a Function to a Data Frame Split by Factors
 ### Aliases: by by.default by.data.frame print.by

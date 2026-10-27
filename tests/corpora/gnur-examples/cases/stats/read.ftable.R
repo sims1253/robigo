@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: read.ftable
 ### Title: Manipulate Flat Contingency Tables
 ### Aliases: read.ftable write.ftable format.ftable print.ftable

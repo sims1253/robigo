@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ar
 ### Title: Fit Autoregressive Models to Time Series
 ### Aliases: ar ar.burg ar.burg.default ar.burg.mts ar.yw ar.yw.default

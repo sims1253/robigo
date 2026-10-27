@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: format
 ### Title: Encode in a Common Format
 ### Aliases: format format.AsIs format.data.frame format.default

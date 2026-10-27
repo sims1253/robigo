@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: ns-load
 ### Title: Loading and Unloading Name Spaces
 ### Aliases: attachNamespace loadNamespace requireNamespace

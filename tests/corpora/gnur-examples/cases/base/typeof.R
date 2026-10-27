@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: typeof
 ### Title: The Type of an Object
 ### Aliases: typeof type

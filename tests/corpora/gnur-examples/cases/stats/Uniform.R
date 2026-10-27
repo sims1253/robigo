@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Uniform
 ### Title: The Uniform Distribution
 ### Aliases: Uniform dunif punif qunif runif

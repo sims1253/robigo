@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: which.min
 ### Title: Where is the Min() or Max() or first TRUE or FALSE ?
 ### Aliases: which.min which.max

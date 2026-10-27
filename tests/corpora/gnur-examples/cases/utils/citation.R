@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: citation
 ### Title: Citing R and R Packages in Publications
 ### Aliases: CITATION citation readCitationFile citHeader citFooter

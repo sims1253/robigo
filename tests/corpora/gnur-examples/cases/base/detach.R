@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: detach
 ### Title: Detach Objects from the Search Path
 ### Aliases: detach

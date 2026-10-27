@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: numeric_version
 ### Title: Numeric Versions
 ### Aliases: numeric_version as.numeric_version is.numeric_version

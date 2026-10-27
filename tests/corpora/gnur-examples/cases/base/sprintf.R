@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sprintf
 ### Title: Use C-style String Formatting Commands
 ### Aliases: sprintf gettextf

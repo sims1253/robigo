@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: sunspot.month
 ### Title: Monthly Sunspot Data, from 1749 to "Present"
 ### Aliases: sunspot.m2014 sunspot.month

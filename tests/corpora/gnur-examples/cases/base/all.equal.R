@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: all.equal
 ### Title: Test if Two Objects are (Nearly) Equal
 ### Aliases: all.equal all.equal.default all.equal.numeric

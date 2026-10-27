@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: rowsum
 ### Title: Give Column Sums of a Matrix or Data Frame, Based on a Grouping
 ###   Variable

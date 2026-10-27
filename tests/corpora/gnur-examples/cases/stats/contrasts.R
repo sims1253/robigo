@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: contrasts
 ### Title: Get and Set Contrast Matrices
 ### Aliases: contrasts contrasts<-

@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: PlantGrowth
 ### Title: Results from an Experiment on Plant Growth
 ### Aliases: PlantGrowth

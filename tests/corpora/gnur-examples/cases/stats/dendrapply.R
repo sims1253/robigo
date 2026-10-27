@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: dendrapply
 ### Title: Apply a Function to All Nodes of a Dendrogram
 ### Aliases: dendrapply

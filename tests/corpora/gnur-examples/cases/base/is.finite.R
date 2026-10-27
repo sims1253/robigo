@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: is.finite
 ### Title: Finite, Infinite and NaN Numbers
 ### Aliases: is.finite is.infinite Inf NaN is.nan finite infinite

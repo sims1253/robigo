@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: lapply
 ### Title: Apply a Function over a List or Vector
 ### Aliases: lapply sapply vapply replicate simplify2array

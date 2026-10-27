@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: Sys.localeconv
 ### Title: Find Details of the Numerical and Monetary Representations in
 ###   the Current Locale

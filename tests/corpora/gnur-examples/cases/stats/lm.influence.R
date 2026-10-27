@@ -1,3 +1,4 @@
+RNGkind("default", "default", "default"); set.seed(1); options(warn = 1)
 ### Name: lm.influence
 ### Title: Regression Diagnostics
 ### Aliases: lm.influence influence influence.lm influence.glm qr.influence
