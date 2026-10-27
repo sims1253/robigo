@@ -176,6 +176,11 @@ pub struct RcMemFields {
     heap: Heap,
     purple: Vec<*mut u8>,
     free_queue: Vec<*mut u8>,
+    /// objects that died by count while still in the purple buffer: their
+    /// memory must not be reused (or freed to the OS) before the next
+    /// collection validates the buffer, or the validation would read freed
+    /// (or reborn) objects
+    dead_parked: Vec<*mut u8>,
     protect_stack: Vec<*mut u8>,
     nil_p: *mut u8,
     na_string: *mut u8,
@@ -369,6 +374,7 @@ impl RcMemFields {
             heap: Heap::new(),
             purple: Vec::with_capacity(PURPLE_CAP + 1),
             free_queue: Vec::new(),
+            dead_parked: Vec::new(),
             protect_stack: Vec::new(),
             nil_p: std::ptr::null_mut(),
             na_string: std::ptr::null_mut(),
@@ -568,6 +574,25 @@ impl RcMemFields {
                 }
                 let mut sink = |c: *mut u8| decref(c);
                 for_each_child(p, &mut sink);
+                if f & flags::BUFFERED != 0 {
+                    // dead but still referenced by the purple buffer: park
+                    // it (children released above) until the collection
+                    // that consumes the buffer has validated it
+                    self.dead_parked.push(p);
+                    continue;
+                }
+            }
+            self.free_object(p);
+        }
+    }
+
+    /// Free the parked objects after a collection has validated (and
+    /// discarded) the stale purple entries pointing at them.
+    fn free_parked(&mut self) {
+        while let Some(p) = self.dead_parked.pop() {
+            unsafe {
+                let f = get_flags(p);
+                set_flags(p, f & !flags::BUFFERED);
             }
             self.free_object(p);
         }
@@ -709,6 +734,9 @@ impl RcMemFields {
             self.free_queue.push(p);
         }
         self.drain_frees();
+        // the purple buffer has been consumed and validated above: the
+        // memory of buffered objects that died by count can flow again
+        self.free_parked();
 
         let dt = t0.elapsed().as_nanos() as u64;
         self.stats.collections += 1;
@@ -1201,15 +1229,18 @@ mod tests {
     /// RcMem installs a process-global pointer for its drop glue, so tests
     /// (which the harness runs on parallel threads) must not overlap: hold
     /// the guard for the whole test.
-    fn mk() -> (RcMem, std::sync::MutexGuard<'static, ()>) {
+    fn mk() -> (std::sync::MutexGuard<'static, ()>, RcMem) {
         static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        (RcMem::new(), g)
+        // the guard must drop AFTER the manager: RcMem::drop resets the
+        // process-global pointer, and the next test installs its own only
+        // under the lock
+        (g, RcMem::new())
     }
 
     #[test]
     fn basic_counts() {
-        let (mut m, _g) = mk();
+        let (_g, mut m) = mk();
         let v = m.alloc_real(10);
         assert_eq!(m.external_refs(&v), 0);
         let w = m.retain(&v);
@@ -1223,7 +1254,7 @@ mod tests {
 
     #[test]
     fn cycles_collected() {
-        let (mut m, _g) = mk();
+        let (_g, mut m) = mk();
         let base = m.stats().live_objects;
         let n = match std::env::var("CYCLES_N") {
             Ok(v) => v.parse().unwrap(),
@@ -1245,7 +1276,7 @@ mod tests {
 
     #[test]
     fn interned_chars_share() {
-        let (mut m, _g) = mk();
+        let (_g, mut m) = mk();
         let a = m.char_intern(b"hello");
         let b = m.char_intern(b"hello");
         assert_eq!(a.0, b.0); // identical byte strings share one object
@@ -1269,7 +1300,7 @@ mod tests {
 
     #[test]
     fn env_take_transfers() {
-        let (mut m, _g) = mk();
+        let (_g, mut m) = mk();
         let s = m.symbol_intern(b"x");
         let v = m.real_scalar(3.5);
         m.env_define(&m.global_env(), &s, &v);

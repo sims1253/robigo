@@ -27,7 +27,19 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 const SAT: u32 = 0x7fff_f000;
-const GC_MIN: usize = 8 << 20; // grow the heap at least this much between GCs
+
+/// Grow the heap at least this much between GCs. Overridable with
+/// MM_GC_MIN (bytes) so tests can stress with tiny heaps.
+#[inline]
+fn gc_min() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("MM_GC_MIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8 << 20)
+    })
+}
 
 // ---- layout -------------------------------------------------------------
 // +0 type u8, +1 flags u8, +2 gp u16, +4 com refcount u32, +8 attrs *mut u8
@@ -271,18 +283,32 @@ unsafe fn trace(g: *mut GcMem) {
     }
 }
 
+pub static WATCH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 unsafe extern "C" fn scan_and_mark(ctx: *mut u8, sp: usize) {
     let g = ctx as *mut GcMem;
+    let watch = WATCH.load(std::sync::atomic::Ordering::Relaxed);
     let top = (*g).stack_top;
     let heap = &raw mut (*g).heap;
     let min = (*heap).min_addr;
     let max = (*heap).max_addr;
     let mut w = (sp + 7) & !7usize;
+    if watch != 0 {
+        eprintln!("scan sp={sp:#x} top={top:#x} words={}", (top - sp) / 8);
+    }
     while w < top {
         let v = *(w as *const usize);
+        if v == watch && watch != 0 {
+            eprintln!("WATCH found on stack at w={w:#x} v={v:#x}");
+        }
         if v >= min && v < max {
             if let Some(p) = (*heap).resolve(v) {
+                if watch != 0 && v == watch {
+                    eprintln!("WATCH in heap range, resolved to {p:?}");
+                }
                 mark_obj(g, p);
+            } else if watch != 0 && v == watch {
+                eprintln!("WATCH in range but resolve FAILED v={v:#x}");
             }
         }
         w += 8;
@@ -303,7 +329,7 @@ impl GcMem {
             int_cache: vec![std::ptr::null_mut(); 1024 + 8192],
             mark_stack: Vec::new(),
             alloc_since_gc: 0,
-            gc_threshold: GC_MIN,
+            gc_threshold: gc_min(),
             stack_top: 0,
             stats: Stats::default(),
             live_bytes: 0,
@@ -637,7 +663,7 @@ impl GcMem {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        self.gc_threshold = ((live_bytes as usize) * 2).max(GC_MIN);
+        self.gc_threshold = ((live_bytes as usize) * 2).max(gc_min());
     }
 
     fn collect_internal(&mut self) -> u64 {
@@ -1207,6 +1233,82 @@ mod tests {
         m.collect();
         let s = m.stats();
         assert!(s.live_objects < 500, "live objects: {}", s.live_objects);
+    }
+
+    #[test]
+    fn recursive_envs_survive() {
+        let mut m = GcMem::new();
+        m.set_stack_top(&m as *const _ as usize);
+        fn rec(m: &mut GcMem, depth: i32) -> i64 {
+            let e = m.env_new(&m.global_env());
+            let s = m.symbol_intern(b"n");
+            let nv = m.int_scalar(depth);
+            m.env_define(&e, &s, &nv);
+            let r = if depth == 0 {
+                m.collect(); // collections deep in the recursion
+                0
+            } else {
+                rec(m, depth - 1)
+            };
+            // e must still be alive after the collections below
+            let v = m.env_lookup(&e, &s).unwrap();
+            m.scalar_int_value(&v) as i64 + r
+        }
+        let r = rec(&mut m, 200);
+        assert_eq!(r, (0..=200).sum::<i32>() as i64);
+    }
+
+    #[test]
+    fn fib_shaped_envs_survive() {
+        // one env per call, allocations triggering collections mid-recursion:
+        // exactly the fib workload's shape. Run with MM_GC_MIN=65536 to
+        // force collections; survives either way.
+        let mut m = GcMem::new();
+        m.set_stack_top(&m as *const _ as usize);
+        fn fib(m: &mut GcMem, n: i32, g: &GcSexp) -> i64 {
+            let e = m.env_new(g);
+            if n == 15 {
+                WATCH.store(e.0 as usize, std::sync::atomic::Ordering::Relaxed);
+            }
+            let s = m.symbol_intern(b"n");
+            let nv = m.int_scalar(n);
+            m.env_define(&e, &s, &nv);
+            let r = if n < 2 {
+                n as i64
+            } else {
+                let a = fib(m, n - 1, g);
+                let b = fib(m, n - 2, g);
+                a + b
+            };
+            let v = match m.env_lookup(&e, &s) {
+                Some(v) => v,
+                None => {
+                    eprintln!("WATCH lookup FAILED for e={:?} n={}", e.0, n);
+                    return -1000;
+                }
+            };
+            m.scalar_int_value(&v) as i64 + r
+        }
+        let g = m.global_env();
+        let r = fib(&mut m, 20, &g);
+        let st = m.stats();
+        eprintln!(
+            "STATS allocs={} alloc_mb={:.1} cols={} thr={} live_objs={} live_mb={:.2}",
+            st.allocs,
+            st.bytes_allocated as f64 / 1048576.0,
+            st.collections,
+            m.gc_threshold,
+            st.live_objects,
+            st.live_bytes as f64 / 1048576.0,
+        );
+        m.collect();
+        let st = m.stats();
+        eprintln!(
+            "AFTER top-level collect: live_objs={} live_mb={:.2}",
+            st.live_objects,
+            st.live_bytes as f64 / 1048576.0,
+        );
+        assert_eq!(r, 6765 + (21..=41).sum::<i64>());
     }
 
     #[test]

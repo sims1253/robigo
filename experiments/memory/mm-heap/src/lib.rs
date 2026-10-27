@@ -216,6 +216,11 @@ impl Heap {
                 if !b.freelist.is_null() {
                     let p = b.freelist;
                     b.freelist = unsafe { *((p as *mut *mut u8).add(1)) }; // next at +8
+                    // the sweeper rebuilds start bits from survivors only,
+                    // so a slot recycled from the free list needs its bit
+                    // back or the next sweep cannot see (nor free, nor
+                    // resolve) the new object
+                    unsafe { b.start_set((p as usize - b.data_ptr() as usize) / 16) };
                     b.live_objects += 1;
                     return p;
                 }
