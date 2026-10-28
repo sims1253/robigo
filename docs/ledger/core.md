@@ -11,6 +11,29 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: GNU R's stats natives built from source run on robigo (council item 1)
+
+- GNU R's Defn.h defines USE_RINTERNALS unless TESTING_WRITE_BARRIER is
+  set; with `-DTESTING_WRITE_BARRIER` the 39 internal-layout files
+  compile to calls of exported functions. So base-package natives need
+  no robigo Defn.h for now: `crates/robigo-capi/natives/build-base-native.sh
+  stats OUT` configures the R 4.5.0 sources once (17 s) and builds
+  stats.so in a build image (robigo-oracle + gfortran, `robigo-build`).
+- stats.so: 69 objects (Trunmed.c is #included by another file), 299
+  undefined symbols; robigo's executable exports all but IS_CACHED and
+  the BLAS/LAPACK routines (ddot_, dnrm2_, dpotrf_, dswap_, dsyrk_,
+  dtrmm_, idamax_; system libblas/liblapack). 30 of them are still stubs:
+  GNU R's src/appl (LINPACK dqrdc_/dqrdc2_/dqrls_/dqrsl_/dqrcf_/dsvdc_/
+  dpbfa_/dpbsl_, optimizers vmmin/nmmin/cgmin/lbfgsb/samin/optif9/
+  fdhess, Rdqags/Rdqagi), Fortran helpers (rchkusr_, rwarn_, rexit_,
+  intpr_, d1mach_, interv_), Rf_deparse1(line), Rf_allocLang,
+  Rf_rPsort, UNIMPLEMENTED_TYPE, signrank_free, wilcox_free.
+- smoke test: dyn.load of the built stats.so in robigo, `.Call` of the
+  registered `cor` and `cov` routines: 0.99947644097685506 and 6.12, as
+  GNU R. Next: build src/appl's C sources into robigo, then load these
+  natives instead of the Rust ports, package by package, measured on the
+  corpora.
+
 ## 2026-10-28: the caught-error benchmark found two unwind bugs
 
 - the C bench's caught-error routine cost ~230k instructions per error.

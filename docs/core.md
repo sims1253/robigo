@@ -395,6 +395,12 @@ all end there). robigo provides what that path expects:
   sources call). A package binary built against GNU R's stock public
   headers still works against `libR.so` (functions only); the capi corpus
   is built against robigo's headers.
+- **Base packages, first route (measured, ledger):** compile GNU R's
+  sources with `-DTESTING_WRITE_BARRIER`, which makes GNU R's own Defn.h
+  call exported functions instead of reading fields; stats.so built that
+  way loads in robigo and its `cor`/`cov` give GNU R's values
+  (`crates/robigo-capi/natives/build-base-native.sh`). A robigo Defn.h
+  with inlined accessors is the faster later step.
 - **Base packages**: `stats.so`, `utils.so`, `tools.so`, `grDevices.so`,
   `graphics.so`, `methods.so`, `grid.so`, `splines.so`, `parallel.so`
   compiled from the R 4.5.0 sources (`~/.cache/robigo-research/rsrc`)
