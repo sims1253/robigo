@@ -4,8 +4,10 @@
 
 - Ports: `eval.c:EnsureLocal` now evaluates the base symbol without discarding its signaled lexical error; `eval.c:do_getconst` exposes the existing constant-buffer slice operation; `envir.c:defineVar` supplies the exact locked-environment message.
 - Result: 1,330/1,371 -> 1,335/1,371, five additional passes, zero regressions. Overall gain: 109 cases from the original 1,226 baseline. Relevant examples hold at 6/8. Kept.
-- `evaluator-errors.R` matches Docker GNU R 4.5.0 byte for byte. Runtime/full conformance verification is running; both new scripts are recorded in the conformance ratchet.
+- `evaluator-errors.R` matches Docker GNU R 4.5.0 byte for byte. All 19 runtime tests pass; full conformance is 168/169, with only the same pre-existing `datetime/zones.R` mismatch. Both VM guards and compiled/interpreted comparisons pass. Formatting passes; both new scripts are recorded in the conformance ratchet.
 - Shared file: `interp.rs` changes only the locked-environment error text in this cycle.
+
+- Delivery: coordinator froze PR #19 at `2598b02a`; this cycle remains local until that PR merges, then moves to a new branch/PR. No further pushes to #19.
 
 ### Current remaining failures and ownership
 
