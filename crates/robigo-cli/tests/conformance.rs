@@ -43,8 +43,27 @@ struct Outcome {
     diff: String,
 }
 
+// A .tzdir sidecar contains a directory relative to the script, also used
+// by scripts/regen-expected.sh. Resolve before spawning: working directories
+// differ between the oracle recorder and the conformance runner.
+fn script_command(script: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_robigo"));
+    command.env_remove("TZDIR");
+    let sidecar = script.with_extension("tzdir");
+    match std::fs::read_to_string(&sidecar) {
+        Ok(dir) => {
+            let path = script.parent().unwrap().join(dir.trim()).canonicalize().expect("resolve .tzdir");
+            assert!(path.is_dir(), ".tzdir must name a directory");
+            command.env("TZDIR", path);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("read {}: {}", sidecar.display(), err),
+    }
+    command
+}
+
 fn run_rr(script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_robigo"))
+    let mut child = script_command(script)
         .arg(script)
         .env("LANGUAGE", "en")
         .env("LC_ALL", "C.UTF-8")
@@ -253,7 +272,7 @@ fn compiled_matches_interpreted() {
     collect(&root.join("tests/r"), &mut scripts);
     scripts.sort();
     let run = |script: &Path, compile: bool, jit: bool| {
-        let out = Command::new(env!("CARGO_BIN_EXE_robigo"))
+        let out = script_command(script)
             .arg(script)
             .env("LANGUAGE", "en")
             .env("LC_ALL", "C.UTF-8")
