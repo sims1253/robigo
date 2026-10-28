@@ -112,7 +112,9 @@ pub fn remove_attrib(mut v: Value, name: Sym) -> Value {
                 return v;
             }
             Value::Lang(l) => {
-                for a in Rc::make_mut(l).args.iter_mut() {
+                let l = Rc::make_mut(l);
+                l.fun_tag = None;
+                for a in l.args.iter_mut() {
                     a.tag = None;
                 }
                 return v;
@@ -180,8 +182,8 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
         }
         Value::Lang(l) => {
             let l = Rc::make_mut(l);
-            // The first name belongs to the function position; it cannot be
-            // stored, so only argument tags are set.
+            // the first name tags the function position
+            l.fun_tag = names.first().cloned().flatten().filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
             for (a, nm) in l.args.iter_mut().zip(names.iter().skip(1)) {
                 a.tag = nm.clone().filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
             }

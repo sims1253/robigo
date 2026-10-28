@@ -65,9 +65,10 @@ fn do_dynload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let base = path.rsplit('/').next().unwrap_or(&path);
     let name = base.strip_suffix(".so").filter(|n| !n.is_empty()).unwrap_or(base);
     // GNU R's own packages keep their Rust ports until their sources are
-    // built against robigo (docs/core.md §8); everything else is loaded
+    // built against robigo (docs/core.md §8: such a build carries the
+    // marker symbol); everything else is loaded
     match native::bridge() {
-        Some(b) if !native::has_table(name) => {
+        Some(b) if !native::has_table(name) || native::is_robigo_build(&path) => {
             let local = !matches!(arg(&args, 1), Value::Lgl(v) if v.data.first() == Some(&0));
             let now = !matches!(arg(&args, 2), Value::Lgl(v) if v.data.first() == Some(&0));
             let h = b.load(i, &path, name, local, now)?;

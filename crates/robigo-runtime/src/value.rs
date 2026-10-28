@@ -126,6 +126,9 @@ pub struct Lang {
     pub fun: Value,
     pub args: Vec<Arg>,
     pub attrs: AttrBox,
+    /// The tag of the function position (GNU R's first cons cell can
+    /// carry one, e.g. after `e[-1]`; `names(e)[1]`).
+    pub fun_tag: Option<Sym>,
 }
 
 /// A non-empty pairlist (LISTSXP). The empty pairlist is `NULL`.
@@ -460,7 +463,7 @@ impl Value {
     }
 
     pub fn lang(fun: Value, args: Vec<Arg>) -> Value {
-        Value::Lang(Rc::new(Lang { fun, args, attrs: None }))
+        Value::Lang(Rc::new(Lang { fun, args, attrs: None, fun_tag: None }))
     }
 
     pub fn call_sym(name: &str, args: Vec<Value>) -> Value {
@@ -710,11 +713,7 @@ impl Value {
     pub fn names(&self) -> Option<Value> {
         match self {
             Value::Pairlist(p) => tags_to_names(&p.items),
-            Value::Lang(l) => {
-                let mut items = vec![Arg::pos(l.fun.clone())];
-                items.extend(l.args.iter().cloned());
-                tags_to_names(&items)
-            }
+            Value::Lang(l) => tags_to_names(&l.items()),
             Value::Dots(d) => tags_to_names(d),
             Value::Env(_) => None,
             _ => self.get_attr(s::NAMES),
@@ -818,13 +817,13 @@ impl Lang {
     /// The call as a list of elements, head first (like a pairlist).
     pub fn items(&self) -> Vec<Arg> {
         let mut v = Vec::with_capacity(self.args.len() + 1);
-        v.push(Arg::pos(self.fun.clone()));
+        v.push(Arg::new(self.fun_tag, self.fun.clone()));
         v.extend(self.args.iter().cloned());
         v
     }
 
     pub fn from_items(mut items: Vec<Arg>, attrs: AttrBox) -> Lang {
         let head = items.remove(0);
-        Lang { fun: head.value, args: items, attrs }
+        Lang { fun: head.value, args: items, attrs, fun_tag: head.tag }
     }
 }

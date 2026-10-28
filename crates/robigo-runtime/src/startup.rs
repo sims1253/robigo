@@ -32,11 +32,20 @@ fn setenv(name: &str, value: &str) {
     unsafe { std::env::set_var(name, value) }
 }
 
+/// robigo's own `R_HOME` (`scripts/robigo-home.sh`): `home/` beside the
+/// directory of the executable (`.robigo/bin/robigo`, `.robigo/home`),
+/// when it is there.
+pub fn robigo_home() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let home = exe.parent()?.parent()?.join("home");
+    home.join("etc/Makeconf").exists().then(|| home.to_string_lossy().into_owned())
+}
+
 /// Locate the GNU R installation: `R_HOME`, or a common install location.
 /// Sets `R_HOME` and the directories R's front-end script (`bin/R`)
 /// exports, unless they are already set.
 pub fn init_r_home() -> Option<String> {
-    let home = std::env::var("R_HOME").ok().filter(|h| !h.is_empty()).or_else(|| {
+    let home = std::env::var("R_HOME").ok().filter(|h| !h.is_empty()).or_else(robigo_home).or_else(|| {
         [
             "/usr/lib/R",
             "/usr/lib64/R",

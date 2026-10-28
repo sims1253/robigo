@@ -64,7 +64,7 @@ pub static DEFS: &[Builtin] = &[
 const NCONNECTIONS: usize = 128;
 const NSINKS: usize = 21;
 /// `R_EOF`
-const EOF: i32 = -1;
+pub(super) const EOF: i32 = -1;
 
 // ----------------------------------------------------------------------
 // The connection table
@@ -81,6 +81,12 @@ pub enum ConnKind {
         /// R: connections.c fileconn — whether the last operation was a
         /// write, to pick the position `seek()` reports.
         last_was_write: bool,
+        /// R: fileconn rpos/wpos — the file's read and write positions,
+        /// kept apart: switching between reading and writing seeks to the
+        /// other one (an anonymous `file()` written then read starts
+        /// reading at the beginning).
+        frpos: u64,
+        wpos: u64,
         /// A `fifo()` connection: opened with `fifo_open` (mkfifo when
         /// writing, O_NONBLOCK unless blocking) and never buffered.
         fifo: bool,
@@ -247,7 +253,7 @@ pub fn expand_file_name(name: &str) -> String {
 
 /// Open connection `n` with its current mode (R's `con->open(con)`).
 /// Failures are reported with a warning and `Ok(false)`.
-fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
+pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     let mode = con.mode.clone();
     let description = con.description.clone();
@@ -321,6 +327,7 @@ fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     }
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.save = -1000;
+    init_file_positions(con);
     set_iconv_check(i, n)?;
     Ok(true)
 }
@@ -469,6 +476,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.canread = canread;
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.save = -1000;
+    init_file_positions(con);
     set_iconv_check(i, n)?;
     Ok(true)
 }
@@ -536,6 +544,29 @@ pub fn connection_description(i: &mut Interp, n: i32) -> RResult<String> {
 }
 
 /// `Rconn_fgetc` on connection `n` (`-1` at end of input).
+/// The fields of connection `n` that GNU R's `struct Rconn` shows C code:
+/// class, description, mode and (text, isopen, incomplete, canread,
+/// canwrite, canseek, blocking).
+pub fn conn_info(i: &mut Interp, n: i32) -> RResult<(String, String, String, [bool; 7])> {
+    let c = i.conns.get(n)?;
+    Ok((
+        c.class.clone(),
+        c.description.clone(),
+        c.mode.clone(),
+        [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking],
+    ))
+}
+
+/// `con->open(con)` for C code: whether it opened.
+pub fn conn_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    con_open(i, n)
+}
+
+/// `con->close(con)` for C code.
+pub fn conn_close(i: &mut Interp, n: i32) -> RResult<()> {
+    con_close_raw(i, n)
+}
+
 pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
     Ok(rconn_fgetc(i.conns.get(n)?))
 }
@@ -585,6 +616,7 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
         let line = con.pushback.pop().unwrap_or_default();
         out.extend_from_slice(&line);
     }
+    file_switch_to_read(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } => {
             out.extend_from_slice(&data[*cur..]);
@@ -611,6 +643,7 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
 /// Write bytes to a connection (R's `con->write`).
 pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
     let con = i.conns.get(n)?;
+    file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { out, writing: true, .. } => {
             out.extend_from_slice(bytes);
@@ -652,7 +685,7 @@ fn i_tempdir() -> RResult<String> {
 }
 
 /// `con->close(con)`
-fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
+pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
         ConnKind::File { fp, .. } => {
@@ -735,6 +768,7 @@ fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
+    file_switch_to_read(&mut con.kind);
     let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, .. } = &mut con.kind else { return EOF };
     *last_was_write = false;
     // R: connections.c fifo_fgetc_internal — fifos read unbuffered.
@@ -805,7 +839,7 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
 }
 
 /// R: connections.c:Rconn_fgetc
-fn rconn_fgetc(con: &mut Connection) -> i32 {
+pub(super) fn rconn_fgetc(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
             let c = con.save;
@@ -850,6 +884,7 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     }
     let con = i.conns.get(n)?;
     let mut raw_bytes: Option<Vec<u8>> = None;
+    file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
@@ -1207,8 +1242,17 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         }
     }
     let mode = if open.is_empty() { "r".to_string() } else { open.clone() };
-    let kind =
-        ConnKind::File { raw, fp: None, rbuf: Vec::new(), rpos: 0, temp: false, last_was_write: false, fifo: false };
+    let kind = ConnKind::File {
+        raw,
+        fp: None,
+        rbuf: Vec::new(),
+        rpos: 0,
+        temp: false,
+        last_was_write: false,
+        frpos: 0,
+        wpos: 0,
+        fifo: false,
+    };
     let mut con = Connection::new("file", &description, &mode, kind);
     con.canseek = !raw;
     con.blocking = block != 0;
@@ -1275,6 +1319,8 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         rpos: 0,
         temp: false,
         last_was_write: false,
+        frpos: 0,
+        wpos: 0,
         fifo: true,
     };
     let mut con = Connection::new("fifo", &sfile, &mode, kind);
@@ -1945,36 +1991,33 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
         return Err(Flow::error("'seek' not enabled for this connection"));
     }
     if matches!(con.kind, ConnKind::File { .. }) {
-        // R: connections.c file_seek (both positions are kept; the read
-        // buffer holds bytes already consumed from the OS file).
-        let (os_pos, unread): (u64, usize) = match &mut con.kind {
-            ConnKind::File { fp: Some(f), rbuf, rpos, .. } => (f.stream_position().unwrap_or(0), rbuf.len() - *rpos),
-            _ => (0, 0),
+        // R: connections.c file_seek (the read buffer holds bytes already
+        // consumed from the OS file)
+        let (canread, canwrite) = (con.canread, con.canwrite);
+        let ConnKind::File { fp: Some(f), rbuf, rpos: rb, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+            return Ok(0.0);
         };
-        let mut last_was_write = match &con.kind {
-            ConnKind::File { last_was_write, .. } => *last_was_write,
-            _ => false,
-        };
-        let (mut rpos, mut wpos) = (os_pos - unread as u64, os_pos);
-        if last_was_write {
-            wpos = os_pos;
+        // make sure both positions are set
+        let os_pos = f.stream_position().unwrap_or(0);
+        if *last_was_write {
+            *wpos = os_pos;
         } else {
-            rpos = os_pos - unread as u64;
+            *frpos = os_pos - (rbuf.len() - *rb) as u64;
         }
-        let mut pos = if last_was_write { wpos } else { rpos };
+        let mut pos = if *last_was_write { *wpos } else { *frpos };
         if rw == 1 {
-            if !con.canread {
+            if !canread {
                 return Err(Flow::error("connection is not open for reading"));
             }
-            pos = rpos;
-            last_was_write = false;
+            pos = *frpos;
+            *last_was_write = false;
         }
         if rw == 2 {
-            if !con.canwrite {
+            if !canwrite {
                 return Err(Flow::error("connection is not open for writing"));
             }
-            pos = wpos;
-            last_was_write = true;
+            pos = *wpos;
+            *last_was_write = true;
         }
         if r#where.is_nan() {
             return Ok(pos as f64);
@@ -1984,17 +2027,19 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
             3 => std::io::SeekFrom::End(r#where as i64),
             _ => std::io::SeekFrom::Start(r#where as u64),
         };
-        if let ConnKind::File { fp: Some(f), rbuf, rpos: rb, .. } = &mut con.kind {
-            rbuf.clear();
-            *rb = 0;
-            let new = f.seek(whence).unwrap_or(0);
-            if last_was_write {
-                wpos = new;
-            } else {
-                rpos = new;
-            }
+        // SEEK_CUR is relative to the logical position, not the buffer's end
+        if let std::io::SeekFrom::Current(_) = whence {
+            let logical = os_pos - (rbuf.len() - *rb) as u64;
+            let _ = f.seek(std::io::SeekFrom::Start(logical));
         }
-        let _ = (rpos, wpos);
+        rbuf.clear();
+        *rb = 0;
+        let new = f.seek(whence).unwrap_or(0);
+        if *last_was_write {
+            *wpos = new;
+        } else {
+            *frpos = new;
+        }
         return Ok(pos as f64);
     }
     match &mut con.kind {
@@ -2100,6 +2145,7 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
     if used == buf.len() {
         return Ok(used);
     }
+    file_switch_to_read(&mut con.kind);
     match &mut con.kind {
         ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
             let take = (buf.len() - used).min(data.len() - *cur);
@@ -2972,4 +3018,49 @@ fn cat_body(
         out.push('\n');
     }
     Ok(())
+}
+
+/// R: connections.c:file_open — reading starts at 0, writing where the
+/// file was opened; a connection that cannot read starts as writing.
+fn init_file_positions(con: &mut Connection) {
+    let (canread, canwrite) = (con.canread, con.canwrite);
+    if let ConnKind::File { fp: Some(f), last_was_write, frpos, wpos, .. } = &mut con.kind {
+        use std::io::Seek;
+        *last_was_write = !canread;
+        *frpos = 0;
+        if canwrite {
+            *wpos = f.stream_position().unwrap_or(0);
+        }
+    }
+}
+
+/// R: connections.c:file_fgetc_internal/file_read — before reading after
+/// a write: remember the write position, go back to the read position.
+fn file_switch_to_read(kind: &mut ConnKind) {
+    if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        use std::io::{Seek, SeekFrom};
+        if *last_was_write {
+            *wpos = f.stream_position().unwrap_or(*wpos);
+            *last_was_write = false;
+            let _ = f.seek(SeekFrom::Start(*frpos));
+            rbuf.clear();
+            *rpos = 0;
+        }
+    }
+}
+
+/// R: connections.c:file_write — before writing after a read: remember
+/// the read position (less what is buffered), go to the write position.
+fn file_switch_to_write(kind: &mut ConnKind) {
+    if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        use std::io::{Seek, SeekFrom};
+        if !*last_was_write {
+            let buffered = (rbuf.len() - *rpos) as u64;
+            *frpos = f.stream_position().unwrap_or(0).saturating_sub(buffered);
+            *last_was_write = true;
+            let _ = f.seek(SeekFrom::Start(*wpos));
+            rbuf.clear();
+            *rpos = 0;
+        }
+    }
 }

@@ -11,6 +11,298 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: src/appl in libR; stats from source vs the Rust ports
+
+- GNU R's src/appl C files (`optim.c` + `lbfgsb.c`, `uncmin.c`,
+  `integrate.c`) are vendored unmodified in `crates/robigo-capi/appl`
+  and compiled into libR by build.rs. A `#[used]` table keeps them in
+  the executable, which exports them. The two shims there: `Defn.h`
+  (only `_()`) and an empty `config.h`.
+- LINPACK with the Fortran ABI in `src/linpack.rs`:
+  - dqrdc2, dqrsl, dqrls and the dqrutl drivers wrap the runtime's
+    existing ports;
+  - dqrdc, dpofa, dtrsl, dpbfa and dpbsl are new line-by-line ports;
+  - reference BLAS level 1 (any stride) serves the appl objects and is
+    not exported (`NOT_EXPORTED` in gen-stubs.py), so packages keep
+    their own BLAS.
+- capi corpus 14 -> 15/20 (`fortran`, to 12-15 significant digits);
+  census 92.6% -> 93.5% weighted (569/831 symbols).
+- GNU R's stats.so built from source (build-base-native.sh) now has only
+  `dsvdc_` left among robigo's stubs. In a robigo home that uses it
+  (`ROBIGO_NATIVES`), smooth.spline, optim (BFGS, Nelder-Mead,
+  L-BFGS-B), integrate, nlm and lm.fit print exactly GNU R's output.
+  - **gnur-examples `^stats/`: 141/275 with GNU R's stats.so, 113/275
+    with robigo's Rust ports, 0 regressions.**
+  - Full fastr corpus with the native stats.so: 2 regressions, both a
+    traceback line (`Calls: ... -> complete.cases -> .External`). GNU R
+    gives a foreign call a builtin context only in the AST interpreter;
+    package code is byte-compiled at installation, and bytecode calls
+    builtins without a context. The bridge now pushes its context only
+    when the call is evaluated outside namespace code; both cases pass,
+    and the capi corpus is unchanged.
+  - Recommendation (measured): serve stats from GNU R's own sources, not
+    the Rust ports. That needs the base-package sources and gfortran in
+    the build (CI): a maintainer decision about the CI image. Until
+    then, robigo's default home keeps the Rust ports.
+
+## 2026-10-28: the gate — install.packages() from source inside robigo
+
+**fastmap and digest install from CRAN sources inside robigo, and their
+own test files pass** (shim `crates/robigo-capi/gate/shim.R`, GNU R
+4.5.0 measured with the same shim in the oracle image):
+
+| package | robigo | GNU R | the difference |
+|---|---|---|---|
+| fastmap 1.2.0 | 302 | 341 | three blocks stop on latin1 strings (the runtime's strings are UTF-8 only) |
+| digest 0.6.39 | 325 | 325 | none |
+
+Before, robigo ran these tests against packages GNU R had built: 291
+and 241 expectations passed.
+
+How it works (docs/core.md §8): `scripts/robigo-home.sh` builds robigo's
+`R_HOME` (`.robigo/home`, found next to the binary when `R_HOME` is
+unset). It contains:
+
+- GNU R's own front-end scripts (`bin/R`, `Rcmd`, `INSTALL`, `SHLIB`,
+  ...), pointed at the home, with robigo as `bin/exec/R`;
+- `include/` with the vendored 4.5.0 public headers
+  (`crates/robigo-capi/include`, unchanged: the public API is functions
+  only);
+- `lib/libR.so`, which carries only the soname: the API symbols bind
+  to the executable;
+- GNU R's `etc/`, with a `Renviron.site` limited to the home's own site
+  library;
+- GNU R's `share/` and `doc/`;
+- the base packages, with `tools.so` built from source for robigo.
+
+`robigo CMD X` runs `bin/R CMD X` in that home.
+
+Steps measured on the way (each a GNU R port, with a conformance or
+corpus test):
+
+- `R CMD SHLIB`/`INSTALL` reach `tools:::.install_packages` in robigo:
+  `-e`/`-f` arguments are unescaped as R's binary does (`~+~`).
+- readDCF (dcf.c), utils' hashtab (unique.c, the `.External` entry
+  points), getVarsFromFrame and lazyLoadDBinsertValue. The serializer
+  gained the persistent-name hook, NAMESPACESXP/PACKAGESXP, and puts
+  external pointers in the reference table. Its reader always did,
+  which desynchronised every later reference.
+- GNU R's `tools.so` built from source (`build-base-native.sh`, which
+  now links a `robigo_base_native` marker that `dyn.load` checks before
+  using a base package's shared object instead of Rust ports). For it:
+  - `getConnection` hands C a real `struct Rconn`: GNU R's public
+    layout, offsets tested, methods calling the runtime;
+  - `begincontext`/`endcontext` run `cend` when an error unwinds past
+    the context (RCNTXT offsets measured with GNU R's Defn.h);
+  - the parser globals have GNU R's sizes: the 32-byte data stubs were
+    smaller than the 256-byte `R_ParseContext` gramRd writes;
+  - `.External2` is called as `fun(call, op, args, env)`;
+  - RC_fopen, R_opendir/readdir/closedir, Rf_strchr, Rf_mbrtowc and
+    R_NewHashedEnv.
+- Runtime semantics the install path needs:
+  - calls keep a tag on the function position (`names(e[-c(1, 2)])`,
+    which `parseNamespaceFile` uses for `.registration`), and `as.call`
+    drops it;
+  - `!` of a zero-length non-logical gives `logical(0)`;
+  - comparisons coerce a raw operand to the other operand's type (it
+    used to panic);
+  - `c()`/`unlist` keep NA names;
+  - file connections keep GNU R's separate read and write positions:
+    `parse_Rd` writes to `file()` and reads back from the start, and
+    `seek` now follows fileconn exactly;
+  - `Sys.setFileTime` and `extSoftVersion` (robigo reports "" for
+    libraries it does not use).
+- `download.file(method = "libcurl")`: libcurl.c's `curlDownload`
+  ported over the system libcurl, which is `dlopen`ed (no link-time
+  dependency). It has GNU R's multi-URL loop, progress output and
+  messages; the libcurl constants were checked against curl.h.
+- An external pointer that exists only in the runtime (restored by
+  `unserialize`) shows C code a NULL address, as in GNU R. fastmap
+  checks for NULL to rebuild its map; before the fix it dereferenced
+  `R_NilValue` and crashed.
+
+The ratchets still pass: conformance 186/186 including the 5 new
+scripts, and the fastr corpus slices gained 79 newly passing cases with
+0 regressions.
+
+Open:
+
+- robigo still starts without the default packages (methods does not
+  load), so the gate runs `utils::install.packages`;
+- latin1 strings (fastmap's encoding tests);
+- a cpp11 package and an Rcpp package;
+- the capi corpus built against robigo's headers.
+
+## 2026-10-28: GC at scale (council item 9)
+
+`crates/robigo-capi/bench/scale.sh` builds a 10M-string STRSXP of unique
+CHARSXPs in C (`mkChar`), then churns 50M `allocVector(REALSXP, 4)` over
+that live heap; GNU R 4.5.0 (oracle image) and robigo run the same
+`scale.R`. robigo's collection time comes from `robigo_gc_seconds()`
+(new export; GNU R's from `gc.time()`).
+
+| | GNU R build | robigo build | GNU R churn | robigo churn |
+|---|---|---|---|---|
+| wall | 5.93 s | 4.13 s | 3.04 s | 1.29 s |
+| in GC | 2.28 s | 0.11 s | 2.04 s | 0.67 s |
+
+The first run showed robigo spending 2.3 s in GC while building. A
+phase timer found the cause in the CHARSXP-table prune: on every
+collection it read the mark bit of each table entry (a cache miss per
+string, 1.3 s at 10M) even when nothing had died. It also rebuilt the
+table at twice the needed size. Fixes:
+
+- the collector counts marked cached CHARSXPs as it traces them, and
+  immortal ones as they are made; when the two add up to the table's
+  size, the prune is skipped (with a debug assertion that every entry is
+  marked);
+- the prune sizes the rebuilt table within insert's 3/4 load factor
+  (2^24 slots for 10M strings, not 2^25: 128 MiB less).
+
+Core-only check (a Rust test building the same 10M strings, 4
+collections): GC total 2.34 s -> 0.26 s.
+
+Memory is the open finding: peak RSS is 915 MB for GNU R and 2071 MB for
+robigo.
+
+- In C after the build: 739 vs 915 MB. The core heap alone holds 761 MB
+  (560 MB of objects plus the 128 MiB table); the rest is the runtime.
+- After returning to R: 746 vs 1305 MB. The bridge copies the STRSXP
+  into the runtime's own string vector, so the dual object model holds
+  the strings twice until the next collection.
+- Churn: robigo collects after allocating 1.5x the live heap, so the
+  dead core copy and up to ~900 MB of churn sit in fresh blocks before
+  the first collection frees them. GNU R's generational collector keeps
+  only 20-40% headroom.
+
+The fixes for these are already on the list: the runtime moving onto
+core objects (no copy) and sticky-mark generational collections (§11:
+minor collections make a smaller growth factor affordable). A lower
+growth factor alone would trade peak memory for proportionally more
+marking of the full live heap.
+
+The robigo binary now relinks when `exports.list` changes (cargo did
+not track the file named in the link argument; build.rs feeds its hash
+into the build).
+
+## 2026-10-28: Preserve/Release as GNU R's list; the src/appl plan
+
+- R_PreserveObject used a HashMap<Sexp, count>; GNU R conses onto a
+  precious list (O(1) for LIFO churn, O(n) worst case). Now a stack
+  released from the top, with the same multiset semantics: bench
+  Preserve/Release 1.82 -> 0.97 of GNU R.
+- stats.so built from source still imports 20 stubbed symbols, all GNU
+  R's src/appl (vmmin, nmmin, cgmin, samin, lbfgsb in appl/optim.c +
+  lbfgsb.c; optif9/fdhess in uncmin.c; Rdqags/Rdqagi in integrate.c;
+  LINPACK dqrdc/dqrdc2/dqrls/dqrsl/dqrcf/dsvdc/dpbfa/dpbsl in Fortran).
+  appl/optim.c includes Defn.h and lbfgsb/uncmin call BLAS and LINPACK,
+  so they belong to the base-natives build (an `appl` object built from
+  the R sources like stats.so and loaded before the base natives), not
+  to robigo's cargo build (CI has no R sources or gfortran). That needs
+  the executable to stop exporting stubs for those names (the
+  executable comes first in symbol lookup and would shadow them):
+  next step, together with switching a base package from its Rust
+  ports to its natives.
+
+## 2026-10-28: GNU R's stats natives built from source run on robigo (council item 1)
+
+- GNU R's Defn.h defines USE_RINTERNALS unless TESTING_WRITE_BARRIER is
+  set; with `-DTESTING_WRITE_BARRIER` the 39 internal-layout files
+  compile to calls of exported functions. So base-package natives need
+  no robigo Defn.h for now: `crates/robigo-capi/natives/build-base-native.sh
+  stats OUT` configures the R 4.5.0 sources once (17 s) and builds
+  stats.so in a build image (robigo-oracle + gfortran, `robigo-build`).
+- stats.so: 69 objects (Trunmed.c is #included by another file), 299
+  undefined symbols; robigo's executable exports all but IS_CACHED and
+  the BLAS/LAPACK routines (ddot_, dnrm2_, dpotrf_, dswap_, dsyrk_,
+  dtrmm_, idamax_; system libblas/liblapack). 30 of them are still stubs:
+  GNU R's src/appl (LINPACK dqrdc_/dqrdc2_/dqrls_/dqrsl_/dqrcf_/dsvdc_/
+  dpbfa_/dpbsl_, optimizers vmmin/nmmin/cgmin/lbfgsb/samin/optif9/
+  fdhess, Rdqags/Rdqagi), Fortran helpers (rchkusr_, rwarn_, rexit_,
+  intpr_, d1mach_, interv_), Rf_deparse1(line), Rf_allocLang,
+  Rf_rPsort, UNIMPLEMENTED_TYPE, signrank_free, wilcox_free.
+- smoke test: dyn.load of the built stats.so in robigo, `.Call` of the
+  registered `cor` and `cov` routines: 0.99947644097685506 and 6.12, as
+  GNU R. Next: build src/appl's C sources into robigo, then load these
+  natives instead of the Rust ports, package by package, measured on the
+  corpora.
+
+## 2026-10-28: the caught-error benchmark found two unwind bugs
+
+- the C bench's caught-error routine cost ~230k instructions per error.
+  Profiled: (1) 8k per Rf_error zeroing an 8 KiB message buffer (now a
+  per-thread scratch buffer); (2) every error after the first fell to
+  the *default* handler (message formatting and traceback): the runtime
+  pops its handler stack while signalling, as GNU R does, but GNU R
+  restores the handler and restart stacks when a jump reaches a context
+  (R_restore_globals) and libR.so's context record did not include
+  them. The host now saves/restores them per context (two Rc clones;
+  R_UnwindProtect's normal path 0.86 -> 1.52 of GNU R, to optimize).
+- (3) comparing the routine's R-visible result with GNU R showed
+  R_UnwindProtect returning the continuation after a jump; GNU R 4.5's
+  continues the unwind itself after cleanfun (context.c: `if (jump)
+  R_ContinueUnwind(cont)`). Fixed; cleanfun is now called outside any
+  robigo context (cpp11 longjmps out of it). `tryCatch(.Call(<loop of
+  R_UnwindProtect over error()>), error = ...)` now gives the outer
+  handler's value, as GNU R ("outer handler"), instead of NULL.
+- result: caught error 230k -> 45k instructions; capi 14/20; digest and
+  fastmap test shims unchanged (241, 291 expectations).
+
+## 2026-10-28: isolates, first step (lead A.2)
+
+- libR.so's internal state (heap, host table, R_alloc stack) moves from
+  a process-wide `static mut STATE` to a thread-local isolate pointer;
+  robigo-core's context stack was already thread-local. The exported
+  data symbols (R_NilValue, R_GlobalEnv, R_PPStack, R_Visible, ...) are
+  still process-wide variables: making them per-isolate is the header
+  work (macros over the isolate record), with the immutable singletons
+  in a shared immortal segment (docs/core.md §10).
+- cost: allocVector small 1.01 -> 1.03 of GNU R (a TLS load per API
+  call); R_UnwindProtect regressed to 1.17 until the context save and
+  restore fetched the isolate once (now 0.86). capi corpus 14/20.
+
+## 2026-10-28: fork-safe marking (lead A.1) and the abandoned-bump-space bug
+
+- measured first (`collecting_in_a_forked_child_does_not_copy_the_heap`,
+  a ~229 MB live heap of 512-byte vectors, fork, one collection in the
+  child, the child's Private_Dirty growth from /proc/self/smaps_rollup):
+  header mark bits -> **226 MB copied**.
+- change: marks live in a per-block mark bitmap next to the start bitmap
+  (the block header grows 576 -> 1,072 bytes; 4,029 granules per block;
+  medium classes recomputed for 64,464 data bytes) and, for large
+  objects, an epoch word in the chunk's header (no clearing). Marking and
+  the sweep read object headers (IMMORTAL, HOST) but never write live
+  objects; the MARK_A/MARK_B header colors are retired. -> **17 MB
+  copied** (the block headers and the collector's own memory).
+- cost (C API bench, robigo/GNU R instructions): allocVector small 0.98
+  -> 1.01, medium 0.35 -> 0.41, lang3 1.26 -> 1.29 (collections compute
+  bitmap positions and clear bitmaps). Kept: fork safety is a lead
+  requirement and the cost is small.
+- found by ROBIGO_GCTORTURE (a test that collected on every allocation
+  reserved 626 MB for 79 MB of data): the sweep reset every class's
+  allocation cursor but re-listed only blocks that gained dead slots, so
+  a block's remaining bump space was stranded until all its objects
+  died — up to one partial block per class per collection. Now blocks
+  with free slots or bump space are re-listed. A new test fails without
+  the fix (2,016 blocks for 2,000 live 8 KiB vectors) and passes with it.
+  The same sweep is in `experiments/memory` (memory track): its
+  long-running workloads strand partial blocks too.
+
+## 2026-10-28: medium objects share blocks (council item 13)
+
+- why: every object above 2 KiB took a dedicated 64 KiB-aligned chunk:
+  a 1000-double vector (8 KiB) reserved 64 KiB, and chunks were kept in
+  a sorted Vec with O(n) insert/remove.
+- change: 31 medium size classes, the largest 16-byte multiple of the
+  block's 64,960 data bytes divided by k = 31 .. 1 (2,080 .. 64,960
+  bytes), so k objects tile a block; only objects above 64,960 bytes get
+  chunks. class_index binary-searches the medium table.
+- result: 10,000 live 1000-double vectors reserve 79 MB (before: one
+  64 KiB chunk each, ~625 MiB); `allocVector(REALSXP, 1000)` 0.92 ->
+  0.35 of GNU R's instructions (bench). Core tests pass, also under
+  gctorture; the request-pair overrun test covers every class that holds
+  three objects per block (sampled sizes for medium classes).
+
 ## 2026-10-28: C API microbenchmarks vs GNU R (council item 9) and the first optimizations
 
 - harness: `crates/robigo-capi/bench/` (capibench.c + bench.py):

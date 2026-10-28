@@ -722,6 +722,24 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     let attrs = binary_attrs(&x, &y, call)?;
     check_recycling(interp, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
+    // R: relop.c — a raw operand compared with a real, integer or logical
+    // one is coerced to that type (real first, then integer, then logical)
+    if matches!(x, Value::Raw(_)) != matches!(y, Value::Raw(_)) {
+        let other = if matches!(x, Value::Raw(_)) { &y } else { &x };
+        let t = match other {
+            Value::Real(_) => Some(VType::Real),
+            Value::Int(_) => Some(VType::Int),
+            Value::Lgl(_) => Some(VType::Lgl),
+            _ => None,
+        };
+        if let Some(t) = t {
+            if matches!(x, Value::Raw(_)) {
+                x = crate::coerce::coerce_quiet(&x, t);
+            } else {
+                y = crate::coerce::coerce_quiet(&y, t);
+            }
+        }
+    }
     let out: Vec<Lgl> = if matches!(x, Value::Str(_)) || matches!(y, Value::Str(_)) {
         let a = crate::coerce::to_str(&x);
         let b = crate::coerce::to_str(&y);
@@ -975,6 +993,9 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
             v.data.iter().map(|e| if e.is_na() { NA_LOGICAL } else { (e.re == 0.0 && e.im == 0.0) as Lgl }).collect(),
         ),
         Value::Raw(v) => Value::raws(v.data.iter().map(|&b| !b).collect()),
+        // R: logic.c:lunary — "for back-compatibility" a zero-length
+        // argument of any other type gives logical(0), without attributes
+        Value::Str(_) | Value::List(_) | Value::Expr(_) if x.len() == 0 => return Ok(Value::lgls(vec![])),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
     if !names.is_null() {
@@ -1514,13 +1535,9 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 /// before base is evaluated.
 // R: arithmetic.c:do_log / do_log_builtin
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    // evalListKeepMissing: evaluate the arguments, keeping the missing
-    // markers (an explicit `x=` stays missing).
-    let mut ev: Vec<Arg> = Vec::with_capacity(args.len());
-    for a in &args {
-        let v = if a.value.is_missing_arg() { a.value.clone() } else { i.eval(&a.value, env)? };
-        ev.push(Arg::new(a.tag, v));
-    }
+    // evalListKeepMissing: evaluate the arguments, expanding `...` and
+    // keeping the missing markers (an explicit `x=` stays missing).
+    let ev = super::subset::eval_keep_missing(i, &args, env)?;
     let is_tag = |a: &Arg, names: &[&str]| a.tag.is_none_or(|t| names.contains(&&*t.name()));
     if ev.len() == 1 && is_tag(&ev[0], &["x"]) {
         let x = &ev[0].value;
@@ -1547,11 +1564,22 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     }
     if ev.len() == 1 {
         // R's n == 1 branch never calls matchArgs_NR: the tag must be
-        // missing or exactly "x", and the value present.
+        // missing or exactly "x", and the value present; it dispatches
+        // with the argument as given (no base)
         let a = &ev[0];
         if a.value.is_missing_arg() || a.tag.is_some_and(|t| &*t.name() != "x") {
             return Err(missing_x_err(call));
         }
+        let x = a.value.clone();
+        if x.is_object() {
+            if let Some(r) = i.try_dispatch_group("Math", "log", call, &ev, env)? {
+                return Ok(r);
+            }
+        }
+        if let Value::Cplx(_) = x {
+            return complex_math1(i, call, &x, "log");
+        }
+        return math1(i, call, ev, env, "log", r_log);
     }
     // matchArgs_NR: signals the first unused argument onward.
     let m = super::match_args(ev, &["x", "base"], call)?;

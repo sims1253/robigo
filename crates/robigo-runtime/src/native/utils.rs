@@ -2,6 +2,7 @@
 //! (port of GNU R's src/library/utils/src/io.c).
 
 use super::NativeFn;
+use super::hashtab;
 use crate::builtins::scan::{EOF, NO_COMCHAR, Scan, strtoi};
 use crate::coerce::{as_integer, as_logical, is_blank, r_strtod5};
 use crate::error::{Flow, RResult};
@@ -22,6 +23,15 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     }),
     // robigo's time-zone code is a port of glibc's (see builtins/datetime).
     ("tzcode_type", |_, _, _, _| Ok(Value::str("system (glibc)"))),
+    ("hashtab_Ext", |i, _, a, _| hashtab::hashtab_ext(i, &a)),
+    ("gethash_Ext", |i, _, a, _| hashtab::gethash_ext(i, &a)),
+    ("sethash_Ext", |i, _, a, _| hashtab::sethash_ext(i, &a)),
+    ("remhash_Ext", |i, _, a, _| hashtab::remhash_ext(i, &a)),
+    ("numhash_Ext", |i, _, a, _| hashtab::numhash_ext(i, &a)),
+    ("typhash_Ext", |i, _, a, _| hashtab::typhash_ext(i, &a)),
+    ("maphash_Ext", |i, _, a, _| hashtab::maphash_ext(i, &a)),
+    ("clrhash_Ext", |i, _, a, _| hashtab::clrhash_ext(i, &a)),
+    ("ishashtab_Ext", |i, _, a, _| hashtab::ishashtab_ext(i, &a)),
 ];
 
 /// GNU R's memory footprint of an object on 64-bit platforms: node and

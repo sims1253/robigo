@@ -21,6 +21,19 @@ unsafe extern "C" {
 }
 
 const BUFSIZE: usize = 8192;
+
+thread_local! {
+    static SCRATCH: std::cell::UnsafeCell<[u8; BUFSIZE]> = const { std::cell::UnsafeCell::new([0; BUFSIZE]) };
+}
+
+/// The thread's message buffer (errors.c formats into an 8 KiB stack
+/// buffer; zeroing one per call cost ~8k instructions per Rf_error).
+/// Messages are handed to the host, which copies them at once, before
+/// anything else can format into it.
+#[inline(always)]
+fn scratch() -> &'static mut [u8; BUFSIZE] {
+    SCRATCH.with(|b| unsafe { &mut *b.get() })
+}
 /// options(warning.length) default
 const R_WARN_LENGTH: usize = 1000;
 
@@ -55,6 +68,7 @@ unsafe fn vformat(buf: &mut [u8], n: usize, fmt: *const c_char, ap: std::ffi::Va
 /// Jump with a host flow token. Plain frames only (see `unwind`).
 pub unsafe fn jump_host(token: usize) -> ! {
     PENDING = token;
+    crate::context::run_cends();
     unwind::jump()
 }
 
@@ -67,17 +81,19 @@ pub unsafe fn raise(call: Sexp, msg: *const c_char) -> ! {
 
 /// Raise an error from a Rust message.
 pub unsafe fn error_str(msg: &str) -> ! {
-    let mut buf = [0u8; BUFSIZE];
+    let buf = scratch();
     let n = msg.len().min(BUFSIZE - 1);
     buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
+    buf[n] = 0;
     raise(Sexp::NULL, buf.as_ptr() as *const c_char)
 }
 
 /// Raise an error reported against `call`.
 pub unsafe fn errorcall_str(call: Sexp, msg: &str) -> ! {
-    let mut buf = [0u8; BUFSIZE];
+    let buf = scratch();
     let n = msg.len().min(BUFSIZE - 1);
     buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
+    buf[n] = 0;
     raise(call, buf.as_ptr() as *const c_char)
 }
 
@@ -94,24 +110,24 @@ pub unsafe fn not_implemented(name: &str) -> ! {
 // R: errors.c:error
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_error(fmt: *const c_char, args: ...) -> ! {
-    let mut buf = [0u8; BUFSIZE];
-    vformat(&mut buf, R_WARN_LENGTH, fmt, args);
+    let buf = scratch();
+    vformat(buf, R_WARN_LENGTH, fmt, args);
     raise(Sexp::NULL, buf.as_ptr() as *const c_char)
 }
 
 // R: errors.c:errorcall
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_errorcall(call: Sexp, fmt: *const c_char, args: ...) -> ! {
-    let mut buf = [0u8; BUFSIZE];
-    vformat(&mut buf, BUFSIZE, fmt, args);
+    let buf = scratch();
+    vformat(buf, BUFSIZE, fmt, args);
     let call = if call == crate::state::R_CurrentExpression { Sexp::NULL } else { call };
     raise(call, buf.as_ptr() as *const c_char)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_errorcall_cpy(call: Sexp, fmt: *const c_char, args: ...) -> ! {
-    let mut buf = [0u8; BUFSIZE];
-    vformat(&mut buf, BUFSIZE, fmt, args);
+    let buf = scratch();
+    vformat(buf, BUFSIZE, fmt, args);
     raise(call, buf.as_ptr() as *const c_char)
 }
 
@@ -138,27 +154,27 @@ unsafe fn do_warning(call: Sexp, buf: &[u8], immediate: c_int) {
 // R: errors.c:warning
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_warning(fmt: *const c_char, args: ...) {
-    let mut buf = [0u8; BUFSIZE];
+    let buf = scratch();
     let psize = R_WARN_LENGTH + 1;
-    let n = vformat(&mut buf, psize, fmt, args);
-    warning_buf(&mut buf, n >= psize);
-    do_warning(Sexp::NULL, &buf, 0)
+    let n = vformat(buf, psize, fmt, args);
+    warning_buf(buf, n >= psize);
+    do_warning(Sexp::NULL, &buf[..], 0)
 }
 
 // R: errors.c:warningcall
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_warningcall(call: Sexp, fmt: *const c_char, args: ...) {
-    let mut buf = [0u8; BUFSIZE];
-    vformat(&mut buf, BUFSIZE, fmt, args);
-    do_warning(if call.is_null() { nil() } else { call }, &buf, 0)
+    let buf = scratch();
+    vformat(buf, BUFSIZE, fmt, args);
+    do_warning(if call.is_null() { nil() } else { call }, &buf[..], 0)
 }
 
 // R: errors.c:warningcall_immediate
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_warningcall_immediate(call: Sexp, fmt: *const c_char, args: ...) {
-    let mut buf = [0u8; BUFSIZE];
-    vformat(&mut buf, BUFSIZE, fmt, args);
-    do_warning(if call.is_null() { nil() } else { call }, &buf, 1)
+    let buf = scratch();
+    vformat(buf, BUFSIZE, fmt, args);
+    do_warning(if call.is_null() { nil() } else { call }, &buf[..], 1)
 }
 
 // R: errors.c:R_BadLongVector
@@ -173,17 +189,19 @@ pub unsafe extern "C" fn R_BadLongVector(_x: Sexp, file: *const c_char, line: c_
 /// Raise with an owned message (moved into a fixed buffer first so no
 /// `Drop` is pending across the jump).
 pub unsafe fn error_str_owned(msg: String) -> ! {
-    let mut buf = [0u8; BUFSIZE];
+    let buf = scratch();
     let n = msg.len().min(BUFSIZE - 1);
     buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
+    buf[n] = 0;
     drop(msg);
     raise(Sexp::NULL, buf.as_ptr() as *const c_char)
 }
 
 pub unsafe fn errorcall_owned(call: Sexp, msg: String) -> ! {
-    let mut buf = [0u8; BUFSIZE];
+    let buf = scratch();
     let n = msg.len().min(BUFSIZE - 1);
     buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
+    buf[n] = 0;
     drop(msg);
     raise(call, buf.as_ptr() as *const c_char)
 }
@@ -293,6 +311,7 @@ pub unsafe extern "C" fn Rf_onintrNoResume() {
 /// its Rust frames, which jumps never cross: every entry into C code is a
 /// C trampoline, and host callbacks return flow tokens.
 pub struct Ctx {
+    host: [usize; 2],
     pptop: c_int,
     ppsize: c_int,
     vmax: *mut c_void,
@@ -302,21 +321,38 @@ pub struct Ctx {
 }
 
 pub unsafe fn ctx_save() -> Ctx {
+    let s = crate::state::st();
+    let mut host = [0usize; 2];
+    if let Some(h) = &s.host {
+        (h.ctx_save)(host.as_mut_ptr());
+    }
     Ctx {
+        host,
         pptop: R_PPStackTop,
         ppsize: crate::state::R_PPStackSize,
-        vmax: crate::memory::vmaxget(),
-        gc_inhibit: crate::state::core().gc_inhibit,
+        vmax: s.vstack.0 as *mut c_void,
+        gc_inhibit: s.core.gc_inhibit,
         visible: crate::state::R_Visible,
         intr_susp: crate::state::R_interrupts_suspended,
     }
 }
 
+/// The context was left normally: release the host's saved state.
+pub unsafe fn ctx_done(c: &Ctx) {
+    if let Some(h) = &crate::state::st().host {
+        (h.ctx_drop)(c.host.as_ptr());
+    }
+}
+
 pub unsafe fn ctx_restore(c: &Ctx) {
+    let s = crate::state::st();
+    if let Some(h) = &s.host {
+        (h.ctx_restore)(c.host.as_ptr());
+    }
     R_PPStackTop = c.pptop;
     crate::state::R_PPStackSize = c.ppsize;
-    crate::memory::vmaxset(c.vmax);
-    crate::state::core().gc_inhibit = c.gc_inhibit;
+    s.vstack = if c.vmax.is_null() { crate::state::R_NilValue } else { Sexp(c.vmax as *mut u8) };
+    s.core.gc_inhibit = c.gc_inhibit;
     crate::state::R_Visible = c.visible;
     crate::state::R_interrupts_suspended = c.intr_susp;
 }
@@ -332,7 +368,12 @@ unsafe fn unwound(c: &Ctx) -> usize {
 /// `f(data)` in a context (C trampoline).
 pub unsafe fn try_void_ptr(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> Result<(), usize> {
     let c = ctx_save();
-    if unwind::robigo_try_void_ptr(f, data) == 0 { Ok(()) } else { Err(unwound(&c)) }
+    if unwind::robigo_try_void_ptr(f, data) == 0 {
+        ctx_done(&c);
+        Ok(())
+    } else {
+        Err(unwound(&c))
+    }
 }
 
 /// `f(data)` returning a SEXP, in a context.
@@ -340,7 +381,12 @@ pub unsafe fn try_sexp_ptr(f: unsafe extern "C" fn(*mut c_void) -> Sexp, data: *
     let c = ctx_save();
     let mut out: *mut c_void = std::ptr::null_mut();
     let f: unsafe extern "C" fn(*mut c_void) -> *mut c_void = std::mem::transmute(f);
-    if unwind::robigo_try_sexp_ptr(f, data, &mut out) == 0 { Ok(Sexp(out as *mut u8)) } else { Err(unwound(&c)) }
+    if unwind::robigo_try_sexp_ptr(f, data, &mut out) == 0 {
+        ctx_done(&c);
+        Ok(Sexp(out as *mut u8))
+    } else {
+        Err(unwound(&c))
+    }
 }
 
 /// `f(data, jump)` in a context.
@@ -350,7 +396,12 @@ pub unsafe fn try_void_ptr_int(
     jump: c_int,
 ) -> Result<(), usize> {
     let c = ctx_save();
-    if unwind::robigo_try_void_ptr_int(f, data, jump) == 0 { Ok(()) } else { Err(unwound(&c)) }
+    if unwind::robigo_try_void_ptr_int(f, data, jump) == 0 {
+        ctx_done(&c);
+        Ok(())
+    } else {
+        Err(unwound(&c))
+    }
 }
 
 /// `f(args[0], ..., args[64])` in a context.
@@ -358,6 +409,7 @@ pub unsafe fn try_call65(f: *const c_void, args: &mut [Sexp; 65]) -> Result<Sexp
     let c = ctx_save();
     let mut out: *mut c_void = std::ptr::null_mut();
     if unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out) == 0 {
+        ctx_done(&c);
         Ok(Sexp(out as *mut u8))
     } else {
         Err(unwound(&c))
@@ -369,7 +421,12 @@ pub unsafe fn try_call65(f: *const c_void, args: &mut [Sexp; 65]) -> Result<Sexp
 /// into package code.
 pub unsafe fn protect_run(f: impl FnOnce()) -> Option<usize> {
     let c = ctx_save();
-    if unwind::try_run(f) { None } else { Some(unwound(&c)) }
+    if unwind::try_run(f) {
+        ctx_done(&c);
+        None
+    } else {
+        Some(unwound(&c))
+    }
 }
 
 // R: context.c:R_ToplevelExec — errors are reported and stop here.
@@ -437,8 +494,13 @@ unsafe fn cont_take(cont: Sexp) -> usize {
 }
 
 // R: context.c:R_UnwindProtect — the context is popped before cleanfun
-// runs; cleanfun may jump away (cpp11, Rcpp), and R_ContinueUnwind may be
-// called later from another frame.
+// runs. After a jump the continuation receives the pending exit, cleanfun
+// runs with jump = TRUE, and the unwind continues (R_ContinueUnwind):
+// R_UnwindProtect never returns after a jump. cleanfun is called
+// directly, outside any robigo context: cpp11 and Rcpp leave it by
+// longjmp to their own setjmp (keeping the exit pending in the
+// continuation for a later R_ContinueUnwind), which must not skip a
+// context of ours.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_UnwindProtect(
     fun: unsafe extern "C" fn(*mut c_void) -> Sexp,
@@ -449,17 +511,19 @@ pub unsafe extern "C" fn R_UnwindProtect(
 ) -> Sexp {
     crate::memory::Rf_protect(cont);
     let r = try_sexp_ptr(fun, data);
-    let jumped = r.is_err();
     if let Err(t) = r {
         cont_set(cont, t);
     }
     crate::memory::Rf_unprotect(1);
-    if let Err(t2) = try_void_ptr_int(cleanfun, cleandata, jumped as c_int) {
-        jump_host(t2)
-    }
     match r {
-        Ok(v) => v,
-        Err(_) => cont,
+        Ok(v) => {
+            cleanfun(cleandata, 0);
+            v
+        }
+        Err(_) => {
+            cleanfun(cleandata, 1);
+            R_ContinueUnwind(cont)
+        }
     }
 }
 

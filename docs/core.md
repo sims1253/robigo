@@ -264,10 +264,14 @@ model at the C boundary:
   `Rf_error` would, so an R error inside `Rf_eval` called from C unwinds
   the C frames like GNU R and reappears as the same `Flow` (error,
   `return`/`break`/restart, interrupt) at the `.Call` boundary.
-- `R_UnwindProtect(fun, data, cleanfun, cleandata, cont)` pushes a
-  context, runs `fun`; on a jump it calls `cleanfun(cleandata, TRUE)` and
-  continues the jump with `R_ContinueUnwind(cont)`, the token holding the
-  pending condition. `R_MakeUnwindCont` allocates the token (a node).
+- `R_UnwindProtect(fun, data, cleanfun, cleandata, cont)` runs `fun` in a
+  context; on a jump it stores the pending exit in `cont`, pops the
+  context, calls `cleanfun(cleandata, TRUE)` directly (cpp11 and Rcpp
+  leave it by longjmp to their own setjmp and call `R_ContinueUnwind`
+  later) and otherwise continues the unwind itself: like GNU R's, it
+  never returns after a jump. A context also saves the host's handler and
+  restart stacks and restores them when a jump reaches it
+  (`R_restore_globals`).
 - *Open (council review):* longjmp skips Rust frames, which is defined
   only for frames without pending destructors. Today `libR.so` keeps the
   rule by construction (messages are formatted into stack buffers and
@@ -391,6 +395,12 @@ all end there). robigo provides what that path expects:
   sources call). A package binary built against GNU R's stock public
   headers still works against `libR.so` (functions only); the capi corpus
   is built against robigo's headers.
+- **Base packages, first route (measured, ledger):** compile GNU R's
+  sources with `-DTESTING_WRITE_BARRIER`, which makes GNU R's own Defn.h
+  call exported functions instead of reading fields; stats.so built that
+  way loads in robigo and its `cor`/`cov` give GNU R's values
+  (`crates/robigo-capi/natives/build-base-native.sh`). A robigo Defn.h
+  with inlined accessors is the faster later step.
 - **Base packages**: `stats.so`, `utils.so`, `tools.so`, `grDevices.so`,
   `graphics.so`, `methods.so`, `grid.so`, `splines.so`, `parallel.so`
   compiled from the R 4.5.0 sources (`~/.cache/robigo-research/rsrc`)
@@ -407,10 +417,22 @@ all end there). robigo provides what that path expects:
    accessors, attributes, errors), the bridge, `.Call`/`.External`/`.C`;
    hill-climb the `capi` corpus case by case.
 3. The `R_HOME` layout, headers, Makeconf and `robigo CMD SHLIB|INSTALL`;
-   switch the capi corpus build to robigo's headers.
+   switch the capi corpus build to robigo's headers. *Done*
+   (`scripts/robigo-home.sh`; the capi corpus builds with `robigo CMD
+   SHLIB`).
 4. The gate: `install.packages("fastmap")` from source inside robigo and
    its tests; `digest`; a small cpp11 and a small Rcpp package; then
-   `stats` from source, the other base packages after it.
+   `stats` from source, the other base packages after it. *Measured
+   (ledger 2026-10-28):*
+   - installed from CRAN sources inside robigo, with their own tests:
+     fastmap 302/341 expectations (the rest is latin1), digest 325/325,
+     timechange (cpp11) 967/967;
+   - Rcpp compiles but cannot load: it imports methods, whose natives
+     need the evaluator's S4 hooks (`R_set_standardGeneric_ptr`,
+     `R_set_quick_method_check`, `do_set_prim_method`, `R_execMethod`,
+     ...: G6);
+   - `tools.so` from source runs `R CMD INSTALL`; `stats.so` from
+     source loads; `src/appl` is next.
 
 Once the API exists, the work splits along `symbols.tsv`'s areas, each a
 track with the capi corpus slice and the census coverage as its metric:
@@ -438,7 +460,9 @@ fastmap/digest/cpp11/Rcpp. That needs ALTREP class registration with the
 serialization hooks (robigo has no ALTREP serialization today:
 `docs/ledger/startup.md`) and fork safety.
 
-**Decision A.1, fork-safe collection: side mark bitmaps.** `mclapply`
+**Decision A.1, fork-safe collection: side mark bitmaps** (implemented:
+a collection in a forked child copies 17 MB of a 229 MB heap instead of
+226 MB; ledger). `mclapply`
 forks a live heap; a collector that writes mark bits into object headers
 dirties every copy-on-write page of the live set in every child. Marks
 therefore move out of the header into per-block side bitmaps (next to
@@ -519,8 +543,8 @@ they land; evidence in `docs/ledger/core.md`):
 |---|---|---|
 | 1 | base-package natives rebuilt from R 4.5.0 sources against robigo's headers + `Defn.h`; ~25 non-API internals | planned (§8) |
 | 2 | immortals traced (symbols, mutable constants) | done |
-| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done in libR.so (`errors::Ctx`); depth/handlers unwind in the host, whose frames jumps never cross |
-| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done (continuation holds a HOST proxy that discards an abandoned condition; tested); packages in the gate |
+| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done (`errors::Ctx`), including the host's handler and restart stacks (found by the caught-error benchmark, ledger) |
+| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done: continues the unwind after cleanfun as GNU R does; the continuation owns a pending exit (HOST proxy) when cleanfun leaves by longjmp; packages in the gate |
 | 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
@@ -529,7 +553,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | done |
 | 11 | the bridge is a thin scaffold with listed limits | §6, bridge.rs header |
 | 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
-| 13 | medium-object pages, LARGE bit, consistent accounting | planned (d/e) |
+| 13 | medium-object pages, LARGE bit, consistent accounting | medium classes up to 64,960 bytes share blocks (ledger); accounting review open |
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |

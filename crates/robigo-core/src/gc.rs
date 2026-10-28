@@ -12,6 +12,13 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::time::Instant;
 
+/// Free slots or bump space left in a block (the sweep re-lists such
+/// blocks: it resets the allocation cursors, and a block left off every
+/// list would keep its unused space until all its objects died).
+unsafe fn block_has_room(b: *mut Block) -> bool {
+    unsafe { !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / 16) as u32 <= (*b).granules }
+}
+
 /// Releases an external payload or host handle when its object dies.
 pub type ReleaseFn = unsafe extern "C" fn(usize);
 
@@ -40,9 +47,16 @@ fn gc_min() -> usize {
 pub struct Core {
     heap: Heap,
     mark_stack: Vec<Sexp>,
-    cur_mark: u8,
+    /// the collection's number: large objects are marked by storing it in
+    /// their chunk's header (no clearing between collections)
+    epoch: u64,
     alloc_since_gc: usize,
     gc_threshold: usize,
+    /// cached CHARSXPs marked by this collection, and immortal ones: when
+    /// they add up to the table's size nothing in it died, and the prune
+    /// (a cache miss per entry: 1.3 s for 10M strings) is skipped
+    marked_chars: usize,
+    immortal_chars: usize,
     /// > 0: allocation does not collect (`R_gc` still does).
     pub gc_inhibit: u32,
     /// the bounds of the thread the core is bound to (the evaluator's)
@@ -69,7 +83,9 @@ pub struct Core {
     syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
 
     /// R_PreserveObject's set, with counts
-    precious: HashMap<Sexp, u32, BuildFx>,
+    /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
+    /// released from the top (O(1) for the usual LIFO churn)
+    precious: Vec<Sexp>,
     /// extra precise roots: called during marking with this core
     pub root_fns: Vec<unsafe fn(&mut Core)>,
     /// weak references (WEAKREFSXP) not yet finalized
@@ -135,9 +151,11 @@ impl Core {
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
-            cur_mark: flags::MARK_B, // the first collection flips to MARK_A
+            epoch: 0,
             alloc_since_gc: 0,
             gc_threshold: gc_min(),
+            marked_chars: 0,
+            immortal_chars: 0,
             gc_inhibit: 0,
             stack_top: thread_stack().1,
             stack_lo: thread_stack().0,
@@ -151,7 +169,7 @@ impl Core {
             missing_arg: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
-            precious: HashMap::default(),
+            precious: Vec::new(),
             root_fns: Vec::new(),
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
@@ -192,6 +210,9 @@ impl Core {
                 return;
             }
             x.set_flag(flags::IMMORTAL, true);
+            if x.typ() == CHARSXP && x.gp() & gp::CACHED != 0 {
+                self.immortal_chars += 1;
+            }
             let b = self.heap.block_of(x.0);
             if (*b).magic == 0x524f4249474f4241 {
                 (*b).immortals += 1;
@@ -270,7 +291,7 @@ impl Core {
     pub fn try_alloc_vector(&mut self, t: u8, n: usize) -> Option<Sexp> {
         let esz = crate::elt_size(t);
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
-        let x = if bytes > crate::heap::MAX_SMALL {
+        let x = if bytes > crate::heap::MAX_MEDIUM {
             if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
                 self.collect();
             }
@@ -434,16 +455,18 @@ impl Core {
 
     // ---- roots ---------------------------------------------------------
 
+    // R: memory.c:R_PreserveObject / R_ReleaseObject (the list form):
+    // each preserve adds an entry, each release removes the most recent
+    // matching one
+    #[inline]
     pub fn preserve(&mut self, x: Sexp) {
-        *self.precious.entry(x).or_insert(0) += 1;
+        self.precious.push(x);
     }
 
+    #[inline]
     pub fn release(&mut self, x: Sexp) {
-        if let Some(n) = self.precious.get_mut(&x) {
-            *n -= 1;
-            if *n == 0 {
-                self.precious.remove(&x);
-            }
+        if let Some(k) = self.precious.iter().rposition(|&p| p == x) {
+            self.precious.swap_remove(k);
         }
     }
 
@@ -543,18 +566,27 @@ impl Core {
             if p.is_null() {
                 return;
             }
-            let f = p.flags();
-            if f & flags::IMMORTAL != 0 {
+            if p.flags() & flags::IMMORTAL != 0 {
                 return;
             }
-            let cur = self.cur_mark;
-            if f & cur != 0 {
-                return;
-            }
-            p.set_flags((f & !(flags::MARK_A | flags::MARK_B)) | cur);
+            // marks live beside the objects (the block's mark bitmap, a
+            // large chunk's header word): marking never writes an object
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
+                let g = (p.0 as usize - (*b).data_ptr() as usize) / 16;
+                let w = (*b).marks.as_mut_ptr().add(g >> 6);
+                let bit = 1u64 << (g & 63);
+                if *w & bit != 0 {
+                    return;
+                }
+                *w |= bit;
                 (*b).marked = (*b).marked.wrapping_add(1);
+            } else {
+                let m = (b as *mut u64).add(1);
+                if *m == self.epoch {
+                    return;
+                }
+                *m = self.epoch;
             }
             self.mark_stack.push(p);
         }
@@ -562,7 +594,18 @@ impl Core {
 
     #[inline]
     unsafe fn is_marked(&self, p: Sexp) -> bool {
-        unsafe { p.flags() & (self.cur_mark | flags::IMMORTAL) != 0 }
+        unsafe {
+            if p.flags() & flags::IMMORTAL != 0 {
+                return true;
+            }
+            let b = (p.0 as usize & !(BLOCK - 1)) as *const Block;
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (p.0 as usize - (*b).data_ptr() as usize) / 16;
+                (*b).marks[g >> 6] & (1u64 << (g & 63)) != 0
+            } else {
+                *(b as *const u64).add(1) == self.epoch
+            }
+        }
     }
 
     unsafe fn trace(&mut self) {
@@ -570,6 +613,8 @@ impl Core {
             while let Some(p) = self.mark_stack.pop() {
                 let t = p.typ();
                 if t == CHARSXP {
+                    // every cached CHARSXP is in the table (mk_char)
+                    self.marked_chars += (p.gp() & gp::CACHED != 0) as usize;
                     continue;
                 }
                 self.mark_obj(p.attrib_raw());
@@ -701,10 +746,11 @@ impl Core {
             std::process::abort();
         }
         let t0 = Instant::now();
-        self.cur_mark = if self.cur_mark == flags::MARK_A { flags::MARK_B } else { flags::MARK_A };
+        self.epoch += 1;
+        self.marked_chars = 0;
         unsafe {
-            let prec: Vec<Sexp> = self.precious.keys().copied().collect();
-            for p in prec {
+            for i in 0..self.precious.len() {
+                let p = self.precious[i];
                 self.mark_obj(p);
             }
             for i in 0..self.finalize_queue.len() {
@@ -743,8 +789,13 @@ impl Core {
     }
 
     fn prune_chars(&mut self) {
-        let live = flags::IMMORTAL | self.cur_mark;
-        self.chars.prune(|c| unsafe { c.flags() } & live != 0);
+        if self.marked_chars + self.immortal_chars == self.chars.len() {
+            debug_assert!(self.chars.all(|c| unsafe { self.is_marked(c) }));
+            return;
+        }
+        let mut chars = std::mem::take(&mut self.chars);
+        chars.prune(|c| unsafe { self.is_marked(c) });
+        self.chars = chars;
     }
 
     /// Queue the release callback of a dead object.
@@ -775,12 +826,12 @@ impl Core {
         let mut dead_chunks: Vec<usize> = Vec::new();
         let mut dead_small_chunks: Vec<(usize, usize, usize)> = Vec::new();
         let chunks = self.heap.chunks.clone();
-        let cur = self.cur_mark;
+        let epoch = self.epoch;
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + DATA_OFF) as *mut u8;
                 let f = unsafe { *obj.add(1) };
-                if f & (cur | flags::IMMORTAL) != 0 {
+                if f & flags::IMMORTAL != 0 || unsafe { *(c.base as *const u64).add(1) } == epoch {
                     live_bytes += (c.end - c.base) as u64;
                     live_objects += 1;
                 } else {
@@ -805,10 +856,18 @@ impl Core {
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
                         (*b).marked = 0;
+                        (*b).marks = [0; START_WORDS];
                         chunk_dead = false;
+                        // the allocation cursors are reset below: a block
+                        // with room left must be findable again
+                        if (*b).owner == OWNER_NONE && block_has_room(b) {
+                            to_list.push(((*b).class as usize, b));
+                        }
                         continue;
                     }
                     let old_starts = (*b).starts;
+                    let marks = (*b).marks;
+                    (*b).marks = [0; START_WORDS];
                     (*b).starts = [0; START_WORDS];
                     (*b).freelist = std::ptr::null_mut();
                     let mut live: u32 = 0;
@@ -819,7 +878,7 @@ impl Core {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = (*b).data_ptr().add(g * 16);
                             let f = *p.add(1);
-                            if f & (cur | flags::IMMORTAL) != 0 {
+                            if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
                                 (*b).start_set(g);
@@ -863,7 +922,7 @@ impl Core {
                     }
                     chunk_dead = false;
                     chunk_touched = true;
-                    if !(*b).freelist.is_null() && (*b).owner == OWNER_NONE {
+                    if (*b).owner == OWNER_NONE && block_has_room(b) {
                         to_list.push(((*b).class as usize, b));
                     }
                 }

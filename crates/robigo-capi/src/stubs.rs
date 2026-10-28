@@ -16,16 +16,11 @@ pub static STUBS: &[&str] = &[
     "R_ClosureEnv",
     "R_do_MAKE_CLASS",
     "R_has_slot",
-    "dqrdc2_",
-    "dqrsl_",
-    "vmmin",
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
     "R_PromiseExpr",
     "Rf_CreateAtVector",
-    "Rf_rPsort",
-    "optif9",
     "GECap",
     "GECircle",
     "GEExpressionHeight",
@@ -55,21 +50,11 @@ pub static STUBS: &[&str] = &[
     "R_ClosureExpr",
     "R_GE_str2col",
     "R_getClassDef",
-    "Rdqags",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
     "Rf_NoDevices",
     "Rf_RGBpar3",
     "Rf_asS4",
-    "Rf_begincontext",
-    "Rf_endcontext",
-    "UNIMPLEMENTED_TYPE",
-    "dpofa_",
-    "dqrdc_",
-    "getConnection",
-    "intpr_",
-    "nmmin",
-    "rexit_",
     "GEExpressionMetric",
     "GEFill",
     "GEFillStroke",
@@ -96,14 +81,12 @@ pub static STUBS: &[&str] = &[
     "GEtoDeviceY",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
-    "RC_fopen",
     "R_AllocStringBuffer",
     "R_Busy",
     "R_CheckDeviceAvailable",
     "R_ClearerrConsole",
     "R_EditFiles",
     "R_EnvironmentIsLocked",
-    "R_FileExists",
     "R_FreeStringBuffer",
     "R_GE_checkVersionOrDie",
     "R_GE_clipPathFillRule",
@@ -152,7 +135,6 @@ pub static STUBS: &[&str] = &[
     "R_HashtabSEXP",
     "R_InitInPStream",
     "R_IsPackageEnv",
-    "R_NewHashedEnv",
     "R_PackageEnvName",
     "R_ReadConsole",
     "R_SelectEx",
@@ -164,7 +146,6 @@ pub static STUBS: &[&str] = &[
     "R_cairoCdynload",
     "R_checkActivity",
     "R_check_class_etc",
-    "R_closedir",
     "R_clrhash",
     "R_data_class",
     "R_deferred_default_method",
@@ -181,14 +162,12 @@ pub static STUBS: &[&str] = &[
     "R_moduleCdynload",
     "R_new_custom_connection",
     "R_numhash",
-    "R_opendir",
     "R_popen",
     "R_primitive_generic",
     "R_primitive_methods",
     "R_qsort_I",
     "R_qsort_int",
     "R_qsort_int_I",
-    "R_readdir",
     "R_remhash",
     "R_runHandlers",
     "R_set_prim_method",
@@ -205,7 +184,6 @@ pub static STUBS: &[&str] = &[
     "R_withCallingErrorHandler",
     "Rconn_printf",
     "Rdownload",
-    "Rdqagi",
     "Rf_EncodeChar",
     "Rf_EncodeComplex",
     "Rf_EncodeElement0",
@@ -215,20 +193,15 @@ pub static STUBS: &[&str] = &[
     "Rf_GPretty",
     "Rf_RGBpar",
     "Rf_acopy_string",
-    "Rf_allocLang",
     "Rf_con_pushback",
     "Rf_csduplicated",
     "Rf_curDevice",
     "Rf_currentTime",
-    "Rf_deparse1",
-    "Rf_deparse1line",
     "Rf_formatComplex",
     "Rf_formatReal",
-    "Rf_iPsort",
     "Rf_killDevice",
     "Rf_matchE",
     "Rf_mbcsToUcs2",
-    "Rf_mbrtowc",
     "Rf_memtrace_report",
     "Rf_nextDevice",
     "Rf_prevDevice",
@@ -236,7 +209,6 @@ pub static STUBS: &[&str] = &[
     "Rf_selectDevice",
     "Rf_sortVector",
     "Rf_strIsASCII",
-    "Rf_strchr",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
     "Rf_utf8toucs",
@@ -252,9 +224,6 @@ pub static STUBS: &[&str] = &[
     "Rsockwrite",
     "Runzip",
     "XTRUELENGTH",
-    "cgmin",
-    "d1mach_",
-    "dblepr_",
     "do_Rprof",
     "do_Rprofmem",
     "do_X11",
@@ -268,29 +237,15 @@ pub static STUBS: &[&str] = &[
     "do_saveplot",
     "do_setGraphicsEventEnv",
     "do_set_prim_method",
-    "dpbfa_",
-    "dpbsl_",
-    "dqrcf_",
-    "dqrls_",
-    "dqrqy_",
     "dsvdc_",
-    "dtrsl_",
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
-    "fdhess",
     "getPRIMNAME",
-    "interv_",
-    "lbfgsb",
     "locale2charset",
     "mbcsValid",
     "parseError",
-    "rchkusr_",
-    "rwarn_",
-    "samin",
-    "signrank_free",
     "utf8Valid",
     "utf8clen",
-    "wilcox_free",
 ];
 
 #[unsafe(no_mangle)]
@@ -334,21 +289,6 @@ pub unsafe extern "C" fn R_has_slot() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrdc2_() {
-    not_implemented("dqrdc2_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrsl_() {
-    not_implemented("dqrsl_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmmin() {
-    not_implemented("vmmin")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn GEMode() {
     not_implemented("GEMode")
 }
@@ -371,16 +311,6 @@ pub unsafe extern "C" fn R_PromiseExpr() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_CreateAtVector() {
     not_implemented("Rf_CreateAtVector")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rPsort() {
-    not_implemented("Rf_rPsort")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn optif9() {
-    not_implemented("optif9")
 }
 
 #[unsafe(no_mangle)]
@@ -538,11 +468,6 @@ pub static mut R_print: [usize; 4] = [0; 4];
 pub static mut R_wait_usec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdqags() {
-    not_implemented("Rdqags")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_GAxisPars() {
     not_implemented("Rf_GAxisPars")
 }
@@ -565,51 +490,6 @@ pub unsafe extern "C" fn Rf_RGBpar3() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_asS4() {
     not_implemented("Rf_asS4")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_begincontext() {
-    not_implemented("Rf_begincontext")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_endcontext() {
-    not_implemented("Rf_endcontext")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn UNIMPLEMENTED_TYPE() {
-    not_implemented("UNIMPLEMENTED_TYPE")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpofa_() {
-    not_implemented("dpofa_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrdc_() {
-    not_implemented("dqrdc_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn getConnection() {
-    not_implemented("getConnection")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn intpr_() {
-    not_implemented("intpr_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nmmin() {
-    not_implemented("nmmin")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rexit_() {
-    not_implemented("rexit_")
 }
 
 #[unsafe(no_mangle)]
@@ -746,11 +626,6 @@ pub unsafe extern "C" fn LOGICAL_NO_NA() {
 pub static mut OutDec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn RC_fopen() {
-    not_implemented("RC_fopen")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_AllocStringBuffer() {
     not_implemented("R_AllocStringBuffer")
 }
@@ -781,11 +656,6 @@ pub unsafe extern "C" fn R_EditFiles() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_EnvironmentIsLocked() {
     not_implemented("R_EnvironmentIsLocked")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_FileExists() {
-    not_implemented("R_FileExists")
 }
 
 #[unsafe(no_mangle)]
@@ -1038,32 +908,12 @@ pub unsafe extern "C" fn R_IsPackageEnv() {
 pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_NewHashedEnv() {
-    not_implemented("R_NewHashedEnv")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_Outputfile: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_PackageEnvName() {
     not_implemented("R_PackageEnvName")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContext: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContextLast: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContextLine: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseError: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseErrorMsg: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut R_PolledEvents: [usize; 4] = [0; 4];
@@ -1116,11 +966,6 @@ pub unsafe extern "C" fn R_checkActivity() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_check_class_etc() {
     not_implemented("R_check_class_etc")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_closedir() {
-    not_implemented("R_closedir")
 }
 
 #[unsafe(no_mangle)]
@@ -1207,11 +1052,6 @@ pub unsafe extern "C" fn R_numhash() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_opendir() {
-    not_implemented("R_opendir")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_popen() {
     not_implemented("R_popen")
 }
@@ -1239,11 +1079,6 @@ pub unsafe extern "C" fn R_qsort_int() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_qsort_int_I() {
     not_implemented("R_qsort_int_I")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_readdir() {
-    not_implemented("R_readdir")
 }
 
 #[unsafe(no_mangle)]
@@ -1327,11 +1162,6 @@ pub unsafe extern "C" fn Rdownload() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdqagi() {
-    not_implemented("Rdqagi")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_EncodeChar() {
     not_implemented("Rf_EncodeChar")
 }
@@ -1377,11 +1207,6 @@ pub unsafe extern "C" fn Rf_acopy_string() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_allocLang() {
-    not_implemented("Rf_allocLang")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_con_pushback() {
     not_implemented("Rf_con_pushback")
 }
@@ -1402,16 +1227,6 @@ pub unsafe extern "C" fn Rf_currentTime() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_deparse1() {
-    not_implemented("Rf_deparse1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_deparse1line() {
-    not_implemented("Rf_deparse1line")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_formatComplex() {
     not_implemented("Rf_formatComplex")
 }
@@ -1419,11 +1234,6 @@ pub unsafe extern "C" fn Rf_formatComplex() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_formatReal() {
     not_implemented("Rf_formatReal")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_iPsort() {
-    not_implemented("Rf_iPsort")
 }
 
 #[unsafe(no_mangle)]
@@ -1439,11 +1249,6 @@ pub unsafe extern "C" fn Rf_matchE() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mbcsToUcs2() {
     not_implemented("Rf_mbcsToUcs2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_mbrtowc() {
-    not_implemented("Rf_mbrtowc")
 }
 
 #[unsafe(no_mangle)]
@@ -1479,11 +1284,6 @@ pub unsafe extern "C" fn Rf_sortVector() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_strIsASCII() {
     not_implemented("Rf_strIsASCII")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_strchr() {
-    not_implemented("Rf_strchr")
 }
 
 #[unsafe(no_mangle)]
@@ -1565,21 +1365,6 @@ pub unsafe extern "C" fn XTRUELENGTH() {
 pub static mut baseRegisterIndex: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cgmin() {
-    not_implemented("cgmin")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn d1mach_() {
-    not_implemented("d1mach_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dblepr_() {
-    not_implemented("dblepr_")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprof() {
     not_implemented("do_Rprof")
 }
@@ -1645,38 +1430,8 @@ pub unsafe extern "C" fn do_set_prim_method() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpbfa_() {
-    not_implemented("dpbfa_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpbsl_() {
-    not_implemented("dpbsl_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrcf_() {
-    not_implemented("dqrcf_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrls_() {
-    not_implemented("dqrls_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrqy_() {
-    not_implemented("dqrqy_")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dsvdc_() {
     not_implemented("dsvdc_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dtrsl_() {
-    not_implemented("dtrsl_")
 }
 
 #[unsafe(no_mangle)]
@@ -1690,23 +1445,8 @@ pub unsafe extern "C" fn extR_HTTPDStop() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fdhess() {
-    not_implemented("fdhess")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn getPRIMNAME() {
     not_implemented("getPRIMNAME")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn interv_() {
-    not_implemented("interv_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lbfgsb() {
-    not_implemented("lbfgsb")
 }
 
 #[unsafe(no_mangle)]
@@ -1761,26 +1501,6 @@ pub static mut ptr_do_dataviewer: [usize; 4] = [0; 4];
 pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rchkusr_() {
-    not_implemented("rchkusr_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rwarn_() {
-    not_implemented("rwarn_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn samin() {
-    not_implemented("samin")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signrank_free() {
-    not_implemented("signrank_free")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn utf8Valid() {
     not_implemented("utf8Valid")
 }
@@ -1788,9 +1508,4 @@ pub unsafe extern "C" fn utf8Valid() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn utf8clen() {
     not_implemented("utf8clen")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wilcox_free() {
-    not_implemented("wilcox_free")
 }

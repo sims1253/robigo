@@ -326,10 +326,12 @@ def classify(exp, o, e, s):
 
 def cmd_run(a):
     conf = corpus_conf(a.name)
-    build_corpus(a.name, conf)
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
+    # the build step (capi: robigo CMD SHLIB) uses the binary under test
+    os.environ["ROBIGO"] = os.path.abspath(robigo)
+    build_corpus(a.name, conf)
     exp = load_expected(a.name)
     if not exp:
         sys.exit(f"{a.name} has no expected output; run: scripts/corpus.py record {a.name}")

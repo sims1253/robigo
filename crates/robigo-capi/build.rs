@@ -7,6 +7,18 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libR.so");
     println!("cargo:rerun-if-changed=build.rs");
+    // GNU R's src/appl C code, built into libR as GNU R does (appl/README.md)
+    println!("cargo:rerun-if-changed=appl");
+    cc::Build::new()
+        .files(["appl/optim.c", "appl/uncmin.c", "appl/integrate.c"])
+        .include("appl")
+        .include("include")
+        .define("HAVE_CONFIG_H", None)
+        .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-sign-compare")
+        .flag_if_supported("-Wno-maybe-uninitialized")
+        .flag_if_supported("-Wno-unused-but-set-variable")
+        .compile("robigo_appl");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let src = out.join("libR-stub.c");
     std::fs::write(&src, "/* robigo's stub libR.so: a soname, no code */\nint robigo_libR_stub;\n").unwrap();

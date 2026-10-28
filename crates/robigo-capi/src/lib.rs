@@ -10,19 +10,23 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod altrep;
+pub mod appl;
 pub mod arith;
 pub mod attrib;
 pub mod bridge;
 pub mod coerce;
 pub mod connections;
+pub mod context;
 pub mod dotcode;
 pub mod envir;
 pub mod errors;
 pub mod extptr;
 pub mod host;
+pub mod linpack;
 pub mod list;
 pub mod memory;
 pub mod nmath;
+pub mod platform;
 pub mod rdynload;
 pub mod rng;
 pub mod serialize;

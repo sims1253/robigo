@@ -14,29 +14,48 @@ use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::mem::MaybeUninit;
 
 pub const BLOCK: usize = 65536;
-pub const DATA_OFF: usize = 576;
-pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / 16) as u32; // 4060
-pub const START_WORDS: usize = (BLOCK_GRANULES as usize + 63) / 64; // 64
+/// The block header: 64 bytes of fields, the start bitmap and the mark
+/// bitmap (marks live here, not in object headers, so a collection in a
+/// forked child does not dirty the parent's object pages: docs/core.md §10).
+pub const DATA_OFF: usize = 1072;
+pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / 16) as u32; // 4029
+pub const START_WORDS: usize = (BLOCK_GRANULES as usize + 63) / 64; // 63
 pub const CHUNK_BLOCKS: usize = 16;
 pub const CHUNK_BYTES: usize = BLOCK * CHUNK_BLOCKS;
 pub const MAX_SMALL: usize = 2048;
+/// The largest object a block holds (one per block); larger objects get
+/// a dedicated chunk.
+pub const MAX_MEDIUM: usize = 64464;
 
-pub const CLASS_NONE: u8 = 44; // block not yet assigned to a size class
+pub const CLASS_NONE: u8 = 255; // block not yet assigned to a size class
 pub const OWNER_NONE: u8 = 0; // current allocation source of its class
 pub const OWNER_LIST: u8 = 1; // in the class's block list (has free space)
 pub const OWNER_EMPTY: u8 = 2; // in the heap-wide empty pool (pristine)
 
-/// 16, 32, ..., 256, 320, 384, ..., 2048.
-pub const SIZES: [usize; 44] = [
+/// Small classes: 16, 32, ..., 256, 320, 384, ..., 2048. Medium classes
+/// (council item 13): the largest 16-byte multiple of (block data)/k for
+/// k = 31 .. 1, so k objects tile a block; objects up to 64464 bytes
+/// share blocks instead of taking a 64 KiB chunk each.
+pub const SIZES: [usize; 75] = [
     16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 320, 384, 448, 512, 576, 640, 704, 768,
     832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984,
-    2048,
+    2048, 2064, 2144, 2208, 2288, 2384, 2464, 2576, 2672, 2800, 2928, 3056, 3216, 3392, 3568, 3792, 4016, 4288, 4592,
+    4944, 5360, 5856, 6432, 7152, 8048, 9200, 10736, 12880, 16112, 21488, 32224, 64464,
 ];
+
+/// The first medium class.
+const FIRST_MEDIUM: usize = 44;
 
 #[inline]
 pub fn class_index(size: usize) -> usize {
-    debug_assert!(size >= 1 && size <= MAX_SMALL);
-    if size <= 256 { ((size + 15) >> 4) - 1 } else { 16 + ((size - 257) >> 6) }
+    debug_assert!(size >= 1 && size <= MAX_MEDIUM);
+    if size <= 256 {
+        ((size + 15) >> 4) - 1
+    } else if size <= MAX_SMALL {
+        16 + ((size - 257) >> 6)
+    } else {
+        FIRST_MEDIUM + SIZES[FIRST_MEDIUM..].partition_point(|&c| c < size)
+    }
 }
 
 #[repr(C, align(65536))]
@@ -72,12 +91,16 @@ pub struct Block {
     _rsv: [u8; 16],
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
+    /// one bit per granule: the object starting here was marked by the
+    /// current collection (cleared by the sweep that reads it).
+    pub marks: [u64; START_WORDS],
     pub data: [MaybeUninit<u8>; BLOCK - DATA_OFF],
 }
 
 // the sweeper and the conservative resolver index `starts`/`data` through
 // these offsets; `marked` must not push them around
 const _: () = assert!(std::mem::offset_of!(Block, starts) == 64);
+const _: () = assert!(std::mem::offset_of!(Block, marks) == 64 + 8 * START_WORDS);
 const _: () = assert!(std::mem::offset_of!(Block, data) == DATA_OFF);
 const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
 const _: () = assert!(std::mem::offset_of!(Block, immortals) == 44);
@@ -187,6 +210,7 @@ impl Heap {
                             immortals: 0,
                             _rsv: [0; 16],
                             starts: [0; START_WORDS],
+                            marks: [0; START_WORDS],
                             data: [MaybeUninit::uninit(); BLOCK - DATA_OFF],
                         },
                     );
@@ -216,7 +240,7 @@ impl Heap {
     #[inline(always)]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         debug_assert!(size >= 16);
-        if size > MAX_SMALL {
+        if size > MAX_MEDIUM {
             return self.alloc_large(size);
         }
         let ci = class_index(size);
@@ -451,7 +475,15 @@ mod tests {
         for ci in 0..SIZES.len() {
             let lo = if ci == 0 { 16 } else { SIZES[ci - 1] + 1 };
             let hi = SIZES[ci];
-            let sizes: Vec<usize> = (lo..=hi).step_by(8).chain([hi]).collect();
+            // three neighbours must fit one block
+            if (BLOCK - DATA_OFF) / hi < 3 {
+                continue;
+            }
+            let sizes: Vec<usize> = if ci < FIRST_MEDIUM {
+                (lo..=hi).step_by(8).chain([hi]).collect()
+            } else {
+                vec![lo, lo + 8, (lo + hi) / 2, hi - 8, hi]
+            };
             for &a in &sizes {
                 for &b in &sizes {
                     let mut h = Heap::new();
@@ -476,5 +508,29 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod medium_tests {
+    use super::*;
+
+    #[test]
+    fn medium_classes_tile_blocks_and_index_correctly() {
+        for ci in FIRST_MEDIUM..SIZES.len() {
+            let c = SIZES[ci];
+            assert_eq!(c % 16, 0);
+            assert!(c > SIZES[ci - 1]);
+            assert_eq!(class_index(c), ci);
+            assert_eq!(class_index(SIZES[ci - 1] + 1), ci);
+        }
+        assert_eq!(class_index(2049), FIRST_MEDIUM);
+        assert_eq!(class_index(MAX_MEDIUM), SIZES.len() - 1);
+        // a 1000-double vector (8032 bytes) shares a block with 7 others
+        let mut h = Heap::new();
+        let a = h.alloc(8032);
+        let b = h.alloc(8032);
+        assert_eq!(a as usize & !(BLOCK - 1), b as usize & !(BLOCK - 1));
+        assert_eq!(h.reserved, CHUNK_BYTES);
     }
 }

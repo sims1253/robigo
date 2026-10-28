@@ -13,15 +13,30 @@ pub struct State {
     pub vstack: Sexp,
 }
 
-pub static mut STATE: *mut State = std::ptr::null_mut();
+// The isolate record (lead requirement A.2, docs/core.md §10): one per
+// OS thread, reached through a thread-local pointer, never a process-wide
+// singleton. The exported data symbols below (R_NilValue, R_GlobalEnv,
+// R_PPStack, ...) are still process-wide variables; robigo's headers
+// turn the per-isolate ones into macros over this record.
+thread_local! {
+    static ISOLATE: std::cell::Cell<*mut State> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// This thread's isolate, or null.
+#[inline(always)]
+pub fn isolate() -> *mut State {
+    ISOLATE.with(|c| c.get())
+}
 
 #[inline(always)]
 pub fn st() -> &'static mut State {
     unsafe {
-        if STATE.is_null() {
+        let p = isolate();
+        if p.is_null() {
             init_state();
+            return &mut *isolate();
         }
-        &mut *STATE
+        &mut *p
     }
 }
 
@@ -241,7 +256,7 @@ unsafe fn mark_api_roots(c: &mut Core) {
     for i in 0..R_PPStackTop.max(0) as usize {
         c.mark(*R_PPStack.add(i));
     }
-    let s = &*STATE;
+    let s = &*isolate();
     c.mark(s.vstack);
     for v in [
         R_GlobalEnv,
@@ -269,7 +284,7 @@ unsafe fn mark_api_roots(c: &mut Core) {
 /// Create the heap and the API's constants (memory.c InitMemory,
 /// names.c InitNames). Idempotent.
 pub unsafe fn init_state() {
-    if !STATE.is_null() {
+    if !isolate().is_null() {
         return;
     }
     let mut heap = Core::new();
@@ -280,7 +295,8 @@ pub unsafe fn init_state() {
     R_BlankString = heap.blank_string;
     heap.root_fns.push(mark_api_roots);
     let nil = heap.nil;
-    STATE = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
+    let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
+    ISOLATE.with(|c| c.set(state));
     let stack = vec![Sexp::NULL; PPSSIZE as usize + 1000].into_boxed_slice();
     R_PPStack = Box::into_raw(stack) as *mut Sexp;
     R_PPStackSize = PPSSIZE;

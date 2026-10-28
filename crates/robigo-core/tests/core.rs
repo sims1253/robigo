@@ -142,7 +142,7 @@ fn stack_references_keep_objects_alive() {
     // only an interior pointer survives in a local
     let interior = std::hint::black_box(unsafe { (x.std_data() as *mut i32).add(10) });
     let x_addr = x.addr();
-    drop(x);
+    let _ = x;
     for i in 0..200_000 {
         int_vec(&mut c, &[i]);
     }
@@ -243,7 +243,7 @@ fn symbol_values_are_traced() {
     let addr = v.addr();
     unsafe { s.set_cdr_raw(v) };
     c.write_barrier(s);
-    drop(v);
+    let _ = v;
     std::hint::black_box([0usize; 64]);
     for _ in 0..3 {
         c.collect();
@@ -278,7 +278,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     let dead_key = c.alloc_vector(INTSXP, 1);
     let _w2 = mk(&mut c, dead_key);
     let dead_addr = dead_key.addr();
-    drop(dead_key);
+    let _ = dead_key;
     std::hint::black_box([0usize; 64]);
     c.collect();
     let mut q = Vec::new();
@@ -300,12 +300,12 @@ fn try_run_and_jump() {
     let ok = robigo_core::unwind::try_run(|| {});
     assert!(ok);
     let mut reached = false;
-    let r = &mut reached as *mut bool;
+    let _r = &mut reached as *mut bool;
     let ok = robigo_core::unwind::try_run(move || unsafe {
         robigo_core::unwind::jump();
         #[allow(unreachable_code)]
         {
-            *r = true;
+            *_r = true;
         }
     });
     assert!(!ok);
@@ -360,4 +360,91 @@ fn one_past_the_end_keeps_the_object() {
     c.collect();
     assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "only a one-past-the-end pointer referenced it");
     std::hint::black_box(end_word);
+}
+
+#[test]
+fn medium_vectors_share_blocks() {
+    // 10,000 live 1000-double vectors (8 KiB of payload each): before the
+    // medium classes each took a 64 KiB chunk (655 MB reserved)
+    let mut c = core_with_roots();
+    let keep = c.alloc_vector(VECSXP, 10_000);
+    // (under ROBIGO_GCTORTURE this collects on every allocation: it also
+    // checks that collections do not abandon a block's unused space)
+    root(keep);
+    for i in 0..10_000 {
+        let v = c.alloc_vector(REALSXP, 1000);
+        unsafe { *(keep.std_data() as *mut Sexp).add(i) = v };
+    }
+    let reserved = c.heap_reserved();
+    eprintln!("reserved for 10k x 8 KiB vectors: {} MB", reserved >> 20);
+    assert!(reserved < 120 << 20, "{reserved}");
+}
+
+fn private_dirty_kb() -> usize {
+    let s = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+    s.lines()
+        .find(|l| l.starts_with("Private_Dirty:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Lead requirement A.1 (docs/core.md §10): a forked child that collects
+/// must not copy the parent's live heap. Prints the child's private dirty
+/// memory after one collection over a ~200 MB live heap.
+#[test]
+fn collecting_in_a_forked_child_does_not_copy_the_heap() {
+    let mut c = core_with_roots();
+    // a measurement over a large live heap: no collection per allocation
+    c.set_torture(false);
+    let n = 400_000;
+    let keep = c.alloc_vector(VECSXP, n);
+    root(keep);
+    for i in 0..n {
+        // 512-byte payloads: ~200 MB live
+        let v = c.alloc_vector(REALSXP, 64);
+        unsafe { *(keep.std_data() as *mut Sexp).add(i) = v };
+    }
+    c.collect();
+    let live_mb = c.heap_reserved() >> 20;
+    let mut fds = [0i32; 2];
+    unsafe { libc::pipe(fds.as_mut_ptr()) };
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        let before = private_dirty_kb();
+        c.collect();
+        let after = private_dirty_kb();
+        let d = (after.saturating_sub(before)) as u64;
+        unsafe {
+            libc::write(fds[1], &d as *const u64 as *const libc::c_void, 8);
+            libc::_exit(0);
+        }
+    }
+    let mut d = 0u64;
+    unsafe {
+        libc::read(fds[0], &mut d as *mut u64 as *mut libc::c_void, 8);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    eprintln!("live heap {live_mb} MB; child's private dirty growth after one collection: {} MB", d >> 10);
+    assert!(
+        (d >> 10) * 4 < live_mb as u64,
+        "a collection in a forked child copied {} MB of a {live_mb} MB heap",
+        d >> 10
+    );
+}
+
+#[test]
+fn collections_do_not_abandon_bump_space() {
+    let mut c = core_with_roots();
+    let keep = c.alloc_vector(VECSXP, 2_000);
+    root(keep);
+    for i in 0..2_000 {
+        let v = c.alloc_vector(REALSXP, 1000);
+        unsafe { *(keep.std_data() as *mut Sexp).add(i) = v };
+        // a collection after every allocation: each stranded the rest of
+        // the current block before the fix (2,000 blocks)
+        c.collect();
+    }
+    let blocks = c.heap_reserved() / (64 << 10);
+    assert!(blocks < 400, "{blocks} blocks for 2,000 x 8 KiB live vectors (8 per block)");
 }

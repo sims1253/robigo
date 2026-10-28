@@ -20,12 +20,14 @@ pub mod coerce;
 pub mod complex;
 pub mod conditions;
 pub mod datetime;
+pub mod dcf;
 pub mod debug;
 pub mod dotcode;
 pub mod envir;
 pub mod funs;
 pub mod grep;
 pub mod identical;
+pub mod internet;
 pub mod io;
 pub mod lang;
 pub mod lapack;
@@ -146,6 +148,8 @@ static TABLES: &[&[Builtin]] = &[
     unique::DEFS,
     math::DEFS,
     io::DEFS,
+    dcf::DEFS,
+    internet::DEFS,
     printint::DEFS,
     apply::DEFS,
     array::DEFS,

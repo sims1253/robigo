@@ -134,11 +134,17 @@ fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> 
 
 fn do_ascall(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = one(&args, "as.call", call)?;
+    // R: coerce.c:do_ascall — the result's first cell never has a tag
+    let untag = |mut l: Lang| {
+        l.fun_tag = None;
+        Ok(Value::Lang(Rc::new(l)))
+    };
     match &x {
-        Value::Lang(_) => Ok(x),
+        Value::Lang(l) if l.fun_tag.is_none() => Ok(x),
+        Value::Lang(l) => untag((**l).clone()),
         Value::List(l) | Value::Expr(l) => {
             if l.data.is_empty() {
-                return Err(Flow::error_call(call.clone(), "invalid argument list"));
+                return Err(Flow::error_call(call.clone(), "invalid length 0 argument"));
             }
             let names = crate::attrib::names_vec(&x);
             let items: Vec<Arg> = l
@@ -154,9 +160,12 @@ fn do_ascall(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
                     Arg::new(tag, v.clone())
                 })
                 .collect();
-            Ok(Value::Lang(Rc::new(Lang::from_items(items, None))))
+            untag(Lang::from_items(items, None))
         }
-        Value::Pairlist(p) => Ok(Value::Lang(Rc::new(Lang::from_items(p.items.clone(), None)))),
+        Value::Pairlist(p) => untag(Lang::from_items(p.items.clone(), None)),
+        Value::Str(_) => {
+            Err(Flow::error_call(call.clone(), "as.call(<character>) not feasible; consider str2lang(<char.>)"))
+        }
         _ => Err(Flow::error_call(call.clone(), "invalid argument list")),
     }
 }
