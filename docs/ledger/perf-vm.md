@@ -205,6 +205,103 @@ without a guard. The port:
 - carries over to G3: element superassignment in place under the same
   conditions as local element assignment.
 
+## 2026-10-28: `a * b + c` on long double vectors: measured, no temporary to remove
+
+- probe: `r <- a * b + c` on 10^6-element plain double vectors, in a loop
+  (callgrind and allocator calls, 20 vs 10 evaluations).
+- allocations: ~4.6 allocator calls per evaluation, i.e. the result
+  vector's two allocations plus small change. The `+ c` step already writes
+  into the unshared `a * b` temporary (`real_binary_inplace`), so there is
+  no extra temporary.
+- instructions: 5.5M per evaluation, half in `real_binary` (`a * b`), half
+  in `real_binary_inplace` (`+ c`): two passes over the data.
+- next (a new op, not started): a fused kernel for `x * y + z` (and
+  `x + y * z`, `x * y - z`) on plain double vectors of equal length, in one
+  pass computing `(x[i] * y[i]) + z[i]` as two separately rounded
+  operations. A hardware FMA rounds differently and must not be used. It
+  applies only where R's result is that elementwise: no attributes, equal
+  lengths (recycling and the length warning stay on the builtins), and both
+  operators guarded to base. Double arithmetic signals no warnings, and
+  NA/NaN propagate elementwise as in the two passes.
+
+## 2026-10-28: VM-to-VM calls: the non-recursive frames measured, the flattened call kept (PR #50)
+
+- the S4 hook contract (docs/ledger/methods.md "Hook contract"): a path
+  that runs a closure body pushes a `Context` exactly as `exec_closure`
+  does and pops it with `end_context`. Both variants below do that, through
+  helpers factored out of interp.rs (`enter_call`/`leave_call`,
+  `call_sysparent`, `push_closure_context`, `bind_positional`), which the
+  general path uses too.
+- tried: VM frames without Rust recursion, as planned below. `Op::Call` of
+  a compiled closure with positional arguments pushed a frame in the
+  running `run_with`; every `return` there became "finish this frame"
+  (callee value to the caller's register, errors unwound frame by frame
+  with each caller's `break`/`next`); registers, slots and guard marks
+  from a pool. Correct (conformance, all tiers), but per call 3,278
+  instructions against 3,253 on main: the frame switch (saving and
+  restoring 13 locals, ~140) and the storage handling (~175) cost what the
+  layers did, and making `code`/`env`/`regs`/`vars`/`checked` reassignable
+  in `run_with` spilled registers all over the dispatch loop (`fannkuch`
+  +4.4%, `profiler-microbenchmark` +1.5%, all on lines without line info).
+  Rejected; kept as a local tag `pv2-nonrecursive-frames`.
+- kept: the same call setup as one function, `vm::direct_call`, with Rust
+  recursion into `run_closure` as before: `enter_call`, `bind_positional`,
+  the context, `run_closure`, a `return()` to the frame, `end_context`,
+  `leave_call`, for a compiled body with positional untagged arguments
+  (`direct_code`); everything else keeps `call_closure_ex`. It skips
+  `call_closure_ex`/`apply_closure_ex`/`exec_closure_ex`'s general cases
+  (argument matching, dispatch variables, the interpreter fallback).
+  fib: 3,253 -> 3,160 instructions per call.
+- remaining per call in fib (3,160): body 669, argument promises and the
+  eager argument's box (`closure_call`) 582, `run_pre` 170, `direct_call`
+  153, `end_context` 151, variable lookups 144, the caller-side `n - 1`
+  guard memo missing per frame (`guard_ok_slow`) 68, frame allocation and
+  release ~250. GNU R: 2,923.
+- rebased on main 7345297 (#51 merged): `direct_call` calls `jit_check` after the context push, as `exec_closure_ex` does. Result against 7345297: 14 faster, none slower (`profiler-shared` -2.3%, `fib` -1.9%, `robigo/binarytrees` -1.6%, `spectralnorm_alt_3` -1.4%, `profiler-microbenchmark` -1.1%); geomean 0.5762 -> 0.5743, faster on 70 -> 71; three-tier conformance with both rebinding scripts passes.
+- first result against main a6bd46e (default profile, container): 20 faster, none slower than 0.5% (worst `spectralnorm_alt_2` +0.42%); `profiler-shared` -2.7%, `fib` -2.2%, `robigo/binarytrees` -1.9%, `spectralnorm_alt_3` -1.6%, `profiler-microbenchmark` -1.4%, the `binarytrees`/`fasta` families -0.5..-1.0%, `Storage` -0.9%; geomean 0.5777 -> 0.5754, faster on 70 -> 71. (main a6bd46e itself has `flexclust` at 5.24G instructions: the scan functions are out of line there now too, see the codegen-units note.)
+
+## 2026-10-28: plan: VM-to-VM calls without Rust recursion (measured, not started)
+
+- per-call cost of `fib` on main 414ae44: 3,265 instructions (GNU R
+  2,923). By function (`callgrind-diff.py`, `fib(21)` - `fib(20)`):
+
+  | part | instructions |
+  |---|---|
+  | interpreting the body (`run_with`) | ~670 |
+  | argument promises, caller-forced argument box, guard check (`closure_call` with `caller_promargs`) | ~520 |
+  | `call_closure_ex` + `apply_closure_ex` + `exec_closure_ex` + `run_closure` | ~400 |
+  | `run_pre` + register/slot drops | ~260 |
+  | `end_context` | ~150 |
+  | environment allocation and release (`with_frame`, `push_new`, drop) | ~145 |
+
+- the design: `Op::Call` of a closure whose body is compiled, with
+  positional arguments matching its formals one to one (the common case;
+  everything else keeps the `call_closure` path), pushes a VM frame inside
+  the running `run_with` instead of recursing:
+  - the context (`Interp::frames`) is pushed as `exec_closure` does, and
+    popped by `end_context`, so `sys.call`, `parent.frame`, `on.exit`,
+    handlers and the S4 hooks see the same stack;
+  - registers and slots move from the Rust stack to a VM-owned arena (one
+    `Vec<RVal>` and `Vec<SlotVal>` grown and reused, frames as offsets), so
+    a call allocates neither;
+  - the per-run state of `run_with` (`pc`, `generation`, `token`,
+    `recheck`, `loops`, `checked`, `Vars`) becomes a frame record saved and
+    restored at call and return;
+  - `Return` of the callee pops the frame and writes the unboxed result to
+    the caller's destination register (no `unboxed_ret` hand-off);
+  - errors unwind the VM frames (popping contexts and running `on.exit`
+    in order) before propagating, as the Rust recursion does today;
+  - native loops (`jit_enter`) and the interpreter's own calls keep
+    recursing; depth limits (`MAX_DEPTH`, `check_stack`) count VM frames.
+- expected gain: the ~400 instructions of call layers and much of `run_pre`
+  and `end_context`'s fixed costs; a frame push in the same loop is tens of
+  instructions. Prerequisite: the S4 agent's `exec_closure`/`end_context`
+  hooks, which a VM frame push has to call too, so this follows their
+  interp.rs changes.
+- single guard check per call: measured at ~15 instructions (the callee's
+  repeated key compare in `fresh_guards_ok`); folded into the frame push
+  above rather than done separately.
+
 ## 2026-10-28: `x[[i]] <- v` in native loops
 
 - why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
