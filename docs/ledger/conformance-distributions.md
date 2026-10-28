@@ -49,7 +49,11 @@ Metric: `fastr` passes with `--filter
   with `set.seed(123); x <- rnorm(100000); y <- runif(100000);
   z <- rpois(100000, 4); print(sum(z))` after `library(stats)`.
 - Rebased onto `ad59f6f` after the values, CI and C API security merges.
-  Runtime unit tests and the final FastR repeat are pending.
+  Final FastR repeat confirms **1542/1558**, zero regressions. Runtime tests
+  pass in Debian: 27 unit tests and 2 lazy-load integration tests. The host
+  fails the unchanged complex C-library oracle added by the values track;
+  Debian passes it. Preserved fallible allocation for empty-parameter NA
+  results during final review, including allocation before its warning.
 
 ## 2026-10-28: baseline and failure grouping
 

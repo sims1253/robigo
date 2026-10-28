@@ -768,11 +768,19 @@ impl RandType {
 }
 
 /// R: random.c:fillWithNAs
-fn fill_with_nas(ty: RandType, n: usize) -> Value {
-    match ty {
-        RandType::Int => Value::ints(vec![NA_INTEGER; n]),
-        RandType::Real => Value::reals(vec![NA_REAL; n]),
-    }
+fn fill_with_nas(ty: RandType, n: usize) -> RResult<Value> {
+    Ok(match ty {
+        RandType::Int => {
+            let mut data = try_alloc::<i32>(n)?;
+            data.resize(n, NA_INTEGER);
+            Value::ints(data)
+        }
+        RandType::Real => {
+            let mut data = try_alloc::<f64>(n)?;
+            data.resize(n, NA_REAL);
+            Value::reals(data)
+        }
+    })
 }
 
 /// `asReal()` of the length argument, with its coercion warning.
@@ -844,8 +852,9 @@ fn random_dispatch(
         return Ok(ty.empty());
     }
     if args[1..].iter().any(|a| a.value.len() < 1) {
+        let ans = fill_with_nas(ty, n)?;
         i.warning("NAs produced")?;
-        return Ok(fill_with_nas(ty, n));
+        return Ok(ans);
     }
     let np = arity - 1;
     let params: Vec<Vec<f64>> = args[1..].iter().map(|a| real_vec(&a.value)).collect();
