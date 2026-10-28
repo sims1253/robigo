@@ -846,6 +846,15 @@ pub unsafe extern "C" fn R_CHAR(x: Sexp) -> *const c_char {
 // R: memory.c:STRING_ELT
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn STRING_ELT(x: Sexp, i: isize) -> Sexp {
+    if x.typ() == STRSXP && !x.is_altrep() {
+        return *(x.std_data() as *const Sexp).offset(i);
+    }
+    string_elt_slow(x, i)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn string_elt_slow(x: Sexp, i: isize) -> Sexp {
     if x.typ() != STRSXP {
         wrong_type("STRING_ELT", "character vector", x)
     }
@@ -857,6 +866,15 @@ pub unsafe extern "C" fn STRING_ELT(x: Sexp, i: isize) -> Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn VECTOR_ELT(x: Sexp, i: isize) -> Sexp {
+    if matches!(x.typ(), VECSXP | EXPRSXP) && !x.is_altrep() {
+        return *(x.std_data() as *const Sexp).offset(i);
+    }
+    vector_elt_slow(x, i)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn vector_elt_slow(x: Sexp, i: isize) -> Sexp {
     if !matches!(x.typ(), VECSXP | EXPRSXP | WEAKREFSXP) {
         wrong_type("VECTOR_ELT", "list", x)
     }
@@ -868,9 +886,36 @@ pub unsafe extern "C" fn VECTOR_ELT(x: Sexp, i: isize) -> Sexp {
     *(x.std_data() as *const Sexp).offset(i)
 }
 
+/// The store of a child into a standard vector slot, with GNU R's
+/// reference counting, when nothing else is needed (no calls: the hot
+/// accessors stay free of a stack frame).
+#[inline(always)]
+unsafe fn store_slot(x: Sexp, p: *mut Sexp, v: Sexp) {
+    let old = *p;
+    if old != v && x.tracks_refs() {
+        old.decref();
+        v.incref();
+    }
+    *p = v;
+}
+
+#[inline(always)]
+unsafe fn plain_target(x: Sexp, i: isize) -> bool {
+    !x.is_altrep() && !x.has_flag(flags::IMMORTAL) && (i as usize) < x.std_len() as usize
+}
+
 // R: memory.c:SET_STRING_ELT
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_STRING_ELT(x: Sexp, i: isize, v: Sexp) {
+    if x.typ() == STRSXP && v.typ() == CHARSXP && plain_target(x, i) {
+        return store_slot(x, (x.std_data() as *mut Sexp).offset(i), v);
+    }
+    set_string_elt_slow(x, i, v)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn set_string_elt_slow(x: Sexp, i: isize, v: Sexp) {
     if x.typ() != STRSXP {
         wrong_type("SET_STRING_ELT", "character vector", x)
     }
@@ -891,6 +936,16 @@ pub unsafe extern "C" fn SET_STRING_ELT(x: Sexp, i: isize, v: Sexp) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_VECTOR_ELT(x: Sexp, i: isize, v: Sexp) -> Sexp {
+    if matches!(x.typ(), VECSXP | EXPRSXP) && plain_target(x, i) {
+        store_slot(x, (x.std_data() as *mut Sexp).offset(i), v);
+        return v;
+    }
+    set_vector_elt_slow(x, i, v)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn set_vector_elt_slow(x: Sexp, i: isize, v: Sexp) -> Sexp {
     if !matches!(x.typ(), VECSXP | EXPRSXP | WEAKREFSXP) {
         wrong_type("SET_VECTOR_ELT", "list", x)
     }
