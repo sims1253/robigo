@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--results", help="results json (default .robigo/results/<corpus>.json)")
     ap.add_argument("--id", help="only cases whose id matches this regex")
     ap.add_argument("--tests", action="store_true", help="only the pass/fail list, no diffs")
+    ap.add_argument("--summary", action="store_true",
+                    help="one line per case: how far it gets (first stdout difference) and why")
     a = ap.parse_args()
 
     corpus.corpus_conf(a.corpus)
@@ -56,6 +58,16 @@ def main():
         fails += 1
         if a.tests:
             print(f"FAIL {r['id']} ({', '.join(r['differs'])})")
+            continue
+        if a.summary:
+            exp = want[r["id"]]
+            w = corpus.normalize(corpus.dec(exp["out"])).decode("utf-8", "replace")
+            n = len(w.split("\n"))
+            d = first_diff(w, corpus.normalize(corpus.dec(r["out"])).decode("utf-8", "replace"))
+            at = f"{d[0]}/{n}" if d else f"{n}/{n}"
+            err = corpus.normalize(corpus.dec(r["err"])).decode("utf-8", "replace").split("\n")
+            why = next((l for l in err if l.strip().startswith("Error")), err[0] if err else "")
+            print(f"{r['id']:44} {at:>9} lines  {why.strip()[:80]}")
             continue
         exp = want[r["id"]]
         print(f"\n===== {r['id']}: {' '.join(r['differs'])}")
