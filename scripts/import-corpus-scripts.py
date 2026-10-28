@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Import the corpus-scripts corpora from GNU R 4.5.0's sources:
+"""Import the corpus-scripts corpora — whole R programs, not snippets:
 
-    scripts/import-corpus-scripts.py gnur-demos   # every shipped demo()
+    scripts/import-corpus-scripts.py gnur-demos   # GNU R 4.5.0's demo()s
     scripts/import-corpus-scripts.py r-intro      # the code of "An Introduction to R"
+    scripts/import-corpus-scripts.py cran-purer   # pure-R CRAN packages' examples
 
-Both corpora are whole, realistic R programs (see tests/corpora/README.md),
-not snippets: `gnur-demos` runs each demo included in GNU R 4.5.0's base
-packages the way `demo(topic, ask = FALSE, echo = TRUE)` does, and `r-intro`
-assembles the manual's runnable examples chapter by chapter.
+`gnur-demos` and `r-intro` come from GNU R 4.5.0's source tree
+($ROBIGO_RSRC, default ~/.cache/robigo-research/rsrc/R-4.5.0): demos run the
+way demo(topic, ask = FALSE, echo = TRUE) runs them, and the manual's
+runnable examples are assembled chapter by chapter.
 
-The sources come from GNU R 4.5.0's source tree ($ROBIGO_RSRC, default
-~/.cache/robigo-research/rsrc/R-4.5.0). The importer only needs Python,
-except for `r-intro`, where non-prompt example blocks are validated by
-`parse()` with an Rscript (skipped with a warning if there is none).
+`cran-purer` vendors a handful of pure-R CRAN packages (packages.txt pins
+the version, sha256 and licence of each; the tarballs live in src/ so CI
+needs no network), and takes a case from every help page's examples, demo
+and plain-R test script.
 
-`scripts/corpus.py record NAME` then records GNU R's output; see
-tests/corpora/{gnur-demos,r-intro}/README.md for what is included and why
-some demos/sections are not.
+The importer only needs Python, except `r-intro` (parse checks and
+execution pruning) and `cran-purer` (Rd2ex), which need an Rscript: use GNU
+R 4.5.0 (the oracle image) so the cases are extracted by the same R.
+
+`scripts/corpus.py record NAME` then records GNU R's output; see each
+corpus's README.md for what is included and why some parts are not.
 """
 import os
 import re
@@ -104,7 +108,7 @@ _SKIP = (
     r"browseURL|download\.file|installed\.packages|available\.packages|R\.version|sessionInfo)\s*\(")
 # .Last runs when R exits, so a block defining it would print the time of
 # the recording; date()/Sys.time() are the same problem wherever they run.
-SKIP_TIME_RE = re.compile(r"(^|[^[:alnum:]_.])(\.Last|date|Sys\.time|Sys\.Date|proc\.time|system\.time)\s*\(")
+SKIP_TIME_RE = re.compile(r"(^|[^A-Za-z0-9_.])(\.Last|date|Sys\.time|Sys\.Date|proc\.time|system\.time)\s*\(")
 # Reading data needs a file: the manual's own examples read files that are
 # not shipped with R, so those blocks only run where the file exists (the
 # sample session reads datasets' morley.tab through system.file()).
@@ -354,13 +358,119 @@ def appendix_a(lines):
     return [c for c in drop_lines(cmds) if not SKIP_RE.search(c)]
 
 
-IMPORTERS = {"gnur-demos": import_demos, "r-intro": import_r_intro}
+# --------------------------------------------------------------- cran-purer
+
+# A case's library: build.sh installs the vendored packages into support/lib,
+# which is linked into the case's working directory (see packages.txt).
+CRAN_HEADER = """\
+## {what}, from the pure-R CRAN package {pkg} {version} ({licence}).
+## Run with the package attached, as R CMD check runs help-page examples.
+.libPaths(c("lib", .libPaths()))
+suppressPackageStartupMessages(library({pkg}))
+set.seed(1)
+"""
+
+# Cases that need packages outside the corpus's pure-R set (they are not
+# pure R themselves, or they are not worth vendoring): a batch session dies
+# in library(), which measures nothing about the package under test.
+CRAN_SKIP = {
+    "assertthat/man/assertions-file.R": "prints randomized tempfile names",
+    "withr/man/with_dir.R": "prints the randomized R session temp directory",
+    "withr/man/with_libpaths.R": "prints machine-specific library paths and randomized tempfile names",
+    "withr/man/with_tempfile.R": "prints randomized tempfile names",
+    "withr/man/with_makevars.R": "compiles C code with R CMD SHLIB and prints machine-specific compiler flags",
+    "withr/man/with_timezone.R": "prints the current time",
+    "withr/man/withr.R": "prints the randomized R session temp directory",
+    "proto/demo/proto-gWidgets.R": "needs gWidgets (and a Tk display)",
+    "withr/man/with_db_connection.R": "needs DBI and a database driver (RSQLite has C code)",
+}
+
+CRAN_RD2EX = r"""
+a <- Sys.getenv("CRAN_MAN"); out <- Sys.getenv("CRAN_OUT")
+dir.create(out, recursive = TRUE, showWarnings = FALSE)
+for (f in list.files(a, "[.]Rd$", full.names = TRUE)) {
+  tf <- file.path(out, sub("[.]Rd$", ".R", basename(f)))
+  tools::Rd2ex(f, tf, commentDontrun = TRUE, commentDonttest = TRUE)
+}
+"""
+
+
+def import_cran_purer(conf):
+    d = os.path.join(CORPORA, "cran-purer")
+    src = os.path.join(d, "src")
+    os.makedirs(src, exist_ok=True)
+    pkgs = []
+    with open(os.path.join(d, "packages.txt"), encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if not line:
+                continue
+            name, version, digest, licence = line.split(None, 3)
+            pkgs.append((name, version, digest, licence))
+    cases = os.path.join(d, "cases")
+    shutil.rmtree(cases, ignore_errors=True)
+    os.makedirs(cases)
+    rscript = shutil.which("Rscript")
+    if not rscript:
+        sys.exit("cran-purer needs an Rscript (GNU R 4.5.0) to run tools::Rd2ex")
+    n_page = n_demo = n_test = 0
+    for name, version, digest, licence in pkgs:
+        tar = os.path.join(src, f"{name}_{version}.tar.gz")
+        if not os.path.exists(tar):
+            url = conf.get("url", "https://cloud.r-project.org") + f"/src/contrib/{name}_{version}.tar.gz"
+            print(f"  fetch {name} {version}")
+            subprocess.run(["curl", "-sSfL", "-o", tar, url], check=True)
+        got = subprocess.run(["sha256sum", tar], capture_output=True, text=True, check=True).stdout.split()[0]
+        if got != digest:
+            sys.exit(f"{tar}: sha256 {got}, packages.txt says {digest}")
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["tar", "xzf", tar, "-C", tmp, "--strip-components=1"], check=True)
+            desc = open(os.path.join(tmp, "DESCRIPTION"), encoding="utf-8").read()
+            if "NeedsCompilation: yes" in desc:
+                sys.exit(f"{name} {version} has compiled code; cran-purer is for pure-R packages")
+            out = os.path.join(tmp, "cases")
+            if os.path.isdir(os.path.join(tmp, "man")):
+                subprocess.run([rscript, "--vanilla", "-e", CRAN_RD2EX], check=True,
+                               env=dict(os.environ, CRAN_MAN=os.path.join(tmp, "man"),
+                                        CRAN_OUT=os.path.join(out, "man")))
+            what = {"man": "help-page examples", "demo": "demo", "tests": "test script"}
+            for kind, sdir in (("man", os.path.join(out, "man")),
+                               ("demo", os.path.join(tmp, "demo")),
+                               ("tests", os.path.join(tmp, "tests"))):
+                if not os.path.isdir(sdir):
+                    continue
+                for fn in sorted(os.listdir(sdir)):
+                    if not fn.endswith(".R"):
+                        continue
+                    code = open(os.path.join(sdir, fn), encoding="utf-8").read()
+                    # testthat suites need testthat (and its compiled deps).
+                    if "library(testthat)" in code or "test_check(" in code:
+                        continue
+                    if f"{name}/{kind}/{fn}" in CRAN_SKIP:
+                        continue
+                    head = CRAN_HEADER.format(what=f"{what[kind]} {fn[:-2]!r}", pkg=name,
+                                              version=version, licence=licence)
+                    dest = os.path.join(cases, name, kind)
+                    os.makedirs(dest, exist_ok=True)
+                    with open(os.path.join(dest, fn), "w", encoding="utf-8") as f:
+                        f.write(head + code)
+                    if kind == "man":
+                        n_page += 1
+                    elif kind == "demo":
+                        n_demo += 1
+                    else:
+                        n_test += 1
+    print(f"cran-purer: {n_page} help pages, {n_demo} demos, {n_test} test scripts "
+          f"from {len(pkgs)} packages")
+
+
+IMPORTERS = {"gnur-demos": import_demos, "r-intro": import_r_intro, "cran-purer": import_cran_purer}
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in IMPORTERS:
         sys.exit(f"usage: {sys.argv[0]} {{{'|'.join(IMPORTERS)}}}")
-    IMPORTERS[sys.argv[1]](None)
+    IMPORTERS[sys.argv[1]]({})
 
 
 if __name__ == "__main__":

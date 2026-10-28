@@ -45,8 +45,9 @@ FALSE, warn = 1)` and `set.seed(123)`, as GNU R's own `tests/demos.R` does.
 
 ## Determinism
 
-All 13 cases are byte-identical between two GNU R 4.5.0 runs (no masked
-lines, no `unstable` cases).
+All 13 cases match between two complete GNU R 4.5.0 recordings under
+the runner's existing address normalization, with no varying-line masks or
+unstable cases. The date-printing `.Last` hook is excluded by the importer.
 
 ## Importing
 
