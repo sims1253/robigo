@@ -19,3 +19,10 @@ for (a in x) for (b in x) {
     z <- matrix(c(a, b), 1L) %*% c(1+0i, 1+0i)
     cat(code(Re(z)), code(Im(z)), "\n")
 }
+# Finite inputs can still overflow or underflow inside the plain product.
+x <- complex(real = c(1e308, -1e308, 1e-308, 0),
+             imaginary = c(1e308, 1e308, -1e-308, 1e-308))
+for (a in x) for (b in x) {
+    for (z in list(a %*% b, crossprod(a, b), tcrossprod(a, b)))
+        cat(code(Re(z)), code(Im(z)), "\n")
+}

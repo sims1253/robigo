@@ -578,11 +578,27 @@ fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _nc
 // R uses C99 complex multiplication, including recovery when both components
 // become NaN. Follow the compiler runtime's __muldc3 recovery rules.
 // Reference: llvm-project/compiler-rt/lib/builtins/muldc3.c.
-fn cmul(a: Complex, b: Complex) -> Complex {
+#[inline]
+fn cmul(a: Complex, b: Complex, reverse: bool) -> Complex {
+    let re = a.re * b.re - a.im * b.im;
+    let im = a.re * b.im + a.im * b.re;
+    if re.is_nan() && im.is_nan() { cmul_nonfinite(a, b, reverse) } else { Complex::new(re, im) }
+}
+
+#[cold]
+#[inline(never)]
+fn cmul_nonfinite(a: Complex, b: Complex, reverse: bool) -> Complex {
     let (mut ar, mut ai, mut br, mut bi) = (a.re, a.im, b.re, b.im);
     let products = [ar * br, ai * bi, ar * bi, ai * br];
     let mut result = Complex::new(products[0] - products[1], products[2] + products[3]);
     if result.re.is_nan() && result.im.is_nan() {
+        // R: array.c:simple_tccrossprod selects NaN payloads in the
+        // opposite order to simple_cmatprod/simple_ccrossprod on Debian.
+        // Keep this selection off the finite product path.
+        if reverse {
+            std::mem::swap(&mut ar, &mut br);
+            std::mem::swap(&mut ai, &mut bi);
+        }
         // R: array.c:CMATPROD_BODY. Keep the operand order of GNU R's
         // C99 product when both operands carry NaNs. LLVM may commute
         // floating multiplication and thereby replace an ordinary NaN
@@ -625,7 +641,26 @@ fn cmul(a: Complex, b: Complex) -> Complex {
     result
 }
 
+#[inline(never)]
 fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usize, ncy: usize) -> Vec<Complex> {
+    // R: array.c:cmatprod/ccrossprod/tccrossprod use the plain BLAS
+    // product for finite inputs, reserving C99 recovery for nonfinite data.
+    if x.iter().chain(y).all(|z| z.re.is_finite() && z.im.is_finite()) {
+        cprod_with::<true>(op, x, nrx, ncx, y, nry, ncy)
+    } else {
+        cprod_with::<false>(op, x, nrx, ncx, y, nry, ncy)
+    }
+}
+
+fn cprod_with<const FINITE: bool>(
+    op: u8,
+    x: &[Complex],
+    nrx: usize,
+    ncx: usize,
+    y: &[Complex],
+    nry: usize,
+    ncy: usize,
+) -> Vec<Complex> {
     let (zr, zc, inner) = match op {
         0 => (nrx, ncy, ncx),
         1 => (ncx, ncy, nrx),
@@ -644,14 +679,18 @@ fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usiz
                     1 => (x[j + i * nrx], y[j + k * nry]),
                     _ => (x[i + j * nrx], y[k + j * nry]),
                 };
-                // R: array.c:simple_tccrossprod. The C99 product in this
-                // loop selects NaN payloads in the opposite operand order
-                // from simple_cmatprod/simple_ccrossprod (Debian GNU R).
-                let p = if op == 2 { cmul(b, a) } else { cmul(a, b) };
+                let p = if FINITE {
+                    Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
+                } else {
+                    cmul(a, b, op == 2)
+                };
                 sr += p.re;
                 si += p.im;
             }
-            z[i + k * zr] = Complex::new(sr, si);
+            // R: cmplxblas.f:ZGEMM, transposed-A branch: C = ALPHA*TEMP.
+            // Even ALPHA=(1,0) affects components when TEMP overflows.
+            z[i + k * zr] =
+                if FINITE && op == 1 { Complex::new(sr - 0.0 * si, si + 0.0 * sr) } else { Complex::new(sr, si) };
         }
     }
     z

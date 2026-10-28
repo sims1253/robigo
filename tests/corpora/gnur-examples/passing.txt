@@ -29,6 +29,8 @@ base/Syntax
 base/Sys.getpid
 base/Sys.glob
 base/Sys.info
+base/Sys.localeconv
+base/Sys.readlink
 base/Sys.setenv
 base/Sys.sleep
 base/Sys.time
@@ -46,6 +48,7 @@ base/array
 base/array2DF
 base/as.Date
 base/as.POSIXlt
+base/as.data.frame
 base/as.environment
 base/as.function
 base/asplit
@@ -71,6 +74,7 @@ base/chartr
 base/chol2inv
 base/class
 base/col
+base/colSums
 base/colnames
 base/comment
 base/conditions
@@ -99,6 +103,7 @@ base/double
 base/dput
 base/drop
 base/droplevels
+base/dump
 base/duplicated
 base/dynload
 base/encodeString
@@ -107,6 +112,8 @@ base/exists
 base/expand.grid
 base/expression
 base/factor
+base/file.access
+base/file.info
 base/files2
 base/find.package
 base/findInterval
@@ -126,6 +133,7 @@ base/getwd
 base/gl
 base/grep
 base/grepRaw
+base/groupGeneric
 base/grouping
 base/hexmode
 base/icuSetCollate
@@ -217,6 +225,7 @@ base/seq.Date
 base/seq.POSIXt
 base/sequence
 base/serialize
+base/sets
 base/shQuote
 base/showConnections
 base/sign
@@ -420,6 +429,7 @@ utils/Rtangle
 utils/SHLIB
 utils/URLencode
 utils/alarm
+utils/apropos
 utils/arrangeWindows
 utils/askYesNo
 utils/aspell
@@ -427,6 +437,7 @@ utils/available.packages
 utils/browseEnv
 utils/browseURL
 utils/browseVignettes
+utils/capture.output
 utils/choose.dir
 utils/choose.files
 utils/combn
@@ -438,6 +449,8 @@ utils/debugger
 utils/edit
 utils/edit.data.frame
 utils/file.edit
+utils/filetest
+utils/findCRANmirror
 utils/findLineNum
 utils/fix
 utils/format
@@ -454,10 +467,13 @@ utils/make.packages.html
 utils/make.socket
 utils/menu
 utils/modifyList
+utils/package.skeleton
 utils/packageName
 utils/packageStatus
 utils/page
 utils/person
+utils/prompt
+utils/promptData
 utils/read.DIF
 utils/read.fortran
 utils/read.fwf
@@ -471,11 +487,13 @@ utils/rtags
 utils/savehistory
 utils/select.list
 utils/sessionInfo
+utils/setRepositories
 utils/setWindowTitle
 utils/shortPathName
 utils/strcapture
 utils/summaryRprof
 utils/txtProgressBar
+utils/type.convert
 utils/url.show
 utils/winDialog
 utils/winMenus
