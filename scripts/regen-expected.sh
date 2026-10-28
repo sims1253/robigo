@@ -19,7 +19,13 @@ else
 fi
 for f in "${files[@]}"; do
   base="${f%.R}"
-  Rscript --vanilla "$f" > "$base.Rout" 2> "$base.Rerr"
+  tz_env=(env -u TZDIR)
+  if [ -f "$base.tzdir" ]; then
+    IFS= read -r tzdir < "$base.tzdir"
+    tzdir=$(cd "$(dirname "$f")/$tzdir" && pwd -P) || exit 1
+    tz_env+=("TZDIR=$tzdir")
+  fi
+  "${tz_env[@]}" Rscript --vanilla "$f" > "$base.Rout" 2> "$base.Rerr"
   echo $? > "$base.Rstatus"
 done
 echo "recorded ${#files[@]} test(s) with $(R --version | head -1)"
