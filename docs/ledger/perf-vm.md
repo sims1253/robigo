@@ -15,6 +15,20 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: `u %*% M` for a row vector as dot products (builtins/array.rs, with permission)
+
+- why: `shootout/spectralnorm_alt` (1.87x GNU R) is 93% `matprod_real` on
+  a row vector, whose column loop ran one element per step (~40
+  instructions per multiply-add).
+- what: for `nrx == 1` (and `ncy != 1`) R calls `dgemv("T")`
+  (R: array.c:matprod): each `z[k]` is `0 + sum(Y(j,k) * X(j))` over
+  ascending `j`. The same products in the same order, now one dot product
+  per column. Bit-identical by construction.
+- tests: `tests/r/math/matprod-rowvec.R` (`%a` of the results, signed
+  zeros, NA/Inf inputs, overflow, cancellation).
+- result: `spectralnorm_alt` 2.31G -> 1.03G instructions (1.87 -> 0.83);
+  `robigo/matrix` +0.1%; kept.
+
 ## 2026-10-28: no drift against main: startup and run_with code size
 
 - why: each step above passed the gate against the previous step, but
