@@ -43,8 +43,6 @@ pub static DEFS: &[Builtin] = &[
     internal("undebug", do_undebug, 1).invisible(),
     internal("isdebugged", do_isdebugged, 1),
     internal("debugonce", do_debug, 3).invisible(),
-    internal("traceOnOff", do_false, 1),
-    internal("debugOnOff", do_false, 1),
     prim(".primTrace", do_identity, 1).invisible(),
     prim(".primUntrace", do_identity, 1).invisible(),
     prim("browser", do_null_any, -1).invisible(),
