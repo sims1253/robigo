@@ -1172,12 +1172,9 @@ pub fn deparse_one_line(v: &Value) -> String {
 }
 
 pub fn join_lines(lines: &[String]) -> String {
-    if lines.len() <= 1 {
-        return lines.first().cloned().unwrap_or_default();
-    }
-    // R joins with "" after trimming leading whitespace of continuation
-    // lines in curly bodies? It simply concatenates.
-    lines.join("")
+    // R: deparse.c:deparse1line_ex — lines are concatenated with "\n"
+    // between them (strcat(buf, "\n") for every line but the last).
+    lines.join("\n")
 }
 
 /// `deparse1s`: first line only, used for error and warning calls.
