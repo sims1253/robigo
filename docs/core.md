@@ -417,7 +417,90 @@ track with the capi corpus slice and the census coverage as its metric:
 `grDevices.so` from Rust ports to GNU R's own shared objects, corpus by
 corpus). G3 (the runtime on the core) then removes the bridge.
 
-## 10. Council review, 2026-10-28
+## 10. Parallelism and isolates (lead's requirement, 2026-10-28)
+
+robigo must have at least GNU R's parallel story and should beat it.
+GNU R's frontier is process-based: `parallel` (fork/`mclapply`, PSOCK),
+`future`, `mirai` (persistent daemons over nanonext/NNG) and `mori`
+(shared-memory R objects: POSIX shm + ALTREP, lazy access in other
+processes, ALTREP serialization hooks so a shared object serializes as a
+reference).
+
+**Parity.** `nanonext`, `mirai`, `mori` and `future` build from source and
+pass their tests on robigo; they join the G4 package ratchet after
+fastmap/digest/cpp11/Rcpp. That needs ALTREP class registration with the
+serialization hooks (robigo has no ALTREP serialization today:
+`docs/ledger/startup.md`) and fork safety.
+
+**Decision A.1, fork-safe collection: side mark bitmaps.** `mclapply`
+forks a live heap; a collector that writes mark bits into object headers
+dirties every copy-on-write page of the live set in every child. Marks
+therefore move out of the header into per-block side bitmaps (next to
+the start bitmap in the 576-byte block header area; a bit in the chunk
+header for large objects), and the collector writes no other header
+state of old objects (immortal and host bits are written once, at
+creation; the sweep writes only dead slots' free-list links). The
+header's MARK_A/MARK_B bits are retired when this lands (with the
+store()/barrier work, (e)); skip-clean sweeps keep working by comparing
+per-block mark counts, and a block's bitmap is cleared only when it is
+walked. Mutator refcount writes remain (they are GNU R's too).
+
+**Decision A.2, isolates: no process-global heap or interpreter.** One
+*isolate* = one heap (`Core`), one interpreter, one set of API globals,
+bound to one OS thread; R semantics (no shared mutable state between
+workers) hold. A later track runs mirai-style workers as threads in one
+process, each an isolate, sharing immutable data zero-copy without
+serialization. So:
+
+- all mutable state lives in an isolate record reached through one
+  thread-local pointer; `libR.so` must not add process-global mutable
+  state (the current `STATE` static becomes that record);
+- exported data that differ per isolate (`R_GlobalEnv`, `R_BaseEnv`,
+  `R_EmptyEnv`, `R_BaseNamespace`, `R_NamespaceRegistry`, `R_PPStack*`,
+  `R_Visible`, `R_interrupts_*`, `R_CStack*`, `R_Srcref`, ...) are, in
+  robigo's headers, macros over the isolate accessor (packages are
+  recompiled, so this is allowed);
+- truly immutable singletons (`R_NilValue`, `R_NaString`,
+  `R_BlankString`, `R_TrueValue`/`R_FalseValue`/`R_LogicalNAValue`,
+  `R_UnboundValue`, `R_MissingArg`, and the symbols) live in a shared,
+  immortal, read-only segment created once per process; the symbol table
+  is the one shared mutable structure (interning under a lock, symbols
+  immutable once created; a symbol's value cell, used only by `base`,
+  moves into the isolate);
+- a *frozen* segment: objects made deeply immutable can be moved (copied
+  once) into a shared read-only segment that every isolate may reference
+  and that mori-style shm can map into other processes;
+- per isolate, the council's rule stands: one owning thread, enforced in
+  `collect()`;
+- packages with process-global C state (C statics holding `SEXP`s or
+  mutable data) cannot run in two isolates at once. A package opts in to
+  isolates (a DESCRIPTION field, e.g. `Robigo-Isolates: yes`, or a
+  registry robigo ships for audited packages); a worker that loads a
+  package without the opt-in falls back to a process worker. `R_init_`
+  runs once per isolate that loads the package.
+
+**Measurements** (§9, (d)): per-task overhead of `mirai_map`, `mclapply`
+on a large live heap (RSS growth from copy-on-write after a collection
+in the child), and sharing a 1 GB vector with workers — each vs GNU R.
+
+## 11. GC lessons to evaluate by measurement (lead, 2026-10-28)
+
+1. Sticky mark bits (JavaScriptCore's Riptide, Julia): non-moving
+   generational and concurrent collection without copying — the upgrade
+   path behind the store()/barrier hook ((e)).
+2. Ruby RGenGC's write-barrier-unprotected objects: packages write
+   pointers through `DATAPTR`/`STRING_PTR_RO`-cast/`VECTOR_PTR` without a
+   barrier; objects whose raw pointer was handed out are marked
+   unprotected and always rescanned, so a generational collector stays
+   correct.
+3. Parallel marking on spare cores (Go, ZGC) for big heaps (12 cores
+   here).
+4. MMTk (Immix, StickyImmix, GenImmix, LXR; ported to Julia, Ruby, V8):
+   a build-vs-adopt measurement on the bake-off and GC-at-scale workloads;
+   robigo keeps its own heap only if it is at least as fast.
+5. PyPy's cpyext (two heaps and a translation layer) confirms one heap.
+
+## 12. Council review, 2026-10-28
 
 GPT-6 Astra, Opus 5.5 and Fable 5.1 reviewed this document @ e3eeac8;
 the synthesis and the reviews are in `docs/core-council.md`. The

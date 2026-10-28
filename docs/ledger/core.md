@@ -11,6 +11,18 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: lead's requirements — parallelism/isolates, GC lessons
+
+- recorded in docs/core.md §10/§11. Settled now, before the layout and
+  exports harden: (A.1) marks move to per-block side bitmaps so a forked
+  child's collections do not dirty copy-on-write pages (header mark bits
+  retired with the barrier work); (A.2) isolates: all mutable state in a
+  per-thread isolate record, per-isolate exported data as header macros,
+  immutable singletons and symbols in a shared immortal segment, a
+  frozen read-only segment for zero-copy sharing, packages opt in to
+  isolates. Parity packages (nanonext, mirai, mori, future) join G4; the
+  parallel benchmarks and the MMTk build-vs-adopt comparison join (d).
+
 ## 2026-10-28: council items (a) and (b) — collector correctness, gctorture
 
 - release callbacks of dead host proxies no longer run inside
