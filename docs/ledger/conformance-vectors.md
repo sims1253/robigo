@@ -57,3 +57,12 @@
   regressions; six passes recorded (four within the primary track filter).
 - Runtime: 17 unit and 2 lazyload tests pass; cargo fmt --check passes.
 - Kept. Indexing baseline: 2,331/2,391 in SimpleVectors/SimpleMatrix/subset.
+
+## 2026-10-28: replacement condition calls
+
+- Port subassign.c:errorNotSubsettable/errorMissingSubscript/
+  errorOutOfBoundsSEXP: pass R_CurrentExpression to condition signaling,
+  retaining the printed <current-expression> symbol.
+- Indexing slice: 2,331/2,391 -> 2,354/2,391, zero regressions, 23 new
+  passes recorded. Runtime tests (17+2), subset conformance and both
+  compiled checks pass; formatting passes. Kept.
