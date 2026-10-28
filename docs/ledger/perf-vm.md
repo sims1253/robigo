@@ -15,6 +15,94 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: no drift against main: startup and run_with code size
+
+- why: each step above passed the gate against the previous step, but
+  against main 12 startup-dominated benchmarks (~286M instructions, mostly
+  startup) had drifted to +0.50..+0.58%, and `fannkuch`/`binarytrees`/`fib`
+  to +0.4%: too close to CI's 0.5% gate, which compares with main.
+- profile (by function, `BYFN=1 cmp.py`; by source line against main's
+  source, `linediff.sh`; by instruction, `asm.py`):
+  1. startup: the once-per-call guard check for closures defined in a call
+     frame ran on the first call of each such closure; at startup most of
+     them run once, so checking every guard up front (`resolves_to_base`,
+     `search_fun`) cost ~830k. Now it runs from the second call with the
+     same key (`fresh_seen`).
+  2. `run_closure`: the 4-field key (with the environment's function
+     version) cost every search-path closure call ~6 instructions (a larger
+     frame, one more load and compare). Search-path closures keep the
+     3-field key; closures defined in a call frame have their own cell
+     (`fresh_nested`, behind an out-of-line check).
+  3. `Compiler::leaf` ran twice per argument: `leaf_args` is derived from
+     `inline_args` now.
+  4. `Op::Index`: `match (fast, i, held)` moved an `Option<RVal>` through
+     the fast path (20.8M vs 7.2M on `fannkuch`). Restructuring it inline
+     made other ops' code worse (register allocation in `run_with`: +12.8M);
+     the general cases of `Index`/`Index2` (index promises, `[`/`[[` calls)
+     are now `#[cold]` out-of-line functions after one flush, which made
+     `run_with` smaller: `fannkuch` -0.9%, `convolution_slow` -1.9%.
+- remaining against main: `fib` +0.32% (its `fib(n - 1)` call sites now
+  look the callee up and find it not inlinable, ~10 instructions per call;
+  main skipped that because `n - 1` was not a leaf).
+- result: against main 28 faster, none slower (worst `fib` +0.32%);
+  geomean 0.683 -> 0.682, faster on 55; kept.
+
+## 2026-10-28: pure closures inlined with arithmetic arguments; guards once per call for nested helpers
+
+- why: `shootout/spectralnorm_naive` (1.52x GNU R) calls
+  `eval_A(i - 1, j)`, a pure helper defined in the enclosing function, in
+  its inner loop: 11.2k instructions per iteration (GNU R ~6.5k). Only
+  calls whose arguments were all constants or variables ran inline, and
+  the callee checked each of its guards per call (`run_closure`
+  pre-checked them only for closures defined on the search path).
+- what:
+  1. Call sites keep `inline_args`: leaves, or one arithmetic operation on
+     leaves (`i - 1`), evaluated before the inlined body only through its
+     scalar fast path (which cannot warn or fail) and with its operator's
+     guard memoized per site; otherwise the real call with promises runs.
+     (`leaf_args`, which the JIT uses, are unchanged.)
+  2. `run_closure` checks all guards once per (search epoch, closure
+     environment, its function-binding version, formals) also for closures
+     whose environment lies directly below the search path.
+  3. `set_var`: a shared scalar binding of the same type (the loop variable
+     a promise still references) is overwritten in place too, instead of
+     falling through to `Interp::define`.
+  4. The inline call moved out of `run_with` into `inline_site_call`, and
+     `run_inline_with` takes the arguments through a callback that fills the
+     slots directly (no intermediate `SmallVec`, no clone per argument);
+     `lapply`'s `call_inline` uses it as well.
+  5. `run_pre` reserves the register/slot `SmallVec`s only when they exceed
+     the inline capacity.
+- rejected, measured: treating frames two levels below the search path as
+  `stable` (token with the parent's function version): -0.9k per
+  iteration on `spectralnorm_naive` before (1), but +36 instructions per
+  iteration of every flushing loop (`vectorFor` +5%, `fannkuch` +3.8%);
+  after (1) its benefit was gone. Dropping registers/slots by hand in
+  `run_pre`: worse (+1% on `fib`). Keeping the inline call inside
+  `run_with`: +16 instructions per iteration on `vectorFor` from register
+  pressure in `run_with`.
+- profile notes (`callgrind --dump-instr=yes`, callers via
+  `callgrind_annotate --tree=caller`): the remaining `fib` +0.17% is
+  `SmallVec::drop` of the registers and slots emitted out of line in
+  `run_pre` (36 + 19 instructions per call) where it was inlined before.
+- tests: `tests/r/basics/inline-call-args.R` (overflow warnings from
+  arguments and from the body, a caller-local `-`, `%%`/`%/%` by zero, NA,
+  unused arguments not forced, logical operands).
+- result: `spectralnorm_naive` -58.5% (1.52 -> 0.62; 11.2k -> 4.0k per
+  iteration), `profiler-microbenchmark` -5.6%, `mandelbrot_naive_ascii`
+  -2.4%, `apply` -2.2%, `fasta_naive` -2.1%, `lapply` -2.0%,
+  `spectralnorm_alt_3` -1.9%, 11 more -0.5..-1.6%; none slower; geomean
+  0.693 -> 0.683, faster on 53 -> 55; kept.
+
+## Notes for other tracks
+
+- conformance-vectors (`builtins/array.rs`): `matprod_real` for a row vector
+  (`nrx == 1`, `u %*% M`) runs its inner loop one element per column
+  step, ~40 instructions per multiply-add; it is 93% of
+  `shootout/spectralnorm_alt` (1.87x GNU R). A dot-product loop per output
+  element (ascending `j` from 0.0, as the reference `dgemm` sums) gives the
+  same bits.
+
 ## 2026-10-28: call sites find functions bound in local frames without the slow path
 
 - why: in `shootout/spectralnorm` (1.82x GNU R) the inner loop calls
