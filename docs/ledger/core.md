@@ -11,6 +11,57 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: the graphics engine in libR; grDevices, graphics, grid from source
+
+- What: GNU R's own graphics engine (`src/main` engine.c, devices.c,
+  plotmath.c, colors.c, graphics.c, plot.c, plot3d.c, patterns/clippath/
+  mask, gevents, Hershey fonts) plus format.c, rlocale.c,
+  localecharset.c and gzio.h, vendored unmodified into
+  `crates/robigo-capi/main/` and linked whole into libR; ports of the
+  print.c/printutils.c/options.c/sysutils.c/util.c pieces they need in
+  `main/robigo_*.c`; `R_FunTab`/`PRIMOFFSET` for display-list replay;
+  `.External.graphics`/`.Call.graphics` record on the display list
+  (do_Externalgr); `.Internal(recordGraphics)` is engine.c's C;
+  `InitGraphics` at libR start, `.Device`/`.Devices` bound in base at
+  startup. `scripts/build-natives.sh grDevices graphics grid` builds and
+  they load (grDevices links its `PKG_LIBS`, `-lz`).
+- Result: `pdf(NULL); plot(...)`, hist, barplot, legend, grid viewports
+  and grobs: the PDF files are byte-identical to the oracle's (timestamps
+  aside). (The local Debian R 4.5.0 differs from the oracle by an ulp in
+  `grconvertY`; the oracle and robigo agree: compare with the oracle.)
+- gnur-examples graphics|grDevices|grid: 30 -> 175 / 184 (0 regressions,
+  local, natives present); gnur-demos 2 -> 11 / 16. capi 15/20 (= its
+  ratchet), conformance green. The new passes need the CI patch
+  (`docs/ci/pending-workflow.patch` now builds grDevices graphics grid
+  and installs zlib1g-dev) before they go into passing.txt.
+- Bridge findings (general, not graphics-only):
+  - C code that keeps an unprotected SEXP of an R-reachable environment
+    (grid's `R_gridEvalEnv` static) lost it at the next GC: the proxy was
+    garbage once the call ended. Proxies of environments, closures and
+    external pointers whose runtime object has other owners are now roots.
+  - C code that changes a looked-up list in place (grid:
+    `SET_VECTOR_ELT(findVar(".GRID.STATE"), i, state)`, pushed viewports
+    in children environments) changed the bridge's copy. Now a list C got
+    from `findVar` and then mutates becomes the binding's value: the
+    binding turns into an active binding over C's object (crate
+    `owned.rs`; the object lives in the binding function's environment,
+    so no table and no leak). `.Devices` (a pairlist C extends with
+    `SETCDR`) is kept by C and copied back after each native call.
+  - proxies now carry their object's attributes when created
+    (`R_GE_maskType` reads a mask function's "type").
+  - `NewEnvironment` ignored its value list; `coerceVector` of a call,
+    symbol or pairlist to EXPRSXP split it instead of wrapping it
+    (legend's expression widths); `eapply` returned an active binding's
+    function instead of calling it; `R_dec_min_exponent` was -4 (-308).
+- Open (other tracks): `"\304"` must be the byte 0xC4, not U+00C4
+  (plotmath symbol() examples, Hershey demo: the encoding window);
+  `signif(x, digits)`/`round` with a missing `digits` must use the
+  default (GNU R's do_Math2 is a special: grDevices `xyTable`);
+  `example()` echoes deparsed code instead of the source (colors, hcl,
+  image and smooth demos); the `<bytecode>` line of printed functions;
+  `eigen` needs `.Internal(La_rs)` (plot.window example); png()/cairo
+  (`R_cairoCdynload` and the cairo module) not yet.
+
 ## 2026-10-28: splines, tools, parallel natives from source; R_UnwindProtect
 
 - `scripts/build-natives.sh` handles grDevices' `@BUILD_AQUA_TRUE@`
