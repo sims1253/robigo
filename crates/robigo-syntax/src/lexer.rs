@@ -215,19 +215,32 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
-        // Skip horizontal whitespace and comments.
-        loop {
-            match self.byte_at(self.pos) {
-                b' ' | b'\t' | b'\r' | 0x0c => self.pos += 1,
-                b'#' => {
-                    // To the end of the line (a newline byte never occurs
-                    // inside a multi-byte character).
-                    self.pos +=
-                        self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
+        // Skip horizontal whitespace and comments. The loop runs on a
+        // local index so the byte loads are not bounds-checked; a newline
+        // byte never occurs inside a multi-byte character, so comments can
+        // end at a raw byte match.
+        {
+            let bytes = self.bytes;
+            let len = bytes.len();
+            let mut i = self.pos;
+            loop {
+                while i < len && bytes[i] == b' ' {
+                    i += 1;
                 }
-                0xc2 if self.byte_at(self.pos + 1) == 0xa0 => self.pos += 2, // U+00A0
-                _ => break,
+                if i >= len {
+                    break;
+                }
+                match bytes[i] {
+                    b'\t' | b'\r' | 0x0c => i += 1,
+                    b'#' => {
+                        // `position` over the raw bytes lowers to memchr.
+                        i += bytes[i..].iter().position(|&b| b == b'\n').unwrap_or(len - i);
+                    }
+                    0xc2 if i + 1 < len && bytes[i + 1] == 0xa0 => i += 2, // U+00A0
+                    _ => break,
+                }
             }
+            self.pos = i;
         }
         let start = self.pos;
         let Some(c) = self.peek_char() else {
@@ -339,18 +352,24 @@ impl<'a> Lexer<'a> {
     }
 
     fn ident(&mut self) -> Tok<'a> {
+        let bytes = self.bytes;
         let start = self.pos;
-        loop {
-            match self.byte_at(self.pos) {
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' => self.pos += 1,
-                b if b >= 0x80 => match self.peek_char() {
-                    Some(c) if is_ident_char(c) => self.pos += c.len_utf8(),
+        let mut i = start;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_') {
+                i += 1;
+            } else if b >= 0x80 {
+                match self.src[i..].chars().next() {
+                    Some(c) if is_ident_char(c) => i += c.len_utf8(),
                     _ => break,
-                },
-                _ => break,
+                }
+            } else {
+                break;
             }
         }
-        let s = &self.src[start..self.pos];
+        self.pos = i;
+        let s = &self.src[start..i];
         // Slice patterns compile to length and byte tests (no string
         // comparisons per keyword).
         match s.as_bytes() {
@@ -382,11 +401,16 @@ impl<'a> Lexer<'a> {
 
     /// Numeric literals, a port of `NumericValue` in gram.y (`// R:
     /// gram.y:NumericValue`). Malformed numbers become the `ERROR` token,
-    /// reported as "unexpected input".
+    /// reported as "unexpected input". The scan runs on a local index over
+    /// the source bytes (`byte` is 0 past the end, as `xxgetc` returns
+    /// EOF); `self.pos` is synced at the exit points.
     fn number(&mut self) -> Result<Tok<'a>, ParseError> {
+        let bytes = self.bytes;
+        let byte = |i: usize| *bytes.get(i).unwrap_or(&0);
         let start = self.pos;
-        let mut c = self.byte_at(self.pos);
-        self.pos += 1;
+        let mut pos = self.pos;
+        let mut c = byte(pos);
+        pos += 1;
         // `seendot`: 0 none, 1 before any exponent, 2 only after one.
         let mut seendot = if c == b'.' { 1 } else { 0 };
         let mut seenexp = false;
@@ -394,11 +418,11 @@ impl<'a> Lexer<'a> {
         let mut count = 1usize;
         let mut ended_with_l = false;
         loop {
-            c = self.byte_at(self.pos);
+            c = byte(pos);
             if !(c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'x' | b'X' | b'L')) {
                 break;
             }
-            self.pos += 1; // the `while` condition consumes in C
+            pos += 1; // the `while` condition consumes in C
             count += 1;
             if c == b'L' {
                 // "must be at the end. Won't allow 1Le3."
@@ -407,18 +431,19 @@ impl<'a> Lexer<'a> {
             }
             if c == b'x' || c == b'X' {
                 if count > 2 || last != b'0' {
-                    self.pos -= 1; // `xxungetc` in the final else
+                    pos -= 1; // `xxungetc` in the final else
                     break;
                 }
                 let mut nd = 0;
                 loop {
-                    c = self.byte_at(self.pos);
-                    self.pos += 1;
+                    c = byte(pos);
+                    pos += 1;
                     if !(c.is_ascii_hexdigit() || c == b'.') {
                         break;
                     }
                     if c == b'.' {
                         if seendot == 1 {
+                            self.pos = pos;
                             return Err(self.error_token(start));
                         }
                         seendot = 1;
@@ -426,56 +451,61 @@ impl<'a> Lexer<'a> {
                     nd += 1;
                 }
                 if nd == 0 {
+                    self.pos = pos;
                     return Err(self.error_token(start));
                 }
                 if c == b'p' || c == b'P' {
                     seenexp = true;
-                    let d = self.byte_at(self.pos);
-                    self.pos += 1;
+                    let d = byte(pos);
+                    pos += 1;
                     if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                        self.pos = pos;
                         return Err(self.error_token(start));
                     }
                     if d == b'+' || d == b'-' {
-                        let d2 = self.byte_at(self.pos);
-                        self.pos += 1;
+                        let d2 = byte(pos);
+                        pos += 1;
                         if !d2.is_ascii_digit() {
+                            self.pos = pos;
                             return Err(self.error_token(start));
                         }
                     }
                     // The first digit is validated and consumed above; count
                     // it, then scan the rest.
                     let mut nd = 1;
-                    while self.byte_at(self.pos).is_ascii_digit() {
-                        self.pos += 1;
+                    while byte(pos).is_ascii_digit() {
+                        pos += 1;
                         nd += 1;
                     }
                     let _ = nd;
-                    c = self.byte_at(self.pos);
-                    self.pos += 1; // the `for` increment consumes in C
+                    c = byte(pos);
+                    pos += 1; // the `for` increment consumes in C
                 }
                 if c == b'L' {
                     ended_with_l = true;
                 } else {
-                    self.pos -= 1; // terminator is not part of the literal
+                    pos -= 1; // terminator is not part of the literal
                 }
                 break;
             }
             if c == b'e' || c == b'E' {
                 if seenexp {
-                    self.pos -= 1;
+                    pos -= 1;
                     break;
                 }
                 seenexp = true;
                 seendot = if seendot == 1 { seendot } else { 2 };
-                let d = self.byte_at(self.pos);
-                self.pos += 1;
+                let d = byte(pos);
+                pos += 1;
                 if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                    self.pos = pos;
                     return Err(self.error_token(start));
                 }
                 if d == b'+' || d == b'-' {
-                    let d2 = self.byte_at(self.pos);
-                    self.pos += 1;
+                    let d2 = byte(pos);
+                    pos += 1;
                     if !d2.is_ascii_digit() {
+                        self.pos = pos;
                         return Err(self.error_token(start));
                     }
                 }
@@ -485,21 +515,22 @@ impl<'a> Lexer<'a> {
             }
             if c == b'.' {
                 if seendot > 0 {
-                    self.pos -= 1;
+                    pos -= 1;
                     break;
                 }
                 seendot = 1;
             }
             last = c;
         }
-        let c = self.byte_at(self.pos);
+        let c = byte(pos);
         let mut is_complex = false;
         if c == b'i' && !ended_with_l {
-            self.pos += 1;
+            pos += 1;
             is_complex = true;
         }
+        self.pos = pos;
         // `yytext` includes a trailing `L` but not `i`.
-        let text_end = self.pos - if is_complex || ended_with_l { 1 } else { 0 };
+        let text_end = pos - if is_complex || ended_with_l { 1 } else { 0 };
         let text = &self.src[start..text_end];
         if is_complex {
             return Ok(Tok::Const(Const::Cplx(0.0, self.parse_number(text))));
