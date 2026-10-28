@@ -15,6 +15,205 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
+
+- the inner loop (`for (j in seq(length = ny)) { ij <- i + j - 1; z[[ij]]
+  <- z[[ij]] + xi * y[[j]] }`) runs in the VM at ~2,000 instructions per
+  iteration. Native code rejects it (`ROBIGO_JIT_TRACE`: "register 4 has no
+  single type at ForStep"), because `seq(length = ny)` is a call of the `seq`
+  closure returning an ordinary vector, not a range.
+- next: compile `seq(length = n)` / `seq(length.out = n)` (a single
+  argument) as `seq_len` where GNU R's result is `seq_len(length.out)`:
+  `seq` is base's, S3 dispatch on the argument would reach `seq.default`
+  (no `seq.integer`/`seq.numeric`/`seq.double` method visible), and
+  `seq.default`'s checks hold (length 1, finite, non-negative; `ceiling` for
+  doubles, the "first element used" warning for longer vectors). Anything
+  else calls `seq`.
+
+## 2026-10-28: `x[[i]] <<- v` / `x[i] <<- v` in the VM
+
+- why: `shootout/nbody_naive` (1.32x GNU R) updates velocity and position
+  vectors element by element with `body_vx[[i]] <<- body_vx[[i]] - dx *
+  body_mass[[j]] * mag`: each one ran the interpreter's complex
+  superassignment (`complex_assign_pre`, `eval`, `dispatch_or_eval_sp`,
+  `subset2_dflt`), 1.28M instructions per `advance()` call.
+- what:
+  - `x[[i]] <<- expr` / `x[i] <<- expr` (index as in `index_form`) with a
+    right-hand side the VM evaluates without calls (`is_simple`: arithmetic
+    and comparisons of variables, constants and `x[i]`/`x[[i]]` reads)
+    compiles to `Op::SuperSetIndex`, guarded on `<<-` and `[[<-`/`[<-`.
+  - The binding `x <<- ` would assign (first enclosing frame binding `x`,
+    else global) is updated in place by `set_element` when it is a plain
+    binding of a non-object vector of a compatible type with an in-range
+    index (or the append position), as `x[i] <- v` is locally; anything
+    else is the complex superassignment after a flush, unchanged.
+  - The current frame's cached copy of `x` is dropped first (it would make
+    the vector look shared, so `make_mut` would copy it on every store).
+  - `sym <<- expr` uses `is_simple` too.
+- tests: `tests/r/basics/super-assign-index.R` (the binding used and a copy
+  that must not change, growth, type changes, lists, names, a locked
+  binding, a missing global, an S3 `[[<-` method, the expression's value,
+  out-of-range and NA indices).
+- result against main 414ae44 (2 faster, none slower): `nbody_naive`
+  -61.8% (1.32 -> **0.50**; 1.28M -> 0.35M instructions per `advance()`),
+  `queens` -19.5% (0.77 -> 0.62); geomean 0.597 -> 0.587, faster than GNU
+  R on 67 -> 68; kept.
+- carries over to G3: element superassignment in place under the same
+  conditions as local element assignment.
+
+## 2026-10-28: `x[[i]] <- v` in native loops
+
+- why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
+  GNU R) never ran natively: the JIT accepted `SetIndex` only for `[`
+  (`supported`: `two` rejected).
+- what: native code's `SetIndex` handles attribute-free double and
+  integer vectors with an in-range scalar index and a double/integer/
+  logical value. On exactly those, `x[[i]] <- v` does what `x[i] <- v`
+  does, and anything else (out of range, other types, lists, a zero or NA
+  index) deoptimizes to the VM op as for `[`. So `[[` is accepted too.
+- tests: `tests/r/subset/assign-elt2-loops.R`: loops inside functions,
+  long enough to be compiled (`ROBIGO_JIT_TRACE` shows them compiled, one
+  continuing in the VM after a deopt), with the edge cases after
+  compilation (growth past the end, a double into an integer vector, NA,
+  names, a list, an index of 0, logical values). JIT on and off print
+  GNU R's output.
+- result against the previous commit (5 faster, none slower):
+  `vectorWhile` -80.6%, `vectorFor` -77.3%, `spectralnorm` -59.9% (its
+  `eval_A_col[[j + 1]] <- eval_A(i, j)` loop now compiles with the inlined
+  call), `fastaredux*` -0.9%. Ratios: `vectorFor` 1.08 -> **0.25**,
+  `vectorWhile` 1.07 -> **0.21**, `spectralnorm` 0.54 -> **0.22**; geomean
+  0.630 -> 0.597, faster than GNU R on 65 -> 67; kept.
+- carries over to G3: the rule (a `[[<-` on an attribute-free atomic
+  vector with an in-range scalar index is `[<-`).
+
+## 2026-10-28: `sym <<- expr` in the VM, scalars updated in place
+
+- why: `simple/superWhile` (`while (x < n) x <<- x + 1` on a free variable,
+  1.00x GNU R) cost 3,510 instructions per iteration: `<<-` ran in the
+  interpreter (`do_super_assign` evaluating `x + 1` through `eval`,
+  `call_builtin`, `do_arith`, then `super_assign` -> `define`), boxing a
+  new double each time (two allocations). GNU R's bytecode updates a
+  scalar binding in place.
+- what: `x <<- expr` with a symbol target and a pure right-hand side (no
+  calls: `is_pure`) compiles to the right-hand side in a register and
+  `Op::SuperSet`, guarded on `<<-`.
+  - It finds the binding as `Interp::super_assign` does: the first
+    enclosing frame of the frame binding the symbol, else the global
+    environment.
+  - A plain binding of a non-function value is overwritten without running
+    code (`set_plain_in_place`): an unshared scalar of the same type in
+    place, anything else replaced.
+  - Everything else (locked or active bindings, promises, function values,
+    a new global binding) goes to `super_assign` after a flush, unchanged.
+  - The current frame's cached copy of the symbol is dropped.
+- rejected, measured: compiling every `<<-` (with calls on the right):
+  `nbody` +1.5% (vector right-hand sides with `as.vector(... %*% ...)`
+  cost more through the VM's flushes and lookups than through the
+  interpreter); still +0.75% with the plain-binding store, +0.25% with
+  pure right-hand sides only.
+- tests: `tests/r/basics/super-assign-loops.R` (the binding found, copies
+  that must not change, type changes, nested closures, the global
+  fallback, a locked binding's error, an active binding, visibility, the
+  expression's value, a function value).
+- result against main 1696902 (11 faster, none slower):
+
+  | benchmark | instructions | x GNU R | allocations |
+  |---|---|---|---|
+  | `superWhile` | -56.6% | 1.00 -> **0.43** | 1.76M -> 0.39M |
+  | `fasta` | -23.9% | 0.97 -> **0.74** | 1.18M -> 0.73M |
+  | `fastaredux` | -29.1% | 0.96 -> **0.68** | 1.21M -> 0.64M |
+  | `fasta_naive` | -22.3% | | 1.04M -> 0.61M |
+  | `Storage` | -4.5% | 0.89 -> 0.85 | 1.07M -> 0.98M |
+
+  Also `fasta_2/3` -22/-19%, `fasta_naive_2` -17%, `fastaredux_naive`
+  -26%, `Bounce_nonames*` -1.5%. geomean 0.653 -> 0.630, faster than GNU R
+  on 64 -> 65; kept.
+- carries over to G3: compiling `<<-` with in-place scalar stores (G2's
+  binding cells make the in-place store GNU R's `BNDCELL` case), and
+  compiling it only where the right-hand side does not call out.
+- noted: fastr `functions/TestS3Dispatch/0cd270304a9a4dfd` fails on main
+  1696902 too (not this branch).
+
+## 2026-10-28: argument vectors reused; scalar results returned unboxed to compiled callers
+
+- why: per call, fib allocated the argument vector (1 allocation), the
+  boxed result at `Return` (2: `Rc<Vector>` + `Vec`) and the boxed
+  caller-forced argument (2), plus the promise and the environment.
+- what:
+  1. `Interp::arg_pool`: `end_context` clears the finished call's argument
+     vector and keeps it (up to 64); `promise_args_with` and
+     `caller_promargs` take one (`Interp::arg_vec`). Empty argument lists
+     allocate nothing and skip the pool.
+  2. Unboxed results: `Op::Call` calls closures through `closure_call` ->
+     `Interp::call_closure_ex(.., unboxed = true)` -> `apply_closure_ex`
+     -> `exec_closure_ex` -> `vm::run_closure(.., unboxed)`. The request
+     travels as a parameter (a global flag could be taken by a condition
+     handler run before the callee starts). The callee's `Return`/end of
+     body (`body_result`) leaves a double/integer/logical scalar in
+     `Interp::unboxed_ret` and returns a placeholder, only when the frame
+     has no `on.exit` code: then nothing runs between the return and the
+     caller taking the value. The existing `call_closure`/`apply_closure`/
+     `exec_closure` are wrappers passing `false`.
+  3. To keep the dispatch loop's code from getting worse (each step
+     measured by instruction and by source line against main): the flag
+     lives in `Vars` rather than as a `run_with` parameter; the slow paths
+     of `SetIndex`/`SetIndex2`/`SetDollar` (complex assignment) moved to the
+     cold `set_index_slow`; the closure arm of `Op::Call` to
+     `closure_call`; `body_result` inlined.
+- rejected, measured: a `run_with` parameter for the flag (+12
+  instructions per iteration of flushing loops), the flag in `Context`
+  (`fannkuch` +1.1%), the result slot as a thread-local instead of an
+  `Interp` field (no change in the loop, more per call), `body_result` out
+  of line (`profiler-microbenchmark` +0.73%).
+- tests: `tests/r/basics/unboxed-returns.R` (invisible results,
+  `on.exit`, `return()`, warnings handled mid-loop, `tryCatch` around a
+  failing callee, recursion, named/attributed results, `sys.function`,
+  `Recall`).
+- result against main 963b3cf (13 faster, none slower):
+
+  | benchmark | instructions | x GNU R | allocations |
+  |---|---|---|---|
+  | `fib` | -5.0% | 1.03 -> **0.98** | 2.09M -> 1.35M (-35%) |
+  | `robigo/binarytrees` | -1.5% | 1.01 -> **1.00** | 1.95M -> 1.42M (-27%) |
+  | `fasta` | -17.8% | 1.18 -> **0.97** | 1.71M -> 1.18M (-31%) |
+  | `fastaredux` | -21.4% | 1.22 -> **0.96** | 1.83M -> 1.21M (-34%) |
+  | `spectralnorm_alt_3` | -38.8% | 1.35 -> **0.82** | 3.08M -> 0.84M (-73%) |
+  | `profiler-shared` | -3.6% | | 9.40M -> 4.89M (-48%) |
+
+  geomean 0.665 -> 0.653, faster than GNU R on 57 -> 64; kept.
+- carries over to G3: the calling convention (an unboxed scalar result
+  for a compiled caller that asked, requested by parameter and handed over
+  only where nothing can run in between) and argument-vector reuse. With
+  G2's scalars the boxes get cheaper, but not free.
+
+## 2026-10-28: conformance item: GNU R binds base functions when its JIT compiles a closure
+
+- finding (from caller-forced-promises tests): after `g <- function(n) if (n < 2) ...` has
+  run a few times, a later global `` `<` <- function(a, b) ... `` is ignored by `g` in GNU R;
+  robigo's guards re-check and call the user's `<`. Coordinator decision: compiled behaviour is
+  GNU R's observable behaviour (JIT on by default), so robigo must match it.
+- the rules to port (R 4.5.0 sources):
+  - `compiler/R/cmp.R`: `getInlineInfo` (optimize >= 2 inlines `languageFuns`, incl. the
+    operators and `if`/`{`/`for`, when `findCenvVar` finds them as ftype "global"; guarded
+    inlining via `BASEGUARD` for other base functions), `tryInline`/`getInlineHandler(name,
+    package)` (handlers per package, so a definition found in `.GlobalEnv` is not inlined),
+    `findCenvVar`/`isBaseVar`/`findLocVar` (compile-time environment: locals from formals and
+    assignments in the body, then the closure environment's frames).
+  - `main/eval.c`: `R_CheckJIT` (strategy `STRATEGY_TOP_SMALL_MAYBE` etc.: small top-level
+    closures, `JIT_score < MIN_JIT_SCORE` = 50, are marked MAYBEJIT on their first call and
+    compiled on the second; loops are compiled with `LOOP_JIT_SCORE`), `R_jit_enabled` level 3,
+    and the JIT cache (compiled code reused by body, which is why a second closure with the
+    same body as an already compiled one behaves as compiled from its first call:
+    `g2 <- function(n) if (n < 2) ...` defined after the global `<` printed "global <" once).
+- plan: port the decision procedure (when a closure is compiled; which calls are inlined
+  without guard, guarded or looked up) into compile.rs, and make the VM's guards follow it:
+  unguarded inlines keep base semantics after a rebinding, guarded ones (`BASEGUARD`) fall
+  back to the call, as now. Conformance scripts: operators redefined before the first call,
+  between the first and second call, after compilation, inside the closure's environment, and
+  for two closures sharing a body.
+- status: not started; after the fib/binarytrees call-cost work (not cheap: the compile-time
+  environment analysis, MAYBEJIT and the body-keyed cache all affect the observable result).
+
 ## 2026-10-28: allocation counts (baseline for the allocation work)
 
 - tool: `scripts/alloc-count.py` counts calls of `__rust_alloc`,

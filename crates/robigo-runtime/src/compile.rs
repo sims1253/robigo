@@ -120,6 +120,25 @@ pub enum Op {
         sym: Sym,
         slot: Slot,
     },
+    /// `sym <<- src`: assign in the first enclosing frame that binds `sym`,
+    /// or the global environment (`slot`: this code's slot for `sym`, whose
+    /// cached value the assignment may make stale).
+    SuperSet {
+        src: Reg,
+        sym: Sym,
+        slot: Slot,
+    },
+    /// `x[i] <<- val` / `x[[i]] <<- val` (`two`; call `consts[k]`): in
+    /// place where `sym <<- ` would assign a plain vector, otherwise the
+    /// complex superassignment.
+    SuperSetIndex {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        two: bool,
+        k: u32,
+    },
     /// Assign to a symbol in the current frame (`<-`/`=`).
     SetVar {
         src: Reg,
@@ -714,6 +733,25 @@ fn is_pure(e: &Value, depth: usize) -> bool {
     }
 }
 
+/// An expression the VM evaluates without calling out: [`is_pure`] ones,
+/// and `x[i]` / `x[[i]]` reads (see [`index_form`]) within arithmetic.
+fn is_simple(e: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if is_pure(e, depth) || index_form(e).is_some() {
+        return true;
+    }
+    let Value::Lang(l) = e else { return false };
+    let Some(h) = head(l) else { return false };
+    let n = h.name();
+    (arith_op(&n).is_some() || rel_op(&n).is_some() || &*n == "(")
+        && !l.args.is_empty()
+        && l.args.len() <= 2
+        && plain_args(l, l.args.len())
+        && l.args.iter().all(|a| is_simple(&a.value, depth + 1))
+}
+
 /// `x[i]` or `x[[i]]` with a variable `x` and a pure index: the
 /// variable, whether it is `[[`, and the index expression.
 fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
@@ -1049,6 +1087,45 @@ impl Compiler {
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
+            }
+            // (Only for a right-hand side without calls: one with calls runs
+            // about as fast through the interpreter, without flushes.)
+            "<<-"
+                if l.args.len() == 2
+                    && matches!(l.args[0].value, Value::Sym(_))
+                    && l.args[0].tag.is_none()
+                    && is_simple(&l.args[1].value, 0) =>
+            {
+                let target = l.args[0].value.as_sym().unwrap();
+                if target.is_empty() || target == s::DOTS {
+                    return self.fallback(whole, dst);
+                }
+                let g = self.guard(h, whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let slot = self.slot(target);
+                self.emit(Op::SuperSet { src: dst, sym: target, slot });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "<<-"
+                if l.args.len() == 2
+                    && l.args[0].tag.is_none()
+                    && index_form(&l.args[0].value).is_some()
+                    && is_simple(&l.args[1].value, 0) =>
+            {
+                let (x, two, i) = index_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new(if two { "[[<-" } else { "[<-" }), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let i = self.index_operand(i);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::SuperSetIndex { val: dst, x, slot, i, two, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
             }
             "<-" | "=" if l.args.len() == 2 && matches!(l.args[0].value, Value::Sym(_)) && l.args[0].tag.is_none() => {
                 let target = l.args[0].value.as_sym().unwrap();
