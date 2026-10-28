@@ -257,7 +257,8 @@ without a guard. The port:
   153, `end_context` 151, variable lookups 144, the caller-side `n - 1`
   guard memo missing per frame (`guard_ok_slow`) 68, frame allocation and
   release ~250. GNU R: 2,923.
-- result against main a6bd46e (default profile, container): 20 faster, none slower than 0.5% (worst `spectralnorm_alt_2` +0.42%); `profiler-shared` -2.7%, `fib` -2.2%, `robigo/binarytrees` -1.9%, `spectralnorm_alt_3` -1.6%, `profiler-microbenchmark` -1.4%, the `binarytrees`/`fasta` families -0.5..-1.0%, `Storage` -0.9%; geomean 0.5777 -> 0.5754, faster on 70 -> 71. (main a6bd46e itself has `flexclust` at 5.24G instructions: the scan functions are out of line there now too, see the codegen-units note.)
+- rebased on main 7345297 (#51 merged): `direct_call` calls `jit_check` after the context push, as `exec_closure_ex` does. Result against 7345297: 14 faster, none slower (`profiler-shared` -2.3%, `fib` -1.9%, `robigo/binarytrees` -1.6%, `spectralnorm_alt_3` -1.4%, `profiler-microbenchmark` -1.1%); geomean 0.5762 -> 0.5743, faster on 70 -> 71; three-tier conformance with both rebinding scripts passes.
+- first result against main a6bd46e (default profile, container): 20 faster, none slower than 0.5% (worst `spectralnorm_alt_2` +0.42%); `profiler-shared` -2.7%, `fib` -2.2%, `robigo/binarytrees` -1.9%, `spectralnorm_alt_3` -1.6%, `profiler-microbenchmark` -1.4%, the `binarytrees`/`fasta` families -0.5..-1.0%, `Storage` -0.9%; geomean 0.5777 -> 0.5754, faster on 70 -> 71. (main a6bd46e itself has `flexclust` at 5.24G instructions: the scan functions are out of line there now too, see the codegen-units note.)
 
 ## 2026-10-28: plan: VM-to-VM calls without Rust recursion (measured, not started)
 
