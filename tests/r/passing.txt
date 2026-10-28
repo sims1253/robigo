@@ -156,6 +156,7 @@ tests/r/subset/matrix-elt2.R
 tests/r/subset/matrix-index.R
 tests/r/subset/misc.R
 tests/r/subset/missing-args.R
+tests/r/subset/range-elements.R
 tests/r/subset/regressions.R
 tests/r/subset/targets.R
 tests/r/subset/vector-index.R
