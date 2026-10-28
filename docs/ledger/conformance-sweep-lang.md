@@ -1,5 +1,13 @@
 # conformance-sweep-lang
 
+## 2026-10-28: follow-up baseline and names attribute coercion
+
+- Branch starts at origin/main bf985045, after PR #27 merged. Rebuilt baseline: FastR 2,085/2,187, zero regressions; GNU R tests 18/59, zero regressions; base examples 257/381, with the same 15 host failures. Saved binary and results under `.robigo/lang-debug/`.
+- Reclassified debugging: nearly all InteractiveDebug failures contain literal <<<NEWLINE>>> and fail before debugging starts; the mismatch is parser/CLI context formatting. Trace cases with tracer expressions need methods native initialization. The eleven getParseData parse cases need methods initialization, and the twelfth parse case fails at file.info. Runtime parse-builtin edits do not unblock these cases.
+- Names port: attrib.c:namesgets preserves the coerced labels' attributes; builtin.c:xlengthgets keeps only names when extending a short label vector. Atomic labels use coerceVector rather than factor dispatch. Pairlist labels follow isVectorizable in Rinlinedfuns.h.
+- Names/attribute slice: 248/264 -> 254/264, six gains, zero regressions. Five gains belong to the primary filter; namesassign/99c388871ae85598 is an additional gain outside it. Kept.
+- names-attribute-values.R matches Docker GNU R 4.5.0 byte for byte. Crate tests and final corpus verification are in progress.
+
 ## 2026-10-28: final verified language metric
 
 - FastR requested filter: **2,036/2,187 -> 2,085/2,187**, 49 implementation gains, zero regressions. All 26 missing() cases pass, including forwarded defaults and cyclic defaults. The initial depth-cutoff experiment was rejected; promise-identity cycle detection restores the existing cyclic-default pass.

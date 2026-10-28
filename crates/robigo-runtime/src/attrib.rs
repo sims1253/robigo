@@ -129,28 +129,37 @@ pub fn remove_attrib(mut v: Value, name: Sym) -> Value {
 
 fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
     let n = v.len();
-    let mut names: Vec<RStr> = match &val {
-        Value::Pairlist(_) | Value::List(_) if !matches!(val, Value::Str(_)) => {
+    // R: attrib.c:namesgets uses coerceVector, retaining the labels'
+    // attributes. Only pairlist coercion allocates fresh unadorned labels.
+    let mut labels = match &val {
+        Value::Pairlist(_) => {
             let items = crate::coerce::to_list(&val);
-            items.iter().take(n).map(|x| to_str(x).first().cloned().flatten()).collect()
-        }
-        _ => {
-            if val.inherits("factor") {
-                match crate::builtins::envir::as_character_factor(&val) {
-                    Value::Str(s) => s.data.clone(),
-                    _ => vec![],
-                }
-            } else {
-                to_str(&val)
+            if items.iter().any(|x| !x.is_vector() || x.len() > 1) {
+                return Err(Flow::error("incompatible 'names' argument"));
             }
+            let mut names: Vec<RStr> = items.iter().take(n).map(|x| to_str(x).first().cloned().flatten()).collect();
+            names.resize(n, rstr(""));
+            Value::strs(names)
         }
+        _ => coerce_quiet(&val, VType::Str),
     };
+    let Value::Str(ref mut label_vec) = labels else { unreachable!() };
+    let names = &mut Rc::make_mut(label_vec).data;
     if !(v.is_vector() || matches!(v, Value::Pairlist(_) | Value::Lang(_))) {
         return Err(Flow::error("names() applied to a non-vector"));
     }
     if names.len() < n {
         names.resize(n, None);
+        // R: builtin.c:xlengthgets preserves only the names attribute.
+        let old_names = labels.get_attr(s::NAMES);
+        labels.clear_attrs();
+        if let Some(Value::Str(old)) = old_names {
+            let mut padded = old.data.clone();
+            padded.resize(n, rstr(""));
+            labels.set_attr_raw(s::NAMES, Value::strs(padded));
+        }
     }
+    let names = labels.as_str_vec().unwrap().data.as_slice();
     if names.len() != n {
         return Err(Flow::error(format!(
             "'names' attribute [{}] must be the same length as the vector [{}]",
@@ -159,13 +168,13 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
         )));
     }
     if is_one_dim_array(&v) {
-        let dn = Value::list(vec![Value::strs(names)]);
+        let dn = Value::list(vec![labels]);
         return dimnames_gets(v, dn);
     }
     match &mut v {
         Value::Pairlist(p) => {
             for (a, nm) in Rc::make_mut(p).items.iter_mut().zip(names) {
-                a.tag = nm.filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
+                a.tag = nm.clone().filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
             }
             Ok(v)
         }
@@ -173,13 +182,13 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
             let l = Rc::make_mut(l);
             // The first name belongs to the function position; it cannot be
             // stored, so only argument tags are set.
-            for (a, nm) in l.args.iter_mut().zip(names.into_iter().skip(1)) {
-                a.tag = nm.filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
+            for (a, nm) in l.args.iter_mut().zip(names.iter().skip(1)) {
+                a.tag = nm.clone().filter(|s| !s.is_empty()).map(|s| Sym::new(&s));
             }
             Ok(v)
         }
         _ => {
-            v.set_attr_raw(s::NAMES, Value::strs(names));
+            v.set_attr_raw(s::NAMES, labels);
             Ok(v)
         }
     }
