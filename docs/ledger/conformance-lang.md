@@ -4,10 +4,13 @@
 
 - Ports: `eval.c:EnsureLocal` now evaluates the base symbol without discarding its signaled lexical error; `eval.c:do_getconst` exposes the existing constant-buffer slice operation; `envir.c:defineVar` supplies the exact locked-environment message.
 - Result: 1,330/1,371 -> 1,335/1,371, five additional passes, zero regressions. Overall gain: 109 cases from the original 1,226 baseline. Relevant examples hold at 6/8. Kept.
-- `evaluator-errors.R` matches Docker GNU R 4.5.0 byte for byte. All 19 runtime tests pass; full conformance is 168/169, with only the same pre-existing `datetime/zones.R` mismatch. Both VM guards and compiled/interpreted comparisons pass. Formatting passes; both new scripts are recorded in the conformance ratchet.
+- `evaluator-errors.R` matches Docker GNU R 4.5.0 byte for byte. All 23 runtime tests pass after rebasing (21 unit, two integration); full conformance is 168/169, with only the same pre-existing `datetime/zones.R` mismatch. Both VM guards and compiled/interpreted comparisons pass. Formatting passes; both new scripts are recorded in the conformance ratchet.
 - Shared file: `interp.rs` changes only the locked-environment error text in this cycle.
 
-- Delivery: coordinator froze PR #19 at `2598b02a`; this cycle remains local until that PR merges, then moves to a new branch/PR. No further pushes to #19.
+- Delivery: rebased the two local commits after PR #19 merged into `origin/main` at `e8e2d31`. The new branch is `track/conformance-lang-conditions`. A fresh build of that main revision reproduces the 1,330/1,371 baseline with zero regressions; the help-page baseline is 6/8. The rebuilt branch passes 1,335/1,371 with zero regressions, preserving every passing case from the new-main baseline. Both focused oracle scripts match; the help-page slice remains 6/8. Rebased verification passes all 23 runtime tests (21 unit, two integration), VM guards, compiled/interpreted comparisons, and formatting. Full conformance remains 168/169; the sole timezone mismatch is byte-identical on the freshly built main baseline.
+
+- Performance verification against main `e8e2d31`: `robigo/fannkuch` uses 1,208,308,538 -> 1,208,373,514 instructions (+0.0054%), within the 0.5% gate (`python3 scripts/perf.py run --metric instr --runtime robigo --suite robigo --filter '^robigo/fannkuch$'`, then `compare`).
+- Build verification: the shared Cargo cache twice supplied a numerics artifact without modules present in this checkout. A source-timestamp refresh recovered the release build; tests then encountered the same stale dependency. Final verification uses the worktree's pre-existing `target` directory through `CARGO_TARGET_DIR` for these commands, with no global configuration change.
 
 ### Current remaining failures and ownership
 
