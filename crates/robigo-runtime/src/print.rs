@@ -110,12 +110,20 @@ impl Printer {
                     }
                 }
                 Some(cl) => {
-                    let c = crate::coerce::to_str(&cl).first().cloned().flatten().unwrap_or_else(|| "NA".into());
+                    // CHAR(STRING_ELT(x, 0)): "NA" for NA; a zero-length vector
+                    // reads as "" in GNU R.
+                    let first = |v: &Value| -> String {
+                        match crate::coerce::to_str(v).first() {
+                            Some(Some(s)) => s.to_string(),
+                            Some(None) => "NA".into(),
+                            None => String::new(),
+                        }
+                    };
+                    let c = first(&cl);
                     match v.get_attr(Sym::new("package")) {
                         None => self.p(&format!("<S4 object of class \"{}\">\n", c)),
                         Some(pkg) => {
-                            let p =
-                                crate::coerce::to_str(&pkg).first().cloned().flatten().unwrap_or_else(|| "NA".into());
+                            let p = first(&pkg);
                             self.p(&format!("<S4 object of class \"{}\" from package '{}'>\n", c, p));
                         }
                     }
