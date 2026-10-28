@@ -6,8 +6,10 @@
 //! without any lowering decisions of its own. The only node that is not a
 //! plain call is [`Expr::Function`], because R stores formals as a pairlist,
 //! which the runtime builds itself.
-
-use std::fmt;
+//!
+//! Nodes live in an [`crate::Arena`] (`'a`), and plain identifiers and
+//! strings reference the source text directly; dropping the arena frees the
+//! whole tree at once, so no node owns heap memory.
 
 /// Half-open byte range into the parsed source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -27,8 +29,8 @@ impl Span {
 }
 
 /// Literal constants. `NA` variants use `None`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Const {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Const<'a> {
     Null,
     Lgl(Option<bool>),
     Int(Option<i32>),
@@ -40,44 +42,44 @@ pub enum Const {
     /// String content as raw bytes: source text keeps its UTF-8 bytes, and
     /// `\xNN`/`\NNN` escapes produce their single byte (a "bytes"-encoded
     /// CHARSXP in GNU R, whatever the locale).
-    Str(Option<Vec<u8>>),
+    Str(Option<&'a [u8]>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Arg {
-    pub name: Option<String>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arg<'a> {
+    pub name: Option<&'a str>,
     /// `None` is the empty argument, as in `x[, 1]`.
-    pub value: Option<Expr>,
+    pub value: Option<Expr<'a>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Formal {
-    pub name: String,
-    pub default: Option<Expr>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Formal<'a> {
+    pub name: &'a str,
+    pub default: Option<Expr<'a>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Expr {
-    Const(Const, Span),
-    Sym(String, Span),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Expr<'a> {
+    Const(Const<'a>, Span),
+    Sym(&'a str, Span),
     /// The pipe placeholder `_`, the string constant `"_"` in GNU R's
     /// trees (`R_PlaceholderToken`). Kept distinct so that only real
     /// placeholders trigger GNU R's post-statement check, and so pipes can
     /// substitute them.
     Placeholder(Span),
     Call {
-        fun: Box<Expr>,
-        args: Vec<Arg>,
+        fun: &'a Expr<'a>,
+        args: &'a [Arg<'a>],
         span: Span,
     },
     Function {
-        formals: Vec<Formal>,
-        body: Box<Expr>,
+        formals: &'a [Formal<'a>],
+        body: &'a Expr<'a>,
         span: Span,
     },
 }
 
-impl Expr {
+impl<'a> Expr<'a> {
     pub fn span(&self) -> Span {
         match self {
             Expr::Const(_, s) | Expr::Sym(_, s) | Expr::Placeholder(s) => *s,
@@ -85,14 +87,10 @@ impl Expr {
         }
     }
 
-    pub fn call(name: &str, name_span: Span, args: Vec<Arg>, span: Span) -> Expr {
-        Expr::Call { fun: Box::new(Expr::Sym(name.to_string(), name_span)), args, span }
-    }
-
     /// The function name, if this is a call to a symbol.
     pub fn call_name(&self) -> Option<&str> {
         match self {
-            Expr::Call { fun, .. } => match fun.as_ref() {
+            Expr::Call { fun, .. } => match fun {
                 Expr::Sym(s, _) => Some(s),
                 _ => None,
             },
@@ -101,8 +99,8 @@ impl Expr {
     }
 }
 
-impl Arg {
-    pub fn positional(value: Expr) -> Arg {
+impl<'a> Arg<'a> {
+    pub fn positional(value: Expr<'a>) -> Arg<'a> {
         Arg { name: None, value: Some(value) }
     }
 }
@@ -150,3 +148,5 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+use std::fmt;

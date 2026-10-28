@@ -35,9 +35,9 @@ const PARSE_CONTEXT_SIZE: usize = 50;
 
 /// The parse statuses of `R_Parse1Buffer` the REPL distinguishes (R:
 /// main.c:Rf_ReplIteration's switch over `state->status`).
-enum Status {
+enum Status<'a> {
     Null,
-    Ok(Vec<robigo_syntax::Expr>),
+    Ok(Vec<robigo_syntax::Expr<'a>>),
     Incomplete,
     Error(robigo_syntax::ParseError),
 }
@@ -149,93 +149,16 @@ fn read_console(input: &mut ConsoleInput, echo: bool, prompt: &str) -> Option<St
 /// warnings are returned for the caller to signal, as R's lexer does
 /// while building the expression (`GenerateCode` gates them to this one
 /// parse).
-fn parse_status(buf: &str) -> (Status, Vec<String>) {
-    // R's lexer notes when the buffer ends inside a comment it cannot
-    // close (R: gram.y's SkipComment sets EndOfFile = 2); every parse
-    // status is then PARSE_INCOMPLETE, whatever the grammar says. The
-    // REPL reaches this whenever its raw `;`/newline cut lands inside a
-    // comment (a `;` in a comment, say).
-    if ends_in_comment(buf) {
-        return (Status::Incomplete, Vec::new());
+fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a>, Vec<String>) {
+    match robigo_syntax::parse_console(arena, buf) {
+        robigo_syntax::ConsoleStatus::Null => (Status::Null, Vec::new()),
+        robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => (Status::Ok(exprs), warnings),
+        robigo_syntax::ConsoleStatus::Incomplete => (Status::Incomplete, Vec::new()),
+        robigo_syntax::ConsoleStatus::Error(e) => (Status::Error(e), Vec::new()),
+        // The REPL's chunks are never empty (a read returns at least one
+        // byte); an empty buffer would just be a null statement.
+        robigo_syntax::ConsoleStatus::Eof => (Status::Null, Vec::new()),
     }
-    match robigo_syntax::parse_program_with_warnings(buf) {
-        Err(e) if e.incomplete => (Status::Incomplete, Vec::new()),
-        Err(e) => (Status::Error(e), Vec::new()),
-        Ok((exprs, warnings)) => {
-            // R's grammar only accepts a statement that is TERMINATED
-            // (`prog: '\n' | expr ';' | expr '\n'`); the REPL's own
-            // chunks are, except when a line longer than
-            // `CONSOLE_BUFFER_SIZE` is cut mid-line (R: PARSE_EOF from
-            // `R_Parse1`, which `R_ReplConsole` treats as more input
-            // pending).
-            if !buf.ends_with(';') && !buf.ends_with('\n') {
-                return (Status::Incomplete, warnings);
-            }
-            if exprs.is_empty() {
-                // The grammar has no rule that can start a statement with
-                // a `;` (`1;;2` is an error at the second one);
-                // robigo-syntax's file parser skips separators between
-                // expressions, so a chunk that is only a separator is
-                // detected here, from the first token. Any other chunk
-                // that parses to nothing (blank, comment) is `'\n'`:
-                // PARSE_NULL.
-                let t = first_semicolon(buf);
-                if t.0 < buf.len() {
-                    return (Status::Error(robigo_syntax::ParseError::new("unexpected ';'", t.0, t.1)), warnings);
-                }
-                return (Status::Null, warnings);
-            }
-            (Status::Ok(exprs), warnings)
-        }
-    }
-}
-
-/// The byte range of `buf`'s first token if it is a `;` (empty range
-/// when it is not; see `parse_status`).
-fn first_semicolon(buf: &str) -> (usize, usize) {
-    match robigo_syntax::lexer::Lexer::new(buf).tokenize() {
-        Ok((tokens, _)) => match tokens.first() {
-            Some(t) if matches!(t.tok, robigo_syntax::lexer::Tok::Semi) => (t.span.start as usize, t.span.end as usize),
-            _ => (buf.len(), buf.len()),
-        },
-        Err(_) => (buf.len(), buf.len()),
-    }
-}
-
-/// Does `buf` end inside an unclosed comment? A comment runs from a
-/// `#` (outside strings and quoted names) to the end of the line, so
-/// only the text after the last newline can hold one; quotes opened
-/// before it imply an unterminated string, which the parser already
-/// reports as incomplete.
-fn ends_in_comment(buf: &str) -> bool {
-    let tail = match buf.rfind('\n') {
-        Some(i) => &buf[i + 1..],
-        None => buf,
-    };
-    let b = tail.as_bytes();
-    let mut quote: Option<u8> = None;
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        match quote {
-            Some(q) => {
-                if c == b'\\' {
-                    i += 1; // an escaped character, possibly a quote
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None => {
-                if c == b'\'' || c == b'"' || c == b'`' {
-                    quote = Some(c);
-                } else if c == b'#' {
-                    return true;
-                }
-            }
-        }
-        i += 1;
-    }
-    false
 }
 
 fn floor_char_boundary(s: &str, i: usize) -> usize {
@@ -307,8 +230,9 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
     let mut bufp = 0; // state->bufp
     let mut iob = String::new(); // R_ConsoleIob
     let mut prompt_type = 1; // 1: `> `, 2: `+ `
-    let mut status = Status::Null; // state->status
+    let mut status_incomplete = false; // state->status == PARSE_INCOMPLETE
     let global = interp.global.clone();
+    let arena = robigo_syntax::Arena::new();
     loop {
         if bufp >= line.len() {
             // R_ReadConsole: buffered output goes out before the prompt.
@@ -322,7 +246,7 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 None => {
                     // R_ReplConsole: end of input while a statement is
                     // still open is an error.
-                    if matches!(status, Status::Incomplete) {
+                    if status_incomplete {
                         interp.write_err("Error: unexpected end of input\n");
                         return false;
                     }
@@ -345,9 +269,9 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 break;
             }
         }
-        let (st, warns) = parse_status(&iob);
-        status = st;
-        match status {
+        let (st, warns) = parse_status(&arena, &iob);
+        status_incomplete = matches!(st, Status::Incomplete);
+        match st {
             Status::Null => {
                 iob.clear();
                 prompt_type = 1;
@@ -433,50 +357,69 @@ mod tests {
         assert_eq!(context("a\there", 6), ["a       here"]);
     }
 
+    /// The chunk statuses without the borrowed trees: what the REPL
+    /// branches on.
+    #[derive(PartialEq, Debug)]
+    enum Kind {
+        Null,
+        Ok(usize),
+        Incomplete,
+        Error,
+    }
+
+    fn kind(buf: &str) -> (Kind, Vec<String>) {
+        let arena = robigo_syntax::Arena::new();
+        match parse_status(&arena, buf) {
+            (Status::Null, w) => (Kind::Null, w),
+            (Status::Ok(es), w) => (Kind::Ok(es.len()), w),
+            (Status::Incomplete, w) => (Kind::Incomplete, w),
+            (Status::Error(_), w) => (Kind::Error, w),
+        }
+    }
+
     #[test]
     fn lone_semicolon_is_an_error() {
         // `;` alone is PARSE_ERROR ("unexpected ';'"), not PARSE_NULL.
-        assert!(matches!(parse_status(";\n"), (Status::Error(_), _)));
-        assert!(matches!(parse_status(" ;"), (Status::Error(_), _)));
+        assert_eq!(kind(";\n").0, Kind::Error);
+        assert_eq!(kind(" ;").0, Kind::Error);
         // Blank and comment-only lines are PARSE_NULL.
-        assert!(matches!(parse_status("\n"), (Status::Null, _)));
-        assert!(matches!(parse_status("   \n"), (Status::Null, _)));
-        assert!(matches!(parse_status("# c\n"), (Status::Null, _)));
+        assert_eq!(kind("\n").0, Kind::Null);
+        assert_eq!(kind("   \n").0, Kind::Null);
+        assert_eq!(kind("# c\n").0, Kind::Null);
     }
 
     #[test]
     fn terminated_statements_are_ok() {
-        assert!(matches!(parse_status("1 + 1\n"), (Status::Ok(_), _)));
-        assert!(matches!(parse_status("x <- 1;"), (Status::Ok(_), _)));
+        assert_eq!(kind("1 + 1\n").0, Kind::Ok(1));
+        assert_eq!(kind("x <- 1;").0, Kind::Ok(1));
         // Multi-expression chunks cannot occur from the REPL's copy loop;
         // single chunks with a trailing separator parse as one.
-        let (st, _) = parse_status("1;\n");
-        assert!(matches!(st, Status::Ok(es) if es.len() == 1));
+        assert_eq!(kind("1;\n").0, Kind::Ok(1));
     }
 
     #[test]
     fn unterminated_statements_are_incomplete() {
-        assert!(matches!(parse_status("if (TRUE) {\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("1 +\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("\"abc\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("if (x) 1 else\n"), (Status::Incomplete, _)));
+        assert_eq!(kind("if (TRUE) {\n").0, Kind::Incomplete);
+        assert_eq!(kind("1 +\n").0, Kind::Incomplete);
+        assert_eq!(kind("\"abc\n").0, Kind::Incomplete);
+        assert_eq!(kind("if (x) 1 else\n").0, Kind::Incomplete);
         // A line longer than the console buffer is cut mid-line: a chunk
         // without its terminating `;` or newline needs more input.
-        assert!(matches!(parse_status("1 + 1 + "), (Status::Incomplete, _)));
+        assert_eq!(kind("1 + 1 + ").0, Kind::Incomplete);
     }
 
     #[test]
     fn comments_cut_by_a_semicolon_are_incomplete() {
         // The REPL's cut lands inside the comment; R's lexer sets
         // EndOfFile = 2 there, whatever the grammar makes of the buffer.
-        assert!(matches!(parse_status("# c;"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("1 # two;"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("f({\n1 # c;"), (Status::Incomplete, _)));
+        assert_eq!(kind("# c;").0, Kind::Incomplete);
+        assert_eq!(kind("1 # two;").0, Kind::Incomplete);
+        assert_eq!(kind("f({\n1 # c;").0, Kind::Incomplete);
         // A comment closed by a newline is fine.
-        assert!(matches!(parse_status("# c\n"), (Status::Null, _)));
-        assert!(matches!(parse_status("f({\n# c;\n"), (Status::Incomplete, _)));
+        assert_eq!(kind("# c\n").0, Kind::Null);
+        assert_eq!(kind("f({\n# c;\n").0, Kind::Incomplete);
         // Strings and quoted names hide a `#`.
-        assert!(matches!(parse_status("\"a#b\";"), (Status::Ok(_), _)));
-        assert!(matches!(parse_status("`a#b`;\n"), (Status::Ok(_), _)));
+        assert_eq!(kind("\"a#b\";").0, Kind::Ok(1));
+        assert_eq!(kind("`a#b`;\n").0, Kind::Ok(1));
     }
 }

@@ -4,14 +4,15 @@
 use std::path::{Path, PathBuf};
 
 use robigo_syntax::dump::{dump, dump_error};
-use robigo_syntax::parse_program;
+use robigo_syntax::{Arena, parse_program};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
 fn our_dump(src: &str) -> Vec<u8> {
-    match parse_program(src) {
+    let arena = Arena::new();
+    match parse_program(&arena, src) {
         Ok(exprs) => {
             let mut out = Vec::new();
             for (i, e) in exprs.iter().enumerate() {

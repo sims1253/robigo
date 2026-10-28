@@ -599,7 +599,8 @@ fn repl(interp: &mut Interp) -> ExitCode {
             Err(_) => return ExitCode::FAILURE,
         }
         buf.push_str(&line);
-        match robigo_syntax::parse_program(&buf) {
+        let arena = robigo_syntax::Arena::new();
+        match robigo_syntax::parse_program(&arena, &buf) {
             Err(e) if e.incomplete => continue,
             _ => {
                 let src = std::mem::take(&mut buf);
@@ -616,7 +617,8 @@ fn parse_cmd(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let src = String::from_utf8_lossy(&std::fs::read(path).expect("read file")).into_owned();
-    match robigo_syntax::parse_program(&src) {
+    let arena = robigo_syntax::Arena::new();
+    match robigo_syntax::parse_program(&arena, &src) {
         Ok(exprs) => {
             use std::io::Write;
             let mut out = std::io::stdout().lock();

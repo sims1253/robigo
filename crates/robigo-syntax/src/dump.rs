@@ -372,7 +372,7 @@ fn dump_into(e: &Expr, s: &mut Vec<u8>) {
         Expr::Call { fun, args, .. } => {
             s.push(b'(');
             dump_into(fun, s);
-            for a in args {
+            for a in *args {
                 s.push(b' ');
                 dump_arg(a.name.as_deref(), a.value.as_ref(), s);
             }
@@ -380,7 +380,7 @@ fn dump_into(e: &Expr, s: &mut Vec<u8>) {
         }
         Expr::Function { formals, body, .. } => {
             s.extend_from_slice(b"(`function` (pairlist");
-            for f in formals {
+            for f in *formals {
                 s.push(b' ');
                 dump_arg(Some(&f.name), f.default.as_ref(), s);
             }

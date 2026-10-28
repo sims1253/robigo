@@ -4,14 +4,16 @@
 //! handling and parse-time rewrites such as `->` and `|>` are reproduced so
 //! that the resulting trees match what `parse()` returns in GNU R.
 
+pub mod arena;
 pub mod ast;
 pub mod cfmt;
 pub mod dump;
 pub mod lexer;
 pub mod parser;
 
+pub use arena::Arena;
 pub use ast::{Arg, Const, Expr, Formal, ParseError, Span};
-pub use parser::{parse_program, parse_program_with_warnings};
+pub use parser::{ConsoleStatus, parse_console, parse_program, parse_program_with_warnings};
 
 /// Convert a byte offset into a 1-based (line, column) pair, counting the
 /// way GNU R's lexer does (gram.c:xxgetc): columns count characters, not

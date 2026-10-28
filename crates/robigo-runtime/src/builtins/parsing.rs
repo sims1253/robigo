@@ -47,7 +47,8 @@ pub fn format_parse_error(src: &str, srcname: &str, e: &robigo_syntax::ParseErro
 }
 
 pub fn parse_text(src: &str, srcname: &str) -> RResult<Vec<Value>> {
-    match robigo_syntax::parse_program(src) {
+    let arena = robigo_syntax::Arena::new();
+    match robigo_syntax::parse_program(&arena, src) {
         Ok(exprs) => Ok(exprs.iter().map(expr_to_value).collect()),
         Err(e) => Err(Flow::error(format_parse_error(src, srcname, &e))),
     }

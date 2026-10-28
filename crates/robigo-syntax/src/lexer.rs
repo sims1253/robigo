@@ -2,11 +2,78 @@
 
 use crate::ast::{Const, ParseError, Span};
 
+/// A symbol name: a source slice, or an owned string when escapes made
+/// it differ from the source (backtick names only).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Tok {
-    Const(Const),
-    Str(Vec<u8>),
-    Sym(String),
+pub enum SymStr<'a> {
+    Src(&'a str),
+    Own(String),
+}
+
+impl<'a> SymStr<'a> {
+    /// The source slice, when the name is verbatim from the source.
+    pub fn src(&self) -> Option<&'a str> {
+        match self {
+            SymStr::Src(s) => Some(s),
+            SymStr::Own(_) => None,
+        }
+    }
+}
+
+impl<'a> std::fmt::Display for SymStr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self)
+    }
+}
+
+impl<'a> std::ops::Deref for SymStr<'a> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            SymStr::Src(s) => s,
+            SymStr::Own(s) => s,
+        }
+    }
+}
+
+/// String-literal bytes: the source between the quotes when no escape
+/// changed them, the unescaped bytes otherwise.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StrTok<'a> {
+    Src(&'a [u8]),
+    Own(Vec<u8>),
+}
+
+impl<'a> StrTok<'a> {
+    /// The source bytes, when the literal is verbatim from the source.
+    pub fn src(&self) -> Option<&'a [u8]> {
+        match self {
+            StrTok::Src(s) => Some(s),
+            StrTok::Own(_) => None,
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for StrTok<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            StrTok::Src(s) => s,
+            StrTok::Own(s) => s,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tok<'a> {
+    Const(Const<'a>),
+    Str(StrTok<'a>),
+    /// Identifiers borrow the source: they are contiguous slices, and a
+    /// borrowed token makes the parser's peeks copies instead of heap
+    /// allocations (GNU R interns symbols; this is the cheap analogue).
+    /// Backtick names with escapes are the exception (their bytes differ
+    /// from the source), so they stay owned.
+    Sym(SymStr<'a>),
     Function,
     Lambda,
     If,
@@ -45,8 +112,8 @@ pub enum Tok {
     Minus,
     Star,
     Slash,
-    /// `%op%`, including `%%`, `%/%` and `%in%`
-    Special(String),
+    /// `%op%`, including `%%`, `%/%` and `%in%` (a source slice)
+    Special(&'a str),
     Pipe,
     PipeBind,
     Colon,
@@ -66,8 +133,8 @@ pub enum Tok {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token {
-    pub tok: Tok,
+pub struct Token<'a> {
+    pub tok: Tok<'a>,
     pub span: Span,
 }
 
@@ -77,6 +144,10 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<String>,
+    /// The input ends inside an unterminated comment (`SkipComment`
+    /// reached end of file: `EndOfFile = 2` in gram.y), which promotes
+    /// every console status to incomplete.
+    pub eof_in_comment: bool,
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -89,7 +160,7 @@ fn is_ident_char(c: char) -> bool {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new() }
+        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new(), eof_in_comment: false }
     }
 
     #[inline]
@@ -152,8 +223,17 @@ impl<'a> Lexer<'a> {
     /// eager, so the first lexical error becomes an `Invalid` token — the
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
-    pub fn tokenize(mut self) -> Result<(Vec<Token>, Vec<String>), ParseError> {
-        let mut out = Vec::new();
+    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+        self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
+    }
+
+    /// [`Lexer::tokenize`] plus the `EndOfFile = 2` flag (the input ends
+    /// inside an unterminated comment), which the console grammar
+    /// consults (`SkipComment` in gram.y).
+    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<String>, bool), ParseError> {
+        // R sources average ~5 bytes per token; pre-sizing avoids the
+        // reallocation churn of growing one Vec per source.
+        let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
         loop {
             let t = match self.next_token() {
                 Ok(t) => t,
@@ -170,23 +250,45 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        Ok((out, self.warnings))
+        let eof_in_comment = self.eof_in_comment;
+        Ok((out, self.warnings, eof_in_comment))
     }
 
-    fn next_token(&mut self) -> Result<Token, ParseError> {
-        // Skip horizontal whitespace and comments.
-        loop {
-            match self.byte_at(self.pos) {
-                b' ' | b'\t' | b'\r' | 0x0c => self.pos += 1,
-                b'#' => {
-                    // To the end of the line (a newline byte never occurs
-                    // inside a multi-byte character).
-                    self.pos +=
-                        self.bytes[self.pos..].iter().position(|&b| b == b'\n').unwrap_or(self.bytes.len() - self.pos);
+    fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
+        // Skip horizontal whitespace and comments. The loop runs on a
+        // local index so the byte loads are not bounds-checked; a newline
+        // byte never occurs inside a multi-byte character, so comments can
+        // end at a raw byte match.
+        {
+            let bytes = self.bytes;
+            let len = bytes.len();
+            let mut i = self.pos;
+            loop {
+                while i < len && bytes[i] == b' ' {
+                    i += 1;
                 }
-                0xc2 if self.byte_at(self.pos + 1) == 0xa0 => self.pos += 2, // U+00A0
-                _ => break,
+                if i >= len {
+                    break;
+                }
+                match bytes[i] {
+                    b'\t' | b'\r' | 0x0c => i += 1,
+                    b'#' => {
+                        // `position` over the raw bytes lowers to memchr.
+                        // No newline until the end of input: the comment
+                        // is unterminated (`EndOfFile = 2` in gram.y).
+                        match bytes[i..].iter().position(|&b| b == b'\n') {
+                            Some(n) => i += n,
+                            None => {
+                                i = len;
+                                self.eof_in_comment = true;
+                            }
+                        }
+                    }
+                    0xc2 if i + 1 < len && bytes[i + 1] == 0xa0 => i += 2, // U+00A0
+                    _ => break,
+                }
             }
+            self.pos = i;
         }
         let start = self.pos;
         let Some(c) = self.peek_char() else {
@@ -205,7 +307,16 @@ impl<'a> Lexer<'a> {
             }
             '`' => {
                 self.pos += 1;
-                let name = String::from_utf8_lossy(&self.string_body('`', start, true)?).into_owned();
+                let body = self.string_body('`', start, true)?;
+                // Without escapes the name is the source between the
+                // backticks, verbatim; with them it is the unescaped
+                // bytes (e.g. `\`` is a name that is one backtick).
+                let raw = &self.src[start + 1..self.pos - 1];
+                let name = if raw.contains('\\') {
+                    SymStr::Own(String::from_utf8_lossy(&body[..]).into_owned())
+                } else {
+                    SymStr::Src(raw)
+                };
                 if name.is_empty() {
                     // `SymbolValue` installs the name right in the lexer
                     // (`// R: gram.y:SymbolValue`, `names.c:install`), and
@@ -246,7 +357,7 @@ impl<'a> Lexer<'a> {
         matches!(self.byte_at(i), b'(' | b'[' | b'{' | b'|')
     }
 
-    fn raw_string(&mut self, start: usize) -> Result<Vec<u8>, ParseError> {
+    fn raw_string(&mut self, start: usize) -> Result<StrTok<'a>, ParseError> {
         let quote = self.bytes[self.pos + 1];
         self.pos += 2;
         let mut dashes = 0;
@@ -279,28 +390,34 @@ impl<'a> Lexer<'a> {
                     j += 1;
                 }
                 if n == dashes && self.byte_at(j) == quote {
-                    let body = self.bytes[body_start..self.pos].to_vec();
+                    let body = &self.bytes[body_start..self.pos];
                     self.pos = j + 1;
-                    return Ok(body);
+                    return Ok(StrTok::Src(body));
                 }
             }
             self.pos += 1;
         }
     }
 
-    fn ident(&mut self) -> Tok {
+    fn ident(&mut self) -> Tok<'a> {
+        let bytes = self.bytes;
         let start = self.pos;
-        loop {
-            match self.byte_at(self.pos) {
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' => self.pos += 1,
-                b if b >= 0x80 => match self.peek_char() {
-                    Some(c) if is_ident_char(c) => self.pos += c.len_utf8(),
+        let mut i = start;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_') {
+                i += 1;
+            } else if b >= 0x80 {
+                match self.src[i..].chars().next() {
+                    Some(c) if is_ident_char(c) => i += c.len_utf8(),
                     _ => break,
-                },
-                _ => break,
+                }
+            } else {
+                break;
             }
         }
-        let s = &self.src[start..self.pos];
+        self.pos = i;
+        let s = &self.src[start..i];
         // Slice patterns compile to length and byte tests (no string
         // comparisons per keyword).
         match s.as_bytes() {
@@ -315,7 +432,7 @@ impl<'a> Lexer<'a> {
                 [b'r', b'e', b'a', b'l', b'_'] => Tok::Const(Const::DblNa),
                 [b'c', b'h', b'a', b'r', b'a', b'c', b't', b'e', b'r', b'_'] => Tok::Const(Const::Str(None)),
                 [b'c', b'o', b'm', b'p', b'l', b'e', b'x', b'_'] => Tok::Const(Const::CplxNa),
-                _ => Tok::Sym(s.to_string()),
+                _ => Tok::Sym(SymStr::Src(s)),
             },
             [b'f', b'u', b'n', b'c', b't', b'i', b'o', b'n'] => Tok::Function,
             [b'i', b'f'] => Tok::If,
@@ -326,17 +443,22 @@ impl<'a> Lexer<'a> {
             [b'r', b'e', b'p', b'e', b'a', b't'] => Tok::Repeat,
             [b'b', b'r', b'e', b'a', b'k'] => Tok::Break,
             [b'n', b'e', b'x', b't'] => Tok::Next,
-            _ => Tok::Sym(s.to_string()),
+            _ => Tok::Sym(SymStr::Src(s)),
         }
     }
 
     /// Numeric literals, a port of `NumericValue` in gram.y (`// R:
     /// gram.y:NumericValue`). Malformed numbers become the `ERROR` token,
-    /// reported as "unexpected input".
-    fn number(&mut self) -> Result<Tok, ParseError> {
+    /// reported as "unexpected input". The scan runs on a local index over
+    /// the source bytes (`byte` is 0 past the end, as `xxgetc` returns
+    /// EOF); `self.pos` is synced at the exit points.
+    fn number(&mut self) -> Result<Tok<'a>, ParseError> {
+        let bytes = self.bytes;
+        let byte = |i: usize| *bytes.get(i).unwrap_or(&0);
         let start = self.pos;
-        let mut c = self.byte_at(self.pos);
-        self.pos += 1;
+        let mut pos = self.pos;
+        let mut c = byte(pos);
+        pos += 1;
         // `seendot`: 0 none, 1 before any exponent, 2 only after one.
         let mut seendot = if c == b'.' { 1 } else { 0 };
         let mut seenexp = false;
@@ -344,11 +466,11 @@ impl<'a> Lexer<'a> {
         let mut count = 1usize;
         let mut ended_with_l = false;
         loop {
-            c = self.byte_at(self.pos);
+            c = byte(pos);
             if !(c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'x' | b'X' | b'L')) {
                 break;
             }
-            self.pos += 1; // the `while` condition consumes in C
+            pos += 1; // the `while` condition consumes in C
             count += 1;
             if c == b'L' {
                 // "must be at the end. Won't allow 1Le3."
@@ -357,18 +479,19 @@ impl<'a> Lexer<'a> {
             }
             if c == b'x' || c == b'X' {
                 if count > 2 || last != b'0' {
-                    self.pos -= 1; // `xxungetc` in the final else
+                    pos -= 1; // `xxungetc` in the final else
                     break;
                 }
                 let mut nd = 0;
                 loop {
-                    c = self.byte_at(self.pos);
-                    self.pos += 1;
+                    c = byte(pos);
+                    pos += 1;
                     if !(c.is_ascii_hexdigit() || c == b'.') {
                         break;
                     }
                     if c == b'.' {
                         if seendot == 1 {
+                            self.pos = pos;
                             return Err(self.error_token(start));
                         }
                         seendot = 1;
@@ -376,56 +499,61 @@ impl<'a> Lexer<'a> {
                     nd += 1;
                 }
                 if nd == 0 {
+                    self.pos = pos;
                     return Err(self.error_token(start));
                 }
                 if c == b'p' || c == b'P' {
                     seenexp = true;
-                    let d = self.byte_at(self.pos);
-                    self.pos += 1;
+                    let d = byte(pos);
+                    pos += 1;
                     if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                        self.pos = pos;
                         return Err(self.error_token(start));
                     }
                     if d == b'+' || d == b'-' {
-                        let d2 = self.byte_at(self.pos);
-                        self.pos += 1;
+                        let d2 = byte(pos);
+                        pos += 1;
                         if !d2.is_ascii_digit() {
+                            self.pos = pos;
                             return Err(self.error_token(start));
                         }
                     }
                     // The first digit is validated and consumed above; count
                     // it, then scan the rest.
                     let mut nd = 1;
-                    while self.byte_at(self.pos).is_ascii_digit() {
-                        self.pos += 1;
+                    while byte(pos).is_ascii_digit() {
+                        pos += 1;
                         nd += 1;
                     }
                     let _ = nd;
-                    c = self.byte_at(self.pos);
-                    self.pos += 1; // the `for` increment consumes in C
+                    c = byte(pos);
+                    pos += 1; // the `for` increment consumes in C
                 }
                 if c == b'L' {
                     ended_with_l = true;
                 } else {
-                    self.pos -= 1; // terminator is not part of the literal
+                    pos -= 1; // terminator is not part of the literal
                 }
                 break;
             }
             if c == b'e' || c == b'E' {
                 if seenexp {
-                    self.pos -= 1;
+                    pos -= 1;
                     break;
                 }
                 seenexp = true;
                 seendot = if seendot == 1 { seendot } else { 2 };
-                let d = self.byte_at(self.pos);
-                self.pos += 1;
+                let d = byte(pos);
+                pos += 1;
                 if !d.is_ascii_digit() && d != b'+' && d != b'-' {
+                    self.pos = pos;
                     return Err(self.error_token(start));
                 }
                 if d == b'+' || d == b'-' {
-                    let d2 = self.byte_at(self.pos);
-                    self.pos += 1;
+                    let d2 = byte(pos);
+                    pos += 1;
                     if !d2.is_ascii_digit() {
+                        self.pos = pos;
                         return Err(self.error_token(start));
                     }
                 }
@@ -435,21 +563,22 @@ impl<'a> Lexer<'a> {
             }
             if c == b'.' {
                 if seendot > 0 {
-                    self.pos -= 1;
+                    pos -= 1;
                     break;
                 }
                 seendot = 1;
             }
             last = c;
         }
-        let c = self.byte_at(self.pos);
+        let c = byte(pos);
         let mut is_complex = false;
         if c == b'i' && !ended_with_l {
-            self.pos += 1;
+            pos += 1;
             is_complex = true;
         }
+        self.pos = pos;
         // `yytext` includes a trailing `L` but not `i`.
-        let text_end = self.pos - if is_complex || ended_with_l { 1 } else { 0 };
+        let text_end = pos - if is_complex || ended_with_l { 1 } else { 0 };
         let text = &self.src[start..text_end];
         if is_complex {
             return Ok(Tok::Const(Const::Cplx(0.0, self.parse_number(text))));
@@ -500,11 +629,13 @@ impl<'a> Lexer<'a> {
     }
 
     /// String constants and backtick symbols, a port of `StringValue` in
-    /// gram.y (`// R: gram.y:StringValue`). Produces raw bytes.
-    fn string_body(&mut self, quote: char, start: usize, for_symbol: bool) -> Result<Vec<u8>, ParseError> {
+    /// gram.y (`// R: gram.y:StringValue`). Produces raw bytes: the
+    /// source slice when no escape changed them, owned bytes otherwise.
+    fn string_body(&mut self, quote: char, start: usize, for_symbol: bool) -> Result<StrTok<'a>, ParseError> {
         let mut out: Vec<u8> = Vec::new();
         let mut byte_escape = false;
         let mut unicode_escape = false;
+        let mut escaped = false;
         loop {
             // Copy a run of plain bytes at once (multi-byte characters are
             // copied whole: their bytes are all >= 0x80).
@@ -512,8 +643,16 @@ impl<'a> Lexer<'a> {
                 .iter()
                 .position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
                 .unwrap_or(self.bytes.len() - self.pos);
+            let end = self.pos + run;
+            // Nothing consumed yet, and the run ends at the closing quote
+            // with no escape seen: the literal is the source, verbatim
+            // (a raw newline inside is kept as-is, so it may lie within).
+            if !escaped && out.is_empty() && end < self.bytes.len() && self.bytes[end] == quote as u8 {
+                self.pos = end + 1;
+                return Ok(StrTok::Src(&self.bytes[start + 1..end]));
+            }
             if run > 0 {
-                out.extend_from_slice(&self.bytes[self.pos..self.pos + run]);
+                out.extend_from_slice(&self.bytes[self.pos..end]);
                 self.pos += run;
             }
             let Some(c) = self.peek_char() else {
@@ -525,7 +664,7 @@ impl<'a> Lexer<'a> {
                     // Position: the closing quote, the last character read.
                     return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
-                return Ok(out);
+                return Ok(StrTok::Own(out));
             }
             // A raw newline acts as an escaped newline: both are kept
             // (the Bravington fix in gram.y's StringValue).
@@ -538,6 +677,7 @@ impl<'a> Lexer<'a> {
                 out.push(b'\n');
                 continue;
             }
+            escaped = true;
             if let Some(ch) =
                 self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)?
             {
@@ -690,7 +830,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn operator(&mut self, start: usize) -> Result<Tok, ParseError> {
+    fn operator(&mut self, start: usize) -> Result<Tok<'a>, ParseError> {
         let (b0, b1, b2) = (self.byte_at(self.pos), self.byte_at(self.pos + 1), self.byte_at(self.pos + 2));
         // Longest match first, as R's lexer does.
         let (tok, len) = match b0 {
@@ -752,7 +892,7 @@ impl<'a> Lexer<'a> {
                     if rest.as_bytes()[1 + end] == b'%' {
                         let op = &rest[..end + 2];
                         self.pos += op.len();
-                        return Ok(Tok::Special(op.to_string()));
+                        return Ok(Tok::Special(op));
                     }
                 }
                 return Err(self.err("unexpected input", start, false));
@@ -1065,7 +1205,118 @@ fn ld_add_digit(a: LD, d: u32) -> LD {
 /// The decimal case of `R_strtod5`: `text` is digits with at most one
 /// `.`, then an optional `e`/`E` exponent (both already validated by the
 /// scanner; no sign, no `0x` prefix — R's parser handles those).
+///
+/// The common shape goes through an integer fast path (`// R:
+/// util.c:R_strtod5`, the decimal tail): with at most 19 digits the
+/// `LDOUBLE` accumulator is exact (integers below 2^64), and for a
+/// resulting decimal exponent in -22..=0 the single division by the
+/// exact power of ten, or in 0..=22 the single multiplication (when the
+/// product fits 128 bits), plus the one rounding to `f64`, are all
+/// reproduced exactly with integer arithmetic — `10^k`'s odd part is
+/// `5^k < 2^52`, so those powers are exact in the 64-bit significand,
+/// and the C code performs exactly one rounding at each step. Anything
+/// else (more digits, extreme exponents, the underflow prescale) takes
+/// the long-double emulation below, which follows the C code op by op.
 fn decimal_to_f64(text: &str) -> f64 {
+    /// 10^0 .. 10^22, the powers that are exact in a 64-bit significand.
+    #[rustfmt::skip]
+    const POW10: [u128; 23] = [
+        1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
+        1_000_000_000, 10_000_000_000, 100_000_000_000, 1_000_000_000_000,
+        10_000_000_000_000, 100_000_000_000_000, 1_000_000_000_000_000,
+        10_000_000_000_000_000, 100_000_000_000_000_000, 1_000_000_000_000_000_000,
+        10_000_000_000_000_000_000, 100_000_000_000_000_000_000,
+        1_000_000_000_000_000_000_000, 10_000_000_000_000_000_000_000,
+    ];
+    const M_LIMIT: u128 = 9_999_999_999_999_999_999; // largest 19-digit value, below 2^64
+
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut m: u128 = 0;
+    let mut expn: i32 = 0;
+    let mut fast = true;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        m = m * 10 + (bytes[i] - b'0') as u128;
+        i += 1;
+        if m > M_LIMIT {
+            fast = false; // the 80-bit accumulation would round here
+            break;
+        }
+    }
+    if fast && i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            m = m * 10 + (bytes[i] - b'0') as u128;
+            expn -= 1;
+            i += 1;
+            if m > M_LIMIT {
+                fast = false;
+                break;
+            }
+        }
+    }
+    if fast && i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        let sign = match bytes.get(i) {
+            Some(b'-') => {
+                i += 1;
+                -1
+            }
+            Some(b'+') => {
+                i += 1;
+                1
+            }
+            _ => 1,
+        };
+        let mut v: i64 = 0;
+        let mut ndig = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            v = v * 10 + (bytes[i] - b'0') as i64;
+            ndig += 1;
+            i += 1;
+            if ndig > 4 {
+                // The slow path caps the accumulated exponent like the C
+                // code (`MAX_EXPONENT_PREFIX`); stay out of that regime.
+                fast = false;
+                break;
+            }
+        }
+        if fast && (ndig == 0 || v > 9999) {
+            fast = false;
+        } else if fast {
+            expn += sign * v as i32;
+        }
+    }
+    if i != bytes.len() {
+        fast = false; // trailing garbage: not a plain decimal after all
+    }
+    if fast && (-22..=22).contains(&expn) {
+        if m == 0 {
+            return 0.0;
+        }
+        if expn >= 0 {
+            let p = POW10[expn as usize];
+            if 128 - m.leading_zeros() + (128 - p.leading_zeros()) <= 128 {
+                // exact product, then the two roundings of the C code:
+                // one to the 64-bit significand, one to `double`.
+                let ld = ld_norm(m * p, 0);
+                return ld_to_f64(ld.m as u64, ld.e);
+            }
+        } else {
+            // `ans /= fac` with fac = 10^|expn| exact: one correctly
+            // rounded 64-bit division. `ld_norm` restates the power with
+            // a sub-2^64 significand (exact; the odd part is 5^k < 2^52).
+            let fac = ld_norm(POW10[(-expn) as usize], 0);
+            let q = ld_div(ld_norm(m, 0), fac);
+            return ld_to_f64(q.m as u64, q.e);
+        }
+    }
+    decimal_to_f64_slow(text)
+}
+
+/// The digit-at-a-time long-double emulation of `R_strtod5`'s decimal
+/// tail, for the literals the fast path above declines.
+fn decimal_to_f64_slow(text: &str) -> f64 {
     let bytes = text.as_bytes();
     let mut i = 0;
     let mut ans = LD::zero();
@@ -1151,4 +1402,103 @@ fn decimal_to_f64(text: &str) -> f64 {
     // (double) ans; the explicit `ans > DBL_MAX` check of the C code
     // gives the same infinity, values at the rounding boundary included.
     ld_to_f64(ans.m as u64, ans.e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The integer fast path of `decimal_to_f64` must be bit-identical to
+    /// the long-double emulation on everything it accepts: random digits,
+    /// points and exponents in and around the accepted ranges, plus
+    /// boundary shapes (19 digits, the 2^64 edge, e+/-22, trailing and
+    /// leading zeros).
+    #[test]
+    fn decimal_fast_path_matches_slow() {
+        let mut seed = 0x243f_6a88_85a3_08d3u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut cases: Vec<String> = Vec::new();
+        for _ in 0..200_000 {
+            let ndigits = 1 + (next() % 19) as usize;
+            let mut s = String::new();
+            if next() & 1 == 0 {
+                for _ in 0..(next() % 3) {
+                    s.push('0');
+                }
+            }
+            for k in 0..ndigits {
+                if k == 0 && next() % 20 == 0 {
+                    s.push('0'); // long zero runs
+                } else {
+                    s.push((b'0' + (next() % 10) as u8) as char);
+                }
+            }
+            if next() & 1 == 0 {
+                let point = 1 + (next() % s.len() as u64) as usize;
+                s.insert(point.min(s.len()), '.');
+            }
+            if next() & 1 == 0 {
+                let e = (next() % 40) as i32 - 20;
+                s.push('e');
+                if e < 0 {
+                    s.push('-');
+                } else if e > 0 && next() & 1 == 0 {
+                    s.push('+');
+                }
+                s.push_str(&e.unsigned_abs().to_string());
+            }
+            cases.push(s);
+        }
+        // Exact boundaries the random loop is unlikely to hit.
+        for s in [
+            "9999999999999999999",
+            "10000000000000000000",
+            "99999999999999999999",
+            "0.0000000000000000001",
+            "1e22",
+            "1e-22",
+            "1234567890123456789e22",
+            "999999999999999999e3",
+            "0e0",
+            "0.000e-22",
+            "1234.e5",
+            ".5e-1",
+        ] {
+            cases.push(s.to_string());
+        }
+        for s in &cases {
+            let fast = decimal_to_f64(s);
+            let slow = decimal_to_f64_slow(s);
+            assert_eq!(
+                fast.to_bits(),
+                slow.to_bits(),
+                "literal {:?}: fast {:e} ({:#x}) vs slow {:e} ({:#x})",
+                s,
+                fast,
+                fast.to_bits(),
+                slow,
+                slow.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_fast_path_boundaries() {
+        // These must equal the slow path AND the values GNU R produces
+        // (pinned in tests/parse/literals.R; a few double-rounding
+        // classics are checked here directly).
+        assert_eq!(
+            decimal_to_f64("0.76077021908142894").to_bits(),
+            decimal_to_f64_slow("0.76077021908142894").to_bits()
+        );
+        assert_eq!(
+            decimal_to_f64("2.2250738585072011e-308").to_bits(),
+            decimal_to_f64_slow("2.2250738585072011e-308").to_bits()
+        );
+    }
 }
