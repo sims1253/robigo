@@ -44,6 +44,24 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: S4 speed vs GNU R (measured, not yet improved)
+
+- Wall time, robigo vs GNU R 4.5.0 (oracle image): 1e5 calls of a
+  one-method generic 0.85 s vs 0.64 s; 2e4 `+` with an S4 method 5.84 s
+  vs 4.44 s; 2e4 `new("P", x = i)` 16.25 s vs 9.32 s. robigo is
+  1.3-1.7x slower.
+- callgrind on `new()` (2000 - 1000 calls): 884k instructions per call.
+  The dispatch machinery (`dispatch_generic` without the method,
+  `load_method`, `do_slot`) is ~1%; the rest is the VM running methods'
+  own R code (`new` -> `initialize` -> the default method, `validObject`,
+  `getClass`). 13.6% is `vm::guard_ok_slow`: frames of namespace closures
+  (parent = the methods namespace, not on the search path) miss the guard
+  memo's fast paths, so every guarded call site rechecks. resolves_to_base
+  itself is negligible.
+- Next: make namespace-closure frames hit the guard memo (perf-vm,
+  vm.rs), then re-measure; and an S4 benchmark in benchmarks/ (generic
+  call, `new`, a primitive method) so perf CI tracks it.
+
 ## 2026-10-28: #52 merged; CI results; trace(); recording with methods
 
 - #52 merged. CI, branch vs main's latest run: fastr 30320 -> 30369
