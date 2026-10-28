@@ -27,9 +27,7 @@ pub static STUBS: &[&str] = &[
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
-    "R_InitOutPStream",
     "R_PromiseExpr",
-    "R_Serialize",
     "R_new_altrep",
     "R_set_altrep_Length_method",
     "R_set_altvec_Dataptr_method",
@@ -425,18 +423,8 @@ pub unsafe extern "C" fn GEinitDisplayList() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_InitOutPStream() {
-    not_implemented("R_InitOutPStream")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_PromiseExpr() {
     not_implemented("R_PromiseExpr")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_Serialize() {
-    not_implemented("R_Serialize")
 }
 
 #[unsafe(no_mangle)]

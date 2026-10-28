@@ -11,6 +11,51 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: the bridge — capi corpus 0/20 -> 14/20; fastmap and digest run on robigo
+
+- linkage (council item 15): the robigo executable links robigo-capi and
+  exports exactly the API with `ld --dynamic-list` (exports.list,
+  generated): 986 symbols; `-rdynamic` alone exported ~1,800 unrelated
+  ones for a trivial Rust binary (measured). A soname-only stub libR.so
+  satisfies objects linked with GNU R's `-lR`. The coordinator's shape
+  (runtime inside libR.so, thin executable) needs ci.yml to ship libR.so
+  next to dist/robigo; this token cannot push workflow changes, so the
+  executable shape is used for now; the crate graph is the same.
+- perf gate vs main @ 49c071a (instructions, all benchmarks): 0 faster,
+  0 slower. (A first comparison showed fib/apply/binarytrees 1.4-2.8%
+  slower; cause: the baseline was newer main with perf-vm's closure
+  inlining; after rebasing the difference is gone. Linking capi without
+  the runtime changes measured identical.)
+- capi corpus: 0 -> 5 (bridge) -> 9 (errors signalled at raise time in a
+  builtin context, onintr, sort.c, duplicated/identical) -> 12
+  (environments, eval, parse, print, gc() finalizers) -> 13 (Rmath,
+  RNG) -> 14 (serialize). Census coverage by implemented exports: 90.7%
+  weighted.
+- found by real packages: arguments must carry the caller's sharing
+  (REFCNT from the runtime value's reference count): digest's AES
+  duplicates its argument only when referenced, so a fresh copy with
+  REFCNT 0 was encrypted in place and the write-back changed the
+  caller's variable. R_Serialize callbacks see GNU R's write pattern
+  (header fields as separate pieces, integer fields 4 bytes): digest's
+  spookyhash skips a byte count into the stream.
+- the gate, measured with GNU R 4.5.0-built source installs (public API
+  only, so source-compatible) and the packages' own test files under a
+  tiny expectation shim (`crates/robigo-capi/gate/shim.R`; tinytest
+  itself needs `file.info`, testthat is too heavy for now):
+  - digest: robigo 241 expectations pass, GNU R 322; every difference is
+    a whole file aborting on a runtime gap (`file.info` in test_blake3
+    and test_misc, `eSoftVersion` in test_sha1); no expectation that ran
+    fails.
+  - fastmap: robigo 291, GNU R 341; the 5 failing blocks hit runtime
+    gaps (latin1 strings in iconv, builtins/character.rs; unserializing
+    closures with empty formals, builtins/lang.rs).
+- remaining capi cases: vectors (1:6 must arrive as a compact ALTREP
+  sequence), altrep (the ALTREP class framework), strings (a CHARSXP
+  returned to R prints `<CHARSXP: ...>`: needs print.rs support),
+  fortran (GNU R's src/appl LINPACK/optimizers: build from source, §8),
+  objects (needs methods, G6), envir (lazy-loaded base bindings are
+  promises in GNU R: startup track).
+
 ## 2026-10-28: council item (c) — contexts and unwind
 
 - C trampolines in the shim (`robigo_try_call65`, `_sexp_ptr`,

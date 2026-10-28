@@ -23,6 +23,7 @@ pub mod memory;
 pub mod nmath;
 pub mod rdynload;
 pub mod rng;
+pub mod serialize;
 pub mod sort;
 pub mod state;
 pub mod strings;

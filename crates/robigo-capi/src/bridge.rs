@@ -618,6 +618,16 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
         "field" => field(a[0], int_arg(a[1]))?,
+        "serialize" => {
+            let v = from_sexp(a[0]);
+            let (fmt, version) = (int_arg(a[1]), int_arg(a[2]));
+            let bytes = if fmt == 2 {
+                robigo_runtime::serialize::serialize_binary(&v, version)
+            } else {
+                robigo_runtime::serialize::serialize_version(&v, version)
+            };
+            to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))
+        }
         "getRNGstate" => {
             with_interp(robigo_runtime::builtins::random::get_rng_state)?;
             R_NilValue
@@ -914,6 +924,20 @@ unsafe fn write_back(v: &Value, x: Sexp) {
     }
 }
 
+/// References to an argument's object besides the argument list itself.
+fn sharing(v: &Value) -> u16 {
+    let n = match v {
+        Value::Lgl(x) | Value::Int(x) => Rc::strong_count(x),
+        Value::Real(x) => Rc::strong_count(x),
+        Value::Cplx(x) => Rc::strong_count(x),
+        Value::Str(x) => Rc::strong_count(x),
+        Value::Raw(x) => Rc::strong_count(x),
+        Value::List(x) | Value::Expr(x) => Rc::strong_count(x),
+        _ => return 0,
+    };
+    n.saturating_sub(1).min(u16::MAX as usize) as u16
+}
+
 unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
@@ -983,7 +1007,15 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
         Interface::Call => {
             let mut xs = Vec::with_capacity(args.len());
             for a in &args {
-                xs.push(Rf_protect(to_sexp(&a.value)));
+                // the caller's sharing: a value bound elsewhere (a
+                // variable) is referenced, as in GNU R, so code following
+                // the NAMED/REFCNT protocol duplicates before writing
+                let refs = sharing(&a.value);
+                let x = Rf_protect(to_sexp(&a.value));
+                if refs > 0 && x.refcnt() < refs {
+                    x.set_refcnt(refs);
+                }
+                xs.push(x);
             }
             let mut out = Sexp::NULL;
             let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
