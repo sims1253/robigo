@@ -71,6 +71,7 @@ tests/r/math/math-warnings.R
 tests/r/math/math2-nonnumeric.R
 tests/r/math/random-args.R
 tests/r/math/random-dists.R
+tests/r/math/random-result-types.R
 tests/r/math/random-seed-var.R
 tests/r/math/random-streams.R
 tests/r/math/rng-kinds.R

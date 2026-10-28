@@ -833,7 +833,7 @@ fn random_dispatch(
     name: &str,
     arity: usize,
     ty: RandType,
-    f: fn(&mut Rng, &[f64]) -> f64,
+    f: impl Fn(&mut Rng, &[f64]) -> f64,
 ) -> RResult<Value> {
     check_arity(&args, arity, name, call)?;
     if !args[0].value.is_vector() || !args[1..].iter().all(|a| is_numeric(&a.value)) {

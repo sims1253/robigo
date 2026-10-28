@@ -37,11 +37,19 @@ Metric: `fastr` passes with `--filter
   two previously unrecorded passes. All 19 RNG failures are fixed. Remaining
   failures are seven rmultinom cases and nine FFT/numeric_deriv cases.
 - Verification: new result-type conformance script and full rank RNG grid
-  match GNU R 4.5.0 stdout/stderr exactly. Unit checks pending.
+  match GNU R 4.5.0 stdout/stderr exactly. All three conformance checks
+  pass, including interpreter/VM/JIT agreement. Numerics passes in the
+  oracle container: 39 unit tests, 2 rank tests, 1 doctest. The host's glibc
+  2.44 fails the unchanged powl comparison; Debian glibc 2.41 passes it.
 - Performance experiment: 100k normal, uniform and Poisson draws, callgrind
   including startup: baseline 341,579,745 instructions; dynamic slice
   dispatcher 348,948,579 (+2.16%). Rejected that dispatch implementation;
-  testing static specialization of the generator closure.
+  kept static specialization of the generator closure. Final count is
+  **340,796,787**, 0.23% below baseline, with identical output. Reproduce
+  with `set.seed(123); x <- rnorm(100000); y <- runif(100000);
+  z <- rpois(100000, 4); print(sum(z))` after `library(stats)`.
+- Rebased onto `ad59f6f` after the values, CI and C API security merges.
+  Runtime unit tests and the final FastR repeat are pending.
 
 ## 2026-10-28: baseline and failure grouping
 
