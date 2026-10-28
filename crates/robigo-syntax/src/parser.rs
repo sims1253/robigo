@@ -48,7 +48,117 @@ pub struct Parser<'a> {
     /// refcount copies instead of allocations. FNV-1a: names are short,
     /// and SipHash would dominate the lookup.
     interned: std::collections::HashMap<&'a str, Name, FnvBuild>,
+    /// The fixed operator names, resolved once each per parse and then
+    /// indexed by [`Op`], so call nodes avoid the intern table's hashing.
+    ops: [Option<Name>; NUM_OPS],
+    /// Whether the token stream holds a pipe placeholder at all; if not,
+    /// `checkForPlaceholder`'s tree walk is skipped.
+    saw_placeholder: bool,
     pub warnings: Vec<String>,
+}
+
+/// The fixed function names of call nodes built by the parser (operator
+/// uses, `if`/`for`/`while`/`{`/`[` and friends; `// R: names.c`). The
+/// `%`-ops `%%`, `%/%` and `%*%` are common enough to belong here;
+/// user-defined `%op%` names go through the intern table.
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
+enum Op {
+    Null,
+    Paren,
+    Minus,
+    Plus,
+    Not,
+    Tilde,
+    Question,
+    If,
+    For,
+    While,
+    Repeat,
+    Break,
+    Next,
+    Brace,
+    Index,
+    Index2,
+    Dollar,
+    At,
+    NsGet,
+    NsGetInt,
+    PipeBind,
+    LeftAssign,
+    LeftAssign2,
+    EqAssign,
+    Or,
+    Or2,
+    And,
+    And2,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    PctMod,
+    PctIntDiv,
+    PctMatMul,
+    Colon,
+    Caret,
+}
+
+const NUM_OPS: usize = Op::Caret as usize + 1;
+
+impl Op {
+    fn as_str(self) -> &'static str {
+        match self {
+            Op::Null => "NULL",
+            Op::Paren => "(",
+            Op::Minus => "-",
+            Op::Plus => "+",
+            Op::Not => "!",
+            Op::Tilde => "~",
+            Op::Question => "?",
+            Op::If => "if",
+            Op::For => "for",
+            Op::While => "while",
+            Op::Repeat => "repeat",
+            Op::Break => "break",
+            Op::Next => "next",
+            Op::Brace => "{",
+            Op::Index => "[",
+            Op::Index2 => "[[",
+            Op::Dollar => "$",
+            Op::At => "@",
+            Op::NsGet => "::",
+            Op::NsGetInt => ":::",
+            Op::PipeBind => "=>",
+            Op::LeftAssign => "<-",
+            Op::LeftAssign2 => "<<-",
+            Op::EqAssign => "=",
+            Op::Or => "|",
+            Op::Or2 => "||",
+            Op::And => "&",
+            Op::And2 => "&&",
+            Op::Eq => "==",
+            Op::Ne => "!=",
+            Op::Lt => "<",
+            Op::Gt => ">",
+            Op::Le => "<=",
+            Op::Ge => ">=",
+            Op::Add => "+",
+            Op::Sub => "-",
+            Op::Mul => "*",
+            Op::Div => "/",
+            Op::PctMod => "%%",
+            Op::PctIntDiv => "%/%",
+            Op::PctMatMul => "%*%",
+            Op::Colon => ":",
+            Op::Caret => "^",
+        }
+    }
 }
 
 const BP_QUESTION: u8 = 2;
@@ -115,7 +225,17 @@ pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>)
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
-        Ok(Parser { src, toks, pos: 0, ctx: vec![Ctx::TopLevel], interned: Default::default(), warnings })
+        let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
+        Ok(Parser {
+            src,
+            toks,
+            pos: 0,
+            ctx: vec![Ctx::TopLevel],
+            interned: Default::default(),
+            ops: std::array::from_fn(|_| None),
+            saw_placeholder,
+            warnings,
+        })
     }
 
     fn intern(&mut self, s: &'a str) -> Name {
@@ -125,6 +245,17 @@ impl<'a> Parser<'a> {
         let rc: Name = s.into();
         self.interned.insert(s, rc.clone());
         rc
+    }
+
+    /// One of the fixed operator names every call to an operator uses
+    /// (`+`, `<-`, `[`, ...): one `Name` per name per parse, resolved
+    /// once through the same intern table and then indexed by the
+    /// operator's small-code (no hashing per call node).
+    fn op(&mut self, op: Op) -> Name {
+        if self.ops[op as usize].is_none() {
+            self.ops[op as usize] = Some(self.intern(op.as_str()));
+        }
+        self.ops[op as usize].clone().unwrap()
     }
 
     /// A name that may not be a source slice (escaped backticks, string
@@ -263,7 +394,7 @@ impl<'a> Parser<'a> {
             // `checkForPlaceholder` in gram.y runs when a statement
             // completes; a syntax error on the terminator wins over it.
             if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
-                if contains_placeholder(&e) {
+                if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error());
                 }
                 out.push(e);
@@ -271,7 +402,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if matches!(self.toks[self.pos].tok, Tok::Eof) {
-                if contains_placeholder(&e) {
+                if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error());
                 }
                 out.push(e);
@@ -339,9 +470,9 @@ impl<'a> Parser<'a> {
             lhs = match &t.tok {
                 Tok::Dollar | Tok::At => {
                     let name = self.member_name()?;
-                    let op = if t.tok == Tok::Dollar { "$" } else { "@" };
+                    let op = if t.tok == Tok::Dollar { Op::Dollar } else { Op::At };
                     let span = lhs.span().to(name.span());
-                    Expr::call(self.intern(op), t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
+                    Expr::call(self.op(op), t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
                 }
                 Tok::NsGet(op) => {
                     let pkg = match lhs {
@@ -349,8 +480,9 @@ impl<'a> Parser<'a> {
                         _ => return Err(self.unexpected(&t)),
                     };
                     let name = self.member_name()?;
+                    let ns_op = if *op == "::" { Op::NsGet } else { Op::NsGetInt };
                     let span = pkg.span().to(name.span());
-                    Expr::call(self.intern(op), t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
+                    Expr::call(self.op(ns_op), t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
                 }
                 Tok::Pipe => {
                     let rhs = self.expr(rbp)?;
@@ -373,16 +505,18 @@ impl<'a> Parser<'a> {
                         });
                     }
                     let span = lhs.span().to(rhs.span());
-                    Expr::call(self.intern("=>"), t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
+                    Expr::call(self.op(Op::PipeBind), t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
                 }
                 _ => {
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
-                        Tok::RightAssign(op) => (if *op == "->" { "<-" } else { "<<-" }, rhs, lhs),
-                        _ => (binary_name(&t.tok), lhs, rhs),
+                        Tok::RightAssign(op) => {
+                            (if *op == "->" { self.op(Op::LeftAssign) } else { self.op(Op::LeftAssign2) }, rhs, lhs)
+                        }
+                        _ => (self.binary_name(&t.tok), lhs, rhs),
                     };
-                    let e = Expr::call(self.intern(name), t.span, vec![Arg::positional(a), Arg::positional(b)], span);
+                    let e = Expr::call(name, t.span, vec![Arg::positional(a), Arg::positional(b)], span);
                     if matches!(t.tok, Tok::Cmp(_)) {
                         // Comparisons do not associate: `a < b < c` is an error.
                         // Comparisons do not associate: `a < b < c` is
@@ -403,6 +537,46 @@ impl<'a> Parser<'a> {
             };
         }
         Ok(lhs)
+    }
+
+    /// The call name of a binary operator token, as an interned `Name`.
+    fn binary_name(&mut self, t: &Tok<'a>) -> Name {
+        let op = match t {
+            Tok::Question => Op::Question,
+            Tok::EqAssign => Op::EqAssign,
+            Tok::LeftAssign(op) => match *op {
+                "<-" => Op::LeftAssign,
+                "<<-" => Op::LeftAssign2,
+                _ => return self.intern(op), // `:=`
+            },
+            Tok::Tilde => Op::Tilde,
+            Tok::Or => Op::Or,
+            Tok::Or2 => Op::Or2,
+            Tok::And => Op::And,
+            Tok::And2 => Op::And2,
+            Tok::Cmp(op) => match *op {
+                "==" => Op::Eq,
+                "!=" => Op::Ne,
+                "<" => Op::Lt,
+                ">" => Op::Gt,
+                "<=" => Op::Le,
+                _ => Op::Ge,
+            },
+            Tok::Plus => Op::Add,
+            Tok::Minus => Op::Sub,
+            Tok::Star => Op::Mul,
+            Tok::Slash => Op::Div,
+            Tok::Special(op) => match *op {
+                "%%" => return self.op(Op::PctMod),
+                "%/%" => return self.op(Op::PctIntDiv),
+                "%*%" => return self.op(Op::PctMatMul),
+                _ => return self.intern(op),
+            },
+            Tok::Colon => Op::Colon,
+            Tok::Caret => Op::Caret,
+            _ => unreachable!("not a binary operator: {:?}", t),
+        };
+        self.op(op)
     }
 
     fn member_name(&mut self) -> Result<Expr, ParseError> {
@@ -511,7 +685,7 @@ impl<'a> Parser<'a> {
                 let close = inner.and_then(|e| self.expect(Tok::RParen).map(|c| (e, c)));
                 self.ctx.pop();
                 let (inner, close) = close?;
-                Ok(Expr::call(self.intern("("), span, vec![Arg::positional(inner)], span.to(close.span)))
+                Ok(Expr::call(self.op(Op::Paren), span, vec![Arg::positional(inner)], span.to(close.span)))
             }
             Tok::LBrace => {
                 self.ctx.push(Ctx::Brace);
@@ -521,24 +695,24 @@ impl<'a> Parser<'a> {
             }
             Tok::Minus | Tok::Plus => {
                 let operand = self.expr(BP_UNARY)?;
-                let name = if t.tok == Tok::Minus { "-" } else { "+" };
+                let name = if t.tok == Tok::Minus { Op::Minus } else { Op::Plus };
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.intern(name), span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.op(name), span, vec![Arg::positional(operand)], full))
             }
             Tok::Not => {
                 let operand = self.expr(BP_NOT)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.intern("!"), span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.op(Op::Not), span, vec![Arg::positional(operand)], full))
             }
             Tok::Tilde => {
                 let operand = self.expr(BP_TILDE)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.intern("~"), span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.op(Op::Tilde), span, vec![Arg::positional(operand)], full))
             }
             Tok::Question => {
                 let operand = self.expr(BP_QUESTION)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.intern("?"), span, vec![Arg::positional(operand)], full))
+                Ok(Expr::call(self.op(Op::Question), span, vec![Arg::positional(operand)], full))
             }
             Tok::Function | Tok::Lambda => self.function(span),
             Tok::If => self.if_expr(span),
@@ -563,7 +737,7 @@ impl<'a> Parser<'a> {
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(Expr::call(
-                    self.intern("for"),
+                    self.op(Op::For),
                     span,
                     vec![Arg::positional(var), Arg::positional(seq), Arg::positional(body)],
                     full,
@@ -574,15 +748,15 @@ impl<'a> Parser<'a> {
                 // `%prec LOW` in gram.y: the body ends before `?`.
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call(self.intern("while"), span, vec![Arg::positional(cond), Arg::positional(body)], full))
+                Ok(Expr::call(self.op(Op::While), span, vec![Arg::positional(cond), Arg::positional(body)], full))
             }
             Tok::Repeat => {
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call(self.intern("repeat"), span, vec![Arg::positional(body)], full))
+                Ok(Expr::call(self.op(Op::Repeat), span, vec![Arg::positional(body)], full))
             }
-            Tok::Break => Ok(Expr::call(self.intern("break"), span, vec![], span)),
-            Tok::Next => Ok(Expr::call(self.intern("next"), span, vec![], span)),
+            Tok::Break => Ok(Expr::call(self.op(Op::Break), span, vec![], span)),
+            Tok::Next => Ok(Expr::call(self.op(Op::Next), span, vec![], span)),
             _ => Err(self.unexpected(&t)),
         }
     }
@@ -612,7 +786,7 @@ impl<'a> Parser<'a> {
             let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
             return Ok(Expr::call(
-                self.intern("if"),
+                self.op(Op::If),
                 span,
                 vec![Arg::positional(cond), Arg::positional(then), Arg::positional(other)],
                 full,
@@ -620,7 +794,7 @@ impl<'a> Parser<'a> {
         }
         self.pos = save;
         let full = span.to(then.span());
-        Ok(Expr::call(self.intern("if"), span, vec![Arg::positional(cond), Arg::positional(then)], full))
+        Ok(Expr::call(self.op(Op::If), span, vec![Arg::positional(cond), Arg::positional(then)], full))
     }
 
     fn function(&mut self, span: Span) -> Result<Expr, ParseError> {
@@ -693,7 +867,7 @@ impl<'a> Parser<'a> {
             if matches!(self.toks[self.pos].tok, Tok::RBrace) {
                 let close = self.toks[self.pos].span;
                 self.pos += 1;
-                return Ok(Expr::call(self.intern("{"), open, stmts, open.to(close)));
+                return Ok(Expr::call(self.op(Op::Brace), open, stmts, open.to(close)));
             }
             if matches!(self.toks[self.pos].tok, Tok::Eof) {
                 let t = self.toks[self.pos].clone();
@@ -796,7 +970,7 @@ impl<'a> Parser<'a> {
                     let name = match t.tok {
                         Tok::Sym(s) => self.sym_name(&s),
                         Tok::Str(s) => self.name_of(&String::from_utf8_lossy(&s)),
-                        Tok::Const(Const::Null) => self.intern("NULL"),
+                        Tok::Const(Const::Null) => self.op(Op::Null),
                         _ => unreachable!("checked above"),
                     };
                     // A string tag installs as a symbol (`TagArg`), so
@@ -850,29 +1024,6 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         Tok::NsGet(_) => (36, 37),
         _ => return None,
     })
-}
-
-fn binary_name<'x>(t: &Tok<'x>) -> &'x str {
-    match t {
-        Tok::Question => "?",
-        Tok::EqAssign => "=",
-        Tok::LeftAssign(op) => *op,
-        Tok::Tilde => "~",
-        Tok::Or => "|",
-        Tok::Or2 => "||",
-        Tok::And => "&",
-        Tok::And2 => "&&",
-        Tok::Cmp(op) => *op,
-        Tok::Plus => "+",
-        Tok::Minus => "-",
-        Tok::Star => "*",
-        Tok::Slash => "/",
-        Tok::Special(op) => *op,
-        Tok::PipeBind => "=>",
-        Tok::Colon => ":",
-        Tok::Caret => "^",
-        _ => unreachable!("not a binary operator: {:?}", t),
-    }
 }
 
 /// `checkForPlaceholder` in gram.y: the placeholder symbol anywhere in a
