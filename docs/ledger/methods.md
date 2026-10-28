@@ -55,7 +55,18 @@ What other evaluator paths must keep:
   (`sys.source` per test file, `RunAllRcppTests=yes`), the same script on
   GNU R 4.5.0 (Rcpp 1.1.2 built there) and on robigo (Rcpp 1.1.2 built by
   `install.packages()` inside robigo), one process per file on robigo
-  because a test file crashed it (segfault, being located).
+  because a test file crashed it.
+- Result (assertions): GNU R 1,624 passed / 4 failed; robigo 1,101 / 13
+  before, then with the C API added for it (R 4.5's
+  `R_ClosureEnv/Formals/Body/Expr` through the bridge; Rmath's
+  `Rf_tetragamma`, `Rf_pentagamma`, `Rf_ftrunc`): test_function 9 -> 22/22,
+  test_support 0 -> 5/5. test_sugar (493 assertions on GNU R) now loads
+  its object but segfaults in it (being located). Smaller differences in
+  test_date (3), test_listof (2), test_matrix (3), test_misc (1),
+  test_string (1), test_vector (3), test_xptr.
+- Still unexported Rmath functions (pointer arguments, need hand-written
+  wrappers in robigo-capi): bessel_{i,j,k,y}_ex, dpsifn, lgammafn_sign,
+  logspace_sum, pnorm_both, and dtukey/rtukey/rnbeta/rnf/rnt.
 
 ## 2026-10-28: the S4 cases lost with methods attached, re-checked
 
