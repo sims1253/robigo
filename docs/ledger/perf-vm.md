@@ -15,6 +15,33 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: `for (j in seq(length = n))` as a native range
+
+- why: `real/convolution_slow` (1.18x GNU R) runs its inner loop over
+  `seq(length = ny)`, a call of the `seq` closure returning an ordinary
+  vector, so native code rejected the loop and the VM ran it at ~2,000
+  instructions per iteration.
+- what: `for (v in seq(<prefix of length.out> = n))`, with `n` a variable or
+  a numeric constant, compiles to `Op::ForSeqLength` (guarded on `seq`). When
+  `n` reads without forcing as a scalar, `seq_length_range` reproduces
+  `seq.default` for a single `length.out` argument (`One`): logical and
+  integer as they are (`is.logint`), doubles `ceiling`ed; then finite,
+  non-negative (and here within integer range), `integer()` for 0, else
+  `seq_len(n)`. It only does so after checking, as `UseMethod` would (after
+  a flush), that no `seq.integer`/`seq.numeric`/`seq.double`/`seq.logical`
+  method is visible from the call or registered and that `seq.default` is
+  base's. Otherwise the call is evaluated by the interpreter: errors,
+  warnings, a lazy argument and dispatch are GNU R's.
+- tests: `tests/r/basics/for-seq-length.R` (integer, double, logical and
+  zero lengths, the loop variable after an empty loop, `length.out`/`len`
+  spellings, the non-negative error for -1/NA/Inf/NaN, the "first element
+  used" warning, a character length, user `seq.numeric`/`seq.integer`
+  methods, a local `seq.default`, a local `seq`, a missing and a lazy
+  argument, nested loops). JIT on and off print GNU R's output.
+- result against main 414ae44 (1 faster, none slower):
+  `convolution_slow` -80.6% (1.18 -> **0.23**); geomean 0.597 -> 0.584,
+  faster than GNU R on 67 -> 68; kept.
+
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 
 - the inner loop (`for (j in seq(length = ny)) { ij <- i + j - 1; z[[ij]]
