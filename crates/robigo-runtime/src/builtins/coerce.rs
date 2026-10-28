@@ -218,12 +218,21 @@ fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     if let Some(r) = i.try_dispatch("as.vector", call, &args, env)? {
         return Ok(r);
     }
-    let x = arg(&args, 0);
+    let mut x = arg(&args, 0);
     let mode = match arg(&args, 1) {
         Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
         // R: error_return(R_MSG_mode) — plain error against the context.
         _ => return Err(Flow::error("invalid 'mode' argument")),
     };
+    // R: coerce.c:ascommon — an S4 object of type OBJSXP stands for its
+    // data part.
+    if x.is_s4() && matches!(x, Value::Obj(_)) {
+        let v = i.get_s4_data_slot(&x, None)?;
+        if v.is_null() {
+            return Err(Flow::error("no method for coercing this S4 class to a vector"));
+        }
+        x = v;
+    }
     as_vector(i, x, &mode, call)
 }
 

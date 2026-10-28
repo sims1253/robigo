@@ -1534,7 +1534,18 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
             _ => i.apply_function(&m, margs, env, call),
         };
     }
-    // The default method.
+    // The default method. An S4 object of type OBJSXP is coerced like
+    // every argument (R: coerce.c:coerceVector), i.e. to its data part.
+    let mut values = values;
+    for v in values.iter_mut() {
+        if v.is_s4() && matches!(v, Value::Obj(_)) {
+            let d = i.get_s4_data_slot(v, None)?;
+            if d.is_null() {
+                return Err(Flow::error("no method for coercing this S4 class to a vector"));
+            }
+            *v = d;
+        }
+    }
     let mut flags = 0u32;
     let mut total = 0usize;
     for v in &values {
