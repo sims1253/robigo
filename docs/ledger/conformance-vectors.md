@@ -47,3 +47,13 @@
   Printing differences and factor dispatch recursion need their owners.
 - Empty binding cases inspected have correct dimensions and values; their
   dput line wrapping belongs to the printing track, so no binding change.
+
+## 2026-10-28: incomparables coercion
+
+- R: unique.c:duplicated3/any_duplicated3 use coerceVector for
+  incomparables. Emit coercion warnings and reject closures/builtins and
+  environments as coerce.c specifies, locally in unique.rs.
+- duplicated/unique/anyDuplicated slice: 130/136 -> 136/136, zero
+  regressions; six passes recorded (four within the primary track filter).
+- Runtime: 17 unit and 2 lazyload tests pass; cargo fmt --check passes.
+- Kept. Indexing baseline: 2,331/2,391 in SimpleVectors/SimpleMatrix/subset.
