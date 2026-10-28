@@ -44,6 +44,37 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+### For perf-vm's in-VM frame push (#50): what the S4 code relies on
+
+Answering the prerequisite noted in perf-vm.md ("the S4 agent's
+exec_closure/end_context hooks"): there is no extra S4 call inside
+`exec_closure_ex` or `end_context`; S4 only reads the context stack and the
+argument bindings. A VM frame push is compatible if, while the callee runs:
+
+1. `interp.frames.last()` is a `Context` with `builtin: false`,
+   `function: Value::Closure(<the callee>)` (the same `Rc`, so its
+   attributes, e.g. `generic`, are visible), `call` = the call as written,
+   `cloenv` = the callee's frame, `sysparent` = the caller's environment
+   (or the `generic` frame's sysparent, see 4), `promargs` = the promised
+   arguments in call order (`R_execMethod` hands them to the method's frame);
+2. formals bound from defaults carry `BIND_MISSING_DEFAULT` and unsupplied
+   formals without default hold the missing argument (`binding_missing`);
+   a default may be bound as a plain constant (exec_method accepts that);
+3. `end_context` (on.exit, handler/restart restore) runs when the frame
+   pops, also on errors and `Flow::Return` to the frame;
+4. `Context.generic` keeps its meaning: the S3 dispatch code sets it on the
+   generic's frame around the method call, and `apply_closure_ex` then
+   takes the method's sysparent from that frame; a VM call path that
+   computes sysparent itself must do the same;
+5. methods are entered through `Interp::exec_closure(call, method,
+   promargs, prebuilt_env, sysparent)` from `exec_method`; the VM need not
+   handle that path (it is a native call), but `exec_closure` must keep
+   accepting a prebuilt environment.
+
+Calls that never push a frame (pure inline closures) stay correct as long
+as their bodies cannot reach `standardGeneric`, `sys.*`, `parent.frame`,
+`missing` or `callNextMethod`, as today.
+
 ## 2026-10-28: fastr with methods attached, whole corpus (host)
 
 - All 31,374 fastr cases re-recorded with methods in `default_packages`
