@@ -128,6 +128,7 @@ pub unsafe extern "C" fn robigo_dotcall(
         (*info).pp_before = before;
         (*info).pp_after = after;
     }
+    crate::util::safe_point();
     r.unwrap_or(0)
 }
 
@@ -172,6 +173,7 @@ pub unsafe extern "C" fn robigo_dotc(fun: *const c_void, ptrs: *const *mut c_voi
     });
     R_PPStackTop = base;
     crate::memory::vmaxset(vmax);
+    crate::util::safe_point();
     r.unwrap_or(0)
 }
 
@@ -179,5 +181,5 @@ pub unsafe extern "C" fn robigo_dotc(fun: *const c_void, ptrs: *const *mut c_voi
 /// a native call returns, from `gc()`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_run_finalizers() {
-    crate::util::run_finalizers()
+    crate::util::safe_point()
 }

@@ -200,6 +200,11 @@ fn extdata_release_runs_once_dead() {
     for _ in 0..3 {
         c.collect();
     }
+    // release callbacks wait for a safe point
+    assert_eq!(RELEASED.load(std::sync::atomic::Ordering::SeqCst), 0);
+    for (f, h) in c.take_releases() {
+        unsafe { f(h) };
+    }
     let r = RELEASED.load(std::sync::atomic::Ordering::SeqCst);
     assert!(r <= 10 && r >= 5, "dead extdata released ({r}), live one not");
     unsafe {
@@ -275,7 +280,10 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     drop(dead_key);
     std::hint::black_box([0usize; 64]);
     c.collect();
-    let q = c.take_finalizable();
+    let mut q = Vec::new();
+    while let Some(w) = c.pop_finalizable() {
+        q.push(w);
+    }
     assert!(q.len() <= 1, "only the dead key's reference is ready");
     if let Some(&w) = q.first() {
         unsafe {
@@ -309,4 +317,46 @@ fn try_run_and_jump() {
     });
     assert!(ok);
     assert_eq!(robigo_core::unwind::depth(), 0);
+}
+
+/// Allocate a 4-double vector and its neighbour; return only the
+/// one-past-the-end pointer of the first.
+#[inline(never)]
+fn alloc_with_end_pointer(c: &mut Core) -> usize {
+    let x = c.alloc_vector(REALSXP, 4);
+    unsafe {
+        for i in 0..4 {
+            *(x.std_data() as *mut f64).add(i) = 1.5;
+        }
+    }
+    let n = c.alloc_vector(REALSXP, 4);
+    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    std::hint::black_box(n);
+    unsafe { x.std_data() as usize + 32 }
+}
+
+/// Overwrite the stack below the caller's frame (stale copies of objects).
+#[inline(never)]
+fn clobber_stack() {
+    let a = [0usize; 4096];
+    std::hint::black_box(&a);
+}
+
+#[test]
+fn one_past_the_end_keeps_the_object() {
+    let mut c = Core::new();
+    // the two allocations must be adjacent: no collection between them
+    c.set_torture(false);
+    // 4 doubles: 32 + 32 = 64 bytes, a whole number of granules
+    let end = alloc_with_end_pointer(&mut c);
+    // hide the pointer's value in a form the scan cannot read, except
+    // through the one-past-the-end word kept below
+    let end_word = std::hint::black_box(end);
+    clobber_stack();
+    // poison freed slots so a wrongly freed object is visible
+    c.set_torture(true);
+    c.collect();
+    c.collect();
+    assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "only a one-past-the-end pointer referenced it");
+    std::hint::black_box(end_word);
 }

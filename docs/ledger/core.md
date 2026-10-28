@@ -11,6 +11,35 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: council items (a) and (b) — collector correctness, gctorture
+
+- release callbacks of dead host proxies no longer run inside
+  `collect(&mut self)` (aliasing); they and the finalizers run at safe
+  points (`safe_point()`: after each native call, `R_gc`, `gc()`),
+  never inside an allocation. Finalizable weak references stay on the
+  collector's queue (rooted) until popped, and are protected while their
+  finalizer runs.
+- conservative scan: a word on a granule boundary also resolves `w - 1`
+  (one-past-the-end pointers, Boehm's rule), and `resolve` now checks the
+  slot end: before, any word pointing into free space after an object
+  resolved to it (false retention). The new test fails without the
+  `w - 1` rule (verified by disabling it) — its first version passed
+  without the fix because of exactly that missing end check.
+- TRACKREFS on construction: no refcount on the car of EXTPTRSXP,
+  BUILTINSXP, SPECIALSXP (an address/offset, not an object).
+- thread binding: the core records its thread's stack bounds; a
+  collection from another thread aborts with a diagnostic; libR.so sets
+  R_CStackStart/Dir/Limit (95%, as setup_Rmainloop) and ports
+  R_CheckStack/R_CheckStack2 ("C stack usage  %ld is too close to the
+  limit").
+- `ROBIGO_GCTORTURE=1`: collect on every allocation, poison freed slots.
+  Core tests: 14/14 pass normally (0.02 s) and under torture (4.9 s).
+  The CI step (`ROBIGO_GCTORTURE=1 cargo test --release -p robigo-core
+  -p robigo-capi` in the build job) could not be pushed: the agent's
+  token lacks the `workflow` scope; it is in the PR description for a
+  maintainer. The rooting rule is in
+  docs/core.md §3.
+
 ## 2026-10-28: the design council's decisions
 
 - The council (Astra, Opus 5.5, Fable 5.1) reviewed docs/core.md @

@@ -329,7 +329,7 @@ pub unsafe extern "C" fn R_ReleaseMSet(mset: Sexp, keep_size: c_int) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_gc() {
     c().collect();
-    crate::util::run_finalizers();
+    crate::util::safe_point();
 }
 
 #[unsafe(no_mangle)]
@@ -454,11 +454,40 @@ pub unsafe extern "C" fn R_realloc_gc(p: *mut c_void, n: usize) -> *mut c_void {
     libc::realloc(p, n)
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_CheckStack() {}
+/// Stack usage of the R thread (errors.c: R_CStackDir * (start - sp)).
+#[inline(always)]
+fn stack_usage() -> isize {
+    let marker = 0u8;
+    let sp = std::hint::black_box(&marker) as *const u8 as usize;
+    unsafe { R_CStackDir as isize * (R_CStackStart as isize - sp as isize) }
+}
 
+// R: errors.c:R_SignalCStackOverflow (the condition is reported without a call)
+unsafe fn signal_cstack_overflow(usage: isize) -> ! {
+    crate::errors::errorcall_owned(R_NilValue, format!("C stack usage  {usage} is too close to the limit"))
+}
+
+// R: errors.c:R_CheckStack
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_CheckStack2(_extra: usize) {}
+pub unsafe extern "C" fn R_CheckStack() {
+    let usage = stack_usage();
+    if R_CStackLimit != usize::MAX && usage > R_CStackLimit as isize {
+        signal_cstack_overflow(usage)
+    }
+}
+
+// R: errors.c:R_CheckStack2
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_CheckStack2(extra: usize) {
+    let usage = stack_usage();
+    if (isize::MAX - usage) < extra as isize {
+        signal_cstack_overflow(isize::MAX)
+    }
+    let usage = usage + extra as isize;
+    if R_CStackLimit != usize::MAX && usage > R_CStackLimit as isize {
+        signal_cstack_overflow(usage)
+    }
+}
 
 // ---- header accessors ------------------------------------------------------
 
@@ -921,42 +950,61 @@ get_region!(RAW_GET_REGION, u8, RAW);
 
 // ---- nodes ----------------------------------------------------------------
 
+/// Field `k` (0 car, 1 cdr, 2 tag) of a node; HOST proxies (robigo
+/// environments, closures, promises before G3) ask the host.
+#[inline]
+pub unsafe fn field(x: Sexp, k: c_int) -> Sexp {
+    if x.has_flag(flags::HOST) {
+        let ks = c().alloc_vector(INTSXP, 1);
+        *(ks.std_data() as *mut i32) = k;
+        return crate::host::op("field\0", &[x, ks]);
+    }
+    match k {
+        0 => x.car(),
+        1 => x.cdr(),
+        _ => x.tag(),
+    }
+}
+
 macro_rules! node_get {
-    ($($name:ident = $($step:ident).+;)*) => {
+    ($($name:ident = $($step:literal),+;)*) => {
         $(
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $name(x: Sexp) -> Sexp {
-                x$(.$step())+
+                let mut v = x;
+                $(v = field(v, $step);)+
+                v
             }
         )*
     };
 }
 
+// steps applied left to right: CADR = car(cdr(x)) is [1, 0]
 node_get! {
-    CAR = car;
-    CDR = cdr;
-    TAG = tag;
-    CAAR = car.car;
-    CDAR = car.cdr;
-    CADR = cdr.car;
-    CDDR = cdr.cdr;
-    CDDDR = cdr.cdr.cdr;
-    CADDR = cdr.cdr.car;
-    CADDDR = cdr.cdr.cdr.car;
-    CAD4R = cdr.cdr.cdr.cdr.car;
-    CAD5R = cdr.cdr.cdr.cdr.cdr.car;
-    FORMALS = car;
-    BODY = cdr;
-    CLOENV = tag;
-    PRINTNAME = car;
-    SYMVALUE = cdr;
-    INTERNAL = tag;
-    FRAME = car;
-    ENCLOS = cdr;
-    HASHTAB = tag;
-    PRVALUE = car;
-    PRCODE = cdr;
-    PRENV = tag;
+    CAR = 0;
+    CDR = 1;
+    TAG = 2;
+    CAAR = 0, 0;
+    CDAR = 0, 1;
+    CADR = 1, 0;
+    CDDR = 1, 1;
+    CDDDR = 1, 1, 1;
+    CADDR = 1, 1, 0;
+    CADDDR = 1, 1, 1, 0;
+    CAD4R = 1, 1, 1, 1, 0;
+    CAD5R = 1, 1, 1, 1, 1, 0;
+    FORMALS = 0;
+    BODY = 1;
+    CLOENV = 2;
+    PRINTNAME = 0;
+    SYMVALUE = 1;
+    INTERNAL = 2;
+    FRAME = 0;
+    ENCLOS = 1;
+    HASHTAB = 2;
+    PRVALUE = 0;
+    PRCODE = 1;
+    PRENV = 2;
 }
 
 #[unsafe(no_mangle)]

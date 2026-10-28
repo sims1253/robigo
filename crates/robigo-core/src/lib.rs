@@ -111,7 +111,7 @@ pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
 // EXTDATA:   +32 data pointer, +40 owner word, +48 release fn
 // nodes:     +16 car, +24 cdr, +32 tag
 // ALTREP:    +16 data1, +24 data2, +32 class
-// HOST:      +16 handle, +24 release fn
+// HOST:      +16/+24/+32 node fields (nil), +40 handle, +48 release fn
 // CHARSXP:   +8 hash u32 (no attributes), +16 length, +24 truelength, +32 bytes\0
 
 pub const OFF_LEN: usize = 16;
@@ -119,6 +119,7 @@ pub const OFF_TRUELEN: usize = 24;
 pub const OFF_DATA: usize = 32;
 pub const NODE_SIZE: usize = 40;
 pub const EXTDATA_SIZE: usize = 56;
+pub const HOST_SIZE: usize = 56;
 
 /// Bytes per element of a vector type (0: not a vector).
 #[inline]

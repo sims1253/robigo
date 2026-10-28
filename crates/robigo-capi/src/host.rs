@@ -133,5 +133,7 @@ pub unsafe extern "C" fn robigo_flags(x: Sexp) -> c_int {
 /// Collect now; returns the pause in nanoseconds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_gc() -> u64 {
-    crate::state::core().collect()
+    let t = crate::state::core().collect();
+    crate::util::safe_point();
+    t
 }

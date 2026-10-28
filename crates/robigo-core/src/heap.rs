@@ -366,7 +366,12 @@ impl Heap {
                 let m = (*b).starts[word] & if bit == 63 { u64::MAX } else { (1u64 << (bit + 1)) - 1 };
                 if m != 0 {
                     let start = word * 64 + (63 - m.leading_zeros()) as usize;
-                    return Some((data + start * 16) as *mut u8);
+                    let obj = data + start * 16;
+                    // a word past the object's slot points into free space
+                    if w >= obj + SIZES[(*b).class as usize] {
+                        return None;
+                    }
+                    return Some(obj as *mut u8);
                 }
                 if word == 0 {
                     return None;

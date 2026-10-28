@@ -171,6 +171,19 @@ held by C stays valid across collections.
    alone keeps `x` alive. This is what makes unprotected-but-live C
    locals (common package bugs that GNU R tolerates by luck) safe.
 
+**The rooting rule.** A `Sexp` survives a collection only if it is (1) in
+a local or register of the R thread's machine stack (conservative scan;
+interior and one-past-the-end pointers count), (2) on the protect stack
+or the precious set, (3) reachable from a traced object, or (4) in a
+container registered as a root (`Core::root_fns`). A `Sexp` stored
+anywhere else — a Rust `Vec`, a `HashMap`, a VM register file or JIT
+cache in heap memory, a C global — is invisible and will be freed.
+Every off-stack container of `Sexp`s is therefore either a traced R
+object (a VECSXP), protected for its lifetime, or registered with a root
+callback. `ROBIGO_GCTORTURE=1` collects on every allocation and poisons
+freed slots, so a violation fails at once instead of rarely; CI runs the
+core and capi tests (and later the capi corpus) under it.
+
 Symbols and the immortal constants are never marked (block immortal
 counts), but their fields can change (a symbol's value, attributes put
 on a shared constant), so every collection traces the children of the
@@ -420,8 +433,8 @@ they land; evidence in `docs/ledger/core.md`):
 | 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | planned (c) |
 | 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | planned (c) |
 | 5 | every export may jump (warnings, allocation, PROTECT overflow) | planned (c) |
-| 6 | rooting rule + gctorture mode in CI | planned (b) |
-| 7 | core bound to the evaluator thread; R_CStack*; C stack check | planned (a) |
+| 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
+| 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
 | 8 | one barrier-capable store() for heap stores; reserved header state | planned (e) |
 | 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | planned (d) |
 | 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | planned (e); ATTRIB done |
@@ -430,12 +443,12 @@ they land; evidence in `docs/ledger/core.md`):
 | 13 | medium-object pages, LARGE bit, consistent accounting | planned (d/e) |
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | planned (f) |
-| 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | classification done; rest (a) |
+| 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | planned (c) |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
-| 19 | conservative scan resolves w-1 at granule boundaries | planned (a) |
+| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
-| 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | planned (a); `!spare` done |
+| 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | planned (with the bridge) |
 | 23 | console output through C stdio; signal ownership | planned |
 | 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |

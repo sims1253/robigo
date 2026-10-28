@@ -314,4 +314,13 @@ pub unsafe fn init_state() {
     R_Srcref = nil;
     c.gc_inhibit -= 1;
     crate::arith::init_arith();
+    // the core is bound to this thread (the evaluator's): GNU R's C stack
+    // check uses its bounds, the stack grows down (R_CStackDir 1), and
+    // the limit is 95% of the stack as setup_Rmainloop sets it
+    let (lo, top) = c.stack_bounds();
+    if top != 0 {
+        R_CStackStart = top;
+        R_CStackDir = 1;
+        R_CStackLimit = ((top - lo) as f64 * 0.95) as usize;
+    }
 }

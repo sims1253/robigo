@@ -45,7 +45,11 @@ pub struct Core {
     gc_threshold: usize,
     /// > 0: allocation does not collect (`R_gc` still does).
     pub gc_inhibit: u32,
+    /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
+    stack_lo: usize,
+    /// collect on every allocation and poison freed slots (ROBIGO_GCTORTURE)
+    torture: bool,
     pub stats: GcStats,
 
     // the immortal constants
@@ -97,19 +101,25 @@ impl std::hash::Hasher for FxHasher {
 }
 pub type BuildFx = std::hash::BuildHasherDefault<FxHasher>;
 
-/// The highest address of the calling thread's stack.
-fn thread_stack_top() -> usize {
+/// The calling thread's stack: (lowest address, highest address).
+fn thread_stack() -> (usize, usize) {
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
-            return 0;
+            return (0, 0);
         }
         let mut addr: *mut libc::c_void = std::ptr::null_mut();
         let mut size: libc::size_t = 0;
         libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
         libc::pthread_attr_destroy(&mut attr);
-        addr as usize + size
+        (addr as usize, addr as usize + size)
     }
+}
+
+#[inline(always)]
+fn stack_pointer() -> usize {
+    let marker = 0usize;
+    std::hint::black_box(&marker) as *const usize as usize
 }
 
 impl Core {
@@ -123,7 +133,9 @@ impl Core {
             alloc_since_gc: 0,
             gc_threshold: gc_min(),
             gc_inhibit: 0,
-            stack_top: thread_stack_top(),
+            stack_top: thread_stack().1,
+            stack_lo: thread_stack().0,
+            torture: std::env::var_os("ROBIGO_GCTORTURE").is_some_and(|v| v != "0"),
             stats: GcStats::default(),
             nil: Sexp::NULL,
             na_string: Sexp::NULL,
@@ -189,7 +201,7 @@ impl Core {
     /// flags, attributes R_NilValue).
     #[inline]
     pub fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
-        if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
+        if (self.alloc_since_gc >= self.gc_threshold || self.torture) && self.gc_inhibit == 0 {
             self.collect();
         }
         let size = size.max(16);
@@ -212,7 +224,10 @@ impl Core {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
             x.set_tag_raw(tag);
-            if t != EXTPTRSXP {
+            // GNU R's constructors count the children they store; an
+            // external pointer's car is an address and a primitive's an
+            // offset, not objects
+            if !matches!(t, EXTPTRSXP | BUILTINSXP | SPECIALSXP) {
                 car.incref();
             }
             cdr.incref();
@@ -265,20 +280,24 @@ impl Core {
     }
 
     /// A proxy for a host object: `release(handle)` runs once it is dead.
+    /// The node fields are R_NilValue (the API asks the host for them);
+    /// the handle and release function follow at +40/+48.
     pub fn alloc_host(&mut self, t: u8, handle: usize, release: Option<ReleaseFn>) -> Sexp {
-        let x = self.alloc_object(t, NODE_SIZE);
+        let x = self.alloc_object(t, crate::HOST_SIZE);
         unsafe {
             x.set_flags(flags::HOST);
-            *(x.0.add(16) as *mut usize) = handle;
-            *(x.0.add(24) as *mut usize) = release.map_or(0, |f| f as usize);
+            x.set_car_raw(self.nil);
+            x.set_cdr_raw(self.nil);
             x.set_tag_raw(self.nil);
+            *(x.0.add(40) as *mut usize) = handle;
+            *(x.0.add(48) as *mut usize) = release.map_or(0, |f| f as usize);
         }
         x
     }
 
     /// The host handle of a HOST proxy.
     pub unsafe fn host_handle(x: Sexp) -> usize {
-        unsafe { *(x.0.add(16) as *const usize) }
+        unsafe { *(x.0.add(40) as *const usize) }
     }
 
     /// The owner word of an EXTDATA vector.
@@ -389,10 +408,32 @@ impl Core {
         self.weak_refs.push(w);
     }
 
-    /// Weak references whose keys died, ready for their finalizers, in
-    /// registration order. They stay reachable until taken.
-    pub fn take_finalizable(&mut self) -> Vec<Sexp> {
-        std::mem::take(&mut self.finalize_queue)
+    /// The next weak reference whose key died, ready for its finalizer.
+    /// It stays on the collector's queue (rooted) until popped; the
+    /// caller protects it while the finalizer runs.
+    pub fn pop_finalizable(&mut self) -> Option<Sexp> {
+        if self.finalize_queue.is_empty() { None } else { Some(self.finalize_queue.remove(0)) }
+    }
+
+    /// Release callbacks of host proxies and external buffers the last
+    /// collections found dead. They never run inside a collection; the
+    /// API runs them at safe points.
+    pub fn take_releases(&mut self) -> Vec<(ReleaseFn, usize)> {
+        std::mem::take(&mut self.releases)
+    }
+
+    /// The thread's stack bounds the core scans: (lowest, highest).
+    pub fn stack_bounds(&self) -> (usize, usize) {
+        (self.stack_lo, self.stack_top)
+    }
+
+    /// Whether collections run on every allocation (ROBIGO_GCTORTURE).
+    pub fn torture(&self) -> bool {
+        self.torture
+    }
+
+    pub fn set_torture(&mut self, on: bool) {
+        self.torture = on;
     }
 
     /// Weak references still waiting for their key to die (for
@@ -559,6 +600,13 @@ impl Core {
                     if let Some(p) = c.heap.resolve(v) {
                         c.mark_obj(Sexp(p));
                     }
+                    // a word on a granule boundary may be one past the end
+                    // of the previous object (a loop bound, p + n)
+                    if v & 15 == 0 {
+                        if let Some(p) = c.heap.resolve(v - 1) {
+                            c.mark_obj(Sexp(p));
+                        }
+                    }
                 }
                 w += 8;
             }
@@ -568,8 +616,13 @@ impl Core {
 
     /// A full collection. Returns the pause in nanoseconds. Release
     /// callbacks of dead EXTDATA/HOST objects run at the end; queued
-    /// finalizers do not run here (see [`Core::take_finalizable`]).
+    /// finalizers do not run here (see [`Core::pop_finalizable`]).
     pub fn collect(&mut self) -> u64 {
+        let sp = stack_pointer();
+        if self.stack_top != 0 && (sp < self.stack_lo || sp > self.stack_top) {
+            eprintln!("robigo: the R heap was used from a thread other than the R thread");
+            std::process::abort();
+        }
         let t0 = Instant::now();
         self.cur_mark = if self.cur_mark == flags::MARK_A { flags::MARK_B } else { flags::MARK_A };
         unsafe {
@@ -609,9 +662,6 @@ impl Core {
         self.stats.collections += 1;
         self.stats.collect_total_ns += dt;
         self.stats.collect_max_pause_ns = self.stats.collect_max_pause_ns.max(dt);
-        for (f, owner) in std::mem::take(&mut self.releases) {
-            unsafe { f(owner) };
-        }
         dt
     }
 
@@ -629,11 +679,9 @@ impl Core {
         unsafe {
             let f = *p.add(1);
             if f & (flags::EXTDATA | flags::HOST) != 0 {
-                let (owner, rel) = if f & flags::EXTDATA != 0 {
-                    (*(p.add(40) as *const usize), *(p.add(48) as *const usize))
-                } else {
-                    (*(p.add(16) as *const usize), *(p.add(24) as *const usize))
-                };
+                // EXTDATA and HOST objects both keep owner/handle at +40
+                // and the release function at +48
+                let (owner, rel) = (*(p.add(40) as *const usize), *(p.add(48) as *const usize));
                 if rel != 0 {
                     self.releases.push((std::mem::transmute::<usize, ReleaseFn>(rel), owner));
                 }
@@ -703,6 +751,12 @@ impl Core {
                                 (*b).start_set(g);
                             } else {
                                 self.on_death(p);
+                                if self.torture {
+                                    // poison: a use after free reads garbage
+                                    // types and pointers, and fails loudly
+                                    std::ptr::write_bytes(p.add(16), 0xDB, csize as usize - 16);
+                                    *p = 0xDB;
+                                }
                                 *((p as *mut *mut u8).add(1)) = (*b).freelist;
                                 (*b).freelist = p;
                                 // a free slot reads as an unmarked, flagless object

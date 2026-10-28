@@ -365,12 +365,23 @@ pub unsafe fn altraw_elt(_x: Sexp, _i: isize) -> u8 {
     not_implemented("ALTRAW_ELT")
 }
 
-/// Run the finalizers the last collection queued (memory.c
-/// RunFinalizers).
+/// A safe point (memory.c R_RunPendingFinalizers, called by GNU R from
+/// the evaluator and gc()): run the release callbacks of dead host
+/// proxies, then the finalizers of weak references whose keys died. Never
+/// called from inside an allocation or a collection.
+pub unsafe fn safe_point() {
+    for (f, h) in core().take_releases() {
+        f(h);
+    }
+    run_finalizers();
+}
+
+/// Run the queued finalizers, each protected while it runs.
 pub unsafe fn run_finalizers() {
-    let q = core().take_finalizable();
-    for w in q {
+    while let Some(w) = core().pop_finalizable() {
+        Rf_protect(w);
         crate::extptr::run_finalizer(w);
+        Rf_unprotect(1);
     }
 }
 

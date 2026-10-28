@@ -232,5 +232,5 @@ pub unsafe extern "C" fn R_RunExitFinalizers() {
             run_finalizer(w);
         }
     }
-    crate::util::run_finalizers();
+    crate::util::safe_point();
 }
