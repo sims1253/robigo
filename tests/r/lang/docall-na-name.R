@@ -1,0 +1,13 @@
+# do.call tags an NA name as `NA` (coerce.c ItemName: only "" is untagged)
+L <- list(A = 1:4)
+names(L) <- NA
+f <- function(...) names(list(...))
+do.call(f, L)
+do.call(f, c(L, list(b = 2)))
+h <- function(...) sys.call()
+do.call(h, L)
+args <- list(1, 2)
+names(args) <- c("", NA)
+do.call(h, args)
+names(as.data.frame(L))
+names(as.data.frame(L, check.names = FALSE))

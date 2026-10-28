@@ -56,6 +56,7 @@ tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-subset.R
 tests/r/lang/compiled-switch.R
 tests/r/lang/compiled-variables.R
+tests/r/lang/docall-na-name.R
 tests/r/lang/environments.R
 tests/r/lang/environment-validation.R
 tests/r/lang/evaluator-errors.R
@@ -157,6 +158,7 @@ tests/r/vec/allany-which.R
 tests/r/vec/bins.R
 tests/r/vec/c-na-names.R
 tests/r/vec/colon-seq.R
+tests/r/vec/cplx-assign-na.R
 tests/r/vec/colsums-ldouble.R
 tests/r/vec/dispatch.R
 tests/r/vec/err/err-any.R

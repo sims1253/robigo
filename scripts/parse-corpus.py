@@ -211,7 +211,13 @@ def build_parse_batch():
         ["cargo", "build", "--release", "-p", "robigo-syntax", "--bin", "parse-batch"],
         check=True, cwd=ROOT,
     )
-    target = os.environ.get("CARGO_TARGET_DIR", str(Path.home() / ".cache/cargo-target"))
+    # cargo's own answer: CI builds into ./target, this machine into the
+    # shared directory from ~/.cargo/config.toml.
+    meta = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+        check=True, cwd=ROOT, capture_output=True,
+    )
+    target = json.loads(meta.stdout)["target_directory"]
     binp = Path(target) / "release/parse-batch"
     if not binp.exists():
         raise SystemExit(f"parse-batch not found at {binp}")
