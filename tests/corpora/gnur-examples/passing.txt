@@ -157,6 +157,7 @@ base/outer
 base/path.expand
 base/pmatch
 base/pos.to.env
+base/print
 base/print.dataframe
 base/print.default
 base/prmatrix

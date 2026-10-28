@@ -13,3 +13,10 @@
 - Port: `attrib.c:R_data_class` returns a nonempty explicit class vector without rebuilding it. Preserve its names and package attributes.
 - Attribute slice: 262/300 -> 274/300, 12 gains, zero regressions. Recorded 12 gains plus 16 previously unrecorded baseline passes with `--update`. Kept.
 - No changes to interp.rs or other shared evaluator paths.
+
+## 2026-10-28: dots lookup and NextMethod supplied slots
+
+- Port: `envir.c:do_dotsElt` / `ddfind` validates arity, index type/length, argument tags, and reports context errors for nonpositive/out-of-range indices. Register as an evaluated builtin per names.c (201), removing the zero-argument panic.
+- Port: `match.c:patchArgsByActuals` / `patchArgument` patches supplied slots in original order. Retain explicit missing arguments and promise current local values, including exact and partial named matches.
+- Dots/function slice: 342/359 -> 353/359, 11 gains and zero regressions. `base/print`: fail -> pass, including table subsetting with an explicit missing row index. Kept.
+- Follow-up under verification: nested missing checks distinguish defaults from absent arguments per `envir.c:R_isMissing`; attribute and removal validation follow attrib.c/envir.c. `.dfltWarn` needs one minimal shared registration change in builtins/conditions.rs to match names.c eval=11.
