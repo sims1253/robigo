@@ -16,7 +16,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use robigo_syntax::dump::{dump, dump_error};
-use robigo_syntax::parse_program;
+use robigo_syntax::{Arena, parse_program};
 use robigo_syntax::{Arg, Const, Expr};
 
 fn transcode_latin1(bytes: &[u8]) -> String {
@@ -102,13 +102,13 @@ fn hash_expr(mut h: u64, e: &Expr) -> u64 {
         Expr::Call { fun, args, .. } => {
             h ^= 0x28;
             h = hash_expr(h, fun);
-            for a in args {
+            for a in *args {
                 h = hash_arg(h, a);
             }
         }
         Expr::Function { formals, body, .. } => {
             h ^= 0x66;
-            for f in formals {
+            for f in *formals {
                 h = hash_bytes(h, f.name.as_bytes());
                 h ^= 0x3d;
                 if let Some(d) = &f.default {
@@ -169,7 +169,9 @@ fn main() {
             }
         };
         n += 1;
-        match parse_program(&src) {
+        // One arena per source: it frees the whole tree at once.
+        let arena = Arena::new();
+        match parse_program(&arena, &src) {
             Ok(exprs) => {
                 if parse_only {
                     checksum = checksum.wrapping_mul(0x100000001b3).wrapping_add(src.len() as u64);

@@ -76,6 +76,7 @@ pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
 
 /// Parse source text into an expression vector of language objects.
 pub fn parse_to_values(src: &str) -> Result<Vec<Value>, robigo_syntax::ParseError> {
-    let exprs = robigo_syntax::parse_program(src)?;
+    let arena = robigo_syntax::Arena::new();
+    let exprs = robigo_syntax::parse_program(&arena, src)?;
     Ok(exprs.iter().map(expr_to_value).collect())
 }

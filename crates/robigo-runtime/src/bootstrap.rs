@@ -32,7 +32,10 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
         } else {
             src
         };
-        let exprs = robigo_syntax::parse_program(src).map_err(|e| {
+        // The arena owns the trees; both die at the end of this block,
+        // after the conversion to values.
+        let arena = robigo_syntax::Arena::new();
+        let exprs = robigo_syntax::parse_program(&arena, src).map_err(|e| {
             let (l, c) = robigo_syntax::line_col(src, e.offset);
             format!("{}:{}:{}: {}", file, l, c, e.message)
         })?;
@@ -64,7 +67,8 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
         lapply(routines[[i]],
                function(sym) assign(paste0(".C_", sym$name), sym, envir = .BaseNamespaceEnv))
 })"#;
-    for e in robigo_syntax::parse_program(tail).map_err(|e| e.message)? {
+    let tail_arena = robigo_syntax::Arena::new();
+    for e in robigo_syntax::parse_program(&tail_arena, tail).map_err(|e| e.message)? {
         interp.frames.clear();
         if let Err(crate::error::Flow::Error(e)) = interp.eval(&expr_to_value(&e), &base) {
             failures.push(BootFailure { file: "baseloader", line: 0, message: e.message });

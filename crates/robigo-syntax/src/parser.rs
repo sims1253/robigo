@@ -23,9 +23,9 @@
 //! | `::` `:::`              |       | 36      |
 //! | `(` `[` `[[` (postfix)  |       | 38      |
 
-use crate::ast::Name;
+use crate::arena::Arena;
 use crate::ast::*;
-use crate::lexer::{Lexer, SymStr, Tok, Token};
+use crate::lexer::{Lexer, StrTok, SymStr, Tok, Token};
 use crate::line_col;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -40,125 +40,14 @@ enum Ctx {
 
 pub struct Parser<'a> {
     src: &'a str,
+    arena: &'a Arena,
     toks: Vec<Token<'a>>,
     pos: usize,
     ctx: Vec<Ctx>,
-    /// One `Name` per distinct string per parse, as GNU R's interned
-    /// symbols: repeated identifiers and the few operator names are
-    /// refcount copies instead of allocations. FNV-1a: names are short,
-    /// and SipHash would dominate the lookup.
-    interned: std::collections::HashMap<&'a str, Name, FnvBuild>,
-    /// The fixed operator names, resolved once each per parse and then
-    /// indexed by [`Op`], so call nodes avoid the intern table's hashing.
-    ops: [Option<Name>; NUM_OPS],
     /// Whether the token stream holds a pipe placeholder at all; if not,
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
     pub warnings: Vec<String>,
-}
-
-/// The fixed function names of call nodes built by the parser (operator
-/// uses, `if`/`for`/`while`/`{`/`[` and friends; `// R: names.c`). The
-/// `%`-ops `%%`, `%/%` and `%*%` are common enough to belong here;
-/// user-defined `%op%` names go through the intern table.
-#[derive(Clone, Copy, PartialEq)]
-#[repr(u8)]
-enum Op {
-    Null,
-    Paren,
-    Minus,
-    Plus,
-    Not,
-    Tilde,
-    Question,
-    If,
-    For,
-    While,
-    Repeat,
-    Break,
-    Next,
-    Brace,
-    Index,
-    Index2,
-    Dollar,
-    At,
-    NsGet,
-    NsGetInt,
-    PipeBind,
-    LeftAssign,
-    LeftAssign2,
-    EqAssign,
-    Or,
-    Or2,
-    And,
-    And2,
-    Eq,
-    Ne,
-    Lt,
-    Gt,
-    Le,
-    Ge,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    PctMod,
-    PctIntDiv,
-    PctMatMul,
-    Colon,
-    Caret,
-}
-
-const NUM_OPS: usize = Op::Caret as usize + 1;
-
-impl Op {
-    fn as_str(self) -> &'static str {
-        match self {
-            Op::Null => "NULL",
-            Op::Paren => "(",
-            Op::Minus => "-",
-            Op::Plus => "+",
-            Op::Not => "!",
-            Op::Tilde => "~",
-            Op::Question => "?",
-            Op::If => "if",
-            Op::For => "for",
-            Op::While => "while",
-            Op::Repeat => "repeat",
-            Op::Break => "break",
-            Op::Next => "next",
-            Op::Brace => "{",
-            Op::Index => "[",
-            Op::Index2 => "[[",
-            Op::Dollar => "$",
-            Op::At => "@",
-            Op::NsGet => "::",
-            Op::NsGetInt => ":::",
-            Op::PipeBind => "=>",
-            Op::LeftAssign => "<-",
-            Op::LeftAssign2 => "<<-",
-            Op::EqAssign => "=",
-            Op::Or => "|",
-            Op::Or2 => "||",
-            Op::And => "&",
-            Op::And2 => "&&",
-            Op::Eq => "==",
-            Op::Ne => "!=",
-            Op::Lt => "<",
-            Op::Gt => ">",
-            Op::Le => "<=",
-            Op::Ge => ">=",
-            Op::Add => "+",
-            Op::Sub => "-",
-            Op::Mul => "*",
-            Op::Div => "/",
-            Op::PctMod => "%%",
-            Op::PctIntDiv => "%/%",
-            Op::PctMatMul => "%*%",
-            Op::Colon => ":",
-            Op::Caret => "^",
-        }
-    }
 }
 
 const BP_QUESTION: u8 = 2;
@@ -174,29 +63,6 @@ const BP_CMP: u8 = 18;
 const BP_UNARY: u8 = 30;
 const BP_POSTFIX: u8 = 38;
 
-/// FNV-1a: the interner's keys are short names, where SipHash's setup
-/// cost would dominate the lookup.
-struct Fnv(u64);
-impl std::hash::Hasher for Fnv {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 ^= b as u64;
-            self.0 = self.0.wrapping_mul(0x100000001b3);
-        }
-    }
-}
-#[derive(Clone, Copy, Default)]
-struct FnvBuild;
-impl std::hash::BuildHasher for FnvBuild {
-    type Hasher = Fnv;
-    fn build_hasher(&self) -> Fnv {
-        Fnv(0xcbf29ce484222325)
-    }
-}
-
 /// `_R_USE_PIPEBIND_` (`xxpipebind` in gram.y caches it after the first
 /// lookup).
 fn pipebind_enabled() -> bool {
@@ -209,15 +75,19 @@ fn pipebind_enabled() -> bool {
     })
 }
 
-/// Parse a whole program into top-level expressions.
-pub fn parse_program(src: &str) -> Result<Vec<Expr>, ParseError> {
-    let mut p = Parser::new(src)?;
-    p.program()
+/// Parse a whole program into top-level expressions. The trees reference
+/// `arena` (and, for identifiers and plain strings, `src`): dropping the
+/// arena drops the whole forest.
+pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>, ParseError> {
+    Parser::new(arena, src)?.program()
 }
 
 /// Like [`parse_program`] but also returns lexer/parser warnings.
-pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>), ParseError> {
-    let mut p = Parser::new(src)?;
+pub fn parse_program_with_warnings<'a>(
+    arena: &'a Arena,
+    src: &'a str,
+) -> Result<(Vec<Expr<'a>>, Vec<String>), ParseError> {
+    let mut p = Parser::new(arena, src)?;
     let exprs = p.program()?;
     Ok((exprs, p.warnings))
 }
@@ -226,7 +96,7 @@ pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>)
 /// `R_Parse1Buffer` with `gend = 0` (`// R: main.c:Rf_ReplIteration`,
 /// `gram.y`'s `prog` rules and `R_Parse1`).
 #[derive(Debug)]
-pub enum ConsoleStatus {
+pub enum ConsoleStatus<'a> {
     /// `prog: '\n'` (PARSE_NULL): a blank or comment-only chunk with its
     /// newline; nothing to evaluate.
     Null,
@@ -234,7 +104,7 @@ pub enum ConsoleStatus {
     /// lexer's warnings (GNU R signals them only on the real, code-
     /// generating parse, which an incomplete or erroneous chunk never
     /// reaches).
-    Ok(Vec<Expr>, Vec<String>),
+    Ok(Vec<Expr<'a>>, Vec<String>),
     /// PARSE_INCOMPLETE: the chunk ends mid-statement or inside a
     /// comment or string; the REPL asks for another line.
     Incomplete,
@@ -254,7 +124,7 @@ pub enum ConsoleStatus {
 /// or newline (a line longer than `CONSOLE_BUFFER_SIZE`, cut mid-line)
 /// is incomplete. Trailing bytes after the first statement are ignored:
 /// the REPL's buffer discipline never produces them.
-pub fn parse_console(src: &str) -> ConsoleStatus {
+pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     let (toks, warnings, eof_in_comment) = match Lexer::new(src).tokenize_with_flags() {
         Ok(t) => t,
         // The lexer never fails: lexical errors become `Invalid` tokens
@@ -263,12 +133,11 @@ pub fn parse_console(src: &str) -> ConsoleStatus {
     };
     let mut p = Parser {
         src,
+        arena,
         saw_placeholder: toks.iter().any(|t| matches!(t.tok, Tok::Placeholder)),
         toks,
         pos: 0,
         ctx: vec![Ctx::TopLevel],
-        interned: Default::default(),
-        ops: std::array::from_fn(|_| None),
         warnings,
     };
     if matches!(p.toks[p.pos].tok, Tok::Newline) {
@@ -305,60 +174,14 @@ pub fn parse_console(src: &str) -> ConsoleStatus {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(src: &'a str) -> Result<Self, ParseError> {
+    pub fn new(arena: &'a Arena, src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
-        Ok(Parser {
-            src,
-            toks,
-            pos: 0,
-            ctx: vec![Ctx::TopLevel],
-            interned: Default::default(),
-            ops: std::array::from_fn(|_| None),
-            saw_placeholder,
-            warnings,
-        })
-    }
-
-    fn intern(&mut self, s: &'a str) -> Name {
-        if let Some(rc) = self.interned.get(s) {
-            return rc.clone();
-        }
-        let rc: Name = s.into();
-        self.interned.insert(s, rc.clone());
-        rc
-    }
-
-    /// One of the fixed operator names every call to an operator uses
-    /// (`+`, `<-`, `[`, ...): one `Name` per name per parse, resolved
-    /// once through the same intern table and then indexed by the
-    /// operator's small-code (no hashing per call node).
-    fn op(&mut self, op: Op) -> Name {
-        if self.ops[op as usize].is_none() {
-            self.ops[op as usize] = Some(self.intern(op.as_str()));
-        }
-        self.ops[op as usize].clone().unwrap()
-    }
-
-    /// A name that may not be a source slice (escaped backticks, string
-    /// tags): own it, uncached.
-    fn name_of(&self, s: &str) -> Name {
-        s.into()
-    }
-
-    fn sym_name(&mut self, s: &SymStr<'a>) -> Name {
-        match s.src() {
-            Some(src) => self.intern(src),
-            None => self.name_of(s),
-        }
+        Ok(Parser { src, arena, toks, pos: 0, ctx: vec![Ctx::TopLevel], saw_placeholder, warnings })
     }
 
     fn cur_ctx(&self) -> Ctx {
         *self.ctx.last().unwrap()
-    }
-
-    fn raw_peek(&self) -> &Token<'a> {
-        &self.toks[self.pos]
     }
 
     /// Next token, skipping newlines when they are insignificant.
@@ -425,7 +248,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn unexpected(&self, t: &Token<'_>) -> ParseError {
+    fn unexpected(&self, t: &Token) -> ParseError {
         if let Tok::Invalid(e) = &t.tok {
             // The lexer's own error fires when the parser asks for the
             // token, before any grammar complaint about it.
@@ -460,7 +283,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn program(&mut self) -> Result<Vec<Expr>, ParseError> {
+    pub fn program(&mut self) -> Result<Vec<Expr<'a>>, ParseError> {
         let mut out = Vec::new();
         loop {
             while matches!(self.toks[self.pos].tok, Tok::Newline) {
@@ -500,7 +323,7 @@ impl<'a> Parser<'a> {
     /// already peeked at (`;` at its own column; a newline at column 0 of
     /// its own line; end of input likewise).
     fn statement_check_error(&self) -> ParseError {
-        let t = self.raw_peek();
+        let t = &self.toks[self.pos];
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
             Tok::Semi => line_col(self.src, t.span.start as usize),
@@ -524,7 +347,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse an expression whose operators all bind tighter than `min_bp`.
-    fn expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+    fn expr(&mut self, min_bp: u8) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         self.skip_newlines();
         let mut lhs = self.prefix()?;
         loop {
@@ -552,9 +376,9 @@ impl<'a> Parser<'a> {
             lhs = match &t.tok {
                 Tok::Dollar | Tok::At => {
                     let name = self.member_name()?;
-                    let op = if t.tok == Tok::Dollar { Op::Dollar } else { Op::At };
+                    let op = if t.tok == Tok::Dollar { "$" } else { "@" };
                     let span = lhs.span().to(name.span());
-                    Expr::call(self.op(op), t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
+                    call2(arena, op, t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
                 }
                 Tok::NsGet(op) => {
                     let pkg = match lhs {
@@ -562,9 +386,8 @@ impl<'a> Parser<'a> {
                         _ => return Err(self.unexpected(&t)),
                     };
                     let name = self.member_name()?;
-                    let ns_op = if *op == "::" { Op::NsGet } else { Op::NsGetInt };
                     let span = pkg.span().to(name.span());
-                    Expr::call(self.op(ns_op), t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
+                    call2(arena, op, t.span, vec![Arg::positional(pkg), Arg::positional(name)], span)
                 }
                 Tok::Pipe => {
                     let rhs = self.expr(rbp)?;
@@ -587,20 +410,19 @@ impl<'a> Parser<'a> {
                         });
                     }
                     let span = lhs.span().to(rhs.span());
-                    Expr::call(self.op(Op::PipeBind), t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
+                    call2(arena, "=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
                 }
                 _ => {
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
-                        Tok::RightAssign(op) => {
-                            (if *op == "->" { self.op(Op::LeftAssign) } else { self.op(Op::LeftAssign2) }, rhs, lhs)
-                        }
-                        _ => (self.binary_name(&t.tok), lhs, rhs),
+                        Tok::RightAssign(op) => ((if *op == "->" { "<-" } else { "<<-" }), rhs, lhs),
+                        // `%op%` names are source slices; the rest are static.
+                        Tok::Special(op) => (*op, lhs, rhs),
+                        _ => (binary_name(&t.tok), lhs, rhs),
                     };
-                    let e = Expr::call(name, t.span, vec![Arg::positional(a), Arg::positional(b)], span);
+                    let e = call2(arena, name, t.span, vec![Arg::positional(a), Arg::positional(b)], span);
                     if matches!(t.tok, Tok::Cmp(_)) {
-                        // Comparisons do not associate: `a < b < c` is an error.
                         // Comparisons do not associate: `a < b < c` is
                         // an error. `peek` would skip newlines in a
                         // bracket context; do the same here.
@@ -621,47 +443,8 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// The call name of a binary operator token, as an interned `Name`.
-    fn binary_name(&mut self, t: &Tok<'a>) -> Name {
-        let op = match t {
-            Tok::Question => Op::Question,
-            Tok::EqAssign => Op::EqAssign,
-            Tok::LeftAssign(op) => match *op {
-                "<-" => Op::LeftAssign,
-                "<<-" => Op::LeftAssign2,
-                _ => return self.intern(op), // `:=`
-            },
-            Tok::Tilde => Op::Tilde,
-            Tok::Or => Op::Or,
-            Tok::Or2 => Op::Or2,
-            Tok::And => Op::And,
-            Tok::And2 => Op::And2,
-            Tok::Cmp(op) => match *op {
-                "==" => Op::Eq,
-                "!=" => Op::Ne,
-                "<" => Op::Lt,
-                ">" => Op::Gt,
-                "<=" => Op::Le,
-                _ => Op::Ge,
-            },
-            Tok::Plus => Op::Add,
-            Tok::Minus => Op::Sub,
-            Tok::Star => Op::Mul,
-            Tok::Slash => Op::Div,
-            Tok::Special(op) => match *op {
-                "%%" => return self.op(Op::PctMod),
-                "%/%" => return self.op(Op::PctIntDiv),
-                "%*%" => return self.op(Op::PctMatMul),
-                _ => return self.intern(op),
-            },
-            Tok::Colon => Op::Colon,
-            Tok::Caret => Op::Caret,
-            _ => unreachable!("not a binary operator: {:?}", t),
-        };
-        self.op(op)
-    }
-
-    fn member_name(&mut self) -> Result<Expr, ParseError> {
+    fn member_name(&mut self) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         self.skip_newlines();
         // `x$(name)` is not valid R, but `x@.Data` etc. are symbols.
         if !matches!(self.toks[self.pos].tok, Tok::Sym(_) | Tok::Str(_)) {
@@ -670,8 +453,8 @@ impl<'a> Parser<'a> {
         }
         let t = self.bump();
         match t.tok {
-            Tok::Sym(s) => Ok(Expr::Sym(self.sym_name(&s), t.span)),
-            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(s)), t.span)),
+            Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), t.span)),
+            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(str_bytes(arena, &s))), t.span)),
             _ => unreachable!("checked above"),
         }
     }
@@ -691,7 +474,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn pipe(&mut self, lhs: Expr, rhs: Expr, _op_span: Span) -> Result<Expr, ParseError> {
+    fn pipe(&mut self, lhs: Expr<'a>, rhs: Expr<'a>, _op_span: Span) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         let rhs_span = rhs.span();
         // `// R: gram.y:xxpipe`
         let err = |msg: &str| ParseError {
@@ -704,46 +488,51 @@ impl<'a> Parser<'a> {
             fixed_line_col: None,
         };
         match rhs {
-            Expr::Call { fun, mut args, span } => {
+            Expr::Call { fun, args, span } => {
                 // A placeholder as (or inside) the called function itself.
-                if contains_placeholder(&fun) {
+                if contains_placeholder(fun) {
                     return Err(err("pipe placeholder cannot be used in the RHS function"));
                 }
                 // `x |> _$a[[1]]`: the placeholder may head a chain of
                 // extractions.
-                match substitute_extraction_placeholder(&fun, &args, &lhs) {
+                match substitute_extraction_placeholder(arena, fun, args, &lhs) {
                     Some(Ok(new)) => return Ok(new),
                     Some(Err(())) => return Err(err("pipe placeholder may only appear once")),
                     None => {}
                 }
                 // A top-level placeholder argument: named ones are substituted.
-                let placeholder = args.iter().position(|a| matches!(&a.value, Some(Expr::Placeholder(_))));
+                let placeholder = args.iter().position(|a| matches!(a.value, Some(Expr::Placeholder(_))));
                 let full = lhs.span().to(span);
                 if let Some(i) = placeholder {
                     if args[i].name.is_none() {
                         return Err(err("pipe placeholder can only be used as a named argument"));
                     }
-                    if args[i + 1..].iter().any(|a| matches!(&a.value, Some(Expr::Placeholder(_)))) {
+                    if args[i + 1..].iter().any(|a| matches!(a.value, Some(Expr::Placeholder(_)))) {
                         return Err(err("pipe placeholder may only appear once"));
                     }
-                    args[i].value = Some(lhs);
-                    return Ok(Expr::Call { fun, args, span: full });
+                    let mut new_args = args.to_vec();
+                    new_args[i].value = Some(lhs);
+                    let new_args = arena.alloc_slice(&new_args);
+                    return Ok(Expr::Call { fun, args: new_args, span: full });
                 }
                 // Syntactically special functions cannot be piped into
                 // (`check_rhs`, IS_SPECIAL_SYMBOL in names.c).
-                if let Expr::Sym(name, _) = fun.as_ref() {
+                if let Expr::Sym(name, _) = fun {
                     if is_special_symbol(name) {
-                        return Err(err(&format!("function '{}' not supported in RHS call of a pipe", name)));
+                        return Err(err(&format!("function '{name}' not supported in RHS call of a pipe")));
                     }
                 }
-                args.insert(0, Arg::positional(lhs));
-                Ok(Expr::Call { fun, args, span: full })
+                let mut all = Vec::with_capacity(args.len() + 1);
+                all.push(Arg::positional(lhs));
+                all.extend_from_slice(args);
+                let all = arena.alloc_slice(&all);
+                Ok(Expr::Call { fun, args: all, span: full })
             }
             // `function(...)` as the RHS is a lang object with head
             // `function`, a special symbol; its body could be a bare
             // placeholder.
             Expr::Function { body, .. } => {
-                if matches!(body.as_ref(), Expr::Placeholder(_)) {
+                if matches!(body, Expr::Placeholder(_)) {
                     Err(err("pipe placeholder can only be used as a named argument"))
                 } else {
                     Err(err("function 'function' not supported in RHS call of a pipe"))
@@ -753,13 +542,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn prefix(&mut self) -> Result<Expr, ParseError> {
+    fn prefix(&mut self) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         let t = self.bump();
         let span = t.span;
         match t.tok {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
-            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(s)), span)),
-            Tok::Sym(s) => Ok(Expr::Sym(self.sym_name(&s), span)),
+            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(str_bytes(arena, &s))), span)),
+            Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), span)),
             Tok::Placeholder => Ok(Expr::Placeholder(span)),
             Tok::LParen => {
                 self.ctx.push(Ctx::Paren);
@@ -767,7 +557,7 @@ impl<'a> Parser<'a> {
                 let close = inner.and_then(|e| self.expect(Tok::RParen).map(|c| (e, c)));
                 self.ctx.pop();
                 let (inner, close) = close?;
-                Ok(Expr::call(self.op(Op::Paren), span, vec![Arg::positional(inner)], span.to(close.span)))
+                Ok(call2(arena, "(", span, vec![Arg::positional(inner)], span.to(close.span)))
             }
             Tok::LBrace => {
                 self.ctx.push(Ctx::Brace);
@@ -777,24 +567,24 @@ impl<'a> Parser<'a> {
             }
             Tok::Minus | Tok::Plus => {
                 let operand = self.expr(BP_UNARY)?;
-                let name = if t.tok == Tok::Minus { Op::Minus } else { Op::Plus };
+                let name = if t.tok == Tok::Minus { "-" } else { "+" };
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.op(name), span, vec![Arg::positional(operand)], full))
+                Ok(call2(arena, name, span, vec![Arg::positional(operand)], full))
             }
             Tok::Not => {
                 let operand = self.expr(BP_NOT)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.op(Op::Not), span, vec![Arg::positional(operand)], full))
+                Ok(call2(arena, "!", span, vec![Arg::positional(operand)], full))
             }
             Tok::Tilde => {
                 let operand = self.expr(BP_TILDE)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.op(Op::Tilde), span, vec![Arg::positional(operand)], full))
+                Ok(call2(arena, "~", span, vec![Arg::positional(operand)], full))
             }
             Tok::Question => {
                 let operand = self.expr(BP_QUESTION)?;
                 let full = span.to(operand.span());
-                Ok(Expr::call(self.op(Op::Question), span, vec![Arg::positional(operand)], full))
+                Ok(call2(arena, "?", span, vec![Arg::positional(operand)], full))
             }
             Tok::Function | Tok::Lambda => self.function(span),
             Tok::If => self.if_expr(span),
@@ -807,8 +597,8 @@ impl<'a> Parser<'a> {
                         let t = self.toks[self.pos].clone();
                         return Err(self.unexpected(&t));
                     }
-                    let Token { tok: Tok::Sym(s), span } = self.bump() else { unreachable!("checked above") };
-                    let var = Expr::Sym(self.sym_name(&s), span);
+                    let Token { tok: Tok::Sym(s), span: sym_span } = self.bump() else { unreachable!("checked above") };
+                    let var = Expr::Sym(sym_name(arena, &s), sym_span);
                     self.expect(Tok::In)?;
                     let seq = self.expr(0)?;
                     self.expect(Tok::RParen)?;
@@ -818,8 +608,9 @@ impl<'a> Parser<'a> {
                 let (var, seq) = header?;
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call(
-                    self.op(Op::For),
+                Ok(call2(
+                    arena,
+                    "for",
                     span,
                     vec![Arg::positional(var), Arg::positional(seq), Arg::positional(body)],
                     full,
@@ -830,20 +621,20 @@ impl<'a> Parser<'a> {
                 // `%prec LOW` in gram.y: the body ends before `?`.
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call(self.op(Op::While), span, vec![Arg::positional(cond), Arg::positional(body)], full))
+                Ok(call2(arena, "while", span, vec![Arg::positional(cond), Arg::positional(body)], full))
             }
             Tok::Repeat => {
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
-                Ok(Expr::call(self.op(Op::Repeat), span, vec![Arg::positional(body)], full))
+                Ok(call2(arena, "repeat", span, vec![Arg::positional(body)], full))
             }
-            Tok::Break => Ok(Expr::call(self.op(Op::Break), span, vec![], span)),
-            Tok::Next => Ok(Expr::call(self.op(Op::Next), span, vec![], span)),
+            Tok::Break => Ok(call2(arena, "break", span, vec![], span)),
+            Tok::Next => Ok(call2(arena, "next", span, vec![], span)),
             _ => Err(self.unexpected(&t)),
         }
     }
 
-    fn paren_cond(&mut self) -> Result<Expr, ParseError> {
+    fn paren_cond(&mut self) -> Result<Expr<'a>, ParseError> {
         self.ctx.push(Ctx::Paren);
         let r = (|| {
             self.expect(Tok::LParen)?;
@@ -855,7 +646,8 @@ impl<'a> Parser<'a> {
         r
     }
 
-    fn if_expr(&mut self, span: Span) -> Result<Expr, ParseError> {
+    fn if_expr(&mut self, span: Span) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         let cond = self.paren_cond()?;
         let then = self.expr(BP_LOW)?;
         // Look for `else`. Outside of the top level, it may follow newlines.
@@ -863,12 +655,13 @@ impl<'a> Parser<'a> {
         if self.cur_ctx() != Ctx::TopLevel {
             self.skip_newlines();
         }
-        if matches!(self.raw_peek().tok, Tok::Else) {
+        if matches!(self.toks[self.pos].tok, Tok::Else) {
             self.bump();
             let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
-            return Ok(Expr::call(
-                self.op(Op::If),
+            return Ok(call2(
+                arena,
+                "if",
                 span,
                 vec![Arg::positional(cond), Arg::positional(then), Arg::positional(other)],
                 full,
@@ -876,10 +669,11 @@ impl<'a> Parser<'a> {
         }
         self.pos = save;
         let full = span.to(then.span());
-        Ok(Expr::call(self.op(Op::If), span, vec![Arg::positional(cond), Arg::positional(then)], full))
+        Ok(call2(arena, "if", span, vec![Arg::positional(cond), Arg::positional(then)], full))
     }
 
-    fn function(&mut self, span: Span) -> Result<Expr, ParseError> {
+    fn function(&mut self, span: Span) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         self.ctx.push(Ctx::Paren);
         let formals = self.formals();
         self.ctx.pop();
@@ -887,13 +681,15 @@ impl<'a> Parser<'a> {
         // `%prec LOW` in gram.y: the body ends before `?`.
         let body = self.expr(BP_LOW)?;
         let full = span.to(body.span());
-        Ok(Expr::Function { formals, body: Box::new(body), span: full })
+        Ok(Expr::Function { formals: arena.alloc_slice(&formals), body: arena.alloc(body), span: full })
     }
 
-    fn formals(&mut self) -> Result<Vec<Formal>, ParseError> {
+    fn formals(&mut self) -> Result<Vec<Formal<'a>>, ParseError> {
+        let arena = self.arena;
         self.expect(Tok::LParen)?;
         let mut out: Vec<Formal> = Vec::new();
-        if matches!(self.peek().tok, Tok::RParen) {
+        self.skip_newlines(); // `peek` inside the parentheses
+        if matches!(self.toks[self.pos].tok, Tok::RParen) {
             self.bump();
             return Ok(out);
         }
@@ -904,7 +700,7 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected(&t));
             }
             let Token { tok: Tok::Sym(name), span: formal_span } = self.bump() else { unreachable!("checked above") };
-            if out.iter().any(|f| *f.name == *name) {
+            if out.iter().any(|f| f.name == &*name) {
                 return Err(ParseError {
                     message: format!("repeated formal argument '{}'", name),
                     offset: formal_span.start as usize,
@@ -922,7 +718,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            out.push(Formal { name: self.sym_name(&name), default });
+            out.push(Formal { name: sym_name(arena, &name), default });
             self.skip_newlines();
             match self.toks[self.pos].tok {
                 Tok::Comma => {
@@ -940,7 +736,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn brace_body(&mut self, open: Span) -> Result<Expr, ParseError> {
+    fn brace_body(&mut self, open: Span) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         let mut stmts = Vec::new();
         loop {
             while matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
@@ -949,7 +746,7 @@ impl<'a> Parser<'a> {
             if matches!(self.toks[self.pos].tok, Tok::RBrace) {
                 let close = self.toks[self.pos].span;
                 self.pos += 1;
-                return Ok(Expr::call(self.op(Op::Brace), open, stmts, open.to(close)));
+                return Ok(call2(arena, "{", open, stmts, open.to(close)));
             }
             if matches!(self.toks[self.pos].tok, Tok::Eof) {
                 let t = self.toks[self.pos].clone();
@@ -966,7 +763,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn postfix(&mut self, lhs: Expr) -> Result<Expr, ParseError> {
+    fn postfix(&mut self, lhs: Expr<'a>) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         let open = self.bump();
         self.ctx.push(Ctx::Paren);
         let r = (|| {
@@ -996,17 +794,19 @@ impl<'a> Parser<'a> {
                             if name.is_empty() {
                                 return Err(self.zero_length_name_error());
                             }
-                            Expr::Sym(self.name_of(&String::from_utf8_lossy(&name)), sp)
+                            Expr::Sym(arena.str(&String::from_utf8_lossy(name)), sp)
                         }
                         other => other,
                     };
-                    Expr::Call { fun: Box::new(fun), args, span }
+                    let fun = arena.alloc(fun);
+                    let args = arena.alloc_slice(&args);
+                    Expr::Call { fun, args, span }
                 }
                 Some(n) => {
-                    let mut all = vec![Arg::positional(lhs)];
-                    all.extend(args);
-                    let name = self.op(if n == "[" { Op::Index } else { Op::Index2 });
-                    Expr::call(name, open.span, all, span)
+                    let mut all = Vec::with_capacity(args.len() + 1);
+                    all.push(Arg::positional(lhs));
+                    all.extend_from_slice(&args);
+                    call2(arena, n, open.span, all, span)
                 }
             })
         })();
@@ -1027,7 +827,8 @@ impl<'a> Parser<'a> {
 
     /// Argument list up to (not including) `close`. The hot checks read
     /// the token in place; only names are moved out, by `bump`.
-    fn args(&mut self, bracket: bool) -> Result<Vec<Arg>, ParseError> {
+    fn args(&mut self, bracket: bool) -> Result<Vec<Arg<'a>>, ParseError> {
+        let arena = self.arena;
         let mut out = Vec::new();
         self.skip_newlines();
         if self.at_close(bracket) {
@@ -1050,9 +851,9 @@ impl<'a> Parser<'a> {
                 if named {
                     let t = self.bump(); // the name
                     let name = match t.tok {
-                        Tok::Sym(s) => self.sym_name(&s),
-                        Tok::Str(s) => self.name_of(&String::from_utf8_lossy(&s)),
-                        Tok::Const(Const::Null) => self.op(Op::Null),
+                        Tok::Sym(s) => sym_name(arena, &s),
+                        Tok::Str(s) => arena.str(&String::from_utf8_lossy(str_bytes(arena, &s))),
+                        Tok::Const(Const::Null) => "NULL",
                         _ => unreachable!("checked above"),
                     };
                     // A string tag installs as a symbol (`TagArg`), so
@@ -1086,6 +887,32 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// A call node: the function symbol, its span, the argument list (copied
+/// into the arena) and the call's full span.
+fn call2<'a>(arena: &'a Arena, name: &'a str, name_span: Span, args: Vec<Arg<'a>>, span: Span) -> Expr<'a> {
+    let fun = arena.alloc(Expr::Sym(name, name_span));
+    let args = arena.alloc_slice(&args);
+    Expr::Call { fun, args, span }
+}
+
+/// A symbol name: source slices pass through untouched, escaped names
+/// are copied into the arena.
+fn sym_name<'a>(arena: &'a Arena, s: &SymStr<'a>) -> &'a str {
+    match s.src() {
+        Some(src) => src,
+        None => arena.str(s),
+    }
+}
+
+/// String-literal bytes: escape-free literals reference the source,
+/// unescaped bytes are copied into the arena.
+fn str_bytes<'a>(arena: &'a Arena, s: &StrTok<'a>) -> &'a [u8] {
+    match s.src() {
+        Some(src) => src,
+        None => arena.bytes(s),
+    }
+}
+
 fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
     Some(match t {
         Tok::Question => (2, 3),
@@ -1106,6 +933,28 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         Tok::NsGet(_) => (36, 37),
         _ => return None,
     })
+}
+
+fn binary_name(t: &Tok) -> &'static str {
+    match t {
+        Tok::Question => "?",
+        Tok::EqAssign => "=",
+        Tok::LeftAssign(op) => *op,
+        Tok::Tilde => "~",
+        Tok::Or => "|",
+        Tok::Or2 => "||",
+        Tok::And => "&",
+        Tok::And2 => "&&",
+        Tok::Cmp(op) => *op,
+        Tok::Plus => "+",
+        Tok::Minus => "-",
+        Tok::Star => "*",
+        Tok::Slash => "/",
+        Tok::PipeBind => "=>",
+        Tok::Colon => ":",
+        Tok::Caret => "^",
+        _ => unreachable!("not a binary operator: {:?}", t),
+    }
 }
 
 /// `checkForPlaceholder` in gram.y: the placeholder symbol anywhere in a
@@ -1178,15 +1027,20 @@ fn is_special_symbol(name: &str) -> bool {
 /// `findExtractorChainPHCell` in gram.y: `x |> _$a[[1]]`. `Ok` substitutes
 /// the placeholder with `lhs`; `Err` means a second placeholder in the
 /// chain; `None` is "not an extraction chain over the placeholder".
-fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Option<Result<Expr, ()>> {
+fn substitute_extraction_placeholder<'a>(
+    arena: &'a Arena,
+    fun: &'a Expr<'a>,
+    args: &'a [Arg<'a>],
+    lhs: &Expr<'a>,
+) -> Option<Result<Expr<'a>, ()>> {
     let Expr::Sym(name, name_span) = fun else { return None };
-    if !matches!(&**name, "$" | "@" | "[[" | "[") || args.is_empty() {
+    if !matches!(*name, "$" | "@" | "[[" | "[") || args.is_empty() {
         return None;
     }
     let first = args[0].value.as_ref()?;
     let replaced = match first {
-        Expr::Placeholder(_) => lhs.clone(),
-        Expr::Call { fun: f, args: a, .. } => match substitute_extraction_placeholder(f, a, lhs) {
+        Expr::Placeholder(_) => *lhs,
+        Expr::Call { fun: f, args: a, .. } => match substitute_extraction_placeholder(arena, f, a, lhs) {
             Some(Ok(e)) => e,
             Some(Err(e)) => return Some(Err(e)),
             None => return None,
@@ -1200,7 +1054,9 @@ fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Op
     let mut new_args = args.to_vec();
     new_args[0].value = Some(replaced);
     let span = lhs.span().to(args.last().and_then(|a| a.value.as_ref()).map(|v| v.span()).unwrap_or(*name_span));
-    Some(Ok(Expr::call(name.clone(), *name_span, new_args, span)))
+    let fun = arena.alloc(Expr::Sym(name, *name_span));
+    let new_args = arena.alloc_slice(&new_args);
+    Some(Ok(Expr::Call { fun, args: new_args, span }))
 }
 
 #[cfg(test)]
@@ -1216,17 +1072,17 @@ mod tests {
     /// the rest of the line to the next chunk.
     #[test]
     fn console_statuses() {
-        let null = |s: &str| matches!(parse_console(s), ConsoleStatus::Null);
-        let incomplete = |s: &str| matches!(parse_console(s), ConsoleStatus::Incomplete);
-        let eof = |s: &str| matches!(parse_console(s), ConsoleStatus::Eof);
-        let error = |s: &str, msg: &str| match parse_console(s) {
+        let null = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Null);
+        let incomplete = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Incomplete);
+        let eof = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Eof);
+        let error = |s: &str, msg: &str| match parse_console(&mut Arena::new(), s) {
             ConsoleStatus::Error(e) => {
                 assert_eq!(e.message, msg, "chunk {s:?}");
                 true
             }
             _ => false,
         };
-        let ok = |s: &str| matches!(parse_console(s), ConsoleStatus::Ok(..));
+        let ok = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Ok(..));
 
         // prog: '\n' — blank and comment-only chunks (with the newline).
         assert!(null("\n"));
@@ -1281,15 +1137,15 @@ mod tests {
     /// GenerateCode gate makes them fire on the real parse alone.
     #[test]
     fn console_warnings() {
-        match parse_console("1.5L\n") {
+        match parse_console(&mut Arena::new(), "1.5L\n") {
             ConsoleStatus::Ok(_, w) => assert_eq!(w, ["integer literal 1.5L contains decimal; using numeric value"]),
             other => panic!("{other:?}"),
         }
-        match parse_console("1.5L +\n") {
+        match parse_console(&mut Arena::new(), "1.5L +\n") {
             ConsoleStatus::Incomplete => {}
             other => panic!("{other:?}"),
         }
-        match parse_console("1e-3L\n") {
+        match parse_console(&mut Arena::new(), "1e-3L\n") {
             // `seendot && !seenexp` picks the message (verified against
             // GNU R: no dot before the exponent says "non-integer value").
             ConsoleStatus::Ok(_, w) => assert_eq!(w, ["non-integer value 1e-3L qualified with L; using numeric value"]),
@@ -1304,15 +1160,24 @@ mod tests {
         // A bare placeholder as the pipe RHS errors in the rewrite
         // (verified against GNU R); one surviving in the tree gives
         // checkForPlaceholder's message.
-        match parse_console("x |> _\n") {
+        match parse_console(&mut Arena::new(), "x |> _\n") {
             ConsoleStatus::Error(e) => {
                 assert_eq!(e.message, "The pipe operator requires a function call as RHS")
             }
             other => panic!("{other:?}"),
         }
-        match parse_console("f(x, _)\n") {
+        match parse_console(&mut Arena::new(), "f(x, _)\n") {
             ConsoleStatus::Error(e) => assert_eq!(e.message, "invalid use of pipe placeholder"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn pipe_extraction_substitutes() {
+        // `x |> _$a[[1]]` builds the extraction chain over x.
+        let mut arena = Arena::new();
+        let exprs = parse_program(&mut arena, "x |> _$a[[1]]\n").unwrap();
+        let d = crate::dump::dump(&exprs[0]);
+        assert_eq!(String::from_utf8_lossy(&d), "(`[[` (`$` `x` `a`) dbl:1)");
     }
 }

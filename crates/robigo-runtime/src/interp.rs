@@ -1005,7 +1005,8 @@ impl Interp {
     /// Evaluate the top-level expressions of `src` in `env`, printing
     /// visible values, until one fails.
     pub fn run_source_in(&mut self, src: &str, env: &Env) -> bool {
-        let exprs = match robigo_syntax::parse_program(src) {
+        let arena = robigo_syntax::Arena::new();
+        let exprs = match robigo_syntax::parse_program(&arena, src) {
             Ok(e) => e,
             Err(e) => {
                 let (line, col) = robigo_syntax::line_col(src, e.offset);

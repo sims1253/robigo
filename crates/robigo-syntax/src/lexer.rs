@@ -36,10 +36,38 @@ impl<'a> std::ops::Deref for SymStr<'a> {
     }
 }
 
+/// String-literal bytes: the source between the quotes when no escape
+/// changed them, the unescaped bytes otherwise.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StrTok<'a> {
+    Src(&'a [u8]),
+    Own(Vec<u8>),
+}
+
+impl<'a> StrTok<'a> {
+    /// The source bytes, when the literal is verbatim from the source.
+    pub fn src(&self) -> Option<&'a [u8]> {
+        match self {
+            StrTok::Src(s) => Some(s),
+            StrTok::Own(_) => None,
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for StrTok<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            StrTok::Src(s) => s,
+            StrTok::Own(s) => s,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok<'a> {
-    Const(Const),
-    Str(Vec<u8>),
+    Const(Const<'a>),
+    Str(StrTok<'a>),
     /// Identifiers borrow the source: they are contiguous slices, and a
     /// borrowed token makes the parser's peeks copies instead of heap
     /// allocations (GNU R interns symbols; this is the cheap analogue).
@@ -195,7 +223,7 @@ impl<'a> Lexer<'a> {
     /// eager, so the first lexical error becomes an `Invalid` token — the
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
-    pub fn tokenize(mut self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
         self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
     }
 
@@ -285,7 +313,7 @@ impl<'a> Lexer<'a> {
                 // bytes (e.g. `\`` is a name that is one backtick).
                 let raw = &self.src[start + 1..self.pos - 1];
                 let name = if raw.contains('\\') {
-                    SymStr::Own(String::from_utf8_lossy(&body).into_owned())
+                    SymStr::Own(String::from_utf8_lossy(&body[..]).into_owned())
                 } else {
                     SymStr::Src(raw)
                 };
@@ -329,7 +357,7 @@ impl<'a> Lexer<'a> {
         matches!(self.byte_at(i), b'(' | b'[' | b'{' | b'|')
     }
 
-    fn raw_string(&mut self, start: usize) -> Result<Vec<u8>, ParseError> {
+    fn raw_string(&mut self, start: usize) -> Result<StrTok<'a>, ParseError> {
         let quote = self.bytes[self.pos + 1];
         self.pos += 2;
         let mut dashes = 0;
@@ -362,9 +390,9 @@ impl<'a> Lexer<'a> {
                     j += 1;
                 }
                 if n == dashes && self.byte_at(j) == quote {
-                    let body = self.bytes[body_start..self.pos].to_vec();
+                    let body = &self.bytes[body_start..self.pos];
                     self.pos = j + 1;
-                    return Ok(body);
+                    return Ok(StrTok::Src(body));
                 }
             }
             self.pos += 1;
@@ -601,11 +629,13 @@ impl<'a> Lexer<'a> {
     }
 
     /// String constants and backtick symbols, a port of `StringValue` in
-    /// gram.y (`// R: gram.y:StringValue`). Produces raw bytes.
-    fn string_body(&mut self, quote: char, start: usize, for_symbol: bool) -> Result<Vec<u8>, ParseError> {
+    /// gram.y (`// R: gram.y:StringValue`). Produces raw bytes: the
+    /// source slice when no escape changed them, owned bytes otherwise.
+    fn string_body(&mut self, quote: char, start: usize, for_symbol: bool) -> Result<StrTok<'a>, ParseError> {
         let mut out: Vec<u8> = Vec::new();
         let mut byte_escape = false;
         let mut unicode_escape = false;
+        let mut escaped = false;
         loop {
             // Copy a run of plain bytes at once (multi-byte characters are
             // copied whole: their bytes are all >= 0x80).
@@ -613,8 +643,16 @@ impl<'a> Lexer<'a> {
                 .iter()
                 .position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
                 .unwrap_or(self.bytes.len() - self.pos);
+            let end = self.pos + run;
+            // Nothing consumed yet, and the run ends at the closing quote
+            // with no escape seen: the literal is the source, verbatim
+            // (a raw newline inside is kept as-is, so it may lie within).
+            if !escaped && out.is_empty() && end < self.bytes.len() && self.bytes[end] == quote as u8 {
+                self.pos = end + 1;
+                return Ok(StrTok::Src(&self.bytes[start + 1..end]));
+            }
             if run > 0 {
-                out.extend_from_slice(&self.bytes[self.pos..self.pos + run]);
+                out.extend_from_slice(&self.bytes[self.pos..end]);
                 self.pos += run;
             }
             let Some(c) = self.peek_char() else {
@@ -626,7 +664,7 @@ impl<'a> Lexer<'a> {
                     // Position: the closing quote, the last character read.
                     return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
-                return Ok(out);
+                return Ok(StrTok::Own(out));
             }
             // A raw newline acts as an escaped newline: both are kept
             // (the Bravington fix in gram.y's StringValue).
@@ -639,6 +677,7 @@ impl<'a> Lexer<'a> {
                 out.push(b'\n');
                 continue;
             }
+            escaped = true;
             if let Some(ch) =
                 self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)?
             {
