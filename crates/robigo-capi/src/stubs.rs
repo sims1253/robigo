@@ -237,7 +237,6 @@ pub static STUBS: &[&str] = &[
     "do_saveplot",
     "do_setGraphicsEventEnv",
     "do_set_prim_method",
-    "dsvdc_",
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
     "getPRIMNAME",
@@ -1427,11 +1426,6 @@ pub unsafe extern "C" fn do_setGraphicsEventEnv() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_set_prim_method() {
     not_implemented("do_set_prim_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dsvdc_() {
-    not_implemented("dsvdc_")
 }
 
 #[unsafe(no_mangle)]

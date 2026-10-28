@@ -240,6 +240,38 @@ allocation and per collection are recorded in the ledger
 Symbols are an immortal interned table keyed by the PRINTNAME's CHARSXP
 pointer; `install(name)` is one hash probe after `mkChar`.
 
+### 4.1 Encodings in the runtime (next step, proposal)
+
+The runtime's strings are `RStr = Option<Rc<str>>`: valid UTF-8, no
+encoding mark. GNU R's CHARSXPs carry `LATIN1`/`UTF8`/`BYTES`/`ASCII`
+and may hold bytes that are not UTF-8. This blocks fastmap's encoding
+tests, 17 iconv cases (conformance-strings ledger) and `Encoding<-`.
+The proposal:
+
+- **Representation**: a newtype `RString(Rc<str>)` whose first byte is
+  a structural mark (native-valid, UTF-8, latin1, bytes,
+  native-invalid), and whose content is valid UTF-8 always. Latin-1
+  text is stored decoded; bytes and invalid native strings are mapped
+  byte to U+0000..U+00FF. The original bytes are therefore a function
+  of (mark, content), and `Deref<Target = str>` gives the content to
+  the existing text code. The value stays 16 bytes (fat pointer); no
+  side table.
+- **Encoding-aware operations** read the mark:
+  - `Encoding`/`Encoding<-`, `enc2utf8`/`enc2native`, `iconv`,
+    `charToRaw`, `nchar(type = "bytes")`;
+  - printing of bytes (`\xe7`), `useBytes`, `validUTF8`;
+  - serialize (GNU R's LATIN1/BYTES levels with the original bytes)
+    and readLines/scan `encoding=`;
+  - the bridge: CHARSXP marks map both ways; `translateCharUTF8` is the
+    content.
+
+  Everything else keeps seeing UTF-8 text, as GNU R in a UTF-8 locale
+  translates first.
+- **Change plan**: about 120 construction sites (`Some(Rc::from(..))`,
+  `rstr(..)`) across 46 runtime/capi files become `RString`
+  constructors, mechanically, in one PR coordinated with the tracks
+  editing those files.
+
 ## 5. Non-local exits across C and Rust
 
 GNU R unwinds with `longjmp`; package code is compiled for that and does
@@ -395,18 +427,32 @@ all end there). robigo provides what that path expects:
   sources call). A package binary built against GNU R's stock public
   headers still works against `libR.so` (functions only); the capi corpus
   is built against robigo's headers.
-- **Base packages, first route (measured, ledger):** compile GNU R's
-  sources with `-DTESTING_WRITE_BARRIER`, which makes GNU R's own Defn.h
-  call exported functions instead of reading fields; stats.so built that
-  way loads in robigo and its `cor`/`cov` give GNU R's values
-  (`crates/robigo-capi/natives/build-base-native.sh`). A robigo Defn.h
-  with inlined accessors is the faster later step.
-- **Base packages**: `stats.so`, `utils.so`, `tools.so`, `grDevices.so`,
-  `graphics.so`, `methods.so`, `grid.so`, `splines.so`, `parallel.so`
-  compiled from the R 4.5.0 sources (`~/.cache/robigo-research/rsrc`)
-  against robigo's headers by a build script, installed into
-  `R_HOME/library/<pkg>/libs`; the Rust ports then become optional
-  overrides (kept only where faster and identical).
+- **Base packages' natives from GNU R's sources, by default** (lead,
+  2026-10-28). `scripts/build-natives.sh [PKG...]`:
+  - configures the R 4.5.0 sources once (`.robigo/natives/build`; the
+    sources are downloaded and checked against their SHA-256 when
+    missing);
+  - compiles a package's `SOURCES_C`/`SOURCES_F` (from its
+    `Makefile.in`) with GNU R's Makeconf flags (`portsrc.f` with
+    `SAFE_FFLAGS`, as GNU R) and `-DTESTING_WRITE_BARRIER`, so GNU R's own
+    Defn.h calls the exported accessor functions instead of reading
+    fields;
+  - links `.robigo/natives/<pkg>/<pkg>.so` with a `robigo_base_native`
+    marker symbol.
+
+  `dyn.load` of a base package (one GNU R's build registers routines
+  for) loads that build when it exists: `$ROBIGO_NATIVES`, else
+  `natives/` beside the binary's directory. It keeps GNU R's path, so
+  `getLoadedDLLs()`, `R.home()` and tracebacks look as in GNU R. Without
+  one, the Rust ports serve the package. Measured for stats (ledger):
+  - fastr 30,576 vs 30,311 cases and gnur-examples 571 vs 545, with 0
+    regressions;
+  - vectorised d/p/q functions ~7% slower than the ports (the vector
+    copies of the bridge; GNU R is in between);
+  - the ports stay until G3 removes that copy, then go, measured.
+- The remaining base packages follow stats: `utils`, `tools`,
+  `grDevices`, `graphics`, `grid`, `splines`, `parallel`. `methods` is
+  G6's (§13).
 
 ## 9. Order of work and parallel tracks
 
@@ -566,3 +612,48 @@ they land; evidence in `docs/ledger/core.md`):
 | 23 | console output through C stdio; signal ownership | planned |
 | 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
 | 25 | start G3 once the accessor layer and the fastmap gate exist | noted |
+
+## 13. What GNU R's methods.so needs from the core (handoff to G6)
+
+GNU R's methods package natives (src/library/methods/src) build with
+`scripts/build-natives.sh methods` and load. `.onLoad` then calls
+`C_R_initMethodDispatch`, which installs methods' dispatch into the
+evaluator. Its imports beyond robigo's implemented API are these 22
+non-API entry points (all stubs in `crates/robigo-capi/src/stubs.rs`
+today, raising "not implemented yet"). Each has GNU R's definition as
+the spec:
+
+| entry point | GNU R | what it does for methods |
+|---|---|---|
+| `R_set_standardGeneric_ptr` | objects.c | installs methods' `R_dispatchGeneric` as the evaluator's `standardGeneric` |
+| `R_set_quick_method_check` | objects.c | installs `R_quick_method_check` (fast dispatch for primitives) |
+| `R_primitive_methods`, `R_primitive_generic`, `R_set_prim_method`, `do_set_prim_method` | objects.c | the per-primitive method tables (`prim_methods`, `prim_generics`, `prim_mlist`): S4 methods on `[`, `+`, `length`, ... |
+| `R_deferred_default_method` | objects.c | the marker for "call the internal default" |
+| `R_execMethod` | eval.c | runs a method closure in a new frame that copies the generic's arguments (`.defined`, `.target`, `.Generic` bindings) |
+| `R_do_slot`, `R_do_slot_assign`, `R_has_slot` | attrib.c | slots as attributes, `.Data`, `.S3Class`, the `\001NULL\001` pseudo-null |
+| `R_do_new_object`, `R_do_MAKE_CLASS` | objects.c | `new()`'s C side (`prototype`, the S4 bit) and `getClass` |
+| `R_data_class` | attrib.c | `class(x)` including implicit classes |
+| `R_findVarLocInFrame`, `R_GetVarLocMISSING` | envir.c | binding cells: methods reads whether a formal is missing |
+| `R_withCallingErrorHandler` | errors.c | a calling handler around a C callback |
+| `R_subassign3_dflt` | subassign.c | the default of `$<-` |
+| `DDVAL` | memory.c | `..1`-style symbols (a node bit) |
+| `Rf_substitute`, `Rf_EncodeChar`, `getPRIMNAME` | coerce.c, printutils.c, names.c | helpers |
+
+The evaluator side, beyond these functions:
+
+- the **S4 bit**. robigo-core reserves GNU R's (`gp::S4`, bit 4) and the
+  C API's `IS_S4_OBJECT`/`SET_S4_OBJECT` use it. The runtime's `Value`
+  has none: `isS4()` is always FALSE and `setS4Object` is the identity,
+  so the bridge drops the bit. A runtime flag (and OBJSXP values) is
+  the first G6 change the core needs, carried across the bridge both
+  ways.
+- **dispatch hooks**. GNU R's `eval` calls `R_standardGeneric_ptr` for
+  `standardGeneric()` and checks `R_has_methods(op)` before a
+  primitive's internal code (`DispatchOrEval`, `DispatchGroup`,
+  `DispatchAnyOrEval`). robigo's `try_dispatch`/`try_dispatch_group`
+  are the places; the tables above are their data.
+
+How the core answers G6: requests go in docs/ledger/core.md (a "G6
+asks" entry). The C API functions above are robigo-capi's to implement
+once the runtime has the S4 bit and the hooks; G6 owns the evaluator
+side and the methods package.

@@ -66,7 +66,8 @@ for short, rf in sorted(export.items()):
     if "rng" in types:
         body = f"crate::rng::with_rng(|rng| {body})"
     rty = "f64" if ret == "f64" else "c_int"
-    out.append(f"#[unsafe(no_mangle)]\npub extern \"C\" fn {rf}({', '.join(params)}) -> {rty} {{\n    {body}\n}}\n")
+    # nmath's MATHLIB_WARNINGs, which numerics queues, are R warnings now
+    out.append(f"#[unsafe(no_mangle)]\npub extern \"C\" fn {rf}({', '.join(params)}) -> {rty} {{\n    let r = {body};\n    crate::errors::nmath_warnings();\n    r\n}}\n")
     done.add(rf)
 open(os.path.join(HERE, "src", "nmath.rs"), "w").write("\n".join(out))
 print(f"{len(done)} Rmath exports")

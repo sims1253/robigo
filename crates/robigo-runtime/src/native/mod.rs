@@ -112,11 +112,25 @@ pub fn has_table(name: &str) -> bool {
 }
 
 /// Whether a shared object is one of GNU R's base packages built from
-/// source against robigo (`crates/robigo-capi/natives/build-base-native.sh`
+/// source against robigo (`scripts/build-natives.sh`
 /// links in the symbol `robigo_base_native`).
 pub fn is_robigo_build(path: &str) -> bool {
     let marker = b"robigo_base_native";
     std::fs::read(path).is_ok_and(|b| b.windows(marker.len()).any(|w| w == marker))
+}
+
+/// robigo's build of a base package's native code from GNU R's sources
+/// (scripts/build-natives.sh): `$ROBIGO_NATIVES/<pkg>/<pkg>.so`, else
+/// `natives/<pkg>/<pkg>.so` beside the executable's directory
+/// (`.robigo/bin/robigo`, `.robigo/natives`).
+pub fn robigo_native(pkg: &str) -> Option<String> {
+    let dir = match std::env::var("ROBIGO_NATIVES") {
+        Ok(d) => std::path::PathBuf::from(d),
+        Err(_) => std::env::current_exe().ok()?.parent()?.parent()?.join("natives"),
+    };
+    let so = dir.join(pkg).join(format!("{pkg}.so"));
+    let so = so.to_str()?.to_string();
+    is_robigo_build(&so).then_some(so)
 }
 
 /// The payload of a DLL's `info` external pointer.

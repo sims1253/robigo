@@ -440,11 +440,21 @@ pub fn r_pow_di(mut x: f64, mut n: i32) -> f64 {
 
 thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// Whether a warning or an allocation error is queued (a cheap test
+    /// for callers that check after every element).
+    static PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `MATHLIB_WARNING(fmt, ...)`: R's `warning()` with the formatted text.
 pub fn mathlib_warning(msg: String) {
+    PENDING.with(|p| p.set(true));
     WARNINGS.with(|w| w.borrow_mut().push(msg));
+}
+
+/// Whether [`take_warnings`] or [`take_alloc_error`] has anything.
+#[inline]
+pub fn pending() -> bool {
+    PENDING.with(|p| p.get())
 }
 
 pub const ME_DOMAIN: i32 = 1;
@@ -469,7 +479,13 @@ pub fn ml_warning(x: i32, s: &str) {
 
 /// Take the warnings raised since the last call.
 pub fn take_warnings() -> Vec<String> {
-    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+    PENDING.with(|p| p.set(false));
+    let w = WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    // an allocation error stays pending until it is taken
+    if ALLOC_ERROR.with(|e| e.borrow().is_some()) {
+        PENDING.with(|p| p.set(true));
+    }
+    w
 }
 
 // ----------------------------------------------------------------------
@@ -484,6 +500,7 @@ thread_local! {
 /// NaN; the `.Call` wrapper drains it with [`take_alloc_error`] and
 /// raises the error, which aborts the call as in R.
 pub fn alloc_error(nelem: u64, elsize: u64) -> f64 {
+    PENDING.with(|p| p.set(true));
     ALLOC_ERROR.with(|e| {
         *e.borrow_mut() = Some(format!("'R_Calloc' could not allocate memory ({} of {} bytes)", nelem, elsize))
     });

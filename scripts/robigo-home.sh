@@ -84,12 +84,13 @@ rm "$dest/lib/libR-stub.c"
 # library: GNU R's base packages (R code and, until robigo builds them,
 # their shared objects); packages installed here are robigo's. A base
 # package whose native code was built for robigo
-# ($ROBIGO_NATIVES/<pkg>/<pkg>.so, crates/robigo-capi/natives/
-# build-base-native.sh) gets that shared object in its libs/.
+# ($ROBIGO_NATIVES/<pkg>/<pkg>.so, default .robigo/natives, by
+# scripts/build-natives.sh) gets that shared object in its libs/.
+natives=${ROBIGO_NATIVES-$root/.robigo/natives}
 for p in "$gnu"/library/*; do
     pkg=$(basename "$p")
-    so=${ROBIGO_NATIVES:-}/$pkg/$pkg.so
-    if [ -n "${ROBIGO_NATIVES:-}" ] && [ -f "$so" ]; then
+    so=$natives/$pkg/$pkg.so
+    if [ -n "$natives" ] && [ -f "$so" ]; then
         mkdir -p "$dest/library/$pkg/libs"
         for f in "$p"/*; do
             [ "$(basename "$f")" = libs ] || ln -s "$f" "$dest/library/$pkg/"

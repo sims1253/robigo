@@ -11,6 +11,65 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: base-package natives from GNU R's sources by default (stats)
+
+Lead's decision: base packages' native code comes from GNU R's sources.
+
+- `scripts/build-natives.sh [PKG...]` builds on the host, no docker. It
+  configures the R 4.5.0 sources once (downloaded and SHA-256 checked
+  when missing), then compiles the package's `Makefile.in` source lists
+  with GNU R's Makeconf flags (`SAFE_FFLAGS` for `portsrc.f`) and
+  `-DTESTING_WRITE_BARRIER`. stats: 41 s including configure.
+- `dyn.load` of a base package loads `$ROBIGO_NATIVES/<pkg>/<pkg>.so`
+  (else `natives/` beside the binary's directory) when it carries the
+  marker, under GNU R's own path. A first attempt that made robigo's
+  home the visible `R_HOME` changed 17 gnur-examples outputs that print
+  `R.home()`/`searchpaths()`; it was dropped for this.
+- Fixes found by the comparison:
+  - nmath's MATHLIB_WARNINGs (robigo-numerics queues them) are now R
+    warnings for C callers too, and nmath's `R_Calloc` failures are
+    errors. 8 stats cases had lost warnings or the rwilcox error. A
+    `pending()` flag keeps the per-element check cheap.
+  - `log(...)` expands dots (a regression from #37's log dispatch fix;
+    also pushed to #37).
+  - `dsvdc_` (LINPACK SVD) ported, with Debian reference BLAS 3.12's
+    `drotg` (the scaled LAPACK 3.10 algorithm) and `drot`. Fortran's
+    NaN branch semantics are kept. loess (which uses it) prints GNU R's
+    output, and GNU R's stats.so now has no unresolved imports.
+- Measured, native stats.so vs Rust ports (same binary,
+  `ROBIGO_NATIVES` pointed at an empty directory for the ports):
+
+  | corpus | native | ports |
+  |---|---|---|
+  | fastr (4 shards) | 30,576 | 30,311 |
+  | gnur-examples | 571 | 545 |
+  | gnur-tests | 22 | 20 |
+  | capi, r-intro, gnur-demos | equal | equal |
+
+  0 regressions caused by the natives. Every remaining "regression" is
+  shared by both modes: main's CI reports the same TestSimpleValues and
+  operators cases, and the 17 gnur-examples ones are local-environment
+  paths and dates.
+- Speed: lm/glm suite benchmark: equal instruction counts (177.15M).
+  `pnorm`/`qnorm`/`dbinom` over 2e6 values, 20 times: native 10.3-10.6
+  s, ports 9.6-9.8 s, GNU R 9.9 s. The difference is the bridge's
+  vector copies (G3 removes them); the ports stay until then.
+- CI (no `workflow` scope for agents): `docs/ci/pending-workflow.patch`
+  adds `libcurl4-openssl-dev` (R's configure needs it; r-base-dev
+  already brings gfortran, BLAS and LAPACK). The build job builds the
+  natives before the tests and ships `dist/natives` with the binary;
+  the corpora and perf jobs set `ROBIGO_NATIVES`. The gctorture step
+  from #28 is already in ci.yml.
+- Local pitfall: after branch switches the shared cargo target
+  sometimes reused a build-script output without the appl library or
+  `ROBIGO_EXPORTS_HASH` (link errors: `vmmin` undefined, or the env var
+  missing). `touch crates/robigo-capi/build.rs` (or robigo-cli's)
+  fixes it; robigo-cli's build.rs now also reruns on its own change.
+  CI builds from scratch.
+- For G6: docs/core.md §13 lists the 22 non-API entry points methods.so
+  needs from the core (the dispatch hooks, the slot functions,
+  R_execMethod, ...) and the missing runtime S4 bit.
+
 ## 2026-10-28: src/appl in libR; stats from source vs the Rust ports
 
 - GNU R's src/appl C files (`optim.c` + `lbfgsb.c`, `uncmin.c`,

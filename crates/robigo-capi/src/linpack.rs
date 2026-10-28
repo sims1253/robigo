@@ -604,3 +604,382 @@ pub unsafe extern "C" fn dpbsl_(abd: *mut f64, lda: *const c_int, n: *const c_in
         daxpy_(&lm, &t, a(la, k), &one, bb(lb), &one);
     }
 }
+
+// R: BLAS drotg (LAPACK 3.10's drotg.f90, as Debian's reference BLAS 3.12)
+unsafe fn drotg(a: &mut f64, b: &mut f64, c: &mut f64, s: &mut f64) {
+    let safmin = f64::MIN_POSITIVE;
+    let safmax = 1.0 / safmin;
+    let anorm = a.abs();
+    let bnorm = b.abs();
+    if bnorm == 0.0 {
+        *c = 1.0;
+        *s = 0.0;
+        *b = 0.0;
+    } else if anorm == 0.0 {
+        *c = 0.0;
+        *s = 1.0;
+        *a = *b;
+        *b = 1.0;
+    } else {
+        let scl = safmax.min(safmin.max(anorm).max(bnorm));
+        let sigma = if anorm > bnorm { 1f64.copysign(*a) } else { 1f64.copysign(*b) };
+        let (as_, bs) = (*a / scl, *b / scl);
+        let r = sigma * (scl * (as_ * as_ + bs * bs).sqrt());
+        *c = *a / r;
+        *s = *b / r;
+        let z = if anorm > bnorm {
+            *s
+        } else if *c != 0.0 {
+            1.0 / *c
+        } else {
+            1.0
+        };
+        *a = r;
+        *b = z;
+    }
+}
+
+// R: BLAS drot (unit strides)
+unsafe fn drot(n: c_int, x: *mut f64, y: *mut f64, c: f64, s: f64) {
+    for i in 0..n.max(0) as usize {
+        let t = c * *x.add(i) + s * *y.add(i);
+        *y.add(i) = c * *y.add(i) - s * *x.add(i);
+        *x.add(i) = t;
+    }
+}
+
+// R: appl/dsvdc.f (LINPACK's singular value decomposition)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dsvdc_(
+    x: *mut f64,
+    ldx: *const c_int,
+    n: *const c_int,
+    p: *const c_int,
+    s: *mut f64,
+    e: *mut f64,
+    u: *mut f64,
+    ldu: *const c_int,
+    v: *mut f64,
+    ldv: *const c_int,
+    work: *mut f64,
+    job: *const c_int,
+    info: *mut c_int,
+) {
+    let (ldx, ldu, ldv) = (us(*ldx), us(*ldu), us(*ldv));
+    let (n, p, job) = (*n, *p, *job);
+    let xa = |i: c_int, j: c_int| x.add((i - 1) as usize + (j - 1) as usize * ldx);
+    let ua = |i: c_int, j: c_int| u.add((i - 1) as usize + (j - 1) as usize * ldu);
+    let va = |i: c_int, j: c_int| v.add((i - 1) as usize + (j - 1) as usize * ldv);
+    let sv = |i: c_int| s.add((i - 1) as usize);
+    let ev = |i: c_int| e.add((i - 1) as usize);
+    let wv = |i: c_int| work.add((i - 1) as usize);
+    let one: c_int = 1;
+    let sign = |a: f64, b: f64| if b >= 0.0 { a.abs() } else { -a.abs() };
+    let maxit = 30;
+    let jobu = (job % 100) / 10;
+    let ncu = if jobu > 1 { n.min(p) } else { n };
+    let wantu = jobu != 0;
+    let wantv = job % 10 != 0;
+    *info = 0;
+    let nct = (n - 1).min(p);
+    let nrt = 0.max((p - 2).min(n));
+    let lu = nct.max(nrt);
+    // reduce x to bidiagonal form
+    for l in 1..=lu {
+        let lp1 = l + 1;
+        if l <= nct {
+            let m1 = n - l + 1;
+            *sv(l) = dnrm2_(&m1, xa(l, l), &one);
+            if *sv(l) != 0.0 {
+                if *xa(l, l) != 0.0 {
+                    *sv(l) = sign(*sv(l), *xa(l, l));
+                }
+                let r = 1.0 / *sv(l);
+                dscal_(&m1, &r, xa(l, l), &one);
+                *xa(l, l) += 1.0;
+            }
+            *sv(l) = -*sv(l);
+        }
+        for j in lp1..=p {
+            if l <= nct && *sv(l) != 0.0 {
+                let m1 = n - l + 1;
+                let t = -ddot_(&m1, xa(l, l), &one, xa(l, j), &one) / *xa(l, l);
+                daxpy_(&m1, &t, xa(l, l), &one, xa(l, j), &one);
+            }
+            *ev(j) = *xa(l, j);
+        }
+        if wantu && l <= nct {
+            for i in l..=n {
+                *ua(i, l) = *xa(i, l);
+            }
+        }
+        if l <= nrt {
+            let m1 = p - l;
+            *ev(l) = dnrm2_(&m1, ev(lp1), &one);
+            if *ev(l) != 0.0 {
+                if *ev(lp1) != 0.0 {
+                    *ev(l) = sign(*ev(l), *ev(lp1));
+                }
+                let r = 1.0 / *ev(l);
+                dscal_(&m1, &r, ev(lp1), &one);
+                *ev(lp1) += 1.0;
+            }
+            *ev(l) = -*ev(l);
+            if !(lp1 > n || *ev(l) == 0.0) {
+                for i in lp1..=n {
+                    *wv(i) = 0.0;
+                }
+                let m2 = n - l;
+                for j in lp1..=p {
+                    daxpy_(&m2, &*ev(j), xa(lp1, j), &one, wv(lp1), &one);
+                }
+                for j in lp1..=p {
+                    let t = -*ev(j) / *ev(lp1);
+                    daxpy_(&m2, &t, wv(lp1), &one, xa(lp1, j), &one);
+                }
+            }
+            if wantv {
+                for i in lp1..=p {
+                    *va(i, l) = *ev(i);
+                }
+            }
+        }
+    }
+    // set up the final bidiagonal matrix of order m
+    let mut m = p.min(n + 1);
+    let nctp1 = nct + 1;
+    let nrtp1 = nrt + 1;
+    if nct < p {
+        *sv(nctp1) = *xa(nctp1, nctp1);
+    }
+    if n < m {
+        *sv(m) = 0.0;
+    }
+    if nrtp1 < m {
+        *ev(nrtp1) = *xa(nrtp1, m);
+    }
+    *ev(m) = 0.0;
+    // generate u
+    if wantu {
+        for j in nctp1..=ncu {
+            for i in 1..=n {
+                *ua(i, j) = 0.0;
+            }
+            *ua(j, j) = 1.0;
+        }
+        for ll in 1..=nct {
+            let l = nct - ll + 1;
+            if *sv(l) != 0.0 {
+                let lp1 = l + 1;
+                let m1 = n - l + 1;
+                for j in lp1..=ncu {
+                    let t = -ddot_(&m1, ua(l, l), &one, ua(l, j), &one) / *ua(l, l);
+                    daxpy_(&m1, &t, ua(l, l), &one, ua(l, j), &one);
+                }
+                let mone = -1.0;
+                dscal_(&m1, &mone, ua(l, l), &one);
+                *ua(l, l) += 1.0;
+                for i in 1..l {
+                    *ua(i, l) = 0.0;
+                }
+            } else {
+                for i in 1..=n {
+                    *ua(i, l) = 0.0;
+                }
+                *ua(l, l) = 1.0;
+            }
+        }
+    }
+    // generate v
+    if wantv {
+        for ll in 1..=p {
+            let l = p - ll + 1;
+            let lp1 = l + 1;
+            if l <= nrt && *ev(l) != 0.0 {
+                let m1 = p - l;
+                for j in lp1..=p {
+                    let t = -ddot_(&m1, va(lp1, l), &one, va(lp1, j), &one) / *va(lp1, l);
+                    daxpy_(&m1, &t, va(lp1, l), &one, va(lp1, j), &one);
+                }
+            }
+            for i in 1..=p {
+                *va(i, l) = 0.0;
+            }
+            *va(l, l) = 1.0;
+        }
+    }
+    // main iteration loop for the singular values
+    let mm = m;
+    let mut iter = 0;
+    loop {
+        if m == 0 {
+            return;
+        }
+        if iter >= maxit {
+            *info = m;
+            return;
+        }
+        // l: the start of the unreduced part
+        let mut l = 0;
+        for ll in 1..=m {
+            l = m - ll;
+            if l == 0 {
+                break;
+            }
+            let test = (*sv(l)).abs() + (*sv(l + 1)).abs();
+            let ztest = test + (*ev(l)).abs();
+            let acc = (test - ztest).abs() / (1.0e-100 + test);
+            // Fortran: `if (acc .gt. 1.d-15) goto 380` (NaN falls through)
+            if !(acc > 1.0e-15) {
+                *ev(l) = 0.0;
+                break;
+            }
+        }
+        let kase;
+        if l == m - 1 {
+            kase = 4;
+        } else {
+            let lp1 = l + 1;
+            let mp1 = m + 1;
+            let mut ls = l;
+            for lls in lp1..=mp1 {
+                ls = m - lls + lp1;
+                if ls == l {
+                    break;
+                }
+                let mut test = 0.0;
+                if ls != m {
+                    test += (*ev(ls)).abs();
+                }
+                if ls != l + 1 {
+                    test += (*ev(ls - 1)).abs();
+                }
+                let ztest = test + (*sv(ls)).abs();
+                let acc = (test - ztest).abs() / (1.0e-100 + test);
+                if !(acc > 1.0e-15) {
+                    *sv(ls) = 0.0;
+                    break;
+                }
+            }
+            if ls == l {
+                kase = 3;
+            } else if ls == m {
+                kase = 1;
+            } else {
+                kase = 2;
+                l = ls;
+            }
+        }
+        l += 1;
+        let (mut cs, mut sn) = (0.0, 0.0);
+        match kase {
+            1 => {
+                // deflate negligible s(m)
+                let mm1 = m - 1;
+                let mut f = *ev(m - 1);
+                *ev(m - 1) = 0.0;
+                for kk in l..=mm1 {
+                    let k = mm1 - kk + l;
+                    let mut t1 = *sv(k);
+                    drotg(&mut t1, &mut f, &mut cs, &mut sn);
+                    *sv(k) = t1;
+                    if k != l {
+                        f = -sn * *ev(k - 1);
+                        *ev(k - 1) *= cs;
+                    }
+                    if wantv {
+                        drot(p, va(1, k), va(1, m), cs, sn);
+                    }
+                }
+            }
+            2 => {
+                // split at negligible s(l)
+                let mut f = *ev(l - 1);
+                *ev(l - 1) = 0.0;
+                for k in l..=m {
+                    let mut t1 = *sv(k);
+                    drotg(&mut t1, &mut f, &mut cs, &mut sn);
+                    *sv(k) = t1;
+                    f = -sn * *ev(k);
+                    *ev(k) *= cs;
+                    if wantu {
+                        drot(n, ua(1, k), ua(1, l - 1), cs, sn);
+                    }
+                }
+            }
+            3 => {
+                // one QR step: the shift
+                let scale = (*sv(m))
+                    .abs()
+                    .max((*sv(m - 1)).abs())
+                    .max((*ev(m - 1)).abs())
+                    .max((*sv(l)).abs())
+                    .max((*ev(l)).abs());
+                let sm = *sv(m) / scale;
+                let smm1 = *sv(m - 1) / scale;
+                let emm1 = *ev(m - 1) / scale;
+                let sl = *sv(l) / scale;
+                let el = *ev(l) / scale;
+                let b = ((smm1 + sm) * (smm1 - sm) + emm1 * emm1) / 2.0;
+                let c = (sm * emm1) * (sm * emm1);
+                let mut shift = 0.0;
+                if !(b == 0.0 && c == 0.0) {
+                    shift = (b * b + c).sqrt();
+                    if b < 0.0 {
+                        shift = -shift;
+                    }
+                    shift = c / (b + shift);
+                }
+                let mut f = (sl + sm) * (sl - sm) + shift;
+                let mut g = sl * el;
+                let mm1 = m - 1;
+                for k in l..=mm1 {
+                    drotg(&mut f, &mut g, &mut cs, &mut sn);
+                    if k != l {
+                        *ev(k - 1) = f;
+                    }
+                    f = cs * *sv(k) + sn * *ev(k);
+                    *ev(k) = cs * *ev(k) - sn * *sv(k);
+                    g = sn * *sv(k + 1);
+                    *sv(k + 1) *= cs;
+                    if wantv {
+                        drot(p, va(1, k), va(1, k + 1), cs, sn);
+                    }
+                    drotg(&mut f, &mut g, &mut cs, &mut sn);
+                    *sv(k) = f;
+                    f = cs * *ev(k) + sn * *sv(k + 1);
+                    *sv(k + 1) = -sn * *ev(k) + cs * *sv(k + 1);
+                    g = sn * *ev(k + 1);
+                    *ev(k + 1) *= cs;
+                    if wantu && k < n {
+                        drot(n, ua(1, k), ua(1, k + 1), cs, sn);
+                    }
+                }
+                *ev(m - 1) = f;
+                iter += 1;
+            }
+            _ => {
+                // convergence: make the singular value non-negative, order
+                if !(*sv(l) >= 0.0) {
+                    *sv(l) = -*sv(l);
+                    if wantv {
+                        let mone = -1.0;
+                        dscal_(&p, &mone, va(1, l), &one);
+                    }
+                }
+                while l != mm && !(*sv(l) >= *sv(l + 1)) {
+                    std::ptr::swap(sv(l), sv(l + 1));
+                    if wantv && l < p {
+                        dswap(p.max(0) as usize, va(1, l), va(1, l + 1));
+                    }
+                    if wantu && l < n {
+                        dswap(n.max(0) as usize, ua(1, l), ua(1, l + 1));
+                    }
+                    l += 1;
+                }
+                iter = 0;
+                m -= 1;
+            }
+        }
+    }
+}
