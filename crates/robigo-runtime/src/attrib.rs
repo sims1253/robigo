@@ -82,7 +82,7 @@ pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
     if name == s::ROW_NAMES {
         return row_names_gets(v, val);
     }
-    if name == Sym::new("tsp") {
+    if name == s::TSP {
         return tsp_gets(v, val);
     }
     if name == s::COMMENT && !matches!(val, Value::Str(_)) {
@@ -327,7 +327,7 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     if (end - start - (n - 1) as f64 / frequency).abs() > 1e-5 {
         return Err(Flow::error("invalid time series parameters specified"));
     }
-    v.set_attr_raw(Sym::new("tsp"), Value::reals(data.clone()));
+    v.set_attr_raw(s::TSP, Value::reals(data.clone()));
     Ok(v)
 }
 
