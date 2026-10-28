@@ -21,6 +21,7 @@ tests/r/conditions/stop-uncaught.R
 tests/r/conditions/trycatch.R
 tests/r/conditions/warnings.R
 tests/r/datetime/internals.R
+tests/r/datetime/zones-arith.R
 tests/r/datetime/zones.R
 tests/r/io/apply.R
 tests/r/io/bind.R
