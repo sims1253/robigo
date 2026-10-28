@@ -5572,6 +5572,7 @@ builtins/TestBuiltin_intToBits/ac798fafccb38c02
 builtins/TestBuiltin_intToBits/b5f56a377a3b2836
 builtins/TestBuiltin_intToBits/c3a26b1409406fc6
 builtins/TestBuiltin_intToBits/cc1c36e43f345fe3
+builtins/TestBuiltin_intToBits/e1253cb9676faa7b
 builtins/TestBuiltin_intToBits/f4814daed56b072a
 builtins/TestBuiltin_intToUtf8/047439952d464107
 builtins/TestBuiltin_intToUtf8/06f7a3fc58bfd1c8

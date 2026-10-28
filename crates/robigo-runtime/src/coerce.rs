@@ -617,8 +617,11 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
         return Ok(v.clone());
     }
     // R: coerce.c:coerceVector — vectors, lists, expressions, language
-    // objects and symbols coerce; everything else fails as a plain
-    // error against the context call.
+    // objects and symbols coerce; environments have their own message;
+    // everything else fails as a plain error against the context call.
+    if let Value::Env(_) = v {
+        return Err(Flow::error("environments cannot be coerced to other types"));
+    }
     if !matches!(
         v,
         Value::Null
