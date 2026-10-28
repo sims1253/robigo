@@ -28,3 +28,8 @@ pub use robigo_core::Sexp;
 pub type SEXP = Sexp;
 pub type R_xlen_t = isize;
 pub type Rboolean = std::ffi::c_int;
+
+/// How many contexts (`setjmp` frames) are active; 0 between calls.
+pub fn unwind_depth() -> usize {
+    robigo_core::unwind::depth()
+}

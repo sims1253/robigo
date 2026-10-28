@@ -285,34 +285,107 @@ pub unsafe extern "C" fn Rf_onintrNoResume() {
 
 // ---- contexts (context.c) ------------------------------------------------
 
-/// Run `f(data)` in a context; on a jump, returns the flow token.
-pub unsafe fn protect_run(f: impl FnOnce()) -> Option<usize> {
-    let top = R_PPStackTop;
-    let vmax = crate::memory::vmaxget();
-    if unwind::try_run(f) {
-        None
-    } else {
-        R_PPStackTop = top;
-        crate::memory::vmaxset(vmax);
-        let t = PENDING;
-        PENDING = 0;
-        Some(t)
+/// What a context restores when a jump reaches it (context.c begincontext
+/// / R_restore_globals): the protect stack depth, its size (the red zone
+/// R_signal_protect_error opens), the R_alloc stack, the collector's
+/// inhibit count, visibility and interrupt suspension. The host's own
+/// state (evaluation depth, handler and restart stacks) unwinds through
+/// its Rust frames, which jumps never cross: every entry into C code is a
+/// C trampoline, and host callbacks return flow tokens.
+pub struct Ctx {
+    pptop: c_int,
+    ppsize: c_int,
+    vmax: *mut c_void,
+    gc_inhibit: u32,
+    visible: c_int,
+    intr_susp: c_int,
+}
+
+pub unsafe fn ctx_save() -> Ctx {
+    Ctx {
+        pptop: R_PPStackTop,
+        ppsize: crate::state::R_PPStackSize,
+        vmax: crate::memory::vmaxget(),
+        gc_inhibit: crate::state::core().gc_inhibit,
+        visible: crate::state::R_Visible,
+        intr_susp: crate::state::R_interrupts_suspended,
     }
+}
+
+pub unsafe fn ctx_restore(c: &Ctx) {
+    R_PPStackTop = c.pptop;
+    crate::state::R_PPStackSize = c.ppsize;
+    crate::memory::vmaxset(c.vmax);
+    crate::state::core().gc_inhibit = c.gc_inhibit;
+    crate::state::R_Visible = c.visible;
+    crate::state::R_interrupts_suspended = c.intr_susp;
+}
+
+/// After a trampoline returned 1: restore the context, take the token.
+unsafe fn unwound(c: &Ctx) -> usize {
+    ctx_restore(c);
+    let t = PENDING;
+    PENDING = 0;
+    t
+}
+
+/// `f(data)` in a context (C trampoline).
+pub unsafe fn try_void_ptr(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> Result<(), usize> {
+    let c = ctx_save();
+    if unwind::robigo_try_void_ptr(f, data) == 0 { Ok(()) } else { Err(unwound(&c)) }
+}
+
+/// `f(data)` returning a SEXP, in a context.
+pub unsafe fn try_sexp_ptr(f: unsafe extern "C" fn(*mut c_void) -> Sexp, data: *mut c_void) -> Result<Sexp, usize> {
+    let c = ctx_save();
+    let mut out: *mut c_void = std::ptr::null_mut();
+    let f: unsafe extern "C" fn(*mut c_void) -> *mut c_void = std::mem::transmute(f);
+    if unwind::robigo_try_sexp_ptr(f, data, &mut out) == 0 { Ok(Sexp(out as *mut u8)) } else { Err(unwound(&c)) }
+}
+
+/// `f(data, jump)` in a context.
+pub unsafe fn try_void_ptr_int(
+    f: unsafe extern "C" fn(*mut c_void, c_int),
+    data: *mut c_void,
+    jump: c_int,
+) -> Result<(), usize> {
+    let c = ctx_save();
+    if unwind::robigo_try_void_ptr_int(f, data, jump) == 0 { Ok(()) } else { Err(unwound(&c)) }
+}
+
+/// `f(args[0], ..., args[64])` in a context.
+pub unsafe fn try_call65(f: *const c_void, args: &mut [Sexp; 65]) -> Result<Sexp, usize> {
+    let c = ctx_save();
+    let mut out: *mut c_void = std::ptr::null_mut();
+    if unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out) == 0 {
+        Ok(Sexp(out as *mut u8))
+    } else {
+        Err(unwound(&c))
+    }
+}
+
+/// Run Rust code that may jump (it calls the API) in a context. Only for
+/// closures that capture plain data; prefer the C trampolines for calls
+/// into package code.
+pub unsafe fn protect_run(f: impl FnOnce()) -> Option<usize> {
+    let c = ctx_save();
+    if unwind::try_run(f) { None } else { Some(unwound(&c)) }
 }
 
 // R: context.c:R_ToplevelExec — errors are reported and stop here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ToplevelExec(fun: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> c_int {
-    match protect_run(|| fun(data)) {
-        None => 1,
-        Some(t) => {
+    match try_void_ptr(fun, data) {
+        Ok(()) => 1,
+        Err(t) => {
             (host().report)(t);
             0
         }
     }
 }
 
-// R: context.c:R_ExecWithCleanup
+// R: context.c:R_ExecWithCleanup — the cleanup runs on both paths; a
+// jump out of the cleanup itself wins.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ExecWithCleanup(
     fun: unsafe extern "C" fn(*mut c_void) -> Sexp,
@@ -320,17 +393,16 @@ pub unsafe extern "C" fn R_ExecWithCleanup(
     cleanfun: unsafe extern "C" fn(*mut c_void),
     cleandata: *mut c_void,
 ) -> Sexp {
-    let mut out = Sexp::NULL;
-    let o = &mut out as *mut Sexp;
-    match protect_run(|| *o = fun(data)) {
-        None => {
-            cleanfun(cleandata);
-            out
+    let r = try_sexp_ptr(fun, data);
+    if let Err(t2) = try_void_ptr(cleanfun, cleandata) {
+        if let Err(t) = r {
+            (host().discard)(t);
         }
-        Some(t) => {
-            cleanfun(cleandata);
-            jump_host(t)
-        }
+        jump_host(t2)
+    }
+    match r {
+        Ok(v) => v,
+        Err(t) => jump_host(t),
     }
 }
 
@@ -340,19 +412,29 @@ pub unsafe extern "C" fn R_MakeUnwindCont() -> Sexp {
     crate::state::core().alloc_node(LISTSXP, nil(), nil(), nil())
 }
 
-/// The flow token a continuation holds: an 8-byte RAWSXP in its car.
-unsafe fn cont_token(cont: Sexp) -> usize {
-    let r = cont.car();
-    if r.typ() == RAWSXP && r.std_len() == 8 { *(r.std_data() as *const usize) } else { 0 }
-}
-
+/// The continuation owns the pending condition: its car is a HOST proxy
+/// whose handle is the flow token and whose release discards it, so a
+/// continuation that is never continued does not leak the condition.
 unsafe fn cont_set(cont: Sexp, token: usize) {
-    let r = crate::state::core().alloc_vector(RAWSXP, 8);
-    *(r.std_data() as *mut usize) = token;
-    cont.set_car_raw(r);
+    let p = crate::state::core().alloc_host(RAWSXP, token, Some(host().discard));
+    cont.set_car_raw(p);
 }
 
-// R: context.c:R_UnwindProtect
+unsafe fn cont_take(cont: Sexp) -> usize {
+    let p = cont.car();
+    if !p.has_flag(robigo_core::flags::HOST) {
+        return 0;
+    }
+    let t = robigo_core::Core::host_handle(p);
+    // the proxy's release would discard the token: disarm it
+    *(p.0.add(48) as *mut usize) = 0;
+    cont.set_car_raw(nil());
+    t
+}
+
+// R: context.c:R_UnwindProtect — the context is popped before cleanfun
+// runs; cleanfun may jump away (cpp11, Rcpp), and R_ContinueUnwind may be
+// called later from another frame.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_UnwindProtect(
     fun: unsafe extern "C" fn(*mut c_void) -> Sexp,
@@ -361,26 +443,26 @@ pub unsafe extern "C" fn R_UnwindProtect(
     cleandata: *mut c_void,
     cont: Sexp,
 ) -> Sexp {
-    let mut out = Sexp::NULL;
-    let o = &mut out as *mut Sexp;
-    match protect_run(|| *o = fun(data)) {
-        None => {
-            cleanfun(cleandata, 0);
-            out
-        }
-        Some(t) => {
-            cont_set(cont, t);
-            cleanfun(cleandata, 1);
-            cont
-        }
+    crate::memory::Rf_protect(cont);
+    let r = try_sexp_ptr(fun, data);
+    let jumped = r.is_err();
+    if let Err(t) = r {
+        cont_set(cont, t);
+    }
+    crate::memory::Rf_unprotect(1);
+    if let Err(t2) = try_void_ptr_int(cleanfun, cleandata, jumped as c_int) {
+        jump_host(t2)
+    }
+    match r {
+        Ok(v) => v,
+        Err(_) => cont,
     }
 }
 
 // R: context.c:R_ContinueUnwind
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ContinueUnwind(cont: Sexp) -> ! {
-    let t = cont_token(cont);
-    cont.set_car_raw(nil());
+    let t = cont_take(cont);
     if t == 0 {
         error_str("bad continuation")
     }

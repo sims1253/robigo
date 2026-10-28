@@ -11,6 +11,30 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: council item (c) — contexts and unwind
+
+- C trampolines in the shim (`robigo_try_call65`, `_sexp_ptr`,
+  `_void_ptr`, `_void_ptr_int`) call package code directly: no Rust frame
+  lies between a context's setjmp and the C code that may longjmp. Used
+  for `.Call`/`.External`/`.C`, `R_init_<pkg>`, `R_unload_<pkg>`, C
+  finalizers, and the bodies and cleanups of R_ToplevelExec,
+  R_ExecWithCleanup and R_UnwindProtect.
+- context record (`errors::Ctx`): R_PPStackTop, R_PPStackSize (red
+  zone), vmax, gc_inhibit, R_Visible, R_interrupts_suspended.
+- R_UnwindProtect pops its context before cleanfun; a cleanfun that jumps
+  wins; the continuation's car is a HOST proxy owning the flow token, so a
+  never-continued continuation discards its condition when collected.
+- tests (`crates/robigo-capi/tests/capi.rs`, a stub host): allocation and
+  attributes across 20k allocations, Rprintf, Rf_error caught by
+  R_ToplevelExec three times with a stable protect depth and context
+  depth 0, R_UnwindProtect jump/no-jump with cleanup, the abandoned
+  continuation discarding its condition, Rf_warning jumping under
+  warn=2, allocVector(-1)'s message, a 3-argument .Call through the
+  65-argument trampoline. Pass, and pass under ROBIGO_GCTORTURE=1.
+- not done: the Result refactor for outward jumps (frames are plain by
+  construction today); catch_unwind belongs to the host callbacks
+  (bridge); C++ exceptions stay fatal as in GNU R (reason in core.md §5).
+
 ## 2026-10-28: lead's requirements — parallelism/isolates, GC lessons
 
 - recorded in docs/core.md §10/§11. Settled now, before the layout and

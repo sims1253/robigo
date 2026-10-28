@@ -195,8 +195,10 @@ pub unsafe fn run_finalizer(w: Sexp) {
     Rf_protect(key);
     Rf_protect(fin);
     if fin.typ() == RAWSXP {
-        let f: unsafe extern "C" fn(Sexp) = std::mem::transmute(*(fin.std_data() as *const usize));
-        crate::errors::protect_run(|| f(key));
+        let f: unsafe extern "C" fn(*mut std::ffi::c_void) = std::mem::transmute(*(fin.std_data() as *const usize));
+        if let Err(t) = crate::errors::try_void_ptr(f, key.0 as *mut std::ffi::c_void) {
+            (crate::host::host().report)(t);
+        }
     } else {
         let call = Rf_protect(crate::list::Rf_lang2(fin, key));
         let mut out = Sexp::NULL;

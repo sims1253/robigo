@@ -279,6 +279,12 @@ model at the C boundary:
   evaluator itself behind these calls.
 - Warnings can jump too (`options(warn = 2)`, a calling handler that
   invokes a restart): the warning callback returns a token like errors.
+- *C++ exceptions*: an exception escaping a package's callback is fatal in
+  GNU R too (it unwinds into C frames without unwind tables and
+  terminates); robigo's callback types stay `extern "C"`, so it aborts
+  deterministically instead of unwinding through Rust. Rcpp and cpp11
+  catch their exceptions and convert them through `R_UnwindProtect`,
+  which is the path that must work (gate).
 - Rust panics never cross into C (`extern "C"` aborts on unwind); C++
   exceptions never cross into robigo (packages catch their own).
 - Warnings (`Rf_warning`, `Rf_warningcall`) go to the host's warning
@@ -513,9 +519,9 @@ they land; evidence in `docs/ledger/core.md`):
 |---|---|---|
 | 1 | base-package natives rebuilt from R 4.5.0 sources against robigo's headers + `Defn.h`; ~25 non-API internals | planned (§8) |
 | 2 | immortals traced (symbols, mutable constants) | done |
-| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | planned (c) |
-| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | planned (c) |
-| 5 | every export may jump (warnings, allocation, PROTECT overflow) | planned (c) |
+| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done in libR.so (`errors::Ctx`); depth/handlers unwind in the host, whose frames jumps never cross |
+| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done (continuation holds a HOST proxy that discards an abandoned condition; tested); packages in the gate |
+| 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
 | 8 | one barrier-capable store() for heap stores; reserved header state | planned (e) |
@@ -527,7 +533,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | planned (f) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
-| 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | planned (c) |
+| 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | partly: C trampolines for every call into package code (`.Call`/`.External`/`.C`, R_init, finalizers, R_UnwindProtect/ExecWithCleanup/ToplevelExec bodies and cleanups); outward errors still jump from the exporting Rust frame (plain frames by construction) until the Result refactor; catch_unwind goes into the host callbacks with the bridge; see §5 on C-unwind |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |

@@ -10,6 +10,22 @@
 use std::ffi::{c_int, c_void};
 
 unsafe extern "C" {
+    /// `*out = f(data)` in a context; 1 if unwound.
+    pub fn robigo_try_sexp_ptr(
+        f: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+        data: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> c_int;
+    /// `f(data)` in a context; 1 if unwound.
+    pub fn robigo_try_void_ptr(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> c_int;
+    /// `f(data, jump)` in a context; 1 if unwound.
+    pub fn robigo_try_void_ptr_int(
+        f: unsafe extern "C" fn(*mut c_void, c_int),
+        data: *mut c_void,
+        jump: c_int,
+    ) -> c_int;
+    /// `*out = f(args[0], ..., args[64])` in a context; 1 if unwound.
+    pub fn robigo_try_call65(f: *const c_void, args: *mut *mut c_void, out: *mut *mut c_void) -> c_int;
     fn robigo_try(body: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> c_int;
     fn robigo_jump() -> !;
     fn robigo_try_depth() -> c_int;

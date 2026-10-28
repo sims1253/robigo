@@ -296,8 +296,8 @@ pub unsafe extern "C" fn robigo_dll_open(
         f = init(&format!("R_init_{}", nm.replace('.', "_")));
     }
     if !f.is_null() {
-        let f: unsafe extern "C" fn(*mut DllInfo) = std::mem::transmute(f);
-        if let Some(t) = crate::errors::protect_run(|| f(info)) {
+        let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(f);
+        if let Err(t) = crate::errors::try_void_ptr(f, info as *mut c_void) {
             *token = t;
         }
     }
@@ -315,8 +315,10 @@ pub unsafe extern "C" fn robigo_dll_close(info: *mut DllInfo) {
             let c = CString::new(format!("R_unload_{nm}")).unwrap();
             let f = libc::dlsym(i.handle, c.as_ptr());
             if !f.is_null() {
-                let f: unsafe extern "C" fn(*mut DllInfo) = std::mem::transmute(f);
-                crate::errors::protect_run(|| f(info));
+                let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(f);
+                if let Err(t) = crate::errors::try_void_ptr(f, info as *mut c_void) {
+                    (crate::host::host().discard)(t);
+                }
             }
             libc::dlclose(i.handle);
         }
