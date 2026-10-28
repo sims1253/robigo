@@ -323,6 +323,20 @@ def cmd_record(a):
                 rec["mask_" + key] = mask
         if any(r[2] != s for r in runs):
             rec["unstable"] = True
+        # The previous recording was made on another machine: lines that
+        # differ between the two machines (host name, kernel, core count,
+        # installed programs) are masked like lines that differ between
+        # runs. A different line count keeps this platform's recording.
+        prev = old.get(cid) if a.mask_against_previous else None
+        if prev and not rec.get("unstable") and prev.get("status") == s:
+            for key, idx in (("out", 0), ("err", 1)):
+                now = normalize(runs[0][idx]).split(b"\n")
+                then = normalize(dec(prev[key])).split(b"\n")
+                if len(now) != len(then):
+                    continue
+                mask = set(rec.get("mask_" + key, [])) | {i for i, (x, y) in enumerate(zip(now, then)) if x != y}
+                if mask:
+                    rec["mask_" + key] = sorted(mask)
         return rec
 
     recs = pmap(one, todo, a.jobs, f"record {a.name}")
@@ -582,6 +596,8 @@ def main():
     p.add_argument("--repeat", type=int, default=2, help="runs per case to detect unstable output")
     p.add_argument("--all", action="store_true", help="re-record unchanged cases too")
     p.add_argument("--filter")
+    p.add_argument("--mask-against-previous", action="store_true",
+                   help="also mask lines that differ from the existing recording (made on another machine)")
     p = sub.add_parser("run")
     p.add_argument("name")
     p.add_argument("--jobs", type=int, default=os.cpu_count())

@@ -843,6 +843,45 @@ mod tests {
         }
     }
 
+    /// R's complex `+ - * / ^` and `%*%` are bit-identical with GNU R
+    /// 4.5.0 itself (Debian r-base-core 4.5.0-3, the CI oracle), whose
+    /// compiled code picks operand orders that decide NaN payloads (NA vs
+    /// NaN): every pair of complex numbers whose parts are NA (signalling
+    /// and quiet), NaNs with several payloads, +-Inf, +-0, finite, huge and
+    /// subnormal values, recorded by `scripts/oracle-complex-arith.R`
+    /// (230,496 results).
+    #[test]
+    fn gnu_r_oracle() {
+        use crate::builtins::arith::{ArithOp, complex_binary};
+        use std::io::Read;
+        let raw = include_bytes!("complex_r_oracle.txt.gz");
+        let mut s = String::new();
+        flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s).unwrap();
+        let hex = |h: &str| f64::from_bits(u64::from_str_radix(h, 16).unwrap());
+        let mut checked = 0usize;
+        for line in s.lines() {
+            let t: Vec<&str> = line.split_whitespace().collect();
+            let (a, b) = (z(hex(t[1]), hex(t[2])), z(hex(t[3]), hex(t[4])));
+            let got = match t[0] {
+                "matprod" => crate::builtins::array::cprod(0, &[a], 1, 1, &[b], 1, 1)[0],
+                op => {
+                    let op = match op {
+                        "add" => ArithOp::Plus,
+                        "sub" => ArithOp::Minus,
+                        "mul" => ArithOp::Times,
+                        "div" => ArithOp::Div,
+                        "pow" => ArithOp::Pow,
+                        other => panic!("bad op {other}"),
+                    };
+                    complex_binary(op, &[a], &[b], 1).ok().unwrap()[0]
+                }
+            };
+            assert_eq!((got.re.to_bits(), got.im.to_bits()), (hex(t[5]).to_bits(), hex(t[6]).to_bits()), "{line}");
+            checked += 1;
+        }
+        assert!(checked > 200_000, "{checked}");
+    }
+
     /// The kernels are bit-identical with the C library GNU R uses
     /// (libgcc's `__muldc3`/`__divdc3`, glibc's `clog`/`cexp`/`csqrt`/
     /// `cpow`) over a grid of special values and random bit patterns,

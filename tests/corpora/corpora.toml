@@ -8,9 +8,11 @@
 #   support           directory whose files are linked into each case's
 #                     working directory
 #   host_dependent    case ids whose output shows the machine (installed
-#                     tools, packages or locales, CPU count): GNU R's
-#                     recorded output holds only where it was recorded, so
-#                     they are neither run nor scored
+#                     tools, packages or locales, CPU count) beyond what
+#                     masking can absorb: neither run nor scored. Prefer
+#                     re-recording on the oracle platform with
+#                     `record --mask-against-previous`, which keeps the case
+#                     scored with the machine-dependent lines masked
 
 # Default packages: GNU R's, without `methods` until robigo can load it
 # (goalpost G6). Then add it back here and re-record: today every case would
@@ -27,7 +29,6 @@ path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutp
 # FastR-only features (Java interop, FastR's own functions).
 exclude_prefix = ["library.fastr.", "rffi."]
 # Sets the en_US.utf8 collation locale, which not every machine has.
-host_dependent = ["builtins/TestBuiltin_order/add626733541c799"]
 
 [gnur-tests]
 description = "GNU R 4.5.0's own regression tests (tests/*.R), as `make check` runs them"
@@ -60,7 +61,6 @@ packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datas
             "stats4", "grid", "parallel", "compiler"]
 # Examples that print the host (kernel and user, tools on the PATH,
 # installed packages, CPU count): not comparable across machines.
-host_dependent = ["base/Sys.info", "base/Sys.which", "base/find.package", "parallel/detectCores"]
 
 # Whole R programs: everyday scripts, not snippets (see
 # tests/corpora/{gnur-demos,r-intro}/README.md). Both import from GNU R
