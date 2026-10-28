@@ -15,6 +15,23 @@ use crate::s4::{StdGeneric, binding_missing, data_class, deferred_default, find_
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+thread_local! {
+    /// Symbols the dispatch code looks up on every call.
+    static MSYMS: [Sym; 7] = [
+        Sym::new(".AllMTable"),
+        Sym::new(".SigArgs"),
+        Sym::new(".SigLength"),
+        Sym::new("target"),
+        Sym::new("defined"),
+        Sym::new("nextMethod"),
+        Sym::new("allMethods"),
+    ];
+}
+
+fn msym(k: usize) -> Sym {
+    MSYMS.with(|s| s[k])
+}
+
 pub static PORTS: &[(&str, NativeFn)] = &[
     ("R_initMethodDispatch", |i, _, a, _| init_method_dispatch(i, arg(&a, 0))),
     ("R_set_method_dispatch", |i, _, a, _| set_method_dispatch(i, &arg(&a, 0))),
@@ -398,6 +415,24 @@ fn handler_call() -> Value {
 
 /// `R_evalHandleError(e, env, argEvalCleanup, {fname, arg_sym})`.
 fn eval_arg_handle_error(i: &mut Interp, e: &Value, ev: &Env, fname: &Value, arg_sym: Sym) -> RResult<Value> {
+    // An argument whose binding is a value or a forced promise evaluates
+    // without running code, so it cannot signal: no handler is needed.
+    if let Value::Sym(sym) = e {
+        let b = ev.0.frame().borrow().get(*sym).map(|b| (b.value.clone(), b.flags));
+        if let Some((v, flags)) = b {
+            if flags & crate::env::BIND_ACTIVE == 0 {
+                match &v {
+                    Value::Promise(p) => {
+                        if let Some(val) = p.value() {
+                            return Ok(val);
+                        }
+                    }
+                    v if !v.is_missing_arg() => return Ok(v.clone()),
+                    _ => {}
+                }
+            }
+        }
+    }
     let fname = as_char(fname);
     let h: crate::conditions::RustHandler = Rc::new(move |i: &mut Interp, cond: &Value| {
         let msg = condition_message(i, cond)?;
@@ -419,11 +454,11 @@ fn eval_arg_handle_error(i: &mut Interp, e: &Value, ev: &Env, fname: &Value, arg
 // R: methods_list_dispatch.c:R_quick_dispatch
 pub fn quick_dispatch(i: &mut Interp, args: &[Arg], generic_env: &Value) -> RResult<Value> {
     let Value::Env(genv) = generic_env else { return Ok(Value::Null) };
-    let mtable = match find_var_in_frame(i, genv, Sym::new(".AllMTable"))? {
+    let mtable = match find_var_in_frame(i, genv, msym(0))? {
         Some(Value::Env(m)) => m,
         _ => return Ok(Value::Null),
     };
-    let nsig = match find_var_in_frame(i, genv, Sym::new(".SigLength"))? {
+    let nsig = match find_var_in_frame(i, genv, msym(2))? {
         Some(Value::Real(v)) if !v.data.is_empty() => v.data[0] as i32,
         Some(Value::Int(v)) if !v.data.is_empty() => v.data[0],
         _ => return Ok(Value::Null),
@@ -465,7 +500,7 @@ pub fn quick_dispatch(i: &mut Interp, args: &[Arg], generic_env: &Value) -> RRes
 
 /// `R_find_method(mlist, class, fname)`.
 fn find_method(i: &mut Interp, mlist: &Value, class: &str, fname: &Value) -> RResult<Value> {
-    let methods = i.do_slot(mlist, Sym::new("allMethods"))?;
+    let methods = i.do_slot(mlist, msym(6))?;
     if methods.is_null() {
         return Err(Flow::error(format!(
             "no \"allMethods\" slot found in object of class \"{}\" used as methods list for function '{}'",
@@ -482,7 +517,7 @@ pub fn quick_method_check(i: &mut Interp, args: &[Arg], mlist: &Value) -> RResul
     if mlist.is_null() {
         return Ok(Value::Null);
     }
-    let mut methods = i.do_slot(mlist, Sym::new("allMethods"))?;
+    let mut methods = i.do_slot(mlist, msym(6))?;
     if methods.is_null() {
         return Ok(Value::Null);
     }
@@ -499,7 +534,7 @@ pub fn quick_method_check(i: &mut Interp, args: &[Arg], mlist: &Value) -> RResul
         if value.is_null() || value.is_function() {
             return Ok(value);
         }
-        methods = i.do_slot(&value, Sym::new("allMethods"))?;
+        methods = i.do_slot(&value, msym(6))?;
     }
     Ok(Value::Null)
 }
@@ -651,8 +686,7 @@ pub fn standard_generic_old(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Valu
 /// `methods:::loadMethod`.
 // R: methods_list_dispatch.c:R_loadMethod
 fn load_method(i: &mut Interp, def: Value, fname: &Value, ev: &Env) -> RResult<Value> {
-    let (target, defined, next_method, srcref, generic) =
-        (Sym::new("target"), Sym::new("defined"), Sym::new("nextMethod"), s::SRCREF, syms::generic());
+    let (target, defined, next_method, srcref, generic) = (msym(3), msym(4), msym(5), s::SRCREF, syms::generic());
     let mut found = 1;
     let attrib: Vec<(Sym, Value)> = def.attrs().map(|a| a.0.clone()).unwrap_or_default();
     for (t, v) in &attrib {
@@ -724,7 +758,7 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
             )));
         }
     };
-    let allmtable = Sym::new(".AllMTable");
+    let allmtable = msym(0);
     let mut mtable = find_var_in_frame(i, &f_env, allmtable)?;
     if mtable.is_none() {
         // do_mtable: initializes the generic.
@@ -734,8 +768,8 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
         i.eval(&e, ev)?;
         mtable = find_var_in_frame(i, &f_env, allmtable)?;
     }
-    let sigargs = find_var_in_frame(i, &f_env, Sym::new(".SigArgs"))?;
-    let siglength = find_var_in_frame(i, &f_env, Sym::new(".SigLength"))?;
+    let sigargs = find_var_in_frame(i, &f_env, msym(1))?;
+    let siglength = find_var_in_frame(i, &f_env, msym(2))?;
     let (Some(sigargs), Some(siglength), Some(mtable)) = (sigargs, siglength, mtable) else {
         return Err(Flow::error(
             "generic seems not to have been initialized for table dispatch---need to have '.SigArgs' and '.AllMtable' assigned in its environment",
@@ -771,11 +805,21 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
         };
         classes.push(this_class);
     }
-    let label: Vec<String> = classes.iter().map(as_char).collect();
+    // The label `class1#class2#...` (`.SigLabel`), built without copies.
+    let mut label = String::new();
+    for (k, c) in classes.iter().enumerate() {
+        if k > 0 {
+            label.push('#');
+        }
+        match c {
+            Value::Str(v) if !v.data.is_empty() => label.push_str(v.data[0].as_deref().unwrap_or("NA")),
+            other => label.push_str(&as_char(other)),
+        }
+    }
     let Value::Env(mtable_env) = &mtable else {
         return Err(Flow::error("robigo: '.AllMTable' is not an environment"));
     };
-    let mut method = find_var_in_frame(i, mtable_env, Sym::new(&label.join("#")))?;
+    let mut method = find_var_in_frame(i, mtable_env, Sym::new(&label))?;
     if let Some(Value::Env(t)) = &method {
         let t = t.clone();
         method = select_by_package(i, &t, &classes)?;

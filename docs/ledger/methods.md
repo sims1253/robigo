@@ -44,6 +44,27 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: S4 dispatch overhead per call
+
+- callgrind (scripts/callgrind-diff.py, 2e4 - 1e4 calls of a one-method
+  generic): 14,398 -> 13,192 instructions per call (-8.4%):
+  - the calling handler around each signature argument's evaluation
+    (`R_evalHandleError`) is skipped when the argument's binding is a
+    value or a forced promise: evaluating it runs no code, so nothing can
+    signal (the handler cost an Rc closure, an entry and a message string
+    per argument per call);
+  - the dispatch's fixed symbols (`.AllMTable`, `.SigArgs`, `.SigLength`,
+    `target`, `defined`, `nextMethod`, `allMethods`) are interned once;
+  - the signature label is built in one String (no Vec<String>, join).
+- What remains of the dispatch: `find_var_in_frame` (~10 frame lookups per
+  call: the generic's tables, `.target`/`.defined`/`.Method`), defining
+  `.target`/`.defined`/`.nextMethod`/`.Method` in the generic's frame and
+  copying them into the method's (GNU R does the same). The rest is the VM
+  running the generic's and the method's frames.
+- Wall time is too noisy on this shared machine to compare with GNU R
+  (GNU R's own numbers moved 2-3x between runs); roughly 1.3-2.3x slower
+  on S4-heavy loops (generic calls, `+` methods, `new()`).
+
 ## 2026-10-28: S4 deparse; recording fastr with methods (memory)
 
 - Deparse of S4 objects ported (deparse.c's IS_S4_OBJECT branch); the
