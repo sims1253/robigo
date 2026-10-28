@@ -44,6 +44,26 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: methods as a default package, per corpus (host, same binary)
+
+Recorded with methods in `default_packages` (oracle image, uid 1000,
+`--memory 6g`), robigo with the matching default packages:
+
+| corpus | without methods | with methods | lost | gained |
+|---|---|---|---|---|
+| gnur-examples | 591 | 603 | file.access, system (recording artifacts: uid, seccomp) | 14 (some date-dependent) |
+| gnur-tests (without reg-large) | 21 | 19 | reg-S4-examples (grDevices `devholdflush` once `plot()` is reached), reg-packages (the host's `R CMD` subprocesses use system R 4.6.1) | 0 |
+| gnur-demos | 2 | 2 | | |
+| r-intro | 4 | 4 | | |
+| fastr | (recording) | | | |
+
+The losses are cases that "passed" only because GNU R and robigo stopped
+at the same early error without methods; with methods GNU R gets further.
+None is an S4 failure. For the switch: record as root (as CI's container
+runs), leave reg-large to CI, and decide with the maintainer how a case
+whose recorded behaviour changes is treated in the ratchet (it is the
+same script with a different oracle).
+
 ## 2026-10-28: S4 speed vs GNU R (measured, not yet improved)
 
 - Wall time, robigo vs GNU R 4.5.0 (oracle image): 1e5 calls of a
