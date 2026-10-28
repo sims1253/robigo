@@ -127,11 +127,7 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
 // `(0/0+1i)+(1+NA)` is NA, not NaN+NaNi).
 pub fn cadd(a: Complex, b: Complex) -> Complex {
     let r = Complex::new(b.re + a.re, b.im + a.im);
-    if r.re.is_nan() || r.im.is_nan() {
-        Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im))
-    } else {
-        r
-    }
+    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im)) } else { r }
 }
 
 // R: complex.c:complex_binary MINUSOP. The subtractions are not
@@ -139,11 +135,7 @@ pub fn cadd(a: Complex, b: Complex) -> Complex {
 // minuend as destination operand.
 pub fn csub(a: Complex, b: Complex) -> Complex {
     let r = Complex::new(a.re - b.re, a.im - b.im);
-    if r.re.is_nan() || r.im.is_nan() {
-        Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im))
-    } else {
-        r
-    }
+    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im)) } else { r }
 }
 
 fn cmul_impl<T: CArith>(a: Complex, b: Complex) -> Complex {
