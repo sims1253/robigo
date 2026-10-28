@@ -9,7 +9,7 @@ use crate::coerce::{CoerceWarnings, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::s;
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -315,7 +315,7 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
             let b = crate::coerce::to_cplx(&y, &mut w);
             let mut out = Vec::with_capacity(n);
             for i in 0..n {
-                out.push(complex_op(op, a[i % nx], b[i % ny]));
+                out.push(complex_op(op, a[i % nx], b[i % ny])?);
             }
             Value::cplxs(out)
         }
@@ -549,70 +549,17 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
     Ok(val)
 }
 
-fn complex_op(op: ArithOp, a: Complex, b: Complex) -> Complex {
+fn complex_op(op: ArithOp, a: Complex, b: Complex) -> RResult<Complex> {
+    // R: complex.c:complex_binary
     match op {
-        ArithOp::Plus => Complex::new(a.re + b.re, a.im + b.im),
-        ArithOp::Minus => Complex::new(a.re - b.re, a.im - b.im),
-        ArithOp::Times => Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re),
-        ArithOp::Div => {
-            // Smith's algorithm, as in R's complex.c
-            let (ratio, den);
-            let abr = b.re.abs();
-            let abi = b.im.abs();
-            if abr >= abi {
-                ratio = b.im / b.re;
-                den = b.re * (1.0 + ratio * ratio);
-                Complex::new((a.re + a.im * ratio) / den, (a.im - a.re * ratio) / den)
-            } else {
-                ratio = b.re / b.im;
-                den = b.im * (1.0 + ratio * ratio);
-                Complex::new((a.re * ratio + a.im) / den, (a.im * ratio - a.re) / den)
-            }
-        }
-        ArithOp::Pow => cpow(a, b),
-        ArithOp::Mod | ArithOp::IDiv => Complex::new(f64::NAN, f64::NAN),
+        ArithOp::Plus => Ok(Complex::new(a.re + b.re, a.im + b.im)),
+        ArithOp::Minus => Ok(Complex::new(a.re - b.re, a.im - b.im)),
+        // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
+        ArithOp::Times => Ok(super::complex::cmul(a, b)),
+        ArithOp::Div => Ok(super::complex::cdiv(a, b)),
+        ArithOp::Pow => Ok(super::complex::cpow(a, b)),
+        ArithOp::Mod | ArithOp::IDiv => Err(Flow::error("unimplemented complex operation")),
     }
-}
-
-fn cpow(x: Complex, y: Complex) -> Complex {
-    if y.im == 0.0 {
-        if y.re == 1.0 {
-            return x;
-        }
-        if x.im == 0.0 && x.re >= 0.0 {
-            return Complex::new(r_pow(x.re, y.re), 0.0);
-        }
-        if x.re == 0.0 && x.im == 0.0 {
-            if y.re > 0.0 {
-                return Complex::new(0.0, 0.0);
-            }
-        }
-        let k = y.re;
-        if k == k.trunc() && k.abs() <= 65536.0 {
-            let mut k = k as i64;
-            let mut z = Complex::new(1.0, 0.0);
-            let mut base = x;
-            if k < 0 {
-                k = -k;
-                base = complex_op(ArithOp::Div, Complex::new(1.0, 0.0), x);
-            }
-            while k > 0 {
-                if k & 1 == 1 {
-                    z = complex_op(ArithOp::Times, z, base);
-                }
-                k >>= 1;
-                if k > 0 {
-                    base = complex_op(ArithOp::Times, base, base);
-                }
-            }
-            return z;
-        }
-    }
-    let logr = x.re.hypot(x.im).ln();
-    let logi = x.im.atan2(x.re);
-    let xr = (logr * y.re - logi * y.im).exp();
-    let xi = logr * y.im + logi * y.re;
-    Complex::new(xr * xi.cos(), xr * xi.sin())
 }
 
 pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
@@ -864,7 +811,7 @@ fn do_relop(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: Rel
         }
     }
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), "operator needs two arguments"));
+        return Err(Flow::error("operator needs two arguments"));
     }
     let y = args.pop().unwrap().value;
     let x = args.pop().unwrap().value;
@@ -913,7 +860,17 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
         }
     }
     if args.len() != 2 {
-        return Err(Flow::error_call(call.clone(), "operator needs two arguments"));
+        // R's checkArity (logic.c:do_logic): the singular form has no
+        // 's' on 'argument'.
+        return Err(Flow::error_call(
+            call.clone(),
+            format!(
+                "{} argument{} passed to '{}' which requires 2",
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                name
+            ),
+        ));
     }
     let mut y = args.pop().unwrap().value;
     let mut x = args.pop().unwrap().value;
@@ -1019,12 +976,13 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
     Ok(val)
 }
 
-/// `&&` / `||` operand: must be length-1 logical-coercible.
+/// `&&` / `||` operand: R's isNumber (logical, integer, double or
+/// complex — not raw, not NULL, not string) and length <= 1
+/// (R: logic.c:do_logic2, asLogical2 with checking).
 pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
     let _ = i;
-    let ok = matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) | Value::Null);
-    if !ok || (matches!(v, Value::Str(_))) {
-        return Err(Flow::error_call(call.clone(), format!("invalid '{}' type in 'x {} y'", which, op)));
+    if !matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_)) {
+        return Err(Flow::error_call(call.clone(), format!("invalid '{which}' type in 'x {op} y'")));
     }
     if v.len() != 1 {
         if v.len() > 1 {
@@ -1036,6 +994,10 @@ pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: 
 }
 
 fn do_and2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: logic.c:do_logic2 — plain error, the operator's name only.
+    if args.len() != 2 {
+        return Err(Flow::error("'&&' operator requires 2 arguments"));
+    }
     let x = i.eval(&args[0].value, env)?;
     let a = scalar_logical(i, call, &x, "x", "&&")?;
     if a == FALSE {
@@ -1053,6 +1015,9 @@ fn do_and2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 }
 
 fn do_or2(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if args.len() != 2 {
+        return Err(Flow::error("'||' operator requires 2 arguments"));
+    }
     let x = i.eval(&args[0].value, env)?;
     let a = scalar_logical(i, call, &x, "x", "||")?;
     if a == TRUE {
@@ -1098,9 +1063,9 @@ fn math1<F: Fn(f64) -> f64>(
     }
     let x = &args[0].value;
     if matches!(x, Value::Cplx(_)) {
-        return Err(Flow::error_call(call.clone(), format!("unimplemented complex function")));
+        return complex_math1(i, call, x, name);
     }
-    if !x.is_numeric_type() {
+    if !r_is_numeric(x) {
         return Err(Flow::error_call(call.clone(), "non-numeric argument to mathematical function"));
     }
     // NaN in gives the same NaN out (keeping NA's payload); a new NaN
@@ -1150,6 +1115,49 @@ macro_rules! math_fn {
     };
 }
 
+/// The complex kernels R's `complex_math1` implements (complex.c).
+/// `None` for the functions that error there ("unimplemented complex
+/// function": floor, sign, gamma, cospi, ...).
+fn math1_c_fn(name: &str) -> Option<fn(Complex) -> Complex> {
+    match name {
+        "log" => Some(super::complex::clog),
+        "sqrt" => Some(super::complex::csqrt),
+        "exp" => Some(super::complex::cexp),
+        _ => None,
+    }
+}
+
+/// `cmath1`/`complex_math1` (R: complex.c): NA in gives complex NA; a
+/// NaN produced warns against the call.
+fn complex_math1(i: &mut Interp, call: &Value, x: &Value, name: &str) -> RResult<Value> {
+    let f = math1_c_fn(name).ok_or_else(|| Flow::error_call(call.clone(), "unimplemented complex function"))?;
+    let Value::Cplx(v) = x else { unreachable!() };
+    let mut naflag = false;
+    let out: Vec<Complex> = v
+        .data
+        .iter()
+        .map(|&z| {
+            if is_na_real(z.re) || is_na_real(z.im) {
+                Complex::NA
+            } else {
+                let r = f(z);
+                if (r.re.is_nan() || r.im.is_nan()) && !(z.re.is_nan() || z.im.is_nan()) {
+                    naflag = true;
+                }
+                r
+            }
+        })
+        .collect();
+    let mut val = Value::cplxs(out);
+    if let Some(a) = &v.attrs {
+        val.set_attrs(Some(a.clone()));
+    }
+    if naflag {
+        i.warningcall(call, format!("NaNs produced in function \"{}\"", name))?;
+    }
+    Ok(val)
+}
+
 math_fn!(do_floor, "floor", f64::floor);
 math_fn!(do_ceiling, "ceiling", f64::ceil);
 math_fn!(do_sqrt, "sqrt", f64::sqrt);
@@ -1191,8 +1199,46 @@ fn do_digamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value>
 fn do_trigamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
     super::math::do_math1_nmath(i, c, a, e, "trigamma", crate::nmath::trigamma)
 }
-math_fn!(do_log2, "log2", f64::log2);
-math_fn!(do_log10, "log10", f64::log10);
+// R: arithmetic.c:do_log1arg — log2/log10 route through the log family
+// (math2 with base 2/10, z_logbase for complex).
+fn do_log1arg(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, base: f64, name: &str) -> RResult<Value> {
+    if args.len() != 1 {
+        return Err(Flow::error_call(
+            call.clone(),
+            format!(
+                "{} argument{} passed to '{}' which requires 1",
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                name
+            ),
+        ));
+    }
+    let x = args.pop().unwrap().value;
+    let b = Value::real(base);
+    if x.is_object() {
+        // DispatchGroup("Math") on log2/log10 itself first, then on the
+        // rewritten `log(x, base)` call.
+        let dargs = vec![Arg::new(None, x.clone())];
+        if let Some(r) = i.try_dispatch_group("Math", name, call, &dargs, env)? {
+            return Ok(r);
+        }
+        let dargs = vec![Arg::new(None, x.clone()), Arg::new(None, b.clone())];
+        if let Some(r) = i.try_dispatch_group("Math", "log", call, &dargs, env)? {
+            return Ok(r);
+        }
+    }
+    if matches!(x, Value::Cplx(_)) {
+        return log_complex_math2(i, call, &x, &b, name);
+    }
+    log_math2(i, call, &x, &b)
+}
+
+fn do_log2(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    do_log1arg(i, c, a, e, 2.0, "log2")
+}
+fn do_log10(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    do_log1arg(i, c, a, e, 10.0, "log10")
+}
 
 fn cospi(x: f64) -> f64 {
     if !x.is_finite() {
@@ -1303,85 +1349,218 @@ fn do_trunc(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     math1(i, call, vec![args[0].clone()], env, "trunc", f64::trunc)
 }
 
-/// `log(x, base)`: a special so that `log(x, base)` can dispatch on x
-/// before base is evaluated.
-fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let ev = i.eval_args(&args, env, call)?;
-    if ev.is_empty() {
-        return Err(Flow::error_call(call.clone(), "argument \"x\" is missing, with no default"));
+// R: arithmetic.h:R_log — log with R's chosen values for x <= 0.
+fn r_log(x: f64) -> f64 {
+    if x > 0.0 {
+        x.ln()
+    } else if x == 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        f64::NAN
     }
-    if ev[0].value.is_object() {
-        if let Some(r) = i.try_dispatch_group("Math", "log", call, &ev, env)? {
-            return Ok(r);
+}
+
+// R: arithmetic.h:logbase
+fn logbase(x: f64, base: f64) -> f64 {
+    if base == 10.0 {
+        if x > 0.0 {
+            x.log10()
+        } else if x == 0.0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::NAN
         }
-    }
-    let m = super::match_args(ev, &["x", "base"], call)?;
-    let x = m.vals[0].clone().unwrap_or(Value::Null);
-    if matches!(x, Value::Cplx(_)) {
-        let base = m.vals[1].as_ref().map(crate::coerce::as_real);
-        if let Value::Cplx(v) = &x {
-            let out: Vec<Complex> = v
-                .data
-                .iter()
-                .map(|z| {
-                    let lr = z.re.hypot(z.im).ln();
-                    let li = z.im.atan2(z.re);
-                    match base {
-                        Some(b) => Complex::new(lr / b.ln(), li / b.ln()),
-                        None => Complex::new(lr, li),
-                    }
-                })
-                .collect();
-            let mut r = Value::cplxs(out);
-            if let Some(a) = &v.attrs {
-                r.set_attrs(Some(a.clone()));
-            }
-            return Ok(r);
+    } else if base == 2.0 {
+        if x > 0.0 {
+            x.log2()
+        } else if x == 0.0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::NAN
         }
+    } else {
+        r_log(x) / r_log(base)
     }
-    if !x.is_numeric_type() {
+}
+
+/// R's `isNumeric`: logical, integer (not factor) or double.
+fn r_is_numeric(v: &Value) -> bool {
+    match v {
+        Value::Int(_) => !v.inherits("factor"),
+        Value::Lgl(_) | Value::Real(_) => true,
+        _ => false,
+    }
+}
+
+/// The math2 kernel of `log(x, base)` on doubles
+/// (R: arithmetic.c:math2 with `logbase`).
+fn log_math2(i: &mut Interp, call: &Value, sa: &Value, sb: &Value) -> RResult<Value> {
+    // SETUP_Math2
+    if !r_is_numeric(sa) || !r_is_numeric(sb) {
         return Err(Flow::error_call(call.clone(), "non-numeric argument to mathematical function"));
     }
-    let base = match &m.vals[1] {
-        Some(b) => {
-            if !b.is_numeric_type() {
-                return Err(Flow::error_call(call.clone(), "non-numeric argument to mathematical function"));
+    let (na, nb) = (sa.len(), sb.len());
+    if na == 0 || nb == 0 {
+        // for 0-length a we want the attributes of a, as no recycling
+        // will occur
+        let mut sy = Value::reals(vec![]);
+        if na == 0 {
+            if let Some(a) = sa.attrs() {
+                sy.set_attrs(Some(Box::new(a.clone())));
             }
-            if b.len() != 1 {
-                return Err(Flow::error_call(call.clone(), "invalid argument 'base' of length 0"));
-            }
-            Some(crate::coerce::as_real(b))
         }
-        None => None,
-    };
-    let a = real_view(&x);
+        return Ok(sy);
+    }
+    let n = na.max(nb);
+    let a = real_view(sa);
+    let b = real_view(sb);
     let mut naflag = false;
-    let out: Vec<f64> = a
-        .iter()
-        .map(|&v| {
-            if v.is_nan() {
-                return v;
+    let out: Vec<f64> = (0..n)
+        .map(|k| {
+            let (ai, bi) = (a[k % na], b[k % nb]);
+            // if_NA_Math2_set
+            if is_na_real(ai) || is_na_real(bi) {
+                NA_REAL
+            } else if ai.is_nan() || bi.is_nan() {
+                f64::NAN
+            } else {
+                let y = logbase(ai, bi);
+                if y.is_nan() {
+                    naflag = true;
+                }
+                y
             }
-            let r = match base {
-                None => v.ln(),
-                Some(b) if b == 10.0 => v.log10(),
-                Some(b) if b == 2.0 => v.log2(),
-                Some(b) => v.ln() / b.ln(),
-            };
-            if r.is_nan() {
-                naflag = true;
-            }
-            r
         })
         .collect();
-    let mut val = Value::reals(out);
-    if let Some(at) = x.attrs() {
-        val.set_attrs(Some(Box::new(at.clone())));
-    }
+    let mut sy = Value::reals(out);
+    // FINISH_Math2
     if naflag {
-        i.warningcall(call, "NaNs produced")?;
+        i.warning("NaNs produced")?;
     }
-    Ok(val)
+    if n == na {
+        if let Some(a) = sa.attrs() {
+            sy.set_attrs(Some(Box::new(a.clone())));
+        }
+    } else if n == nb {
+        if let Some(b) = sb.attrs() {
+            sy.set_attrs(Some(Box::new(b.clone())));
+        }
+    }
+    Ok(sy)
+}
+
+/// `z_logbase` over recycled operands (R: complex.c:complex_math2 for
+/// the log family). The warning is a plain `warning()` like R's.
+fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, name: &str) -> RResult<Value> {
+    let _ = call;
+    let mut w = CoerceWarnings::default();
+    let a = crate::coerce::to_cplx(sx, &mut w);
+    let b = crate::coerce::to_cplx(sbase, &mut w);
+    w.emit(i)?;
+    let (na, nb) = (a.len(), b.len());
+    if na == 0 || nb == 0 {
+        return Ok(Value::cplxs(vec![]));
+    }
+    let n = na.max(nb);
+    let mut naflag = false;
+    let out: Vec<Complex> = (0..n)
+        .map(|k| {
+            let ai = a[k % na];
+            let bi = b[k % nb];
+            if is_na_real(ai.re) && is_na_real(ai.im) && is_na_real(bi.re) && is_na_real(bi.im) {
+                Complex::NA
+            } else {
+                // z_logbase: clog(z)/clog(base)
+                let r = super::complex::cdiv(super::complex::clog(ai), super::complex::clog(bi));
+                if (r.re.is_nan() || r.im.is_nan())
+                    && !(ai.re.is_nan() || ai.im.is_nan() || bi.re.is_nan() || bi.im.is_nan())
+                {
+                    naflag = true;
+                }
+                r
+            }
+        })
+        .collect();
+    let mut sy = Value::cplxs(out);
+    if naflag {
+        i.warning(format!("NaNs produced in function \"{}\"", name))?;
+    }
+    if n == na {
+        if let Some(a) = sx.attrs() {
+            sy.set_attrs(Some(Box::new(a.clone())));
+        }
+    } else if n == nb {
+        if let Some(b) = sbase.attrs() {
+            sy.set_attrs(Some(Box::new(b.clone())));
+        }
+    }
+    Ok(sy)
+}
+
+/// `log(x, base)`: a special so that `log(x, base)` can dispatch on x
+/// before base is evaluated.
+// R: arithmetic.c:do_log / do_log_builtin
+fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // evalListKeepMissing: evaluate the arguments, keeping the missing
+    // markers (an explicit `x=` stays missing).
+    let mut ev: Vec<Arg> = Vec::with_capacity(args.len());
+    for a in &args {
+        let v = if a.value.is_missing_arg() { a.value.clone() } else { i.eval(&a.value, env)? };
+        ev.push(Arg::new(a.tag, v));
+    }
+    let is_tag = |a: &Arg, names: &[&str]| a.tag.is_none_or(|t| names.contains(&&*t.name()));
+    if ev.len() == 1 && is_tag(&ev[0], &["x"]) {
+        let x = &ev[0].value;
+        if !x.is_missing_arg() && !x.is_object() {
+            if let Value::Cplx(_) = x {
+                return complex_math1(i, call, x, "log");
+            }
+            return math1(i, call, vec![ev[0].clone()], env, "log", r_log);
+        }
+    } else if ev.len() == 2 && is_tag(&ev[0], &["x"]) && is_tag(&ev[1], &["base"]) {
+        let (x, y) = (&ev[0].value, &ev[1].value);
+        if !x.is_missing_arg() && !y.is_missing_arg() && !x.is_object() && !y.is_object() {
+            if matches!(x, Value::Cplx(_)) || matches!(y, Value::Cplx(_)) {
+                return log_complex_math2(i, call, x, y, "log");
+            }
+            return log_math2(i, call, x, y);
+        }
+    }
+    // General path: match the argument names like R's do_log (the
+    // matched call has exactly the formals x and base).
+    let missing_x_err = |call: &Value| Flow::error_call(call.clone(), "argument \"x\" is missing, with no default");
+    if ev.is_empty() {
+        return Err(missing_x_err(call));
+    }
+    if ev.len() == 1 {
+        // R's n == 1 branch never calls matchArgs_NR: the tag must be
+        // missing or exactly "x", and the value present.
+        let a = &ev[0];
+        if a.value.is_missing_arg() || a.tag.is_some_and(|t| &*t.name() != "x") {
+            return Err(missing_x_err(call));
+        }
+    }
+    // matchArgs_NR: signals the first unused argument onward.
+    let m = super::match_args(ev, &["x", "base"], call)?;
+    let x = m.vals[0].clone().unwrap_or_else(Value::missing_arg);
+    if x.is_missing_arg() {
+        return Err(missing_x_err(call));
+    }
+    let base = m.vals[1].clone().unwrap_or_else(|| Value::real(std::f64::consts::E));
+    if base.is_object() || x.is_object() {
+        // DispatchGroup("Math", ...) with the matched args.
+        let dargs = vec![Arg::new(Some(s::X), x.clone()), Arg::new(Some(Sym::new("base")), base.clone())];
+        if let Some(r) = i.try_dispatch_group("Math", "log", call, &dargs, env)? {
+            return Ok(r);
+        }
+    }
+    if base.len() == 0 {
+        return Err(Flow::error_call(call.clone(), "invalid argument 'base' of length 0"));
+    }
+    if matches!(x, Value::Cplx(_)) || matches!(base, Value::Cplx(_)) {
+        return log_complex_math2(i, call, &x, &base, "log");
+    }
+    log_math2(i, call, &x, &base)
 }
 
 #[allow(dead_code)]
