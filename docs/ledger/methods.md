@@ -44,6 +44,27 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: relation to core.md §13 (methods.so's entry points)
+
+- core.md §13 lists the 22 non-API entry points GNU R's methods.so would
+  import. Every one of them now exists in the runtime (`s4.rs`), and the
+  S4 bit and OBJSXP cross the bridge both ways. The methods natives
+  themselves are served by `native/methods.rs`; `scripts/build-natives.sh`
+  builds only stats by default, so `dyn.load` keeps using the port unless
+  someone builds methods.so explicitly.
+- To make methods.so loadable later (a measurement, not a switch), the C
+  side of those entry points would be thin host callbacks into `s4.rs`:
+  `R_set_standardGeneric_ptr`/`R_set_quick_method_check` (store the C
+  function pointers and call them from `Interp::standard_generic` /
+  `possible_dispatch`), `R_execMethod`, the `prim_*` tables,
+  `R_findVarLocInFrame`/`R_GetVarLocMISSING` (`s4::binding_missing`).
+  Expected costs, from the bridge's design (core.md §6): argument copies on
+  every dispatch and a lost in-place `R_set_slot` (which `initialize()`
+  relies on), so the port stays the default until G3.
+- Already in libR (robigo-capi `objects.rs`, for packages): `R_do_slot`,
+  `R_do_slot_assign`, `R_has_slot`, `R_do_new_object`, `R_do_MAKE_CLASS`,
+  `R_getClassDef`, `Rf_asS4`.
+
 ## 2026-10-28: Rcpp loads and runs; S4 environments; zero-cost OBJSXP; full corpus
 
 - **Rcpp from source inside robigo.** With robigo's R_HOME
