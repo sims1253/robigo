@@ -15,6 +15,58 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: argument vectors reused; scalar results returned unboxed to compiled callers
+
+- why: per call, fib allocated the argument vector (1 allocation), the
+  boxed result at `Return` (2: `Rc<Vector>` + `Vec`) and the boxed
+  caller-forced argument (2), plus the promise and the environment.
+- what:
+  1. `Interp::arg_pool`: `end_context` clears the finished call's argument
+     vector and keeps it (up to 64); `promise_args_with` and
+     `caller_promargs` take one (`Interp::arg_vec`). Empty argument lists
+     allocate nothing and skip the pool.
+  2. Unboxed results: `Op::Call` calls closures through `closure_call` ->
+     `Interp::call_closure_ex(.., unboxed = true)` -> `apply_closure_ex`
+     -> `exec_closure_ex` -> `vm::run_closure(.., unboxed)`. The request
+     travels as a parameter (a global flag could be taken by a condition
+     handler run before the callee starts). The callee's `Return`/end of
+     body (`body_result`) leaves a double/integer/logical scalar in
+     `Interp::unboxed_ret` and returns a placeholder, only when the frame
+     has no `on.exit` code: then nothing runs between the return and the
+     caller taking the value. The existing `call_closure`/`apply_closure`/
+     `exec_closure` are wrappers passing `false`.
+  3. To keep the dispatch loop's code from getting worse (each step
+     measured by instruction and by source line against main): the flag
+     lives in `Vars` rather than as a `run_with` parameter; the slow paths
+     of `SetIndex`/`SetIndex2`/`SetDollar` (complex assignment) moved to the
+     cold `set_index_slow`; the closure arm of `Op::Call` to
+     `closure_call`; `body_result` inlined.
+- rejected, measured: a `run_with` parameter for the flag (+12
+  instructions per iteration of flushing loops), the flag in `Context`
+  (`fannkuch` +1.1%), the result slot as a thread-local instead of an
+  `Interp` field (no change in the loop, more per call), `body_result` out
+  of line (`profiler-microbenchmark` +0.73%).
+- tests: `tests/r/basics/unboxed-returns.R` (invisible results,
+  `on.exit`, `return()`, warnings handled mid-loop, `tryCatch` around a
+  failing callee, recursion, named/attributed results, `sys.function`,
+  `Recall`).
+- result against main 963b3cf (13 faster, none slower):
+
+  | benchmark | instructions | x GNU R | allocations |
+  |---|---|---|---|
+  | `fib` | -5.0% | 1.03 -> **0.98** | 2.09M -> 1.35M (-35%) |
+  | `robigo/binarytrees` | -1.5% | 1.01 -> **1.00** | 1.95M -> 1.42M (-27%) |
+  | `fasta` | -17.8% | 1.18 -> **0.97** | 1.71M -> 1.18M (-31%) |
+  | `fastaredux` | -21.4% | 1.22 -> **0.96** | 1.83M -> 1.21M (-34%) |
+  | `spectralnorm_alt_3` | -38.8% | 1.35 -> **0.82** | 3.08M -> 0.84M (-73%) |
+  | `profiler-shared` | -3.6% | | 9.40M -> 4.89M (-48%) |
+
+  geomean 0.665 -> 0.653, faster than GNU R on 57 -> 64; kept.
+- carries over to G3: the calling convention (an unboxed scalar result
+  for a compiled caller that asked, requested by parameter and handed over
+  only where nothing can run in between) and argument-vector reuse. With
+  G2's scalars the boxes get cheaper, but not free.
+
 ## 2026-10-28: conformance item: GNU R binds base functions when its JIT compiles a closure
 
 - finding (from caller-forced-promises tests): after `g <- function(n) if (n < 2) ...` has

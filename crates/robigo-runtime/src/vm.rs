@@ -248,6 +248,10 @@ struct Vars<'a> {
     /// `env::r_epoch()` when the cached (clean) values were valid: R code
     /// that ran since may have changed the variables.
     epoch: u64,
+    /// The compiled caller takes a scalar result unboxed (see
+    /// `run_closure`). (Here rather than a `run_with` parameter, which
+    /// costs the dispatch loop a register.)
+    unboxed: bool,
 }
 
 impl Vars<'_> {
@@ -559,6 +563,53 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
         }
     }
     Ok(())
+}
+
+/// The general case of `Op::SetIndex`/`Op::SetIndex2`/`Op::SetDollar`
+/// (`x[i] <- val`, `x[i, j] <- val`, `x$name <- val`: no `idx`; call
+/// `consts[k]`), after a flush: the complex
+/// assignment with `val`'s value and, where an index was evaluated into a
+/// register (or, for two indices, any is), the indices' values.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_index_slow(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    vars: &mut Vars<'_>,
+    slot: Slot,
+    idx: &[&Leaf],
+    val: Reg,
+    k: u32,
+) -> RResult<()> {
+    let whole = &code.consts[k as usize];
+    let Value::Lang(l) = whole else { unreachable!() };
+    let rhs = regs[val as usize].to_value();
+    let pre = match idx {
+        [Leaf::R(r)] => Some(vec![regs[*r as usize].to_value()]),
+        [_] => None,
+        [i, j] if matches!(i, Leaf::R(_)) || matches!(j, Leaf::R(_)) => {
+            let iv = leaf_value(interp, vars, env, regs, i)?.to_value();
+            let jv = leaf_value(interp, vars, env, regs, j)?.to_value();
+            Some(vec![iv, jv])
+        }
+        _ => None,
+    };
+    let r = crate::builtins::lang::complex_assign_pre(
+        interp,
+        whole,
+        &l.args[0].value,
+        &l.args[1].value,
+        rhs,
+        env,
+        false,
+        pre.as_deref(),
+    );
+    // The assignment rebound `x` in the frame.
+    vars.slots[slot as usize] = SlotVal::Empty;
+    signal(interp, r.map(|_| Value::Null)).map(|_| ())
 }
 
 /// The general case of `Op::Index` (`x[i]` / `x[[i]]`, call `consts[k]`),
@@ -1558,6 +1609,38 @@ fn inline_site_call(
     })
 }
 
+/// `Op::Call` of the closure `clo` (call site `site`, call `l`): promised
+/// arguments (some forced by the caller, see [`caller_promargs`]), then
+/// the call, whose compiled body may leave a scalar result unboxed.
+#[inline(never)]
+fn closure_call(
+    interp: &mut Interp,
+    site: &CallSite,
+    clo: &Rc<Closure>,
+    l: &crate::value::Lang,
+    env: &Env,
+    vars: &mut Vars<'_>,
+    regs: &[RVal],
+) -> RResult<RVal> {
+    let promargs = if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
+        caller_promargs(interp, site, clo, l, env, vars, regs)
+    } else {
+        interp.promise_args_with(&l.args, env, &site.codes)
+    };
+    let r = match promargs {
+        Ok(promargs) => match force_args(interp, &promargs, site.force) {
+            Ok(()) => interp.call_closure_ex(&site.call, clo, promargs, env, true),
+            Err(e) => signal(interp, Err(e)),
+        },
+        Err(e) => signal(interp, Err(e)),
+    };
+    let v = r?;
+    Ok(match interp.unboxed_ret.take() {
+        Some(r) => r,
+        None => RVal::V(v),
+    })
+}
+
 /// The promised arguments of a call of `clo` at `site`. Where the body
 /// forces a formal before anything that may run R code (`Code::strict`,
 /// with all its guards known to hold), evaluating that argument here
@@ -1576,7 +1659,7 @@ fn caller_promargs(
     regs: &[RVal],
 ) -> RResult<Vec<Arg>> {
     if let Some(eager) = eager_args(interp, site, clo, env, vars, regs) {
-        let mut out = Vec::with_capacity(l.args.len());
+        let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
             out.push(match (v, &a.value) {
                 (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))),
@@ -1664,6 +1747,22 @@ fn eager_args(
         any = true;
     }
     any.then_some(out)
+}
+
+/// The value a closure body returns: a scalar stays unboxed when the compiled caller asked (`unboxed`) and the
+/// frame has no `on.exit` code (which would run before the caller takes
+/// it), with `NULL` as the placeholder; otherwise boxed.
+#[inline]
+fn body_result(interp: &mut Interp, r: RVal, unboxed: bool) -> Value {
+    if unboxed
+        && matches!(r, RVal::D(_) | RVal::I(_) | RVal::L(_))
+        && interp.frames.last().is_some_and(|c| c.on_exit.is_empty())
+        && !crate::typeprof::enabled()
+    {
+        interp.unboxed_ret = Some(r);
+        return Value::Null;
+    }
+    r.into_value()
 }
 
 /// Evaluate code that is a single guarded operation on constants and
@@ -2067,7 +2166,7 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
 }
 
 pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
-    run_pre(interp, code, env, false)
+    run_pre(interp, code, env, false, false)
 }
 
 /// Run a closure body in its fresh call frame `env`. For a closure defined
@@ -2078,10 +2177,15 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
 /// holds, per version of its function bindings, for a closure defined in a
 /// frame directly below the search path (say a helper defined in a function
 /// called from the global environment) that is called repeatedly.
-pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure) -> RResult<Value> {
+///
+/// With `unboxed` (the compiled caller asked, `Interp::call_closure_ex`), a
+/// scalar result of a frame without `on.exit`
+/// code is left unboxed (see [`body_result`]) and a placeholder returned:
+/// nothing runs between the return and the caller taking it.
+pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
     let pre = code.nguards > 0
         && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
-    run_pre(interp, code, env, pre)
+    run_pre(interp, code, env, pre, unboxed)
 }
 
 #[inline]
@@ -2127,7 +2231,7 @@ fn guards_hold_fresh(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
         && code.guard_syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env))
 }
 
-fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Value> {
+fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool) -> RResult<Value> {
     // Registers and slots live on the Rust stack for typical code, so a
     // call does not allocate them.
     // (Sized for typical base-R functions, which a call should not have
@@ -2155,8 +2259,15 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Va
         }
         slots.set_len(code.vars.len());
     }
-    let mut vars =
-        Vars { slots: &mut slots, any: false, dirty: false, vclean: false, touched: 0, epoch: crate::env::r_epoch() };
+    let mut vars = Vars {
+        slots: &mut slots,
+        any: false,
+        dirty: false,
+        vclean: false,
+        touched: 0,
+        epoch: crate::env::r_epoch(),
+        unboxed,
+    };
     // Valid in the first flush generation (see `run_with`).
     let init = pre as u32;
     let mut small = std::mem::MaybeUninit::<[u32; 128]>::uninit();
@@ -2692,28 +2803,7 @@ fn run_with(
                 };
                 if !done {
                     flush!();
-                    let whole = &code.consts[*k as usize];
-                    let Value::Lang(l) = whole else { unreachable!() };
-                    let rhs = regs[*val as usize].to_value();
-                    let pre = if matches!(i, Leaf::R(_)) || matches!(j, Leaf::R(_)) {
-                        let iv = tryop!(leaf_value(interp, &mut vars, env, regs, i)).to_value();
-                        let jv = tryop!(leaf_value(interp, &mut vars, env, regs, j)).to_value();
-                        Some(vec![iv, jv])
-                    } else {
-                        None
-                    };
-                    let r = crate::builtins::lang::complex_assign_pre(
-                        interp,
-                        whole,
-                        &l.args[0].value,
-                        &l.args[1].value,
-                        rhs,
-                        env,
-                        false,
-                        pre.as_deref(),
-                    );
-                    vars.slots[*slot as usize] = SlotVal::Empty;
-                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k));
                 }
             }
             Op::SetDollar { val, x, slot, name, k } => {
@@ -2725,21 +2815,7 @@ fn run_with(
                     };
                 if !done {
                     flush!();
-                    let whole = &code.consts[*k as usize];
-                    let Value::Lang(l) = whole else { unreachable!() };
-                    let rhs = regs[*val as usize].to_value();
-                    let r = crate::builtins::lang::complex_assign_pre(
-                        interp,
-                        whole,
-                        &l.args[0].value,
-                        &l.args[1].value,
-                        rhs,
-                        env,
-                        false,
-                        None,
-                    );
-                    vars.slots[*slot as usize] = SlotVal::Empty;
-                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k));
                 }
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
@@ -2765,26 +2841,7 @@ fn run_with(
                 };
                 if !done {
                     flush!();
-                    let whole = &code.consts[*k as usize];
-                    let Value::Lang(l) = whole else { unreachable!() };
-                    let rhs = regs[*val as usize].to_value();
-                    let pre = match i {
-                        Leaf::R(r) => Some(vec![regs[*r as usize].to_value()]),
-                        _ => None,
-                    };
-                    let r = crate::builtins::lang::complex_assign_pre(
-                        interp,
-                        whole,
-                        &l.args[0].value,
-                        &l.args[1].value,
-                        rhs,
-                        env,
-                        false,
-                        pre.as_deref(),
-                    );
-                    // The assignment rebound `x` in the frame.
-                    vars.slots[*slot as usize] = SlotVal::Empty;
-                    tryop!(signal(interp, r.map(|_| Value::Null)));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k));
                 }
             }
             Op::CallBuiltin { dst, f, args, call } => {
@@ -2929,20 +2986,7 @@ fn run_with(
                 };
                 let v = match (&fun, &site.call) {
                     (Value::Closure(clo), Value::Lang(l)) => {
-                        let promargs =
-                            if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
-                                caller_promargs(interp, site, clo, l, env, vars, regs)
-                            } else {
-                                interp.promise_args_with(&l.args, env, &site.codes)
-                            };
-                        let r = match promargs {
-                            Ok(promargs) => match force_args(interp, &promargs, site.force) {
-                                Ok(()) => interp.call_closure(&site.call, clo, promargs, env),
-                                Err(e) => signal(interp, Err(e)),
-                            },
-                            Err(e) => signal(interp, Err(e)),
-                        };
-                        tryop!(r)
+                        tryop!(closure_call(interp, site, clo, l, env, vars, regs))
                     }
                     // A builtin (say the value of a variable): its arguments
                     // through their bytecode, left to right, as evalList.
@@ -2967,11 +3011,11 @@ fn run_with(
                             argv.push(Arg::new(a.tag, v));
                         }
                         let r = interp.invoke_builtin(b, &site.call, argv, env);
-                        tryop!(signal(interp, r))
+                        RVal::V(tryop!(signal(interp, r)))
                     }
-                    _ => tryop!(interp.eval(&site.call, env)),
+                    _ => RVal::V(tryop!(interp.eval(&site.call, env))),
                 };
-                regs[*dst as usize] = RVal::V(v);
+                regs[*dst as usize] = v;
             }
             Op::Colon { dst, a, b, call } => {
                 let range = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
@@ -3005,10 +3049,11 @@ fn run_with(
                 if !(code.is_body && frame_dies(interp, env)) {
                     flush!();
                 }
-                let v = std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null)).into_value();
+                let r = std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null));
                 if code.is_body {
-                    return Ok(v);
+                    return Ok(body_result(interp, r, vars.unboxed));
                 }
+                let v = r.into_value();
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {
@@ -3081,7 +3126,8 @@ fn run_with(
     if !(code.is_body && frame_dies(interp, env)) {
         vars.flush(interp, env, &code.vars)?;
     }
-    Ok(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)).into_value())
+    let r = std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null));
+    Ok(if code.is_body { body_result(interp, r, vars.unboxed) } else { r.into_value() })
 }
 
 /// Executed ops by kind (`--features op-stats`).

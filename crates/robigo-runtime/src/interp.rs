@@ -69,6 +69,12 @@ pub struct Interp {
     /// Cache of function lookups through the search path, keyed by symbol
     /// and starting environment, valid for `fun_cache_epoch`.
     pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,
+    /// Argument vectors of finished calls, cleared, for the next calls'
+    /// promised arguments (a call then allocates no vector).
+    pub arg_pool: Vec<Vec<Arg>>,
+    /// A scalar result a compiled closure body returned unboxed to the
+    /// compiled caller that asked for it (`call_closure_ex`).
+    pub unboxed_ret: Option<crate::vm::RVal>,
     pub fun_cache_epoch: u64,
     /// Name of the script being run (for type profiles).
     pub source_name: String,
@@ -156,6 +162,8 @@ impl Interp {
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
             fun_cache: HashMap::default(),
+            arg_pool: Vec::new(),
+            unboxed_ret: None,
             fun_cache_epoch: u64::MAX,
             source_name: "<text>".to_string(),
             cli_args: None,
@@ -485,6 +493,20 @@ impl Interp {
     /// Evaluate `call`, whose function is the closure `clo`, as `eval` does
     /// (nesting limit, signaling errors), with promised arguments.
     pub fn call_closure(&mut self, call: &Value, clo: &Rc<Closure>, promargs: Vec<Arg>, env: &Env) -> RResult<Value> {
+        self.call_closure_ex(call, clo, promargs, env, false)
+    }
+
+    /// [`Self::call_closure`]; with `unboxed`, a compiled body may leave a
+    /// scalar result unboxed (returning a placeholder) for the compiled
+    /// caller that asked (see `vm::run_closure`).
+    pub fn call_closure_ex(
+        &mut self,
+        call: &Value,
+        clo: &Rc<Closure>,
+        promargs: Vec<Arg>,
+        env: &Env,
+        unboxed: bool,
+    ) -> RResult<Value> {
         self.visible = true;
         self.check_stack()?;
         self.depth += 1;
@@ -498,7 +520,7 @@ impl Interp {
             });
             return Err(self.signal_error(err));
         }
-        let r = self.apply_closure(call, clo, promargs, env, None);
+        let r = self.apply_closure_ex(call, clo, promargs, env, None, unboxed);
         self.depth -= 1;
         match r {
             Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
@@ -556,7 +578,10 @@ impl Interp {
         env: &Env,
         codes: &[Option<Rc<crate::compile::Code>>],
     ) -> RResult<Vec<Arg>> {
-        let mut out = Vec::with_capacity(args.len());
+        if args.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = self.arg_vec(args.len());
         for (i, a) in args.iter().enumerate() {
             match &a.value {
                 Value::Sym(sym) if *sym == s::DOTS => match env.lookup(s::DOTS) {
@@ -577,6 +602,19 @@ impl Interp {
             }
         }
         Ok(out)
+    }
+
+    /// An empty argument vector with room for `n`, reused from a finished
+    /// call when there is one.
+    #[inline]
+    pub fn arg_vec(&mut self, n: usize) -> Vec<Arg> {
+        match self.arg_pool.pop() {
+            Some(mut v) => {
+                v.reserve(n);
+                v
+            }
+            None => Vec::with_capacity(n),
+        }
     }
 
     /// Evaluate arguments for a builtin; expand `...`.
@@ -765,6 +803,19 @@ impl Interp {
         callenv: &Env,
         dispatch_vars: Option<Vec<(Sym, Value)>>,
     ) -> RResult<Value> {
+        self.apply_closure_ex(call, clo, promargs, callenv, dispatch_vars, false)
+    }
+
+    /// [`Self::apply_closure`]; `unboxed` as for [`Self::call_closure_ex`].
+    pub fn apply_closure_ex(
+        &mut self,
+        call: &Value,
+        clo: &Rc<Closure>,
+        promargs: Vec<Arg>,
+        callenv: &Env,
+        dispatch_vars: Option<Vec<(Sym, Value)>>,
+        unboxed: bool,
+    ) -> RResult<Value> {
         let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
         let bind = |k: usize, tag: Sym, f: &Arg, a: Option<Value>| match a {
             Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
@@ -799,7 +850,7 @@ impl Interp {
             Some(c) if c.generic => c.sysparent.clone(),
             _ => callenv.clone(),
         };
-        self.exec_closure(call, clo, promargs, newenv, sysparent)
+        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
     }
 
     pub fn exec_closure(
@@ -809,6 +860,19 @@ impl Interp {
         promargs: Vec<Arg>,
         newenv: Env,
         sysparent: Env,
+    ) -> RResult<Value> {
+        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, false)
+    }
+
+    /// [`Self::exec_closure`]; `unboxed` as for [`Self::call_closure_ex`].
+    pub fn exec_closure_ex(
+        &mut self,
+        call: &Value,
+        clo: &Rc<Closure>,
+        promargs: Vec<Arg>,
+        newenv: Env,
+        sysparent: Env,
+        unboxed: bool,
     ) -> RResult<Value> {
         crate::env::bump_r_epoch();
         self.frames.push(Context {
@@ -829,7 +893,7 @@ impl Interp {
             None
         };
         let r = match code {
-            Some(code) => crate::vm::run_closure(self, &code, &newenv, clo),
+            Some(code) => crate::vm::run_closure(self, &code, &newenv, clo, unboxed),
             None => self.eval(&clo.body, &newenv),
         };
         let r = match r {
@@ -869,6 +933,11 @@ impl Interp {
         let ctx = self.frames.pop().unwrap();
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;
+        let mut promargs = ctx.promargs;
+        if promargs.capacity() != 0 && self.arg_pool.len() < 64 {
+            promargs.clear();
+            self.arg_pool.push(promargs);
+        }
         result
     }
 

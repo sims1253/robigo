@@ -9,6 +9,7 @@ tests/r/basics/int-arith-kernels.R
 tests/r/basics/local-fun-calls.R
 tests/r/basics/mod-ldouble.R
 tests/r/basics/print-numbers.R
+tests/r/basics/unboxed-returns.R
 tests/r/basics/vectors.R
 tests/r/cli/chunks.R
 tests/r/cli/comment-chunks.R
