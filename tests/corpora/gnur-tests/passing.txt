@@ -1,5 +1,6 @@
 any-all
 array-subset
+conditions
 d-p-q-r-tests
 datetime
 datetime2

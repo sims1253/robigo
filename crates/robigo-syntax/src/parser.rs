@@ -162,7 +162,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     // on it wins over `checkForPlaceholder` (as in `program`).
     if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
         if p.saw_placeholder && contains_placeholder(&e) {
-            return ConsoleStatus::Error(p.statement_check_error());
+            return ConsoleStatus::Error(p.statement_check_error(&e));
         }
         return ConsoleStatus::Ok(vec![e], p.warnings);
     }
@@ -263,7 +263,8 @@ impl<'a> Parser<'a> {
             end: t.span.end as usize,
             incomplete: matches!(t.tok, Tok::Eof),
             at_eof: matches!(t.tok, Tok::Eof),
-            with_pos_suffix: false,
+            style: ErrorStyle::Grammar,
+            call: None,
             fixed_line_col: None,
         }
     }
@@ -284,8 +285,13 @@ impl<'a> Parser<'a> {
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr<'a>>, ParseError> {
+        self.program_n(usize::MAX)
+    }
+
+    // R: gram.y:R_ParseVector, stop after the requested number of statements.
+    pub fn program_n(&mut self, n: usize) -> Result<Vec<Expr<'a>>, ParseError> {
         let mut out = Vec::new();
-        loop {
+        while out.len() < n {
             while matches!(self.toks[self.pos].tok, Tok::Newline) {
                 self.pos += 1;
             }
@@ -300,7 +306,7 @@ impl<'a> Parser<'a> {
             // completes; a syntax error on the terminator wins over it.
             if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
                 if self.saw_placeholder && contains_placeholder(&e) {
-                    return Err(self.statement_check_error());
+                    return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
                 self.pos += 1;
@@ -308,7 +314,7 @@ impl<'a> Parser<'a> {
             }
             if matches!(self.toks[self.pos].tok, Tok::Eof) {
                 if self.saw_placeholder && contains_placeholder(&e) {
-                    return Err(self.statement_check_error());
+                    return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
                 break;
@@ -322,7 +328,7 @@ impl<'a> Parser<'a> {
     /// The position of a `checkForPlaceholder` failure: the terminator
     /// already peeked at (`;` at its own column; a newline at column 0 of
     /// its own line; end of input likewise).
-    fn statement_check_error(&self) -> ParseError {
+    fn statement_check_error(&self, expr: &Expr) -> ParseError {
         let t = &self.toks[self.pos];
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
@@ -341,7 +347,9 @@ impl<'a> Parser<'a> {
             end: (t.span.end as usize).max(t.span.start as usize + 1),
             incomplete: false,
             at_eof: false,
-            with_pos_suffix: true,
+            style: ErrorStyle::Condition,
+            // R: gram.y:R_Parse1 passes R_CurrentExpr as the condition's call.
+            call: Some(Box::new(ErrorExpr::from_expr(expr))),
             fixed_line_col: Some((line, col)),
         }
     }
@@ -398,16 +406,12 @@ impl<'a> Parser<'a> {
                     // `// R: gram.y:xxpipebind`: `=>` is disabled unless
                     // `_R_USE_PIPEBIND_` asks for it.
                     if !pipebind_enabled() {
-                        return Err(ParseError {
-                            message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it"
-                                .into(),
-                            offset: t.span.start as usize,
-                            end: t.span.end as usize,
-                            incomplete: false,
-                            at_eof: false,
-                            with_pos_suffix: true,
-                            fixed_line_col: None,
-                        });
+                        return Err(ParseError::condition(
+                            "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it",
+                            t.span.start as usize,
+                            t.span.end as usize,
+                            None,
+                        ));
                     }
                     let span = lhs.span().to(rhs.span());
                     call2(arena, "=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
@@ -463,35 +467,31 @@ impl<'a> Parser<'a> {
     /// `TagArg`/`xxfuncall`): a zero-length argument tag or function
     /// name. GNU R raises this from `error()`, with no position.
     fn zero_length_name_error(&self) -> ParseError {
-        ParseError {
-            message: "attempt to use zero-length variable name".into(),
-            offset: 0,
-            end: 1,
-            incomplete: false,
-            at_eof: false,
-            with_pos_suffix: false,
-            fixed_line_col: Some((0, 0)),
-        }
+        ParseError::r_error("attempt to use zero-length variable name")
     }
 
     fn pipe(&mut self, lhs: Expr<'a>, rhs: Expr<'a>, _op_span: Span) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
         let rhs_span = rhs.span();
         // `// R: gram.y:xxpipe`
-        let err = |msg: &str| ParseError {
-            message: msg.to_string(),
-            offset: rhs_span.start as usize,
-            end: rhs_span.end as usize,
-            incomplete: false,
-            at_eof: false,
-            with_pos_suffix: true,
-            fixed_line_col: None,
+        // `// R: gram.y:xxpipe`: raiseParseError with the offending RHS
+        // expression as the condition's call.
+        let error_rhs = rhs;
+        let err = |msg: &str| {
+            ParseError::condition(
+                msg,
+                rhs_span.start as usize,
+                rhs_span.end as usize,
+                Some(ErrorExpr::from_expr(&error_rhs)),
+            )
         };
         match rhs {
             Expr::Call { fun, args, span } => {
                 // A placeholder as (or inside) the called function itself.
                 if contains_placeholder(fun) {
-                    return Err(err("pipe placeholder cannot be used in the RHS function"));
+                    let mut e = err("pipe placeholder cannot be used in the RHS function");
+                    e.call = None;
+                    return Err(e);
                 }
                 // `x |> _$a[[1]]`: the placeholder may head a chain of
                 // extractions.
@@ -707,7 +707,8 @@ impl<'a> Parser<'a> {
                     end: formal_span.end as usize,
                     incomplete: false,
                     at_eof: false,
-                    with_pos_suffix: true,
+                    style: ErrorStyle::Condition,
+                    call: None,
                     fixed_line_col: None,
                 });
             }
