@@ -276,7 +276,7 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 }
 
 /// R: array.c:do_array
-fn do_array(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_array(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let vals = arg(&args, 0);
     let t = match vals.vtype() {
         Some(
@@ -294,7 +294,7 @@ fn do_array(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         }
     };
     let lendat = vals.len();
-    let dims = match coerce_quiet(&arg(&args, 1), VType::Int) {
+    let dims = match i.coerce(&arg(&args, 1), VType::Int)? {
         Value::Int(d) => d.data.clone(),
         _ => vec![],
     };
@@ -305,6 +305,11 @@ fn do_array(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let d: f64 = dims.iter().map(|&x| x as f64).product();
     if d > i32::MAX as f64 {
         return Err(Flow::error("too many elements specified"));
+    }
+    // R: array.c:do_array -> memory.c:allocVector3 checks length before
+    // installing dimensions, including a negative dimension product.
+    if d < 0.0 {
+        return Err(Flow::error("negative length vectors are not allowed"));
     }
     let nans = d as usize;
     let mut ans = if nans > 0 && lendat > 0 {
