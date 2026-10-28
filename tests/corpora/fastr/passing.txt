@@ -561,6 +561,7 @@ builtins/TestBuiltin_array/414cfc72a8e006c5
 builtins/TestBuiltin_array/46096f4bc205f8e1
 builtins/TestBuiltin_array/49e9a8e38ecbe006
 builtins/TestBuiltin_array/56b22d0e402e7580
+builtins/TestBuiltin_array/62b2fa7328c3355f
 builtins/TestBuiltin_array/651bfcbbd00399a5
 builtins/TestBuiltin_array/6f2a143379baa94b
 builtins/TestBuiltin_array/7122fdd769bd6123
@@ -7092,6 +7093,7 @@ builtins/TestBuiltin_matchfun/10e6951db982e7f4
 builtins/TestBuiltin_matchfun/1aece6a5ab722c5c
 builtins/TestBuiltin_matchfun/2495b03b9dc8aba8
 builtins/TestBuiltin_matchfun/257fbfb5d447cbed
+builtins/TestBuiltin_matchfun/286d6ff530898be5
 builtins/TestBuiltin_matchfun/2dfbc6e273b312d8
 builtins/TestBuiltin_matchfun/2ef561d8f832414b
 builtins/TestBuiltin_matchfun/3d1a89e7ae082f73
@@ -7105,6 +7107,7 @@ builtins/TestBuiltin_matchfun/594a73a313139fb3
 builtins/TestBuiltin_matchfun/5fc8afccba383bc4
 builtins/TestBuiltin_matchfun/60559b89654391d0
 builtins/TestBuiltin_matchfun/61946adef576e6f6
+builtins/TestBuiltin_matchfun/79a1c086746d2df9
 builtins/TestBuiltin_matchfun/7bd9e146e14e62c0
 builtins/TestBuiltin_matchfun/7be6c3d90e836701
 builtins/TestBuiltin_matchfun/7c262904eeddbd2d
@@ -7116,6 +7119,7 @@ builtins/TestBuiltin_matchfun/8f7ed99ed7269103
 builtins/TestBuiltin_matchfun/96f20ee4df8238b5
 builtins/TestBuiltin_matchfun/98008ad3d2407eee
 builtins/TestBuiltin_matchfun/9976b93f26b01840
+builtins/TestBuiltin_matchfun/9d124e1330308a23
 builtins/TestBuiltin_matchfun/a40bf5d03ac369c9
 builtins/TestBuiltin_matchfun/ab3ad012e5af1c12
 builtins/TestBuiltin_matchfun/abaf604eb0285e72
@@ -12987,6 +12991,7 @@ builtins/TestBuiltin_subset2/f7c3fba2278d23f0
 builtins/TestBuiltin_subset2/fa26d157ca9176d9
 builtins/TestBuiltin_subset_dataframe/1c51bb52da4d8d3f
 builtins/TestBuiltin_subset_dataframe/21e30356e609c23d
+builtins/TestBuiltin_subset_dataframe/4166b1ae4d218ac9
 builtins/TestBuiltin_subset_dataframe/6567638bb6735b08
 builtins/TestBuiltin_subset_dataframe/8e39c3287b3aa1c2
 builtins/TestBuiltin_subset_dataframe/b42456da0ad1c56a
@@ -12994,6 +12999,7 @@ builtins/TestBuiltin_subset_dataframe/b8269d1766a7319c
 builtins/TestBuiltin_subset_dataframe/c0cc78e7da4f2192
 builtins/TestBuiltin_subset_dataframe/da133a3541f0b13b
 builtins/TestBuiltin_subset_dataframe/dc5dffbeecada640
+builtins/TestBuiltin_subset_dataframe/fed7edf9aceb1d88
 builtins/TestBuiltin_substitute/0318cde8585496fc
 builtins/TestBuiltin_substitute/03429c4aab77cb8a
 builtins/TestBuiltin_substitute/04ab927705374980
@@ -16009,6 +16015,7 @@ library/base/TestSimpleArrays/aa5457d7a31192cf
 library/base/TestSimpleArrays/aa7bba1d10b46040
 library/base/TestSimpleArrays/aae70bd2e5ab7dea
 library/base/TestSimpleArrays/ab299342c5304a38
+library/base/TestSimpleArrays/aca2fa53710199c3
 library/base/TestSimpleArrays/af29124b42ad3f40
 library/base/TestSimpleArrays/af96e904c9aecdf3
 library/base/TestSimpleArrays/b08a1a940b6567c3
@@ -25475,6 +25482,7 @@ library/base/TestSimpleVectors/0e9b61332afe90b0
 library/base/TestSimpleVectors/0eb35618ae729dfb
 library/base/TestSimpleVectors/0eb632d7ecee264c
 library/base/TestSimpleVectors/0ecc02a33a7b3dda
+library/base/TestSimpleVectors/0ed140ee246519f4
 library/base/TestSimpleVectors/0efd01a6c2098a7e
 library/base/TestSimpleVectors/0f44a0cf3c5f3be3
 library/base/TestSimpleVectors/0f538e7447c6e839
@@ -26386,6 +26394,7 @@ library/base/TestSimpleVectors/896e4569c12fea3a
 library/base/TestSimpleVectors/898532e1a3a86496
 library/base/TestSimpleVectors/898e4040167692e6
 library/base/TestSimpleVectors/89c39359c421c4ca
+library/base/TestSimpleVectors/89e1d3855abd473a
 library/base/TestSimpleVectors/89f1c0d4fd274d45
 library/base/TestSimpleVectors/8a28a0f492a35d3f
 library/base/TestSimpleVectors/8a4a40fe7db467bd

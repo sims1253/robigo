@@ -820,8 +820,49 @@ fn assign2_level(
             offset = off + pindx[0];
         }
         let fix = type_fix(interp, x, y, 2)?;
-        let target = fix.x_to.unwrap_or_else(|| sexptype(x));
-        if !matches!(target, 19 | 20) && !atomic_which_ok(fix.which) {
+        // R: subassign.c:do_subassign2_dflt's assignment switch. NULL
+        // deletion is handled only for a single subscript above; matrices
+        // must reject the remaining list <- NULL combination (1900).
+        let list_which_ok = matches!(
+            fix.which,
+            1019 | 1319
+                | 1419
+                | 1519
+                | 1619
+                | 1901
+                | 1902
+                | 1903
+                | 1904
+                | 1905
+                | 1906
+                | 1907
+                | 1908
+                | 1910
+                | 1913
+                | 1914
+                | 1915
+                | 1916
+                | 1919
+                | 1920
+                | 1921
+                | 1922
+                | 1923
+                | 1924
+                | 1925
+                | 1999
+                | 2001
+                | 2002
+                | 2006
+                | 2010
+                | 2013
+                | 2014
+                | 2015
+                | 2016
+                | 2020
+                | 2024
+                | 2025
+        );
+        if !list_which_ok && !atomic_which_ok(fix.which) {
             return Err(Flow::error(format!(
                 "incompatible types (from {} to {}) in [[ assignment",
                 type_char(fix.which / 100),
