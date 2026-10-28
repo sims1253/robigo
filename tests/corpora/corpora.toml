@@ -69,3 +69,22 @@ mode = "echo"
 default_packages = "datasets,utils,grDevices,graphics,stats"
 timeout = 300
 importer = "corpus-scripts"
+
+# Help-page examples, demos and plain-R test scripts of pure-R CRAN
+# packages (no compiled code, no compiled dependencies), with the package
+# installed into support/lib by build.sh. Cases are whole scripts that
+# attach a package, the way scripts use one. See
+# tests/corpora/cran-purer/README.md for the packages and their licences.
+[cran-purer]
+description = "Help-page examples, demos and tests of pure-R CRAN packages (R6, withr, assertthat, proto, R.methodsS3)"
+mode = "script"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 120
+support = "support"
+build = "build.sh"
+importer = "corpus-scripts"
+url = "https://cloud.r-project.org"
+
+[cran-purer.env]
+# with_path examples print PATH. Pin it independently of the caller.
+PATH = "/usr/local/bin:/usr/bin"
