@@ -43,23 +43,29 @@ pub enum Const {
     Str(Option<Vec<u8>>),
 }
 
+/// Names are shared: one `Rc<str>` per distinct name per parse (the
+/// parser interns), so trees hold one allocation for the thousands of
+/// `+`, `$` or `x` nodes a source produces. GNU R does the same with its
+/// interned symbol table.
+pub type Name = std::rc::Rc<str>;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arg {
-    pub name: Option<String>,
+    pub name: Option<Name>,
     /// `None` is the empty argument, as in `x[, 1]`.
     pub value: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Formal {
-    pub name: String,
+    pub name: Name,
     pub default: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Const(Const, Span),
-    Sym(String, Span),
+    Sym(Name, Span),
     /// The pipe placeholder `_`, the string constant `"_"` in GNU R's
     /// trees (`R_PlaceholderToken`). Kept distinct so that only real
     /// placeholders trigger GNU R's post-statement check, and so pipes can
@@ -85,8 +91,8 @@ impl Expr {
         }
     }
 
-    pub fn call(name: &str, name_span: Span, args: Vec<Arg>, span: Span) -> Expr {
-        Expr::Call { fun: Box::new(Expr::Sym(name.to_string(), name_span)), args, span }
+    pub fn call(name: Name, name_span: Span, args: Vec<Arg>, span: Span) -> Expr {
+        Expr::Call { fun: Box::new(Expr::Sym(name, name_span)), args, span }
     }
 
     /// The function name, if this is a call to a symbol.
