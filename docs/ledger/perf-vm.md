@@ -15,6 +15,79 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: `x[[i]] <- v` in native loops
+
+- why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
+  GNU R) never ran natively: the JIT accepted `SetIndex` only for `[`
+  (`supported`: `two` rejected).
+- what: native code's `SetIndex` handles attribute-free double and
+  integer vectors with an in-range scalar index and a double/integer/
+  logical value. On exactly those, `x[[i]] <- v` does what `x[i] <- v`
+  does, and anything else (out of range, other types, lists, a zero or NA
+  index) deoptimizes to the VM op as for `[`. So `[[` is accepted too.
+- tests: `tests/r/subset/assign-elt2-loops.R`: loops inside functions,
+  long enough to be compiled (`ROBIGO_JIT_TRACE` shows them compiled, one
+  continuing in the VM after a deopt), with the edge cases after
+  compilation (growth past the end, a double into an integer vector, NA,
+  names, a list, an index of 0, logical values). JIT on and off print
+  GNU R's output.
+- result against the previous commit (5 faster, none slower):
+  `vectorWhile` -80.6%, `vectorFor` -77.3%, `spectralnorm` -59.9% (its
+  `eval_A_col[[j + 1]] <- eval_A(i, j)` loop now compiles with the inlined
+  call), `fastaredux*` -0.9%. Ratios: `vectorFor` 1.08 -> **0.25**,
+  `vectorWhile` 1.07 -> **0.21**, `spectralnorm` 0.54 -> **0.22**; geomean
+  0.630 -> 0.597, faster than GNU R on 65 -> 67; kept.
+- carries over to G3: the rule (a `[[<-` on an attribute-free atomic
+  vector with an in-range scalar index is `[<-`).
+
+## 2026-10-28: `sym <<- expr` in the VM, scalars updated in place
+
+- why: `simple/superWhile` (`while (x < n) x <<- x + 1` on a free variable,
+  1.00x GNU R) cost 3,510 instructions per iteration: `<<-` ran in the
+  interpreter (`do_super_assign` evaluating `x + 1` through `eval`,
+  `call_builtin`, `do_arith`, then `super_assign` -> `define`), boxing a
+  new double each time (two allocations). GNU R's bytecode updates a
+  scalar binding in place.
+- what: `x <<- expr` with a symbol target and a pure right-hand side (no
+  calls: `is_pure`) compiles to the right-hand side in a register and
+  `Op::SuperSet`, guarded on `<<-`.
+  - It finds the binding as `Interp::super_assign` does: the first
+    enclosing frame of the frame binding the symbol, else the global
+    environment.
+  - A plain binding of a non-function value is overwritten without running
+    code (`set_plain_in_place`): an unshared scalar of the same type in
+    place, anything else replaced.
+  - Everything else (locked or active bindings, promises, function values,
+    a new global binding) goes to `super_assign` after a flush, unchanged.
+  - The current frame's cached copy of the symbol is dropped.
+- rejected, measured: compiling every `<<-` (with calls on the right):
+  `nbody` +1.5% (vector right-hand sides with `as.vector(... %*% ...)`
+  cost more through the VM's flushes and lookups than through the
+  interpreter); still +0.75% with the plain-binding store, +0.25% with
+  pure right-hand sides only.
+- tests: `tests/r/basics/super-assign-loops.R` (the binding found, copies
+  that must not change, type changes, nested closures, the global
+  fallback, a locked binding's error, an active binding, visibility, the
+  expression's value, a function value).
+- result against main 1696902 (11 faster, none slower):
+
+  | benchmark | instructions | x GNU R | allocations |
+  |---|---|---|---|
+  | `superWhile` | -56.6% | 1.00 -> **0.43** | 1.76M -> 0.39M |
+  | `fasta` | -23.9% | 0.97 -> **0.74** | 1.18M -> 0.73M |
+  | `fastaredux` | -29.1% | 0.96 -> **0.68** | 1.21M -> 0.64M |
+  | `fasta_naive` | -22.3% | | 1.04M -> 0.61M |
+  | `Storage` | -4.5% | 0.89 -> 0.85 | 1.07M -> 0.98M |
+
+  Also `fasta_2/3` -22/-19%, `fasta_naive_2` -17%, `fastaredux_naive`
+  -26%, `Bounce_nonames*` -1.5%. geomean 0.653 -> 0.630, faster than GNU R
+  on 64 -> 65; kept.
+- carries over to G3: compiling `<<-` with in-place scalar stores (G2's
+  binding cells make the in-place store GNU R's `BNDCELL` case), and
+  compiling it only where the right-hand side does not call out.
+- noted: fastr `functions/TestS3Dispatch/0cd270304a9a4dfd` fails on main
+  1696902 too (not this branch).
+
 ## 2026-10-28: argument vectors reused; scalar results returned unboxed to compiled callers
 
 - why: per call, fib allocated the argument vector (1 allocation), the

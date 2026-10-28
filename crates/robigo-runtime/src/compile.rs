@@ -120,6 +120,14 @@ pub enum Op {
         sym: Sym,
         slot: Slot,
     },
+    /// `sym <<- src`: assign in the first enclosing frame that binds `sym`,
+    /// or the global environment (`slot`: this code's slot for `sym`, whose
+    /// cached value the assignment may make stale).
+    SuperSet {
+        src: Reg,
+        sym: Sym,
+        slot: Slot,
+    },
     /// Assign to a symbol in the current frame (`<-`/`=`).
     SetVar {
         src: Reg,
@@ -1047,6 +1055,26 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 self.expr(&l.args[0].value, dst, w.value());
                 self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            // (Only for a right-hand side without calls: one with calls runs
+            // about as fast through the interpreter, without flushes.)
+            "<<-"
+                if l.args.len() == 2
+                    && matches!(l.args[0].value, Value::Sym(_))
+                    && l.args[0].tag.is_none()
+                    && is_pure(&l.args[1].value, 0) =>
+            {
+                let target = l.args[0].value.as_sym().unwrap();
+                if target.is_empty() || target == s::DOTS {
+                    return self.fallback(whole, dst);
+                }
+                let g = self.guard(h, whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let slot = self.slot(target);
+                self.emit(Op::SuperSet { src: dst, sym: target, slot });
+                self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
             }
