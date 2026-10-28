@@ -4,6 +4,7 @@ tests/r/basics/arith.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
 tests/r/basics/int-arith-kernels.R
+tests/r/basics/local-fun-calls.R
 tests/r/basics/mod-ldouble.R
 tests/r/basics/print-numbers.R
 tests/r/basics/vectors.R
@@ -119,8 +120,10 @@ tests/r/subset/copy-semantics.R
 tests/r/subset/dispatch.R
 tests/r/subset/env-lang.R
 tests/r/subset/errors.R
+tests/r/subset/index-promises.R
 tests/r/subset/lang-nested.R
 tests/r/subset/list-index.R
+tests/r/subset/matrix-elt2.R
 tests/r/subset/matrix-index.R
 tests/r/subset/misc.R
 tests/r/subset/missing-args.R
