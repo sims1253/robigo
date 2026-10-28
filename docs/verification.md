@@ -51,7 +51,7 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 | `gnur-examples` | 1,153 | echo | the examples of every help page of base R's packages |
 | `gnur-demos` | 16 | echo | every `demo()` of GNU R's base packages, as `demo(..., echo = TRUE)` runs it |
 | `r-intro` | 13 | echo | the runnable code of "An Introduction to R", one script per chapter |
-| `cran-purer` | 42 | script | pure-R CRAN examples, demos and standalone tests from five pinned packages |
+| `cran-purer` | 41 | script | pure-R CRAN examples, demos and standalone tests from five pinned packages |
 | `capi` | 20 | script | C cases compiled by each case's `build.sh` (`R CMD SHLIB`), driven from R; GNU R's output is `robigo-capi`'s (G2) target, weighted coverage measured by `scripts/capi-census.py coverage` |
 
 ```sh

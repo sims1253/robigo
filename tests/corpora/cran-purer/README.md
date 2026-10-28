@@ -29,13 +29,17 @@ in the GNU R 4.5.0 oracle container. Help examples use `tools::Rd2ex`, with
 because testthat requires compiled dependencies. The proto gWidgets demo
 requires a display; withr's database example requires DBI and a driver.
 
-Six help pages are excluded for nondeterministic or machine-specific
+Seven help pages are excluded for nondeterministic or machine-specific
 output: assertthat's `assertions-file`, and withr's `with_dir`,
-`with_libpaths`, `with_tempfile`, `with_timezone`, and `withr`. They print
-random temporary paths, library paths, or the current time. Exclusions are
+`with_libpaths`, `with_tempfile`, `with_timezone`, `withr`, and
+`with_makevars`. The latter compiles C code and prints compiler flags.
+The others print random temporary paths, library paths, or the current time. Exclusions are
 explicit in `CRAN_SKIP`, rather than masking recorded output.
 
 Record with `python3 scripts/corpus.py record cran-purer --all --repeat 2
 --jobs 4` inside `robigo-oracle:4.5.0`. Run with `python3 scripts/corpus.py
 run cran-purer --jobs 4 --keep-output`. See
 `docs/ledger/corpus-scripts.md` for results and failure ownership.
+
+The initial robigo passing list contains 31 of 41 cases. The corpus manifest
+pins PATH to `/usr/local/bin:/usr/bin` for the `with_path` examples.

@@ -108,7 +108,7 @@ _SKIP = (
     r"browseURL|download\.file|installed\.packages|available\.packages|R\.version|sessionInfo)\s*\(")
 # .Last runs when R exits, so a block defining it would print the time of
 # the recording; date()/Sys.time() are the same problem wherever they run.
-SKIP_TIME_RE = re.compile(r"(^|[^[:alnum:]_.])(\.Last|date|Sys\.time|Sys\.Date|proc\.time|system\.time)\s*\(")
+SKIP_TIME_RE = re.compile(r"(^|[^A-Za-z0-9_.])(\.Last|date|Sys\.time|Sys\.Date|proc\.time|system\.time)\s*\(")
 # Reading data needs a file: the manual's own examples read files that are
 # not shipped with R, so those blocks only run where the file exists (the
 # sample session reads datasets' morley.tab through system.file()).
@@ -378,6 +378,7 @@ CRAN_SKIP = {
     "withr/man/with_dir.R": "prints the randomized R session temp directory",
     "withr/man/with_libpaths.R": "prints machine-specific library paths and randomized tempfile names",
     "withr/man/with_tempfile.R": "prints randomized tempfile names",
+    "withr/man/with_makevars.R": "compiles C code with R CMD SHLIB and prints machine-specific compiler flags",
     "withr/man/with_timezone.R": "prints the current time",
     "withr/man/withr.R": "prints the randomized R session temp directory",
     "proto/demo/proto-gWidgets.R": "needs gWidgets (and a Tk display)",

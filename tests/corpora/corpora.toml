@@ -84,3 +84,7 @@ support = "support"
 build = "build.sh"
 importer = "corpus-scripts"
 url = "https://cloud.r-project.org"
+
+[cran-purer.env]
+# with_path examples print PATH. Pin it independently of the caller.
+PATH = "/usr/local/bin:/usr/bin"
