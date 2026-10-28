@@ -2695,12 +2695,49 @@ mod tests {
         assert_eq!(tre("("), "ERR Missing ')'");
         assert_eq!(tre("["), "ERR Missing ']'");
         assert_eq!(tre("a{2,1}"), "ERR Invalid contents of {}");
+        assert_eq!(tre("a{2, 3}"), "ERR Invalid contents of {}");
         assert_eq!(tre("a{1"), "ERR Missing '}'");
         assert_eq!(tre("a**"), "ERR Invalid use of repetition operators");
         assert_eq!(tre("[[:foo:]]"), "ERR Unknown character class name");
         assert_eq!(tre("\\"), "ERR Trailing backslash");
         assert_eq!(tre("(a)\\2"), "ERR Invalid back reference");
         assert_eq!(tre("[b-a]"), "ERR Invalid character range");
+    }
+
+    /// TRE only skips blanks and commas after the repetition counts, so a
+    /// blank before `}` is fine but one before a second count is not.
+    #[test]
+    fn tre_bound_blanks() {
+        assert_eq!(tre("a{2, }"), "(?:a){2,}");
+        assert_eq!(tre("a{2,    }"), "(?:a){2,}");
+        assert_eq!(tre("a{2, 3}"), "ERR Invalid contents of {}");
+    }
+
+    #[test]
+    fn approx_ties() {
+        let p = |max_err| AParams {
+            cost_ins: 1,
+            cost_del: 1,
+            cost_subst: 0,
+            max_cost: i32::MAX,
+            max_ins: i32::MAX,
+            max_del: i32::MAX,
+            max_subst: i32::MAX,
+            max_err,
+        };
+        let cs = |s: &str| s.chars().collect::<Vec<_>>();
+        // Same alignment without `icase` needs one substitution ...
+        assert!(approx_match(&cs("ab"), &cs("aa"), false, &p(1)));
+        // ... but with `icase` the letter has two transitions (upper first)
+        // and the first one is a free substitution, which ties with the
+        // exact match and wins, spending an error (`bounds[4]`).
+        assert!(!approx_match(&cs("ab"), &cs("aa"), true, &p(1)));
+        assert!(approx_match(&cs("ab"), &cs("aa"), true, &p(2)));
+        assert!(approx_match(&cs("aa"), &cs("aa"), true, &p(0)));
+        // `max_cost == 0` goes through TRE's exact matcher.
+        let exact = AParams { max_cost: 0, ..p(0) };
+        assert!(approx_match(&cs("ab"), &cs("xabx"), false, &exact));
+        assert!(!approx_match(&cs("ba"), &cs("ab"), false, &exact));
     }
 
     fn compiles(p: &str) {
