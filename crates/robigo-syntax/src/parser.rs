@@ -923,7 +923,7 @@ impl<'a> Parser<'a> {
                 Some(n) => {
                     let mut all = vec![Arg::positional(lhs)];
                     all.extend(args);
-                    let name = self.intern(n);
+                    let name = self.op(if n == "[" { Op::Index } else { Op::Index2 });
                     Expr::call(name, open.span, all, span)
                 }
             })
