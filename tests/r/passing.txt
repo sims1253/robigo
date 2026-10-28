@@ -114,6 +114,7 @@ tests/r/s4/bits.R
 tests/r/s4/classes.R
 tests/r/s4/dispatch.R
 tests/r/s4/refclass.R
+tests/r/s4/s3-dispatch.R
 tests/r/strings/as-numeric-strtod.R
 tests/r/strings/basic.R
 tests/r/strings/case-names.R

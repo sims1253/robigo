@@ -1033,7 +1033,8 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
     match interp.usemethod(&generic, &obj, &gcall, promargs, env, &callenv, &defenv)? {
         Some(ans) => Err(Flow::Return(ans, env.clone())),
         None => {
-            let klass = crate::dispatch::dispatch_class(&obj);
+            // R: objects.c:do_usemethod — R_data_class2 (S4 superclasses).
+            let klass = interp.data_class2(&obj)?;
             let cl = if klass.len() == 1 {
                 klass[0].to_string()
             } else {
