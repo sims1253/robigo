@@ -37,7 +37,7 @@ use regex_automata::{Anchored, Input, MatchKind};
 
 use super::character::{as_bool2, check_arity_internal, copy_all_attrs, simple_lower, simple_upper};
 use super::internal;
-use crate::coerce::as_logical;
+use crate::coerce::{as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -53,6 +53,7 @@ pub static DEFS: &[Builtin] = &[
     internal("regexpr", do_regexpr, 6),
     internal("gregexpr", do_gregexpr, 6),
     internal("regexec", do_regexec, 5),
+    internal("grepRaw", do_grepraw, 8),
 ];
 
 // ======================================================================
@@ -1727,6 +1728,199 @@ fn do_grep(i: &mut Interp, c: &Value, a: Vec<Arg>, _: &Env) -> RResult<Value> {
 
 fn do_grepl(i: &mut Interp, c: &Value, a: Vec<Arg>, _: &Env) -> RResult<Value> {
     grep_impl(i, c, a, true)
+}
+
+// ======================================================================
+// grepRaw
+
+// R: grep.c:fgrepraw1 -- fixed single binary search; `None` = no match.
+fn fgrepraw1(pat: &[u8], text: &[u8], offset: usize) -> Option<usize> {
+    let n = text.len();
+    let nc = pat.len();
+    if n < nc || offset > n - nc {
+        return None;
+    }
+    (offset..=n - nc).find(|&i| &text[i..i + nc] == pat)
+}
+
+/// R's `do_grepraw` matches bytes. robigo's regex layer works on strings, so
+/// bytes are mapped one-to-one to U+0000..U+00FF, which keeps every offset a
+/// byte offset (`// R: grep.c:do_grepraw`).
+fn bytes_to_latin1(b: &[u8]) -> String {
+    b.iter().map(|&c| c as char).collect()
+}
+
+// R: grep.c:do_grepraw
+fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 8, "grepRaw")?;
+    let Value::Raw(pat) = &args[0].value else {
+        return Err(Flow::error("invalid 'pattern' argument"));
+    };
+    let Value::Raw(text) = &args[1].value else {
+        return Err(Flow::error("invalid 'text' argument"));
+    };
+    let pat = &pat.data;
+    let text = &text.data;
+    // R's offset is R_size_t: a negative or NA `asInteger` wraps to a huge
+    // value and only the `offset > LENGTH(text)` test is reached.
+    let offset = as_integer(&args[2].value) as u32 as usize;
+    let igcase_opt = as_bool2(&args[3].value, call)?;
+    let fixed_opt = as_bool2(&args[4].value, call)?;
+    let value = as_bool2(&args[5].value, call)?;
+    let all = as_bool2(&args[6].value, call)?;
+    let mut invert = as_bool2(&args[7].value, call)?;
+    if fixed_opt && igcase_opt {
+        interp.warning("argument 'ignore.case = TRUE' will be ignored")?;
+    }
+    if invert && !value {
+        interp.warning("argument 'invert = TRUE' will be ignored")?;
+        invert = false;
+    }
+    if offset < 1 {
+        return Err(Flow::error("invalid 'offset' argument"));
+    }
+    if offset > text.len() {
+        return Ok(Value::ints(Vec::new()));
+    }
+    let offset = offset - 1;
+
+    if fixed_opt {
+        if pat.is_empty() {
+            return Ok(if value {
+                if all { Value::list(Vec::new()) } else { Value::raws(Vec::new()) }
+            } else {
+                Value::ints(Vec::new())
+            });
+        }
+        if !all {
+            let res = fgrepraw1(pat, text, offset);
+            if invert {
+                let Some(res) = res else {
+                    return Ok(if value { Value::raws(text.clone()) } else { Value::ints(vec![1]) });
+                };
+                if !value {
+                    return Ok(Value::ints(vec![if res == 0 { pat.len() as i32 } else { 0 } + 1]));
+                }
+                let mut out = Vec::with_capacity(text.len() - pat.len());
+                out.extend_from_slice(&text[..res]);
+                let after = res + pat.len();
+                if after < text.len() {
+                    out.extend_from_slice(&text[after..]);
+                }
+                return Ok(Value::raws(out));
+            }
+            let Some(res) = res else {
+                return Ok(if value { Value::raws(Vec::new()) } else { Value::ints(Vec::new()) });
+            };
+            if !value {
+                return Ok(Value::ints(vec![res as i32 + 1]));
+            }
+            return Ok(Value::raws(pat.clone()));
+        }
+        let mut matches: Vec<usize> = Vec::new();
+        let mut off = offset;
+        while off < text.len() {
+            let Some(m) = fgrepraw1(pat, text, off) else { break };
+            matches.push(m + 1);
+            off = m + pat.len();
+        }
+        if value {
+            if invert {
+                if matches.is_empty() {
+                    return Ok(Value::raws(text.clone()));
+                }
+                let mut ans = Vec::with_capacity(matches.len() + 1);
+                let mut pos = 0usize;
+                for &m in &matches {
+                    let end = (m - 1) as usize;
+                    ans.push(Value::raws(text[pos..end].to_vec()));
+                    pos = end + pat.len();
+                }
+                ans.push(Value::raws(text[pos..].to_vec()));
+                return Ok(Value::list(ans));
+            }
+            let ans: Vec<Value> = (0..matches.len()).map(|_| Value::raws(pat.clone())).collect();
+            return Ok(Value::list(ans));
+        }
+        return Ok(Value::ints(matches.iter().map(|&m| m as i32).collect()));
+    }
+
+    // Non-fixed: TRE over the bytes (see `bytes_to_latin1`).
+    let ptxt = bytes_to_latin1(pat);
+    let ttxt = bytes_to_latin1(text);
+    let ascii = ptxt.is_ascii() && ttxt.is_ascii();
+    let re = Re::compile(interp, &ptxt, false, false, igcase_opt, false, ascii)?;
+
+    if !all {
+        let m = re.exec(&ttxt, offset, Ctx::Fresh { notbol: false }, false);
+        let span = m.and_then(|m| m[0]);
+        let Some((so, eo)) = span else {
+            return Ok(if value { Value::raws(Vec::new()) } else { Value::ints(Vec::new()) });
+        };
+        if value {
+            if so == eo {
+                return Ok(if invert { Value::raws(text.clone()) } else { Value::raws(Vec::new()) });
+            }
+            if invert {
+                let mut out = Vec::with_capacity(text.len() - (eo - so));
+                out.extend_from_slice(&text[..so]);
+                out.extend_from_slice(&text[eo..]);
+                return Ok(Value::raws(out));
+            }
+            return Ok(Value::raws(text[offset + so..offset + eo].to_vec()));
+        }
+        return Ok(Value::ints(vec![(so + 1 + offset) as i32]));
+    }
+
+    // All matches: (start, length) with `start` relative to the whole text.
+    // R restarts the search at each match end and sets REG_NOTBOL after the
+    // first, so an empty match is detected exactly like `do_grepraw`.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut off = offset;
+    let mut notbol = false;
+    loop {
+        let Some(m) = re.exec(&ttxt, off, Ctx::Fresh { notbol }, false) else { break };
+        let Some((so, eo)) = m[0] else { break };
+        if spans.is_empty() {
+            notbol = true;
+        }
+        spans.push((so, eo - so));
+        off += eo;
+        if eo == 0 {
+            let mut infinite = true;
+            if spans.len() == 1 {
+                match re.exec(&ttxt, off, Ctx::Fresh { notbol }, false).and_then(|m| m[0]) {
+                    Some((_, e2)) if e2 == 0 => {}
+                    _ => infinite = false,
+                }
+            }
+            if infinite {
+                interp.warning("pattern matches an empty string infinitely, returning first match only")?;
+                break;
+            }
+        }
+        if off >= text.len() {
+            break;
+        }
+    }
+
+    if value {
+        let mut ans = Vec::new();
+        let mut inv_start = 0usize;
+        for &(s, len) in &spans {
+            if invert {
+                ans.push(Value::raws(text[inv_start..s].to_vec()));
+                inv_start = s + len;
+            } else {
+                ans.push(Value::raws(text[s..s + len].to_vec()));
+            }
+        }
+        if invert {
+            ans.push(Value::raws(text[inv_start..].to_vec()));
+        }
+        return Ok(Value::list(ans));
+    }
+    Ok(Value::ints(spans.iter().map(|&(s, _)| s as i32 + 1).collect()))
 }
 
 // ======================================================================
