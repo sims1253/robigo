@@ -209,6 +209,48 @@ fn extdata_release_runs_once_dead() {
 }
 
 #[test]
+fn layout_is_compact() {
+    // docs/core.md §2: the layout is robigo's; robigo's headers map
+    // GNU R's macros onto it
+    let mut c = Core::new();
+    let v = c.alloc_vector(INTSXP, 1);
+    let n = c.alloc_node(LISTSXP, v, c.nil, c.nil);
+    unsafe {
+        assert_eq!(*v.0, INTSXP, "type: byte 0");
+        assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
+        assert_eq!(v.std_data() as usize - v.addr(), 32, "payload at +32");
+        assert_eq!(*(n.0.add(16) as *const usize), v.addr(), "CAR at +16");
+        assert_eq!(*(n.0.add(24) as *const usize), c.nil.addr(), "CDR at +24");
+        assert_eq!(*(n.0.add(8) as *const usize), c.nil.addr(), "ATTRIB at +8");
+        n.set_gp(0xABCD);
+        assert_eq!(*(n.0.add(2) as *const u16), 0xABCD, "gp at +2");
+        assert!(n.tracks_refs());
+        let ch = c.mk_char(b"x", 0);
+        assert_eq!(std::ffi::CStr::from_ptr(ch.0.add(32) as *const std::ffi::c_char).to_bytes(), b"x");
+    }
+}
+
+#[test]
+fn symbol_values_are_traced() {
+    let mut c = Core::new();
+    let s = c.install(b"some_symbol");
+    let v = c.alloc_vector(REALSXP, 3);
+    let addr = v.addr();
+    unsafe { s.set_cdr_raw(v) };
+    drop(v);
+    std::hint::black_box([0usize; 64]);
+    for _ in 0..3 {
+        c.collect();
+    }
+    for i in 0..100_000 {
+        let x = c.alloc_vector(REALSXP, 3);
+        unsafe { *(x.std_data() as *mut f64) = i as f64 };
+    }
+    unsafe { assert_eq!(s.cdr().addr(), addr) };
+    assert!(c.resolve(addr).is_some());
+}
+
+#[test]
 fn weak_refs_queue_finalizers_of_dead_keys() {
     let mut c = core_with_roots();
     let key_live = c.alloc_vector(INTSXP, 1);
@@ -234,7 +276,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     std::hint::black_box([0usize; 64]);
     c.collect();
     let q = c.take_finalizable();
-    assert!(q.len() <= 1);
+    assert!(q.len() <= 1, "only the dead key's reference is ready");
     if let Some(&w) = q.first() {
         unsafe {
             assert_eq!((*(w.std_data() as *const Sexp)).addr(), dead_addr, "key kept for the finalizer");

@@ -70,6 +70,9 @@ pub struct Core {
     finalize_queue: Vec<Sexp>,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
+    /// immortal objects whose fields can still change (symbols' values,
+    /// attributes set on shared constants): traced on every collection
+    immortal_roots: Vec<Sexp>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -134,6 +137,7 @@ impl Core {
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
             releases: Vec::new(),
+            immortal_roots: Vec::new(),
         });
         unsafe {
             // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
@@ -168,6 +172,9 @@ impl Core {
                 return;
             }
             x.set_flag(flags::IMMORTAL, true);
+            if x.typ() != CHARSXP {
+                self.immortal_roots.push(x);
+            }
             let b = self.heap.block_of(x.0);
             if (*b).magic == 0x524f4249474f4241 {
                 (*b).immortals += 1;
@@ -210,7 +217,6 @@ impl Core {
             }
             cdr.incref();
             tag.incref();
-            x.set_flag(flags::TRACKREFS, true);
         }
         x
     }
@@ -239,9 +245,6 @@ impl Core {
                 }
                 _ => {}
             }
-            if matches!(t, STRSXP | VECSXP | EXPRSXP) {
-                x.set_flag(flags::TRACKREFS, true);
-            }
         }
         x
     }
@@ -268,7 +271,7 @@ impl Core {
             x.set_flags(flags::HOST);
             *(x.0.add(16) as *mut usize) = handle;
             *(x.0.add(24) as *mut usize) = release.map_or(0, |f| f as usize);
-            *(x.0.add(32) as *mut usize) = 0;
+            x.set_tag_raw(self.nil);
         }
         x
     }
@@ -519,23 +522,22 @@ impl Core {
                     break;
                 }
             }
-            let nil = self.nil;
+            // memory.c CheckFinalizers: every reference whose key died is
+            // ready to finalize (with or without a finalizer); then every
+            // reference keeps its key, value and finalizer alive for this
+            // round; RunFinalizers clears them
             let refs = std::mem::take(&mut self.weak_refs);
             let mut keep = Vec::with_capacity(refs.len());
             for w in refs {
                 let key = Self::weak_field(w, 0);
-                if self.is_marked(key) {
-                    keep.push(w);
-                } else if Self::weak_field(w, 2) != nil {
-                    for k in 0..3 {
-                        self.mark_obj(Self::weak_field(w, k));
-                    }
+                if !self.is_marked(key) {
                     w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
                     self.finalize_queue.push(w);
                 } else {
-                    let d = w.std_data() as *mut Sexp;
-                    *d = nil;
-                    *d.add(1) = nil;
+                    keep.push(w);
+                }
+                for k in 0..3 {
+                    self.mark_obj(Self::weak_field(w, k));
                 }
             }
             self.trace();
@@ -585,6 +587,12 @@ impl Core {
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
                 self.mark_obj(w);
+            }
+            // immortal objects are never marked, but their fields can
+            // change (a symbol's value, attributes set on a constant)
+            for i in 0..self.immortal_roots.len() {
+                let x = self.immortal_roots[i];
+                self.mark_stack.push(x);
             }
             let fns = std::mem::take(&mut self.root_fns);
             for f in &fns {

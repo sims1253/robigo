@@ -564,13 +564,24 @@ tables (§4.2).
 |---|---|---|
 | G0 | Gate on stdout, stderr and exact status, as bytes, in all tiers | done |
 | G1 | VM by default; the AST interpreter for bootstrap, `eval` and deopt; `Eval` share tracked | done |
-| G2 | New core, from scratch: header'd thin objects (S4 bit, encoding bits), storage variants (owned, compact, foreign, ALTREP), interned CHARSXPs, cons cells, both memory managers (§5.5), exported as a `libR.so` ABI with `PROTECT` and unwind trampolines | installed `fastmap` and `digest` binaries load unmodified and pass their tests on the core; memory-manager bake-off decided |
+| G2 | New core, from scratch: header'd thin objects (S4 bit, encoding bits), storage variants (owned, compact, foreign, ALTREP), interned CHARSXPs, cons cells, the mark-region memory manager (§5.5), exported as `libR.so` with GNU R's C API at the source level (robigo's headers, Makeconf, `robigo CMD INSTALL`), `PROTECT` and unwind trampolines (`docs/core.md`) | inside robigo, `install.packages("fastmap")` builds it from source against robigo and its tests pass; then `digest`, a small cpp11 and a small Rcpp package; GNU R's base-package natives (`stats` first) built from source against robigo's headers; memory-manager bake-off decided |
 | G3 | Rebuild the runtime on the core: evaluator, VM, JIT, builtins (rewrite allowed) | the full conformance suite; `1:2e8` in constant memory; byte strings round-trip; leak tests bounded |
-| G4 | Real packages: Rcpp, rlang, vctrs, data.table from their installed binaries | their own tests pass; packages passing becomes a ratchet |
+| G4 | Real packages: Rcpp, rlang, vctrs, data.table built from source against robigo | their own tests pass; packages passing becomes a ratchet |
 | G5 | Numeric policy and portability (F7, F8) | wasm32 (JIT off) and aarch64 pass the suite byte for byte in CI; fast mode passes a tolerance suite |
 | G6 | `methods`/S4, default packages without `R_HOME`, a startup snapshot | `library(methods)`, `setClass`, `new` work; robigo runs without GNU R installed |
 | G7 | REPL: line editing, history, interrupts; panics become R errors | an interactive session survives errors and Ctrl-C |
 | G8 | Optimizing tier: whole-closure native code by sampling, contextual dispatch, LLVM where it pays | fib and binarytrees at or below GNU R; `match.arg`, `stopifnot`, `seq` ≤ 1.0x GNU R's instructions |
+
+**Lead's decision (2026-10-28): source compatibility, not binary.**
+robigo does not load GNU R's pre-compiled binaries; packages (and GNU R's
+own base-package natives) are built from source against robigo's headers
+through GNU R's own install code (`install.packages()` → `R CMD INSTALL`
+→ `R CMD SHLIB` with robigo's Makeconf), as users reinstall after an R
+major-version upgrade. The object layout is therefore robigo's, chosen
+for speed; robigo's headers map GNU R's macros (including `Defn.h`'s
+`USE_RINTERNALS` level, which 39 base-package source files use) onto it.
+Binary repositories are out of scope; a robigo binary cache can come
+later (`docs/core.md` §1, §8).
 
 Until G3 lands, new builtins and stats ports wait; they would be written
 twice. Afterwards: GNU R's own `tests/*.R`, ry facts for guarded

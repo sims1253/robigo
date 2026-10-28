@@ -9,37 +9,74 @@ conservative stack scanning and reference counts kept only for
 copy-on-modify. This document fixes the concrete layout and the
 boundaries; the ledger (`docs/ledger/core.md`) records what was measured.
 
-**Exit gate (G2):** the installed `fastmap` and `digest` binaries (built
-by GNU R 4.5.0) load unmodified into robigo and pass their tests.
+**The contract (lead's decision, 2026-10-28): source compatibility.**
+Max's existing R scripts must run on robigo unchanged, and robigo must be
+the fastest R; recompiling packages from source for robigo is acceptable.
+So robigo does *not* load GNU R's pre-compiled binaries (neither GNU R's
+own base-package `.so`s nor installed CRAN binaries). It is compatible
+with GNU R's C API at the *source* level: `R.h`, `Rinternals.h`,
+`Rinlinedfuns.h`, the `R_ext/` headers, and the `Defn.h`/`USE_RINTERNALS`
+level that GNU R's own base-package sources use. Packages are reinstalled
+for robigo from source, the way users reinstall after an R major-version
+upgrade, through GNU R's own install code (§8).
+
+**Exit gate (G2):** inside robigo, `install.packages("fastmap", repos =
+<CRAN or a local source repository>)` builds `fastmap` from source against
+robigo and its tests pass; then `digest`, a small cpp11 package and a small
+Rcpp package (C++ exceptions and `R_UnwindProtect`); and GNU R's
+base-package natives built from the R 4.5.0 sources against robigo's
+headers, `stats` first (it unblocks `deriv`, splines, `cov`/`cor`, `optim`
+and most dataset examples). Binary repositories (PPM, r-universe) are out
+of scope; a robigo binary cache can come later.
 **Metrics, in order:** (a) `capi` corpus cases passing
-(`scripts/corpus.py run capi`); (b) weighted coverage of
-`tests/capi/symbols.tsv` by *implemented* exports (stubs that raise
-"not implemented" do not count; `crates/robigo-capi/coverage.py`);
-(c) the gate packages.
+(`scripts/corpus.py run capi`, its cases compiled against robigo's
+headers); (b) weighted coverage of `tests/capi/symbols.tsv` by
+*implemented* exports (stubs that raise "not implemented" do not count;
+`crates/robigo-capi/coverage.py`); (c) the gate.
 
-## 1. What the ABI fixes, and what is ours
+## 1. What the C API fixes, and what is ours
 
-A package compiled against GNU R 4.5's headers without `USE_RINTERNALS`
-reaches R objects only through:
+Package sources reach R objects through the API's functions, macros and
+inline functions and a few global variables:
 
 - **functions** (`INTEGER`, `STRING_ELT`, `Rf_allocVector`, `ATTRIB`,
-  `TYPEOF`, `LENGTH`, ...): every accessor is a call, so the object layout
-  is ours;
+  `TYPEOF`, `LENGTH`, ...), exported by `libR.so`;
 - **data symbols**: `SEXP` variables (`R_NilValue`, `R_GlobalEnv`,
   `R_NamesSymbol`, `R_NaString`, `R_BlankString`, ...), numbers
   (`R_NaInt`, `R_NaReal`, `R_NaN`, `R_PosInf`, `R_NegInf`), and a few
-  whose *layout* is fixed: `R_PPStack`/`R_PPStackTop`/`R_PPStackSize`
-  (`SEXP*`, `int`, `int`: the protect stack is a C array of `SEXP`, as in
-  GNU R), `R_interrupts_pending`, `R_Interactive`, `R_CStackLimit`,
-  `R_isForkedChild`, `R_TempDir`, ...;
+  whose type is fixed by the headers: `R_PPStack`/`R_PPStackTop`/
+  `R_PPStackSize` (`SEXP*`, `int`, `int`: the protect stack is a C array
+  of `SEXP`, as in GNU R), `R_interrupts_pending`, `R_Interactive`,
+  `R_CStackLimit`, `R_isForkedChild`, `R_TempDir`, ...;
 - **struct layouts in headers**: `R_CallMethodDef` & co (registration),
   `Rcomplex` (`{double r, i}`), `R_altrep_class_t` (`{SEXP ptr}`),
-  `DllInfo` (opaque), `R_outpstream_st` (serialization), `DevDesc`.
+  `R_outpstream_st` (serialization), `DevDesc`, and for base-package
+  sources `RCNTXT` — all sized by robigo's headers.
 
-So: a `SEXP` is one pointer to a robigo heap object; the C ABI is exactly
-GNU R 4.5's exported symbol set (`symbols.tsv` ranks it by use); the
-layout behind the pointer is free. Rust code inside robigo sees the same
-pointer as `Sexp` (a `Copy` newtype, no handle table: design §5.5).
+**The layout behind a `SEXP` is robigo's**, chosen for speed (§2), and
+robigo's headers map the macros onto it.
+
+*Audit (2026-10-28), why the headers matter:* `Defn.h` defines
+`USE_RINTERNALS` (Defn.h:49-51), and 39 C files of GNU R's base packages
+include it — stats (cov, deriv, model, optim, optimize, splines), graphics
+(base, graphics, par, plot, plot3d), grDevices (13 files: devices, colors,
+devPS, ...), methods (methods_list_dispatch, utils,
+do_substitute_direct), utils (io, size, stubs), tools (install, Rmd5,
+Rsha256, gramRd, ...), parallel (fork), tcltk. Those compile the
+accessors as direct field accesses: counted over their sources, `CDR` 579,
+`REAL` 578, `INTEGER` 482, `CHAR` 210, `CADR` 198, `LENGTH` 153, `TYPEOF`
+121, `CADDR` 94, `LOGICAL` 48, `XLENGTH` 21, `TAG` 16, `RAW` 15,
+`COMPLEX` 10, `PRINTNAME` 8, and single uses of `CLOENV`, `FORMALS`,
+`BODY`, `ATTRIB`, `ENCLOS`, `SYMVALUE`, `INTERNAL`, `DDVAL`, `ENC_KNOWN`,
+`IS_CACHED`, `ENSURE_NAMEDMAX`, `RTRACE`/`SET_RTRACE`, `SET_OBJECT`,
+`SET_TYPEOF`, `EXTPTR_TAG`/`EXTPTR_PROT`. The installed `stats.so` imports
+`TYPEOF`, `CAR`, `INTEGER`, ... as functions only from its other files.
+Loading GNU R's own binaries would have pinned GNU R's `SEXPREC` (a
+32-byte header with two generation-list words); under source
+compatibility robigo instead builds those sources against its own
+`Defn.h`, whose macros address robigo's layout. CRAN packages cannot
+define `USE_RINTERNALS` since R 4.3 (the census confirms they import the
+accessors as functions), so they need nothing beyond the public headers.
 
 ## 2. Object layout
 
@@ -49,7 +86,8 @@ All objects are 16-byte aligned, 16-byte granules, allocated by the heap
 ```text
 +0  u8   type     GNU R's SEXPTYPE number (NILSXP 0 ... OBJSXP 25)
 +1  u8   flags    OBJECT 0x01 · ALTREP 0x02 · EXTDATA 0x04 · IMMORTAL 0x08
-                  · MARK_A 0x10 · MARK_B 0x20 · HOST 0x40 · TRACKREFS 0x80
+                  · MARK_A 0x10 · MARK_B 0x20 · HOST 0x40 · NO_TRACKREFS 0x80
+                  (GNU R's `spare`: TRACKREFS is `!spare`)
 +2  u16  gp       GNU R's sxpinfo.gp, bit for bit (LEVELS): encodings
                   BYTES 1<<1, LATIN1 1<<2, UTF8 1<<3, S4 1<<4, CACHED 1<<5,
                   ASCII 1<<6; MISSING 0..3, DDVAL 0, ACTIVE_BINDING 1<<15,
@@ -92,6 +130,15 @@ keeps it, so `LEVELS`/`SETLEVELS` round-trip.
   `R_UnboundValue`, `R_RestartToken`, every symbol.
 - **Long vectors**: `length` is `R_xlen_t` from the start.
 
+**Header-level inlining.** robigo's `Rinternals.h` may define the hot
+accessors inline (`TYPEOF` is one byte load; `INTEGER`/`REAL`/`DATAPTR`
+test the ALTREP|EXTDATA byte and otherwise return `x + 32`; `LENGTH`
+reads `+16` under the same test) where that is measured faster and stays
+correct; the exported functions remain for code that takes their
+address. `Defn.h` for base-package sources defines the `USE_RINTERNALS`
+macros (`CAR`, `CDR`, `TAG`, `PRINTNAME`, `ENC_KNOWN`, `RTRACE`,
+`SET_TYPEOF`, ...) against the same layout.
+
 ## 3. Memory: the mark-region heap
 
 The `mm-gc` prototype becomes `robigo_core::heap`, unchanged in policy:
@@ -99,7 +146,11 @@ The `mm-gc` prototype becomes `robigo_core::heap`, unchanged in policy:
 chunk per larger object, free lists rebuilt by the sweeper, fully empty
 blocks pooled, dead chunks returned to the OS, a 2 MiB collection floor,
 growth to 1.5x the live bytes, alternating mark colors and skip-clean
-sweeps with per-block immortal counts. Objects never move, so `REAL(x)`
+sweeps with per-block immortal counts. Every slot is carved at its size
+class (the bake-off's allocator cut bump-allocated slots to the request
+size, so reusing a dead slot for a larger request of the same class
+overran its neighbour; fixed and tested over every request-size pair).
+Objects never move, so `REAL(x)`
 held by C stays valid across collections.
 
 **Roots** (marked precisely, then traced):
@@ -121,13 +172,18 @@ held by C stays valid across collections.
    locals (common package bugs that GNU R tolerates by luck) safe.
 
 Symbols and the immortal constants are never marked (block immortal
-counts). The CHARSXP cache is weak: it is pruned after marking, before
+counts), but their fields can change (a symbol's value, attributes put
+on a shared constant), so every collection traces the children of the
+non-CHARSXP immortals. The CHARSXP cache is weak: it is pruned after marking, before
 any memory is reused. Finalizers (`R_RegisterCFinalizer[Ex]`,
 `R_RegisterFinalizer[Ex]`) and weak references follow memory.c's
-`WEAKREFSXP` protocol: after marking, weak references whose key is
-unmarked have their finalizer scheduled (key/value/finalizer then marked
-so they survive this collection), and finalizers run after the sweep,
-outside the collector, under `R_ToplevelExec`. `onexit = TRUE`
+`WEAKREFSXP` protocol: values and finalizers of references with live
+keys are marked to a fixed point; then (CheckFinalizers) every reference
+whose key died is ready to finalize, with or without a finalizer, and
+every reference keeps key, value and finalizer alive for this round.
+Finalizers run after the collection, at safe points (after a native call
+returns, `gc()`), outside the collector; R finalizers' errors are
+reported, not propagated. `onexit = TRUE`
 finalizers run at exit.
 
 **Copy-on-modify counts** (`refcnt`) are GNU R's `REFCNT` protocol since
@@ -199,6 +255,17 @@ model at the C boundary:
   context, runs `fun`; on a jump it calls `cleanfun(cleandata, TRUE)` and
   continues the jump with `R_ContinueUnwind(cont)`, the token holding the
   pending condition. `R_MakeUnwindCont` allocates the token (a node).
+- *Open (council review):* longjmp skips Rust frames, which is defined
+  only for frames without pending destructors. Today `libR.so` keeps the
+  rule by construction (messages are formatted into stack buffers and
+  owned values dropped before jumping; no locks or `RefCell` guards are
+  held across calls that can jump; host callbacks return tokens and the
+  jump happens in `libR.so`). The stronger form the council proposed —
+  inner functions return `Result`, and only a thin exported wrapper (or a
+  C trampoline) jumps — is the planned refactor before G3 puts the
+  evaluator itself behind these calls.
+- Warnings can jump too (`options(warn = 2)`, a calling handler that
+  invokes a restart): the warning callback returns a token like errors.
 - Rust panics never cross into C (`extern "C"` aborts on unwind); C++
   exceptions never cross into robigo (packages catch their own).
 - Warnings (`Rf_warning`, `Rf_warningcall`) go to the host's warning
@@ -213,20 +280,16 @@ side by side; the bridge converts at the `.Call`/`.External`/`.C`
 boundary.
 
 **Loading.** `robigo-capi` is a `cdylib` named `libR.so` with
-`DT_SONAME libR.so`, installed next to the `robigo` binary
-(`scripts/build.sh`; CI copies it with the binary). The first real
-`dyn.load()` opens it with `RTLD_NOW | RTLD_GLOBAL`; package objects
-whose `DT_NEEDED` says `libR.so` then bind to it (glibc matches already
-loaded objects by soname), so binaries built by `R CMD SHLIB`/`R CMD
-INSTALL` against GNU R load unmodified. Package `.so`s are opened with
-`RTLD_LAZY | RTLD_LOCAL` (GNU R's default `now = TRUE` is honoured once
-every census symbol is exported), and `R_init_<pkg>` runs for routine
-registration (`R_registerRoutines`, `R_useDynamicSymbols`,
-`R_forceSymbols`, `R_RegisterCCallable`/`R_GetCCallable`). Unregistered
-symbols are found with `dlsym`, as Rdynload.c does. GNU R's own base
-packages (`stats`, `utils`, `grDevices`, ...) keep their current Rust
-ports until their `.so`s are switched over one by one (measured against
-the corpora).
+`DT_SONAME libR.so`, installed in robigo's `R_HOME/lib` next to the
+binary (`scripts/build.sh`; CI copies it with the binary). The first
+`dyn.load()` of a package object opens it with `RTLD_GLOBAL`; package
+objects link against it (`-lR` from robigo's Makeconf) and bind to the
+loaded copy by soname. `R_init_<pkg>` runs for routine registration
+(`R_registerRoutines`, `R_useDynamicSymbols`, `R_forceSymbols`,
+`R_RegisterCCallable`/`R_GetCCallable`); unregistered symbols are found
+with `dlsym`, as Rdynload.c does. GNU R's own base packages keep their
+Rust ports until their sources are built against robigo (§8), one by
+one, measured against the corpora.
 
 The runtime does not link `robigo-core`: it resolves the C API it needs
 from the loaded `libR.so` with `dlsym` (the same symbols packages use,
@@ -241,7 +304,7 @@ coercion and printing helpers it has not ported yet.
 | robigo value | core object |
 |---|---|
 | `NULL` | `R_NilValue` |
-| logical/integer/double/complex/raw vector | **zero-copy**: an EXTDATA vector whose data pointer is the `Vec`'s buffer and whose owner word holds an `Rc` clone (released by the sweeper). C writes through `INTEGER(x)` are visible to the caller, as in GNU R. Attributes are converted. |
+| logical/integer/double/complex/raw vector | **zero-copy**: an EXTDATA vector whose data pointer is the `Vec`'s buffer and whose owner word holds an `Rc` clone (released by the sweeper; `ALTREP(x)` stays false). C writes through `INTEGER(x)` are visible to the caller, as in GNU R. Attributes are converted. |
 | character vector | a STRSXP of cached CHARSXPs (`Rc<str>` is UTF-8; non-ASCII strings are marked UTF-8) |
 | list / expression | converted element-wise |
 | symbol | the interned core symbol |
@@ -286,14 +349,49 @@ caller's object; `NAMED`/`MAYBE_SHARED` on arguments report "shared"
 - `crates/robigo-runtime/src/builtins/dotcode.rs` + `native/` (bridge
   side): `dlopen`, registration tables, conversion, host callbacks.
 
-## 8. Order of work and parallel tracks
+## 8. Headers and the package build path
+
+No new package manager: GNU R's install path is R code robigo runs —
+`install.packages()` → `R CMD INSTALL` = `tools:::.install_packages()` →
+`R CMD SHLIB` → `make` with `R_HOME/etc/Makeconf` (pak, renv and remotes
+all end there). robigo provides what that path expects:
+
+- **`R_HOME` layout**: `bin/` (the `robigo` binary, an `R` front end),
+  `lib/libR.so`, `include/` (robigo's headers), `etc/Makeconf`
+  (`R_INCLUDE_DIR` → robigo's headers, `LIBR = -L$(R_HOME)/lib -lR`,
+  compilers and flags as GNU R 4.5.0's), `library/` (base packages; their
+  R code and, once built, their `libs/*.so`), `share/make/shlib.mk` and
+  friends from GNU R. `R.home()`/`R_HOME` point there.
+- **`robigo CMD INSTALL|SHLIB|...`**, mirroring GNU R's `bin/R` dispatch:
+  `CMD SHLIB` and `CMD INSTALL` run `tools:::.SHLIB()` /
+  `tools:::.install_packages()` in robigo.
+- **Headers**: GNU R 4.5.0's public headers (GPL, vendored) with the
+  layout-dependent parts replaced: `Rinternals.h`'s inline accessors (if
+  any, §2), `Rinlinedfuns.h`, and a `Defn.h` subset for base-package
+  sources (`USE_RINTERNALS` macros, `RCNTXT`, internal entry points those
+  sources call). A package binary built against GNU R's stock public
+  headers still works against `libR.so` (functions only); the capi corpus
+  is built against robigo's headers.
+- **Base packages**: `stats.so`, `utils.so`, `tools.so`, `grDevices.so`,
+  `graphics.so`, `methods.so`, `grid.so`, `splines.so`, `parallel.so`
+  compiled from the R 4.5.0 sources (`~/.cache/robigo-research/rsrc`)
+  against robigo's headers by a build script, installed into
+  `R_HOME/library/<pkg>/libs`; the Rust ports then become optional
+  overrides (kept only where faster and identical).
+
+## 9. Order of work and parallel tracks
 
 1. Core heap + objects + strings + symbols, unit-tested (allocation, GC
    under PROTECT and conservative roots, CHARSXP interning and encodings,
-   unwind through C), with instruction counts per operation.
+   unwind through C), with instruction counts per operation. *Done.*
 2. `libR.so` with the top of `symbols.tsv` (registration, allocation,
-   accessors, attributes, errors), the bridge, `.Call`/`.External`/`.C`.
-3. Hill-climb the `capi` corpus case by case; then `fastmap`, `digest`.
+   accessors, attributes, errors), the bridge, `.Call`/`.External`/`.C`;
+   hill-climb the `capi` corpus case by case.
+3. The `R_HOME` layout, headers, Makeconf and `robigo CMD SHLIB|INSTALL`;
+   switch the capi corpus build to robigo's headers.
+4. The gate: `install.packages("fastmap")` from source inside robigo and
+   its tests; `digest`; a small cpp11 and a small Rcpp package; then
+   `stats` from source, the other base packages after it.
 
 Once the API exists, the work splits along `symbols.tsv`'s areas, each a
 track with the capi corpus slice and the census coverage as its metric:

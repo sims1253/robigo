@@ -56,8 +56,9 @@ pub mod flags {
     pub const MARK_B: u8 = 0x20;
     /// A proxy for an object of the host runtime (handle at +16).
     pub const HOST: u8 = 0x40;
-    /// Maintain reference counts of the children (GNU R's TRACKREFS).
-    pub const TRACKREFS: u8 = 0x80;
+    /// Do not maintain reference counts of the children: GNU R's `spare`
+    /// bit (TRACKREFS(x) is `!spare`, and closures always track).
+    pub const NO_TRACKREFS: u8 = 0x80;
 }
 
 /// GNU R's sxpinfo.gp bits that the core itself uses (Defn.h).
@@ -189,6 +190,19 @@ impl Sexp {
             let v = self.flags();
             self.set_flags(if on { v | f } else { v & !f });
         }
+    }
+    #[inline(always)]
+    pub unsafe fn is_object(self) -> bool {
+        unsafe { self.has_flag(flags::OBJECT) }
+    }
+    #[inline(always)]
+    pub unsafe fn set_object(self, on: bool) {
+        unsafe { self.set_flag(flags::OBJECT, on) }
+    }
+    /// GNU R's TRACKREFS.
+    #[inline(always)]
+    pub unsafe fn tracks_refs(self) -> bool {
+        unsafe { self.typ() == CLOSXP || !self.has_flag(flags::NO_TRACKREFS) }
     }
     #[inline(always)]
     pub unsafe fn gp(self) -> u16 {

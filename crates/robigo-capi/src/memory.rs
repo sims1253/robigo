@@ -214,17 +214,35 @@ pub unsafe extern "C" fn R_ReleaseObject(x: Sexp) {
     c().release(x)
 }
 
-// R: memory.c:R_NewPreciousMSet & co: a multiset is a list (store,
-// count) whose store holds the protected objects.
+// R: memory.c:R_NewPreciousMSet & co. A multi-set is CONS(store,
+// npreserved) tagged with the initial size; it protects its members as
+// long as it is itself protected.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_NewPreciousMSet(_initial: c_int) -> Sexp {
-    let s = c().alloc_vector(VECSXP, 2);
-    Rf_protect(s);
-    let n = c().alloc_vector(INTSXP, 1);
-    *(n.std_data() as *mut i32) = 0;
-    SET_VECTOR_ELT(s, 1, n);
+pub unsafe extern "C" fn R_NewPreciousMSet(initial: c_int) -> Sexp {
+    let np = c().alloc_vector(INTSXP, 1);
+    *(np.std_data() as *mut i32) = 0;
+    let mset = Rf_protect(Rf_cons(R_NilValue, np));
+    if initial < 0 {
+        error_str("'initialSize' must be non-negative")
+    }
+    let isize = crate::list::Rf_ScalarInteger(initial);
+    SET_TAG(mset, isize);
     Rf_unprotect(1);
-    s
+    mset
+}
+
+unsafe fn check_mset(mset: Sexp) {
+    let store = mset.car();
+    let np = mset.cdr();
+    let isize = mset.tag();
+    if (store != R_NilValue && store.typ() != VECSXP)
+        || np.typ() != INTSXP
+        || xlength(np) != 1
+        || isize.typ() != INTSXP
+        || xlength(isize) != 1
+    {
+        error_str("Invalid mset")
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -233,21 +251,34 @@ pub unsafe extern "C" fn R_PreserveInMSet(x: Sexp, mset: Sexp) {
         return;
     }
     Rf_protect(x);
-    let mut store = VECTOR_ELT(mset, 0);
-    let count = INTEGER(VECTOR_ELT(mset, 1));
-    let n = *count as isize;
-    if store == R_NilValue || n >= XLENGTH(store) {
-        let newsize = if store == R_NilValue { 4 } else { 2 * XLENGTH(store) };
-        let ns = c().alloc_vector(VECSXP, newsize as usize);
-        for i in 0..n {
+    check_mset(mset);
+    let mut store = mset.car();
+    let n = mset.cdr().std_data() as *mut i32;
+    if store == R_NilValue {
+        let mut newsize = *(mset.tag().std_data() as *const i32) as isize;
+        if newsize == 0 {
+            newsize = 4;
+        }
+        store = c().alloc_vector(VECSXP, newsize as usize);
+        SETCAR(mset, store);
+    }
+    let size = xlength(store);
+    if *n as isize == size {
+        let newsize = 2 * size;
+        if newsize >= i32::MAX as isize {
+            error_str("Multi-set overflow")
+        }
+        let ns = Rf_protect(c().alloc_vector(VECSXP, newsize as usize));
+        for i in 0..size {
             SET_VECTOR_ELT(ns, i, VECTOR_ELT(store, i));
         }
-        SET_VECTOR_ELT(mset, 0, ns);
+        SETCAR(mset, ns);
+        Rf_unprotect(1);
         store = ns;
     }
-    SET_VECTOR_ELT(store, n, x);
-    *count += 1;
     Rf_unprotect(1);
+    SET_VECTOR_ELT(store, *n as isize, x);
+    *n += 1;
 }
 
 #[unsafe(no_mangle)]
@@ -255,30 +286,44 @@ pub unsafe extern "C" fn R_ReleaseFromMSet(x: Sexp, mset: Sexp) {
     if x == R_NilValue || x.typ() == SYMSXP {
         return;
     }
-    let store = VECTOR_ELT(mset, 0);
+    check_mset(mset);
+    let store = mset.car();
     if store == R_NilValue {
         return;
     }
-    let count = INTEGER(VECTOR_ELT(mset, 1));
-    let n = *count as isize;
-    let mut i = n - 1;
+    let n = mset.cdr().std_data() as *mut i32;
+    let mut i = *n as isize - 1;
     while i >= 0 {
         if VECTOR_ELT(store, i) == x {
-            for j in i..n - 1 {
-                SET_VECTOR_ELT(store, j, VECTOR_ELT(store, j + 1));
+            while i < *n as isize - 1 {
+                SET_VECTOR_ELT(store, i, VECTOR_ELT(store, i + 1));
+                i += 1;
             }
-            SET_VECTOR_ELT(store, n - 1, R_NilValue);
-            *count -= 1;
+            SET_VECTOR_ELT(store, i, R_NilValue);
+            *n -= 1;
             return;
         }
         i -= 1;
     }
 }
 
+// R: memory.c:R_ReleaseMSet
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ReleaseMSet(mset: Sexp, _keepsize: c_int) {
-    SET_VECTOR_ELT(mset, 0, R_NilValue);
-    *INTEGER(VECTOR_ELT(mset, 1)) = 0;
+pub unsafe extern "C" fn R_ReleaseMSet(mset: Sexp, keep_size: c_int) {
+    check_mset(mset);
+    let store = mset.car();
+    if store == R_NilValue {
+        return;
+    }
+    let n = mset.cdr().std_data() as *mut i32;
+    if xlength(store) <= keep_size as isize {
+        for i in 0..*n as isize {
+            SET_VECTOR_ELT(store, i, R_NilValue);
+        }
+    } else {
+        SETCAR(mset, R_NilValue);
+    }
+    *n = 0;
 }
 
 #[unsafe(no_mangle)]
@@ -514,7 +559,7 @@ pub unsafe extern "C" fn SHALLOW_DUPLICATE_ATTRIB(to: Sexp, from: Sexp) {
 
 #[inline]
 pub unsafe fn fix_refcnt(x: Sexp, old: Sexp, new: Sexp) {
-    if x.has_flag(flags::TRACKREFS) && old != new {
+    if x.tracks_refs() && old != new {
         if !old.is_null() {
             old.decref();
         }
