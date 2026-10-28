@@ -375,7 +375,11 @@ pub unsafe fn protect_run(f: impl FnOnce()) -> Option<usize> {
 // R: context.c:R_ToplevelExec — errors are reported and stop here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ToplevelExec(fun: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> c_int {
-    match try_void_ptr(fun, data) {
+    let mut out = Sexp::NULL;
+    crate::host::try_op("toplevelBegin\0", &[], &mut out);
+    let r = try_void_ptr(fun, data);
+    crate::host::try_op("toplevelEnd\0", &[], &mut out);
+    match r {
         Ok(()) => 1,
         Err(t) => {
             (host().report)(t);

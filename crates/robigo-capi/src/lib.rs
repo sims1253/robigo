@@ -20,6 +20,7 @@ pub mod host;
 pub mod list;
 pub mod memory;
 pub mod rdynload;
+pub mod sort;
 pub mod state;
 pub mod strings;
 pub mod stubs;

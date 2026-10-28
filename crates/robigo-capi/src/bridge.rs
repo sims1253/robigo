@@ -51,6 +51,8 @@ thread_local! {
     /// core objects wrapped for the runtime, for identity
     static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
     static READY: Cell<bool> = const { Cell::new(false) };
+    /// handler stacks hidden by R_ToplevelExec
+    static TOPLEVEL: RefCell<Vec<robigo_runtime::conditions::HandlerStack>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Run `f` with the interpreter that is currently calling into C.
@@ -467,10 +469,18 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
     })
 }
 
+/// `Rf_error`/`Rf_errorcall`: signal the condition now, as errors.c
+/// does, so calling handlers run while the C frames are live and the
+/// default handler's traceback includes them.
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
     guarded(|| unsafe {
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
-        if call.is_null() { store_flow(Flow::error(m)) } else { store_flow(Flow::error_call(from_sexp(call), m)) }
+        let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
+        let f = match f {
+            Flow::Error(e) => with_interp(|i| i.signal_error(e)),
+            other => other,
+        };
+        store_flow(f)
     })
 }
 
@@ -549,6 +559,46 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
         "field" => field(a[0], int_arg(a[1]))?,
+        // a builtin of the host (.Internal or .Primitive) with evaluated
+        // arguments: the C API functions that GNU R implements with the
+        // same code as an R builtin
+        "internal" => {
+            let name = String::from_utf8_lossy(STRING_ELT(a[0], 0).char_bytes()).into_owned();
+            let b = robigo_runtime::builtins::lookup_internal(&name)
+                .ok_or_else(|| Flow::error(format!("robigo: no internal '{name}'")))?;
+            let args: Vec<Arg> = a[1..].iter().map(|&x| Arg::pos(from_sexp(x))).collect();
+            let call = Value::Null;
+            let v = with_interp(|i| {
+                let env = i.global.clone();
+                i.invoke_builtin(b, &call, args, &env)
+            })?;
+            to_sexp(&v)
+        }
+        // R_ToplevelExec hides the handler stack of its caller
+        "toplevelBegin" => {
+            with_interp(|i| TOPLEVEL.with(|t| t.borrow_mut().push(i.handlers.take())));
+            R_NilValue
+        }
+        "toplevelEnd" => {
+            if let Some(h) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
+                with_interp(|i| i.handlers = h);
+            }
+            R_NilValue
+        }
+        // R: errors.c:onintr with nothing to resume: signal an interrupt
+        // condition, then jump to top level (non-interactive: halt)
+        "onintr" => {
+            let mut cond = Value::list(vec![]);
+            cond.set_attr_raw(s::CLASS, Value::strs_from(["interrupt", "condition"]));
+            with_interp(|i| i.signal_condition(&cond, &Value::Null))?;
+            with_interp(|i| i.write_err("\n"));
+            return Err(Flow::Error(Box::new(robigo_runtime::error::RError {
+                message: String::new(),
+                call: Some(Value::Null),
+                signaled: true,
+                classes: vec![],
+            })));
+        }
         _ => return Err(Flow::error(format!("robigo: C API host operation '{name}' is not implemented yet"))),
     })
 }
@@ -715,7 +765,33 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
     }
 }
 
+/// The foreign call runs in a builtin context, as GNU R gives PP_FOREIGN
+/// primitives one (eval.c): tracebacks show it, `error()` skips it.
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    interp.frames.push(robigo_runtime::interp::Context {
+        call: call.clone(),
+        function: Value::Null,
+        cloenv: env.clone(),
+        sysparent: env.clone(),
+        promargs: vec![],
+        on_exit: vec![],
+        handlers: interp.handlers.clone(),
+        restarts: interp.restarts.clone(),
+        generic: false,
+        builtin: true,
+    });
+    let r = call_routine_in(interp, call, r, args, env);
+    let r = match r {
+        Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
+        other => other,
+    };
+    let ctx = interp.frames.pop().unwrap();
+    interp.handlers = ctx.handlers;
+    interp.restarts = ctx.restarts;
+    r
+}
+
+unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     ensure_ready(interp);
     let base = R_PPStackTop;
     let res = match r.interface {

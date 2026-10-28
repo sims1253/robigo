@@ -384,6 +384,7 @@
   R_closedir;
   R_clrhash;
   R_compute_identical;
+  R_csort;
   R_data_class;
   R_dec_min_exponent;
   R_deferred_default_method;
@@ -896,6 +897,7 @@
   XLENGTH;
   XTRUELENGTH;
   baseRegisterIndex;
+  cPsort;
   cgmin;
   d1mach_;
   dblepr_;
@@ -929,6 +931,7 @@
   fdhess;
   getConnection;
   getPRIMNAME;
+  iPsort;
   interv_;
   intpr_;
   known_to_be_latin1;
@@ -954,7 +957,9 @@
   ptr_do_dataentry;
   ptr_do_dataviewer;
   ptr_do_selectlist;
+  rPsort;
   rchkusr_;
+  revsort;
   rexit_;
   robigo_capi_init;
   robigo_dll_close;

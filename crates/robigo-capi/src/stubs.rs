@@ -53,7 +53,6 @@ pub static STUBS: &[&str] = &[
     "Rf_dbinom",
     "Rf_dnbinom",
     "Rf_dnorm4",
-    "Rf_duplicated",
     "Rf_findVarInFrame3",
     "Rf_lbeta",
     "Rf_pbeta",
@@ -77,17 +76,13 @@ pub static STUBS: &[&str] = &[
     "R_ParentEnv",
     "R_PromiseExpr",
     "R_Serialize",
-    "R_compute_identical",
     "R_lsInternal3",
     "R_new_altrep",
     "R_pow",
-    "R_rsort",
     "R_set_altrep_Length_method",
     "R_set_altvec_Dataptr_method",
     "Rf_CreateAtVector",
     "Rf_PrintDefaults",
-    "Rf_any_duplicated",
-    "Rf_col2name",
     "Rf_dpois",
     "Rf_match",
     "Rf_pbinom",
@@ -133,7 +128,6 @@ pub static STUBS: &[&str] = &[
     "R_ClosureExpr",
     "R_GE_str2col",
     "R_getClassDef",
-    "R_isort",
     "R_set_altrep_Inspect_method",
     "R_set_altrep_data2",
     "R_set_altvec_Dataptr_or_null_method",
@@ -350,7 +344,6 @@ pub static STUBS: &[&str] = &[
     "Rf_RGBpar",
     "Rf_acopy_string",
     "Rf_allocLang",
-    "Rf_any_duplicated3",
     "Rf_bessel_i",
     "Rf_beta",
     "Rf_con_pushback",
@@ -482,7 +475,6 @@ pub static STUBS: &[&str] = &[
     "mbcsValid",
     "parseError",
     "rchkusr_",
-    "rsort_with_index",
     "rwarn_",
     "samin",
     "signrank_free",
@@ -717,11 +709,6 @@ pub unsafe extern "C" fn Rf_dnorm4() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_duplicated() {
-    not_implemented("Rf_duplicated")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_findVarInFrame3() {
     not_implemented("Rf_findVarInFrame3")
 }
@@ -837,11 +824,6 @@ pub unsafe extern "C" fn R_Serialize() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_compute_identical() {
-    not_implemented("R_compute_identical")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_lsInternal3() {
     not_implemented("R_lsInternal3")
 }
@@ -854,11 +836,6 @@ pub unsafe extern "C" fn R_new_altrep() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_pow() {
     not_implemented("R_pow")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_rsort() {
-    not_implemented("R_rsort")
 }
 
 #[unsafe(no_mangle)]
@@ -879,16 +856,6 @@ pub unsafe extern "C" fn Rf_CreateAtVector() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_PrintDefaults() {
     not_implemented("Rf_PrintDefaults")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_any_duplicated() {
-    not_implemented("Rf_any_duplicated")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_col2name() {
-    not_implemented("Rf_col2name")
 }
 
 #[unsafe(no_mangle)]
@@ -1117,11 +1084,6 @@ pub static mut R_MB_CUR_MAX: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_getClassDef() {
     not_implemented("R_getClassDef")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_isort() {
-    not_implemented("R_isort")
 }
 
 #[unsafe(no_mangle)]
@@ -2250,11 +2212,6 @@ pub unsafe extern "C" fn Rf_allocLang() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_any_duplicated3() {
-    not_implemented("Rf_any_duplicated3")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_bessel_i() {
     not_implemented("Rf_bessel_i")
 }
@@ -2946,11 +2903,6 @@ pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rchkusr_() {
     not_implemented("rchkusr_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rsort_with_index() {
-    not_implemented("rsort_with_index")
 }
 
 #[unsafe(no_mangle)]

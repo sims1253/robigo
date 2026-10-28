@@ -10,6 +10,9 @@ use std::ffi::{c_int, c_void};
 /// R limits `.Call` and `.C` to 65 arguments (dotcode.c MAX_ARGS).
 pub const MAX_ARGS: usize = 65;
 
+/// Protect-stack headroom below a native routine (see robigo_dotcall).
+const PP_HEADROOM: c_int = 8;
+
 /// What the bridge reports after a call: the protect stack depth before
 /// and after (for dotcode.c's "stack imbalance" warning).
 #[repr(C)]
@@ -35,13 +38,21 @@ pub unsafe extern "C" fn robigo_dotcall(
     for &x in &a[..n] {
         crate::memory::Rf_protect(x);
     }
+    // GNU R's evaluator always holds protections below a .Call (5 to 23
+    // in measurements, 8 for a top-level print(.Call(...))): code that
+    // unprotects more than it protected gets the "stack imbalance"
+    // warning there, not an error. Keep that headroom above the
+    // arguments, and report depths relative to 8.
+    for _ in 0..PP_HEADROOM {
+        crate::memory::Rf_protect(R_NilValue);
+    }
     let before = R_PPStackTop;
     let r = crate::errors::try_call65(fun, &mut a);
     let after = R_PPStackTop;
     R_PPStackTop = base;
     if !info.is_null() {
-        (*info).pp_before = before;
-        (*info).pp_after = after;
+        (*info).pp_before = PP_HEADROOM;
+        (*info).pp_after = PP_HEADROOM + (after - before);
     }
     match r {
         Ok(v) => {
