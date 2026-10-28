@@ -582,11 +582,13 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
 /// `a op b` on complex vectors with R's recycling (R:
 /// complex.c:complex_binary).
 fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize) -> RResult<Vec<Complex>> {
-    use super::complex::{cadd, cdiv, cmul, cpow, csub};
+    use super::complex::{cadd, cdiv, cmul, cpow, csub, zip_unrolled};
     Ok(match op {
         // GCC commuted the compiled adds (the second operand's NaN payload
         // wins) and calls __muldc3 with (y, x); see complex.rs.
+        ArithOp::Plus if a.len() == n && b.len() == n => zip_unrolled(a, b, cadd),
         ArithOp::Plus => real_kernel!(a, b, n, cadd),
+        ArithOp::Minus if a.len() == n && b.len() == n => zip_unrolled(a, b, csub),
         ArithOp::Minus => real_kernel!(a, b, n, csub),
         // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
         ArithOp::Times => real_kernel!(a, b, n, |x: Complex, y: Complex| cmul(y, x)),

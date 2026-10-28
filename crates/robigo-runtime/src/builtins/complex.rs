@@ -155,21 +155,85 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
     if r.re.is_nan() || r.im.is_nan() { cmul_impl::<ExactArith>(a, b) } else { r }
 }
 
+/// A packed SSE2 operation on both parts of two complex numbers, `$a` the
+/// destination operand: one instruction, with the operand order fixed (in
+/// plain Rust LLVM may commute an addition, and which NaN payload survives
+/// shows as NA vs NaN).
+#[cfg(target_arch = "x86_64")]
+macro_rules! sse_pair {
+    ($insn:literal, $a:expr, $b:expr) => {{
+        use core::arch::x86_64::__m128d;
+        // SAFETY: Complex is #[repr(C)] { re, im }: the same 16 bytes as an
+        // __m128d; SSE2 is part of x86-64.
+        unsafe {
+            let mut va = core::mem::transmute::<Complex, __m128d>($a);
+            let vb = core::mem::transmute::<Complex, __m128d>($b);
+            core::arch::asm!(concat!($insn, " {a}, {b}"), a = inout(xmm_reg) va, b = in(xmm_reg) vb,
+                             options(pure, nomem, nostack, preserves_flags));
+            core::mem::transmute::<__m128d, Complex>(va)
+        }
+    }};
+}
+
 // R: complex.c:complex_binary PLUSOP. GCC commuted the adds of the
 // compiled loop: the destination operand of each addsd holds the *second*
 // operand's part, so with two NaN operands x2's payload wins (observable:
-// `(0/0+1i)+(1+NA)` is NA, not NaN+NaNi).
+// `(0/0+1i)+(1+NA)` is NA, not NaN+NaNi). One `addpd` with `b` as the
+// destination: a single pass, also for NaN sums (escaping Mandelbrot
+// iterations are all NaN).
+#[inline(always)]
 pub fn cadd(a: Complex, b: Complex) -> Complex {
-    let r = Complex::new(b.re + a.re, b.im + a.im);
-    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im)) } else { r }
+    #[cfg(target_arch = "x86_64")]
+    {
+        sse_pair!("addpd", b, a)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im))
+    }
 }
 
 // R: complex.c:complex_binary MINUSOP. The subtractions are not
 // commutative, so the compiled code has no freedom: x1 - x2 with the
 // minuend as destination operand.
+#[inline(always)]
 pub fn csub(a: Complex, b: Complex) -> Complex {
-    let r = Complex::new(a.re - b.re, a.im - b.im);
-    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im)) } else { r }
+    #[cfg(target_arch = "x86_64")]
+    {
+        sse_pair!("subpd", a, b)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im))
+    }
+}
+
+/// `f` over two slices of the same length, unrolled by four and written
+/// into the result's spare capacity: LLVM does not unroll loops around
+/// inline assembly, and the loop overhead would otherwise cost more than
+/// the operation.
+#[inline(always)]
+pub fn zip_unrolled(a: &[Complex], b: &[Complex], f: impl Fn(Complex, Complex) -> Complex) -> Vec<Complex> {
+    let n = a.len().min(b.len());
+    let mut out: Vec<Complex> = Vec::with_capacity(n);
+    {
+        let dst = &mut out.spare_capacity_mut()[..n];
+        let (a, b) = (&a[..n], &b[..n]);
+        let mut d4 = dst.chunks_exact_mut(4);
+        let (mut a4, mut b4) = (a.chunks_exact(4), b.chunks_exact(4));
+        for ((o, x), y) in (&mut d4).zip(&mut a4).zip(&mut b4) {
+            o[0].write(f(x[0], y[0]));
+            o[1].write(f(x[1], y[1]));
+            o[2].write(f(x[2], y[2]));
+            o[3].write(f(x[3], y[3]));
+        }
+        for ((o, &x), &y) in d4.into_remainder().iter_mut().zip(a4.remainder()).zip(b4.remainder()) {
+            o.write(f(x, y));
+        }
+    }
+    // SAFETY: the loops above wrote all n elements.
+    unsafe { out.set_len(n) };
+    out
 }
 
 #[inline(always)]
