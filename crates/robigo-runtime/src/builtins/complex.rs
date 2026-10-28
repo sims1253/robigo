@@ -12,15 +12,123 @@ const RMIN2: f64 = f64::EPSILON;
 const RMINSCAL: f64 = 1.0 / f64::EPSILON;
 const RMAX2: f64 = RBIG * RMIN2;
 
+/// x86-64 SSE binary-operation NaN semantics, as exhibited by the compiled
+/// libgcc `__muldc3`/`__divdc3` (and any gcc-compiled C): a NaN operand is
+/// returned quietized, the destination (left) operand's payload wins when
+/// both are NaN, and an invalid operation on non-NaN operands yields the
+/// QNaN indefinite `0xfff8000000000000`. LLVM differs in exactly the cases
+/// that decide payload bits: it constant-folds invalid operations on
+/// literals to the positive default NaN (e.g. `INFINITY * 0.0`) and may
+/// commute operands, so which NaN payload survives `nan + nan` depends on
+/// the codegen. The kernels therefore recompute through these helpers
+/// whenever the fast result contains a NaN (see [`CArith`]).
+mod sse {
+    /// SSE quiets a propagated signalling NaN by setting the quiet bit.
+    #[inline(always)]
+    fn quietize(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000)
+    }
+
+    // The QNaN indefinite every invalid x86-64 SSE operation produces
+    // (0*Inf, Inf-Inf, 0/0, sqrt(-1), ...); LLVM folds literals to
+    // 0x7ff8000000000000 instead.
+    const INDEFINITE: f64 = f64::from_bits(0xfff8_0000_0000_0000);
+
+    #[cold]
+    #[inline(never)]
+    fn propagate(a: f64, b: f64) -> f64 {
+        if a.is_nan() {
+            quietize(a)
+        } else if b.is_nan() {
+            quietize(b)
+        } else {
+            INDEFINITE
+        }
+    }
+
+    macro_rules! sse_op {
+        ($(#[$attr:meta])* $name:ident, $op:tt) => {
+            $(#[$attr])*
+            #[inline(always)]
+            pub fn $name(a: f64, b: f64) -> f64 {
+                let r = a $op b;
+                if r.is_nan() { propagate(a, b) } else { r }
+            }
+        };
+    }
+    sse_op!(add, +);
+    sse_op!(sub, -);
+    sse_op!(mul, *);
+    sse_op!(div, /);
+}
+
+/// The arithmetic the complex kernels are instantiated with. `Fast` is the
+/// plain IEEE operations — bit-identical with the compiled C library for
+/// every non-NaN result, whatever LLVM does with operand order and literal
+/// folding (finite arithmetic is never reassociated). `Exact` adds x86-64
+/// SSE NaN semantics (see [`sse`]) so NaN payload bits match the C library
+/// too; it only ever runs for results the fast path reported as NaN.
+trait CArith {
+    fn add(a: f64, b: f64) -> f64;
+    fn sub(a: f64, b: f64) -> f64;
+    fn mul(a: f64, b: f64) -> f64;
+    fn div(a: f64, b: f64) -> f64;
+}
+
+struct FastArith;
+impl CArith for FastArith {
+    #[inline(always)]
+    fn add(a: f64, b: f64) -> f64 {
+        a + b
+    }
+    #[inline(always)]
+    fn sub(a: f64, b: f64) -> f64 {
+        a - b
+    }
+    #[inline(always)]
+    fn mul(a: f64, b: f64) -> f64 {
+        a * b
+    }
+    #[inline(always)]
+    fn div(a: f64, b: f64) -> f64 {
+        a / b
+    }
+}
+
+struct ExactArith;
+impl CArith for ExactArith {
+    #[inline(always)]
+    fn add(a: f64, b: f64) -> f64 {
+        sse::add(a, b)
+    }
+    #[inline(always)]
+    fn sub(a: f64, b: f64) -> f64 {
+        sse::sub(a, b)
+    }
+    #[inline(always)]
+    fn mul(a: f64, b: f64) -> f64 {
+        sse::mul(a, b)
+    }
+    #[inline(always)]
+    fn div(a: f64, b: f64) -> f64 {
+        sse::div(a, b)
+    }
+}
+
 // R: libgcc2.c:__muldc3 (the C99 `x * y` R's complex_binary uses).
 pub fn cmul(a: Complex, b: Complex) -> Complex {
+    let r = cmul_impl::<FastArith>(a, b);
+    if r.re.is_nan() || r.im.is_nan() { cmul_impl::<ExactArith>(a, b) } else { r }
+}
+
+fn cmul_impl<T: CArith>(a: Complex, b: Complex) -> Complex {
     let (a, b, c, d) = (a.re, a.im, b.re, b.im);
-    let ac = a * c;
-    let bd = b * d;
-    let ad = a * d;
-    let bc = b * c;
-    let mut x = ac - bd;
-    let mut y = ad + bc;
+    let ac = T::mul(a, c);
+    let bd = T::mul(b, d);
+    let ad = T::mul(a, d);
+    let bc = T::mul(b, c);
+    let mut x = T::sub(ac, bd);
+    let mut y = T::add(ad, bc);
     if x.is_nan() && y.is_nan() {
         // Recover infinities that computed as NaN + iNaN.
         let (mut a, mut b, mut c, mut d) = (a, b, c, d);
@@ -63,8 +171,8 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
             recalc = true;
         }
         if recalc {
-            x = f64::INFINITY * (a * c - b * d);
-            y = f64::INFINITY * (a * d + b * c);
+            x = T::mul(f64::INFINITY, T::sub(T::mul(a, c), T::mul(b, d)));
+            y = T::mul(f64::INFINITY, T::add(T::mul(a, d), T::mul(b, c)));
         }
     }
     Complex::new(x, y)
@@ -77,93 +185,98 @@ fn copysign(x: f64, y: f64) -> f64 {
 
 // R: libgcc2.c:__divdc3 (the C99 `x / y` R's complex_binary uses).
 pub fn cdiv(a: Complex, b: Complex) -> Complex {
+    let r = cdiv_impl::<FastArith>(a, b);
+    if r.re.is_nan() || r.im.is_nan() { cdiv_impl::<ExactArith>(a, b) } else { r }
+}
+
+fn cdiv_impl<T: CArith>(a: Complex, b: Complex) -> Complex {
     let (mut a, mut b, mut c, mut d) = (a.re, a.im, b.re, b.im);
     let (mut x, mut y);
     if c.abs() < d.abs() {
         // Prevent underflow when denominator is near max representable.
         if d.abs() >= RBIG {
-            a /= 2.0;
-            b /= 2.0;
-            c /= 2.0;
-            d /= 2.0;
+            a = T::div(a, 2.0);
+            b = T::div(b, 2.0);
+            c = T::div(c, 2.0);
+            d = T::div(d, 2.0);
         }
         // Avoid overflow/underflow issues when c and d are small.
         if d.abs() < RMIN2 {
-            a *= RMINSCAL;
-            b *= RMINSCAL;
-            c *= RMINSCAL;
-            d *= RMINSCAL;
+            a = T::mul(a, RMINSCAL);
+            b = T::mul(b, RMINSCAL);
+            c = T::mul(c, RMINSCAL);
+            d = T::mul(d, RMINSCAL);
         } else if (a.abs() < RMIN && b.abs() < RMAX2 && d.abs() < RMAX2)
             || (b.abs() < RMIN && a.abs() < RMAX2 && d.abs() < RMAX2)
         {
-            a *= RMINSCAL;
-            b *= RMINSCAL;
-            c *= RMINSCAL;
-            d *= RMINSCAL;
+            a = T::mul(a, RMINSCAL);
+            b = T::mul(b, RMINSCAL);
+            c = T::mul(c, RMINSCAL);
+            d = T::mul(d, RMINSCAL);
         }
-        let ratio = c / d;
-        let denom = (c * ratio) + d;
+        let ratio = T::div(c, d);
+        let denom = T::add(T::mul(c, ratio), d);
         // Choose alternate order of computation if ratio is subnormal.
         if ratio.abs() > RMIN {
-            x = ((a * ratio) + b) / denom;
-            y = ((b * ratio) - a) / denom;
+            x = T::div(T::add(T::mul(a, ratio), b), denom);
+            y = T::div(T::sub(T::mul(b, ratio), a), denom);
         } else {
             // gcc 14's __divdc3 emits `(a/d) * c`, not the source's
             // `c * (a/d)`: with NaN operands the destination operand's
             // payload wins, so the order is observable in the bits.
-            x = (((a / d) * c) + b) / denom;
-            y = (((b / d) * c) - a) / denom;
+            x = T::div(T::add(T::mul(T::div(a, d), c), b), denom);
+            y = T::div(T::sub(T::mul(T::div(b, d), c), a), denom);
         }
     } else {
         if c.abs() >= RBIG {
-            a /= 2.0;
-            b /= 2.0;
-            c /= 2.0;
-            d /= 2.0;
+            a = T::div(a, 2.0);
+            b = T::div(b, 2.0);
+            c = T::div(c, 2.0);
+            d = T::div(d, 2.0);
         }
         if c.abs() < RMIN2 {
-            a *= RMINSCAL;
-            b *= RMINSCAL;
-            c *= RMINSCAL;
-            d *= RMINSCAL;
+            a = T::mul(a, RMINSCAL);
+            b = T::mul(b, RMINSCAL);
+            c = T::mul(c, RMINSCAL);
+            d = T::mul(d, RMINSCAL);
         } else if (a.abs() < RMIN && b.abs() < RMAX2 && c.abs() < RMAX2)
             || (b.abs() < RMIN && a.abs() < RMAX2 && c.abs() < RMAX2)
         {
-            a *= RMINSCAL;
-            b *= RMINSCAL;
-            c *= RMINSCAL;
-            d *= RMINSCAL;
+            a = T::mul(a, RMINSCAL);
+            b = T::mul(b, RMINSCAL);
+            c = T::mul(c, RMINSCAL);
+            d = T::mul(d, RMINSCAL);
         }
-        let ratio = d / c;
-        let denom = (d * ratio) + c;
+        let ratio = T::div(d, c);
+        let denom = T::add(T::mul(d, ratio), c);
         if ratio.abs() > RMIN {
-            x = ((b * ratio) + a) / denom;
-            y = (b - (a * ratio)) / denom;
+            x = T::div(T::add(T::mul(b, ratio), a), denom);
+            y = T::div(T::sub(b, T::mul(a, ratio)), denom);
         } else {
             // gcc 14 emits `(b/c) * d`, not the source's `d * (b/c)`,
             // and adds with the product as destination: with NaN
             // operands the destination operand's payload wins, so the
             // order is observable in the bits.
-            x = (((b / c) * d) + a) / denom;
-            y = (b - ((a / c) * d)) / denom;
+            x = T::div(T::add(T::mul(T::div(b, c), d), a), denom);
+            y = T::div(T::sub(b, T::mul(T::div(a, c), d)), denom);
         }
     }
     // Recover infinities and zeros that computed as NaN+iNaN; the only
     // cases are nonzero/zero, infinite/finite, and finite/infinite.
     if x.is_nan() && y.is_nan() {
         if c == 0.0 && d == 0.0 && (!a.is_nan() || !b.is_nan()) {
-            x = f64::copysign(f64::INFINITY, c) * a;
-            y = f64::copysign(f64::INFINITY, c) * b;
+            x = T::mul(f64::copysign(f64::INFINITY, c), a);
+            y = T::mul(f64::copysign(f64::INFINITY, c), b);
         } else if (a.is_infinite() || b.is_infinite()) && c.is_finite() && d.is_finite() {
             let a2 = copysign(if a.is_infinite() { 1.0 } else { 0.0 }, a);
             let b2 = copysign(if b.is_infinite() { 1.0 } else { 0.0 }, b);
-            x = f64::INFINITY * (a2 * c + b2 * d);
-            y = f64::INFINITY * (b2 * c - a2 * d);
+            x = T::mul(f64::INFINITY, T::add(T::mul(a2, c), T::mul(b2, d)));
+            y = T::mul(f64::INFINITY, T::sub(T::mul(b2, c), T::mul(a2, d)));
         } else if (c.is_infinite() || d.is_infinite()) && a.is_finite() && b.is_finite() {
             let c2 = copysign(if c.is_infinite() { 1.0 } else { 0.0 }, c);
             let d2 = copysign(if d.is_infinite() { 1.0 } else { 0.0 }, d);
-            x = 0.0 * (a * c2 + b * d2);
-            y = 0.0 * (b * c2 - a * d2);
+            x = T::mul(0.0, T::add(T::mul(a, c2), T::mul(b, d2)));
+            y = T::mul(0.0, T::sub(T::mul(b, c2), T::mul(a, d2)));
         }
     }
     Complex::new(x, y)
