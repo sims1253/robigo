@@ -230,7 +230,7 @@ fn do_deparse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let opts = if opts == NA_INTEGER { DEFAULTDEPARSE } else { opts as u32 };
     let nlines = crate::coerce::as_integer(&arg(&args, 4));
     let nlines = if nlines == NA_INTEGER || nlines < 0 { None } else { Some(nlines as usize) };
-    let lines = deparse_lines(&expr, cutoff as usize, backtick, opts, nlines);
+    let lines = i.deparse_prepared(&expr, || deparse_lines(&expr, cutoff as usize, backtick, opts, nlines))?;
     Ok(Value::strs_from(lines))
 }
 
@@ -241,7 +241,7 @@ fn do_dput(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     let opts = if opts == NA_INTEGER { DEFAULTDEPARSE } else { opts as u32 };
     // R: deparse.c:do_dput -- deparse1() uses DEFAULT_Cutoff (60).
     let mut text = String::new();
-    for l in deparse_lines(&x, crate::deparse::DEFAULT_CUTOFF, true, opts, None) {
+    for l in i.deparse_prepared(&x, || deparse_lines(&x, crate::deparse::DEFAULT_CUTOFF, true, opts, None))? {
         text.push_str(&l);
         text.push('\n');
     }
@@ -310,7 +310,7 @@ fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         } else {
             text.push_str(&format!("`{}` <-\n", name));
         }
-        for l in deparse_lines(&val, crate::deparse::DEFAULT_CUTOFF, true, opts, None) {
+        for l in i.deparse_prepared(&val, || deparse_lines(&val, crate::deparse::DEFAULT_CUTOFF, true, opts, None))? {
             text.push_str(&l);
             text.push('\n');
         }

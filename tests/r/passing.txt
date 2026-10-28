@@ -120,6 +120,7 @@ tests/r/s3/ops.R
 tests/r/s4/bind.R
 tests/r/s4/bits.R
 tests/r/s4/classes.R
+tests/r/s4/deparse.R
 tests/r/s4/dispatch.R
 tests/r/s4/features.R
 tests/r/s4/groups.R
