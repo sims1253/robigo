@@ -59,6 +59,58 @@ fn emit_nmath_warnings(i: &mut Interp) -> RResult<()> {
     Ok(())
 }
 
+/// R: distn.c:math2_1 / math2_2 (`SETUP_Math2` .. `FINISH_Math2`)
+fn math2(i: &mut Interp, a: &[Arg], f: &dyn Fn(f64, f64) -> f64) -> RResult<Value> {
+    if a.len() < 2 {
+        return Err(Flow::error(MSG_NONNUM_MATH));
+    }
+    let (sa, sb) = (&a[0].value, &a[1].value);
+    if !is_numeric(sa) || !is_numeric(sb) {
+        return Err(Flow::error(MSG_NONNUM_MATH));
+    }
+    let (na, nb) = (sa.len(), sb.len());
+    if na == 0 || nb == 0 {
+        let mut sy = Value::reals(vec![]);
+        if na == 0 {
+            copy_all_attrs(sa, &mut sy);
+        }
+        return Ok(sy);
+    }
+    let n = na.max(nb);
+    let (va, vb) = (reals(sa), reals(sb));
+    nmath::take_warnings();
+    let mut naflag = false;
+    let mut y = Vec::with_capacity(n);
+    for k in 0..n {
+        let (ai, bi) = (va[k % na], vb[k % nb]);
+        let v = match na_result(&[ai, bi]) {
+            Some(v) => v,
+            None => {
+                let v = f(ai, bi);
+                if v.is_nan() {
+                    naflag = true;
+                }
+                v
+            }
+        };
+        y.push(v);
+    }
+    emit_nmath_warnings(i)?;
+    if let Some(msg) = nmath::take_alloc_error() {
+        return Err(Flow::error(msg));
+    }
+    if naflag {
+        i.warning(MSG_NA)?;
+    }
+    let mut sy = Value::reals(y);
+    if n == na {
+        copy_all_attrs(sa, &mut sy);
+    } else if n == nb {
+        copy_all_attrs(sb, &mut sy);
+    }
+    Ok(sy)
+}
+
 /// R: distn.c:math3_1 / math3_2 (`SETUP_Math3` .. `FINISH_Math3`)
 fn math3(i: &mut Interp, a: &[Arg], f: &dyn Fn(f64, f64, f64) -> f64) -> RResult<Value> {
     if a.len() < 3 {
@@ -96,6 +148,9 @@ fn math3(i: &mut Interp, a: &[Arg], f: &dyn Fn(f64, f64, f64) -> f64) -> RResult
         y.push(v);
     }
     emit_nmath_warnings(i)?;
+    if let Some(msg) = nmath::take_alloc_error() {
+        return Err(Flow::error(msg));
+    }
     if naflag {
         i.warning(MSG_NA)?;
     }
@@ -147,6 +202,9 @@ fn math4(i: &mut Interp, a: &[Arg], f: &dyn Fn(f64, f64, f64, f64) -> f64) -> RR
         y.push(v);
     }
     emit_nmath_warnings(i)?;
+    if let Some(msg) = nmath::take_alloc_error() {
+        return Err(Flow::error(msg));
+    }
     if naflag {
         i.warning(MSG_NA)?;
     }
@@ -252,4 +310,41 @@ pub fn qtukey(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
     let lt = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
     let lg = a.get(5).map(|a| flag(&a.value)).unwrap_or(false);
     math4(i, a, &|p, nranges, nmeans, df| nmath::tukey::qtukey(p, nranges, nmeans, df, lt, lg))
+}
+
+// ----------------------------------------------------------------------
+// Wilcoxon's rank sum and signed rank distributions
+
+pub fn dwilcox(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lg = a.get(3).map(|a| flag(&a.value)).unwrap_or(false);
+    math3(i, a, &|x, m, n| nmath::wilcox::dwilcox(x, m, n, lg))
+}
+
+pub fn pwilcox(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(3).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
+    math3(i, a, &|q, m, n| nmath::wilcox::pwilcox(q, m, n, lt, lg))
+}
+
+pub fn qwilcox(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(3).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
+    math3(i, a, &|p, m, n| nmath::wilcox::qwilcox(p, m, n, lt, lg))
+}
+
+pub fn dsignrank(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lg = a.get(2).map(|a| flag(&a.value)).unwrap_or(false);
+    math2(i, a, &|x, n| nmath::signrank::dsignrank(x, n, lg))
+}
+
+pub fn psignrank(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(2).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(3).map(|a| flag(&a.value)).unwrap_or(false);
+    math2(i, a, &|q, n| nmath::signrank::psignrank(q, n, lt, lg))
+}
+
+pub fn qsignrank(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(2).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(3).map(|a| flag(&a.value)).unwrap_or(false);
+    math2(i, a, &|p, n| nmath::signrank::qsignrank(p, n, lt, lg))
 }

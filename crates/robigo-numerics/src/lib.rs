@@ -41,9 +41,11 @@ pub mod pgamma;
 pub mod polygamma;
 pub mod rand;
 pub mod rng;
+pub mod signrank;
 pub mod tdist;
 pub mod toms708;
 pub mod tukey;
+pub mod wilcox;
 
 pub use self::gamma::{beta as beta_fn, choose, gammafn, lbeta, lchoose, lgammafn, lgammafn_sign};
 pub use self::polygamma::{digamma, psigamma, trigamma};
@@ -467,6 +469,37 @@ pub fn ml_warning(x: i32, s: &str) {
 /// Take the warnings raised since the last call.
 pub fn take_warnings() -> Vec<String> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+}
+
+// ----------------------------------------------------------------------
+// Allocation failures (nmath's calloc/malloc wrappers)
+
+thread_local! {
+    static ALLOC_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// R: main/memory.c:R_chk_calloc / R_chk_malloc.  nmath has no error
+/// path, so a failing allocation records R's message here and returns
+/// NaN; the `.Call` wrapper drains it with [`take_alloc_error`] and
+/// raises the error, which aborts the call as in R.
+pub fn alloc_error(nelem: u64, elsize: u64) -> f64 {
+    ALLOC_ERROR.with(|e| {
+        *e.borrow_mut() = Some(format!("'R_Calloc' could not allocate memory ({} of {} bytes)", nelem, elsize))
+    });
+    ML_NAN
+}
+
+/// Take the allocation error raised since the last call, if any.
+pub fn take_alloc_error() -> Option<String> {
+    ALLOC_ERROR.with(|e| e.borrow_mut().take())
+}
+
+/// C's `(int)` conversion of a double (`cvttsd2si`): out of range and NaN
+/// give `INT_MIN`.  Rust's `as i32` saturates instead, which nmath's
+/// integer arithmetic (e.g. `w_init_maybe`'s `(int) Inf`) does not.
+#[inline]
+pub fn c_int_cast(x: f64) -> i32 {
+    if x.is_nan() || x >= 2147483648.0 || x < -2147483648.0 { i32::MIN } else { x as i32 }
 }
 
 /// C's `%f` (six decimals).

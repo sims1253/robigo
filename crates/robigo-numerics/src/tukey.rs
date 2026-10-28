@@ -280,6 +280,7 @@ fn qinv(p: f64, c: f64, v: f64) -> f64 {
 }
 
 /// R: nmath/qtukey.c:qtukey
+#[allow(unused_assignments)] // `valx1 = -p` mirrors the C and is overwritten below
 pub fn qtukey(p: f64, rr: f64, cc: f64, df: f64, lower_tail: bool, log_p: bool) -> f64 {
     const EPS: f64 = 0.0001;
     const MAXITER: i32 = 50;
