@@ -203,3 +203,11 @@
 - `builtins/TestBuiltin_substitute/bc7be81aded6089e`
 - `functions/TestFunctions/c4b89173958d45e9`
 
+## 2026-10-28: lookup validation, modes, and numeric environments
+
+- Why: lookup treated integer and double as distinct modes, accepted invalid modes, interpreted numeric environments as search-path positions, and reported internal calls in errors.
+- Port: `envir.c:do_get`, `str2mode`, `findVar1mode`; `util.c:TypeTable`; `context.c:R_sysframe` through the existing frame walker.
+- Result: 1,226/1,371 -> 1,308/1,371, an increase of 82; zero regressions. Kept. The 83 additions to `passing.txt` include the one pre-existing unrecorded pass.
+- Verification: runtime crate tests pass (17 unit, two integration); focused lookup test matches Docker GNU R 4.5.0 byte for byte; relevant help-page examples remain 5/8 with zero regressions; `cargo fmt --check` passes.
+- Tests: `tests/r/lang/lookup-modes.R` covers mode normalization, invalid names and modes, frame lookup, and existence checks that must not force promises. Expected output was recorded by `scripts/regen-expected.sh` in `robigo-oracle:4.5.0`.
+- Remaining lookup failure: `.Device` is absent, which belongs to package/device startup.

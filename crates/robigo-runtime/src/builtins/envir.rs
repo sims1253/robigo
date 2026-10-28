@@ -317,23 +317,68 @@ fn do_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(value)
 }
 
+// R: envir.c:str2mode, util.c:TypeTable
+fn lookup_mode(v: &Value) -> RResult<Rc<str>> {
+    let mode = match v {
+        Value::Str(s) if !s.data.is_empty() => s.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
+        _ => return Err(Flow::error("invalid 'mode' argument")),
+    };
+    match &*mode {
+        "NULL" | "symbol" | "pairlist" | "closure" | "environment" | "promise" | "language" | "special" | "builtin"
+        | "char" | "logical" | "integer" | "double" | "complex" | "character" | "..." | "any" | "expression"
+        | "list" | "externalptr" | "bytecode" | "weakref" | "raw" | "S4" | "object" | "numeric" | "name"
+        | "function" => Ok(mode),
+        _ => Err(Flow::error(format!("invalid 'mode' argument '{}'", mode))),
+    }
+}
+
+// R: envir.c:findVar1mode. Lookup uses mode, merging integer/double and
+// all three function types, rather than requiring the exact storage type.
 fn mode_matches(v: &Value, mode: &str) -> bool {
     match mode {
         "any" => true,
-        "function" => v.is_function(),
-        "numeric" => matches!(v, Value::Int(_) | Value::Real(_)) && !v.inherits("factor"),
-        "character" => matches!(v, Value::Str(_)),
-        "logical" => matches!(v, Value::Lgl(_)),
-        "integer" => matches!(v, Value::Int(_)),
-        "double" => matches!(v, Value::Real(_)),
-        "complex" => matches!(v, Value::Cplx(_)),
-        "list" => matches!(v, Value::List(_)),
-        "environment" => matches!(v, Value::Env(_)),
-        "name" | "symbol" => matches!(v, Value::Sym(_)),
-        "call" | "language" => matches!(v, Value::Lang(_)),
-        "S4" => false,
+        "function" | "closure" | "builtin" | "special" => v.is_function(),
+        "numeric" | "integer" | "double" => matches!(v, Value::Int(_) | Value::Real(_)),
+        "name" => matches!(v, Value::Sym(_)),
+        "S4" | "object" => false,
         other => v.type_name() == other,
     }
+}
+
+// R: envir.c:do_get (shared by get, get0 and exists).
+fn lookup_args(i: &mut Interp, args: &[Arg], call: &Value) -> RResult<(Sym, Env, Rc<str>, bool)> {
+    let sym = match arg(args, 0) {
+        Value::Sym(s) => s,
+        Value::Str(s) if !s.data.is_empty() && s.data[0].as_deref() != Some("") => {
+            if s.data.len() > 1 {
+                return Err(Flow::error("first argument has length > 1"));
+            }
+            Sym::new(s.data[0].as_deref().unwrap_or("NA"))
+        }
+        _ => return Err(Flow::error("invalid first argument")),
+    };
+    let env = match arg(args, 1) {
+        Value::Int(_) | Value::Real(_) => {
+            let n = as_integer(&arg(args, 1));
+            if n == NA_INTEGER {
+                return Err(Flow::error("NA argument is invalid"));
+            }
+            if n == 0 {
+                i.global.clone()
+            } else {
+                match nth_frame(i, n, i.current_frame())? {
+                    Some(k) => i.frames[k].cloenv.clone(),
+                    None => i.global.clone(),
+                }
+            }
+        }
+        Value::Env(e) => e,
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        v => as_env(i, &v, call).map_err(|_| Flow::error("invalid 'envir' argument"))?,
+    };
+    let mode = lookup_mode(&arg(args, 2))?;
+    let inherits = lgl_arg(&arg(args, 3), "inherits")?;
+    Ok((sym, env, mode, inherits))
 }
 
 /// Look up a variable with a mode filter (R's `findVar1mode`).
@@ -362,43 +407,28 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
 }
 
 fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => s.data[0].clone().unwrap(),
-        _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
-    };
-    let env = env_arg(i, &arg(&args, 1), call, "envir")?;
-    let mode = str_arg(&arg(&args, 2), "mode")?;
-    let inherits = lgl_arg(&arg(&args, 3), "inherits")?;
-    let sym = Sym::new(&name);
+    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
+    let name = sym.name();
     match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => {
             if v.is_missing_arg() {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    format!("argument \"{}\" is missing, with no default", name),
-                ));
+                return Err(Flow::error(format!("argument \"{}\" is missing, with no default", name)));
             }
             Ok(v)
         }
         None => {
             if &*mode == "any" {
-                Err(Flow::error_call(call.clone(), format!("object '{}' not found", name)))
+                Err(Flow::error(format!("object '{}' not found", name)))
             } else {
-                Err(Flow::error_call(call.clone(), format!("object '{}' of mode '{}' was not found", name, mode)))
+                Err(Flow::error(format!("object '{}' of mode '{}' was not found", name, mode)))
             }
         }
     }
 }
 
 fn do_get0(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => s.data[0].clone().unwrap(),
-        _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
-    };
-    let env = env_arg(i, &arg(&args, 1), call, "envir")?;
-    let mode = str_arg(&arg(&args, 2), "mode")?;
-    let inherits = lgl_arg(&arg(&args, 3), "inherits")?;
-    match find_var_mode(i, Sym::new(&name), &env, &mode, inherits)? {
+    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
+    match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => Ok(v),
         None => Ok(arg(&args, 4)),
     }
@@ -439,14 +469,7 @@ fn do_mget(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 fn do_exists(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => s.data[0].clone().unwrap(),
-        _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
-    };
-    let env = env_arg(i, &arg(&args, 1), call, "envir")?;
-    let mode = str_arg(&arg(&args, 2), "mode")?;
-    let inherits = lgl_arg(&arg(&args, 3), "inherits")?;
-    let sym = Sym::new(&name);
+    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
     if &*mode == "any" {
         let mut cur = Some(env);
         while let Some(e) = cur {
