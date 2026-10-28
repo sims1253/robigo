@@ -1161,7 +1161,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
                 Some(b) => (Value::Builtin(b), Sym::new(&gname), klass.len()),
                 None => {
                     // A closure generic in base (e.g. print) has no default.
-                    match interp.base.get_local(Sym::new(&gname)) {
+                    match interp.base_binding(Sym::new(&gname)) {
                         Some(f @ Value::Closure(_)) => (f, Sym::new(&gname), klass.len()),
                         _ => return Err(Flow::error(format!("no more methods for '{}'", generic))),
                     }

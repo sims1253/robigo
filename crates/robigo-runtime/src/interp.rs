@@ -363,6 +363,14 @@ impl Interp {
     }
 
     /// Force a value if it is a promise.
+    /// A binding of the base environment, its promise forced: GNU R's
+    /// base is lazily loaded, every object a promise until first use
+    /// (bootstrap.rs). An error while forcing reads as no binding.
+    pub fn base_binding(&mut self, sym: crate::sym::Sym) -> Option<Value> {
+        let v = self.base.get_local(sym)?;
+        self.force(v).ok()
+    }
+
     pub fn force(&mut self, v: Value) -> RResult<Value> {
         match v {
             Value::Promise(p) => self.force_promise(&p),

@@ -1321,7 +1321,7 @@ fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
         }
     }
     let dflt = Sym::new("seq.default");
-    let base = interp.base_ns.get_local(dflt)?;
+    let base = interp.base_binding(dflt)?;
     match interp.lookup_method(dflt, env, &defenv) {
         Ok(Some(f)) if f.ptr_eq(&base) => Some(len as u64),
         _ => None,

@@ -193,7 +193,7 @@ impl Interp {
         }
         // Methods registered for base generics live in base's table.
         if !defenv.ptr_eq(&self.base) {
-            if let Some(Value::Env(t)) = self.base.get_local(s::DOT_S3_METHODS_TABLE) {
+            if let Some(Value::Env(t)) = self.base_binding(s::DOT_S3_METHODS_TABLE) {
                 if let Some(v) = t.get_local(method) {
                     let v = self.force(v)?;
                     if v.is_function() {
