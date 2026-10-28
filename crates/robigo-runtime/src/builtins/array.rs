@@ -583,6 +583,17 @@ fn cmul(a: Complex, b: Complex) -> Complex {
     let products = [ar * br, ai * bi, ar * bi, ai * br];
     let mut result = Complex::new(products[0] - products[1], products[2] + products[3]);
     if result.re.is_nan() && result.im.is_nan() {
+        // R: array.c:CMATPROD_BODY. Keep the operand order of GNU R's
+        // C99 product when both operands carry NaNs. LLVM may commute
+        // floating multiplication and thereby replace an ordinary NaN
+        // with R's NA payload. Quiet the selected NaN explicitly.
+        let mul = |a: f64, b: f64| {
+            if b.is_nan() { f64::from_bits(b.to_bits() | (1_u64 << 51)) } else { a * b }
+        };
+        let ac = mul(ar, br);
+        let bc = mul(ai, br);
+        result.re = if ac.is_nan() { ac } else { ac - mul(ai, bi) };
+        result.im = if bc.is_nan() { bc } else { bc + mul(bi, ar) };
         let mut recover = false;
         let normalize = |v: f64| (if v.is_infinite() { 1.0_f64 } else { 0.0_f64 }).copysign(v);
         let zero_nan = |v: f64| if v.is_nan() { 0.0_f64.copysign(v) } else { v };
@@ -633,7 +644,10 @@ fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usiz
                     1 => (x[j + i * nrx], y[j + k * nry]),
                     _ => (x[i + j * nrx], y[k + j * nry]),
                 };
-                let p = cmul(a, b);
+                // R: array.c:simple_tccrossprod. The C99 product in this
+                // loop selects NaN payloads in the opposite operand order
+                // from simple_cmatprod/simple_ccrossprod (Debian GNU R).
+                let p = if op == 2 { cmul(b, a) } else { cmul(a, b) };
                 sr += p.re;
                 si += p.im;
             }
