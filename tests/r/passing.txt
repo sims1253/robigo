@@ -1,6 +1,7 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
 tests/r/basics/arith-vectors.R
 tests/r/basics/arith.R
+tests/r/basics/caller-forced-promises.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
 tests/r/basics/inline-call-args.R

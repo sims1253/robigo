@@ -449,12 +449,51 @@ pub struct CallSite {
     /// operations on leaves (for running pure closures inline: see
     /// `vm::inline_arg`).
     pub inline_args: Option<Vec<InlineArg>>,
+    /// `inline_args` has one to four arguments, one of them not a constant:
+    /// the caller may evaluate some itself (`vm::caller_promargs`).
+    pub eager: bool,
+    /// The formals (address) of the last closure for which that is
+    /// impossible for reasons of the call site and the closure's
+    /// definition alone (so later calls of it skip the attempt).
+    pub no_eager: std::cell::Cell<usize>,
     /// The slot of the function's name, if the code has one (filled in once
     /// compilation is done).
     pub fslot: Option<Slot>,
     /// `forceAndCall(force, f, ...)`: the number of promise arguments of a
     /// closure forced before the call.
     pub force: u32,
+}
+
+/// The variables `ops` read, in order, before the first operation that may
+/// run R code, assuming every guard holds: guards, constants and variable
+/// reads come first; an arithmetic or comparison op reads its operands and
+/// may then run code (its slow path). Reading a variable may force a
+/// promise, which is why callers walk this list in order and stop where
+/// they cannot supply the value themselves.
+fn strict_prefix(ops: &[Op]) -> Vec<Sym> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            Op::Guard { .. }
+            | Op::Const { .. }
+            | Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::Null { .. }
+            | Op::Visible { .. } => {}
+            Op::GetVar { sym, .. } => out.push(*sym),
+            Op::ArithL { a, b, .. } | Op::RelL { a, b, .. } => {
+                for l in [a, b] {
+                    if let Leaf::Var(sym, _) = l {
+                        out.push(*sym);
+                    }
+                }
+                break;
+            }
+            _ => break,
+        }
+    }
+    out
 }
 
 /// An argument of a call that may run a pure closure inline.
@@ -520,6 +559,10 @@ pub struct Code {
     /// and the key of the last call whose guards were not checked yet
     /// (they are, from its second call with the same key on).
     pub fresh_nested: std::cell::Cell<(u64, usize, u32, usize)>,
+    /// The variables the code reads, in order, before its first operation
+    /// that may run R code (see [`strict_prefix`]): a caller may evaluate
+    /// arguments for formals among them itself (`vm::caller_promargs`).
+    pub strict: Vec<Sym>,
     pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
@@ -541,6 +584,7 @@ impl Code {
                 c.call_sites[*site as usize].fslot = c.vars.iter().position(|v| v == f).map(|p| p as Slot);
             }
         }
+        let strict = if is_body { strict_prefix(&c.ops) } else { Vec::new() };
         let mut guard_syms: Vec<Sym> = Vec::new();
         for op in &c.ops {
             match op {
@@ -576,6 +620,7 @@ impl Code {
             jit: Default::default(),
             fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             fresh_nested: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
+            strict,
             fresh_seen: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             result,
             is_body,
@@ -903,7 +948,11 @@ impl Compiler {
             codes,
             memo: Default::default(),
             leaf_args,
+            eager: inline_args.as_ref().is_some_and(|a| {
+                (1..=4).contains(&a.len()) && a.iter().any(|x| !matches!(x, InlineArg::Leaf(Leaf::D(_) | Leaf::I(_))))
+            }),
             inline_args,
+            no_eager: std::cell::Cell::new(0),
             fslot: None,
             force,
         });

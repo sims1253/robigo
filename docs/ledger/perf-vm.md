@@ -15,6 +15,114 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## For G3: which techniques carry over to the new core
+
+The VM will be rebuilt on `robigo-core` (G2, PR #28). Most of what this
+track measured depends on R's semantics and on which work can be skipped,
+not on today's `Value`/`Env` layout:
+
+- **Carry over (layout-independent):**
+  - *Call-site function lookup through local frames* (`call_site_fun_fast`):
+    `findFun` semantics, cached per call site, slow path for anything that
+    could force or signal.
+  - *Pure-closure inlining* with leaf and single-arithmetic arguments
+    (`inline_args`, `run_inline_with`): evaluate arguments eagerly only
+    through effect-free fast paths, and fall back to a real call before
+    anything observable happens.
+  - *Caller-forced promises* (`Code::strict` + `caller_promargs`): the
+    strict-prefix analysis and the conditions under which eager evaluation
+    is unobservable (a formal forced before any op that may run code, all
+    guards known to hold, arguments readable without forcing). With the new
+    core's promises it maps onto GNU R's own structure (PRVALUE set, PRENV
+    NULL).
+  - *Index promises forced in R's order* (`R_DispatchOrEvalSP` +
+    `R_isMissing`), holding `x`'s value from before the forcing.
+  - *Guard memoization keyed on (search epoch, environment id, function
+    binding version)*, pre-checked once per closure environment, and only
+    from a closure's second call for environments that live for one call.
+    The new core's per-environment version counters (architecture.md) are
+    exactly what this needs.
+  - *Static per-site rejection memos* (`no_eager`): once a call site and a
+    callee definition rule an optimization out, never retry it.
+  - `%*%` row vector as dot products (bit-identical to `dgemv("T")`).
+- **Specific to today's layout (redo, don't port):**
+  - the `SmallVec` register/slot buffers and their reserve/drop costs;
+  - the in-place `set_var`/`own_var` binding tricks, which depend on
+    `Frame`'s `SmallVec<Binding>` and on `Rc::get_mut`;
+  - moving cold paths out of `run_with` to tame LLVM's register
+    allocation. The lesson carries over (keep the dispatch loop small;
+    measure codegen effects by instruction against the base), the code
+    does not.
+- **Method:** compare against main by function (`BYFN=1 cmp.py`), by
+  source line against main's source (`linediff.sh`), and by instruction
+  (`asm.py`, callgrind `--dump-instr=yes`). Per-step gates hide cumulative
+  drift, so re-measure against main before each PR.
+
+## 2026-10-28: caller-forced promises for strict formals
+
+- why: `fib` (1.12x GNU R; 3,767 instructions per call against GNU R's
+  2,923) spent ~450 per call forcing `n` in the callee: the promise of
+  `n - 1`, its bytecode, the caller's environment, a boxed result.
+- what: `Code::strict` lists the variables a body reads, in order, before
+  its first op that may run R code (guards, constants and reads first; an
+  `ArithL`/`RelL` reads its operands and ends the prefix). At a call site
+  whose arguments are leaves or single arithmetic ops (`site.eager`), the
+  caller walks that list in order. For each formal it can supply without
+  running code, it builds a promise already forced (`Promise::forced`,
+  expression kept, environment cleared, as forcing leaves it): a constant,
+  a variable readable without forcing, or an arithmetic op through its
+  scalar fast path with its guard memoized. This requires the callee's
+  guards to be known to hold (`fresh_guards_ok`; for nested closures only
+  an existing `fresh_nested` memo), so no rebound `if`/`<` can run before
+  the force. The walk stops at the first entry it cannot supply.
+  `no_eager` memoizes static rejections per (site, callee formals).
+- profile-driven fixes before keeping it: `profiler-microbenchmark` +3.1%
+  (zero-argument calls paid ~128 instructions to reject: the guard check
+  and the argument array came before the cheap tests; then 38 for the
+  out-of-line call, fixed by the compile-time `site.eager` flag), and
+  `profiler-shared` +1.1% (1.5M calls rejected for static reasons at ~43
+  each; fixed by `no_eager`).
+- tests: `tests/r/basics/caller-forced-promises.R` (`substitute`,
+  `missing`, a callee that rebinds the caller's variable before forcing,
+  a local rebinding of `<` in the caller, integer overflow and errors in
+  arguments, `sys.call`/`match.call`, closures capturing the argument,
+  NA).
+- result: `fib` 3,767 -> ~3,500 instructions per call, -5.3% (1.12 ->
+  1.06), `robigo/binarytrees` -2.3% (1.06 -> 1.03), `queens` -1.1%,
+  `shootout/binarytrees` -0.7%; none slower (worst
+  `profiler-shared` +0.14%); kept.
+- findings, not fixed:
+  - GNU R binds base functions when its JIT compiles a closure:
+    after `g <- function(n) if (n < 2) ...` has been compiled, a later
+    global `` `<` <- function(a, b) ... `` is ignored by `g` (and how
+    often it is called before depends on when the JIT compiled `g`).
+    robigo's guards re-check and call the user's `<`. A conformance gap
+    of the VM to decide on: emulate compile-time binding, or keep R's
+    AST semantics.
+  - fastr `library/base/TestSimpleArithmetic/6f36cc66d662530c`
+    (`as.complex(NA) %*% NaN` prints `NA` instead of `NaN+NaNi`) fails on
+    main bf98504 too, so it is not from this branch.
+- remaining per-call cost in `fib` (by function): `run_with` ~680,
+  `caller_promargs` ~300 (mostly boxing the value and allocating the
+  forced promise), `run_pre` ~165, `apply_closure`/`exec_closure`/
+  `end_context` ~390, malloc/free ~260. Next: `promargs` without a heap
+  `Vec` (SmallVec or a pool: `Context::promargs`, interp.rs, plus 4 uses
+  in builtins/lang.rs), one guard pre-check per call instead of two
+  (caller and `run_closure`), VM-to-VM calls without `call_closure`'s
+  Rust recursion.
+
+## 2026-10-28: tzdata 2026e on CI (`zones.R`), for the record
+
+- #31's first CI run failed `tests/r/datetime/zones.R`. Debian
+  `trixie-updates` moved tzdata from 2026c to 2026e between main's run
+  (02:27 UTC) and #31's (02:38 UTC). Under 2026e, GNU R 4.5.0 prints
+  different Europe/Dublin rows (1925-09-27 11:00 UTC is hour 11, not 12),
+  and robigo (main, #31, #31 merged into main) printed exactly what GNU R
+  prints. PR #33 made the test hermetic (vendored zoneinfo).
+  `tests/r/datetime/zones-arith.R` pins the test's arithmetic in UTC.
+- local setup: my image now has tzdata 2026e
+  (`robigo-oracle:4.5.0`; 2026c kept as `robigo-oracle:4.5.0-2026c`).
+
 ## 2026-10-28: `u %*% M` for a row vector as dot products (builtins/array.rs, with permission)
 
 - why: `shootout/spectralnorm_alt` (1.87x GNU R) is 93% `matprod_real` on
