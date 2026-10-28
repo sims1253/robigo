@@ -282,6 +282,7 @@ unsafe fn mark_api_roots(c: &mut Core) {
     crate::errors::mark_roots(c);
     crate::rdynload::mark_roots(c);
     crate::graphics::mark_roots(c);
+    crate::bridge::mark_proxies(c);
 }
 
 /// Create the heap and the API's constants (memory.c InitMemory,

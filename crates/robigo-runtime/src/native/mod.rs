@@ -105,6 +105,14 @@ pub trait NativeBridge: Sync {
     ) -> RResult<Value> {
         Err(crate::error::Flow::error(format!("robigo: '{name}' needs the graphics engine (libR)")))
     }
+    /// The value of a C-owned variable (see [`c_owned_binding`]).
+    fn owned_get(&self, _interp: &mut Interp, _id: usize) -> RResult<Value> {
+        Ok(Value::Null)
+    }
+    /// Assignment to a C-owned variable.
+    fn owned_set(&self, _interp: &mut Interp, _id: usize, _value: Value) -> RResult<()> {
+        Ok(())
+    }
     /// options() set an option the C code reads from a global
     /// (`OutDec`, `max.contour.segments`).
     fn option_set(&self, _name: &str, _value: &Value) {}
@@ -447,4 +455,42 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
 /// The base DLL, registered at startup as in GNU R's `InitDynload`.
 pub fn base_dll() -> Dll {
     Dll::new("base", "base")
+}
+
+/// A variable whose value C code keeps and mutates in place (GNU R code
+/// such as grid's `SET_VECTOR_ELT(findVar(".GRID.STATE", ...), i, state)`
+/// shares the object between C and R; the bridge hands C its own copy).
+/// The binding becomes an active binding over the C object: reading it
+/// converts C's current object, assigning replaces it.
+pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, id: usize) {
+    let v = crate::sym::Sym::new("v");
+    let body = Value::lang(Value::Builtin(&C_OWNED), vec![Arg::pos(Value::int(id as i32)), Arg::pos(Value::Sym(v))]);
+    let f = Value::Closure(std::rc::Rc::new(crate::value::Closure {
+        formals: std::rc::Rc::from(vec![Arg { tag: Some(v), value: Value::missing_arg() }]),
+        body,
+        env: env.clone(),
+        attrs: None,
+        code: Default::default(),
+        inline: Default::default(),
+        defaults: Default::default(),
+    }));
+    env.set_local_flags(sym, f, crate::env::BIND_ACTIVE);
+}
+
+static C_OWNED: Builtin = crate::builtins::special(".robigo.c_owned", do_c_owned, 2);
+
+fn do_c_owned(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
+    let (Some(Value::Int(id)), Some(Value::Sym(v))) = (args.first().map(|a| &a.value), args.get(1).map(|a| &a.value))
+    else {
+        return Err(crate::error::Flow::error("robigo: invalid C-owned binding"));
+    };
+    let id = id.data[0] as usize;
+    let Some(b) = bridge() else { return Ok(Value::Null) };
+    if crate::builtins::lang::missing_sym(i, call, *v, env)? {
+        b.owned_get(i, id)
+    } else {
+        let value = i.eval(&Value::Sym(*v), env)?;
+        b.owned_set(i, id, value)?;
+        Ok(Value::Null)
+    }
 }

@@ -254,6 +254,28 @@ unsafe fn proxy(v: &Value) -> Sexp {
     x
 }
 
+/// Proxies of environments, closures and external pointers the runtime
+/// still holds elsewhere are roots: in GNU R they are the R objects, so C
+/// code may keep one unprotected (grid's `R_gridEvalEnv` static) while R
+/// keeps it reachable.
+pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
+    PROXIED.with(|m| {
+        for (key, v) in m.borrow().values() {
+            let held = match v {
+                Value::Env(e) => Rc::strong_count(&e.0) > 1,
+                Value::Closure(f) => Rc::strong_count(f) > 1,
+                Value::ExtPtr(p) => Rc::strong_count(p) > 1,
+                _ => false,
+            };
+            if held {
+                if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(key).copied()) {
+                    c.mark(x);
+                }
+            }
+        }
+    })
+}
+
 fn proxied(x: Sexp) -> Option<Value> {
     if !unsafe { x.has_flag(flags::HOST) } {
         return None;
@@ -690,6 +712,16 @@ fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     Ok(Some(v))
 }
 
+/// A variable's value for C; a list is noted, in case C changes it in
+/// place (crate::owned).
+unsafe fn found(v: &Value, env: &Env, sym: Sym) -> Sexp {
+    let x = to_sexp(v);
+    if matches!(v, Value::List(_)) && CALL_DEPTH.with(|d| d.get()) > 0 {
+        crate::owned::note_origin(x, env, sym);
+    }
+    x
+}
+
 fn vtype_of(t: i32) -> Option<VType> {
     Some(match t as u8 {
         NILSXP => VType::Null,
@@ -842,8 +874,11 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "findVar" => {
             let (sym, mut env) = (sym_arg(a[0])?, Some(env_of(a[1])?));
             while let Some(e) = env {
+                if let Some(x) = crate::owned::lookup(&e, sym) {
+                    return Ok(x);
+                }
                 if let Some(v) = binding(&e, sym)? {
-                    return Ok(to_sexp(&v));
+                    return Ok(found(&v, &e, sym));
                 }
                 env = e.parent();
             }
@@ -851,8 +886,11 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "findVarInFrame" => {
             let (env, sym) = (env_of(a[0])?, sym_arg(a[1])?);
+            if let Some(x) = crate::owned::lookup(&env, sym) {
+                return Ok(x);
+            }
             match binding(&env, sym)? {
-                Some(v) => to_sexp(&v),
+                Some(v) => found(&v, &env, sym),
                 None => R_UnboundValue,
             }
         }
@@ -1247,6 +1285,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         if kept_count() > SWEEP_AT.with(|c| c.get()) {
             sweep_stored();
         }
+        crate::owned::clear_origins();
     }
     res
 }
@@ -1554,6 +1593,15 @@ impl NativeBridge for Bridge {
             crate::graphics::sync_devices(interp);
             r
         })
+    }
+
+    fn owned_get(&self, interp: &mut Interp, id: usize) -> RResult<Value> {
+        Ok(enter(interp, |_| unsafe { crate::owned::get(id) }))
+    }
+
+    fn owned_set(&self, interp: &mut Interp, id: usize, value: Value) -> RResult<()> {
+        enter(interp, |_| unsafe { crate::owned::set(id, to_sexp(&value)) });
+        Ok(())
     }
 
     fn option_set(&self, name: &str, value: &Value) {
