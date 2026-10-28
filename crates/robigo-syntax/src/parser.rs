@@ -222,6 +222,88 @@ pub fn parse_program_with_warnings(src: &str) -> Result<(Vec<Expr>, Vec<String>)
     Ok((exprs, p.warnings))
 }
 
+/// The result of parsing one console chunk, the statuses of GNU R's
+/// `R_Parse1Buffer` with `gend = 0` (`// R: main.c:Rf_ReplIteration`,
+/// `gram.y`'s `prog` rules and `R_Parse1`).
+#[derive(Debug)]
+pub enum ConsoleStatus {
+    /// `prog: '\n'` (PARSE_NULL): a blank or comment-only chunk with its
+    /// newline; nothing to evaluate.
+    Null,
+    /// `prog: expr '\n' | expr ';'` (PARSE_OK): the statement, plus the
+    /// lexer's warnings (GNU R signals them only on the real, code-
+    /// generating parse, which an incomplete or erroneous chunk never
+    /// reaches).
+    Ok(Vec<Expr>, Vec<String>),
+    /// PARSE_INCOMPLETE: the chunk ends mid-statement or inside a
+    /// comment or string; the REPL asks for another line.
+    Incomplete,
+    /// PARSE_ERROR: a syntax error, with GNU R's message and position.
+    Error(ParseError),
+    /// PARSE_EOF: the chunk is empty (and does not end in a comment).
+    Eof,
+}
+
+/// Parse one console chunk the way the REPL does: a chunk is the input
+/// up to and including the first `;` or newline (wherever it lies —
+/// `Rf_ReplIteration`'s copy loop does not look inside strings or
+/// comments), and the grammar accepts one terminated statement, a bare
+/// newline, or end of input (`// R: gram.y` `prog`, `R_Parse1`).
+///
+/// A statement must be *terminated*: a chunk that stops without its `;`
+/// or newline (a line longer than `CONSOLE_BUFFER_SIZE`, cut mid-line)
+/// is incomplete. Trailing bytes after the first statement are ignored:
+/// the REPL's buffer discipline never produces them.
+pub fn parse_console(src: &str) -> ConsoleStatus {
+    let (toks, warnings, eof_in_comment) = match Lexer::new(src).tokenize_with_flags() {
+        Ok(t) => t,
+        // The lexer never fails: lexical errors become `Invalid` tokens
+        // the parser reports when it reaches them.
+        Err(e) => return ConsoleStatus::Error(e),
+    };
+    let mut p = Parser {
+        src,
+        saw_placeholder: toks.iter().any(|t| matches!(t.tok, Tok::Placeholder)),
+        toks,
+        pos: 0,
+        ctx: vec![Ctx::TopLevel],
+        interned: Default::default(),
+        ops: std::array::from_fn(|_| None),
+        warnings,
+    };
+    if matches!(p.toks[p.pos].tok, Tok::Newline) {
+        return ConsoleStatus::Null;
+    }
+    // `prog: END_OF_INPUT` is PARSE_EOF, unless the buffer ends inside a
+    // comment (`SkipComment`'s `EndOfFile = 2`), which makes it
+    // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
+    if matches!(p.toks[p.pos].tok, Tok::Eof) {
+        return if eof_in_comment { ConsoleStatus::Incomplete } else { ConsoleStatus::Eof };
+    }
+    let e = match p.expr(0) {
+        Ok(e) => e,
+        // An error at end of input — an open statement, or an
+        // unterminated string — asks for another line (`R_Parse1`
+        // promotes every error to PARSE_INCOMPLETE when the lexer hit
+        // the end of the buffer).
+        Err(e) if e.incomplete => return ConsoleStatus::Incomplete,
+        Err(e) => return ConsoleStatus::Error(e),
+    };
+    // The terminator is part of the statement's grammar; a syntax error
+    // on it wins over `checkForPlaceholder` (as in `program`).
+    if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
+        if p.saw_placeholder && contains_placeholder(&e) {
+            return ConsoleStatus::Error(p.statement_check_error());
+        }
+        return ConsoleStatus::Ok(vec![e], p.warnings);
+    }
+    if matches!(p.toks[p.pos].tok, Tok::Eof) {
+        return ConsoleStatus::Incomplete;
+    }
+    let t = p.toks[p.pos].clone();
+    ConsoleStatus::Error(p.unexpected(&t))
+}
+
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
@@ -1119,4 +1201,118 @@ fn substitute_extraction_placeholder(fun: &Expr, args: &[Arg], lhs: &Expr) -> Op
     new_args[0].value = Some(replaced);
     let span = lhs.span().to(args.last().and_then(|a| a.value.as_ref()).map(|v| v.span()).unwrap_or(*name_span));
     Some(Ok(Expr::call(name.clone(), *name_span, new_args, span)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ConsoleStatus::*;
+
+    /// The console statuses GNU R 4.5.0 produces for these chunks were
+    /// verified by feeding them to `R --vanilla` on stdin (prompts,
+    /// values, errors) — see docs/ledger/parser.md. The `+` continuation
+    /// behavior these imply: an incomplete chunk makes the REPL read
+    /// another line; a comment cut by the `;`/newline boundary leaves
+    /// the rest of the line to the next chunk.
+    #[test]
+    fn console_statuses() {
+        let null = |s: &str| matches!(parse_console(s), ConsoleStatus::Null);
+        let incomplete = |s: &str| matches!(parse_console(s), ConsoleStatus::Incomplete);
+        let eof = |s: &str| matches!(parse_console(s), ConsoleStatus::Eof);
+        let error = |s: &str, msg: &str| match parse_console(s) {
+            ConsoleStatus::Error(e) => {
+                assert_eq!(e.message, msg, "chunk {s:?}");
+                true
+            }
+            _ => false,
+        };
+        let ok = |s: &str| matches!(parse_console(s), ConsoleStatus::Ok(..));
+
+        // prog: '\n' — blank and comment-only chunks (with the newline).
+        assert!(null("\n"));
+        assert!(null("   \n"));
+        assert!(null("# c\n"));
+        // prog: END_OF_INPUT.
+        assert!(eof(""));
+        // ... promoted to incomplete when the buffer ends in a comment
+        // (SkipComment's EndOfFile = 2): the REPL's raw `;`/newline cut
+        // can land inside one.
+        assert!(incomplete("# c;"));
+        assert!(incomplete("# c"));
+        assert!(incomplete("1 # c;"));
+        assert!(incomplete("f({\n1 # c;"));
+        assert!(incomplete("\"a\nb\" # c;")); // a multi-line string, then the comment
+        // A comment closed by a newline is fine (the statement itself
+        // stays open here, which is what makes this incomplete).
+        assert!(incomplete("f({\n# c;\n"));
+        // prog: expr '\n' | expr ';'.
+        assert!(ok("1 + 1\n"));
+        assert!(ok("x <- 1;"));
+        assert!(ok("1 ; # c\n")); // the comment hides nothing: the ';' came first
+        assert!(ok("1 # c\n")); // the newline terminates; the comment is closed
+        assert!(ok("\"a#b\";"));
+        assert!(ok("`a#b`;\n"));
+        assert!(ok("if (TRUE) 1 else 2;"));
+        assert!(ok("function(x)\n  x\n"));
+        // A statement without its terminator (a line cut at the console
+        // buffer size) needs more input.
+        assert!(incomplete("1 + 1 + "));
+        assert!(incomplete("1"));
+        assert!(incomplete("NULL"));
+        // Open statements.
+        assert!(incomplete("1 +"));
+        assert!(incomplete("1 +\n"));
+        assert!(incomplete("if (TRUE) {\n"));
+        assert!(incomplete("x <- # c")); // the comment runs to the end; the expr is open
+        assert!(incomplete("\"abc\n")); // an unterminated string
+        assert!(incomplete("if (x) 1 else\n"));
+        // prog: error — a `;` cannot start a statement.
+        assert!(error(";\n", "unexpected ';'"));
+        assert!(error(" ;", "unexpected ';'"));
+        assert!(error(";2\n", "unexpected ';'"));
+        // `1;;2` at the console is the two chunks `1;` (ok) and `;2`
+        // (this error): Rf_ReplIteration cuts at the first `;`.
+        assert!(ok("1;"));
+        assert!(error(";2\n", "unexpected ';'"));
+        assert!(error("x x # c", "unexpected symbol")); // before the comment, not promoted
+    }
+
+    /// Warnings travel only with a complete statement, as GNU R's
+    /// GenerateCode gate makes them fire on the real parse alone.
+    #[test]
+    fn console_warnings() {
+        match parse_console("1.5L\n") {
+            ConsoleStatus::Ok(_, w) => assert_eq!(w, ["integer literal 1.5L contains decimal; using numeric value"]),
+            other => panic!("{other:?}"),
+        }
+        match parse_console("1.5L +\n") {
+            ConsoleStatus::Incomplete => {}
+            other => panic!("{other:?}"),
+        }
+        match parse_console("1e-3L\n") {
+            // `seendot && !seenexp` picks the message (verified against
+            // GNU R: no dot before the exponent says "non-integer value").
+            ConsoleStatus::Ok(_, w) => assert_eq!(w, ["non-integer value 1e-3L qualified with L; using numeric value"]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The invalid use of a pipe placeholder at the console is an error
+    /// with the same text and position logic as the file parser.
+    #[test]
+    fn console_placeholder() {
+        // A bare placeholder as the pipe RHS errors in the rewrite
+        // (verified against GNU R); one surviving in the tree gives
+        // checkForPlaceholder's message.
+        match parse_console("x |> _\n") {
+            ConsoleStatus::Error(e) => {
+                assert_eq!(e.message, "The pipe operator requires a function call as RHS")
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_console("f(x, _)\n") {
+            ConsoleStatus::Error(e) => assert_eq!(e.message, "invalid use of pipe placeholder"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

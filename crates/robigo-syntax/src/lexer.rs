@@ -116,6 +116,10 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<String>,
+    /// The input ends inside an unterminated comment (`SkipComment`
+    /// reached end of file: `EndOfFile = 2` in gram.y), which promotes
+    /// every console status to incomplete.
+    pub eof_in_comment: bool,
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -128,7 +132,7 @@ fn is_ident_char(c: char) -> bool {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new() }
+        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new(), eof_in_comment: false }
     }
 
     #[inline]
@@ -192,6 +196,13 @@ impl<'a> Lexer<'a> {
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
     pub fn tokenize(mut self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+        self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
+    }
+
+    /// [`Lexer::tokenize`] plus the `EndOfFile = 2` flag (the input ends
+    /// inside an unterminated comment), which the console grammar
+    /// consults (`SkipComment` in gram.y).
+    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<String>, bool), ParseError> {
         // R sources average ~5 bytes per token; pre-sizing avoids the
         // reallocation churn of growing one Vec per source.
         let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
@@ -211,7 +222,8 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        Ok((out, self.warnings))
+        let eof_in_comment = self.eof_in_comment;
+        Ok((out, self.warnings, eof_in_comment))
     }
 
     fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
@@ -234,7 +246,15 @@ impl<'a> Lexer<'a> {
                     b'\t' | b'\r' | 0x0c => i += 1,
                     b'#' => {
                         // `position` over the raw bytes lowers to memchr.
-                        i += bytes[i..].iter().position(|&b| b == b'\n').unwrap_or(len - i);
+                        // No newline until the end of input: the comment
+                        // is unterminated (`EndOfFile = 2` in gram.y).
+                        match bytes[i..].iter().position(|&b| b == b'\n') {
+                            Some(n) => i += n,
+                            None => {
+                                i = len;
+                                self.eof_in_comment = true;
+                            }
+                        }
                     }
                     0xc2 if i + 1 < len && bytes[i + 1] == 0xa0 => i += 2, // U+00A0
                     _ => break,
