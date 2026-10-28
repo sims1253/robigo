@@ -1040,7 +1040,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
                 // R's Rstrlen: escaped width without the quotes; "NA" for NA
                 let l = match e {
                     None => 2,
-                    Some(s) => crate::format::rstrlen(s, quote) - qw,
+                    Some(s) => escaped_width(s, quote),
                 };
                 ww = ww.max(l);
             }
@@ -1058,7 +1058,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
         .iter()
         .map(|e| {
             if na != 0 || e.is_some() {
-                Some(Rc::from(crate::format::encode_string(e, w.max(0) as usize, quote, just, &pp).as_str()))
+                Some(Rc::from(encode_string_q(e, w.max(0) as usize, quote, just, &pp).as_str()))
             } else {
                 None
             }
@@ -1067,6 +1067,58 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
     let mut ans = Value::strs(out);
     copy_all_attrs(x, &mut ans);
     Ok(ans)
+}
+
+/// `EncodeString`'s escaping without the surrounding quotes. R only escapes
+/// `'`, `"` and `` ` `` (with a backslash) when they are the quote character
+/// itself (`// R: printutils.c:EncodeString`, the `case L'\''` arm); any other
+/// quote character only delimits the result.
+fn escape_body(s: &str, quote: Option<char>) -> String {
+    use crate::format::escape_string;
+    match quote {
+        Some(q) if q == '"' || q == '\'' || q == '`' => {
+            let with = escape_string(s, Some(q));
+            with[1..with.len() - 1].to_string()
+        }
+        _ => escape_string(s, None),
+    }
+}
+
+/// `Rstrlen` of the escaped form without the quotes.
+fn escaped_width(s: &str, quote: Option<char>) -> usize {
+    crate::format::str_width(&escape_body(s, quote))
+}
+
+/// `EncodeString` with padding (`// R: printutils.c:EncodeString`), with R's
+/// quote-character rule (see `escape_body`).
+fn encode_string_q(
+    s: &RStr,
+    w: usize,
+    quote: Option<char>,
+    justify: crate::format::Justify,
+    pp: &crate::format::PrintParams,
+) -> String {
+    let (body, quoted) = match s {
+        None => (if quote.is_some() { pp.na_string.clone() } else { pp.na_string_noquote.clone() }, 0),
+        Some(s) => match quote {
+            Some(q) => (format!("{q}{}{q}", escape_body(s, Some(q))), 2),
+            None => (escape_body(s, None), 0),
+        },
+    };
+    let bw = crate::format::str_width(&body) - quoted;
+    let pad = w.saturating_sub(bw + quoted);
+    if pad == 0 || justify == crate::format::Justify::None {
+        return body;
+    }
+    match justify {
+        crate::format::Justify::Left => format!("{}{}", body, " ".repeat(pad)),
+        crate::format::Justify::Right => format!("{}{}", " ".repeat(pad), body),
+        crate::format::Justify::Centre => {
+            let l = pad / 2;
+            format!("{}{}{}", " ".repeat(l), body, " ".repeat(pad - l))
+        }
+        crate::format::Justify::None => body,
+    }
 }
 
 fn str_is_ascii(s: &RStr) -> bool {
