@@ -264,3 +264,41 @@ belongs to the startup track.
 - Benchmark output against GNU R (`perf.py run --metric time --runtime
   both`): the same 3 wrong programs as main (`fannkuchredux`,
   `fannkuchredux_naive`, `spectralnorm_math`).
+
+## Follow-up: complex `+`/`-` in one pass (after #47)
+
+- why: main's `mandelbrot_noout` went from 648.4M (d8a097f) to 693.2M
+  (a6bd46e). #47's `cadd`/`csub` computed a plain sum and, when a part was
+  NaN, recomputed it with exact SSE semantics; the escaping iterations
+  are all NaN, so they paid for both passes.
+- what: both parts through one `addpd`/`subpd` with GNU R's operand
+  order (`x2` the destination for `+`, `x1` for `-`; inline assembly, so
+  LLVM cannot commute it), and equal-length operands through a loop
+  unrolled by four that writes into the result's spare capacity (LLVM
+  does not unroll loops around inline assembly; this design measured best
+  on the ratchet branch before #47: two scalar `addsd` +0.7%, by-reference
+  memory operands +1.2%, `extend_from_slice` +2%).
+- tests: the GNU R oracle (`gnu_r_oracle`, 230,496 results, from #58,
+  applied locally) and the C library oracle pass; new
+  `zip_unrolled_matches_elementwise` (every length 0..11, NaN payloads);
+  conformance in all tiers; fastr `TestSimpleValues|TestSimpleArithmetic|
+  TestBuiltin_(complex|Re|Im|Mod|Arg|Conj|operators|cumsum|cumprod|sum|prod)`
+  (10,104 cases): the same pass set as main.
+- result (callgrind, container, memory-capped, `--jobs 2`; targeted:
+  complex-heavy programs plus controls, against main a6bd46e):
+
+| benchmark | main a6bd46e | this PR | |
+|---|---|---|---|
+| rbench/shootout/fannkuchredux | 286,847,353 | 286,765,658 | -0.03% |
+| rbench/shootout/mandelbrot_ascii | 590,856,007 | 559,859,709 | -5.25% |
+| rbench/shootout/mandelbrot_naive_ascii | 1,342,011,936 | 1,341,563,581 | -0.03% |
+| rbench/shootout/mandelbrot_noout | 693,170,398 | 647,380,977 | -6.61% |
+| rbench/shootout/mandelbrot_noout_naive | 764,428,251 | 751,394,999 | -1.70% |
+| rbench/shootout/nbody | 884,497,309 | 884,099,512 | -0.04% |
+| robigo/dataframe | 686,099,200 | 685,960,022 | -0.02% |
+| robigo/fib | 1,073,803,187 | 1,073,711,714 | -0.01% |
+| robigo/mandelbrot | 337,174,497 | 337,097,755 | -0.02% |
+| robigo/matrix | 758,532,840 | 758,400,287 | -0.02% |
+| robigo/vecarith | 4,480,822,310 | 4,480,698,096 | -0.00% |
+
+  kept.
