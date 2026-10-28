@@ -23,6 +23,30 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
     let base = interp.base_ns.clone();
     // Errors during bootstrap must not be printed.
     let saved_err = std::mem::replace(&mut interp.err, Box::new(std::io::sink()));
+    // Load base the way GNU R does: run its baseloader (`library/base/R/base`
+    // in an R installation), which binds every base symbol lazily to the
+    // pre-built database `base.rdb` instead of evaluating the R sources.
+    // ROBIGO_BASE_FROM_SRC=1 forces the source bootstrap.
+    if std::env::var_os("ROBIGO_BASE_FROM_SRC").is_none() {
+        if let Some(home) = crate::startup::init_r_home() {
+            let baseloader = format!("{}/library/base/R/base", home);
+            if let Ok(src) = std::fs::read_to_string(&baseloader) {
+                let exprs = robigo_syntax::parse_program(&src).map_err(|e| format!("{}: {}", baseloader, e.message))?;
+                for e in &exprs {
+                    interp.frames.clear();
+                    interp.handlers = None;
+                    interp.restarts = None;
+                    if let Err(crate::error::Flow::Error(err)) = interp.eval(&expr_to_value(&e), &base) {
+                        failures.push(BootFailure { file: "baseloader", line: 0, message: err.message });
+                    }
+                }
+                interp.warnings.clear();
+                interp.err = saved_err;
+                crate::builtins::post_base_init(interp);
+                return Ok(failures);
+            }
+        }
+    }
     for (file, src) in BASE_SOURCES {
         // The configure substitution R's build applies (basepkg.mk).
         let configured;

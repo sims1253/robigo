@@ -237,10 +237,14 @@ impl Printer {
     }
 
     fn print_special(&mut self, interp: &mut Interp, b: &Builtin) {
-        let args_env = interp.base.get_local(Sym::new(".ArgsEnv"));
+        let args_env = interp.base_var(Sym::new(".ArgsEnv")).ok().flatten();
         let mut def = None;
         for envname in [".ArgsEnv", ".GenericArgsEnv"] {
-            let e = if envname == ".ArgsEnv" { args_env.clone() } else { interp.base.get_local(Sym::new(envname)) };
+            let e = if envname == ".ArgsEnv" {
+                args_env.clone()
+            } else {
+                interp.base_var(Sym::new(envname)).ok().flatten()
+            };
             if let Some(Value::Env(e)) = e {
                 if let Some(f) = e.get_local(Sym::new(b.name)) {
                     def = Some(f);

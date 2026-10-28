@@ -423,6 +423,50 @@ fn decompress3(data: &[u8]) -> Result<Vec<u8>, DecompressFail> {
     }
 }
 
+// R: serialize.c readRawFromFile's interface to cache the pkg.rdb files:
+// up to 100 database files, each read whole into memory (10 MiB limit) on
+// the first access, later reads copy the range out of the cache.
+const RDB_CACHE_FILES: usize = 100;
+const RDB_FILE_LIMIT: usize = 10 * 1048576;
+
+thread_local! {
+    static RDB_CACHE: std::cell::RefCell<std::collections::HashMap<String, std::rc::Rc<Vec<u8>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Read `len` bytes at `off` of a lazy-load database file, caching the
+/// whole file like GNU R does (serialize.c readRawFromFile).
+fn read_raw_from_file(file: &str, off: usize, len: usize) -> RResult<Vec<u8>> {
+    if let Some(data) = RDB_CACHE.with(|c| c.borrow().get(file).cloned()) {
+        return data
+            .get(off..off + len)
+            .map(|s| s.to_vec())
+            .ok_or_else(|| Flow::error(format!("read failed on {}", file)));
+    }
+    let read_all = |f: &str| -> std::io::Result<Vec<u8>> {
+        let mut f = std::fs::File::open(f)?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut buf)?;
+        Ok(buf)
+    };
+    match read_all(file) {
+        Ok(data) => {
+            let n = data.len();
+            let out = data.get(off..off + len).map(|s| s.to_vec());
+            if n <= RDB_FILE_LIMIT {
+                RDB_CACHE.with(|c| {
+                    let mut c = c.borrow_mut();
+                    if c.len() < RDB_CACHE_FILES {
+                        c.insert(file.to_string(), std::rc::Rc::new(data));
+                    }
+                });
+            }
+            out.ok_or_else(|| Flow::error(format!("read failed on {}", file)))
+        }
+        Err(_) => Err(Flow::error(format!("cannot open file '{}': No such file or directory", file))),
+    }
+}
+
 fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let key = crate::coerce::to_int(&arg(&args, 0), &mut Default::default());
     let file = crate::coerce::as_string(&arg(&args, 1)).ok_or_else(|| Flow::error("bad file name"))?;
@@ -432,12 +476,7 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
         return Err(Flow::error("bad offset/length argument"));
     }
     let (off, len) = (key[0] as usize, key[1] as usize);
-    let mut f = std::fs::File::open(&*file)
-        .map_err(|_| Flow::error(format!("cannot open file '{}': No such file or directory", file)))?;
-    use std::io::Seek;
-    f.seek(std::io::SeekFrom::Start(off as u64)).map_err(|_| Flow::error("seek failed"))?;
-    let mut buf = vec![0u8; len];
-    f.read_exact(&mut buf).map_err(|_| Flow::error("read failed"))?;
+    let buf = read_raw_from_file(&file, off, len)?;
     // R: serialize.c do_lazyLoadDBfetch — asInteger(compressed) decides the
     // method; NA is truthy in C and selects R_decompress1.
     let method = if compressed == NA_INTEGER { 1 } else { compressed };

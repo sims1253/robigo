@@ -370,6 +370,18 @@ impl Interp {
         }
     }
 
+    /// Read a binding of the base environment, forcing a lazy-load
+    /// promise first (R: findVar + eval semantics; base bindings become
+    /// promises when base is loaded from the lazy-load database, as GNU R
+    /// installs it). Rust code that reads base internals like `.ArgsEnv`
+    /// must use this instead of `Env::get_local`.
+    pub fn base_var(&mut self, sym: Sym) -> RResult<Option<Value>> {
+        match self.base.get_local(sym) {
+            Some(Value::Promise(p)) => Ok(Some(self.force_promise(&p)?)),
+            v => Ok(v),
+        }
+    }
+
     /// Look up a function binding, skipping non-function values.
     pub fn find_fun(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
         if let Some(v) = self.find_fun_cached(sym, env) {
