@@ -500,6 +500,44 @@ pub fn format_string(x: &[RStr], quote: Option<char>, pp: &PrintParams) -> usize
 }
 
 /// Element encoding used by deparse (digits = 15, no padding).
+/// C's `snprintf("%a", x)` for a finite double (glibc): the exact
+/// hexadecimal significand with trailing zero nibbles removed.
+pub fn encode_hex_real(x: f64) -> String {
+    let bits = x.to_bits();
+    let sign = if bits >> 63 != 0 { "-" } else { "" };
+    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    if exp_bits == 0 && frac == 0 {
+        return format!("{sign}0x0p+0");
+    }
+    // Subnormals print with a leading 0 and the exponent fixed at -1022.
+    let (lead, exp) = if exp_bits == 0 { (0, -1022) } else { (1, exp_bits - 1023) };
+    let mut digits = String::new();
+    for k in 0..13 {
+        let d = (frac >> (48 - 4 * k)) & 0xf;
+        digits.push(char::from_digit(d as u32, 16).unwrap());
+    }
+    let digits = digits.trim_end_matches('0');
+    let mut s = format!("{sign}0x{lead}");
+    if !digits.is_empty() {
+        s.push('.');
+        s.push_str(digits);
+    }
+    s.push_str(&format!("p{exp:+}"));
+    s
+}
+
+/// R's `%a + %ai` for a finite complex element (deparse.c).
+pub fn encode_hex_complex(z: Complex) -> String {
+    format!("{} + {}i", encode_hex_real(z.re), encode_hex_real(z.im))
+}
+
+/// C's `%+.17g` for a finite double (deparse's digits17 complex).
+pub fn encode_digits17_signed(x: f64) -> String {
+    let s = robigo_syntax::cfmt::fmt_g(x, 17, false, false);
+    if s.starts_with('-') { s } else { format!("+{s}") }
+}
+
 pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
     match v {
         Value::Lgl(x) => encode_logical(x.data[i], 0, "NA"),

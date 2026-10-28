@@ -1340,7 +1340,14 @@ fn do_internal(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         return Err(Flow::error_call(call.clone(), format!("there is no .Internal function '{}'", name)));
     };
     interp.visible = true;
-    interp.call_builtin(b, inner, &l.args, env)
+    // R: names.c:do_internal -- arguments are evaluated by evalList with the
+    // *outer* `.Internal(...)` call (so `argument N is empty` reports that
+    // call), then the primitive runs with the inner call `s`.
+    let argv = match b.kind {
+        BuiltinKind::Special => l.args.to_vec(),
+        BuiltinKind::Builtin => interp.eval_args(&l.args, env, call)?,
+    };
+    interp.invoke_builtin(b, inner, argv, env)
 }
 
 fn do_primitive(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

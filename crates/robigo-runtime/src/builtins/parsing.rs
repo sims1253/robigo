@@ -126,11 +126,14 @@ fn do_str2expression(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     Ok(Value::expr_vec(parse_text(&src, "<text>")?))
 }
 
-fn do_deparse(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_deparse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let expr = arg(&args, 0);
-    let cutoff = crate::coerce::as_integer(&arg(&args, 1));
+    let mut cutoff = crate::coerce::as_integer(&arg(&args, 1));
+    // R: deparse.c:do_deparse -- an out-of-range cutoff warns and falls back
+    // to DEFAULT_Cutoff; it is not an error.
     if cutoff == NA_INTEGER || !(20..=500).contains(&cutoff) {
-        return Err(Flow::error("invalid 'cutoff' value for 'deparse', using default"));
+        i.warning("invalid 'cutoff' value for 'deparse', using default")?;
+        cutoff = crate::deparse::DEFAULT_CUTOFF as i32;
     }
     let backtick = crate::coerce::as_logical(&arg(&args, 2)) == TRUE;
     let opts = crate::coerce::as_integer(&arg(&args, 3));
@@ -146,8 +149,9 @@ fn do_dput(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     let con = crate::coerce::as_integer(&arg(&args, 1));
     let opts = crate::coerce::as_integer(&arg(&args, 2));
     let opts = if opts == NA_INTEGER { DEFAULTDEPARSE } else { opts as u32 };
+    // R: deparse.c:do_dput -- deparse1() uses DEFAULT_Cutoff (60).
     let mut text = String::new();
-    for l in deparse_lines(&x, 70, true, opts, None) {
+    for l in deparse_lines(&x, crate::deparse::DEFAULT_CUTOFF, true, opts, None) {
         text.push_str(&l);
         text.push('\n');
     }

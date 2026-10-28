@@ -85,6 +85,7 @@ base/dim
 base/dimnames
 base/do.call
 base/double
+base/dput
 base/drop
 base/dynload
 base/encodeString

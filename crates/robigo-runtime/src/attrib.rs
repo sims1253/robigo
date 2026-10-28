@@ -297,9 +297,9 @@ pub fn class_gets(mut v: Value, val: Value) -> RResult<Value> {
             if c.data.iter().any(|x| x.as_deref() == Some("factor")) && !matches!(v, Value::Int(_)) {
                 return Err(Flow::error("adding class \"factor\" to an invalid object"));
             }
-            let mut c2 = val.clone();
-            c2.clear_attrs();
-            v.set_attr_raw(s::CLASS, c2);
+            // R: attrib.c:classgets -- installAttrib(vec, R_ClassSymbol,
+            // klass) keeps the class vector's own attributes (e.g. names).
+            v.set_attr_raw(s::CLASS, val.clone());
             Ok(v)
         }
         _ => Err(Flow::error("attempt to set invalid 'class' attribute")),

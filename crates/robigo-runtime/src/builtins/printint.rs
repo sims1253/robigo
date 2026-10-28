@@ -12,6 +12,9 @@ pub static DEFS: &[Builtin] =
     &[internal("print.default", do_printdefault, 3).invisible(), internal("prmatrix", do_prmatrix, 6).invisible()];
 
 fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: print.c:do_printdefault -> checkArity(op, args) (3 arguments:
+    // x, the missing flags, and the pairlist of the remaining ones).
+    super::character::check_arity_internal(&args, 3, "print.default")?;
     let x = arg(&args, 0);
     let pargs: Vec<Arg> = match arg(&args, 1) {
         Value::Pairlist(p) => p.items.clone(),
