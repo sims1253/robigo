@@ -232,44 +232,53 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, want: Tok<'a>) -> Result<Token<'a>, ParseError> {
-        let t = self.peek().clone();
-        if t.tok == want { Ok(self.bump()) } else { Err(self.unexpected(&t)) }
+    /// Consume the next token if it is `want`. All callers pass unit
+    /// variants, so the match compares discriminants without cloning the
+    /// token (the cold error path may clone).
+    fn expect(&mut self, want: Tok<'_>) -> Result<Token<'a>, ParseError> {
+        if self.cur_ctx() == Ctx::Paren {
+            self.skip_newlines();
+        }
+        if self.toks[self.pos].tok == want {
+            Ok(self.bump())
+        } else {
+            let t = self.toks[self.pos].clone();
+            Err(self.unexpected(&t))
+        }
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut out = Vec::new();
         loop {
-            while matches!(self.raw_peek().tok, Tok::Newline) {
+            while matches!(self.toks[self.pos].tok, Tok::Newline) {
                 self.pos += 1;
             }
-            if matches!(self.raw_peek().tok, Tok::Eof) {
+            if matches!(self.toks[self.pos].tok, Tok::Eof) {
                 break;
             }
             // `;` only terminates an expression (`prog` in gram.y has no
             // leading-`;` rule), so one where a statement should start is
             // the unexpected token itself.
             let e = self.expr(0)?;
-            let t = self.raw_peek().clone();
             // `checkForPlaceholder` in gram.y runs when a statement
             // completes; a syntax error on the terminator wins over it.
-            match t.tok {
-                Tok::Newline | Tok::Semi => {
-                    if contains_placeholder(&e) {
-                        return Err(self.statement_check_error());
-                    }
-                    out.push(e);
-                    self.pos += 1;
+            if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
+                if contains_placeholder(&e) {
+                    return Err(self.statement_check_error());
                 }
-                Tok::Eof => {
-                    if contains_placeholder(&e) {
-                        return Err(self.statement_check_error());
-                    }
-                    out.push(e);
-                    break;
-                }
-                _ => return Err(self.unexpected(&t)),
+                out.push(e);
+                self.pos += 1;
+                continue;
             }
+            if matches!(self.toks[self.pos].tok, Tok::Eof) {
+                if contains_placeholder(&e) {
+                    return Err(self.statement_check_error());
+                }
+                out.push(e);
+                break;
+            }
+            let t = self.toks[self.pos].clone();
+            return Err(self.unexpected(&t));
         }
         Ok(out)
     }
@@ -376,9 +385,17 @@ impl<'a> Parser<'a> {
                     let e = Expr::call(self.intern(name), t.span, vec![Arg::positional(a), Arg::positional(b)], span);
                     if matches!(t.tok, Tok::Cmp(_)) {
                         // Comparisons do not associate: `a < b < c` is an error.
-                        let next = self.peek().clone();
-                        if matches!(next.tok, Tok::Cmp(_)) && min_bp < BP_CMP {
-                            return Err(self.unexpected(&next));
+                        // Comparisons do not associate: `a < b < c` is
+                        // an error. `peek` would skip newlines in a
+                        // bracket context; do the same here.
+                        if min_bp < BP_CMP {
+                            if self.cur_ctx() == Ctx::Paren {
+                                self.skip_newlines();
+                            }
+                            if matches!(self.toks[self.pos].tok, Tok::Cmp(_)) {
+                                let t = self.toks[self.pos].clone();
+                                return Err(self.unexpected(&t));
+                            }
                         }
                     }
                     e
@@ -390,21 +407,16 @@ impl<'a> Parser<'a> {
 
     fn member_name(&mut self) -> Result<Expr, ParseError> {
         self.skip_newlines();
-        let t = self.peek().clone();
+        // `x$(name)` is not valid R, but `x@.Data` etc. are symbols.
+        if !matches!(self.toks[self.pos].tok, Tok::Sym(_) | Tok::Str(_)) {
+            let t = self.toks[self.pos].clone();
+            return Err(self.unexpected(&t));
+        }
+        let t = self.bump();
         match t.tok {
-            Tok::Sym(s) => {
-                self.bump();
-                Ok(Expr::Sym(self.sym_name(&s), t.span))
-            }
-            Tok::Str(s) => {
-                self.bump();
-                Ok(Expr::Const(Const::Str(Some(s)), t.span))
-            }
-            Tok::LParen => {
-                // `x$(name)` is not valid R, but `x@.Data` etc. are symbols.
-                Err(self.unexpected(&t))
-            }
-            _ => Err(self.unexpected(&t)),
+            Tok::Sym(s) => Ok(Expr::Sym(self.sym_name(&s), t.span)),
+            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(s)), t.span)),
+            _ => unreachable!("checked above"),
         }
     }
 
@@ -534,13 +546,13 @@ impl<'a> Parser<'a> {
                 self.ctx.push(Ctx::Paren);
                 let header = (|| {
                     self.expect(Tok::LParen)?;
-                    let var = match self.peek().clone() {
-                        Token { tok: Tok::Sym(s), span } => {
-                            self.bump();
-                            Expr::Sym(self.sym_name(&s), span)
-                        }
-                        other => return Err(self.unexpected(&other)),
-                    };
+                    self.skip_newlines(); // `peek` inside the parentheses
+                    if !matches!(self.toks[self.pos].tok, Tok::Sym(_)) {
+                        let t = self.toks[self.pos].clone();
+                        return Err(self.unexpected(&t));
+                    }
+                    let Token { tok: Tok::Sym(s), span } = self.bump() else { unreachable!("checked above") };
+                    let var = Expr::Sym(self.sym_name(&s), span);
                     self.expect(Tok::In)?;
                     let seq = self.expr(0)?;
                     self.expect(Tok::RParen)?;
@@ -630,32 +642,33 @@ impl<'a> Parser<'a> {
             return Ok(out);
         }
         loop {
-            let t = self.peek().clone();
-            let name = match t.tok {
-                Tok::Sym(s) => s,
-                _ => return Err(self.unexpected(&t)),
-            };
-            self.bump();
+            self.skip_newlines(); // `peek` inside the parentheses
+            if !matches!(self.toks[self.pos].tok, Tok::Sym(_)) {
+                let t = self.toks[self.pos].clone();
+                return Err(self.unexpected(&t));
+            }
+            let Token { tok: Tok::Sym(name), span: formal_span } = self.bump() else { unreachable!("checked above") };
             if out.iter().any(|f| *f.name == *name) {
                 return Err(ParseError {
                     message: format!("repeated formal argument '{}'", name),
-                    offset: t.span.start as usize,
-                    end: t.span.end as usize,
+                    offset: formal_span.start as usize,
+                    end: formal_span.end as usize,
                     incomplete: false,
                     at_eof: false,
                     with_pos_suffix: true,
                     fixed_line_col: None,
                 });
             }
-            let default = if matches!(self.peek().tok, Tok::EqAssign) {
+            self.skip_newlines();
+            let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
                 self.bump();
                 Some(self.expr(BP_EQ_ASSIGN)?)
             } else {
                 None
             };
             out.push(Formal { name: self.sym_name(&name), default });
-            let t = self.peek().clone();
-            match t.tok {
+            self.skip_newlines();
+            match self.toks[self.pos].tok {
                 Tok::Comma => {
                     self.bump();
                 }
@@ -663,7 +676,10 @@ impl<'a> Parser<'a> {
                     self.bump();
                     return Ok(out);
                 }
-                _ => return Err(self.unexpected(&t)),
+                _ => {
+                    let t = self.toks[self.pos].clone();
+                    return Err(self.unexpected(&t));
+                }
             }
         }
     }
@@ -671,26 +687,25 @@ impl<'a> Parser<'a> {
     fn brace_body(&mut self, open: Span) -> Result<Expr, ParseError> {
         let mut stmts = Vec::new();
         loop {
-            while matches!(self.raw_peek().tok, Tok::Newline | Tok::Semi) {
+            while matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
                 self.pos += 1;
             }
-            let t = self.raw_peek().clone();
-            if matches!(t.tok, Tok::RBrace) {
-                self.bump();
-                return Ok(Expr::call(self.intern("{"), open, stmts, open.to(t.span)));
+            if matches!(self.toks[self.pos].tok, Tok::RBrace) {
+                let close = self.toks[self.pos].span;
+                self.pos += 1;
+                return Ok(Expr::call(self.intern("{"), open, stmts, open.to(close)));
             }
-            if matches!(t.tok, Tok::Eof) {
+            if matches!(self.toks[self.pos].tok, Tok::Eof) {
+                let t = self.toks[self.pos].clone();
                 return Err(self.unexpected(&t));
             }
             let e = self.expr(0)?;
             stmts.push(Arg::positional(e));
-            let t = self.raw_peek().clone();
-            match t.tok {
-                Tok::Newline | Tok::Semi => {
-                    self.pos += 1;
-                }
-                Tok::RBrace => {}
-                _ => return Err(self.unexpected(&t)),
+            if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
+                self.pos += 1;
+            } else if !matches!(self.toks[self.pos].tok, Tok::RBrace) {
+                let t = self.toks[self.pos].clone();
+                return Err(self.unexpected(&t));
             }
         }
     }
@@ -699,18 +714,18 @@ impl<'a> Parser<'a> {
         let open = self.bump();
         self.ctx.push(Ctx::Paren);
         let r = (|| {
-            let (close_tok, name) = match open.tok {
-                Tok::LParen => (Tok::RParen, None),
-                Tok::LBracket => (Tok::RBracket, Some("[")),
-                Tok::LBB => (Tok::RBracket, Some("[[")),
+            let (bracket, name) = match open.tok {
+                Tok::LParen => (false, None),
+                Tok::LBracket => (true, Some("[")),
+                Tok::LBB => (true, Some("[[")),
                 _ => unreachable!(),
             };
-            let mut args = self.args(&close_tok)?;
-            if name.is_some() && args.is_empty() {
+            let mut args = self.args(bracket)?;
+            if bracket && args.is_empty() {
                 // `x[]` indexes with one empty argument; `f()` has none.
                 args.push(Arg { name: None, value: None });
             }
-            let mut close = self.expect(close_tok.clone())?;
+            let mut close = self.expect(if bracket { Tok::RBracket } else { Tok::RParen })?;
             if matches!(open.tok, Tok::LBB) {
                 close = self.expect(Tok::RBracket)?;
             }
@@ -743,25 +758,33 @@ impl<'a> Parser<'a> {
         r
     }
 
-    /// Argument list up to (not including) `close`.
-    fn args(&mut self, close: &Tok) -> Result<Vec<Arg>, ParseError> {
+    /// Is the current token the given list terminator? Callers are inside
+    /// brackets, where `peek` would skip newlines first.
+    #[inline]
+    fn at_close(&self, bracket: bool) -> bool {
+        if bracket {
+            matches!(self.toks[self.pos].tok, Tok::RBracket)
+        } else {
+            matches!(self.toks[self.pos].tok, Tok::RParen)
+        }
+    }
+
+    /// Argument list up to (not including) `close`. The hot checks read
+    /// the token in place; only names are moved out, by `bump`.
+    fn args(&mut self, bracket: bool) -> Result<Vec<Arg>, ParseError> {
         let mut out = Vec::new();
-        if &self.peek().tok == close {
+        self.skip_newlines();
+        if self.at_close(bracket) {
             return Ok(out);
         }
         loop {
-            let t = self.peek().clone();
-            let arg = if &t.tok == close || matches!(t.tok, Tok::Comma) {
+            self.skip_newlines(); // `peek` inside the brackets
+            let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
                 Arg { name: None, value: None }
             } else {
                 // `name = value`, where name is a symbol, string or NULL.
-                let name = match &t.tok {
-                    Tok::Sym(s) => Some(self.sym_name(s)),
-                    Tok::Str(s) => Some(self.name_of(&String::from_utf8_lossy(s))),
-                    Tok::Const(Const::Null) => Some(self.intern("NULL")),
-                    _ => None,
-                };
-                let named = name.is_some() && {
+                let name_kind = matches!(&self.toks[self.pos].tok, Tok::Sym(_) | Tok::Str(_) | Tok::Const(Const::Null));
+                let named = name_kind && {
                     let mut j = self.pos + 1;
                     while matches!(self.toks[j].tok, Tok::Newline) {
                         j += 1;
@@ -769,32 +792,39 @@ impl<'a> Parser<'a> {
                     matches!(self.toks[j].tok, Tok::EqAssign)
                 };
                 if named {
+                    let t = self.bump(); // the name
+                    let name = match t.tok {
+                        Tok::Sym(s) => self.sym_name(&s),
+                        Tok::Str(s) => self.name_of(&String::from_utf8_lossy(&s)),
+                        Tok::Const(Const::Null) => self.intern("NULL"),
+                        _ => unreachable!("checked above"),
+                    };
                     // A string tag installs as a symbol (`TagArg`), so
                     // the empty string errors at parse time.
-                    if name.as_deref() == Some("") {
+                    if name.is_empty() {
                         return Err(self.zero_length_name_error());
                     }
-                    self.bump();
                     self.expect(Tok::EqAssign)?;
-                    let next = self.peek().tok.clone();
-                    if &next == close || next == Tok::Comma {
-                        Arg { name, value: None }
+                    self.skip_newlines();
+                    if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
+                        Arg { name: Some(name), value: None }
                     } else {
-                        Arg { name, value: Some(self.expr(BP_EQ_ASSIGN)?) }
+                        Arg { name: Some(name), value: Some(self.expr(BP_EQ_ASSIGN)?) }
                     }
                 } else {
                     Arg { name: None, value: Some(self.expr(0)?) }
                 }
             };
             out.push(arg);
-            let t = self.peek().clone();
-            if matches!(t.tok, Tok::Comma) {
+            self.skip_newlines();
+            if matches!(self.toks[self.pos].tok, Tok::Comma) {
                 self.bump();
                 continue;
             }
-            if &t.tok == close {
+            if self.at_close(bracket) {
                 return Ok(out);
             }
+            let t = self.toks[self.pos].clone();
             return Err(self.unexpected(&t));
         }
     }
