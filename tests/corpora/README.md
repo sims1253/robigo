@@ -23,4 +23,14 @@ corpus, described in `corpora.toml`:
 | `fastr` | FastR's `ExpectedTestOutput.test` (oracle/fastr, commit in `corpora.toml`); FastR-only tests excluded | GPL-3 (see `fastr/README.md`) |
 | `gnur-tests` | GNU R 4.5.0's `tests/` | GPL-2 or later, part of R |
 | `gnur-examples` | the examples of GNU R 4.5.0's help pages (`tools::Rd2ex`) | GPL-2 or later, part of R |
+| `gnur-demos` | every `demo()` of GNU R 4.5.0's base packages (`src/library/*/demo/*.R`), as `demo(..., echo = TRUE)` runs it | GPL-2 or later, part of R |
+| `r-intro` | the runnable examples of GNU R's "An Introduction to R" (`doc/manual/R-intro.texi`), one script per chapter plus appendix A | GPL-2 or later, part of R |
 | `capi` | C cases over libR's exported API (`tests/capi/symbols.tsv` is the census; `scripts/capi-census.py` measures coverage) | written for robigo, GPL-2 or later |
+
+`gnur-demos` and `r-intro` are the *script* corpora: whole, realistic R
+programs rather than snippets, the measuring stick for "existing R scripts
+just work". Both import from the R sources with
+`scripts/import-corpus-scripts.py NAME` (see each corpus's README for what
+is included and what is left out, and `docs/ledger/corpus-scripts.md` for
+the ranked list of what still breaks them).
+

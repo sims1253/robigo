@@ -49,6 +49,8 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 | `fastr` | 31,374 | script | FastR's unit-test snippets (GPL-3), one R expression each |
 | `gnur-tests` | 59 | echo | GNU R's own `tests/*.R` |
 | `gnur-examples` | 1,153 | echo | the examples of every help page of base R's packages |
+| `gnur-demos` | 16 | echo | every `demo()` of GNU R's base packages, as `demo(..., echo = TRUE)` runs it |
+| `r-intro` | 13 | echo | the runnable code of "An Introduction to R", one script per chapter |
 | `capi` | 20 | script | C cases compiled by each case's `build.sh` (`R CMD SHLIB`), driven from R; GNU R's output is `robigo-capi`'s (G2) target, weighted coverage measured by `scripts/capi-census.py coverage` |
 
 ```sh
@@ -56,6 +58,7 @@ scripts/corpus.py run fastr --filter 'builtins/TestBuiltin_paste/'   # a slice
 scripts/corpus.py show fastr builtins/TestBuiltin_paste/0aefed6423ab410d
 scripts/corpus.py run gnur-tests --update   # also record new passes
 scripts/corpus.py score
+scripts/triage.py gnur-demos                # first difference per failing case
 ```
 
 A case passes only if stdout, stderr and the exit status all match GNU

@@ -519,7 +519,12 @@ IMPORTERS = {"fastr": import_fastr, "gnur-tests": import_gnur_tests, "gnur-examp
 def cmd_import(a):
     conf = corpus_conf(a.name)
     os.makedirs(cdir(a.name), exist_ok=True)
-    IMPORTERS[conf.get("importer", a.name)](conf)
+    fn = IMPORTERS.get(conf.get("importer", a.name))
+    if fn is None:
+        # A corpus with its own importer: scripts/import-<importer>.py NAME.
+        sys.exit(subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "import-" + conf["importer"] + ".py"),
+                                 a.name], check=False).returncode)
+    fn(conf)
 
 
 def main():
