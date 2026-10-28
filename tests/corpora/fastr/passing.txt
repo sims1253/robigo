@@ -4627,6 +4627,7 @@ builtins/TestBuiltin_formatC/f64f212acdcd2b7b
 builtins/TestBuiltin_formatC/fbc8c22740d534b5
 builtins/TestBuiltin_formatPOSIXlt/329d27e540a3e605
 builtins/TestBuiltin_formatPOSIXlt/4b67f52f36534e66
+builtins/TestBuiltin_formatPOSIXlt/55d5fa34f300cd91
 builtins/TestBuiltin_formatPOSIXlt/64df410ff63d0cf5
 builtins/TestBuiltin_formatPOSIXlt/7d1c9351976137cf
 builtins/TestBuiltin_formatPOSIXlt/89923e51eef76190
@@ -8866,6 +8867,10 @@ builtins/TestBuiltin_postoenv/9b43a358e47544f9
 builtins/TestBuiltin_postoenv/ad5cbd907580be00
 builtins/TestBuiltin_postoenv/d1f254e4cfa5156f
 builtins/TestBuiltin_postoenv/e699f11792d74f09
+builtins/TestBuiltin_pretty/29204e1a6098dbdc
+builtins/TestBuiltin_pretty/42a6f5953598e2e7
+builtins/TestBuiltin_pretty/783d3f8904a8039b
+builtins/TestBuiltin_pretty/bcdfc3b116ff11af
 builtins/TestBuiltin_primUntrace/5f735f4278325e52
 builtins/TestBuiltin_print/035e674f82bdf315
 builtins/TestBuiltin_print/057a881757788eaf
@@ -9278,6 +9283,7 @@ builtins/TestBuiltin_rbind/1bc9a6116419ace8
 builtins/TestBuiltin_rbind/23551e95f7e17a42
 builtins/TestBuiltin_rbind/25d04db6b798937a
 builtins/TestBuiltin_rbind/284343642b0d862e
+builtins/TestBuiltin_rbind/29360f60bcce34b7
 builtins/TestBuiltin_rbind/30460b4d10bc1909
 builtins/TestBuiltin_rbind/3316d19fd1eed489
 builtins/TestBuiltin_rbind/346aad2d151222d0
@@ -9316,6 +9322,7 @@ builtins/TestBuiltin_rbind/7d040427efda4914
 builtins/TestBuiltin_rbind/82f5ec42df3bfd90
 builtins/TestBuiltin_rbind/91e8cae2f39da3cd
 builtins/TestBuiltin_rbind/9346253ed214069a
+builtins/TestBuiltin_rbind/a0775161a800525a
 builtins/TestBuiltin_rbind/a35a4da72ac34b0a
 builtins/TestBuiltin_rbind/a9dd122466a0be08
 builtins/TestBuiltin_rbind/aac824367b864ecc
@@ -26016,7 +26023,9 @@ library/base/TestSimpleVectors/2051b1561a604863
 library/base/TestSimpleVectors/2069cf9b44b7033c
 library/base/TestSimpleVectors/2085ef361d921dca
 library/base/TestSimpleVectors/2097937bd38f5349
+library/base/TestSimpleVectors/20ab995f8e3a2079
 library/base/TestSimpleVectors/20d4238d74eceaae
+library/base/TestSimpleVectors/210619787d8d888a
 library/base/TestSimpleVectors/216767cb609c311d
 library/base/TestSimpleVectors/21965c30cd2e4d49
 library/base/TestSimpleVectors/21c0abb6c32decc8

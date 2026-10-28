@@ -568,6 +568,13 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
     }
     let n = sr.len() * sc.len();
     if n > 0 && ny == 0 {
+        // GNU R reports a NULL RHS with the "not a multiple" error here even
+        // though subassign.c:MatrixAssign checks ny == 0 first (verified
+        // against the 4.5.0 oracle); a zero-length non-NULL RHS gets the
+        // length-zero message.
+        if y.is_null() {
+            return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+        }
         return Err(Flow::error("replacement has length zero"));
     }
     if n > 0 && n % ny != 0 {
@@ -614,6 +621,11 @@ fn array_assign(interp: &mut Interp, _call: &Value, x: &mut Value, subs: &[Value
     let bound: Vec<usize> = sub_idx.iter().map(|v| v.len()).collect();
     let n: usize = bound.iter().product();
     if n > 0 && ny == 0 {
+        // See matrix_assign: GNU R reports a NULL RHS with the "not a
+        // multiple" error.
+        if y.is_null() {
+            return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+        }
         return Err(Flow::error("replacement has length zero"));
     }
     if n > 0 && n % ny != 0 {
