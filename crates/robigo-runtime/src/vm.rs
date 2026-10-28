@@ -1215,6 +1215,59 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
     signal(interp, r.map(|_| Value::Null)).map(|_| ())
 }
 
+/// `sym <<- val` without running code, as `Interp::super_assign` would do
+/// it: the first enclosing frame of `env` binding `sym` (or the global
+/// environment) holds a plain binding of a value that is not function-like,
+/// and `val` is not either (those change function bindings, see
+/// `Env::set_local_flags`): an unshared scalar of `val`'s type is updated
+/// in place, anything else replaced. `false` (nothing done) otherwise.
+fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &RVal) -> bool {
+    if matches!(val, RVal::V(Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) | RVal::Range { .. }) {
+        return false;
+    }
+    let mut cur = env.parent();
+    while let Some(e) = cur {
+        if e.has_local(sym) {
+            return set_plain_in_place(&e, sym, val);
+        }
+        cur = e.parent();
+    }
+    set_plain_in_place(&interp.global, sym, val)
+}
+
+/// Overwrite the existing plain binding `sym` of `env`'s own frame with
+/// `val` (see [`super_set_fast`]).
+fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
+    let mut frame = env.0.frame().borrow_mut();
+    let Some(b) = frame.get_mut(sym) else { return false };
+    if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
+        return false;
+    }
+    macro_rules! scalar {
+        ($rc:expr, $x:expr) => {
+            match Rc::get_mut($rc) {
+                Some(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                    v.data[0] = *$x;
+                    true
+                }
+                _ => false,
+            }
+        };
+    }
+    let done = match (&mut b.value, val) {
+        (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
+        (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
+        (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
+        _ => false,
+    };
+    if !done {
+        let prev = std::mem::replace(&mut b.value, val.to_value());
+        drop(frame);
+        drop(prev);
+    }
+    true
+}
+
 /// Call the base builtin named by the call's head with boxed arguments.
 fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -> RResult<Value> {
     let Value::Lang(l) = call else { unreachable!() };
@@ -2804,6 +2857,18 @@ fn run_with(
                 if !done {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k));
+                }
+            }
+            Op::SuperSet { src, sym, slot } => {
+                // The current frame's cached value of `sym` may be the old
+                // value of the binding assigned here.
+                if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
+                    vars.slots[*slot as usize] = SlotVal::Empty;
+                }
+                if !super_set_fast(interp, env, *sym, &regs[*src as usize]) {
+                    flush!();
+                    let r = interp.super_assign(*sym, regs[*src as usize].to_value(), env);
+                    tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
             }
             Op::SetDollar { val, x, slot, name, k } => {
