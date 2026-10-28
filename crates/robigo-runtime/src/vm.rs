@@ -583,6 +583,7 @@ fn set_index_slow(
     idx: &[&Leaf],
     val: Reg,
     k: u32,
+    sup: bool,
 ) -> RResult<()> {
     let whole = &code.consts[k as usize];
     let Value::Lang(l) = whole else { unreachable!() };
@@ -604,7 +605,7 @@ fn set_index_slow(
         &l.args[1].value,
         rhs,
         env,
-        false,
+        sup,
         pre.as_deref(),
     );
     // The assignment rebound `x` in the frame.
@@ -1213,6 +1214,27 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
     }
     let r = interp.define(sym, val.to_value(), env);
     signal(interp, r.map(|_| Value::Null)).map(|_| ())
+}
+
+/// `x[i] <<- val` / `x[[i]] <<- val` (`two`) in place, without running
+/// code: the binding `x <<- ` would assign (see [`super_set_fast`]) is a
+/// plain binding of a vector [`set_element`] can update. `false` (nothing
+/// done) otherwise.
+fn super_set_element(interp: &Interp, env: &Env, sym: Sym, i: usize, val: &RVal, two: bool) -> bool {
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let Some(b) = frame.get_mut(sym) else { return false };
+    if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
+        return false;
+    }
+    set_element(&mut b.value, i, val, two)
 }
 
 /// `sym <<- val` without running code, as `Interp::super_assign` would do
@@ -2856,7 +2878,7 @@ fn run_with(
                 };
                 if !done {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k, false));
                 }
             }
             Op::SuperSet { src, sym, slot } => {
@@ -2871,6 +2893,21 @@ fn run_with(
                     tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
             }
+            Op::SuperSetIndex { val, x, slot, i, two, k } => {
+                // (The current frame's cached copy of `x` would make the
+                // vector look shared, and may be stale afterwards.)
+                if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
+                    vars.slots[*slot as usize] = SlotVal::Empty;
+                }
+                let done = match scalar_index(&mut vars, env, &regs, i) {
+                    Some(ix) => super_set_element(interp, env, *x, ix as usize, &regs[*val as usize], *two),
+                    None => false,
+                };
+                if !done {
+                    flush!();
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, true));
+                }
+            }
             Op::SetDollar { val, x, slot, name, k } => {
                 let Value::Str(nm) = &code.consts[*name as usize] else { unreachable!() };
                 let done = own_var(&mut vars, env, *x, *slot)
@@ -2880,7 +2917,7 @@ fn run_with(
                     };
                 if !done {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
                 }
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
@@ -2906,7 +2943,7 @@ fn run_with(
                 };
                 if !done {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false));
                 }
             }
             Op::CallBuiltin { dst, f, args, call } => {
