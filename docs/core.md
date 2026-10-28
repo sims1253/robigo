@@ -438,7 +438,9 @@ fastmap/digest/cpp11/Rcpp. That needs ALTREP class registration with the
 serialization hooks (robigo has no ALTREP serialization today:
 `docs/ledger/startup.md`) and fork safety.
 
-**Decision A.1, fork-safe collection: side mark bitmaps.** `mclapply`
+**Decision A.1, fork-safe collection: side mark bitmaps** (implemented:
+a collection in a forked child copies 17 MB of a 229 MB heap instead of
+226 MB; ledger). `mclapply`
 forks a live heap; a collector that writes mark bits into object headers
 dirties every copy-on-write page of the live set in every child. Marks
 therefore move out of the header into per-block side bitmaps (next to

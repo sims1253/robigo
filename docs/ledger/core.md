@@ -11,6 +11,33 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: fork-safe marking (lead A.1) and the abandoned-bump-space bug
+
+- measured first (`collecting_in_a_forked_child_does_not_copy_the_heap`,
+  a ~229 MB live heap of 512-byte vectors, fork, one collection in the
+  child, the child's Private_Dirty growth from /proc/self/smaps_rollup):
+  header mark bits -> **226 MB copied**.
+- change: marks live in a per-block mark bitmap next to the start bitmap
+  (the block header grows 576 -> 1,072 bytes; 4,029 granules per block;
+  medium classes recomputed for 64,464 data bytes) and, for large
+  objects, an epoch word in the chunk's header (no clearing). Marking and
+  the sweep read object headers (IMMORTAL, HOST) but never write live
+  objects; the MARK_A/MARK_B header colors are retired. -> **17 MB
+  copied** (the block headers and the collector's own memory).
+- cost (C API bench, robigo/GNU R instructions): allocVector small 0.98
+  -> 1.01, medium 0.35 -> 0.41, lang3 1.26 -> 1.29 (collections compute
+  bitmap positions and clear bitmaps). Kept: fork safety is a lead
+  requirement and the cost is small.
+- found by ROBIGO_GCTORTURE (a test that collected on every allocation
+  reserved 626 MB for 79 MB of data): the sweep reset every class's
+  allocation cursor but re-listed only blocks that gained dead slots, so
+  a block's remaining bump space was stranded until all its objects
+  died — up to one partial block per class per collection. Now blocks
+  with free slots or bump space are re-listed. A new test fails without
+  the fix (2,016 blocks for 2,000 live 8 KiB vectors) and passes with it.
+  The same sweep is in `experiments/memory` (memory track): its
+  long-running workloads strand partial blocks too.
+
 ## 2026-10-28: medium objects share blocks (council item 13)
 
 - why: every object above 2 KiB took a dedicated 64 KiB-aligned chunk:
