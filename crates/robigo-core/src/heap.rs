@@ -92,9 +92,11 @@ impl Block {
         self.starts[g >> 6] |= 1u64 << (g & 63);
     }
     #[inline]
+    #[allow(dead_code)]
     pub fn start_test(&self, g: usize) -> bool {
         self.starts[g >> 6] & (1u64 << (g & 63)) != 0
     }
+    #[allow(dead_code)]
     pub fn clear_starts(&mut self) {
         self.starts = [0; START_WORDS];
     }
@@ -380,6 +382,7 @@ impl Heap {
     /// reference to it can exist); immortals are never marked and never
     /// swept, so this count is what stands in for them in the sweeper's
     /// skip test.
+    #[allow(dead_code)]
     pub fn note_immortal(&mut self, p: *mut u8) {
         let b = self.block_of(p);
         unsafe {

@@ -102,7 +102,7 @@ pub struct Rcomplex {
 pub const NA_INTEGER: i32 = i32::MIN;
 pub const NA_LOGICAL: i32 = i32::MIN;
 /// GNU R's NA_real_: a NaN with payload 1954 (arithmetic.c R_ValueOfNA).
-pub const NA_REAL: f64 = unsafe { std::mem::transmute::<u64, f64>(0x7FF0_0000_0000_07A2) };
+pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
 
 // ---- layout ---------------------------------------------------------------
 // +0 type u8, +1 flags u8, +2 gp u16, +4 refcnt u16, +6 extra u16, +8 attrib
