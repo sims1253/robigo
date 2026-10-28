@@ -502,6 +502,19 @@ fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: u
     // element sums the same products in the same order as the loop below,
     // which runs down contiguous columns (and vectorizes).
     if x.iter().chain(y.iter()).all(|v| v.is_finite()) {
+        if nrx == 1 && ncy != 1 {
+            // A row vector times a matrix goes to dgemv("T"), one dot
+            // product per column of Y: TEMP = 0 + sum of Y(j,k) * X(j) for
+            // ascending j (the same sums, without a loop over one row).
+            for (k, zk) in z.iter_mut().enumerate() {
+                let mut sum = 0.0;
+                for (yj, xj) in y[k * nry..(k + 1) * nry].iter().zip(x) {
+                    sum += yj * xj;
+                }
+                *zk = sum;
+            }
+            return z;
+        }
         for k in 0..ncy {
             let zc = &mut z[k * nrx..(k + 1) * nrx];
             for j in 0..ncx {

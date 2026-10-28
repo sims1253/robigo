@@ -1558,6 +1558,114 @@ fn inline_site_call(
     })
 }
 
+/// The promised arguments of a call of `clo` at `site`. Where the body
+/// forces a formal before anything that may run R code (`Code::strict`,
+/// with all its guards known to hold), evaluating that argument here
+/// instead is unobservable if it needs no code either: a constant, a
+/// variable readable without forcing, or an arithmetic operation through
+/// its scalar fast path. Such arguments get promises already forced (as
+/// the callee would leave them), so the callee reads their values; the
+/// others are promised as usual.
+fn caller_promargs(
+    interp: &mut Interp,
+    site: &CallSite,
+    clo: &Closure,
+    l: &crate::value::Lang,
+    env: &Env,
+    vars: &mut Vars<'_>,
+    regs: &[RVal],
+) -> RResult<Vec<Arg>> {
+    if let Some(eager) = eager_args(interp, site, clo, env, vars, regs) {
+        let mut out = Vec::with_capacity(l.args.len());
+        for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
+            out.push(match (v, &a.value) {
+                (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))),
+                (None, Value::Sym(_) | Value::Lang(_)) => Arg::new(
+                    a.tag,
+                    Value::Promise(Rc::new(Promise::with_code(a.value.clone(), env.clone(), c.clone()))),
+                ),
+                (None, _) => a.clone(),
+            });
+        }
+        return Ok(out);
+    }
+    interp.promise_args_with(&l.args, env, &site.codes)
+}
+
+/// The values [`caller_promargs`] may supply (by argument), if any.
+fn eager_args(
+    interp: &mut Interp,
+    site: &CallSite,
+    clo: &Closure,
+    env: &Env,
+    vars: &mut Vars<'_>,
+    regs: &[RVal],
+) -> Option<[Option<Value>; 4]> {
+    let args = site.inline_args.as_ref()?;
+    let code = clo.code.get()?.as_ref()?;
+    // Reasons that depend on the call site and the closure's definition
+    // only are remembered. (Up to four arguments, the common case.) The
+    // body must read a formal first, whose argument is not a constant
+    // (constants are passed as values anyway).
+    let first =
+        (args.len() <= 4 && args.len() == clo.formals.len() && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS)))
+            .then(|| clo.formals.iter().position(|f| Some(f.tag) == code.strict.first().map(|s| Some(*s))))
+            .flatten()
+            .filter(|k| !matches!(args[*k], InlineArg::Leaf(Leaf::D(_) | Leaf::I(_))));
+    if first.is_none() {
+        site.no_eager.set(Rc::as_ptr(&clo.formals) as *const Arg as usize);
+        return None;
+    }
+    // No guard of the body may fail before it forces these formals (a
+    // rebound `if` or `<` could run code first).
+    if code.nguards > 0 {
+        let held = if clo.env.is_search() {
+            fresh_guards_ok(interp, code, clo)
+        } else {
+            let key = (
+                crate::env::search_epoch(),
+                clo.env.id(),
+                clo.env.fn_version(),
+                Rc::as_ptr(&clo.formals) as *const Arg as usize,
+            );
+            clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search()) && code.fresh_nested.get() == key
+        };
+        if !held {
+            return None;
+        }
+    }
+    let mut out: [Option<Value>; 4] = [None, None, None, None];
+    let mut any = false;
+    for sym in &code.strict {
+        // (In order: stop at the first read that would need the callee.)
+        let Some(k) = clo.formals.iter().position(|f| f.tag == Some(*sym)) else { break };
+        if out[k].is_some() {
+            continue;
+        }
+        let v = match &args[k] {
+            InlineArg::Leaf(Leaf::D(_) | Leaf::I(_)) => continue,
+            InlineArg::Leaf(Leaf::Var(s, slot)) => match read_var(vars, env, *s, *slot) {
+                Some(v) => v.to_value(),
+                None => break,
+            },
+            InlineArg::Leaf(Leaf::R(_)) => break,
+            InlineArg::Arith { op, a, b, sym, memo } => {
+                if !guard_ok(interp, *sym, env, memo) {
+                    break;
+                }
+                let (Some(x), Some(y)) = (leaf_num(vars, env, regs, a), leaf_num(vars, env, regs, b)) else { break };
+                match arith_fast(*op, x, y) {
+                    Some(v) => v.into_value(),
+                    None => break,
+                }
+            }
+        };
+        out[k] = Some(v);
+        any = true;
+    }
+    any.then_some(out)
+}
+
 /// Evaluate code that is a single guarded operation on constants and
 /// variables (see `Code::simple`) without a VM run; `None` when any part
 /// needs the general path (which then runs the code normally).
@@ -1976,6 +2084,7 @@ pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure) -
     run_pre(interp, code, env, pre)
 }
 
+#[inline]
 fn fresh_guards_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
     let key = (crate::env::search_epoch(), clo.env.id(), Rc::as_ptr(&clo.formals) as *const Arg as usize);
     if code.fresh_guards.get() == key {
@@ -2820,7 +2929,13 @@ fn run_with(
                 };
                 let v = match (&fun, &site.call) {
                     (Value::Closure(clo), Value::Lang(l)) => {
-                        let r = match interp.promise_args_with(&l.args, env, &site.codes) {
+                        let promargs =
+                            if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
+                                caller_promargs(interp, site, clo, l, env, vars, regs)
+                            } else {
+                                interp.promise_args_with(&l.args, env, &site.codes)
+                            };
+                        let r = match promargs {
                             Ok(promargs) => match force_args(interp, &promargs, site.force) {
                                 Ok(()) => interp.call_closure(&site.call, clo, promargs, env),
                                 Err(e) => signal(interp, Err(e)),
