@@ -25,6 +25,20 @@ builds and copies under a lock; the harnesses below use
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | corpora | `scripts/corpus.py run NAME` | below |
 
+### Timezone fixtures
+
+A conformance script can have a `.tzdir` sidecar, for example
+`tests/r/datetime/zones.tzdir`. It contains one directory path relative to
+the script. `scripts/regen-expected.sh` and the conformance runner resolve
+it to an absolute path and set `TZDIR` before starting GNU R or robigo,
+including interpreter, VM and JIT runs. Both clear inherited `TZDIR` for
+scripts without a sidecar. A missing fixture directory fails the run.
+
+Named-zone tests use `tests/r/datetime/zoneinfo`, pinned to Debian tzdata
+2026e. Its README documents provenance and regeneration. Record with
+Debian's GNU R 4.5.0, never the host's newer R. The fixture keeps timezone
+rule updates from changing expected output or masking runtime regressions.
+
 ### Corpora
 
 `tests/corpora/` holds large collections of R code with GNU R's recorded
