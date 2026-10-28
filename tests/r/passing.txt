@@ -8,6 +8,7 @@ tests/r/basics/functions.R
 tests/r/basics/inline-call-args.R
 tests/r/basics/int-arith-kernels.R
 tests/r/basics/local-fun-calls.R
+tests/r/basics/long-line-exponent.R
 tests/r/basics/mod-ldouble.R
 tests/r/basics/print-numbers.R
 tests/r/basics/super-assign-index.R
@@ -73,9 +74,11 @@ tests/r/lang/quote.R
 tests/r/lang/substitute-dots.R
 tests/r/math/atan2.R
 tests/r/math/bessel-nbinom-hyper.R
+tests/r/math/complex-nan-payloads.R
 tests/r/math/complex-vector-arith.R
 tests/r/math/distributions.R
 tests/r/math/gamma.R
+tests/r/math/log-args.R
 tests/r/math/log-dots.R
 tests/r/math/math2-nonnumeric.R
 tests/r/math/math-warnings.R
