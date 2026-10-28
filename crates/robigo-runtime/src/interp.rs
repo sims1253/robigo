@@ -510,6 +510,15 @@ impl Interp {
         env: &Env,
         unboxed: bool,
     ) -> RResult<Value> {
+        self.enter_call()?;
+        let r = self.apply_closure_ex(call, clo, promargs, env, None, unboxed);
+        self.leave_call(r)
+    }
+
+    /// The start of a closure call as `eval` makes it: visibility, the C
+    /// stack and nesting limits. Pair with [`Self::leave_call`].
+    #[inline]
+    pub(crate) fn enter_call(&mut self) -> RResult<()> {
         self.visible = true;
         self.check_stack()?;
         self.depth += 1;
@@ -523,7 +532,13 @@ impl Interp {
             });
             return Err(self.signal_error(err));
         }
-        let r = self.apply_closure_ex(call, clo, promargs, env, None, unboxed);
+        Ok(())
+    }
+
+    /// The end of a call begun by [`Self::enter_call`]: errors not yet
+    /// signaled are signaled here.
+    #[inline]
+    pub(crate) fn leave_call(&mut self, r: RResult<Value>) -> RResult<Value> {
         self.depth -= 1;
         match r {
             Err(Flow::Error(err)) if !err.signaled => Err(self.signal_error(err)),
@@ -825,6 +840,20 @@ impl Interp {
         dispatch_vars: Option<Vec<(Sym, Value)>>,
         unboxed: bool,
     ) -> RResult<Value> {
+        let nf = clo.formals.len();
+        let np = promargs.len();
+        if np <= nf && promargs.iter().all(|a| a.tag.is_none()) && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
+            // Positional arguments only and no `...`: matching assigns them
+            // in order (the fast path of `match_args`, without its copies).
+            let newenv = bind_positional(clo, &promargs);
+            if let Some(vars) = dispatch_vars {
+                for (k, v) in vars {
+                    newenv.set_local(k, v);
+                }
+            }
+            let sysparent = self.call_sysparent(callenv);
+            return self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed);
+        }
         let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
         let bind = |k: usize, tag: Sym, f: &Arg, a: Option<Value>| match a {
             Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
@@ -836,30 +865,27 @@ impl Interp {
                 }
             }
         };
-        let nf = clo.formals.len();
-        let np = promargs.len();
-        if np <= nf && promargs.iter().all(|a| a.tag.is_none()) && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
-            // Positional arguments only and no `...`: matching assigns them
-            // in order (the fast path of `match_args`, without its copies).
-            for (k, f) in clo.formals.iter().enumerate() {
-                bind(k, f.tag.unwrap(), f, promargs.get(k).map(|a| a.value.clone()));
-            }
-        } else {
-            let actuals = self.match_args(&clo.formals, &promargs, call)?;
-            for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
-                bind(k, f.tag.unwrap(), f, a);
-            }
+        let actuals = self.match_args(&clo.formals, &promargs, call)?;
+        for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
+            bind(k, f.tag.unwrap(), f, a);
         }
         if let Some(vars) = dispatch_vars {
             for (k, v) in vars {
                 newenv.set_local(k, v);
             }
         }
-        let sysparent = match self.frames.last() {
+        let sysparent = self.call_sysparent(callenv);
+        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
+    }
+
+    /// The `sysparent` of a closure called from `callenv`: a generic's
+    /// caller for a method dispatched from it.
+    #[inline]
+    pub(crate) fn call_sysparent(&self, callenv: &Env) -> Env {
+        match self.frames.last() {
             Some(c) if c.generic => c.sysparent.clone(),
             _ => callenv.clone(),
-        };
-        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
+        }
     }
 
     pub fn exec_closure(
@@ -883,19 +909,7 @@ impl Interp {
         sysparent: Env,
         unboxed: bool,
     ) -> RResult<Value> {
-        crate::env::bump_r_epoch();
-        self.frames.push(Context {
-            call: call.clone(),
-            function: Value::Closure(clo.clone()),
-            cloenv: newenv.clone(),
-            sysparent,
-            promargs,
-            on_exit: Vec::new(),
-            handlers: self.handlers.clone(),
-            restarts: self.restarts.clone(),
-            generic: false,
-            builtin: false,
-        });
+        self.push_closure_context(call, clo, promargs, &newenv, sysparent);
         if clo.jit.unsettled() {
             crate::vm::jit_check(self, clo);
         }
@@ -913,6 +927,32 @@ impl Interp {
             r => r,
         };
         self.end_context(r)
+    }
+
+    /// Push the context of a call of `clo` (R: begincontext in
+    /// R_execClosure); [`Self::end_context`] pops it.
+    #[inline]
+    pub(crate) fn push_closure_context(
+        &mut self,
+        call: &Value,
+        clo: &Rc<Closure>,
+        promargs: Vec<Arg>,
+        newenv: &Env,
+        sysparent: Env,
+    ) {
+        crate::env::bump_r_epoch();
+        self.frames.push(Context {
+            call: call.clone(),
+            function: Value::Closure(clo.clone()),
+            cloenv: newenv.clone(),
+            sysparent,
+            promargs,
+            on_exit: Vec::new(),
+            handlers: self.handlers.clone(),
+            restarts: self.restarts.clone(),
+            generic: false,
+            builtin: false,
+        });
     }
 
     /// Pop the current context, running `on.exit` code.
@@ -1217,6 +1257,27 @@ impl Default for Interp {
 /// VM is on). Constants evaluate to themselves without side effects, so they
 /// are bound directly (`missing()` still sees the BIND_MISSING_DEFAULT flag,
 /// and `substitute()` the same constant).
+/// A new frame for a call of `clo` with positional, untagged arguments
+/// (no more than its formals, none of which is `...`): R's argument
+/// matching for that case.
+pub(crate) fn bind_positional(clo: &Closure, promargs: &[Arg]) -> Env {
+    let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
+    for (k, f) in clo.formals.iter().enumerate() {
+        let tag = f.tag.unwrap();
+        match promargs.get(k).map(|a| &a.value) {
+            Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v.clone(), 0),
+            _ => {
+                if !f.value.is_missing_arg() {
+                    newenv.bind_arg(tag, default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
+                } else {
+                    newenv.bind_arg(tag, Value::missing_arg(), 0);
+                }
+            }
+        }
+    }
+    newenv
+}
+
 pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
     let expr = &clo.formals[k].value;
     match expr {

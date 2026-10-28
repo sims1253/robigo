@@ -1744,7 +1744,10 @@ fn closure_call(
     };
     let r = match promargs {
         Ok(promargs) => match force_args(interp, &promargs, site.force) {
-            Ok(()) => interp.call_closure_ex(&site.call, clo, promargs, env, true),
+            Ok(()) => match direct_code(clo, &promargs) {
+                Some(code) => direct_call(interp, &site.call, clo, &code, promargs, env),
+                None => interp.call_closure_ex(&site.call, clo, promargs, env, true),
+            },
             Err(e) => signal(interp, Err(e)),
         },
         Err(e) => signal(interp, Err(e)),
@@ -1754,6 +1757,52 @@ fn closure_call(
         Some(r) => r,
         None => RVal::V(v),
     })
+}
+
+/// The compiled body of `clo` when a call with these arguments can take
+/// [`direct_call`]: untagged, no more than the formals, none of which is
+/// `...` (R's matching is then positional: `interp::bind_positional`).
+#[inline]
+fn direct_code(clo: &Closure, promargs: &[Arg]) -> Option<Rc<Code>> {
+    if promargs.len() > clo.formals.len()
+        || promargs.iter().any(|a| a.tag.is_some())
+        || clo.formals.iter().any(|f| f.tag == Some(s::DOTS))
+        || crate::typeprof::enabled()
+    {
+        return None;
+    }
+    clo.code.get_or_init(|| code_for(&clo.body, true)).clone()
+}
+
+/// A call of `clo` from compiled code, as `call_closure_ex` makes it
+/// (through `apply_closure_ex` and `exec_closure_ex`) for positional
+/// arguments and a compiled body, without their general cases: nesting
+/// limits, the new frame, the context (pushed as `exec_closure` does, see
+/// the hook contract in docs/ledger/methods.md), the body, a `return()` to
+/// it, `end_context`, signaling. A scalar result may stay unboxed
+/// (`Interp::unboxed_ret`).
+#[inline(never)]
+fn direct_call(
+    interp: &mut Interp,
+    call: &Value,
+    clo: &Rc<Closure>,
+    code: &Code,
+    promargs: Vec<Arg>,
+    env: &Env,
+) -> RResult<Value> {
+    interp.enter_call()?;
+    let newenv = crate::interp::bind_positional(clo, &promargs);
+    let sysparent = interp.call_sysparent(env);
+    interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
+    if clo.jit.unsettled() {
+        jit_check(interp, clo);
+    }
+    let r = match run_closure(interp, code, &newenv, clo, true) {
+        Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
+        r => r,
+    };
+    let r = interp.end_context(r);
+    interp.leave_call(r)
 }
 
 /// The promised arguments of a call of `clo` at `site`. Where the body
