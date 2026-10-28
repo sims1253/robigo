@@ -417,10 +417,22 @@ all end there). robigo provides what that path expects:
    accessors, attributes, errors), the bridge, `.Call`/`.External`/`.C`;
    hill-climb the `capi` corpus case by case.
 3. The `R_HOME` layout, headers, Makeconf and `robigo CMD SHLIB|INSTALL`;
-   switch the capi corpus build to robigo's headers.
+   switch the capi corpus build to robigo's headers. *Done*
+   (`scripts/robigo-home.sh`; the capi corpus builds with `robigo CMD
+   SHLIB`).
 4. The gate: `install.packages("fastmap")` from source inside robigo and
    its tests; `digest`; a small cpp11 and a small Rcpp package; then
-   `stats` from source, the other base packages after it.
+   `stats` from source, the other base packages after it. *Measured
+   (ledger 2026-10-28):*
+   - installed from CRAN sources inside robigo, with their own tests:
+     fastmap 302/341 expectations (the rest is latin1), digest 325/325,
+     timechange (cpp11) 967/967;
+   - Rcpp compiles but cannot load: it imports methods, whose natives
+     need the evaluator's S4 hooks (`R_set_standardGeneric_ptr`,
+     `R_set_quick_method_check`, `do_set_prim_method`, `R_execMethod`,
+     ...: G6);
+   - `tools.so` from source runs `R CMD INSTALL`; `stats.so` from
+     source loads; `src/appl` is next.
 
 Once the API exists, the work splits along `symbols.tsv`'s areas, each a
 track with the capi corpus slice and the census coverage as its metric:
