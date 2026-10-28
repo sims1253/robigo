@@ -67,11 +67,20 @@ fn do_dynload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     // GNU R's own packages keep their Rust ports until their sources are
     // built against robigo (docs/core.md §8: such a build carries the
     // marker symbol); everything else is loaded
+    // A base package's shared object may also come from robigo's build of
+    // GNU R's sources (scripts/build-natives.sh); it is loaded in place of
+    // GNU R's under GNU R's path, so the DLL looks as in GNU R.
+    let file = if native::has_table(name) && !native::is_robigo_build(&path) {
+        native::robigo_native(name)
+    } else {
+        Some(path.clone())
+    };
     match native::bridge() {
-        Some(b) if !native::has_table(name) || native::is_robigo_build(&path) => {
+        Some(b) if file.is_some() => {
+            let file = file.unwrap();
             let local = !matches!(arg(&args, 1), Value::Lgl(v) if v.data.first() == Some(&0));
             let now = !matches!(arg(&args, 2), Value::Lgl(v) if v.data.first() == Some(&0));
-            let h = b.load(i, &path, name, local, now)?;
+            let h = b.load(i, &file, name, local, now)?;
             i.dlls.push(Dll::loaded(name, &path, h, b));
         }
         _ => i.dlls.push(Dll::new(name, &path)),

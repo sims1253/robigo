@@ -8,625 +8,875 @@ use std::ffi::c_int;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_bessel_i(a0: f64, a1: f64, a2: f64) -> f64 {
-    robigo_numerics::bessel::bessel_i(a0, a1, a2)
+    let r = robigo_numerics::bessel::bessel_i(a0, a1, a2);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_bessel_j(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::bessel::bessel_j(a0, a1)
+    let r = robigo_numerics::bessel::bessel_j(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_bessel_k(a0: f64, a1: f64, a2: f64) -> f64 {
-    robigo_numerics::bessel::bessel_k(a0, a1, a2)
+    let r = robigo_numerics::bessel::bessel_k(a0, a1, a2);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_bessel_y(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::bessel::bessel_y(a0, a1)
+    let r = robigo_numerics::bessel::bessel_y(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_beta(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::gamma::beta(a0, a1)
+    let r = robigo_numerics::gamma::beta(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_choose(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::gamma::choose(a0, a1)
+    let r = robigo_numerics::gamma::choose(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dbeta(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::beta::dbeta(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::beta::dbeta(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dbinom(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::binom::dbinom(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::binom::dbinom(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dbinom_raw(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int) -> f64 {
-    robigo_numerics::binom::dbinom_raw(a0, a1, a2, a3, a4 != 0)
+    let r = robigo_numerics::binom::dbinom_raw(a0, a1, a2, a3, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dcauchy(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::dist::dcauchy(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::dist::dcauchy(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dchisq(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::pgamma::dchisq(a0, a1, a2 != 0)
+    let r = robigo_numerics::pgamma::dchisq(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dexp(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::dist::dexp(a0, a1, a2 != 0)
+    let r = robigo_numerics::dist::dexp(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_df(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::fdist::df(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::fdist::df(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dgamma(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::pgamma::dgamma(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::pgamma::dgamma(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dgeom(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::dist::dgeom(a0, a1, a2 != 0)
+    let r = robigo_numerics::dist::dgeom(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dhyper(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int) -> f64 {
-    robigo_numerics::hyper::dhyper(a0, a1, a2, a3, a4 != 0)
+    let r = robigo_numerics::hyper::dhyper(a0, a1, a2, a3, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_digamma(a0: f64) -> f64 {
-    robigo_numerics::polygamma::digamma(a0)
+    let r = robigo_numerics::polygamma::digamma(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dlnorm(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::dist::dlnorm(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::dist::dlnorm(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dlogis(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::dist::dlogis(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::dist::dlogis(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnbeta(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int) -> f64 {
-    robigo_numerics::nbeta::dnbeta(a0, a1, a2, a3, a4 != 0)
+    let r = robigo_numerics::nbeta::dnbeta(a0, a1, a2, a3, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnbinom(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::nbinom::dnbinom(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::nbinom::dnbinom(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnbinom_mu(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::nbinom::dnbinom_mu(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::nbinom::dnbinom_mu(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnchisq(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::nchisq::dnchisq(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::nchisq::dnchisq(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnf(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int) -> f64 {
-    robigo_numerics::nf::dnf(a0, a1, a2, a3, a4 != 0)
+    let r = robigo_numerics::nf::dnf(a0, a1, a2, a3, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnorm4(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::norm::dnorm(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::norm::dnorm(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dnt(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::nt::dnt(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::nt::dnt(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dpois(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::pgamma::dpois(a0, a1, a2 != 0)
+    let r = robigo_numerics::pgamma::dpois(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dpois_raw(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::pgamma::dpois_raw(a0, a1, a2 != 0)
+    let r = robigo_numerics::pgamma::dpois_raw(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dsignrank(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::signrank::dsignrank(a0, a1, a2 != 0)
+    let r = robigo_numerics::signrank::dsignrank(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dt(a0: f64, a1: f64, a2: c_int) -> f64 {
-    robigo_numerics::tdist::dt(a0, a1, a2 != 0)
+    let r = robigo_numerics::tdist::dt(a0, a1, a2 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dunif(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::dist::dunif(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::dist::dunif(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dweibull(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::dist::dweibull(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::dist::dweibull(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_dwilcox(a0: f64, a1: f64, a2: f64, a3: c_int) -> f64 {
-    robigo_numerics::wilcox::dwilcox(a0, a1, a2, a3 != 0)
+    let r = robigo_numerics::wilcox::dwilcox(a0, a1, a2, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_fmax2(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::fmax2(a0, a1)
+    let r = robigo_numerics::fmax2(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_fmin2(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::fmin2(a0, a1)
+    let r = robigo_numerics::fmin2(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_fprec(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::fround::fprec(a0, a1)
+    let r = robigo_numerics::fround::fprec(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_fround(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::fround::fround(a0, a1)
+    let r = robigo_numerics::fround::fround(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_fsign(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::fsign(a0, a1)
+    let r = robigo_numerics::fsign(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_gammafn(a0: f64) -> f64 {
-    robigo_numerics::gamma::gammafn(a0)
+    let r = robigo_numerics::gamma::gammafn(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_imax2(a0: c_int, a1: c_int) -> c_int {
-    robigo_numerics::imax2(a0, a1)
+    let r = robigo_numerics::imax2(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_imin2(a0: c_int, a1: c_int) -> c_int {
-    robigo_numerics::imin2(a0, a1)
+    let r = robigo_numerics::imin2(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_lbeta(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::gamma::lbeta(a0, a1)
+    let r = robigo_numerics::gamma::lbeta(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_lchoose(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::gamma::lchoose(a0, a1)
+    let r = robigo_numerics::gamma::lchoose(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_lgamma1p(a0: f64) -> f64 {
-    robigo_numerics::pgamma::lgamma1p(a0)
+    let r = robigo_numerics::pgamma::lgamma1p(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_lgammafn(a0: f64) -> f64 {
-    robigo_numerics::gamma::lgammafn(a0)
+    let r = robigo_numerics::gamma::lgammafn(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_log1pexp(a0: f64) -> f64 {
-    robigo_numerics::dist::log1pexp(a0)
+    let r = robigo_numerics::dist::log1pexp(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_log1pmx(a0: f64) -> f64 {
-    robigo_numerics::pgamma::log1pmx(a0)
+    let r = robigo_numerics::pgamma::log1pmx(a0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_logspace_add(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::pgamma::logspace_add(a0, a1)
+    let r = robigo_numerics::pgamma::logspace_add(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_logspace_sub(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::pgamma::logspace_sub(a0, a1)
+    let r = robigo_numerics::pgamma::logspace_sub(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pbeta(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::beta::pbeta(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::beta::pbeta(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pbeta_raw(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::beta::pbeta_raw(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::beta::pbeta_raw(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pbinom(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::binom::pbinom(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::binom::pbinom(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pcauchy(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::pcauchy(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::pcauchy(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pchisq(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::pgamma::pchisq(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::pgamma::pchisq(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pexp(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::dist::pexp(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::dist::pexp(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pf(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::fdist::pf(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::fdist::pf(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pgamma(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::pgamma::pgamma(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::pgamma::pgamma(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pgeom(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::dist::pgeom(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::dist::pgeom(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_phyper(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::hyper::phyper(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::hyper::phyper(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_plnorm(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::plnorm(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::plnorm(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_plogis(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::plogis(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::plogis(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnbeta(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::nbeta::pnbeta(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::nbeta::pnbeta(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnbinom(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nbinom::pnbinom(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nbinom::pnbinom(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnbinom_mu(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nbinom::pnbinom_mu(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nbinom::pnbinom_mu(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnchisq(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nchisq::pnchisq(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nchisq::pnchisq(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnf(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::nf::pnf(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::nf::pnf(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnorm5(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::norm::pnorm(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::norm::pnorm(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pnt(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nt::pnt(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nt::pnt(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pow1p(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::binom::pow1p(a0, a1)
+    let r = robigo_numerics::binom::pow1p(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_ppois(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::pgamma::ppois(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::pgamma::ppois(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_psigamma(a0: f64, a1: f64) -> f64 {
-    robigo_numerics::polygamma::psigamma(a0, a1)
+    let r = robigo_numerics::polygamma::psigamma(a0, a1);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_psignrank(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::signrank::psignrank(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::signrank::psignrank(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pt(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::tdist::pt(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::tdist::pt(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_ptukey(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::tukey::ptukey(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::tukey::ptukey(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_punif(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::punif(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::punif(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pweibull(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::pweibull(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::pweibull(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pwilcox(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::wilcox::pwilcox(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::wilcox::pwilcox(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qbeta(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::beta::qbeta(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::beta::qbeta(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qbinom(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::binom::qbinom(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::binom::qbinom(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qcauchy(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::qcauchy(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::qcauchy(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qchisq(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::pgamma::qchisq(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::pgamma::qchisq(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qchisq_appr(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int, a5: f64) -> f64 {
-    robigo_numerics::pgamma::qchisq_appr(a0, a1, a2, a3 != 0, a4 != 0, a5)
+    let r = robigo_numerics::pgamma::qchisq_appr(a0, a1, a2, a3 != 0, a4 != 0, a5);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qexp(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::dist::qexp(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::dist::qexp(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qf(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::fdist::qf(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::fdist::qf(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qgamma(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::pgamma::qgamma(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::pgamma::qgamma(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qgeom(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::dist::qgeom(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::dist::qgeom(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qhyper(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::hyper::qhyper(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::hyper::qhyper(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qlnorm(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::qlnorm(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::qlnorm(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qlogis(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::qlogis(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::qlogis(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnbeta(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::nbeta::qnbeta(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::nbeta::qnbeta(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnbinom(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nbinom::qnbinom(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nbinom::qnbinom(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnbinom_mu(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nbinom::qnbinom_mu(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nbinom::qnbinom_mu(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnchisq(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nchisq::qnchisq(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nchisq::qnchisq(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnf(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::nf::qnf(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::nf::qnf(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnorm5(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::norm::qnorm(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::norm::qnorm(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qnt(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::nt::qnt(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::nt::qnt(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qpois(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::pgamma::qpois(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::pgamma::qpois(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qsignrank(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::signrank::qsignrank(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::signrank::qsignrank(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qt(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
-    robigo_numerics::tdist::qt(a0, a1, a2 != 0, a3 != 0)
+    let r = robigo_numerics::tdist::qt(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qtukey(a0: f64, a1: f64, a2: f64, a3: f64, a4: c_int, a5: c_int) -> f64 {
-    robigo_numerics::tukey::qtukey(a0, a1, a2, a3, a4 != 0, a5 != 0)
+    let r = robigo_numerics::tukey::qtukey(a0, a1, a2, a3, a4 != 0, a5 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qunif(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::qunif(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::qunif(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qweibull(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::dist::qweibull(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::dist::qweibull(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_qwilcox(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) -> f64 {
-    robigo_numerics::wilcox::qwilcox(a0, a1, a2, a3 != 0, a4 != 0)
+    let r = robigo_numerics::wilcox::qwilcox(a0, a1, a2, a3 != 0, a4 != 0);
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rbeta(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rbeta(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rbeta(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rbinom(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rbinom(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rbinom(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rcauchy(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rcauchy(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rcauchy(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rchisq(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rchisq(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rchisq(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rexp(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rexp(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rexp(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rf(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rf(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rf(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rgamma(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rgamma(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rgamma(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rgeom(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rgeom(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rgeom(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rhyper(a1: f64, a2: f64, a3: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::hyper::rhyper(rng, a1, a2, a3))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::hyper::rhyper(rng, a1, a2, a3));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rlnorm(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rlnorm(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rlnorm(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rlogis(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rlogis(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rlogis(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rnbinom(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rnbinom(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rnbinom(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rnbinom_mu(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rnbinom_mu(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rnbinom_mu(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rnchisq(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rnchisq(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rnchisq(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rnorm(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rnorm(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rnorm(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rpois(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rpois(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rpois(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rsignrank(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rsignrank(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rsignrank(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rt(a1: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rt(rng, a1))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rt(rng, a1));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_runif(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::runif(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::runif(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rweibull(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rweibull(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rweibull(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rwilcox(a1: f64, a2: f64) -> f64 {
-    crate::rng::with_rng(|rng| robigo_numerics::rand::rwilcox(rng, a1, a2))
+    let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rwilcox(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_trigamma(a0: f64) -> f64 {
-    robigo_numerics::polygamma::trigamma(a0)
+    let r = robigo_numerics::polygamma::trigamma(a0);
+    crate::errors::nmath_warnings();
+    r
 }

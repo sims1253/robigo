@@ -151,6 +151,29 @@ unsafe fn do_warning(call: Sexp, buf: &[u8], immediate: c_int) {
     }
 }
 
+/// nmath's `MATHLIB_WARNING`s (robigo-numerics queues them; the runtime
+/// drains the queue after its own calls): R `warning()`s, as GNU R's nmath
+/// calls warning() for C callers too.
+#[inline]
+pub fn nmath_warnings() {
+    if robigo_numerics::pending() {
+        nmath_flush();
+    }
+}
+
+#[cold]
+fn nmath_flush() {
+    for w in robigo_numerics::take_warnings() {
+        if let Ok(c) = std::ffi::CString::new(w) {
+            unsafe { Rf_warning(c"%s".as_ptr(), c.as_ptr()) }
+        }
+    }
+    // R: memory.c:R_chk_calloc — nmath's failed allocation is an error
+    if let Some(msg) = robigo_numerics::take_alloc_error() {
+        unsafe { error_str_owned(msg) }
+    }
+}
+
 // R: errors.c:warning
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_warning(fmt: *const c_char, args: ...) {

@@ -86,6 +86,14 @@ def cdir(name):
     return os.path.join(CORPORA, name)
 
 
+def ensure_natives():
+    """GNU R's base-package natives built from the R sources
+    (scripts/build-natives.sh) serve the base packages when present."""
+    natives = os.path.join(STATE, "natives")
+    if "ROBIGO_NATIVES" not in os.environ and os.path.isdir(natives):
+        os.environ["ROBIGO_NATIVES"] = natives
+
+
 def build_corpus(name, conf):
     """A per-corpus build step: the corpus's `build` key names a script in
     its directory, run once before cases (the capi corpus compiles its C
@@ -331,6 +339,7 @@ def cmd_run(a):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
+    ensure_natives()
     build_corpus(a.name, conf)
     exp = load_expected(a.name)
     if not exp:
