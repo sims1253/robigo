@@ -18,7 +18,8 @@ pub static DEFS: &[Builtin] = &[
     internal(".resetCondHands", do_reset_cond_hands, 1).invisible(),
     internal(".signalCondition", do_signal_condition, 3),
     internal(".dfltStop", do_dflt_stop, 2),
-    internal(".dfltWarn", do_dflt_warn, 2).invisible(),
+    // R: names.c registers .dfltWarn with eval=11 (visible).
+    internal(".dfltWarn", do_dflt_warn, 2),
     internal(".addRestart", do_add_restart, 1).invisible(),
     internal(".getRestart", do_get_restart, 1),
     internal(".invokeRestart", do_invoke_restart, 2),

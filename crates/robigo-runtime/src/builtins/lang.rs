@@ -40,7 +40,7 @@ pub static DEFS: &[Builtin] = &[
     prim("invisible", do_invisible, -1).invisible(),
     special("forceAndCall", do_force_and_call, -1).custom_vis(),
     special("...length", do_dots_length, 0),
-    special("...elt", do_dots_elt, -1).custom_vis(),
+    prim("...elt", do_dots_elt, 1).custom_vis(),
     special("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
     internal("getconst", do_getconst, 2),
@@ -726,43 +726,48 @@ fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -
     Ok(items.into_iter().next().map(|a| a.value).unwrap_or(Value::Null))
 }
 
-pub fn is_missing_in(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
-    if sym.is_empty() {
-        return true;
-    }
-    if depth > 100 {
-        return false;
-    }
-    let (sym, ddv) = match sym.ddval() {
-        Some(i) => (s::DOTS, Some(i)),
-        None => (sym, None),
-    };
-    let frame = env.0.frame().borrow();
-    let Some(b) = frame.get(sym) else { return false };
-    let mut v = b.value.clone();
-    let flags = b.flags;
-    drop(frame);
-    if let Some(i) = ddv {
-        match &v {
-            Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
-            _ => return true,
+pub fn is_missing_in(_interp: &Interp, sym: Sym, env: &Env, _depth: usize) -> bool {
+    // R: envir.c:R_isMissing follows unforced symbol promises and uses
+    // PRSEEN to recognize cycles. Track their identities without mutating them.
+    let mut sym = sym;
+    let mut env = env.clone();
+    let mut seen = Vec::new();
+    loop {
+        if sym.is_empty() {
+            return true;
         }
-    } else if flags & BIND_MISSING_DEFAULT != 0 || v.is_missing_arg() {
-        return true;
-    }
-    if v.is_missing_arg() {
-        return true;
-    }
-    if let Value::Promise(p) = &v {
-        if p.value().is_none() {
-            if let Value::Sym(s2) = &p.expr {
-                if let Some(penv) = p.env.borrow().clone() {
-                    return is_missing_in(interp, *s2, &penv, depth + 1);
-                }
+        let (lookup, ddv) = match sym.ddval() {
+            Some(i) => (s::DOTS, Some(i)),
+            None => (sym, None),
+        };
+        let Some(mut v) = env.get_local(lookup) else { return false };
+        if let Some(i) = ddv {
+            match &v {
+                Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
+                _ => return true,
             }
         }
+        // MISSING == 2 (a default argument) is not missing here.
+        if v.is_missing_arg() {
+            return true;
+        }
+        let Value::Promise(mut p) = v else { return false };
+        while let Value::Promise(q) = &p.expr {
+            p = q.clone();
+        }
+        if p.value().is_some() {
+            return false;
+        }
+        let Value::Sym(next) = p.expr else { return false };
+        let Some(penv) = p.env.borrow().clone() else { return false };
+        let id = Rc::as_ptr(&p);
+        if seen.contains(&id) {
+            return true;
+        }
+        seen.push(id);
+        sym = next;
+        env = penv;
     }
-    false
 }
 
 fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -1162,34 +1167,68 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             }
         }
     };
-    // Arguments: the method's promargs, with formals rebound to promises
-    // for their current values in the method frame.
-    let mut newargs: Vec<Arg> = Vec::new();
-    let actuals = interp.match_args(&mclo.formals, &mpromargs, &mcall)?;
-    let mut used_dots = false;
-    for (f, a) in mclo.formals.iter().zip(actuals) {
+    // R: match.c:patchArgsByActuals / patchArgument. Patch the supplied
+    // slots in place, retaining their order, tags, and explicit missing args.
+    let mut newargs = mpromargs.clone();
+    let mut formal_state = vec![0u8; mclo.formals.len()];
+    let mut used = vec![false; newargs.len()];
+    let patch = |arg: &mut Arg, tag: Sym| {
+        let missing = arg.value.is_missing_arg();
+        if missing && method_env.get_local(tag).is_some_and(|v| v.is_missing_arg()) {
+            return 2;
+        }
+        arg.value = Value::Promise(Rc::new(Promise::new(Value::Sym(tag), method_env.clone())));
+        if missing { 3 } else { 1 }
+    };
+    for (fi, f) in mclo.formals.iter().enumerate() {
         let tag = f.tag.unwrap();
         if tag == s::DOTS {
-            if let Some(Value::Env(_)) = None::<Value> {}
-            match method_env.get_local(s::DOTS) {
-                Some(Value::Dots(d)) => newargs.extend(d.iter().cloned()),
-                _ => {}
-            }
-            used_dots = true;
             continue;
         }
-        match a {
-            Some(v) if !v.is_missing_arg() => {
-                // Was the formal supplied by name in the original call?
-                let named = mpromargs.iter().any(|p| p.tag == Some(tag));
-                let p = Promise::new(Value::Sym(tag), method_env.clone());
-                let _ = v;
-                newargs.push(Arg::new(
-                    if named || newargs.len() > 0 && used_dots { Some(tag) } else { None },
-                    Value::Promise(Rc::new(p)),
-                ));
+        if let Some(bi) = newargs.iter().position(|a| a.tag == Some(tag)) {
+            formal_state[fi] = patch(&mut newargs[bi], tag);
+            used[bi] = true;
+        }
+    }
+    let mut seen_dots = false;
+    for (fi, f) in mclo.formals.iter().enumerate() {
+        if formal_state[fi] != 0 {
+            continue;
+        }
+        let tag = f.tag.unwrap();
+        if tag == s::DOTS && !seen_dots {
+            seen_dots = true;
+            continue;
+        }
+        if let Some(bi) = newargs.iter().enumerate().position(|(bi, a)| {
+            !used[bi]
+                && a.tag.is_some_and(|t| {
+                    if seen_dots { t == tag } else { !t.name().is_empty() && tag.name().starts_with(&*t.name()) }
+                })
+        }) {
+            formal_state[fi] = patch(&mut newargs[bi], tag);
+            used[bi] = true;
+        }
+    }
+    let (mut fi, mut bi) = (0, 0);
+    while fi < mclo.formals.len() && bi < newargs.len() {
+        let tag = mclo.formals[fi].tag.unwrap();
+        if tag == s::DOTS {
+            break;
+        }
+        if formal_state[fi] == 1 {
+            fi += 1;
+        } else if used[bi] || newargs[bi].tag.is_some() {
+            bi += 1;
+        } else {
+            if formal_state[fi] == 3 {
+                newargs[bi].value = Value::missing_arg();
+            } else {
+                patch(&mut newargs[bi], tag);
             }
-            _ => {}
+            used[bi] = true;
+            fi += 1;
+            bi += 1;
         }
     }
     // Extra arguments to NextMethod (after generic, object) override.
@@ -1419,16 +1458,32 @@ fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<V
 }
 
 fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let n = as_integer(&interp.eval(&args[0].value, env)?);
-    let d = dots_of(env)?;
-    if n == NA_INTEGER || n < 1 {
-        return Err(Flow::error_call(call.clone(), "indexing '...' with non-positive index"));
+    // R: envir.c:do_dotsElt and ddfind.
+    super::check_arity(&args, 1, "...elt", call)?;
+    if let Some(tag) = args[0].tag {
+        if !"n".starts_with(&*tag.name()) {
+            return Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match 'n'", tag)));
+        }
     }
+    let index = &args[0].value;
+    if !index.is_numeric_type() || (matches!(index, Value::Int(_)) && index.inherits("factor")) || index.len() != 1 {
+        return Err(Flow::error_call(call.clone(), "indexing '...' with an invalid index"));
+    }
+    let n = as_integer(index);
+    if n <= 0 {
+        return Err(Flow::error(format!("indexing '...' with non-positive index {}", n)));
+    }
+    let d = match env.lookup(s::DOTS) {
+        Some((Value::Dots(d), _)) => (*d).clone(),
+        Some(_) => vec![],
+        None => return Err(Flow::error(format!("..{} used in an incorrect context, no ... to look in", n))),
+    };
     if n as usize > d.len() {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("the ... list contains fewer than {} element{}", n, if n == 1 { "" } else { "s" }),
-        ));
+        return Err(Flow::error(format!(
+            "the ... list contains fewer than {} element{}",
+            n,
+            if n == 1 { "" } else { "s" }
+        )));
     }
     interp.visible = true;
     let v = d[n as usize - 1].value.clone();

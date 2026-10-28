@@ -82,6 +82,9 @@ pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
     if name == s::ROW_NAMES {
         return row_names_gets(v, val);
     }
+    if name == s::TSP {
+        return tsp_gets(v, val);
+    }
     if name == s::COMMENT && !matches!(val, Value::Str(_)) {
         return Err(Flow::error("attempt to set invalid 'comment' attribute"));
     }
@@ -306,6 +309,28 @@ pub fn class_gets(mut v: Value, val: Value) -> RResult<Value> {
     }
 }
 
+// R: attrib.c:tspgets. Validate before installing a fresh double triple.
+fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
+    if !val.is_numeric_type() || (matches!(val, Value::Int(_)) && val.inherits("factor")) || val.len() != 3 {
+        return Err(Flow::error("'tsp' attribute must be numeric of length three"));
+    }
+    let Value::Real(data) = coerce_quiet(&val, VType::Real) else { unreachable!() };
+    let data = &data.data;
+    let (start, end, frequency) = (data[0], data[1], data[2]);
+    if frequency <= 0.0 {
+        return Err(Flow::error("invalid time series parameters specified"));
+    }
+    let n = dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len());
+    if n == 0 {
+        return Err(Flow::error("cannot assign 'tsp' to zero-length vector"));
+    }
+    if (end - start - (n - 1) as f64 / frequency).abs() > 1e-5 {
+        return Err(Flow::error("invalid time series parameters specified"));
+    }
+    v.set_attr_raw(s::TSP, Value::reals(data.clone()));
+    Ok(v)
+}
+
 fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
     if let Value::Real(r) = &val {
         if r.data.len() == 2 && r.data[0].is_nan() {
@@ -398,5 +423,11 @@ pub fn attributes_list(v: &Value) -> Value {
 
 /// `class(x)` (R_data_class with singleString = FALSE).
 pub fn class_of(v: &Value) -> Value {
+    // R: attrib.c:R_data_class returns an explicit class unchanged.
+    if let Some(class) = v.get_attr(s::CLASS) {
+        if !class.is_empty() {
+            return class;
+        }
+    }
     Value::strs(crate::dispatch::implicit_class(v).into_iter().map(Some).collect())
 }

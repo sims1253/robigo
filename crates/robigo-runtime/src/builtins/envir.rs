@@ -501,10 +501,15 @@ fn do_exists(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let names = match arg(&args, 0) {
         Value::Str(s) => s.data.clone(),
-        Value::Null => vec![],
-        _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
+        Value::Null => return Ok(Value::Null),
+        _ => return Err(Flow::error("invalid first argument")),
     };
-    let env = env_arg(i, &arg(&args, 1), call, "envir")?;
+    // R: envir.c:do_remove uses context errors for environment validation.
+    let env = match arg(&args, 1) {
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        Value::Env(e) => e,
+        v => as_env(i, &v, call).map_err(|_| Flow::error("invalid 'envir' argument"))?,
+    };
     let inherits = lgl_arg(&arg(&args, 2), "inherits")?;
     for n in names.iter() {
         let n = n.clone().unwrap_or_else(|| Rc::from("NA"));
