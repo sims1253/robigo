@@ -754,9 +754,12 @@ fn do_docall(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         .into_iter()
         .enumerate()
         .map(|(k, v)| {
+            // R: coerce.c:do_docall's `ItemName`: any name but "" becomes
+            // the tag, NA as `NA` (`installTrChar(NA_STRING)`).
             let tag = names
                 .as_ref()
-                .and_then(|n| n.get(k).cloned().flatten())
+                .and_then(|n| n.get(k).cloned())
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
                 .filter(|s| !s.is_empty())
                 .map(|s| Sym::new(&s));
             Arg::new(tag, v)

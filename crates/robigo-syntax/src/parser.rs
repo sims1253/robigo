@@ -170,7 +170,10 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         return ConsoleStatus::Incomplete;
     }
     let t = p.toks[p.pos].clone();
-    ConsoleStatus::Error(p.unexpected(&t))
+    match p.unexpected(&t) {
+        e if e.incomplete => ConsoleStatus::Incomplete,
+        e => ConsoleStatus::Error(e),
+    }
 }
 
 impl<'a> Parser<'a> {
@@ -1118,6 +1121,14 @@ mod tests {
         assert!(incomplete("NULL"));
         // Open statements.
         assert!(incomplete("1 +"));
+        // A lexer error whose scan read the end of the buffer (a console
+        // read cut a literal): `EndOfFile` promotes it too.
+        assert!(incomplete("x <- 1e-"));
+        assert!(incomplete("x <- 1.5e"));
+        assert!(incomplete("0x"));
+        assert!(incomplete("x <<"));
+        assert!(!incomplete("x <- 1e-\n"));
+        assert!(!incomplete("x << 1\n"));
         assert!(incomplete("1 +\n"));
         assert!(incomplete("if (TRUE) {\n"));
         assert!(incomplete("x <- # c")); // the comment runs to the end; the expr is open
