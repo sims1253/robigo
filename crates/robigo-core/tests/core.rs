@@ -242,6 +242,7 @@ fn symbol_values_are_traced() {
     let v = c.alloc_vector(REALSXP, 3);
     let addr = v.addr();
     unsafe { s.set_cdr_raw(v) };
+    c.write_barrier(s);
     drop(v);
     std::hint::black_box([0usize; 64]);
     for _ in 0..3 {

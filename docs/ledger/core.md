@@ -11,6 +11,46 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: C API microbenchmarks vs GNU R (council item 9) and the first optimizations
+
+- harness: `crates/robigo-capi/bench/` (capibench.c + bench.py):
+  instructions inside each routine under callgrind --toggle-collect,
+  GNU R 4.5.0 (oracle image) vs robigo; 100k operations per routine.
+- baseline -> after (robigo/GNU R):
+  | routine | baseline | after |
+  |---|---:|---:|
+  | allocVector(REALSXP, 4) | 1.25 | 0.98 |
+  | allocVector(REALSXP, 1000) | 0.91 | 0.92 |
+  | lang3 | 1.58 | 1.26 |
+  | PROTECT/UNPROTECT | 1.00 | 1.00 |
+  | mkChar hit | 0.69 | 0.59 |
+  | mkChar miss | 1.02 | 0.82 |
+  | install | 0.85 | 0.84 |
+  | INTEGER loop | 0.35 | 0.35 |
+  | SET_STRING_ELT | 0.86 | 1.14 |
+  | Preserve/Release | 1.99 | 1.78 |
+  | eval (trivial closure) | 0.67 | 0.67 |
+  | R_UnwindProtect | 1.04 | 1.04 |
+  (the caught-error row is not comparable: callgrind does not attribute
+  GNU R's cost after a longjmp leaves the routine; robigo pays ~230k
+  instructions per caught error, to investigate.)
+- kept: (1) `Heap::alloc` inlines the fast path (free list, bump) and
+  keeps the block switch cold; per-allocation statistics counters
+  removed (bytes allocated accumulate at collection). (2) small atomic
+  vectors skip the checked size arithmetic and the fill. (3) the store
+  barrier (council item 8, first step): every API store goes through
+  `fix_refcnt`, which hands immortal targets to `Core::write_barrier`;
+  only immortals that received a store are traced as roots (instead of
+  every non-CHARSXP immortal). (4) the CHARSXP cache is a flat
+  open-addressing table of `Sexp`s with the hash in each CHARSXP's
+  header (council item 10), rebuilt from survivors when pruned (the
+  HashMap<u32, Vec<Sexp>> pruned bucket by bucket through malloc/free).
+- open: SET_STRING_ELT regressed 0.86 -> 1.14 with the barrier check in
+  fix_refcnt (to profile: likely lost inlining); Preserve/Release uses a
+  HashMap (GNU R conses onto a list: O(1) for LIFO churn); lang3 still
+  1.26 (refcount increments on construction, PROTECT in the list
+  constructors).
+
 ## 2026-10-28: conservative scan limited to C frames (deterministic finalizers); connections
 
 - the extptr case passed, then failed on the next run: its finalizer

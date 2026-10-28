@@ -9,6 +9,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+mod chars;
 mod gc;
 mod heap;
 pub mod unwind;

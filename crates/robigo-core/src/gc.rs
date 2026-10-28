@@ -64,7 +64,7 @@ pub struct Core {
     pub missing_arg: Sexp,
 
     /// the CHARSXP cache: weak, pruned after marking
-    chars: HashMap<u32, Vec<Sexp>, BuildFx>,
+    chars: crate::chars::CharTable,
     /// symbols by name (immortal)
     syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
 
@@ -78,9 +78,11 @@ pub struct Core {
     finalize_queue: Vec<Sexp>,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
-    /// immortal objects whose fields can still change (symbols' values,
-    /// attributes set on shared constants): traced on every collection
+    /// immortal objects something was stored into (a symbol's value,
+    /// attributes set on a shared constant): traced on every collection.
+    /// Stores reach it through [`Core::write_barrier`].
     immortal_roots: Vec<Sexp>,
+    immortal_seen: std::collections::HashSet<Sexp, BuildFx>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -147,7 +149,7 @@ impl Core {
             blank_string: Sexp::NULL,
             unbound: Sexp::NULL,
             missing_arg: Sexp::NULL,
-            chars: HashMap::default(),
+            chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
             precious: HashMap::default(),
             root_fns: Vec::new(),
@@ -155,6 +157,7 @@ impl Core {
             finalize_queue: Vec::new(),
             releases: Vec::new(),
             immortal_roots: Vec::new(),
+            immortal_seen: Default::default(),
         });
         unsafe {
             // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
@@ -167,7 +170,7 @@ impl Core {
             c.make_immortal(nil);
             nil.set_attrib_raw(nil);
             // NA_STRING is not in the cache (names.c: mkChar("NA") is a different object)
-            let na = c.alloc_char(b"NA", 0);
+            let na = c.alloc_char(b"NA", 0, hash_bytes(b"NA"));
             c.make_immortal(na);
             c.na_string = na;
             let blank = c.mk_char(b"", 0);
@@ -189,9 +192,6 @@ impl Core {
                 return;
             }
             x.set_flag(flags::IMMORTAL, true);
-            if x.typ() != CHARSXP {
-                self.immortal_roots.push(x);
-            }
             let b = self.heap.block_of(x.0);
             if (*b).magic == 0x524f4249474f4241 {
                 (*b).immortals += 1;
@@ -204,7 +204,7 @@ impl Core {
 
     /// A raw object of `size` bytes with a fresh header (type `t`, no
     /// flags, attributes R_NilValue).
-    #[inline]
+    #[inline(always)]
     pub fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
         if (self.alloc_since_gc >= self.gc_threshold || self.torture) && self.gc_inhibit == 0 {
             self.collect();
@@ -216,8 +216,6 @@ impl Core {
             *((p as *mut *mut u8).add(1)) = self.nil.0;
         }
         self.alloc_since_gc += size;
-        self.stats.allocs += 1;
-        self.stats.bytes_allocated += size as u64;
         Sexp(p)
     }
 
@@ -244,8 +242,22 @@ impl Core {
     /// A vector as GNU R's allocVector: STRSXP filled with
     /// R_BlankString, VECSXP/EXPRSXP with R_NilValue, others not
     /// initialized.
+    #[inline]
     pub fn alloc_vector(&mut self, t: u8, n: usize) -> Sexp {
         let esz = crate::elt_size(t);
+        if n <= 256 && !matches!(t, STRSXP | VECSXP | EXPRSXP | WEAKREFSXP) {
+            // small atomic vectors: no overflow check, no fill
+            let x = self.alloc_object(t, (OFF_DATA + n * esz).div_ceil(16) * 16);
+            unsafe {
+                x.set_std_len(n as isize);
+                x.set_truelen(0);
+            }
+            return x;
+        }
+        self.alloc_vector_slow(t, n, esz)
+    }
+
+    fn alloc_vector_slow(&mut self, t: u8, n: usize, esz: usize) -> Sexp {
         let bytes = n.checked_mul(esz).and_then(|b| b.checked_add(OFF_DATA)).expect("vector too large");
         let x = self.alloc_object(t, bytes.div_ceil(16) * 16);
         unsafe {
@@ -312,10 +324,10 @@ impl Core {
 
     // ---- CHARSXPs and symbols -------------------------------------------
 
-    fn alloc_char(&mut self, bytes: &[u8], gpbits: u16) -> Sexp {
+    fn alloc_char(&mut self, bytes: &[u8], gpbits: u16, h: u32) -> Sexp {
         let x = self.alloc_object(CHARSXP, (OFF_DATA + bytes.len() + 1).div_ceil(16) * 16);
         unsafe {
-            *(x.0.add(8) as *mut u64) = hash_bytes(bytes) as u64;
+            *(x.0.add(8) as *mut u64) = h as u64;
             x.set_std_len(bytes.len() as isize);
             x.set_truelen(0);
             let d = x.0.add(OFF_DATA);
@@ -334,19 +346,15 @@ impl Core {
         let ascii = bytes.is_ascii();
         let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
         let h = hash_bytes(bytes);
-        if let Some(bucket) = self.chars.get(&h) {
-            for &c in bucket {
-                unsafe {
-                    if c.gp() & (gp::UTF8 | gp::LATIN1 | gp::BYTES | gp::ASCII) == bits & !gp::CACHED
-                        && c.char_bytes() == bytes
-                    {
-                        return c;
-                    }
-                }
-            }
+        let enc = bits & !gp::CACHED;
+        let found = self.chars.find(h, |c| unsafe {
+            c.gp() & (gp::UTF8 | gp::LATIN1 | gp::BYTES | gp::ASCII) == enc && c.char_bytes() == bytes
+        });
+        if let Some(c) = found {
+            return c;
         }
-        let c = self.alloc_char(bytes, bits);
-        self.chars.entry(h).or_default().push(c);
+        let c = self.alloc_char(bytes, bits, h);
+        self.chars.insert(c);
         c
     }
 
@@ -456,6 +464,26 @@ impl Core {
     /// finalizers that run on exit).
     pub fn weak_refs(&self) -> &[Sexp] {
         &self.weak_refs
+    }
+
+    /// The store barrier: every store of an object into a field of `x`
+    /// goes through here (the API's setters do). Immortal objects are
+    /// never marked, so one that received a store becomes a root traced
+    /// on every collection (a symbol's value, attributes on a shared
+    /// constant). The hook a generational collector extends (docs/core.md
+    /// §11: sticky marks).
+    #[inline(always)]
+    pub fn write_barrier(&mut self, x: Sexp) {
+        if unsafe { x.has_flag(flags::IMMORTAL) } {
+            self.remember_immortal(x);
+        }
+    }
+
+    #[cold]
+    fn remember_immortal(&mut self, x: Sexp) {
+        if self.immortal_seen.insert(x) {
+            self.immortal_roots.push(x);
+        }
     }
 
     /// Mark `x` and everything reachable from it (root callbacks call
@@ -634,6 +662,7 @@ impl Core {
     /// callbacks of dead EXTDATA/HOST objects run at the end; queued
     /// finalizers do not run here (see [`Core::pop_finalizable`]).
     pub fn collect(&mut self) -> u64 {
+        self.stats.bytes_allocated += self.alloc_since_gc as u64;
         let sp = stack_pointer();
         if self.stack_top != 0 && (sp < self.stack_lo || sp > self.stack_top) {
             eprintln!("robigo: the R heap was used from a thread other than the R thread");
@@ -683,10 +712,7 @@ impl Core {
 
     fn prune_chars(&mut self) {
         let live = flags::IMMORTAL | self.cur_mark;
-        self.chars.retain(|_, bucket| {
-            bucket.retain(|&c| unsafe { c.flags() } & live != 0);
-            !bucket.is_empty()
-        });
+        self.chars.prune(|c| unsafe { c.flags() } & live != 0);
     }
 
     /// Queue the release callback of a dead object.

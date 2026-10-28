@@ -204,15 +204,39 @@ impl Heap {
         base as *mut Block
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         debug_assert!(size >= 16);
         if size > MAX_SMALL {
             return self.alloc_large(size);
         }
+        let ci = class_index(size);
+        // the fast path, inlined into the callers: the current block's
+        // free list, then its bump region
+        let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
+        if !cs.cur.is_null() {
+            let b = unsafe { &mut *cs.cur };
+            let p = b.freelist;
+            if !p.is_null() {
+                b.freelist = unsafe { *((p as *mut *mut u8).add(1)) };
+                b.start_set((p as usize - b.data_ptr() as usize) / 16);
+                b.live_objects += 1;
+                return p;
+            }
+            let g = (SIZES[ci] / 16) as u32;
+            if b.bump_next + g <= b.granules {
+                let p = unsafe { b.data_ptr().add(b.bump_next as usize * 16) };
+                b.start_set(b.bump_next as usize);
+                b.bump_next += g;
+                b.live_objects += 1;
+                return p;
+            }
+        }
         self.alloc_small(size)
     }
 
+    #[cold]
+    #[inline(never)]
     fn alloc_small(&mut self, size: usize) -> *mut u8 {
         let ci = class_index(size);
         // every slot of a class is carved at the class size: free-list

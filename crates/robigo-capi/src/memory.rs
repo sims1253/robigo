@@ -588,6 +588,9 @@ pub unsafe extern "C" fn SHALLOW_DUPLICATE_ATTRIB(to: Sexp, from: Sexp) {
 
 #[inline]
 pub unsafe fn fix_refcnt(x: Sexp, old: Sexp, new: Sexp) {
+    if x.has_flag(flags::IMMORTAL) {
+        c().write_barrier(x);
+    }
     if x.tracks_refs() && old != new {
         if !old.is_null() {
             old.decref();
