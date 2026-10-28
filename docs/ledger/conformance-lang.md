@@ -6,8 +6,14 @@
 - Ports: `builtin.c:do_envirgets`; `envir.c:do_remove`, `RemoveVariable`, `pos2env`; `eval.c:do_eval` numeric-environment validation; `coerce.c:substitute`, `substituteList`, `do_substitute`; `objects.c:do_nextmethod` metadata update.
 - Result: 1,308/1,371 -> 1,323/1,371, 15 additional passes; zero regressions. Kept. Overall gain from the starting binary is 97 cases; 98 corpus ratchet entries include the pre-existing unrecorded pass.
 - Runtime edits remain in `builtins/envir.rs` and `builtins/lang.rs`. No shared `interp.rs` change is needed. Environment replacement takes ownership of arguments and mutates closures through `Rc::make_mut`.
-- Verification: all three new scripts match GNU R 4.5.0 byte for byte; final filtered FastR rerun is 1,323/1,371 with zero regressions; the relevant help-page slice remains 5/8 with zero regressions. Runtime and full conformance checks are in progress.
+- Verification: all three new scripts match GNU R 4.5.0 byte for byte; final filtered FastR rerun is 1,323/1,371 with zero regressions; the relevant help-page slice remains 5/8 with zero regressions. Runtime tests pass (17 unit, two integration); full conformance is 166/167 scripts, with the sole mismatch reproduced byte for byte by the starting binary. The compiled/interpreted comparison and VM guard checks pass. `cargo fmt --check` passes.
 - Regression scripts: `environment-validation.R` and `substitute-dots.R`, recorded with `scripts/regen-expected.sh` inside `robigo-oracle:4.5.0`.
+
+### Validation limits
+
+- `tests/r/datetime/zones.R` has one stdout difference against the recorded oracle on this host. Both the saved starting binary and final binary emit identical stdout (589,363 bytes), stderr, and exit status. This is a pre-existing local mismatch, not a regression introduced by this track. No expected output or existing passing entry was changed.
+- The host binary cannot run in the Debian oracle container because it requires `GLIBC_2.44`; the container provides an older glibc. CI builds its own binary in Debian trixie and remains the judge for the full corpus and this platform difference.
+- Latest `main` advanced through the numerics-policy merge; `git merge-tree --write-tree origin/main HEAD` reports a clean merge, so no rebase is required.
 
 ### Remaining work
 
