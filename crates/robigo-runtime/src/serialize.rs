@@ -631,7 +631,10 @@ fn altrep_unserialize(info: &Value, state: &Value) -> RResult<Value> {
                 _ => return Err(corrupt()),
             };
             let (n, n1, inc) = (st[0] as i64, st[1] as i64, st[2] as i64);
-            Ok(Value::ints((0..n).map(|k| (n1 + k * inc) as i32).collect()))
+            if inc != 1 && inc != -1 {
+                return Err(Flow::error(format!("compact sequences with increment {} not supported yet", inc)));
+            }
+            Ok(Value::compact_intseq(n as usize, n1, inc))
         }
         "compact_realseq" => {
             let st = match state {
@@ -639,7 +642,10 @@ fn altrep_unserialize(info: &Value, state: &Value) -> RResult<Value> {
                 _ => return Err(corrupt()),
             };
             let (n, n1, inc) = (st[0] as i64, st[1], st[2]);
-            Ok(Value::reals((0..n).map(|k| n1 + k as f64 * inc).collect()))
+            if inc != 1.0 && inc != -1.0 {
+                return Err(Flow::error(format!("compact sequences with increment {:.6} not supported yet", inc)));
+            }
+            Ok(Value::compact_realseq(n as usize, n1, inc))
         }
         c if c.starts_with("wrap_") => match state {
             Value::List(l) => Ok(l.data.first().cloned().unwrap_or(Value::Null)),
@@ -967,6 +973,17 @@ impl Writer<'_> {
         }
     }
 
+    /// A compact sequence: ALTREP_SXP, the class info `list3(class,
+    /// package, type)`, the state `c(n, n1, inc)` and no attributes
+    /// (altclasses.c compact_*seq_Serialized_state).
+    fn altrep_seq(&mut self, class: &str, ty: u32, n: usize, n1: f64, inc: f64) {
+        self.flags(ALTREP_SXP, 0, false, false, false);
+        let info = vec![Arg::pos(Value::sym(class)), Arg::pos(Value::sym("base")), Arg::pos(Value::int(ty as i32))];
+        self.pairlist_items(LISTSXP, &info, None);
+        self.item(&Value::reals(vec![n as f64, n1, inc]));
+        self.int(NILVALUE_SXP as i32);
+    }
+
     /// R: serialize.c:OutStringVec
     fn string_vec(&mut self, s: &[RStr]) {
         self.int(0);
@@ -1133,6 +1150,16 @@ impl Writer<'_> {
                 if has_attr {
                     self.attrs(v);
                 }
+            }
+            // R: serialize.c:WriteItem — ALTREP objects with a serialized
+            // state (compact sequences) in version 3
+            Value::Int(x) if self.version >= 3 && compact_intseq_of(x).is_some() => {
+                let (n, n1, inc) = compact_intseq_of(x).unwrap();
+                self.altrep_seq("compact_intseq", INTSXP, n, n1, inc);
+            }
+            Value::Real(x) if self.version >= 3 && compact_realseq_of(x).is_some() => {
+                let (n, n1, inc) = compact_realseq_of(x).unwrap();
+                self.altrep_seq("compact_realseq", REALSXP, n, n1, inc);
             }
             Value::Lgl(x) | Value::Int(x) => {
                 self.flags(if matches!(v, Value::Lgl(_)) { LGLSXP } else { INTSXP }, levs, obj, has_attr, false);

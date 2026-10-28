@@ -206,13 +206,11 @@ fn compact_intrange(n1: i64, n2: i64, call: &Value) -> RResult<Value> {
         return Err(Flow::error_call(call.clone(), "result would be too long a vector"));
     }
     let up = n1 <= n2;
+    let inc = if up { 1 } else { -1 };
     if n1 <= i32::MIN as i64 || n1 > i32::MAX as i64 || n2 <= i32::MIN as i64 || n2 > i32::MAX as i64 {
-        let start = n1 as f64;
-        let v: Vec<f64> = (0..n).map(|k| if up { start + k as f64 } else { start - k as f64 }).collect();
-        return Ok(Value::reals(v));
+        return Ok(Value::compact_realseq(n as usize, n1 as f64, inc as f64));
     }
-    let v: Vec<i32> = (0..n).map(|k| if up { (n1 + k) as i32 } else { (n1 - k) as i32 }).collect();
-    Ok(Value::ints(v))
+    Ok(Value::compact_intseq(n as usize, n1, inc))
 }
 
 /// R's `seq_colon`.

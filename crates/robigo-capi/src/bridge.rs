@@ -314,6 +314,15 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         Value::Null => return R_NilValue,
         Value::Sym(s) => return sym_sexp(*s),
         Value::Lgl(x) => atomic(LGLSXP, &x.data),
+        // GNU R's compact sequences stay compact ALTREP objects in C
+        Value::Int(x) if robigo_runtime::value::compact_intseq_of(x).is_some() => {
+            let (n, n1, inc) = robigo_runtime::value::compact_intseq_of(x).unwrap();
+            return crate::compact::new_compact_intseq(n as isize, n1 as i32, inc as i32);
+        }
+        Value::Real(x) if robigo_runtime::value::compact_realseq_of(x).is_some() => {
+            let (n, n1, inc) = robigo_runtime::value::compact_realseq_of(x).unwrap();
+            return crate::compact::new_compact_realseq(n as isize, n1, inc);
+        }
         Value::Int(x) => atomic(INTSXP, &x.data),
         Value::Real(x) => atomic(REALSXP, &x.data),
         Value::Cplx(x) => atomic(CPLXSXP, &x.data),
@@ -437,6 +446,13 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     }
     if let Some(v) = proxied(x) {
         return v;
+    }
+    if let Some((int, n, n1, inc)) = crate::compact::compact_info(x) {
+        return if int {
+            Value::compact_intseq(n as usize, n1 as i64, inc as i64)
+        } else {
+            Value::compact_realseq(n as usize, n1, inc)
+        };
     }
     let mut v = match x.typ() {
         SYMSXP => {
@@ -1021,6 +1037,10 @@ fn iface_of(k: c_int) -> Interface {
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp) {
+    // a compact sequence went to C as an immutable ALTREP object
+    if x.is_altrep() {
+        return;
+    }
     fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
         unsafe {
             let n = rc.data.len();

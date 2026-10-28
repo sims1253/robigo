@@ -112,6 +112,78 @@ impl<T> Vector<T> {
     }
 }
 
+// GNU R's compact sequences (altclasses.c compact_intseq / compact_realseq):
+// the vectors `:`, `seq_len`, `seq_along` and compact row names make. They
+// serialize in ALTREP form and go to C as ALTREP objects. GNU R's are
+// immutable, so modifying one duplicates it into a regular vector: a copy
+// is never compact, and a vector modified in place stops being one when
+// its values or attributes no longer are the sequence's.
+//
+// They are registered by allocation, so ordinary vectors carry nothing: a
+// `Weak` keeps the allocation (not the data) while registered, so its
+// address cannot be reused by another vector; dead entries are pruned
+// when the registry has doubled.
+thread_local! {
+    static COMPACT_INT: std::cell::RefCell<Registry<i32>> = std::cell::RefCell::new(Registry::default());
+    static COMPACT_REAL: std::cell::RefCell<Registry<f64>> = std::cell::RefCell::new(Registry::default());
+}
+
+struct Registry<T> {
+    map: std::collections::HashMap<usize, std::rc::Weak<Vector<T>>>,
+    prune_at: usize,
+}
+
+impl<T> Default for Registry<T> {
+    fn default() -> Self {
+        Registry { map: Default::default(), prune_at: 1024 }
+    }
+}
+
+impl<T> Registry<T> {
+    fn insert(&mut self, rc: &Rc<Vector<T>>) {
+        if self.map.len() >= self.prune_at {
+            self.map.retain(|_, w| w.strong_count() > 0);
+            self.prune_at = (self.map.len() * 2).max(1024);
+        }
+        self.map.insert(Rc::as_ptr(rc) as usize, Rc::downgrade(rc));
+    }
+
+    fn contains(&self, rc: &Rc<Vector<T>>) -> bool {
+        // the Weak pins the address: an entry for this address is this vector
+        !self.map.is_empty() && self.map.contains_key(&(Rc::as_ptr(rc) as usize))
+    }
+}
+
+/// The (length, first, increment) of a registered compact sequence. A
+/// registered vector is unmodified: modifying goes through `Rc::make_mut`,
+/// which moves a weakly referenced value to a new allocation, or
+/// `Rc::get_mut`, which refuses it.
+fn compact_seq_of<T: Copy + Into<f64>>(v: &Vector<T>) -> Option<(usize, f64, f64)> {
+    if v.attrs.is_some() || v.data.len() < 2 {
+        return None;
+    }
+    let first: f64 = v.data[0].into();
+    let inc = v.data[1].into() - first;
+    debug_assert!(v.data.iter().enumerate().all(|(k, &x)| x.into() == first + k as f64 * inc));
+    Some((v.data.len(), first, inc))
+}
+
+/// A compact integer sequence's (length, first, increment).
+pub fn compact_intseq_of(rc: &Rc<Vector<i32>>) -> Option<(usize, f64, f64)> {
+    if !COMPACT_INT.with(|r| r.borrow().contains(rc)) {
+        return None;
+    }
+    compact_seq_of(rc)
+}
+
+/// A compact real sequence's (length, first, increment).
+pub fn compact_realseq_of(rc: &Rc<Vector<f64>>) -> Option<(usize, f64, f64)> {
+    if !COMPACT_REAL.with(|r| r.borrow().contains(rc)) {
+        return None;
+    }
+    compact_seq_of(rc)
+}
+
 /// An element of a call, pairlist, formals list or `...`: an optional tag
 /// and a value. Empty arguments hold the missing-argument marker.
 #[derive(Clone)]
@@ -438,6 +510,24 @@ impl Value {
 
     pub fn ints(v: Vec<i32>) -> Value {
         Value::Int(Rc::new(Vector::new(v)))
+    }
+
+    /// GNU R's `new_compact_intseq(n, n1, inc)` (a scalar when n == 1).
+    pub fn compact_intseq(n: usize, n1: i64, inc: i64) -> Value {
+        let rc = Rc::new(Vector::new((0..n as i64).map(|k| (n1 + k * inc) as i32).collect()));
+        if n != 1 {
+            COMPACT_INT.with(|r| r.borrow_mut().insert(&rc));
+        }
+        Value::Int(rc)
+    }
+
+    /// GNU R's `new_compact_realseq(n, n1, inc)` (a scalar when n == 1).
+    pub fn compact_realseq(n: usize, n1: f64, inc: f64) -> Value {
+        let rc = Rc::new(Vector::new((0..n).map(|k| n1 + k as f64 * inc).collect()));
+        if n != 1 {
+            COMPACT_REAL.with(|r| r.borrow_mut().insert(&rc));
+        }
+        Value::Real(rc)
     }
 
     pub fn reals(v: Vec<f64>) -> Value {
