@@ -529,7 +529,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | done |
 | 11 | the bridge is a thin scaffold with listed limits | §6, bridge.rs header |
 | 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
-| 13 | medium-object pages, LARGE bit, consistent accounting | planned (d/e) |
+| 13 | medium-object pages, LARGE bit, consistent accounting | medium classes up to 64,960 bytes share blocks (ledger); accounting review open |
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |

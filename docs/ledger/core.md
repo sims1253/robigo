@@ -11,6 +11,21 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: medium objects share blocks (council item 13)
+
+- why: every object above 2 KiB took a dedicated 64 KiB-aligned chunk:
+  a 1000-double vector (8 KiB) reserved 64 KiB, and chunks were kept in
+  a sorted Vec with O(n) insert/remove.
+- change: 31 medium size classes, the largest 16-byte multiple of the
+  block's 64,960 data bytes divided by k = 31 .. 1 (2,080 .. 64,960
+  bytes), so k objects tile a block; only objects above 64,960 bytes get
+  chunks. class_index binary-searches the medium table.
+- result: 10,000 live 1000-double vectors reserve 79 MB (before: one
+  64 KiB chunk each, ~625 MiB); `allocVector(REALSXP, 1000)` 0.92 ->
+  0.35 of GNU R's instructions (bench). Core tests pass, also under
+  gctorture; the request-pair overrun test covers every class that holds
+  three objects per block (sampled sizes for medium classes).
+
 ## 2026-10-28: C API microbenchmarks vs GNU R (council item 9) and the first optimizations
 
 - harness: `crates/robigo-capi/bench/` (capibench.c + bench.py):

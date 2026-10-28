@@ -361,3 +361,19 @@ fn one_past_the_end_keeps_the_object() {
     assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "only a one-past-the-end pointer referenced it");
     std::hint::black_box(end_word);
 }
+
+#[test]
+fn medium_vectors_share_blocks() {
+    // 10,000 live 1000-double vectors (8 KiB of payload each): before the
+    // medium classes each took a 64 KiB chunk (655 MB reserved)
+    let mut c = core_with_roots();
+    let keep = c.alloc_vector(VECSXP, 10_000);
+    root(keep);
+    for i in 0..10_000 {
+        let v = c.alloc_vector(REALSXP, 1000);
+        unsafe { *(keep.std_data() as *mut Sexp).add(i) = v };
+    }
+    let reserved = c.heap_reserved();
+    eprintln!("reserved for 10k x 8 KiB vectors: {} MB", reserved >> 20);
+    assert!(reserved < 120 << 20, "{reserved}");
+}

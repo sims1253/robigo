@@ -270,7 +270,7 @@ impl Core {
     pub fn try_alloc_vector(&mut self, t: u8, n: usize) -> Option<Sexp> {
         let esz = crate::elt_size(t);
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
-        let x = if bytes > crate::heap::MAX_SMALL {
+        let x = if bytes > crate::heap::MAX_MEDIUM {
             if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
                 self.collect();
             }
