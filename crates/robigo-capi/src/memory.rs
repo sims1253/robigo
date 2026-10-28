@@ -1007,26 +1007,34 @@ elt_accessors!(REAL_ELT, SET_REAL_ELT, REAL, f64, altreal_elt);
 elt_accessors!(COMPLEX_ELT, SET_COMPLEX_ELT, COMPLEX, Rcomplex, altcomplex_elt);
 elt_accessors!(RAW_ELT, SET_RAW_ELT, RAW, u8, altraw_elt);
 
+// R: altrep.c:INTEGER_GET_REGION & co — the class's Get_region method,
+// else element by element (no materialization)
 macro_rules! get_region {
-    ($name:ident, $t:ty, $ptr:ident) => {
+    ($name:ident, $t:ty, $elt:ident) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(x: Sexp, i: isize, n: isize, buf: *mut $t) -> isize {
+            if x.is_altrep() {
+                let f = (*(x.tag().std_data() as *const crate::altrep::Methods)).get_region;
+                if f != 0 {
+                    let f: unsafe extern "C" fn(Sexp, isize, isize, *mut $t) -> isize = std::mem::transmute(f);
+                    return f(x, i, n, buf);
+                }
+            }
             let len = xlength(x);
             let ncopy = if len - i > n { n } else { len - i };
-            let p = $ptr(x);
             for k in 0..ncopy.max(0) {
-                *buf.offset(k) = *p.offset(i + k);
+                *buf.offset(k) = $elt(x, i + k);
             }
             ncopy
         }
     };
 }
 
-get_region!(INTEGER_GET_REGION, c_int, INTEGER);
-get_region!(LOGICAL_GET_REGION, c_int, LOGICAL);
-get_region!(REAL_GET_REGION, f64, REAL);
-get_region!(COMPLEX_GET_REGION, Rcomplex, COMPLEX);
-get_region!(RAW_GET_REGION, u8, RAW);
+get_region!(INTEGER_GET_REGION, c_int, INTEGER_ELT);
+get_region!(LOGICAL_GET_REGION, c_int, LOGICAL_ELT);
+get_region!(REAL_GET_REGION, f64, REAL_ELT);
+get_region!(COMPLEX_GET_REGION, Rcomplex, COMPLEX_ELT);
+get_region!(RAW_GET_REGION, u8, RAW_ELT);
 
 // ---- nodes ----------------------------------------------------------------
 

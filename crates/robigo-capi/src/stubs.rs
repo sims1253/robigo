@@ -8,17 +8,12 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "ALTREP_LENGTH",
-    "ALTVEC_DATAPTR",
-    "ALTSTRING_ELT",
     "R_ClosureFormals",
     "R_do_slot",
     "R_do_slot_assign",
     "R_mkClosure",
     "R_do_new_object",
     "R_ClosureEnv",
-    "R_altrep_data1",
-    "R_altrep_data2",
     "R_do_MAKE_CLASS",
     "R_has_slot",
     "dqrdc2_",
@@ -28,9 +23,6 @@ pub static STUBS: &[&str] = &[
     "GEcurrentDevice",
     "GEinitDisplayList",
     "R_PromiseExpr",
-    "R_new_altrep",
-    "R_set_altrep_Length_method",
-    "R_set_altvec_Dataptr_method",
     "Rf_CreateAtVector",
     "Rf_rPsort",
     "optif9",
@@ -63,9 +55,6 @@ pub static STUBS: &[&str] = &[
     "R_ClosureExpr",
     "R_GE_str2col",
     "R_getClassDef",
-    "R_set_altrep_Inspect_method",
-    "R_set_altrep_data2",
-    "R_set_altvec_Dataptr_or_null_method",
     "Rdqags",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
@@ -81,7 +70,6 @@ pub static STUBS: &[&str] = &[
     "intpr_",
     "nmmin",
     "rexit_",
-    "ALTREP_CLASS",
     "GEExpressionMetric",
     "GEFill",
     "GEFillStroke",
@@ -106,13 +94,9 @@ pub static STUBS: &[&str] = &[
     "GEtoDeviceWidth",
     "GEtoDeviceX",
     "GEtoDeviceY",
-    "INTEGER_IS_SORTED",
-    "INTEGER_NO_NA",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
     "RC_fopen",
-    "REAL_IS_SORTED",
-    "REAL_NO_NA",
     "R_AllocStringBuffer",
     "R_Busy",
     "R_CheckDeviceAvailable",
@@ -192,10 +176,6 @@ pub static STUBS: &[&str] = &[
     "R_gzgets",
     "R_gzopen",
     "R_isHashtable",
-    "R_make_altinteger_class",
-    "R_make_altlogical_class",
-    "R_make_altreal_class",
-    "R_make_altstring_class",
     "R_maphash",
     "R_mkhashtab",
     "R_moduleCdynload",
@@ -211,17 +191,6 @@ pub static STUBS: &[&str] = &[
     "R_readdir",
     "R_remhash",
     "R_runHandlers",
-    "R_set_altinteger_Elt_method",
-    "R_set_altinteger_Get_region_method",
-    "R_set_altinteger_Is_sorted_method",
-    "R_set_altinteger_Max_method",
-    "R_set_altinteger_Min_method",
-    "R_set_altinteger_Sum_method",
-    "R_set_altlogical_Elt_method",
-    "R_set_altrep_Duplicate_method",
-    "R_set_altstring_Elt_method",
-    "R_set_altstring_Set_elt_method",
-    "R_set_altvec_Extract_subset_method",
     "R_set_prim_method",
     "R_set_quick_method_check",
     "R_set_standardGeneric_ptr",
@@ -282,8 +251,6 @@ pub static STUBS: &[&str] = &[
     "Rsockread",
     "Rsockwrite",
     "Runzip",
-    "STRING_IS_SORTED",
-    "STRING_NO_NA",
     "XTRUELENGTH",
     "cgmin",
     "d1mach_",
@@ -327,21 +294,6 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ALTREP_LENGTH() {
-    not_implemented("ALTREP_LENGTH")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ALTVEC_DATAPTR() {
-    not_implemented("ALTVEC_DATAPTR")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ALTSTRING_ELT() {
-    not_implemented("ALTSTRING_ELT")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ClosureFormals() {
     not_implemented("R_ClosureFormals")
 }
@@ -369,16 +321,6 @@ pub unsafe extern "C" fn R_do_new_object() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ClosureEnv() {
     not_implemented("R_ClosureEnv")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_altrep_data1() {
-    not_implemented("R_altrep_data1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_altrep_data2() {
-    not_implemented("R_altrep_data2")
 }
 
 #[unsafe(no_mangle)]
@@ -424,21 +366,6 @@ pub unsafe extern "C" fn GEinitDisplayList() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_PromiseExpr() {
     not_implemented("R_PromiseExpr")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_new_altrep() {
-    not_implemented("R_new_altrep")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altrep_Length_method() {
-    not_implemented("R_set_altrep_Length_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altvec_Dataptr_method() {
-    not_implemented("R_set_altvec_Dataptr_method")
 }
 
 #[unsafe(no_mangle)]
@@ -608,21 +535,6 @@ pub unsafe extern "C" fn R_getClassDef() {
 pub static mut R_print: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altrep_Inspect_method() {
-    not_implemented("R_set_altrep_Inspect_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altrep_data2() {
-    not_implemented("R_set_altrep_data2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altvec_Dataptr_or_null_method() {
-    not_implemented("R_set_altvec_Dataptr_or_null_method")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_wait_usec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -698,11 +610,6 @@ pub unsafe extern "C" fn nmmin() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rexit_() {
     not_implemented("rexit_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ALTREP_CLASS() {
-    not_implemented("ALTREP_CLASS")
 }
 
 #[unsafe(no_mangle)]
@@ -826,16 +733,6 @@ pub unsafe extern "C" fn GEtoDeviceY() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn INTEGER_IS_SORTED() {
-    not_implemented("INTEGER_IS_SORTED")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn INTEGER_NO_NA() {
-    not_implemented("INTEGER_NO_NA")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn IS_SCALAR() {
     not_implemented("IS_SCALAR")
 }
@@ -851,16 +748,6 @@ pub static mut OutDec: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn RC_fopen() {
     not_implemented("RC_fopen")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn REAL_IS_SORTED() {
-    not_implemented("REAL_IS_SORTED")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn REAL_NO_NA() {
-    not_implemented("REAL_NO_NA")
 }
 
 #[unsafe(no_mangle)]
@@ -1295,26 +1182,6 @@ pub unsafe extern "C" fn R_isHashtable() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_make_altinteger_class() {
-    not_implemented("R_make_altinteger_class")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_make_altlogical_class() {
-    not_implemented("R_make_altlogical_class")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_make_altreal_class() {
-    not_implemented("R_make_altreal_class")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_make_altstring_class() {
-    not_implemented("R_make_altstring_class")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_maphash() {
     not_implemented("R_maphash")
 }
@@ -1387,61 +1254,6 @@ pub unsafe extern "C" fn R_remhash() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_runHandlers() {
     not_implemented("R_runHandlers")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Elt_method() {
-    not_implemented("R_set_altinteger_Elt_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Get_region_method() {
-    not_implemented("R_set_altinteger_Get_region_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Is_sorted_method() {
-    not_implemented("R_set_altinteger_Is_sorted_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Max_method() {
-    not_implemented("R_set_altinteger_Max_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Min_method() {
-    not_implemented("R_set_altinteger_Min_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altinteger_Sum_method() {
-    not_implemented("R_set_altinteger_Sum_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altlogical_Elt_method() {
-    not_implemented("R_set_altlogical_Elt_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altrep_Duplicate_method() {
-    not_implemented("R_set_altrep_Duplicate_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altstring_Elt_method() {
-    not_implemented("R_set_altstring_Elt_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altstring_Set_elt_method() {
-    not_implemented("R_set_altstring_Set_elt_method")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_set_altvec_Extract_subset_method() {
-    not_implemented("R_set_altvec_Extract_subset_method")
 }
 
 #[unsafe(no_mangle)]
@@ -1742,16 +1554,6 @@ pub unsafe extern "C" fn Rsockwrite() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Runzip() {
     not_implemented("Runzip")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn STRING_IS_SORTED() {
-    not_implemented("STRING_IS_SORTED")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn STRING_NO_NA() {
-    not_implemented("STRING_NO_NA")
 }
 
 #[unsafe(no_mangle)]

@@ -1,7 +1,7 @@
 //! util.c and Rinlinedfuns.h: type names, predicates, dimensions; and the
 //! dispatch points to ALTREP classes and finalizers.
 
-use crate::errors::{error_str, error_str_owned, not_implemented};
+use crate::errors::{error_str, error_str_owned};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
@@ -325,44 +325,44 @@ pub unsafe extern "C" fn Rf_envxlength(rho: Sexp) -> isize {
 
 // ---- ALTREP dispatch (altrep.c) ----------------------------------------------
 
-pub unsafe fn altrep_length(_x: Sexp) -> isize {
-    not_implemented("ALTREP_LENGTH")
+pub unsafe fn altrep_length(x: Sexp) -> isize {
+    crate::altrep::length(x)
 }
-pub unsafe fn altrep_dataptr(_x: Sexp, _writable: bool) -> *mut u8 {
-    not_implemented("ALTVEC_DATAPTR")
+pub unsafe fn altrep_dataptr(x: Sexp, writable: bool) -> *mut u8 {
+    crate::altrep::dataptr(x, writable)
 }
-pub unsafe fn altrep_dataptr_or_null(_x: Sexp) -> *mut u8 {
-    std::ptr::null_mut()
+pub unsafe fn altrep_dataptr_or_null(x: Sexp) -> *mut u8 {
+    crate::altrep::dataptr_or_null(x)
 }
-pub unsafe fn altrep_duplicate(_x: Sexp, _deep: bool) -> Sexp {
-    not_implemented("ALTREP duplicate")
+pub unsafe fn altrep_duplicate(x: Sexp, deep: bool) -> Sexp {
+    crate::altrep::duplicate(x, deep)
 }
-pub unsafe fn altstring_elt(_x: Sexp, _i: isize) -> Sexp {
-    not_implemented("ALTSTRING_ELT")
+pub unsafe fn altstring_elt(x: Sexp, i: isize) -> Sexp {
+    crate::altrep::string_elt(x, i)
 }
-pub unsafe fn altstring_set_elt(_x: Sexp, _i: isize, _v: Sexp) {
-    not_implemented("ALTSTRING_SET_ELT")
+pub unsafe fn altstring_set_elt(x: Sexp, i: isize, v: Sexp) {
+    crate::altrep::string_set_elt(x, i, v)
 }
-pub unsafe fn altlist_elt(_x: Sexp, _i: isize) -> Sexp {
-    not_implemented("ALTLIST_ELT")
+pub unsafe fn altlist_elt(x: Sexp, i: isize) -> Sexp {
+    crate::altrep::list_elt(x, i)
 }
-pub unsafe fn altlist_set_elt(_x: Sexp, _i: isize, _v: Sexp) {
-    not_implemented("ALTLIST_SET_ELT")
+pub unsafe fn altlist_set_elt(x: Sexp, i: isize, v: Sexp) {
+    crate::altrep::list_set_elt(x, i, v)
 }
-pub unsafe fn altinteger_elt(_x: Sexp, _i: isize) -> c_int {
-    not_implemented("ALTINTEGER_ELT")
+pub unsafe fn altinteger_elt(x: Sexp, i: isize) -> c_int {
+    crate::altrep::integer_elt(x, i)
 }
-pub unsafe fn altlogical_elt(_x: Sexp, _i: isize) -> c_int {
-    not_implemented("ALTLOGICAL_ELT")
+pub unsafe fn altlogical_elt(x: Sexp, i: isize) -> c_int {
+    crate::altrep::logical_elt(x, i)
 }
-pub unsafe fn altreal_elt(_x: Sexp, _i: isize) -> f64 {
-    not_implemented("ALTREAL_ELT")
+pub unsafe fn altreal_elt(x: Sexp, i: isize) -> f64 {
+    crate::altrep::real_elt(x, i)
 }
-pub unsafe fn altcomplex_elt(_x: Sexp, _i: isize) -> Rcomplex {
-    not_implemented("ALTCOMPLEX_ELT")
+pub unsafe fn altcomplex_elt(x: Sexp, i: isize) -> Rcomplex {
+    crate::altrep::complex_elt(x, i)
 }
-pub unsafe fn altraw_elt(_x: Sexp, _i: isize) -> u8 {
-    not_implemented("ALTRAW_ELT")
+pub unsafe fn altraw_elt(x: Sexp, i: isize) -> u8 {
+    crate::altrep::raw_elt(x, i)
 }
 
 /// A safe point (memory.c R_RunPendingFinalizers, called by GNU R from

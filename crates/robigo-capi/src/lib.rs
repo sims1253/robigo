@@ -9,6 +9,7 @@
 #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, clippy::missing_safety_doc, static_mut_refs)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+pub mod altrep;
 pub mod arith;
 pub mod attrib;
 pub mod bridge;
