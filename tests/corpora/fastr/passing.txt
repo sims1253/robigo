@@ -3748,12 +3748,16 @@ builtins/TestBuiltin_environmentName/ce8a925ec5b2df8e
 builtins/TestBuiltin_environmentName/de189bb7f92ab1cc
 builtins/TestBuiltin_environmentName/fa6b9f18afe4555a
 builtins/TestBuiltin_environmentassign/2dbb49261f819cdf
+builtins/TestBuiltin_environmentassign/3cb17b2eb22e605a
+builtins/TestBuiltin_environmentassign/6823ed839ffcb02f
 builtins/TestBuiltin_environmentassign/94af5af1b267d43b
 builtins/TestBuiltin_environmentassign/9ba210326a202c96
 builtins/TestBuiltin_environmentassign/aa6ab713d9fa6dbe
 builtins/TestBuiltin_environmentassign/adb051bb1efa1b4c
 builtins/TestBuiltin_environmentassign/bff84f5cc88cc006
 builtins/TestBuiltin_environmentassign/c91c9ea96a355dec
+builtins/TestBuiltin_environmentassign/cd987d08652f8300
+builtins/TestBuiltin_environmentassign/dbf00906a62936b7
 builtins/TestBuiltin_eval/01870751ca8893c5
 builtins/TestBuiltin_eval/08031e152558a107
 builtins/TestBuiltin_eval/1515803f6e8864ed
@@ -3775,6 +3779,7 @@ builtins/TestBuiltin_eval/92674f9ed6fa1c60
 builtins/TestBuiltin_eval/95efa6c22d974db9
 builtins/TestBuiltin_eval/9d839adca1b93a7f
 builtins/TestBuiltin_eval/9e18c1c1a3d8bbb8
+builtins/TestBuiltin_eval/a9778461f56584a2
 builtins/TestBuiltin_eval/ab7114f82d2be4b2
 builtins/TestBuiltin_eval/b94f1c1067fd1fde
 builtins/TestBuiltin_eval/bb16fc23a7490c8f
@@ -12982,6 +12987,7 @@ builtins/TestBuiltin_substitute/4ff759cde9c3493b
 builtins/TestBuiltin_substitute/51f3bb52190eb24b
 builtins/TestBuiltin_substitute/5358d31f0be26ad8
 builtins/TestBuiltin_substitute/56092bdbc8a05074
+builtins/TestBuiltin_substitute/5868c9cb39afe0ed
 builtins/TestBuiltin_substitute/5c36268073e41ffc
 builtins/TestBuiltin_substitute/5eddcd322be27c72
 builtins/TestBuiltin_substitute/65979264c5351a4b
@@ -13016,6 +13022,7 @@ builtins/TestBuiltin_substitute/b47a091ec8b2e8bd
 builtins/TestBuiltin_substitute/b7299a26fa04ad87
 builtins/TestBuiltin_substitute/b760f616b9b1779e
 builtins/TestBuiltin_substitute/b84f8383a4d3a2de
+builtins/TestBuiltin_substitute/bc7be81aded6089e
 builtins/TestBuiltin_substitute/c2a1edcb953df089
 builtins/TestBuiltin_substitute/c2f7b3c2095710c6
 builtins/TestBuiltin_substitute/c3d0d240c665e7b5
@@ -14821,6 +14828,7 @@ functions/TestFunctions/c0497be8b07a025b
 functions/TestFunctions/c11d34997d4bb24d
 functions/TestFunctions/c2cf8bb8e526aae7
 functions/TestFunctions/c339ffaf7d82f698
+functions/TestFunctions/c4b89173958d45e9
 functions/TestFunctions/c51bbe800f2a3e03
 functions/TestFunctions/c7063b158fab2e55
 functions/TestFunctions/c83742746b5e926e
@@ -14910,6 +14918,7 @@ functions/TestS3Dispatch/4084382bc36cddee
 functions/TestS3Dispatch/470b1d56b7803b96
 functions/TestS3Dispatch/49df64704640b659
 functions/TestS3Dispatch/4a9ee643ff8abb3e
+functions/TestS3Dispatch/53668ca0b24c7abf
 functions/TestS3Dispatch/5512a571f827438c
 functions/TestS3Dispatch/60e887f731c2a73f
 functions/TestS3Dispatch/680185b15070381d
@@ -14926,6 +14935,7 @@ functions/TestS3Dispatch/7cd75c3fab06566a
 functions/TestS3Dispatch/83fc5157e04aa339
 functions/TestS3Dispatch/88660b34fff9c01e
 functions/TestS3Dispatch/8ae330d094a715fc
+functions/TestS3Dispatch/926dc15e5b1ba14a
 functions/TestS3Dispatch/959c03c5e061b47e
 functions/TestS3Dispatch/9700419e0d47179d
 functions/TestS3Dispatch/9708f85b0e543050
@@ -14937,12 +14947,14 @@ functions/TestS3Dispatch/ab5c4be4388daaeb
 functions/TestS3Dispatch/b392407c1e90d955
 functions/TestS3Dispatch/b4beeeb14ec18f96
 functions/TestS3Dispatch/ba45af5261fe9c9b
+functions/TestS3Dispatch/bb91fb087c146c41
 functions/TestS3Dispatch/c064748f5afe398e
 functions/TestS3Dispatch/c36a7cd6b30ccfa5
 functions/TestS3Dispatch/d1019f7f796e8b47
 functions/TestS3Dispatch/d7350ecf9a3b26a1
 functions/TestS3Dispatch/dc570dc05330a464
 functions/TestS3Dispatch/dd67249cbd4df4fa
+functions/TestS3Dispatch/e28592d9526fc3d9
 functions/TestS3Dispatch/e7d5203ebaba17a3
 functions/TestS3Dispatch/fb5557bdf21a0308
 library/base/TestConditionHandling/07f2a7fdf1422729
@@ -15194,6 +15206,7 @@ library/base/TestEnvironments/6d99a585cf3da3a8
 library/base/TestEnvironments/708bbb208a991ff8
 library/base/TestEnvironments/7177670fc80f256f
 library/base/TestEnvironments/73ec511f78e1acb4
+library/base/TestEnvironments/742f5c7a79cb407d
 library/base/TestEnvironments/7478c9d703ab1b09
 library/base/TestEnvironments/764e09241cf806fd
 library/base/TestEnvironments/781d38b514f680b4
@@ -15217,6 +15230,7 @@ library/base/TestEnvironments/8f9137f6de000882
 library/base/TestEnvironments/8fdc3aa69f569fc9
 library/base/TestEnvironments/90720ea926f0425b
 library/base/TestEnvironments/90a3b8c4b30b4875
+library/base/TestEnvironments/91d250891c17dfa9
 library/base/TestEnvironments/925ad70e1cf112db
 library/base/TestEnvironments/9306bfda26303abf
 library/base/TestEnvironments/94752687355ed70f
@@ -15231,6 +15245,7 @@ library/base/TestEnvironments/9d413c7b47e1ab4d
 library/base/TestEnvironments/a1de821c1110864d
 library/base/TestEnvironments/a2067539c2b007c9
 library/base/TestEnvironments/a257eff657cf9e38
+library/base/TestEnvironments/a37873dae607c741
 library/base/TestEnvironments/a3a330e08d12cd3e
 library/base/TestEnvironments/a5ad05f3cc63a099
 library/base/TestEnvironments/a5c37c283112c0b9

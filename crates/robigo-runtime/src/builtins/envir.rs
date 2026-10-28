@@ -168,7 +168,7 @@ fn pos_to_env(interp: &mut Interp, n: i32, call: &Value) -> RResult<Env> {
         if k == n {
             return Ok(env);
         }
-        if env.ptr_eq(&interp.base) {
+        if env.ptr_eq(&interp.empty) {
             break;
         }
         e = env.parent();
@@ -187,22 +187,25 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
     Ok(Value::Env(as_env(i, &v, call)?))
 }
 
-fn do_set_environment(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let f = arg(&args, 0);
-    let e = arg(&args, 1);
-    match (&f, &e) {
-        (Value::Closure(c), Value::Env(e)) => {
-            let mut c2 = (**c).clone();
-            c2.env = e.clone();
-            Ok(Value::Closure(Rc::new(c2)))
-        }
-        (Value::Closure(_), _) => Err(Flow::error_call(call.clone(), "replacement object is not an environment")),
-        (_, Value::Env(_)) | (_, Value::Null) => {
-            let mut f = f.clone();
-            f.set_attr_raw(s::DOT_ENVIRONMENT, e.clone());
-            Ok(f)
-        }
-        _ => Err(Flow::error_call(call.clone(), "replacement object is not an environment")),
+// R: builtin.c:do_envirgets
+fn do_set_environment(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    super::check_arity(&args, 2, "environment<-", call)?;
+    let mut f = std::mem::replace(&mut args[0].value, Value::Null);
+    let e = std::mem::replace(&mut args[1].value, Value::Null);
+    if !matches!(e, Value::Env(_) | Value::Null) {
+        return Err(Flow::error("replacement object is not an environment"));
+    }
+    if let Value::Closure(c) = &mut f {
+        let Value::Env(e) = e else {
+            return Err(Flow::error("use of NULL environment is defunct"));
+        };
+        Rc::make_mut(c).env = e;
+        Ok(f)
+    } else if matches!(f, Value::Builtin(_)) && !e.is_null() {
+        i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")?;
+        Ok(f)
+    } else {
+        crate::attrib::set_attrib(f, s::DOT_ENVIRONMENT, e)
     }
 }
 
@@ -346,7 +349,7 @@ fn mode_matches(v: &Value, mode: &str) -> bool {
 }
 
 // R: envir.c:do_get (shared by get, get0 and exists).
-fn lookup_args(i: &mut Interp, args: &[Arg], call: &Value) -> RResult<(Sym, Env, Rc<str>, bool)> {
+fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, Rc<str>, bool)> {
     let sym = match arg(args, 0) {
         Value::Sym(s) => s,
         Value::Str(s) if !s.data.is_empty() && s.data[0].as_deref() != Some("") => {
@@ -374,7 +377,7 @@ fn lookup_args(i: &mut Interp, args: &[Arg], call: &Value) -> RResult<(Sym, Env,
         }
         Value::Env(e) => e,
         Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
-        v => as_env(i, &v, call).map_err(|_| Flow::error("invalid 'envir' argument"))?,
+        _ => return Err(Flow::error("invalid 'envir' argument")),
     };
     let mode = lookup_mode(&arg(args, 2))?;
     let inherits = lgl_arg(&arg(args, 3), "inherits")?;
@@ -407,12 +410,15 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
 }
 
 fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
+    let (sym, env, mode, inherits) = lookup_args(i, &args)?;
     let name = sym.name();
     match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => {
             if v.is_missing_arg() {
-                return Err(Flow::error(format!("argument \"{}\" is missing, with no default", name)));
+                return Err(Flow::error_call(
+                    call.clone(),
+                    format!("argument \"{}\" is missing, with no default", name),
+                ));
             }
             Ok(v)
         }
@@ -426,8 +432,8 @@ fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     }
 }
 
-fn do_get0(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
+fn do_get0(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let (sym, env, mode, inherits) = lookup_args(i, &args)?;
     match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => Ok(v),
         None => Ok(arg(&args, 4)),
@@ -468,8 +474,8 @@ fn do_mget(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(v)
 }
 
-fn do_exists(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let (sym, env, mode, inherits) = lookup_args(i, &args, call)?;
+fn do_exists(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let (sym, env, mode, inherits) = lookup_args(i, &args)?;
     if &*mode == "any" {
         let mut cur = Some(env);
         while let Some(e) = cur {
@@ -499,7 +505,20 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         let sym = Sym::new(&n);
         let mut cur = Some(env.clone());
         let mut done = false;
+        // R: envir.c:do_remove, RemoveVariable
         while let Some(e) = cur {
+            if e.ptr_eq(&i.empty) {
+                break;
+            }
+            if e.ptr_eq(&i.base_ns) {
+                return Err(Flow::error("cannot remove variables from base namespace"));
+            }
+            if e.ptr_eq(&i.base) {
+                return Err(Flow::error("cannot remove variables from the base environment"));
+            }
+            if e.0.locked.get() {
+                return Err(Flow::error("cannot remove bindings from a locked environment"));
+            }
             if e.remove(sym) {
                 done = true;
                 break;
@@ -510,7 +529,7 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             cur = e.parent();
         }
         if !done {
-            i.warningcall(call, format!("object '{}' not found", n))?;
+            i.warning(format!("object '{}' not found", n))?;
         }
     }
     Ok(Value::Null)
@@ -789,7 +808,14 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             e
         }
         Value::Int(_) | Value::Real(_) => {
+            // R: eval.c:do_eval
+            if envir.len() != 1 {
+                return Err(Flow::error("numeric 'envir' arg not of length one"));
+            }
             let n = as_integer(&envir);
+            if n == NA_INTEGER {
+                return Err(Flow::error(format!("invalid 'envir' argument of type '{}'", envir.type_name())));
+            }
             // sys.frame(n) relative to the caller of eval
             if n == 0 {
                 i.global.clone()

@@ -1,5 +1,34 @@
 # conformance-lang
 
+## 2026-10-28: environment validation, dots substitution, and Ops NextMethod
+
+- Why: replacement errors used internal calls; removal ignored environment locks; dots expansion lost pairlist semantics; `NextMethod` collapsed binary `.Method` vectors.
+- Ports: `builtin.c:do_envirgets`; `envir.c:do_remove`, `RemoveVariable`, `pos2env`; `eval.c:do_eval` numeric-environment validation; `coerce.c:substitute`, `substituteList`, `do_substitute`; `objects.c:do_nextmethod` metadata update.
+- Result: 1,308/1,371 -> 1,323/1,371, 15 additional passes; zero regressions. Kept. Overall gain from the starting binary is 97 cases; 98 corpus ratchet entries include the pre-existing unrecorded pass.
+- Runtime edits remain in `builtins/envir.rs` and `builtins/lang.rs`. No shared `interp.rs` change is needed. Environment replacement takes ownership of arguments and mutates closures through `Rc::make_mut`.
+- Verification: all three new scripts match GNU R 4.5.0 byte for byte; final filtered FastR rerun is 1,323/1,371 with zero regressions; the relevant help-page slice remains 5/8 with zero regressions. Runtime and full conformance checks are in progress.
+- Regression scripts: `environment-validation.R` and `substitute-dots.R`, recorded with `scripts/regen-expected.sh` inside `robigo-oracle:4.5.0`.
+
+### Remaining work
+
+48 cases remain in the FastR filter:
+
+- Class attributes and printing: 24. Preserve attributes on class vectors in `attrib.rs:class_gets` and `builtins/attrib.rs:do_class`; check pairlist attribute printing. These paths need coordination with their owners.
+- Evaluator and argument diagnostics: nine. Fix the lexical call for missing values, promise errors through `eval` and `UseMethod`, empty numeric dots, and the `alist()` rendering of unused missing arguments. Port `eval.c`/`envir.c` lookup and `match.c:matchArgs_NR` in a separate evaluator batch. Include the remaining `switch` default missing-argument case.
+- Parser diagnostics: four. Zero-length argument tags, repeated formals, and the unexpected-input context belong to the parser/CLI owners.
+- Other tracks: eleven. S4 state (one), `.Device` startup (one), `getconst` (two), `gettext(NULL, NULL)` (one), system timeouts (two), subset/array validation (two), and the locked-environment assignment message from `Interp::define` (one). Function bytecode printing contributes one more case in this group.
+
+The help-page failures remain `base/environment` (hash-profile example), `base/eval` (negative numeric frame selection), and `base/get` (missing-argument condition classes). Next steps: port numeric `eval` environment lookup against `R_GlobalContext` and preserve `missingArgError`/`getMissingError` classes through the condition machinery.
+
+## 2026-10-28: lookup validation, modes, and numeric environments
+
+- Why: lookup treated integer and double as distinct modes, accepted invalid modes, interpreted numeric environments as search-path positions, and reported internal calls in errors.
+- Port: `envir.c:do_get`, `str2mode`, `findVar1mode`; `util.c:TypeTable`; `context.c:R_sysframe` through the existing frame walker.
+- Result: 1,226/1,371 -> 1,308/1,371, an increase of 82; zero regressions. Kept. The 83 additions to `passing.txt` include the one pre-existing unrecorded pass.
+- Verification: runtime crate tests pass (17 unit, two integration); focused lookup test matches Docker GNU R 4.5.0 byte for byte; relevant help-page examples remain 5/8 with zero regressions; `cargo fmt --check` passes.
+- Tests: `tests/r/lang/lookup-modes.R` covers mode normalization, invalid names and modes, frame lookup, and existence checks that must not force promises. Expected output was recorded by `scripts/regen-expected.sh` in `robigo-oracle:4.5.0`.
+- Remaining lookup failure: `.Device` is absent, which belongs to package/device startup.
+
 ## 2026-10-28: filtered baseline and failure groups
 
 - Metric: 1,226/1,371 FastR cases pass; 145 fail; zero ratchet regressions.
@@ -202,12 +231,3 @@
 - `builtins/TestBuiltin_substitute/5868c9cb39afe0ed`
 - `builtins/TestBuiltin_substitute/bc7be81aded6089e`
 - `functions/TestFunctions/c4b89173958d45e9`
-
-## 2026-10-28: lookup validation, modes, and numeric environments
-
-- Why: lookup treated integer and double as distinct modes, accepted invalid modes, interpreted numeric environments as search-path positions, and reported internal calls in errors.
-- Port: `envir.c:do_get`, `str2mode`, `findVar1mode`; `util.c:TypeTable`; `context.c:R_sysframe` through the existing frame walker.
-- Result: 1,226/1,371 -> 1,308/1,371, an increase of 82; zero regressions. Kept. The 83 additions to `passing.txt` include the one pre-existing unrecorded pass.
-- Verification: runtime crate tests pass (17 unit, two integration); focused lookup test matches Docker GNU R 4.5.0 byte for byte; relevant help-page examples remain 5/8 with zero regressions; `cargo fmt --check` passes.
-- Tests: `tests/r/lang/lookup-modes.R` covers mode normalization, invalid names and modes, frame lookup, and existence checks that must not force promises. Expected output was recorded by `scripts/regen-expected.sh` in `robigo-oracle:4.5.0`.
-- Remaining lookup failure: `.Device` is absent, which belongs to package/device startup.

@@ -1,0 +1,44 @@
+x + y
+[[1]]
+x + y
+
+[[2]]
+z + w
+
+[1] "pairlist"
+list(x + y, z + w)
+a
+$first
+a
+
+$second
+b
+
+[1] "pairlist"
+list(first = a, second = b)
+NULL
+NULL
+[1] "NULL"
+list()
+...()
+list()
+[1] "'...' used in an incorrect context"
+doTryCatch(return(expr), name, parentenv, handler)
+[[1]]
+[1] "Ops.one" ""       
+
+[[2]]
+[1] "Ops.two" ""       
+
+[[1]]
+[1] ""        "Ops.one"
+
+[[2]]
+[1] ""        "Ops.two"
+
+[[1]]
+[1] "Ops.one" "Ops.one"
+
+[[2]]
+[1] "Ops.two" "Ops.two"
+
