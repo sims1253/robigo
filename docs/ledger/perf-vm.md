@@ -15,6 +15,21 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
+
+- the inner loop (`for (j in seq(length = ny)) { ij <- i + j - 1; z[[ij]]
+  <- z[[ij]] + xi * y[[j]] }`) runs in the VM at ~2,000 instructions per
+  iteration. Native code rejects it (`ROBIGO_JIT_TRACE`: "register 4 has no
+  single type at ForStep"), because `seq(length = ny)` is a call of the `seq`
+  closure returning an ordinary vector, not a range.
+- next: compile `seq(length = n)` / `seq(length.out = n)` (a single
+  argument) as `seq_len` where GNU R's result is `seq_len(length.out)`:
+  `seq` is base's, S3 dispatch on the argument would reach `seq.default`
+  (no `seq.integer`/`seq.numeric`/`seq.double` method visible), and
+  `seq.default`'s checks hold (length 1, finite, non-negative; `ceiling` for
+  doubles, the "first element used" warning for longer vectors). Anything
+  else calls `seq`.
+
 ## 2026-10-28: `x[[i]] <<- v` / `x[i] <<- v` in the VM
 
 - why: `shootout/nbody_naive` (1.32x GNU R) updates velocity and position
