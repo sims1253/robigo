@@ -117,6 +117,7 @@ tests/r/programs/stack.R
 tests/r/s3/dispatch.R
 tests/r/s3/nextmethod-special-default.R
 tests/r/s3/ops.R
+tests/r/s4/bind.R
 tests/r/s4/bits.R
 tests/r/s4/classes.R
 tests/r/s4/dispatch.R
