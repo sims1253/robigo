@@ -70,6 +70,7 @@ tests/r/math/atan2.R
 tests/r/math/bessel-nbinom-hyper.R
 tests/r/math/distributions.R
 tests/r/math/gamma.R
+tests/r/math/log-dots.R
 tests/r/math/math2-nonnumeric.R
 tests/r/math/math-warnings.R
 tests/r/math/matprod-rowvec.R

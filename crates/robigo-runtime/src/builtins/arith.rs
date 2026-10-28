@@ -1522,13 +1522,9 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 /// before base is evaluated.
 // R: arithmetic.c:do_log / do_log_builtin
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    // evalListKeepMissing: evaluate the arguments, keeping the missing
-    // markers (an explicit `x=` stays missing).
-    let mut ev: Vec<Arg> = Vec::with_capacity(args.len());
-    for a in &args {
-        let v = if a.value.is_missing_arg() { a.value.clone() } else { i.eval(&a.value, env)? };
-        ev.push(Arg::new(a.tag, v));
-    }
+    // evalListKeepMissing: evaluate the arguments, expanding `...` and
+    // keeping the missing markers (an explicit `x=` stays missing).
+    let ev = super::subset::eval_keep_missing(i, &args, env)?;
     let is_tag = |a: &Arg, names: &[&str]| a.tag.is_none_or(|t| names.contains(&&*t.name()));
     if ev.len() == 1 && is_tag(&ev[0], &["x"]) {
         let x = &ev[0].value;
