@@ -532,10 +532,18 @@ impl Interp {
     }
 
     fn eval_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> RResult<Value> {
-        let fun = match &l.fun {
+        let mut fun = match &l.fun {
             Value::Sym(sym) => self.find_fun_for_call(*sym, call, env)?,
             other => self.eval(other, env)?,
         };
+        // A rebound `<`, `if`, ... that GNU R's compiled code would not see.
+        if let (Value::Closure(_), Value::Sym(sym)) = (&fun, &l.fun) {
+            if crate::vm::is_frozen_fun(*sym) {
+                if let Some(f) = crate::vm::frozen_fun(self, *sym, &fun, l, env) {
+                    fun = f;
+                }
+            }
+        }
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
@@ -890,6 +898,9 @@ impl Interp {
             generic: false,
             builtin: false,
         });
+        if clo.jit.unsettled() {
+            crate::vm::jit_check(self, clo);
+        }
         let code = if crate::vm::enabled() {
             clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone()
         } else {

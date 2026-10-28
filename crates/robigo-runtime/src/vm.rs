@@ -29,6 +29,9 @@ use crate::interp::Interp;
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+mod rjit;
+pub use rjit::{JitState, frozen_fun, is_frozen_fun, jit_check, jit_inherit};
+
 #[derive(Clone)]
 pub enum RVal {
     V(Value),
@@ -1691,7 +1694,9 @@ fn inline_site_call(
     env: &Env,
     regs: &[RVal],
 ) -> Option<RVal> {
-    if leaves.len() != clo.formals.len() {
+    // (Until GNU R's JIT would have decided about the closure, its calls
+    // are counted: see `rjit::jit_check`.)
+    if leaves.len() != clo.formals.len() || clo.jit.unsettled() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(clo)).as_ref()?;
@@ -1967,7 +1972,7 @@ pub(crate) fn inlinable(clo: &Closure) -> bool {
 /// the real call).
 pub(crate) fn call_inline(interp: &mut Interp, clo: &Closure, args: &[Value]) -> Option<Value> {
     let info = clo.inline.get()?.as_ref()?;
-    if args.len() != info.formal_slots.len() {
+    if args.len() != info.formal_slots.len() || clo.jit.unsettled() {
         return None;
     }
     let v = run_inline_with(interp, info, &clo.env, |_, k| Some(unbox(args[k].clone())))?;
@@ -1998,6 +2003,11 @@ fn inline_call(
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
     if info.free_vars {
         return None;
+    }
+    // Native code does not count calls: take the loop to call the closure
+    // at least twice (GNU R's JIT decides by the second call).
+    while clo.jit.unsettled() {
+        jit_check(interp, &clo);
     }
     Some(crate::jit::InlineCall {
         code: info.code.clone(),
