@@ -11,6 +11,16 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: CI builds the base-package natives (pending-workflow.patch applied)
+
+- With the gates enforced (#58), the build job builds GNU R's stats
+  natives from source (cached R sources), ships them in the `robigo`
+  artifact (`dist/natives`), and the corpora and perf jobs run with
+  `ROBIGO_NATIVES`; setup installs libcurl4-openssl-dev (R's configure)
+  and zlib1g-dev. The package list grows with the PRs that make each
+  package run: splines tools parallel (#57), grDevices graphics grid
+  (#69). `docs/ci/pending-workflow.patch` is gone; those PRs edit ci.yml.
+
 ## 2026-10-28: compact sequences (GNU R's compact_intseq / compact_realseq)
 
 - `:`, `seq_len`, `seq_along` (also the VM's lazy ranges when they
