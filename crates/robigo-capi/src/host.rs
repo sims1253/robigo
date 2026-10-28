@@ -34,6 +34,13 @@ pub struct Host {
     pub report: unsafe extern "C" fn(token: usize),
     /// Forget a flow token that will not be continued.
     pub discard: unsafe extern "C" fn(token: usize),
+    /// The host's part of a context record (its condition handler and
+    /// restart stacks, which signalling pops as it searches): save into
+    /// two words when a context is entered, restore them when a jump
+    /// reaches it (context.c R_restore_globals), drop them otherwise.
+    pub ctx_save: unsafe extern "C" fn(out: *mut usize),
+    pub ctx_restore: unsafe extern "C" fn(saved: *const usize),
+    pub ctx_drop: unsafe extern "C" fn(saved: *const usize),
 }
 
 /// Install the host's callbacks and create the heap. `globals` receives

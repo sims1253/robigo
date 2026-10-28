@@ -184,10 +184,8 @@ struct CoreRef(Sexp);
 
 impl Drop for CoreRef {
     fn drop(&mut self) {
-        unsafe {
-            if !crate::state::isolate().is_null() {
-                core().release(self.0);
-            }
+        if !crate::state::isolate().is_null() {
+            core().release(self.0);
         }
         WRAPPED.with(|m| {
             m.borrow_mut().remove(&self.0.addr());
@@ -858,7 +856,44 @@ static HOST: Host = Host {
     error: h_error,
     report: h_report,
     discard: h_discard,
+    ctx_save: h_ctx_save,
+    ctx_restore: h_ctx_restore,
+    ctx_drop: h_ctx_drop,
 };
+
+// The handler and restart stacks are persistent lists (Rc), so saving is
+// two reference-count increments.
+unsafe extern "C" fn h_ctx_save(out: *mut usize) {
+    with_interp(|i| unsafe {
+        *out = i.handlers.clone().map_or(0, |h| Rc::into_raw(h) as usize);
+        *out.add(1) = i.restarts.clone().map_or(0, |r| Rc::into_raw(r) as usize);
+    })
+}
+
+unsafe fn take_saved(
+    saved: *const usize,
+) -> (robigo_runtime::conditions::HandlerStack, robigo_runtime::conditions::RestartStack) {
+    unsafe {
+        let h = *saved;
+        let r = *saved.add(1);
+        (
+            (h != 0).then(|| Rc::from_raw(h as *const robigo_runtime::conditions::HandlerNode)),
+            (r != 0).then(|| Rc::from_raw(r as *const robigo_runtime::conditions::RestartNode)),
+        )
+    }
+}
+
+unsafe extern "C" fn h_ctx_restore(saved: *const usize) {
+    let (h, r) = unsafe { take_saved(saved) };
+    with_interp(|i| {
+        i.handlers = h;
+        i.restarts = r;
+    })
+}
+
+unsafe extern "C" fn h_ctx_drop(saved: *const usize) {
+    drop(unsafe { take_saved(saved) });
+}
 
 // ---- the stub libR.so (package objects built by GNU R ask for it) ---------------
 

@@ -264,10 +264,14 @@ model at the C boundary:
   `Rf_error` would, so an R error inside `Rf_eval` called from C unwinds
   the C frames like GNU R and reappears as the same `Flow` (error,
   `return`/`break`/restart, interrupt) at the `.Call` boundary.
-- `R_UnwindProtect(fun, data, cleanfun, cleandata, cont)` pushes a
-  context, runs `fun`; on a jump it calls `cleanfun(cleandata, TRUE)` and
-  continues the jump with `R_ContinueUnwind(cont)`, the token holding the
-  pending condition. `R_MakeUnwindCont` allocates the token (a node).
+- `R_UnwindProtect(fun, data, cleanfun, cleandata, cont)` runs `fun` in a
+  context; on a jump it stores the pending exit in `cont`, pops the
+  context, calls `cleanfun(cleandata, TRUE)` directly (cpp11 and Rcpp
+  leave it by longjmp to their own setjmp and call `R_ContinueUnwind`
+  later) and otherwise continues the unwind itself: like GNU R's, it
+  never returns after a jump. A context also saves the host's handler and
+  restart stacks and restores them when a jump reaches it
+  (`R_restore_globals`).
 - *Open (council review):* longjmp skips Rust frames, which is defined
   only for frames without pending destructors. Today `libR.so` keeps the
   rule by construction (messages are formatted into stack buffers and
@@ -521,8 +525,8 @@ they land; evidence in `docs/ledger/core.md`):
 |---|---|---|
 | 1 | base-package natives rebuilt from R 4.5.0 sources against robigo's headers + `Defn.h`; ~25 non-API internals | planned (§8) |
 | 2 | immortals traced (symbols, mutable constants) | done |
-| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done in libR.so (`errors::Ctx`); depth/handlers unwind in the host, whose frames jumps never cross |
-| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done (continuation holds a HOST proxy that discards an abandoned condition; tested); packages in the gate |
+| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done (`errors::Ctx`), including the host's handler and restart stacks (found by the caught-error benchmark, ledger) |
+| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done: continues the unwind after cleanfun as GNU R does; the continuation owns a pending exit (HOST proxy) when cleanfun leaves by longjmp; packages in the gate |
 | 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |

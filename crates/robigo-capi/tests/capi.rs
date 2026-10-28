@@ -77,7 +77,18 @@ static HOST: capi::host::Host = capi::host::Host {
     error: h_error,
     report: h_report,
     discard: h_discard,
+    ctx_save: h_ctx_save,
+    ctx_restore: h_ctx_noop,
+    ctx_drop: h_ctx_noop,
 };
+
+unsafe extern "C" fn h_ctx_save(out: *mut usize) {
+    unsafe {
+        *out = 0;
+        *out.add(1) = 0;
+    }
+}
+unsafe extern "C" fn h_ctx_noop(_: *const usize) {}
 
 unsafe extern "C" fn body_error(_: *mut c_void) {
     unsafe { capi::errors::Rf_error(c"boom %d".as_ptr(), 42) }
@@ -106,20 +117,24 @@ unsafe extern "C" fn fun_warn(_: *mut c_void) {
     unsafe { capi::errors::Rf_warning(c"careful".as_ptr()) }
 }
 
-/// R_UnwindProtect whose body errors; the continuation is dropped
-/// afterwards. Returns the number of pending conditions.
+unsafe extern "C" fn unwind_protect_error(_: *mut c_void) {
+    unsafe {
+        let cont = capi::memory::Rf_protect(capi::errors::R_MakeUnwindCont());
+        capi::errors::R_UnwindProtect(fun_error, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), cont);
+        log("not reached: R_UnwindProtect continues the unwind".to_string());
+    }
+}
+
+/// R_UnwindProtect whose body errors, inside R_ToplevelExec: the cleanup
+/// runs with jump = 1, then the error continues to the outer context.
 #[inline(never)]
 unsafe fn unwind_and_abandon() -> usize {
     unsafe {
-        let cont = capi::memory::Rf_protect(capi::errors::R_MakeUnwindCont());
-        let r = capi::errors::R_UnwindProtect(fun_error, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), cont);
-        assert_eq!(r, cont, "unwound: the continuation comes back");
-        assert_eq!(take_log(), vec!["cleanup jump=1".to_string()]);
-        assert_eq!(R_PPStackTop, 1, "the body's PROTECT was undone");
-        capi::memory::Rf_unprotect(1);
-        let pending = pending_errors();
-        assert!(pending >= 1);
-        pending
+        let top = R_PPStackTop;
+        assert_eq!(capi::errors::R_ToplevelExec(unwind_protect_error, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["cleanup jump=1".to_string(), "reported: in the body".to_string()]);
+        assert_eq!(R_PPStackTop, top, "the body's PROTECTs were undone");
+        pending_errors()
     }
 }
 
@@ -178,9 +193,8 @@ fn the_api() {
         // ---- R_UnwindProtect: cleanup runs, continuation owns the condition
         let pending = unwind_and_abandon();
         clobber_stack();
-        // never continued: the condition dies with the continuation
         capi::host::robigo_gc();
-        assert_eq!(pending_errors(), pending - 1, "an abandoned continuation discards its condition");
+        assert_eq!(pending_errors(), pending, "the continued exit was consumed, nothing left pending");
 
         let cont = capi::memory::Rf_protect(capi::errors::R_MakeUnwindCont());
         let r = capi::errors::R_UnwindProtect(fun_ok, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), cont);

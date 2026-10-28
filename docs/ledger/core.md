@@ -11,6 +11,27 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: the caught-error benchmark found two unwind bugs
+
+- the C bench's caught-error routine cost ~230k instructions per error.
+  Profiled: (1) 8k per Rf_error zeroing an 8 KiB message buffer (now a
+  per-thread scratch buffer); (2) every error after the first fell to
+  the *default* handler (message formatting and traceback): the runtime
+  pops its handler stack while signalling, as GNU R does, but GNU R
+  restores the handler and restart stacks when a jump reaches a context
+  (R_restore_globals) and libR.so's context record did not include
+  them. The host now saves/restores them per context (two Rc clones;
+  R_UnwindProtect's normal path 0.86 -> 1.52 of GNU R, to optimize).
+- (3) comparing the routine's R-visible result with GNU R showed
+  R_UnwindProtect returning the continuation after a jump; GNU R 4.5's
+  continues the unwind itself after cleanfun (context.c: `if (jump)
+  R_ContinueUnwind(cont)`). Fixed; cleanfun is now called outside any
+  robigo context (cpp11 longjmps out of it). `tryCatch(.Call(<loop of
+  R_UnwindProtect over error()>), error = ...)` now gives the outer
+  handler's value, as GNU R ("outer handler"), instead of NULL.
+- result: caught error 230k -> 45k instructions; capi 14/20; digest and
+  fastmap test shims unchanged (241, 291 expectations).
+
 ## 2026-10-28: isolates, first step (lead A.2)
 
 - libR.so's internal state (heap, host table, R_alloc stack) moves from
