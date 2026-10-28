@@ -22,6 +22,12 @@ expect_silent <- function(x, ...) rec(!inherits(try(x, silent = TRUE), "try-erro
 expect_message <- function(x, ...) { m <- FALSE; withCallingHandlers(x, message = function(c) { m <<- TRUE; invokeRestart("muffleMessage") }); rec(m, "message") }
 expect_inherits <- function(current, class, ...) rec(inherits(current, class), "inherits")
 using <- function(...) invisible(NULL)
+context <- function(...) invisible(NULL)
+expect_is <- function(object, class, ...) rec(inherits(object, class), "is")
+is_a <- function(class) function(x) inherits(x, class)
+equals <- function(expected, ...) function(x) isTRUE(all.equal(expected, x, ...))
+is_identical_to <- function(expected) function(x) identical(x, expected)
+expect_that <- function(object, condition, ...) rec(isTRUE(condition(object)), "that")
 expect_length <- function(x, n, ...) rec(length(x) == n, "length")
 ignore <- function(f) f
 exit_file <- function(...) stop("exit_file")
@@ -36,10 +42,13 @@ expect_setequal <- function(object, expected, ...) rec(setequal(object, expected
 skip_on_cran <- function() invisible(NULL)
 skip_if_not <- function(...) invisible(NULL)
 skip <- function(...) stop("skip")
-for (h in list.files(dir, pattern = "^helper.*\\.R$", full.names = TRUE)) sys.source(h, envir = globalenv())
+# testthat evaluates test files in a child of the package namespace;
+# tinytest in a child of the global environment
+parent <- if (basename(normalizePath(dir)) == "testthat") new.env(parent = asNamespace(pkg)) else globalenv()
+for (h in list.files(dir, pattern = "^helper.*\\.R$", full.names = TRUE)) sys.source(h, envir = parent)
 for (f in sort(list.files(dir, pattern = "^test.*\\.R$", full.names = TRUE))) {
   res$file <- basename(f)
-  r <- try(sys.source(f, envir = new.env(parent = globalenv())), silent = TRUE)
+  r <- try(sys.source(f, envir = new.env(parent = parent)), silent = TRUE)
   if (inherits(r, "try-error")) res$fail <- c(res$fail, paste(basename(f), "ABORTED:", trimws(conditionMessage(attr(r, "condition")))))
 }
 cat(pkg, ": ", res$pass, " expectations passed, ", length(res$fail), " failed\n", sep = "")

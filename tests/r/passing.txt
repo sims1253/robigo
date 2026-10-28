@@ -102,6 +102,7 @@ tests/r/programs/quicksort.R
 tests/r/programs/shapes.R
 tests/r/programs/stack.R
 tests/r/s3/dispatch.R
+tests/r/s3/nextmethod-special-default.R
 tests/r/s3/ops.R
 tests/r/strings/as-numeric-strtod.R
 tests/r/strings/basic.R

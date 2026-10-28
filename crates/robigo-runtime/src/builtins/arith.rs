@@ -1555,11 +1555,22 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     }
     if ev.len() == 1 {
         // R's n == 1 branch never calls matchArgs_NR: the tag must be
-        // missing or exactly "x", and the value present.
+        // missing or exactly "x", and the value present; it dispatches
+        // with the argument as given (no base)
         let a = &ev[0];
         if a.value.is_missing_arg() || a.tag.is_some_and(|t| &*t.name() != "x") {
             return Err(missing_x_err(call));
         }
+        let x = a.value.clone();
+        if x.is_object() {
+            if let Some(r) = i.try_dispatch_group("Math", "log", call, &ev, env)? {
+                return Ok(r);
+            }
+        }
+        if let Value::Cplx(_) = x {
+            return complex_math1(i, call, &x, "log");
+        }
+        return math1(i, call, ev, env, "log", r_log);
     }
     // matchArgs_NR: signals the first unused argument onward.
     let m = super::match_args(ev, &["x", "base"], call)?;

@@ -112,7 +112,13 @@ pub fn dispatch_or_eval_special(
             Value::Promise(p) => i.force_promise(p)?,
             v => v.clone(),
         };
-        if v.is_object() {
+        // R: eval.c:DispatchOrEval — a call of `<generic>.default` (as
+        // NextMethod makes for an internal default) does not dispatch
+        let is_default = match call {
+            Value::Lang(l) => l.fun_sym().is_some_and(|f| f.name().ends_with(".default")),
+            _ => false,
+        };
+        if v.is_object() && !is_default {
             if let Some(r) = i.dispatch_with_temp_context(generic, &v, call, pargs.clone(), env)? {
                 return Ok(Ok(r));
             }
