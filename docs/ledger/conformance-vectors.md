@@ -93,7 +93,17 @@
   product with memory.c's allocation error at that point.
 - Array slice: 232/236 -> 234/236; two passes recorded, zero regressions.
 - Runtime: 17 unit and 2 lazyload tests pass. Formatting passes.
-- Matrix conformance and consolidated filter verification pending.
+- Matrix conformance and both compiled checks pass. Consolidated original
+  branch metric: 6,669/6,819 -> 6,736/6,819, zero regressions.
+- After rebasing onto main (including PRs #16 and #19): 6,741/6,819,
+  zero regressions. Five extra passes are from main's language fixes
+  (three match.fun, two missing data-frame arguments), recorded via --update.
+- Isolated-target runtime tests: 21 unit + 2 lazyload pass; both compiled
+  checks pass. Full conformance has only the existing datetime/zones.R
+  host difference, identical to the original baseline. Formatting passes.
+- The shared cargo target produced stale-numerics import failures during
+  test compilation; rerunning with CARGO_TARGET_DIR=$PWD/target resolved it.
+- PR #21 merged with all CI checks green. Follow-up commits are PR #22.
 
 ### Remaining work after five improvement cycles
 
