@@ -821,6 +821,28 @@ mod tests {
         assert!(csqrt(z(crate::value::NA_REAL, 0.0)).re.is_nan());
     }
 
+    /// The unrolled loop gives the element-by-element results for every
+    /// length (remainders included), NaN payloads and all.
+    #[test]
+    fn zip_unrolled_matches_elementwise() {
+        let vals = [
+            z(1.0, -2.0),
+            z(f64::from_bits(0x7ff00000000007a2), 1.0),
+            z(f64::from_bits(0xfff8000000000000), 0.0),
+            z(f64::from_bits(0x7ff8000000000123), f64::INFINITY),
+            z(-0.0, 3.5),
+        ];
+        for n in 0..12 {
+            let a: Vec<Complex> = (0..n).map(|k| vals[k % 5]).collect();
+            let b: Vec<Complex> = (0..n).map(|k| vals[(k * 3 + 1) % 5]).collect();
+            for f in [cadd as fn(Complex, Complex) -> Complex, csub] {
+                let got: Vec<(u64, u64)> = zip_unrolled(&a, &b, f).iter().map(|c| bits(*c)).collect();
+                let want: Vec<(u64, u64)> = a.iter().zip(&b).map(|(&x, &y)| bits(f(x, y))).collect();
+                assert_eq!(got, want, "n = {n}");
+            }
+        }
+    }
+
     /// The kernels are bit-identical with the C library GNU R uses
     /// (libgcc's `__muldc3`/`__divdc3`, glibc's `clog`/`cexp`/`csqrt`/
     /// `cpow`) over a grid of special values and random bit patterns,
