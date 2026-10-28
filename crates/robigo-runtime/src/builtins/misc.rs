@@ -410,7 +410,11 @@ fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 
 /// robigo does not track allocations by R's cell classes; report NA rather
 /// than invented numbers.
-fn do_gc(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // the C API's heap collects and runs pending finalizers (docs/core.md §3)
+    if let Some(b) = crate::native::bridge() {
+        b.gc(i);
+    }
     Ok(Value::reals(vec![NA_REAL; 14]))
 }
 

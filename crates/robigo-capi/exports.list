@@ -159,6 +159,7 @@
   R_BaseNamespace;
   R_BaseSymbol;
   R_BindingIsActive;
+  R_BindingIsLocked;
   R_BlankScalarString;
   R_BlankString;
   R_BraceSymbol;
@@ -428,6 +429,7 @@
   R_isHashtable;
   R_isnancpp;
   R_isort;
+  R_lsInternal;
   R_lsInternal3;
   R_make_altinteger_class;
   R_make_altlogical_class;
@@ -493,6 +495,7 @@
   R_tryEvalSilent;
   R_typeToChar;
   R_typhash;
+  R_unLockBinding;
   R_useDynamicSymbols;
   R_wait_usec;
   R_withCallingErrorHandler;

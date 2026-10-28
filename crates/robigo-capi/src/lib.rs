@@ -14,6 +14,7 @@ pub mod attrib;
 pub mod bridge;
 pub mod coerce;
 pub mod dotcode;
+pub mod envir;
 pub mod errors;
 pub mod extptr;
 pub mod host;

@@ -52,7 +52,13 @@ thread_local! {
     static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
     static READY: Cell<bool> = const { Cell::new(false) };
     /// handler stacks hidden by R_ToplevelExec
-    static TOPLEVEL: RefCell<Vec<robigo_runtime::conditions::HandlerStack>> = const { RefCell::new(Vec::new()) };
+    static TOPLEVEL: RefCell<Vec<(Vec<robigo_runtime::interp::Context>, robigo_runtime::conditions::HandlerStack)>> =
+        const { RefCell::new(Vec::new()) };
+    /// Identity within a native call: a runtime vector converted twice is
+    /// the same core object (findVar(x) == R_getVar(x)). Entries are
+    /// preserved until the outermost native call returns.
+    static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Run `f` with the interpreter that is currently calling into C.
@@ -257,8 +263,39 @@ unsafe fn args_list(args: &[Arg], t: u8) -> Sexp {
     list
 }
 
-/// Convert a runtime value to a core object (a copy for vectors).
+fn vector_identity(v: &Value) -> Option<usize> {
+    Some(match v {
+        Value::Lgl(x) | Value::Int(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Real(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Cplx(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Str(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Raw(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::List(x) | Value::Expr(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Lang(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Pairlist(x) => Rc::as_ptr(x) as *const u8 as usize,
+        _ => return None,
+    })
+}
+
+/// Convert a runtime value to a core object (a copy for vectors; the
+/// same copy while a native call runs).
 pub unsafe fn to_sexp(v: &Value) -> Sexp {
+    let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
+    if let Some(k) = key {
+        if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
+            return x;
+        }
+    }
+    let x = to_sexp_new(v);
+    if let Some(k) = key {
+        core().preserve(x);
+        // the Value is kept too, so its address is not reused meanwhile
+        SEEN.with(|m| m.borrow_mut().insert(k, (x, v.clone())));
+    }
+    x
+}
+
+unsafe fn to_sexp_new(v: &Value) -> Sexp {
     let x = match v {
         Value::Null => return R_NilValue,
         Value::Sym(s) => return sym_sexp(*s),
@@ -298,12 +335,14 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
             return r;
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => return core_ref_of(v).unwrap(),
-        Value::Env(_)
-        | Value::Closure(_)
-        | Value::Promise(_)
-        | Value::Builtin(_)
-        | Value::Dots(_)
-        | Value::ExtPtr(_) => {
+        // `...`: a DOTSXP chain, R_MissingArg when empty (as GNU R binds it)
+        Value::Dots(d) => {
+            if d.is_empty() {
+                return R_MissingArg;
+            }
+            return args_list(d, DOTSXP);
+        }
+        Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
         }
     };
@@ -505,6 +544,26 @@ unsafe extern "C" fn h_discard(t: usize) {
     });
 }
 
+unsafe fn sym_arg(x: Sexp) -> RResult<Sym> {
+    match from_sexp(x) {
+        Value::Sym(s) => Ok(s),
+        Value::Str(v) if v.data.len() == 1 && v.data[0].is_some() => Ok(Sym::new(v.data[0].as_deref().unwrap())),
+        _ => Err(Flow::error("invalid symbol")),
+    }
+}
+
+/// The value bound to `sym` in this frame, as findVarInFrame sees it:
+/// promises unforced, active bindings called.
+fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
+    let Some(flags) = env.binding_flags(sym) else { return Ok(None) };
+    let v = env.get_local(sym).unwrap_or(Value::Null);
+    if flags & robigo_runtime::env::BIND_ACTIVE != 0 {
+        let g = with_interp(|i| i.global.clone());
+        return with_interp(|i| i.call_value(&v, vec![], &g)).map(Some);
+    }
+    Ok(Some(v))
+}
+
 fn vtype_of(t: i32) -> Option<VType> {
     Some(match t as u8 {
         NILSXP => VType::Null,
@@ -559,6 +618,94 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
         "field" => field(a[0], int_arg(a[1]))?,
+        "newEnv" => {
+            let parent = env_of(a[0])?;
+            to_sexp(&Value::Env(Env::new(Some(parent))))
+        }
+        "defineVar" => {
+            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            with_interp(|i| i.define(sym, val, &env))?;
+            R_NilValue
+        }
+        "setVar" => {
+            // R: envir.c:setVar — assign where bound, else in the global env
+            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            let mut cur = Some(env);
+            let mut target = None;
+            while let Some(e) = cur {
+                if e.has_local(sym) {
+                    target = Some(e);
+                    break;
+                }
+                cur = e.parent();
+            }
+            let target = target.unwrap_or_else(|| with_interp(|i| i.global.clone()));
+            with_interp(|i| i.define(sym, val, &target))?;
+            R_NilValue
+        }
+        "findVar" => {
+            let (sym, mut env) = (sym_arg(a[0])?, Some(env_of(a[1])?));
+            while let Some(e) = env {
+                if let Some(v) = binding(&e, sym)? {
+                    return Ok(to_sexp(&v));
+                }
+                env = e.parent();
+            }
+            R_UnboundValue
+        }
+        "findVarInFrame" => {
+            let (env, sym) = (env_of(a[0])?, sym_arg(a[1])?);
+            match binding(&env, sym)? {
+                Some(v) => to_sexp(&v),
+                None => R_UnboundValue,
+            }
+        }
+        "existsVarInFrame" => crate::list::Rf_ScalarLogical(env_of(a[0])?.has_local(sym_arg(a[1])?) as c_int),
+        "removeVar" => {
+            let (sym, env) = (sym_arg(a[0])?, env_of(a[1])?);
+            if env.0.locked.get() {
+                return Err(Flow::error("cannot remove bindings from a locked environment"));
+            }
+            env.remove(sym);
+            R_NilValue
+        }
+        "findFun" => {
+            let (sym, env) = (sym_arg(a[0])?, env_of(a[1])?);
+            to_sexp(&with_interp(|i| i.find_fun(sym, &env))?)
+        }
+        "getVar" => {
+            // R: envir.c:R_getVarEx — forces promises
+            let (sym, env, inherits) = (sym_arg(a[0])?, env_of(a[1])?, *LOGICAL(a[2]) == 1);
+            let mut cur = Some(env);
+            let mut found = None;
+            while let Some(e) = cur {
+                if let Some(v) = binding(&e, sym)? {
+                    found = Some(v);
+                    break;
+                }
+                cur = if inherits { e.parent() } else { None };
+            }
+            match found {
+                Some(v) => to_sexp(&with_interp(|i| i.force(v))?),
+                None if a[3] != R_UnboundValue => a[3],
+                None => return Err(Flow::error(format!("object '{}' not found", sym.name()))),
+            }
+        }
+        "parse" => {
+            let n = crate::memory::xlength(a[0]);
+            let lines: Vec<String> =
+                (0..n).map(|k| String::from_utf8_lossy(STRING_ELT(a[0], k).char_bytes()).into_owned()).collect();
+            let exprs = robigo_runtime::builtins::parsing::parse_text(&lines.join("\n"), "<text>")?;
+            to_sexp(&Value::Expr(Rc::new(Vector::new(exprs))))
+        }
+        "printValue" => {
+            let v = from_sexp(a[0]);
+            with_interp(|i| {
+                let g = i.global.clone();
+                robigo_runtime::print::print_value(i, &v, &g)
+            })?;
+            R_NilValue
+        }
         // a builtin of the host (.Internal or .Primitive) with evaluated
         // arguments: the C API functions that GNU R implements with the
         // same code as an R builtin
@@ -575,13 +722,22 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             to_sexp(&v)
         }
         // R_ToplevelExec hides the handler stack of its caller
+        // R_ToplevelExec/R_tryEval start a new top-level context: the
+        // caller's frames (sys.calls, the call stop() reports) and
+        // handlers are hidden until it returns
         "toplevelBegin" => {
-            with_interp(|i| TOPLEVEL.with(|t| t.borrow_mut().push(i.handlers.take())));
+            with_interp(|i| {
+                let saved = (std::mem::take(&mut i.frames), i.handlers.take());
+                TOPLEVEL.with(|t| t.borrow_mut().push(saved))
+            });
             R_NilValue
         }
         "toplevelEnd" => {
-            if let Some(h) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
-                with_interp(|i| i.handlers = h);
+            if let Some((frames, h)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
+                with_interp(|i| {
+                    i.frames = frames;
+                    i.handlers = h;
+                });
             }
             R_NilValue
         }
@@ -768,6 +924,27 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 /// The foreign call runs in a builtin context, as GNU R gives PP_FOREIGN
 /// primitives one (eval.c): tracebacks show it, `error()` skips it.
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    CALL_DEPTH.with(|d| d.set(d.get() + 1));
+    let res = call_routine_ctx(interp, call, r, args, env);
+    if CALL_DEPTH.with(|d| {
+        d.set(d.get() - 1);
+        d.get() == 0
+    }) {
+        let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
+        for (_, (x, _)) in seen {
+            core().release(x);
+        }
+    }
+    res
+}
+
+unsafe fn call_routine_ctx(
+    interp: &mut Interp,
+    call: &Value,
+    r: &Routine,
+    args: Vec<Arg>,
+    env: &Env,
+) -> RResult<Value> {
     interp.frames.push(robigo_runtime::interp::Context {
         call: call.clone(),
         function: Value::Null,

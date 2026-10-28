@@ -8,34 +8,19 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "Rf_eval",
-    "Rf_defineVar",
-    "Rf_findFun",
     "GetRNGstate",
     "PutRNGstate",
-    "R_getVar",
     "unif_rand",
-    "R_NewEnv",
     "ALTREP_LENGTH",
     "ALTVEC_DATAPTR",
     "ALTSTRING_ELT",
     "R_ClosureFormals",
-    "R_ParseVector",
-    "Rf_findVar",
-    "Rf_findVarInFrame",
-    "R_ExpandFileName",
-    "R_FindNamespace",
     "R_do_slot",
     "R_do_slot_assign",
     "R_mkClosure",
-    "R_tryEval",
     "Rf_fmax2",
     "Rf_fmin2",
-    "R_MakeActiveBinding",
     "R_do_new_object",
-    "R_existsVarInFrame",
-    "R_getVarEx",
-    "R_removeVarFromFrame",
     "Rf_gammafn",
     "Rf_imax2",
     "Rf_imin2",
@@ -49,11 +34,9 @@ pub static STUBS: &[&str] = &[
     "R_do_MAKE_CLASS",
     "R_has_slot",
     "R_pow_di",
-    "Rf_PrintValue",
     "Rf_dbinom",
     "Rf_dnbinom",
     "Rf_dnorm4",
-    "Rf_findVarInFrame3",
     "Rf_lbeta",
     "Rf_pbeta",
     "Rf_pnbinom",
@@ -69,22 +52,15 @@ pub static STUBS: &[&str] = &[
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
-    "R_ActiveBindingFunction",
-    "R_BindingIsActive",
     "R_InitOutPStream",
-    "R_IsNamespaceEnv",
-    "R_ParentEnv",
     "R_PromiseExpr",
     "R_Serialize",
-    "R_lsInternal3",
     "R_new_altrep",
     "R_pow",
     "R_set_altrep_Length_method",
     "R_set_altvec_Dataptr_method",
     "Rf_CreateAtVector",
-    "Rf_PrintDefaults",
     "Rf_dpois",
-    "Rf_match",
     "Rf_pbinom",
     "Rf_ppois",
     "Rf_pt",
@@ -262,7 +238,6 @@ pub static STUBS: &[&str] = &[
     "R_HashtabSEXP",
     "R_InitInPStream",
     "R_IsPackageEnv",
-    "R_LockBinding",
     "R_NewHashedEnv",
     "R_PackageEnvName",
     "R_ReadConsole",
@@ -282,7 +257,6 @@ pub static STUBS: &[&str] = &[
     "R_execMethod",
     "R_findVarLocInFrame",
     "R_fopen",
-    "R_forceAndCall",
     "R_gethash",
     "R_gzclose",
     "R_gzgets",
@@ -340,7 +314,6 @@ pub static STUBS: &[&str] = &[
     "Rf_EncodeLogical",
     "Rf_EncodeReal0",
     "Rf_GPretty",
-    "Rf_NewEnvironment",
     "Rf_RGBpar",
     "Rf_acopy_string",
     "Rf_allocLang",
@@ -420,7 +393,6 @@ pub static STUBS: &[&str] = &[
     "Rf_rweibull",
     "Rf_rwilcox",
     "Rf_selectDevice",
-    "Rf_setVar",
     "Rf_sortVector",
     "Rf_strIsASCII",
     "Rf_strchr",
@@ -484,21 +456,6 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_eval() {
-    not_implemented("Rf_eval")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_defineVar() {
-    not_implemented("Rf_defineVar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_findFun() {
-    not_implemented("Rf_findFun")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn GetRNGstate() {
     not_implemented("GetRNGstate")
 }
@@ -509,18 +466,8 @@ pub unsafe extern "C" fn PutRNGstate() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_getVar() {
-    not_implemented("R_getVar")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn unif_rand() {
     not_implemented("unif_rand")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_NewEnv() {
-    not_implemented("R_NewEnv")
 }
 
 #[unsafe(no_mangle)]
@@ -544,31 +491,6 @@ pub unsafe extern "C" fn R_ClosureFormals() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ParseVector() {
-    not_implemented("R_ParseVector")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_findVar() {
-    not_implemented("Rf_findVar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_findVarInFrame() {
-    not_implemented("Rf_findVarInFrame")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ExpandFileName() {
-    not_implemented("R_ExpandFileName")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_FindNamespace() {
-    not_implemented("R_FindNamespace")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_do_slot() {
     not_implemented("R_do_slot")
 }
@@ -584,11 +506,6 @@ pub unsafe extern "C" fn R_mkClosure() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_tryEval() {
-    not_implemented("R_tryEval")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_fmax2() {
     not_implemented("Rf_fmax2")
 }
@@ -599,28 +516,8 @@ pub unsafe extern "C" fn Rf_fmin2() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_MakeActiveBinding() {
-    not_implemented("R_MakeActiveBinding")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_do_new_object() {
     not_implemented("R_do_new_object")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_existsVarInFrame() {
-    not_implemented("R_existsVarInFrame")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_getVarEx() {
-    not_implemented("R_getVarEx")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_removeVarFromFrame() {
-    not_implemented("R_removeVarFromFrame")
 }
 
 #[unsafe(no_mangle)]
@@ -689,11 +586,6 @@ pub unsafe extern "C" fn R_pow_di() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_PrintValue() {
-    not_implemented("Rf_PrintValue")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_dbinom() {
     not_implemented("Rf_dbinom")
 }
@@ -706,11 +598,6 @@ pub unsafe extern "C" fn Rf_dnbinom() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_dnorm4() {
     not_implemented("Rf_dnorm4")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_findVarInFrame3() {
-    not_implemented("Rf_findVarInFrame3")
 }
 
 #[unsafe(no_mangle)]
@@ -789,28 +676,8 @@ pub unsafe extern "C" fn GEinitDisplayList() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ActiveBindingFunction() {
-    not_implemented("R_ActiveBindingFunction")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_BindingIsActive() {
-    not_implemented("R_BindingIsActive")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_InitOutPStream() {
     not_implemented("R_InitOutPStream")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_IsNamespaceEnv() {
-    not_implemented("R_IsNamespaceEnv")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ParentEnv() {
-    not_implemented("R_ParentEnv")
 }
 
 #[unsafe(no_mangle)]
@@ -821,11 +688,6 @@ pub unsafe extern "C" fn R_PromiseExpr() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_Serialize() {
     not_implemented("R_Serialize")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_lsInternal3() {
-    not_implemented("R_lsInternal3")
 }
 
 #[unsafe(no_mangle)]
@@ -854,18 +716,8 @@ pub unsafe extern "C" fn Rf_CreateAtVector() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_PrintDefaults() {
-    not_implemented("Rf_PrintDefaults")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_dpois() {
     not_implemented("Rf_dpois")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_match() {
-    not_implemented("Rf_match")
 }
 
 #[unsafe(no_mangle)]
@@ -1775,11 +1627,6 @@ pub unsafe extern "C" fn R_IsPackageEnv() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_LockBinding() {
-    not_implemented("R_LockBinding")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -1896,11 +1743,6 @@ pub unsafe extern "C" fn R_findVarLocInFrame() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_fopen() {
     not_implemented("R_fopen")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_forceAndCall() {
-    not_implemented("R_forceAndCall")
 }
 
 #[unsafe(no_mangle)]
@@ -2189,11 +2031,6 @@ pub unsafe extern "C" fn Rf_EncodeReal0() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_GPretty() {
     not_implemented("Rf_GPretty")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_NewEnvironment() {
-    not_implemented("Rf_NewEnvironment")
 }
 
 #[unsafe(no_mangle)]
@@ -2589,11 +2426,6 @@ pub unsafe extern "C" fn Rf_rwilcox() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_selectDevice() {
     not_implemented("Rf_selectDevice")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_setVar() {
-    not_implemented("Rf_setVar")
 }
 
 #[unsafe(no_mangle)]
