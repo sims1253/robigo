@@ -1531,6 +1531,31 @@ impl NativeBridge for Bridge {
         enter(interp, |interp| unsafe { call_routine(interp, call, r, args, env) })
     }
 
+    fn c_internal(&self, interp: &mut Interp, name: &str, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
+        let fun = match name {
+            "recordGraphics" => crate::graphics::do_recordGraphics as *const c_void,
+            _ => return Err(Flow::error(format!("robigo: no C internal '{name}'"))),
+        };
+        enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            let base = R_PPStackTop;
+            let op = match robigo_runtime::builtins::lookup_internal(name) {
+                Some(b) => Value::Builtin(b),
+                None => Value::Null,
+            };
+            let a = [
+                Rf_protect(to_sexp(call)),
+                Rf_protect(to_sexp(&op)),
+                Rf_protect(args_list(args, LISTSXP)),
+                Rf_protect(to_sexp(&Value::Env(env.clone()))),
+            ];
+            let r = gr_call(fun, &a);
+            R_PPStackTop = base;
+            crate::graphics::sync_devices(interp);
+            r
+        })
+    }
+
     fn option_set(&self, name: &str, value: &Value) {
         unsafe { crate::graphics::option_set(name, value) }
     }

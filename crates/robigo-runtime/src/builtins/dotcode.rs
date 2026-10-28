@@ -25,6 +25,7 @@ pub static DEFS: &[Builtin] = &[
     prim(".Call", do_dotcall, -1),
     prim(".External.graphics", do_external_gr, -1),
     prim(".Call.graphics", do_dotcall_gr, -1),
+    internal("recordGraphics", do_record_graphics, 3).custom_vis(),
 ];
 
 fn path_arg(v: &Value) -> RResult<String> {
@@ -316,6 +317,14 @@ fn graphics_call(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interf
     let r = dot_code(i, call, args.clone(), interface, env)?;
     b.graphics_end(i, call, &op, &args, record)?;
     Ok(r)
+}
+
+// R: engine.c:do_recordGraphics (GNU R's C, in libR)
+fn do_record_graphics(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    match native::bridge() {
+        Some(b) => b.c_internal(i, "recordGraphics", call, &args, env),
+        None => Err(Flow::error("robigo: 'recordGraphics' needs the graphics engine (libR)")),
+    }
 }
 
 fn do_external_gr(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

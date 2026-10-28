@@ -200,6 +200,7 @@ pub unsafe fn init_graphics() {
 
 unsafe extern "C" {
     fn Rf_InitGraphics();
+    pub fn do_recordGraphics(call: Sexp, op: Sexp, args: Sexp, env: Sexp) -> Sexp;
     pub fn robigo_gr_begin() -> Sexp;
     pub fn robigo_gr_end(call: Sexp, op: Sexp, args: Sexp, record: Sexp) -> Sexp;
     fn robigo_gr_roots(out: *mut Sexp, max: c_int) -> c_int;

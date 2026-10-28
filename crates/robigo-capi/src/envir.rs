@@ -69,9 +69,29 @@ pub unsafe extern "C" fn R_NewEnv(enclos: Sexp, _hash: c_int, _size: c_int) -> S
     op("newEnv\0", &[enclos])
 }
 
+// R: envir.c:NewEnvironment — the frame is valuelist, its tags taken
+// from namelist where that has elements
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_NewEnvironment(_namelist: Sexp, _valuelist: Sexp, rho: Sexp) -> Sexp {
-    op("newEnv\0", &[rho])
+pub unsafe extern "C" fn Rf_NewEnvironment(namelist: Sexp, valuelist: Sexp, rho: Sexp) -> Sexp {
+    let env = Rf_protect(op("newEnv\0", &[rho]));
+    let (mut v, mut n) = (valuelist, namelist);
+    let mut frame = Vec::new();
+    while v != R_NilValue {
+        let tag = if n != R_NilValue { TAG(n) } else { TAG(v) };
+        frame.push((tag, CAR(v)));
+        v = CDR(v);
+        if n != R_NilValue {
+            n = CDR(n);
+        }
+    }
+    // defineVar keeps the first binding of a name, as a frame lookup does
+    for &(tag, val) in frame.iter().rev() {
+        if tag != R_NilValue {
+            Rf_defineVar(tag, val, env);
+        }
+    }
+    Rf_unprotect(1);
+    env
 }
 
 // R: envir.c:defineVar

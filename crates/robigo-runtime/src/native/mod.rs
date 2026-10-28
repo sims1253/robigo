@@ -93,6 +93,18 @@ pub trait NativeBridge: Sync {
     ) -> RResult<Value>;
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// A `.Internal` GNU R implements in its graphics engine (C code in
+    /// libR: `recordGraphics`), called with the evaluated arguments.
+    fn c_internal(
+        &self,
+        _interp: &mut Interp,
+        name: &str,
+        _call: &Value,
+        _args: &[Arg],
+        _env: &crate::env::Env,
+    ) -> RResult<Value> {
+        Err(crate::error::Flow::error(format!("robigo: '{name}' needs the graphics engine (libR)")))
+    }
     /// options() set an option the C code reads from a global
     /// (`OutDec`, `max.contour.segments`).
     fn option_set(&self, _name: &str, _value: &Value) {}
