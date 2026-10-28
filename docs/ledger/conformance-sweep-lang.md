@@ -1,5 +1,11 @@
 # conformance-sweep-lang
 
+## 2026-10-28: follow-up delivery verification
+
+- Final candidate 049e4ed reconfirms 2,093/2,187 in the requested FastR filter, zero regressions. Combined names/tracing slice is 258/272, nine gains overall. Base examples remain 257/381 and GNU R scripts remain 18/59; related handler cases preserve their previous pass/fail status while conditions advances to the filesystem dependency.
+- Runtime tests: 23 unit + two integration pass. Language conformance: 31/31; vm_guards_hold and compiled_matches_interpreted both pass. Full conformance: 174/175, solely the pre-existing timezone mismatch with byte-identical main/candidate output. Formatting and whitespace checks pass.
+- Three verified cycles delivered: names-label attributes, memory-tracing validation, and persistent global calling handlers. No remaining named group can become fully passing without the ownership dependencies below. Stop this batch with PR #30 open; do not merge. CI's timezone failure needs the datetime/runner owner, not a weakened expectation.
+
 ## 2026-10-28: global calling handler registration
 
 - Port errors.c:do_addGlobHands into the existing condition internals. Reject registration with local handlers on the stack, install the new global chain, and update every saved context to prevent restoration of the old chain.
