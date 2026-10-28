@@ -54,6 +54,8 @@ pub static DEFS: &[Builtin] = &[
     internal("gregexpr", do_gregexpr, 6),
     internal("regexec", do_regexec, 5),
     internal("grepRaw", do_grepraw, 8),
+    internal("agrep", do_agrep, 8),
+    internal("agrepl", do_agrepl, 8),
 ];
 
 // ======================================================================
@@ -70,7 +72,6 @@ const REG_EBRACE: &str = "Missing '}'";
 const REG_BADBR: &str = "Invalid contents of {}";
 const REG_ERANGE: &str = "Invalid character range";
 const REG_BADRPT: &str = "Invalid use of repetition operators";
-const RE_DUP_MAX: i64 = 255;
 
 /// TRE's word characters (`IS_WORD_CHAR`: alnum or `_`) and their complement.
 const TRE_WORD: &str = r"[\p{Alphabetic}\p{Nd}_]";
@@ -272,7 +273,7 @@ impl TreParser {
         if overflow { -1 } else { num }
     }
 
-    // R: tre-parse.c:tre_parse_bound (without approximate matching)
+    // R: tre-parse.c:tre_parse_bound
     fn parse_bound(&mut self, atom: String) -> TreRes<String> {
         let start = self.i;
         let mut min = -1;
@@ -284,34 +285,84 @@ impl TreParser {
             self.i += 1;
             max = self.parse_int();
         }
-        if (max >= 0 && min > max) || max > RE_DUP_MAX {
+        if (max >= 0 && min > max) || max > 255 {
             return Err(REG_BADBR);
         }
-        // the count-limit loop skips blanks and commas
-        while self.at(1).is_some() && matches!(self.peek(), Some(' ') | Some(',')) {
-            self.i += 1;
-        }
-        match self.peek() {
-            None => return Err(REG_EBRACE),
-            Some('}') => {}
-            Some(c) if matches!(c, '+' | '-' | '#' | '~' | '<') || c.is_ascii_digit() => {
-                // TRE's approximate matching parameters
-                if !self.re[self.i..].contains(&'}') {
-                    return Err(REG_EBRACE);
+        // Count limits (`+n -n #n ~n`) and the cost equation
+        // (`Xi+Yd+Zs<C`): TRE keeps scanning while the position advanced.
+        // Spaces are only skipped here, after the repetition counts, so
+        // `x{2, 3}` is malformed (the 3 starts a cost) while `x{2, }` is not.
+        let mut counts_set = false;
+        let mut costs_set = false;
+        let mut approx = false;
+        loop {
+            let before = self.i;
+            if !counts_set {
+                let mut done = false;
+                while self.i + 1 < self.re.len() && !done {
+                    match self.peek() {
+                        Some('+') | Some('-') | Some('#') => {
+                            self.i += 1;
+                            self.parse_int();
+                            counts_set = true;
+                        }
+                        Some('~') => {
+                            self.i += 1;
+                            self.parse_int();
+                            approx = true;
+                        }
+                        Some(',') | Some(' ') => self.i += 1,
+                        _ => done = true,
+                    }
                 }
-                return Err("robigo: approximate regular expression matching is not supported");
             }
-            Some(_) => {
-                if !self.re[self.i..].contains(&'}') {
-                    return Err(REG_EBRACE);
+            if !costs_set {
+                let mut done = false;
+                while self.i + 1 < self.re.len() && !done {
+                    match self.peek() {
+                        Some('+') | Some(' ') => self.i += 1,
+                        Some('<') => {
+                            self.i += 1;
+                            while self.peek() == Some(' ') {
+                                self.i += 1;
+                            }
+                            self.parse_int();
+                            approx = true;
+                        }
+                        Some(',') => {
+                            self.i += 1;
+                            done = true;
+                        }
+                        Some(c) if c.is_ascii_digit() => {
+                            self.parse_int();
+                            match self.peek() {
+                                Some('i') | Some('d') | Some('s') => {
+                                    self.i += 1;
+                                    costs_set = true;
+                                }
+                                _ => return Err(REG_BADBR),
+                            }
+                        }
+                        _ => done = true,
+                    }
                 }
-                return Err(REG_BADBR);
+            }
+            if self.i == before {
+                break;
             }
         }
+        // Missing }.
+        if self.i >= self.re.len() {
+            return Err(REG_EBRACE);
+        }
+        // Empty contents of {}.
         if self.i == start {
             return Err(REG_BADBR);
         }
-        self.i += 1; // '}'
+        if self.peek() != Some('}') {
+            return Err(REG_BADBR);
+        }
+        self.i += 1;
         let mut minimal = self.ungreedy;
         match self.peek() {
             Some('?') => {
@@ -320,6 +371,9 @@ impl TreParser {
             }
             Some('*') | Some('+') => return Err(REG_BADRPT),
             _ => {}
+        }
+        if approx || costs_set || counts_set {
+            return Err("robigo: approximate regular expression matching is not supported");
         }
         if min == 0 && max == 0 {
             return Ok(format!("(?:{}){{0}}", atom));
@@ -1094,38 +1148,56 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
             '*' | '+' | '?' | '{' => {
                 // quantifier
                 let qstart = i;
+                let q: String;
                 if c == '{' {
-                    // only a quantifier if it has the form {n}, {n,}, {n,m}
+                    // PCRE2 allows white space inside a quantifier
+                    // (`{2,    }`, `{ 2 , 3 }`), so parse the numbers and
+                    // rebuild it without spaces.
                     let mut j = i + 1;
-                    let mut ok = false;
-                    let mut digits = 0;
-                    while j < b.len() && b[j].is_ascii_digit() {
-                        j += 1;
-                        digits += 1;
-                    }
-                    if digits > 0 {
-                        if b.get(j) == Some(&'}') {
-                            ok = true;
-                        } else if b.get(j) == Some(&',') {
-                            j += 1;
-                            while j < b.len() && b[j].is_ascii_digit() {
-                                j += 1;
-                            }
-                            ok = b.get(j) == Some(&'}');
+                    let num = |j: &mut usize| -> String {
+                        while b.get(*j) == Some(&' ') {
+                            *j += 1;
                         }
+                        let s = *j;
+                        while b.get(*j).is_some_and(|c| c.is_ascii_digit()) {
+                            *j += 1;
+                        }
+                        b[s..*j].iter().collect()
+                    };
+                    let min = num(&mut j);
+                    while b.get(j) == Some(&' ') {
+                        j += 1;
                     }
-                    if !ok {
+                    let parsed = if min.is_empty() {
+                        None
+                    } else if b.get(j) == Some(&'}') {
+                        Some(format!("{{{}}}", min))
+                    } else if b.get(j) == Some(&',') {
+                        j += 1;
+                        let max = num(&mut j);
+                        while b.get(j) == Some(&' ') {
+                            j += 1;
+                        }
+                        (b.get(j) == Some(&'}')).then(|| {
+                            if max.is_empty() { format!("{{{},}}", min) } else { format!("{{{},{}}}", min, max) }
+                        })
+                    } else {
+                        None
+                    };
+                    let Some(parsed) = parsed else {
+                        // not a quantifier: PCRE treats `{` literally
                         out.push_str(r"\{");
                         i += 1;
                         atom_start = Some(this_start);
                         last_was_quant = false;
                         continue;
-                    }
+                    };
+                    q = parsed;
                     i = j + 1;
                 } else {
+                    q = c.to_string();
                     i += 1;
                 }
-                let q: String = b[qstart..i].iter().collect();
                 let Some(astart) = atom_start.filter(|_| !last_was_quant) else {
                     if last_was_quant && c == '?' {
                         // lazy modifier already handled; PCRE allows `??` etc.
@@ -1728,6 +1800,275 @@ fn do_grep(i: &mut Interp, c: &Value, a: Vec<Arg>, _: &Env) -> RResult<Value> {
 
 fn do_grepl(i: &mut Interp, c: &Value, a: Vec<Arg>, _: &Env) -> RResult<Value> {
     grep_impl(i, c, a, true)
+}
+
+// ======================================================================
+// agrep / agrepl
+
+/// TRE's approximate-match parameters (`regaparams_t`), after R's
+/// `agrep.c:amatch_regaparams`.
+///
+/// TRE's "insert" consumes a text character and its "delete" drops a pattern
+/// character, so R's `costs[0]`/`costs[1]` and `bounds[2]`/`bounds[1]` are
+/// TRE's insertion/deletion costs and limits, not R's names for them.
+struct AParams {
+    cost_ins: i32,
+    cost_del: i32,
+    cost_subst: i32,
+    max_cost: i32,
+    max_ins: i32,
+    max_del: i32,
+    max_subst: i32,
+    max_err: i32,
+}
+
+/// A bound from `.amatch_bounds`: fractions of the pattern length become
+/// counts (`ceil`, with `NA` meaning unlimited).
+fn amatch_bound(b: f64, scale: f64) -> i32 {
+    if b.is_nan() {
+        return i32::MAX;
+    }
+    let b = if b < 1.0 { b * scale } else { b };
+    let c = b.ceil();
+    if c >= i32::MAX as f64 { i32::MAX } else { c as i32 }
+}
+
+/// A state of TRE's approximate matcher at one pattern position
+/// (`tre_tnfa_approx_reach_t`).
+#[derive(Clone, Copy)]
+struct Reach {
+    pos: isize,
+    cost: i64,
+    ins: i32,
+    del: i32,
+    subst: i32,
+    err: i32,
+}
+
+impl Reach {
+    /// TRE marks everything empty with `pos = -2` (`tre-match-approx.c`).
+    const EMPTY: Reach = Reach { pos: -2, cost: 0, ins: 0, del: 0, subst: 0, err: 0 };
+}
+
+/// Is there a match of `pat` in `text` within the bounds? A port of TRE's
+/// `tre_tnfa_run_approx` for a literal pattern. Text before the match start
+/// and after the match end is free, so the initial state is re-added at every
+/// position, and a match succeeds as soon as the final state is reached.
+///
+/// TRE keeps one path per state and position, dropping the new path when its
+/// cost ties the existing one (`cost0 >= ...`; the tag comparison cannot
+/// break ties because agrep compiles with `REG_NOSUB`, so `tre_tag_order`
+/// returns 0). That makes the result depend on the order the operations are
+/// tried -- initial states, then inserts, then deletes, then exact matches and
+/// substitutions -- so a plain edit-distance DP can disagree with TRE when
+/// several alignments have the same cost. This follows TRE's loop order.
+fn approx_match(pat: &[char], text: &[char], icase: bool, p: &AParams) -> bool {
+    let fold = |c: char| if icase { simple_lower(c) } else { c };
+    let patf: Vec<char> = pat.iter().map(|&c| fold(c)).collect();
+    let textf: Vec<char> = text.iter().map(|&c| fold(c)).collect();
+    if p.max_cost == 0 {
+        // No cost may be spent: TRE dispatches to the exact matcher
+        // (`// R: tre/regexec.c:tre_match_approx`).
+        let n = patf.len();
+        return n == 0 || textf.windows(n).any(|w| w == &patf[..]);
+    }
+    let n = pat.len();
+    let m = text.len();
+    let max_cost = p.max_cost as i64;
+    let mut reach = vec![Reach::EMPTY; n + 1];
+    let mut next = vec![Reach::EMPTY; n + 1];
+    let mut prev_pos: isize = -1;
+    let mut pos: isize = 0;
+    loop {
+        // Initial states: a match may start anywhere.
+        if next[0].pos < pos {
+            next[0] = Reach { pos, ..Reach::EMPTY };
+            if n == 0 {
+                return true;
+            }
+        }
+        // Inserts: consume a text character, stay in the same state.
+        for id in 0..=n {
+            let e = reach[id];
+            if e.pos != prev_pos {
+                continue;
+            }
+            let cost = e.cost + p.cost_ins as i64;
+            if cost > max_cost || e.ins + 1 > p.max_ins || e.err + 1 > p.max_err {
+                continue;
+            }
+            let t = &mut next[id];
+            if t.pos == pos && cost >= t.cost {
+                continue;
+            }
+            *t = Reach { pos, cost, ins: e.ins + 1, del: e.del, subst: e.subst, err: e.err + 1 };
+        }
+        // Deletes: drop a pattern character, breadth-first, so a chain of
+        // deletes can be found and a state may be updated again with a lower
+        // cost.
+        let mut queue: Vec<usize> = (0..=n).filter(|&i| next[i].pos == pos).collect();
+        let mut qi = 0;
+        while qi < queue.len() {
+            let id = queue[qi];
+            qi += 1;
+            let e = next[id];
+            let cost = e.cost + p.cost_del as i64;
+            if cost > max_cost || e.del + 1 > p.max_del || e.err + 1 > p.max_err {
+                continue;
+            }
+            let dest = id + 1;
+            if dest > n {
+                continue;
+            }
+            let t = &mut next[dest];
+            if t.pos == pos && cost >= t.cost {
+                continue;
+            }
+            *t = Reach { pos, cost, ins: e.ins, del: e.del + 1, subst: e.subst, err: e.err + 1 };
+            if dest == n {
+                return true;
+            }
+            queue.push(dest);
+        }
+        if pos >= m as isize {
+            break;
+        }
+        prev_pos = pos;
+        let c = text[pos as usize];
+        pos += 1;
+        std::mem::swap(&mut reach, &mut next);
+        // Exact matches and substitutions consume `c`.
+        for id in 0..n {
+            let e = reach[id];
+            if e.pos < prev_pos {
+                continue;
+            }
+            let a = pat[id];
+            // With `icase` TRE turns each letter into a union of its two
+            // cases and emits one transition per case, upper first
+            // (`// R: tre-parse.c` adds the opposite-case counterpoint and
+            // the items stay sorted). Both transitions lead to the same
+            // state and ties go to the first one, so a free substitution
+            // (`costs[2] == 0`) can beat the exact match -- and, because it
+            // is still a substitution, it also uses up `bounds[4]` errors.
+            let (edges, nedges) = if icase && a.is_ascii_alphabetic() {
+                ([a.to_ascii_uppercase(), a.to_ascii_lowercase()], 2)
+            } else {
+                ([fold(a), fold(a)], 1)
+            };
+            for &edge in &edges[..nedges] {
+                let (cost, err) = if edge == c {
+                    (e.cost, 0)
+                } else {
+                    let cost = e.cost + p.cost_subst as i64;
+                    if cost > max_cost || e.subst + 1 > p.max_subst || e.err + 1 > p.max_err {
+                        continue;
+                    }
+                    (cost, 1)
+                };
+                let t = &mut next[id + 1];
+                if t.pos == pos && cost >= t.cost {
+                    continue;
+                }
+                *t = Reach { pos, cost, ins: e.ins, del: e.del, subst: e.subst + err, err: e.err + err };
+                if id + 1 == n {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn agrep_impl(interp: &mut Interp, args: Vec<Arg>, grepl: bool) -> RResult<Value> {
+    check_arity_internal(&args, 8, if grepl { "agrepl" } else { "agrep" })?;
+    let pat = match &args[0].value {
+        Value::Str(p) if !p.data.is_empty() => p,
+        _ => return Err(Flow::error("invalid 'pattern' argument")),
+    };
+    if pat.data.len() > 1 {
+        interp.warning("argument 'pattern' has length > 1 and only the first element will be used")?;
+    }
+    let Some(x) = str_vec(&args[1].value) else {
+        return Err(Flow::error("invalid 'x' argument"));
+    };
+    let icase = as_logical(&args[2].value) == TRUE;
+    let value = as_logical(&args[3].value) == TRUE;
+    let costs: [i32; 3] = match &args[4].value {
+        Value::Int(v) if v.data.len() >= 3 => [v.data[0], v.data[1], v.data[2]],
+        Value::Real(v) if v.data.len() >= 3 => [v.data[0] as i32, v.data[1] as i32, v.data[2] as i32],
+        _ => [1, 1, 1],
+    };
+    let bounds: [f64; 5] = match &args[5].value {
+        Value::Real(v) if v.data.len() >= 5 => [v.data[0], v.data[1], v.data[2], v.data[3], v.data[4]],
+        Value::Int(v) if v.data.len() >= 5 => {
+            [v.data[0] as f64, v.data[1] as f64, v.data[2] as f64, v.data[3] as f64, v.data[4] as f64]
+        }
+        _ => [0.1, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
+    };
+    let use_bytes = as_logical(&args[6].value) == TRUE;
+    let fixed = as_logical(&args[7].value) != FALSE;
+
+    let n = x.data.len();
+    if pat.data[0].is_none() {
+        // An NA pattern makes every answer NA (R returns INTSXP before the
+        // agrepl check, so agrepl gets integer NAs).
+        if value {
+            return Ok(Value::strs(vec![None; n]));
+        }
+        return Ok(Value::ints(vec![NA_INTEGER; n]));
+    }
+    let pats = pat.data[0].as_deref().unwrap_or("");
+    let patlen = if use_bytes { pats.len() as i32 } else { pats.chars().count() as i32 };
+    if patlen == 0 {
+        return Err(Flow::error("'pattern' must be a non-empty character string"));
+    }
+    if !fixed {
+        return Err(Flow::error("robigo: approximate matching of regular expressions is not implemented yet"));
+    }
+    let maxc = costs.iter().copied().max().unwrap_or(1);
+    let p = AParams {
+        cost_ins: costs[0],
+        cost_del: costs[1],
+        cost_subst: costs[2],
+        max_cost: amatch_bound(bounds[0], patlen as f64 * maxc as f64),
+        max_ins: amatch_bound(bounds[2], patlen as f64),
+        max_del: amatch_bound(bounds[1], patlen as f64),
+        max_subst: amatch_bound(bounds[3], patlen as f64),
+        max_err: amatch_bound(bounds[4], patlen as f64),
+    };
+    let as_chars =
+        |s: &str| -> Vec<char> { if use_bytes { s.bytes().map(|b| b as char).collect() } else { s.chars().collect() } };
+    let pc = as_chars(pats);
+    let ind: Vec<bool> = x
+        .data
+        .iter()
+        .map(|e| match e {
+            Some(s) => approx_match(&pc, &as_chars(s), icase, &p),
+            None => false,
+        })
+        .collect();
+    if grepl {
+        return Ok(Value::lgls(ind.iter().map(|&b| b as Lgl).collect()));
+    }
+    let sel: Vec<usize> = (0..n).filter(|&i| ind[i]).collect();
+    if value {
+        let mut ans = Value::strs(sel.iter().map(|&i| x.data[i].clone()).collect());
+        if let Some(Value::Str(nm)) = args[1].value.get_attr(s::NAMES) {
+            ans.set_attr_raw(s::NAMES, Value::strs(sel.iter().map(|&i| nm.data[i].clone()).collect()));
+        }
+        Ok(ans)
+    } else {
+        Ok(Value::ints(sel.iter().map(|&i| i as i32 + 1).collect()))
+    }
+}
+
+fn do_agrep(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    agrep_impl(interp, args, false)
+}
+
+fn do_agrepl(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    agrep_impl(interp, args, true)
 }
 
 // ======================================================================
