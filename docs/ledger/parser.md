@@ -49,6 +49,24 @@ use `getFilename`'s environment-only rule for condition filenames; preserve
 on successful parses. The pre-rebase syntax unit tests and curated parser
 oracle passed. Rebase retained main's arena AST and console parser.
 
+Result: 147/191 -> 168/191 (+21), zero recorded-pass regressions.
+`--update` records 22 newly listed passes, including one already passing
+on the baseline. Syntax unit tests, curated parser oracle, runtime parser
+tests, and both runtime integration tests pass. The complete runtime unit
+suite has one pre-existing host-libc difference in
+`builtins::complex::tests::c_library_oracle` (sqrt, one bit); all 28 other
+unit tests pass. The PR's Debian CI build and tests pass. A host-linked
+binary cannot run in the older Debian image (GLIBC_2.44 dependency), so
+that attempted cross-libc test run was rejected, with no code changes.
+
+Remaining 23 filter failures: 11 parse-data/source metadata cases;
+9 CLI empty-backtick reports and one CLI octal-escape report that still
+append console context; empty-string assignment and `as.symbol("")`
+need the language track. Next CLI step: consume `ParseError.style` in
+`echo.rs`, preserving condition calls through runtime error reporting.
+The imported NEWLINE cases improve through correct `<<` token consumption
+and error context; no importer or expected-output changes were needed.
+
 Commands for verification:
 
 ```sh
