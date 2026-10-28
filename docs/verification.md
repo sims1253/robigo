@@ -117,6 +117,17 @@ scripts/perf.py compare before.json after.json          # the gate
 3. **perf:** instruction counts of every benchmark; on pull requests
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
+4. **progress** (main only): appends the commit's numbers (instruction
+   counts of every benchmark, passing cases of every corpus, builtins
+   implemented) as one line to `history.jsonl` on the orphan branch
+   `progress-data`, then publishes the charts, badges and a page with
+   every benchmark and corpus on GitHub Pages
+   (https://sims1253.github.io/robigo/); the README embeds them. Nothing
+   is committed to `main`, so the repository does not grow by an image
+   per merge. `scripts/history.py sync` also records main runs the
+   history lacks (a cancelled run, a failed push) from their artifacts,
+   for as long as those exist; `scripts/history.py render HISTORY --out
+   DIR` draws the site locally.
 
 Every job runs in a `debian:trixie` container with Debian's
 `r-base-core 4.5.0-3`: the GNU R the corpora were recorded with, on the
