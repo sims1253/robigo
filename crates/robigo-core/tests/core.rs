@@ -142,7 +142,7 @@ fn stack_references_keep_objects_alive() {
     // only an interior pointer survives in a local
     let interior = std::hint::black_box(unsafe { (x.std_data() as *mut i32).add(10) });
     let x_addr = x.addr();
-    drop(x);
+    let _ = x;
     for i in 0..200_000 {
         int_vec(&mut c, &[i]);
     }
@@ -243,7 +243,7 @@ fn symbol_values_are_traced() {
     let addr = v.addr();
     unsafe { s.set_cdr_raw(v) };
     c.write_barrier(s);
-    drop(v);
+    let _ = v;
     std::hint::black_box([0usize; 64]);
     for _ in 0..3 {
         c.collect();
@@ -278,7 +278,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     let dead_key = c.alloc_vector(INTSXP, 1);
     let _w2 = mk(&mut c, dead_key);
     let dead_addr = dead_key.addr();
-    drop(dead_key);
+    let _ = dead_key;
     std::hint::black_box([0usize; 64]);
     c.collect();
     let mut q = Vec::new();
