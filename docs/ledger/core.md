@@ -11,6 +11,58 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: GC at scale (council item 9)
+
+`crates/robigo-capi/bench/scale.sh` builds a 10M-string STRSXP of unique
+CHARSXPs in C (`mkChar`), then churns 50M `allocVector(REALSXP, 4)` over
+that live heap; GNU R 4.5.0 (oracle image) and robigo run the same
+`scale.R`. robigo's collection time comes from `robigo_gc_seconds()`
+(new export; GNU R's from `gc.time()`).
+
+| | GNU R build | robigo build | GNU R churn | robigo churn |
+|---|---|---|---|---|
+| wall | 5.93 s | 4.13 s | 3.04 s | 1.29 s |
+| in GC | 2.28 s | 0.11 s | 2.04 s | 0.67 s |
+
+The first run showed robigo spending 2.3 s in GC while building. A
+phase timer found the cause in the CHARSXP-table prune: on every
+collection it read the mark bit of each table entry (a cache miss per
+string, 1.3 s at 10M) even when nothing had died. It also rebuilt the
+table at twice the needed size. Fixes:
+
+- the collector counts marked cached CHARSXPs as it traces them, and
+  immortal ones as they are made; when the two add up to the table's
+  size, the prune is skipped (with a debug assertion that every entry is
+  marked);
+- the prune sizes the rebuilt table within insert's 3/4 load factor
+  (2^24 slots for 10M strings, not 2^25: 128 MiB less).
+
+Core-only check (a Rust test building the same 10M strings, 4
+collections): GC total 2.34 s -> 0.26 s.
+
+Memory is the open finding: peak RSS is 915 MB for GNU R and 2071 MB for
+robigo.
+
+- In C after the build: 739 vs 915 MB. The core heap alone holds 761 MB
+  (560 MB of objects plus the 128 MiB table); the rest is the runtime.
+- After returning to R: 746 vs 1305 MB. The bridge copies the STRSXP
+  into the runtime's own string vector, so the dual object model holds
+  the strings twice until the next collection.
+- Churn: robigo collects after allocating 1.5x the live heap, so the
+  dead core copy and up to ~900 MB of churn sit in fresh blocks before
+  the first collection frees them. GNU R's generational collector keeps
+  only 20-40% headroom.
+
+The fixes for these are already on the list: the runtime moving onto
+core objects (no copy) and sticky-mark generational collections (§11:
+minor collections make a smaller growth factor affordable). A lower
+growth factor alone would trade peak memory for proportionally more
+marking of the full live heap.
+
+The robigo binary now relinks when `exports.list` changes (cargo did
+not track the file named in the link argument; build.rs feeds its hash
+into the build).
+
 ## 2026-10-28: Preserve/Release as GNU R's list; the src/appl plan
 
 - R_PreserveObject used a HashMap<Sexp, count>; GNU R conses onto a

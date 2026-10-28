@@ -1042,6 +1042,8 @@
   robigo_extdata_owner;
   robigo_flags;
   robigo_gc;
+  robigo_gc_count;
+  robigo_gc_seconds;
   robigo_host_handle;
   robigo_host_proxy;
   robigo_run_finalizers;

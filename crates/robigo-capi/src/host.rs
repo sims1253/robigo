@@ -144,3 +144,16 @@ pub unsafe extern "C" fn robigo_gc() -> u64 {
     crate::util::safe_point();
     t
 }
+
+/// Seconds spent in collections so far (robigo's gc.time(); the GC-at-scale
+/// benchmark reads it).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn robigo_gc_seconds() -> f64 {
+    crate::state::core().stats.collect_total_ns as f64 / 1e9
+}
+
+/// Collections so far.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn robigo_gc_count() -> f64 {
+    crate::state::core().stats.collections as f64
+}

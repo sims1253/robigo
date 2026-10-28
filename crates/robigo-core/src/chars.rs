@@ -75,14 +75,19 @@ impl CharTable {
         }
     }
 
+    /// Whether `f` holds for every entry.
+    pub fn all(&self, f: impl Fn(Sexp) -> bool) -> bool {
+        self.slots.iter().all(|c| c.is_null() || f(*c))
+    }
+
     /// Drop the entries `live` rejects (after marking, before any memory
     /// is reused); the table shrinks to fit the survivors.
     pub fn prune(&mut self, live: impl Fn(Sexp) -> bool) {
         let survivors = self.slots.iter().filter(|c| !c.is_null() && live(**c)).count();
-        let cap = (survivors * 2).next_power_of_two().max(MIN_SLOTS);
-        if survivors == self.len && cap == self.slots.len() {
-            return;
-        }
+        // the smallest table within insert's 3/4 load factor: a sparser
+        // one costs a word per slot (10M strings: 128 MiB more, measured
+        // by bench/scale.sh)
+        let cap = (survivors * 4 / 3 + 1).next_power_of_two().max(MIN_SLOTS);
         self.rebuild(cap, live);
     }
 }

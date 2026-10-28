@@ -52,6 +52,11 @@ pub struct Core {
     epoch: u64,
     alloc_since_gc: usize,
     gc_threshold: usize,
+    /// cached CHARSXPs marked by this collection, and immortal ones: when
+    /// they add up to the table's size nothing in it died, and the prune
+    /// (a cache miss per entry: 1.3 s for 10M strings) is skipped
+    marked_chars: usize,
+    immortal_chars: usize,
     /// > 0: allocation does not collect (`R_gc` still does).
     pub gc_inhibit: u32,
     /// the bounds of the thread the core is bound to (the evaluator's)
@@ -149,6 +154,8 @@ impl Core {
             epoch: 0,
             alloc_since_gc: 0,
             gc_threshold: gc_min(),
+            marked_chars: 0,
+            immortal_chars: 0,
             gc_inhibit: 0,
             stack_top: thread_stack().1,
             stack_lo: thread_stack().0,
@@ -203,6 +210,9 @@ impl Core {
                 return;
             }
             x.set_flag(flags::IMMORTAL, true);
+            if x.typ() == CHARSXP && x.gp() & gp::CACHED != 0 {
+                self.immortal_chars += 1;
+            }
             let b = self.heap.block_of(x.0);
             if (*b).magic == 0x524f4249474f4241 {
                 (*b).immortals += 1;
@@ -603,6 +613,8 @@ impl Core {
             while let Some(p) = self.mark_stack.pop() {
                 let t = p.typ();
                 if t == CHARSXP {
+                    // every cached CHARSXP is in the table (mk_char)
+                    self.marked_chars += (p.gp() & gp::CACHED != 0) as usize;
                     continue;
                 }
                 self.mark_obj(p.attrib_raw());
@@ -735,6 +747,7 @@ impl Core {
         }
         let t0 = Instant::now();
         self.epoch += 1;
+        self.marked_chars = 0;
         unsafe {
             for i in 0..self.precious.len() {
                 let p = self.precious[i];
@@ -776,6 +789,10 @@ impl Core {
     }
 
     fn prune_chars(&mut self) {
+        if self.marked_chars + self.immortal_chars == self.chars.len() {
+            debug_assert!(self.chars.all(|c| unsafe { self.is_marked(c) }));
+            return;
+        }
         let mut chars = std::mem::take(&mut self.chars);
         chars.prune(|c| unsafe { self.is_marked(c) });
         self.chars = chars;
