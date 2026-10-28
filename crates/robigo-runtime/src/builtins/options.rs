@@ -98,34 +98,98 @@ fn default_packages() -> Value {
 // ----------------------------------------------------------------------
 // Collation
 
-fn primary_weight(c: char) -> (u32, u32) {
-    // ICU root collation order for ASCII (non-ignorable punctuation):
-    // whitespace, punctuation, symbols, digits, letters.
-    const PUNCT: &str = "\t\n\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
-    if let Some(i) = PUNCT.find(c) {
-        return (1 + i as u32, 0);
+// ICU root collation order for ASCII (non-ignorable punctuation):
+// whitespace, punctuation, symbols, digits, letters.
+const PUNCT: &str = "\t\n\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+
+const fn ascii_weight(c: u8) -> (u32, u32) {
+    let p = PUNCT.as_bytes();
+    let mut i = 0;
+    while i < p.len() {
+        if p[i] == c {
+            return (1 + i as u32, 0);
+        }
+        i += 1;
     }
     if c.is_ascii_digit() {
-        return (100 + (c as u32 - '0' as u32), 0);
+        return (100 + (c - b'0') as u32, 0);
     }
     if c.is_ascii_alphabetic() {
         let l = c.to_ascii_lowercase();
-        return (200 + (l as u32 - 'a' as u32), c.is_ascii_uppercase() as u32);
+        return (200 + (l - b'a') as u32, c.is_ascii_uppercase() as u32);
     }
     (1000 + c as u32, 0)
+}
+
+/// [`ascii_weight`] of every ASCII character, so that a comparison costs a
+/// table load per character.
+static ASCII_WEIGHTS: [(u32, u32); 128] = {
+    let mut t = [(0, 0); 128];
+    let mut c = 0;
+    while c < 128 {
+        t[c] = ascii_weight(c as u8);
+        c += 1;
+    }
+    t
+};
+
+#[inline]
+fn primary_weight(c: char) -> (u32, u32) {
+    match ASCII_WEIGHTS.get(c as usize) {
+        Some(&w) => w,
+        None => (1000 + c as u32, 0),
+    }
 }
 
 /// String collation as GNU R's `Scollate` does in a non-C locale (ICU
 /// root collator): case-insensitive first, lower case before upper case
 /// on ties. Exact for ASCII; other characters sort by code point.
+///
+/// This is the lexicographic order of the strings' primary weights, then of
+/// their tertiary weights, then of their bytes, computed in one pass: the
+/// first primary difference decides; otherwise (the weight sequences have
+/// the strings' lengths) the shorter string, then the first tertiary
+/// difference.
 pub fn scollate(a: &str, b: &str) -> Ordering {
-    let pa: Vec<(u32, u32)> = a.chars().map(primary_weight).collect();
-    let pb: Vec<(u32, u32)> = b.chars().map(primary_weight).collect();
-    let prim = pa.iter().map(|x| x.0).cmp(pb.iter().map(|x| x.0));
+    if a == b {
+        return Ordering::Equal;
+    }
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    let mut tert = Ordering::Equal;
+    for (&p, &q) in x.iter().zip(y) {
+        if p == q {
+            continue;
+        }
+        if p >= 0x80 || q >= 0x80 {
+            return scollate_chars(a, b);
+        }
+        let ((pp, pt), (qp, qt)) = (ASCII_WEIGHTS[p as usize], ASCII_WEIGHTS[q as usize]);
+        if pp != qp {
+            return pp.cmp(&qp);
+        }
+        if tert == Ordering::Equal {
+            tert = pt.cmp(&qt);
+        }
+    }
+    if x.len() != y.len() {
+        // The shorter string is a prefix of the longer one up to ASCII
+        // tertiary differences: the longer has more weights.
+        return x.len().cmp(&y.len());
+    }
+    if tert != Ordering::Equal {
+        return tert;
+    }
+    a.cmp(b)
+}
+
+/// [`scollate`] for strings that are not ASCII.
+#[cold]
+fn scollate_chars(a: &str, b: &str) -> Ordering {
+    let prim = a.chars().map(|c| primary_weight(c).0).cmp(b.chars().map(|c| primary_weight(c).0));
     if prim != Ordering::Equal {
         return prim;
     }
-    let tert = pa.iter().map(|x| x.1).cmp(pb.iter().map(|x| x.1));
+    let tert = a.chars().map(|c| primary_weight(c).1).cmp(b.chars().map(|c| primary_weight(c).1));
     if tert != Ordering::Equal {
         return tert;
     }
@@ -496,4 +560,33 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     v.set_attr_raw(s::NAMES, Value::strs(names));
     i.visible = visible;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one-pass comparison agrees with the definition (weights of whole
+    /// strings compared in turn) on every pair of short strings.
+    #[test]
+    fn scollate_matches_weight_sequences() {
+        let alphabet =
+            ["a", "A", "b", "B", "z", "1", "9", " ", "_", "-", ".", "\t", "\u{1}", "\u{7f}", "é", "É", "€", "ü"];
+        let mut strs = vec![String::new()];
+        for _ in 0..3 {
+            let prev: Vec<String> = strs.clone();
+            for s in &prev {
+                for c in alphabet {
+                    strs.push(format!("{s}{c}"));
+                }
+            }
+        }
+        strs.sort();
+        strs.dedup();
+        for a in &strs {
+            for b in &strs {
+                assert_eq!(scollate(a, b), scollate_chars(a, b), "{a:?} vs {b:?}");
+            }
+        }
+    }
 }

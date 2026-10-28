@@ -70,6 +70,7 @@ tests/r/lang/quote.R
 tests/r/lang/substitute-dots.R
 tests/r/math/atan2.R
 tests/r/math/bessel-nbinom-hyper.R
+tests/r/math/complex-vector-arith.R
 tests/r/math/distributions.R
 tests/r/math/gamma.R
 tests/r/math/math-warnings.R
@@ -168,6 +169,7 @@ tests/r/vec/merge-internal.R
 tests/r/vec/minmax.R
 tests/r/vec/order-radix.R
 tests/r/vec/order-range.R
+tests/r/vec/order-strings.R
 tests/r/vec/pminmax-shapes.R
 tests/r/vec/rep.R
 tests/r/vec/sort-base.R

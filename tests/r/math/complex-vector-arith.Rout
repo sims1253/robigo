@@ -1,0 +1,31 @@
+[1] -1.0+  3i -2.5+  7i  1.0-  1i  Inf-Infi  NaN+NaNi -Inf-Infi
+[1]  1.5000000+0.5000000i -0.4230769-0.3846154i -0.5000000-0.5000000i
+[4]        Inf+      Infi        NaN+      NaNi        Inf-      Infi
+[1]   2+3.0i   0-2.5i   1+0.0i Inf-2.0i NaN+1.0i   5-Infi
+[1]   0+1.0i  -4+3.5i  -1-2.0i Inf+4.0i NaN-1.0i   1-Infi
+[1] -3.00+  4i  3.75-  2i -1.00+  0i   Inf+Infi   NaN+NaNi  -Inf-Infi
+[1]  0.02708206+0.29273606i -0.10818360+0.06408144i
+[1]   2+  4i  -4+  1i   0-  2i Inf+NaNi NaN+NaNi NaN-Infi
+[1]  0.4000000-0.8000000i -0.9411765-0.2352941i  0.0000000+2.0000000i
+[4]  0.0000000+0.0000000i        NaN+      NaNi  0.0000000+0.0000000i
+[1]   1+  2i  -4+  1i   0-  3i Inf+NaNi NaN+NaNi NaN-Infi
+[1]   1+  2i   0+  0i       NA Inf+NaNi NaN+NaNi NaN+NaNi
+complex(0)
+complex(0)
+[1]        NaN-      Infi -0.1518273-0.0396549i       -Inf+      NaNi
+[1]       -Inf+       NaNi 0.02147901+0.01204139i        Inf+       NaNi
+[1] NaN+Infi NaN+NaNi       NA
+[1] NaN+Infi
+[1] NaN+Infi
+[1] Inf+Infi NaN+NaNi
+      [,1]     [,2]      [,3]
+r1 -1.0+3i   1-  1i  NaN+NaNi
+r2 -2.5+7i Inf-Infi -Inf-Infi
+     [,1]     [,2]      [,3]
+r1 2.0-1i  -1+  0i  NaN+NaNi
+r2 0.5+2i NaN-Infi -Inf+NaNi
+    p     q 
+-1+1i  3+2i
+[1] "unimplemented complex operation"
+complex(0)
+[1]   -1+  3i   -5+ 14i    3-  3i  Inf-Infi  NaN+NaNi -Inf-Infi
