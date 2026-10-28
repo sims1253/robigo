@@ -1099,6 +1099,68 @@ fn str_eq_fast(op: RelOp, a: &RVal, b: &RVal) -> Option<RVal> {
     }))
 }
 
+/// An attribute-free complex, double, integer or logical scalar as a
+/// complex number (R: coerce.c:ComplexFromReal etc.), and whether it is
+/// complex.
+fn cplx_scalar(v: &RVal) -> Option<(Complex, bool)> {
+    Some(match v {
+        RVal::D(x) => (Complex::new(*x, 0.0), false),
+        RVal::I(x) | RVal::L(x) => (Complex::new(int_to_real(*x), 0.0), false),
+        RVal::V(Value::Cplx(z)) if z.data.len() == 1 && z.attrs.is_none() => (z.data[0], true),
+        _ => return None,
+    })
+}
+
+/// `x op y` for scalars, at least one complex, as `complex_binary`
+/// computes it (R: complex.c:complex_binary; nothing to warn about).
+fn complex_op(op: ArithOp, (x, cx): (Complex, bool), (y, cy): (Complex, bool)) -> Option<RVal> {
+    use crate::builtins::complex::{cdiv, cmul, cpow};
+    if !(cx || cy) {
+        return None;
+    }
+    let z = match op {
+        ArithOp::Plus => Complex::new(x.re + y.re, x.im + y.im),
+        ArithOp::Minus => Complex::new(x.re - y.re, x.im - y.im),
+        // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
+        ArithOp::Times => cmul(x, y),
+        ArithOp::Div => cdiv(x, y),
+        ArithOp::Pow => cpow(x, y),
+        ArithOp::Mod | ArithOp::IDiv => return None,
+    };
+    Some(RVal::V(Value::cplx(z)))
+}
+
+/// [`complex_op`] on two registers.
+#[inline(never)]
+fn complex_regs(op: ArithOp, x: &RVal, y: &RVal) -> Option<RVal> {
+    complex_op(op, cplx_scalar(x)?, cplx_scalar(y)?)
+}
+
+/// [`complex_op`] on two leaves, read without running code.
+#[inline(never)]
+fn complex_leaves(op: ArithOp, vars: &mut Vars<'_>, env: &Env, regs: &[RVal], a: &Leaf, b: &Leaf) -> Option<RVal> {
+    let mut read = |l: &Leaf| match l {
+        Leaf::D(x) => Some((Complex::new(*x, 0.0), false)),
+        Leaf::I(x) => Some((Complex::new(int_to_real(*x), 0.0), false)),
+        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot).and_then(cplx_scalar),
+        Leaf::R(r) => cplx_scalar(&regs[*r as usize]),
+    };
+    let x = read(a)?;
+    let y = read(b)?;
+    complex_op(op, x, y)
+}
+
+/// `abs(z)` of an attribute-free complex scalar: its modulus.
+#[inline(never)]
+fn complex_abs(f: Math1, x: &RVal) -> Option<RVal> {
+    match x {
+        RVal::V(Value::Cplx(z)) if f == Math1::Abs && z.data.len() == 1 && z.attrs.is_none() => {
+            Some(RVal::D(z.data[0].re.hypot(z.data[0].im)))
+        }
+        _ => None,
+    }
+}
+
 /// Unboxed `sqrt(x)` etc.; `None` where the builtin must run (it warns
 /// about NaNs produced, or the input is not a plain number).
 fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
@@ -2799,7 +2861,7 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $mul:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $op:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -2820,7 +2882,10 @@ fn run_with(
             let y = leaf_num(&mut vars, env, &regs, $b);
             let fast = match (x, y) {
                 (Some(x), Some(y)) => $fast(x, y),
-                _ => None,
+                _ => match $op {
+                    Some(op) => complex_leaves(op, &mut vars, env, &regs, $a, $b),
+                    None => None,
+                },
             };
             regs[dst] = match fast {
                 Some(v) => {
@@ -2843,7 +2908,7 @@ fn run_with(
                             Some(v) => v,
                             None => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
                         },
-                        _ if $mul => match mul_add_next(code, pc, dst as Reg, x, y, &mut vars, env, regs) {
+                        _ if $op == Some(ArithOp::Times) => match mul_add_next(code, pc, dst as Reg, x, y, &mut vars, env, regs) {
                             Ok(out) => {
                                 pc += 1;
                                 regs[out.0 as usize] = RVal::V(out.1);
@@ -2957,7 +3022,7 @@ fn run_with(
             Op::Arith { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
                     (Some(x), Some(y)) => arith_fast(*op, x, y),
-                    _ => None,
+                    _ => complex_regs(*op, &regs[*a as usize], &regs[*b as usize]),
                 };
                 regs[*dst as usize] = match fast {
                     Some(v) => {
@@ -2987,10 +3052,10 @@ fn run_with(
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), *op == ArithOp::Times);
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Some(*op));
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), false);
+                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), None::<ArithOp>);
             }
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
@@ -3353,7 +3418,10 @@ fn run_with(
                 };
             }
             Op::Math1 { f, dst, a, call } => {
-                regs[*dst as usize] = match scalar(&regs[*a as usize]).and_then(|x| math1_fast(*f, x)) {
+                regs[*dst as usize] = match scalar(&regs[*a as usize])
+                    .and_then(|x| math1_fast(*f, x))
+                    .or_else(|| complex_abs(*f, &regs[*a as usize]))
+                {
                     Some(v) => {
                         regs[*a as usize] = RVal::I(0);
                         v
