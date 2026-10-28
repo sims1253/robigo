@@ -1586,7 +1586,7 @@ fn run_inline_with(
     let code = &*info.code;
     // All guards at once, once per search epoch, when that suffices.
     let mut guarded = false;
-    if env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) {
+    if env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || locked_to_search(env) {
         let key = (crate::env::search_epoch(), env.id(), env.fn_version());
         if info.guards_key.get() != key && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
             info.guards_key.set(key);
@@ -2395,17 +2395,19 @@ fn fresh_guards_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
 
 #[inline(never)]
 fn fresh_nested_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
-    if !clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search()) {
-        return false;
-    }
     let key = (
         crate::env::search_epoch(),
         clo.env.id(),
         clo.env.fn_version(),
         Rc::as_ptr(&clo.formals) as *const Arg as usize,
     );
+    // (Only ever set for an environment that qualifies, which it keeps:
+    // locked environments stay locked.)
     if code.fresh_nested.get() == key {
         return true;
+    }
+    if !clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search() || locked_to_search(p)) {
+        return false;
     }
     // Environments below the search path come and go with calls: check
     // only for a closure called again with the same environment (checking
@@ -2415,6 +2417,35 @@ fn fresh_nested_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
     }
     code.fresh_nested.set(key);
     true
+}
+
+/// A call frame whose enclosure is a namespace (see [`locked_to_search`]):
+/// its guards, like those of frames directly below the search path,
+/// depend only on the search epoch and its own function bindings.
+#[inline(never)]
+fn frame_of_locked(env: &Env) -> bool {
+    env.parent_ref().as_ref().is_some_and(|p| p.0.locked.get() && locked_to_search(p))
+}
+
+/// Whether `env` and its enclosures up to the search path are all locked
+/// (a namespace, its imports, the base namespace): no binding can appear
+/// in them, so function lookups through them depend only on their
+/// function bindings and the search path.
+#[inline(never)]
+fn locked_to_search(env: &Env) -> bool {
+    let mut cur = env.clone();
+    loop {
+        if cur.is_search() {
+            return true;
+        }
+        if !cur.0.locked.get() {
+            return false;
+        }
+        cur = match cur.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+    }
 }
 
 /// Whether every guard of `code` holds in a fresh call frame of `clo`.
@@ -2497,7 +2528,7 @@ fn run_with(
     // bindings of `env` and its parent: R code that ran (after a flush)
     // invalidates them only if one changed. Elsewhere (more deeply nested
     // closures) every flush does.
-    let stable = env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search());
+    let stable = env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env);
     let mut token = (crate::env::search_epoch(), env.fn_version());
     let mut recheck = false;
     interp.visible = true;
