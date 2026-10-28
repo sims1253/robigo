@@ -203,6 +203,13 @@ fn the_api() {
         assert_eq!(capi::errors::R_ToplevelExec(neg, std::ptr::null_mut()), 0);
         assert_eq!(take_log(), vec!["reported: negative length vectors are not allowed".to_string()]);
 
+        // ---- allocation failure is GNU R's error, not an abort
+        unsafe extern "C" fn huge(_: *mut c_void) {
+            unsafe { capi::memory::Rf_allocVector(REALSXP as u32, 1_000_000_000_000_000) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 7450580.6 Gb".to_string()]);
+
         // ---- .Call through the 65-argument trampoline
         unsafe extern "C" fn add3(a: Sexp, b: Sexp, c: Sexp) -> Sexp {
             unsafe {

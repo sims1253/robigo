@@ -148,11 +148,20 @@ impl Heap {
     /// by address and mmap does not hand out monotonic addresses, so the
     /// new chunk is not necessarily the last one.
     fn new_chunk(&mut self, large: bool, min_payload: usize) -> (*mut u8, usize) {
-        let total = if large { min_payload.div_ceil(BLOCK) * BLOCK } else { CHUNK_BYTES };
-        let layout = Layout::from_size_align(total, BLOCK).unwrap();
+        match self.try_new_chunk(large, min_payload) {
+            Some(r) => r,
+            None => handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap()),
+        }
+    }
+
+    /// A new chunk, or None if the system has no memory for it (large
+    /// objects turn that into GNU R's allocation error).
+    fn try_new_chunk(&mut self, large: bool, min_payload: usize) -> Option<(*mut u8, usize)> {
+        let total = if large { min_payload.div_ceil(BLOCK).checked_mul(BLOCK)? } else { CHUNK_BYTES };
+        let layout = Layout::from_size_align(total, BLOCK).ok()?;
         let base = unsafe { alloc(layout) };
         if base.is_null() {
-            handle_alloc_error(layout);
+            return None;
         }
         let base = base as usize;
         let idx = self.chunks.partition_point(|c| c.base < base);
@@ -187,7 +196,7 @@ impl Heap {
         self.min_addr = self.min_addr.min(base);
         self.max_addr = self.max_addr.max(base + total);
         self.reserved += total;
-        (base as *mut u8, idx)
+        Some((base as *mut u8, idx))
     }
 
     fn fresh_block(&mut self) -> *mut Block {
@@ -299,14 +308,19 @@ impl Heap {
     }
 
     fn alloc_large(&mut self, size: usize) -> *mut u8 {
+        self.try_alloc_large(size).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
+    }
+
+    /// A large object, or None if the system has no memory for it.
+    pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
         // object header + payload live after a pseudo block header area
-        let total_payload = size + DATA_OFF;
-        let (base, _) = self.new_chunk(true, total_payload);
+        let total_payload = size.checked_add(DATA_OFF)?;
+        let (base, _) = self.try_new_chunk(true, total_payload)?;
         let base = base as usize;
         // a large chunk has no block header: clear the magic word so
         // per-block bookkeeping never mistakes it for one
         unsafe { *(base as *mut u64) = 0 };
-        (base + DATA_OFF) as *mut u8
+        Some((base + DATA_OFF) as *mut u8)
     }
 
     /// Immediate free of a small object.

@@ -40,7 +40,13 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
     match t {
         NILSXP => R_NilValue,
         LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP => {
-            c().alloc_vector(t, n as usize)
+            if n <= 256 {
+                return c().alloc_vector(t, n as usize);
+            }
+            match c().try_alloc_vector(t, n as usize) {
+                Some(x) => x,
+                None => cannot_allocate(t, n),
+            }
         }
         LISTSXP => Rf_allocList(n as c_int),
         LANGSXP => {
@@ -53,6 +59,22 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
         }
         _ => error_str_owned(format!("invalid type/length ({}/{}) in vector allocation", type_to_char_t(t), n)),
     }
+}
+
+// R: memory.c:allocVector3 — the size in GNU R's VECREC (8-byte) units,
+// reported against no call
+#[cold]
+unsafe fn cannot_allocate(t: u8, n: isize) -> ! {
+    let bytes = n as f64 * robigo_core::elt_size(t) as f64;
+    let dsize = (bytes / 8.0).ceil() * 8.0 / 1024.0;
+    let msg = if dsize > 1024.0 * 1024.0 {
+        format!("cannot allocate vector of size {:.1} Gb", dsize / 1024.0 / 1024.0)
+    } else if dsize > 1024.0 {
+        format!("cannot allocate vector of size {:.1} Mb", dsize / 1024.0)
+    } else {
+        format!("cannot allocate vector of size {:.0} Kb", dsize)
+    };
+    crate::errors::errorcall_owned(R_NilValue, msg)
 }
 
 pub fn type_to_char_t(t: u8) -> &'static str {

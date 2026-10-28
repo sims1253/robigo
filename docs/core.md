@@ -524,21 +524,21 @@ they land; evidence in `docs/ledger/core.md`):
 | 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
-| 8 | one barrier-capable store() for heap stores; reserved header state | planned (e) |
-| 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | planned (d) |
-| 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | planned (e); ATTRIB done |
-| 11 | the bridge is a thin scaffold with listed limits | §6 |
-| 12 | allocation failure is an R error with GNU R's messages | planned (e) |
+| 8 | one barrier-capable store() for heap stores; reserved header state | first step: every API store goes through `fix_refcnt` → `Core::write_barrier` (immortal roots today); generational use planned |
+| 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | microbenchmarks done (`crates/robigo-capi/bench`, ledger); GC-at-scale planned |
+| 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | done |
+| 11 | the bridge is a thin scaffold with listed limits | §6, bridge.rs header |
+| 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
 | 13 | medium-object pages, LARGE bit, consistent accounting | planned (d/e) |
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
-| 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | planned (f) |
+| 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | partly: C trampolines for every call into package code (`.Call`/`.External`/`.C`, R_init, finalizers, R_UnwindProtect/ExecWithCleanup/ToplevelExec bodies and cleanups); outward errors still jump from the exporting Rust frame (plain frames by construction) until the Result refactor; catch_unwind goes into the host callbacks with the bridge; see §5 on C-unwind |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
-| 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | planned (with the bridge) |
+| 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | bridge copies arguments in (EXTDATA unused); ALTREP class planned |
 | 23 | console output through C stdio; signal ownership | planned |
 | 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
 | 25 | start G3 once the accessor layer and the fastmap gate exist | noted |

@@ -254,12 +254,44 @@ impl Core {
             }
             return x;
         }
-        self.alloc_vector_slow(t, n, esz)
+        self.alloc_vector_slow(t, n)
     }
 
-    fn alloc_vector_slow(&mut self, t: u8, n: usize, esz: usize) -> Sexp {
-        let bytes = n.checked_mul(esz).and_then(|b| b.checked_add(OFF_DATA)).expect("vector too large");
-        let x = self.alloc_object(t, bytes.div_ceil(16) * 16);
+    fn alloc_vector_slow(&mut self, t: u8, n: usize) -> Sexp {
+        match self.try_alloc_vector(t, n) {
+            Some(x) => x,
+            None => panic!("robigo: cannot allocate a vector of {n} elements"),
+        }
+    }
+
+    /// A vector, or None if there is no memory for it (after a
+    /// collection): the API turns that into GNU R's "cannot allocate
+    /// vector of size ..." error.
+    pub fn try_alloc_vector(&mut self, t: u8, n: usize) -> Option<Sexp> {
+        let esz = crate::elt_size(t);
+        let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
+        let x = if bytes > crate::heap::MAX_SMALL {
+            if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
+                self.collect();
+            }
+            let p = match self.heap.try_alloc_large(bytes) {
+                Some(p) => p,
+                None => {
+                    if self.gc_inhibit == 0 {
+                        self.collect();
+                    }
+                    self.heap.try_alloc_large(bytes)?
+                }
+            };
+            unsafe {
+                *(p as *mut u64) = t as u64;
+                *((p as *mut *mut u8).add(1)) = self.nil.0;
+            }
+            self.alloc_since_gc += bytes;
+            Sexp(p)
+        } else {
+            self.alloc_object(t, bytes)
+        };
         unsafe {
             x.set_std_len(n as isize);
             x.set_truelen(0);
@@ -278,7 +310,7 @@ impl Core {
                 _ => {}
             }
         }
-        x
+        Some(x)
     }
 
     /// A vector whose payload belongs to someone else: `release(owner)`
