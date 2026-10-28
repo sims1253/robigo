@@ -190,7 +190,8 @@ jobs:
             git worktree add -q --detach data origin/progress-data
             python3 scripts/history.py add data/history.jsonl artifacts --commit "$GITHUB_SHA" \
               --run "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
-            python3 scripts/history.py sync data/history.jsonl --repo "$GITHUB_REPOSITORY" --limit 20
+            python3 scripts/history.py sync data/history.jsonl --repo "$GITHUB_REPOSITORY" --limit 20 ||
+              echo "::warning::history sync failed; recording this commit only"
             git -C data add history.jsonl
             if git -C data diff --cached --quiet; then break; fi
             git -C data commit -q -m "history: ${GITHUB_SHA::12}"
