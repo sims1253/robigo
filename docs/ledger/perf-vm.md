@@ -224,6 +224,41 @@ without a guard. The port:
   operators guarded to base. Double arithmetic signals no warnings, and
   NA/NaN propagate elementwise as in the two passes.
 
+## 2026-10-28: VM-to-VM calls: the non-recursive frames measured, the flattened call kept (PR #50)
+
+- the S4 hook contract (docs/ledger/methods.md "Hook contract"): a path
+  that runs a closure body pushes a `Context` exactly as `exec_closure`
+  does and pops it with `end_context`. Both variants below do that, through
+  helpers factored out of interp.rs (`enter_call`/`leave_call`,
+  `call_sysparent`, `push_closure_context`, `bind_positional`), which the
+  general path uses too.
+- tried: VM frames without Rust recursion, as planned below. `Op::Call` of
+  a compiled closure with positional arguments pushed a frame in the
+  running `run_with`; every `return` there became "finish this frame"
+  (callee value to the caller's register, errors unwound frame by frame
+  with each caller's `break`/`next`); registers, slots and guard marks
+  from a pool. Correct (conformance, all tiers), but per call 3,278
+  instructions against 3,253 on main: the frame switch (saving and
+  restoring 13 locals, ~140) and the storage handling (~175) cost what the
+  layers did, and making `code`/`env`/`regs`/`vars`/`checked` reassignable
+  in `run_with` spilled registers all over the dispatch loop (`fannkuch`
+  +4.4%, `profiler-microbenchmark` +1.5%, all on lines without line info).
+  Rejected; kept as a local tag `pv2-nonrecursive-frames`.
+- kept: the same call setup as one function, `vm::direct_call`, with Rust
+  recursion into `run_closure` as before: `enter_call`, `bind_positional`,
+  the context, `run_closure`, a `return()` to the frame, `end_context`,
+  `leave_call`, for a compiled body with positional untagged arguments
+  (`direct_code`); everything else keeps `call_closure_ex`. It skips
+  `call_closure_ex`/`apply_closure_ex`/`exec_closure_ex`'s general cases
+  (argument matching, dispatch variables, the interpreter fallback).
+  fib: 3,253 -> 3,160 instructions per call.
+- remaining per call in fib (3,160): body 669, argument promises and the
+  eager argument's box (`closure_call`) 582, `run_pre` 170, `direct_call`
+  153, `end_context` 151, variable lookups 144, the caller-side `n - 1`
+  guard memo missing per frame (`guard_ok_slow`) 68, frame allocation and
+  release ~250. GNU R: 2,923.
+- result against main a6bd46e (default profile, container): 20 faster, none slower than 0.5% (worst `spectralnorm_alt_2` +0.42%); `profiler-shared` -2.7%, `fib` -2.2%, `robigo/binarytrees` -1.9%, `spectralnorm_alt_3` -1.6%, `profiler-microbenchmark` -1.4%, the `binarytrees`/`fasta` families -0.5..-1.0%, `Storage` -0.9%; geomean 0.5777 -> 0.5754, faster on 70 -> 71. (main a6bd46e itself has `flexclust` at 5.24G instructions: the scan functions are out of line there now too, see the codegen-units note.)
+
 ## 2026-10-28: plan: VM-to-VM calls without Rust recursion (measured, not started)
 
 - per-call cost of `fib` on main 414ae44: 3,265 instructions (GNU R
