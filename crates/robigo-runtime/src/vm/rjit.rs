@@ -90,11 +90,45 @@ thread_local! {
         }
         b
     };
+    /// Symbols `findLocals` treats specially.
+    static K: Names = Names {
+        assign: s::ASSIGN,
+        eq_assign: s::EQ_ASSIGN,
+        r#for: s::FOR,
+        assign_fn: Sym::new("assign"),
+        delayed_assign: Sym::new("delayedAssign"),
+        function: s::FUNCTION,
+        tilde: s::TILDE,
+        local: Sym::new("local"),
+        expression: Sym::new("expression"),
+        quote: s::QUOTE,
+        browser: Sym::new("browser"),
+    };
+    /// JIT scores and hashes of closure bodies, by address (kept alive in
+    /// the entry; the hash is computed when first needed).
+    static SCORES: RefCell<HashMap<usize, (Value, i64, Option<u64>), crate::env::FastHash>> =
+        RefCell::new(HashMap::default());
     /// The JIT cache (R: eval.c:JIT_cache), by body hash.
     static CACHE: RefCell<HashMap<u64, Entry, crate::env::FastHash>> = RefCell::new(HashMap::default());
-    /// The locals (as a frozen-set mask) of `function` bodies, by body
-    /// address (kept alive in the entry).
-    static LOCALS: RefCell<HashMap<usize, (Value, u64), crate::env::FastHash>> = RefCell::new(HashMap::default());
+    /// The formals and locals (as a frozen-set mask) of closures created
+    /// by compiled code, by body and formals address (kept alive in the
+    /// entry).
+    static LOCALS: RefCell<HashMap<(usize, usize), (Value, Rc<[Arg]>, u64), crate::env::FastHash>> =
+        RefCell::new(HashMap::default());
+}
+
+struct Names {
+    assign: Sym,
+    eq_assign: Sym,
+    r#for: Sym,
+    assign_fn: Sym,
+    delayed_assign: Sym,
+    function: Sym,
+    tilde: Sym,
+    local: Sym,
+    expression: Sym,
+    quote: Sym,
+    browser: Sym,
 }
 
 /// A JIT cache entry: the compiled body and its compile environment
@@ -108,12 +142,13 @@ struct Entry {
 }
 
 /// Is `sym` one of [`FROZEN_FUNS`]?
-#[inline]
-pub fn is_frozen_fun(sym: Sym) -> bool {
+#[inline(never)]
+fn is_frozen_fun(sym: Sym) -> bool {
     let i = sym.0 as usize;
     BITS.with(|b| b.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0))
 }
 
+#[inline(never)]
 fn index(sym: Sym) -> Option<usize> {
     SYMS.with(|v| v.iter().position(|s| *s == sym))
 }
@@ -126,13 +161,12 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
     let v = clo.jit.0.get();
     match v & 0xff {
         UNSEEN => {
-            let top = interp.topenv(&clo.env);
-            if top.ptr_eq(&interp.base_ns) || crate::dispatch::is_namespace(&top) {
+            if in_namespace(interp, &clo.env) {
                 clo.jit.set(IGNORE, 0);
                 return;
             }
             // R: eval.c:R_CheckJIT, strategy STRATEGY_TOP_SMALL_MAYBE.
-            let score = jit_score(&clo.body);
+            let score = body_score(&clo.body);
             if clo.env.ptr_eq(&interp.global) {
                 // Top-level functions are compiled at their first call if
                 // the score is high enough, else at their second.
@@ -157,7 +191,67 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
     }
 }
 
+/// Is `env` (or an enclosure of it below the global environment) a
+/// namespace or the base environment? Namespaces reach the global
+/// environment through the base namespace (their imports' parent), other
+/// code directly.
+#[inline(never)]
+fn in_namespace(interp: &Interp, env: &Env) -> bool {
+    let mut e = env.clone();
+    loop {
+        if e.ptr_eq(&interp.global) {
+            return false;
+        }
+        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
+            return true;
+        }
+        match e.parent() {
+            Some(p) => e = p,
+            None => return false,
+        }
+    }
+}
+
+/// [`jit_score`] of a closure body, memoized by body (closures made by
+/// one `function` expression share it).
+#[inline(never)]
+fn body_score(body: &Value) -> i64 {
+    let Value::Lang(l) = body else { return 1 };
+    let key = Rc::as_ptr(l) as usize;
+    if let Some(n) = SCORES.with(|c| c.borrow().get(&key).map(|e| e.1)) {
+        return n;
+    }
+    let n = jit_score(body);
+    SCORES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 100_000 {
+            c.clear();
+        }
+        c.insert(key, (body.clone(), n, None))
+    });
+    n
+}
+
+/// [`hash_expr`] of a closure body, memoized with its score.
+#[inline(never)]
+fn body_hash(body: &Value) -> u64 {
+    let Value::Lang(l) = body else { return hash_expr(body, 5381) };
+    let key = Rc::as_ptr(l) as usize;
+    if let Some(h) = SCORES.with(|c| c.borrow().get(&key).and_then(|e| e.2)) {
+        return h;
+    }
+    let h = hash_expr(body, 5381);
+    body_score(body);
+    SCORES.with(|c| {
+        if let Some(e) = c.borrow_mut().get_mut(&key) {
+            e.2 = Some(h);
+        }
+    });
+    h
+}
+
 // R: eval.c:JIT_score
+#[inline(never)]
 fn jit_score(e: &Value) -> i64 {
     let Value::Lang(l) = e else { return 1 };
     match l.fun.as_sym() {
@@ -174,13 +268,14 @@ fn jit_score(e: &Value) -> i64 {
 
 /// R: eval.c:R_cmpfun: reuse the cached code of an identical body compiled
 /// for a compatible environment, else compile.
+#[inline(never)]
 fn compile(interp: &mut Interp, clo: &Closure) {
     if may_call_browser(&clo.body) {
         // (cmpfun returns the closure uncompiled.)
         clo.jit.set(NOJIT, 0);
         return;
     }
-    let hash = hash_expr(&clo.body, 5381);
+    let hash = body_hash(&clo.body);
     let cached = CACHE.with(|c| {
         let c = c.borrow();
         let e = c.get(&hash)?;
@@ -227,6 +322,7 @@ fn compile(interp: &mut Interp, clo: &Closure) {
 }
 
 // R: eval.c:jit_env_match
+#[inline(never)]
 fn env_match(interp: &Interp, e: &Entry, clo: &Closure) -> bool {
     let top = interp.topenv(&clo.env);
     if !top.ptr_eq(&e.top) {
@@ -249,6 +345,7 @@ fn env_match(interp: &Interp, e: &Entry, clo: &Closure) -> bool {
 }
 
 // R: eval.c:hashexpr1 (symbols and non-scalar constants by identity)
+#[inline(never)]
 fn hash_expr(e: &Value, h: u64) -> u64 {
     let mix = |h: u64, x: u64| h.wrapping_mul(33) ^ x;
     match e {
@@ -279,10 +376,11 @@ fn hash_expr(e: &Value, h: u64) -> u64 {
 }
 
 // R: cmp.R:mayCallBrowser
+#[inline(never)]
 fn may_call_browser(e: &Value) -> bool {
     let Value::Lang(l) = e else { return false };
     if let Some(f) = l.fun.as_sym() {
-        if &*f.name() == "browser" {
+        if f == K.with(|k| k.browser) {
             return true;
         }
         if f == s::FUNCTION {
@@ -298,6 +396,7 @@ fn may_call_browser(e: &Value) -> bool {
 /// not formals or local variables of its body and that `findCenvVar`
 /// finds in base (R: cmp.R:getInlineInfo, ftype "global"). `None` for a
 /// body the compiler rejects.
+#[inline(never)]
 fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
     let local = locals_mask(interp, clo)?;
     let top = interp.topenv(&clo.env);
@@ -330,124 +429,112 @@ fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
 
 /// The [`FROZEN_FUNS`] among the formals and local variables of `clo`'s
 /// body (R: cmp.R:funEnv).
+#[inline(never)]
 fn locals_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
     let mut elist: Vec<&Value> = clo.formals.iter().map(|f| &f.value).collect();
     elist.push(&clo.body);
-    let mut mask = 0u64;
-    for f in clo.formals.iter() {
-        if let Some(i) = f.tag.and_then(index) {
-            mask |= 1 << i;
-        }
-    }
     // R: cmp.R:findLocalsList. `quote` and `expression` are never base
     // variables in the compiler's sense (not language functions); `local`
     // is unless it is a formal or not base's.
-    let local_is_base = {
-        let l = Sym::new("local");
-        !clo.formals.iter().any(|f| f.tag == Some(l)) && interp.resolves_to_base(l, &clo.env)
-    };
-    let all = ["expression", "local", "quote"];
-    let shadowed: Vec<&str> = all.iter().copied().filter(|n| *n != "local" || !local_is_base).collect();
-    let mut sf: Vec<&str> = all.to_vec();
-    loop {
+    let k = K.with(|k| [k.expression, k.local, k.quote]);
+    let local_is_base = !clo.formals.iter().any(|f| f.tag == Some(k[1])) && interp.resolves_to_base(k[1], &clo.env);
+    let shadowed: Vec<Sym> = k.iter().copied().filter(|n| *n != k[1] || !local_is_base).collect();
+    let mut sf: Vec<Sym> = k.to_vec();
+    let vals = loop {
         let vals = find_locals(&elist, &sf)?;
         let n = sf.len();
-        let mut next: Vec<&str> = shadowed.clone();
+        let mut next = shadowed.clone();
         for f in &sf {
-            if vals.contains(&Sym::new(f)) && !next.contains(f) {
-                next.push(f);
+            if vals.contains(f) && !next.contains(f) {
+                next.push(*f);
             }
         }
         sf = next;
         if sf.len() == n {
-            for v in vals {
-                if let Some(i) = index(v) {
-                    mask |= 1 << i;
-                }
-            }
-            return Some(mask);
+            break vals;
         }
-    }
+    };
+    Some(vals.into_iter().filter_map(index).fold(formals_mask(clo), |m, i| m | 1 << i))
 }
 
 /// The local mask of a closure created by compiled code (its own formals
 /// and locals), cached by body.
+#[inline(never)]
 fn function_locals(interp: &mut Interp, clo: &Closure) -> u64 {
     let key = match &clo.body {
-        Value::Lang(l) => Rc::as_ptr(l) as usize,
-        _ => 0,
+        Value::Lang(l) => (Rc::as_ptr(l) as usize, Rc::as_ptr(&clo.formals) as *const Arg as usize),
+        _ => return locals_mask(interp, clo).unwrap_or(!0),
     };
-    if key != 0 {
-        if let Some(m) = LOCALS.with(|c| c.borrow().get(&key).map(|e| e.1)) {
-            // (Formals may differ between closures sharing a body.)
-            return m | formals_mask(clo);
-        }
+    if let Some(m) = LOCALS.with(|c| c.borrow().get(&key).map(|e| e.2)) {
+        return m;
     }
     let m = locals_mask(interp, clo).unwrap_or(!0);
-    if key != 0 {
-        LOCALS.with(|c| c.borrow_mut().insert(key, (clo.body.clone(), m)));
-    }
-    m | formals_mask(clo)
+    LOCALS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 100_000 {
+            c.clear();
+        }
+        c.insert(key, (clo.body.clone(), clo.formals.clone(), m))
+    });
+    m
 }
 
+#[inline(never)]
 fn formals_mask(clo: &Closure) -> u64 {
     clo.formals.iter().filter_map(|f| f.tag.and_then(index)).fold(0, |m, i| m | 1 << i)
 }
 
 // R: cmp.R:findLocalsList1 + findLocals1
-fn find_locals(elist: &[&Value], shadowed: &[&str]) -> Option<Vec<Sym>> {
-    let mut vars: Vec<Sym> = Vec::new();
-    let mut todo: Vec<Value> = elist.iter().map(|v| (*v).clone()).collect();
-    while !todo.is_empty() {
-        let mut next = Vec::new();
-        for e in &todo {
+#[inline(never)]
+fn find_locals(elist: &[&Value], shadowed: &[Sym]) -> Option<Vec<Sym>> {
+    K.with(|k| {
+        let mut vars: Vec<Sym> = Vec::new();
+        let mut todo: Vec<&Value> = elist.to_vec();
+        while let Some(e) = todo.pop() {
             let Value::Lang(l) = e else { continue };
-            let name = match &l.fun {
-                Value::Sym(f) => Some(f.name().to_string()),
-                Value::Str(v) if v.data.len() == 1 => v.data[0].as_ref().map(|s| s.to_string()),
+            let head = match &l.fun {
+                Value::Sym(f) => Some(*f),
+                Value::Str(v) if v.data.len() == 1 => v.data[0].as_ref().map(|s| Sym::new(s)),
                 _ => None,
             };
-            let Some(v) = name else {
+            let Some(v) = head else {
                 // A call with a computed function: all its parts.
-                next.push(l.fun.clone());
-                next.extend(l.args.iter().map(|a| a.value.clone()));
+                todo.push(&l.fun);
+                todo.extend(l.args.iter().map(|a| &a.value));
                 continue;
             };
-            let args = || l.args.iter().map(|a| a.value.clone());
-            match v.as_str() {
-                "=" | "<-" => {
-                    add(&mut vars, assigned_var(l)?);
-                    next.extend(args());
+            let args = l.args.iter().map(|a| &a.value);
+            if v == k.assign || v == k.eq_assign {
+                add(&mut vars, assigned_var(l)?);
+                todo.extend(args);
+            } else if v == k.r#for {
+                if let Some(Value::Sym(var)) = l.args.first().map(|a| &a.value) {
+                    add(&mut vars, *var);
                 }
-                "for" => {
-                    if let Some(Value::Sym(var)) = l.args.first().map(|a| &a.value) {
-                        add(&mut vars, *var);
-                    }
-                    next.extend(args().skip(1));
-                }
-                "delayedAssign" | "assign" => {
-                    if l.args.len() == 2 {
-                        if let Value::Str(n) = &l.args[0].value {
-                            if n.data.len() == 1 {
-                                if let Some(n) = &n.data[0] {
-                                    add(&mut vars, Sym::new(n));
-                                }
-                                next.push(l.args[1].value.clone());
+                todo.extend(args.skip(1));
+            } else if v == k.assign_fn || v == k.delayed_assign {
+                if let [name, value] = &l.args[..] {
+                    if let Value::Str(n) = &name.value {
+                        if n.data.len() == 1 {
+                            if let Some(n) = &n.data[0] {
+                                add(&mut vars, Sym::new(n));
                             }
+                            todo.push(&value.value);
                         }
                     }
                 }
-                "function" | "~" => {}
-                "local" if !shadowed.contains(&"local") && l.args.len() == 1 => {}
-                "expression" | "quote" if !shadowed.contains(&v.as_str()) => {}
-                _ => next.extend(args()),
+            } else if v == k.function || v == k.tilde {
+            } else if v == k.local && !shadowed.contains(&v) && l.args.len() == 1 {
+            } else if (v == k.expression || v == k.quote) && !shadowed.contains(&v) {
+            } else {
+                todo.extend(args);
             }
         }
-        todo = next;
-    }
-    Some(vars)
+        Some(vars)
+    })
 }
 
+#[inline(never)]
 fn add(vars: &mut Vec<Sym>, v: Sym) {
     if !vars.contains(&v) {
         vars.push(v);
@@ -455,6 +542,7 @@ fn add(vars: &mut Vec<Sym>, v: Sym) {
 }
 
 // R: cmp.R:getAssignedVar (`None`: "bad assignment", a compiler error)
+#[inline(never)]
 fn assigned_var(l: &Lang) -> Option<Sym> {
     let mut v = l.args.first()?.value.clone();
     loop {
@@ -469,6 +557,7 @@ fn assigned_var(l: &Lang) -> Option<Sym> {
 
 /// The frozen set of the compiled closure whose call frame is `env`, if
 /// any.
+#[inline(never)]
 fn frame_mask(interp: &Interp, env: &Env) -> u64 {
     for ctx in interp.frames.iter().rev() {
         if ctx.cloenv.ptr_eq(env) {
@@ -495,9 +584,12 @@ pub fn frozen(interp: &Interp, sym: Sym, env: &Env) -> bool {
 /// The interpreter found `f` for the call `l` of the language function
 /// `sym` in `env`: base's function instead when GNU R's compiled code
 /// there would use it (and `f` is not base's own).
-#[cold]
 #[inline(never)]
-pub fn frozen_fun(interp: &Interp, sym: Sym, f: &Value, l: &Lang, env: &Env) -> Option<Value> {
+pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Value> {
+    let Value::Sym(sym) = l.fun else { return None };
+    if !is_frozen_fun(sym) {
+        return None;
+    }
     let base = interp.base.get_local(sym)?;
     if base.ptr_eq(f) {
         return None;
@@ -513,7 +605,7 @@ pub fn frozen_fun(interp: &Interp, sym: Sym, f: &Value, l: &Lang, env: &Env) -> 
 /// `function` evaluated in `env`: when that is the frame of a compiled
 /// closure, the new closure is compiled code too, with the creator's
 /// bindings (R: cmp.R:cmpfun compiles nested function bodies).
-#[inline]
+#[inline(never)]
 pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
     if env.is_search() {
         return;

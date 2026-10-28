@@ -30,7 +30,7 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 mod rjit;
-pub use rjit::{JitState, frozen_fun, is_frozen_fun, jit_check, jit_inherit};
+pub use rjit::{JitState, frozen_fun, jit_check, jit_inherit};
 
 #[derive(Clone)]
 pub enum RVal {

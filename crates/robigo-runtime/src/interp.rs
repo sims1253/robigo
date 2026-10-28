@@ -537,11 +537,9 @@ impl Interp {
             other => self.eval(other, env)?,
         };
         // A rebound `<`, `if`, ... that GNU R's compiled code would not see.
-        if let (Value::Closure(_), Value::Sym(sym)) = (&fun, &l.fun) {
-            if crate::vm::is_frozen_fun(*sym) {
-                if let Some(f) = crate::vm::frozen_fun(self, *sym, &fun, l, env) {
-                    fun = f;
-                }
+        if let Value::Closure(_) = &fun {
+            if let Some(f) = crate::vm::frozen_fun(self, &fun, l, env) {
+                fun = f;
             }
         }
         match &fun {

@@ -1,6 +1,6 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
-tests/r/basics/arith.R
 tests/r/basics/arith-vectors.R
+tests/r/basics/arith.R
 tests/r/basics/caller-forced-promises.R
 tests/r/basics/control.R
 tests/r/basics/for-seq-length.R
@@ -38,6 +38,8 @@ tests/r/io/messages.R
 tests/r/io/options.R
 tests/r/io/solve.R
 tests/r/io/sysutils.R
+tests/r/jit/base-rebinding-2.R
+tests/r/jit/base-rebinding.R
 tests/r/lang/call-head-tag.R
 tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R
@@ -56,8 +58,8 @@ tests/r/lang/compiled-semantics.R
 tests/r/lang/compiled-subset.R
 tests/r/lang/compiled-switch.R
 tests/r/lang/compiled-variables.R
-tests/r/lang/environments.R
 tests/r/lang/environment-validation.R
+tests/r/lang/environments.R
 tests/r/lang/evaluator-errors.R
 tests/r/lang/frame-lifetime.R
 tests/r/lang/global-handlers.R
@@ -76,8 +78,8 @@ tests/r/math/complex-vector-arith.R
 tests/r/math/distributions.R
 tests/r/math/gamma.R
 tests/r/math/log-dots.R
-tests/r/math/math2-nonnumeric.R
 tests/r/math/math-warnings.R
+tests/r/math/math2-nonnumeric.R
 tests/r/math/matprod-rowvec.R
 tests/r/math/random-args.R
 tests/r/math/random-dists.R
@@ -127,8 +129,8 @@ tests/r/strings/regex-classes.R
 tests/r/strings/regex-errors.R
 tests/r/strings/regex-fixed.R
 tests/r/strings/regex-perl.R
-tests/r/strings/regex.R
 tests/r/strings/regex-tre.R
+tests/r/strings/regex.R
 tests/r/strings/sprintf-errors.R
 tests/r/strings/sprintf-fixed-exact.R
 tests/r/strings/sprintf.R
@@ -189,6 +191,7 @@ tests/r/vec/sort-internal.R
 tests/r/vec/subset-mask-matrix.R
 tests/r/vec/sum-ldouble.R
 tests/r/vec/sum-prod.R
+tests/r/vec/unique.R
 tests/r/vectors/apply-inline.R
 tests/r/vectors/apply.R
 tests/r/vectors/factors.R
@@ -197,4 +200,3 @@ tests/r/vectors/shared-scalars.R
 tests/r/vectors/subassign.R
 tests/r/vectors/subset.R
 tests/r/vectors/types.R
-tests/r/vec/unique.R
