@@ -865,17 +865,33 @@ static HOST: Host = Host {
 static STUB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libR-stub.so"));
 
 /// Load a soname-only `libR.so` so that objects linked with `-lR` (GNU R's
-/// Makeconf) bind their API symbols to this executable's exports.
+/// Makeconf) bind their API symbols to this executable's exports. The
+/// loader matches `-lR` by the stub's SONAME, not its path, so the stub is
+/// loaded from an anonymous memory file: a file in a shared temporary
+/// directory could be replaced by another user before `dlopen` reads it.
 fn load_stub() {
-    let dir = std::env::temp_dir().join(format!("robigo-libR-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("libR.so");
-    if std::fs::write(&path, STUB).is_ok() {
-        let c = CString::new(path.to_string_lossy().as_bytes()).unwrap();
-        unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+    // SAFETY: memfd_create with a NUL-terminated name; the fd is ours alone.
+    let fd = unsafe { libc::memfd_create(c"libR.so".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return;
     }
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
+    let mut written = 0;
+    while written < STUB.len() {
+        // SAFETY: writing the remaining bytes of a static slice to our fd.
+        let n = unsafe { libc::write(fd, STUB[written..].as_ptr().cast(), STUB.len() - written) };
+        if n <= 0 {
+            // SAFETY: closing the fd we opened.
+            unsafe { libc::close(fd) };
+            return;
+        }
+        written += n as usize;
+    }
+    let path = CString::new(format!("/proc/self/fd/{}", fd)).unwrap();
+    // SAFETY: dlopen of the stub we just wrote; the mapping outlives the fd.
+    unsafe {
+        libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL);
+        libc::close(fd);
+    }
 }
 
 unsafe fn ensure_ready(interp: &mut Interp) {
