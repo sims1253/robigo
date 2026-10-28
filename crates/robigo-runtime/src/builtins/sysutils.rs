@@ -34,6 +34,7 @@ pub static DEFS: &[Builtin] = &[
     internal("tempfile", do_tempfile, 3),
     internal("file.exists", do_fileexists, 1),
     internal("setFileTime", do_setfiletime, 2),
+    internal("eSoftVersion", do_esoftversion, 0),
     internal("file.access", do_fileaccess, 2),
     internal("file.info", do_fileinfo, 2),
     internal("file.copy", do_filecopy, 6),
@@ -1963,4 +1964,23 @@ fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         ans.push(res as Lgl);
     }
     Ok(Value::lgls(ans))
+}
+
+unsafe extern "C" {
+    fn lzma_version_string() -> *const c_char;
+    fn gnu_get_libc_version() -> *const c_char;
+}
+
+// R: platform.c:do_eSoftVersion — the versions of the external libraries
+// in use; "" for those robigo does not use (it has its own deflate,
+// regular-expression, LAPACK code and no bzip2, ICU or readline)
+fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let c = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    let xz = c(unsafe { lzma_version_string() });
+    let iconv = format!("glibc {}", c(unsafe { gnu_get_libc_version() }));
+    let vals = ["", "", &xz, "", "", "", "", &iconv, "", ""];
+    let names = ["zlib", "bzlib", "xz", "libdeflate", "PCRE", "ICU", "TRE", "iconv", "readline", "BLAS"];
+    let mut ans = Value::strs_from(vals);
+    ans.set_attr_raw(s::NAMES, Value::strs_from(names));
+    Ok(ans)
 }
