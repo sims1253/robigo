@@ -326,6 +326,15 @@ pub enum Op {
         seq: Reg,
         call: u32,
     },
+    /// Set up `seq` for a `for` loop over `seq(length.out = n)` (call
+    /// `consts[call]`, `n` the leaf `len`): the integer range GNU R's
+    /// `seq.default` returns when it can be read off without running code,
+    /// else the value of the call (see `vm::seq_length_range`).
+    ForSeqLength {
+        len: Leaf,
+        seq: Reg,
+        call: u32,
+    },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval {
         dst: Reg,
@@ -852,6 +861,29 @@ fn range_form(e: &Value) -> Option<(Sym, RangeKind, &Value, Option<&Value>)> {
     Some((h, kind, &l.args[0].value, l.args.get(1).map(|a| &a.value)))
 }
 
+/// `seq(length.out = n)` with the one argument named by a prefix of
+/// `length.out` (as `seq.default`'s formals match it) and `n` a variable or
+/// a numeric constant: `seq` and `n`.
+fn seq_length_form(e: &Value) -> Option<(Sym, &Value)> {
+    let Value::Lang(l) = e else { return None };
+    let h = head(l)?;
+    if &*h.name() != "seq" || l.args.len() != 1 {
+        return None;
+    }
+    let tag = l.args[0].tag?;
+    let tag = tag.name();
+    if tag.is_empty() || !"length.out".starts_with(&*tag) {
+        return None;
+    }
+    let v = &l.args[0].value;
+    let leaf = match v {
+        Value::Sym(s) => is_var(*s),
+        Value::Real(_) | Value::Int(_) => v.len() == 1 && v.attrs().is_none(),
+        _ => false,
+    };
+    leaf.then_some((h, v))
+}
+
 fn arith_op(name: &str) -> Option<ArithOp> {
     Some(match name {
         "+" => ArithOp::Plus,
@@ -1346,7 +1378,14 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                if let Some((rh, kind, a_e, b_e)) = range_form(&l.args[1].value) {
+                if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
+                    let gs = self.guard(rh, &l.args[1].value, seq);
+                    let len = self.leaf(len).unwrap();
+                    let kseq = self.konst(l.args[1].value.clone());
+                    self.emit(Op::ForSeqLength { len, seq, call: kseq });
+                    let here = self.here();
+                    self.patch(gs, here);
+                } else if let Some((rh, kind, a_e, b_e)) = range_form(&l.args[1].value) {
                     // Guard the sequence function; on failure the
                     // interpreter evaluates the sequence expression.
                     let gs = self.guard(rh, &l.args[1].value, seq);

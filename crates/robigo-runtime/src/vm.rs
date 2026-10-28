@@ -1290,6 +1290,40 @@ fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
     true
 }
 
+/// The length of the integer sequence `seq(length.out = n)` returns, when
+/// the call would reach base's `seq.default` (no `seq.integer`,
+/// `seq.numeric`, `seq.double` or `seq.logical` method visible from `env`
+/// or registered, and `seq.default` itself base's) and `n` passes its
+/// checks: logical and integer `n` as they are, doubles rounded up, and
+/// then finite, non-negative and within integer range, the result being
+/// `seq_len(n)` (or `integer()` for 0). `None`: the call is made.
+// R: seq.R:seq.default (`One <- nargs() == 1L`, `is.logint`, the
+// `length.out` checks)
+fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
+    let (len, classes): (f64, &[&str]) = match n {
+        Num::I(x) if x != NA_INTEGER => (x as f64, &["seq.integer", "seq.numeric"]),
+        Num::L(x) if x != NA_LOGICAL => (x as f64, &["seq.logical"]),
+        Num::D(x) => (x.ceil(), &["seq.double", "seq.numeric"]),
+        _ => return None,
+    };
+    if !len.is_finite() || len < 0.0 || len > i32::MAX as f64 {
+        return None;
+    }
+    let defenv = interp.base_ns.clone();
+    for m in classes {
+        match interp.lookup_method(Sym::new(m), env, &defenv) {
+            Ok(None) => {}
+            _ => return None,
+        }
+    }
+    let dflt = Sym::new("seq.default");
+    let base = interp.base_ns.get_local(dflt)?;
+    match interp.lookup_method(dflt, env, &defenv) {
+        Ok(Some(f)) if f.ptr_eq(&base) => Some(len as u64),
+        _ => None,
+    }
+}
+
 /// Call the base builtin named by the call's head with boxed arguments.
 fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -> RResult<Value> {
     let Value::Lang(l) = call else { unreachable!() };
@@ -3118,6 +3152,22 @@ fn run_with(
                     _ => RVal::V(tryop!(interp.eval(&site.call, env))),
                 };
                 regs[*dst as usize] = v;
+            }
+            Op::ForSeqLength { len, seq, call } => {
+                let n = match leaf_num(&mut vars, env, &regs, len) {
+                    Some(n) => {
+                        flush!();
+                        seq_length_range(interp, env, n)
+                    }
+                    None => None,
+                };
+                regs[*seq as usize] = match n {
+                    Some(n) => RVal::Range { start: 1, step: 1, n },
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*call as usize], env)))
+                    }
+                };
             }
             Op::Colon { dst, a, b, call } => {
                 let range = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
