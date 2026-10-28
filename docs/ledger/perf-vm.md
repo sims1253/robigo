@@ -128,6 +128,35 @@ Tooling of this agent (private target dir, container builds):
     per-call state check, the interpreter hook, compiling user closures);
     geomean 0.5734 -> 0.5740, faster on 71.
 
+## 2026-10-29: guards in namespace code (lead from the methods ledger)
+
+- why: the methods agent found `vm::guard_ok_slow` at 13.6% of an S4
+  `new()`. Frames of namespace closures (frame -> namespace -> imports ->
+  base namespace -> global) are neither on nor directly below the search
+  path, so (1) each guard walked the chain and, finding `+` etc. bound in
+  the base namespace, called `resolves_to_base` with no memo; (2)
+  `fresh_nested_ok` never pre-checked their guards; (3) their frames were
+  not `stable`, so every flush invalidated every guard mark.
+- what: where the environments past the frame's parent up to the search
+  path are all locked (namespaces, imports, the base namespace: they cannot
+  gain bindings), the outcome depends only on the parent's function
+  bindings and the frame's own: memoized by the parent
+  (`GuardMemo::outer`), the closure's guards pre-checked once per
+  (epoch, environment, version, formals) as for closures below the search
+  path, and the frame `stable` (also the pure-closure inliner's per-epoch
+  check). Not noticed: a function rebound in an imports environment
+  without a search-path change (GNU R's namespace code is compiled with
+  base inlined anyway).
+- tests: `tests/r/jit/locked-env-guards.R` (a locked chain, a binding
+  replaced after `unlockBinding`, a frame binding `length`, namespace
+  closures), recorded, ratcheted; three-tier conformance incl. the S4
+  scripts.
+- result: an S4 loop (2000 `new("P", x = i)`, 20000 calls of a one-method
+  generic; `R_DEFAULT_PACKAGES=utils,stats,methods`) 2,788M -> 2,553M
+  instructions (-8.4%). Suite against main 7345297: none faster or slower
+  than 0.5% (no benchmark uses methods; an S4 benchmark in `benchmarks/`
+  would track it).
+
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 
 - the inner loop (`for (j in seq(length = ny)) { ij <- i + j - 1; z[[ij]]
