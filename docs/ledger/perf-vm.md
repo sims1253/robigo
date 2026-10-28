@@ -15,6 +15,26 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: call sites find functions bound in local frames without the slow path
+
+- why: in `shootout/spectralnorm` (1.82x GNU R) the inner loop calls
+  `eval_A`, a pure helper defined in the enclosing function. Call sites
+  looked functions up quickly only on the search path:
+  `call_site_fun_fast` gave up at the first local frame that might bind
+  the name, so the call was never inlined and went through promises, a
+  frame and a flush (17.6k instructions per iteration).
+- what: a local frame that binds the name to a closure, builtin or forced
+  promise of one returns it (as `findFun` would; non-functions are
+  skipped); unforced promises, active bindings and missing arguments still
+  take the slow path.
+- tests: `tests/r/basics/local-fun-calls.R` (helpers, shadowing by a
+  non-function, function arguments forced lazily, redefinition in the
+  loop, missing and active bindings, local recursion, warnings).
+- result: 17.6k -> 3.1k instructions per inner iteration;
+  `spectralnorm` -69.1% (1.82 -> 0.56), `profiler-microbenchmark` -3.7%,
+  `spectralnorm_alt_3` -1.8%, `spectralnorm_naive` -1.1%, `profiler-rsa`
+  -0.6%, none slower; geomean 0.705 -> 0.693, faster on 52 -> 53; kept.
+
 ## 2026-10-28: `x[[i, j]]` in the VM; index promises forced in place; cheaper slot write-backs
 
 - why: `simple/matrixFor` (`x[[i, j]] <- 5` in a double loop) cost 5.45x

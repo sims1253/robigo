@@ -1803,7 +1803,24 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
     let mut cur = env.clone();
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
-            return None;
+            // A function bound in a local frame (say a helper defined in
+            // the enclosing function, or an argument already forced), as
+            // `findFun` finds it; anything that would need forcing, an
+            // active binding or an error takes the slow path.
+            let frame = cur.0.frame().borrow();
+            let b = frame.get(sym)?;
+            if b.flags & crate::env::BIND_ACTIVE != 0 {
+                return None;
+            }
+            match &b.value {
+                Value::Closure(_) | Value::Builtin(_) => return Some(b.value.clone()),
+                Value::Promise(p) => match &*p.value.borrow() {
+                    Some(v @ (Value::Closure(_) | Value::Builtin(_))) => return Some(v.clone()),
+                    Some(v) if !v.is_missing_arg() => {}
+                    _ => return None,
+                },
+                _ => return None,
+            }
         }
         cur = cur.parent()?;
     }

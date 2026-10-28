@@ -4,6 +4,7 @@ tests/r/basics/arith.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
 tests/r/basics/int-arith-kernels.R
+tests/r/basics/local-fun-calls.R
 tests/r/basics/mod-ldouble.R
 tests/r/basics/print-numbers.R
 tests/r/basics/vectors.R
