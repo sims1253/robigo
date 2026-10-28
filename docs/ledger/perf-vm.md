@@ -205,6 +205,48 @@ without a guard. The port:
 - carries over to G3: element superassignment in place under the same
   conditions as local element assignment.
 
+## 2026-10-28: plan: VM-to-VM calls without Rust recursion (measured, not started)
+
+- per-call cost of `fib` on main 414ae44: 3,265 instructions (GNU R
+  2,923). By function (`callgrind-diff.py`, `fib(21)` - `fib(20)`):
+
+  | part | instructions |
+  |---|---|
+  | interpreting the body (`run_with`) | ~670 |
+  | argument promises, caller-forced argument box, guard check (`closure_call` with `caller_promargs`) | ~520 |
+  | `call_closure_ex` + `apply_closure_ex` + `exec_closure_ex` + `run_closure` | ~400 |
+  | `run_pre` + register/slot drops | ~260 |
+  | `end_context` | ~150 |
+  | environment allocation and release (`with_frame`, `push_new`, drop) | ~145 |
+
+- the design: `Op::Call` of a closure whose body is compiled, with
+  positional arguments matching its formals one to one (the common case;
+  everything else keeps the `call_closure` path), pushes a VM frame inside
+  the running `run_with` instead of recursing:
+  - the context (`Interp::frames`) is pushed as `exec_closure` does, and
+    popped by `end_context`, so `sys.call`, `parent.frame`, `on.exit`,
+    handlers and the S4 hooks see the same stack;
+  - registers and slots move from the Rust stack to a VM-owned arena (one
+    `Vec<RVal>` and `Vec<SlotVal>` grown and reused, frames as offsets), so
+    a call allocates neither;
+  - the per-run state of `run_with` (`pc`, `generation`, `token`,
+    `recheck`, `loops`, `checked`, `Vars`) becomes a frame record saved and
+    restored at call and return;
+  - `Return` of the callee pops the frame and writes the unboxed result to
+    the caller's destination register (no `unboxed_ret` hand-off);
+  - errors unwind the VM frames (popping contexts and running `on.exit`
+    in order) before propagating, as the Rust recursion does today;
+  - native loops (`jit_enter`) and the interpreter's own calls keep
+    recursing; depth limits (`MAX_DEPTH`, `check_stack`) count VM frames.
+- expected gain: the ~400 instructions of call layers and much of `run_pre`
+  and `end_context`'s fixed costs; a frame push in the same loop is tens of
+  instructions. Prerequisite: the S4 agent's `exec_closure`/`end_context`
+  hooks, which a VM frame push has to call too, so this follows their
+  interp.rs changes.
+- single guard check per call: measured at ~15 instructions (the callee's
+  repeated key compare in `fresh_guards_ok`); folded into the frame push
+  above rather than done separately.
+
 ## 2026-10-28: `x[[i]] <- v` in native loops
 
 - why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
