@@ -31,8 +31,15 @@ are indicative only; instructions are the gate.
   reads, and repeated flushing. Recorded with Debian GNU R 4.5.0-3.
 - Supporting shared paths: `crates/robigo-runtime/Cargo.toml`, Cargo.lock,
   `scripts/startup-perf.py`, and `tests/r/serialize/lazy-cache.*`.
-- Container builds must use `CARGO_TARGET_DIR=$HOME/.cache/robigo-trixie-target`.
-  Reusing the host target produced incompatible stale parser artifacts.
+- Saved optimized NULL-startup profile `/tmp/l2.cg` totals 53.650M.
+  Inclusive base bootstrap is 22.888M, startup/profile loading 28.189M,
+  and parsing 1.317M. Decompression is 8.717M, nested inside bootstrap
+  and profile loading. These overlapping costs must not be summed.
+  Default packages add about 194M in the saved binary, including namespace
+  evaluation, database deserialization and LZMA.
+- Container builds must use a private `CARGO_TARGET_DIR=$HOME/.cache/robigo-startup-target`
+  (never a shared one: the host target has stale parser artifacts, and
+  `~/.cache/robigo-trixie-target` belongs to perf-vm).
 
 ## 2026-10-28: load base from GNU R's own lazy-load database (baseloader)
 
