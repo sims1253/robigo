@@ -31,8 +31,17 @@ Metric: `fastr` passes with `--filter
 - GNU R regression failure is reg-tests-1d's missing formals warning.
   Of 13 failing examples, 11 stop at missing graphics routines, one at
   rmultinom, and one at r2dtable. Native stats/graphics support belongs to G2.
-- Verification so far: new result-type conformance script and full rank RNG
-  grid match GNU R 4.5.0 stdout/stderr exactly. Unit/corpus checks pending.
+- Result: FastR **1523/1558 -> 1542/1558**, zero regressions. Recorded 23
+  additions to passing.txt, including four existing unrecorded baseline passes.
+  GNU R slices remain **2/3** and **8/21**, zero regressions; recorded their
+  two previously unrecorded passes. All 19 RNG failures are fixed. Remaining
+  failures are seven rmultinom cases and nine FFT/numeric_deriv cases.
+- Verification: new result-type conformance script and full rank RNG grid
+  match GNU R 4.5.0 stdout/stderr exactly. Unit checks pending.
+- Performance experiment: 100k normal, uniform and Poisson draws, callgrind
+  including startup: baseline 341,579,745 instructions; dynamic slice
+  dispatcher 348,948,579 (+2.16%). Rejected that dispatch implementation;
+  testing static specialization of the generator closure.
 
 ## 2026-10-28: baseline and failure grouping
 
