@@ -92,6 +92,7 @@ fn sexptype(v: &Value) -> u32 {
         Value::Expr(_) => 20,
         Value::ExtPtr(_) => 22,
         Value::Raw(_) => 24,
+        Value::Obj(_) => 25,
     }
 }
 
@@ -117,6 +118,7 @@ fn type_char(t: u32) -> &'static str {
         20 => "expression",
         22 => "externalptr",
         24 => "raw",
+        25 => "S4",
         _ => "unknown",
     }
 }
@@ -135,7 +137,7 @@ fn rebuilt_attrs(x: &Value, names: Option<Value>) -> AttrBox {
             }
         }
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
 }
 
 /// R's `PairToVectorList`.
@@ -242,7 +244,7 @@ struct TypeFix {
 }
 
 // R: subassign.c:SubassignTypeFix
-fn type_fix(interp: &mut Interp, x: &Value, y: Value, level: u8) -> RResult<TypeFix> {
+fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -> RResult<TypeFix> {
     let tx = sexptype(x);
     let ty = sexptype(&y);
     let which = 100 * tx + ty;
@@ -260,6 +262,22 @@ fn type_fix(interp: &mut Interp, x: &Value, y: Value, level: u8) -> RResult<Type
         | 1903 | 1907 | 1908 | 1999 => {
             if level == 1 {
                 y = coerce_rhs_to_list(interp, y)?;
+            } else {
+                return Ok(TypeFix { x_to, y, which });
+            }
+        }
+        // R: subassign.c:embedInVector
+        1925 | 2025 => {
+            if level == 1 {
+                if y.is_s4() {
+                    interp.warningcall(call, "implicit list embedding of S4 objects is deprecated")?;
+                } else {
+                    return Err(Flow::error_call(
+                        call.clone(),
+                        "implicit list embedding of \"object\" is not possible",
+                    ));
+                }
+                y = Value::list(vec![y]);
             } else {
                 return Ok(TypeFix { x_to, y, which });
             }
@@ -470,7 +488,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     if y.len() > 1 && indx.idx.contains(&NA_IDX) {
         return Err(Flow::error("NAs are not allowed in subscripted assignments"));
     }
-    let fix = type_fix(interp, x, y, 1)?;
+    let fix = type_fix(interp, call, x, y, 1)?;
     if stretch > 0 {
         check_bounds(interp, x.len(), stretch)?;
     }
@@ -580,7 +598,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
     if n > 0 && n % ny != 0 {
         return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
     }
-    let fix = type_fix(interp, x, y, 1)?;
+    let fix = type_fix(interp, call, x, y, 1)?;
     if n > 0 && fix.which != 1919 && !atomic_which_ok(fix.which) {
         return Err(Flow::error(format!(
             "incompatible types (from {} to {}) in matrix subset assignment",
@@ -606,8 +624,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
 
 /// R's `ArrayAssign`: `x[i, j, k, ...] <- y`.
 // R: subassign.c:ArrayAssign
-fn array_assign(interp: &mut Interp, _call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
-    let call = _call;
+fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
     let dims = match dim_of(x) {
         Some(d) if d.len() == subs.len() => d,
         _ => return Err(Flow::error("incorrect number of subscripts")),
@@ -638,7 +655,7 @@ fn array_assign(interp: &mut Interp, _call: &Value, x: &mut Value, subs: &[Value
     for i in 1..k {
         offset[i] = offset[i - 1] * dims[i - 1] as i64;
     }
-    let fix = type_fix(interp, x, y, 1)?;
+    let fix = type_fix(interp, call, x, y, 1)?;
     if n > 0 && fix.which != 1919 && !atomic_which_ok(fix.which) {
         return Err(Flow::error(format!(
             "incompatible types (from {} to {}) in array subset assignment",
@@ -831,7 +848,7 @@ fn assign2_level(
             }
             offset = off + pindx[0];
         }
-        let fix = type_fix(interp, x, y, 2)?;
+        let fix = type_fix(interp, call, x, y, 2)?;
         // R: subassign.c:do_subassign2_dflt's assignment switch. NULL
         // deletion is handled only for a single subscript above; matrices
         // must reject the remaining list <- NULL combination (1900).

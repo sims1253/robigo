@@ -382,11 +382,20 @@ pub fn copy_most_attrib(from: &Value, to: &mut Value) {
             }
         }
     }
+    // R: attrib.c:copyMostAttrib copies the S4 bit too.
+    let s4 = from.is_s4();
+    if s4 != to.is_s4() {
+        to.set_s4(s4);
+    }
 }
 
 /// `copyMostAttribNoTs`: like [`copy_most_attrib`], also leaving out
 /// `tsp` and removing "ts" from the class.
 pub fn copy_most_attrib_no_ts(from: &Value, to: &mut Value) {
+    let s4 = from.is_s4();
+    if s4 != to.is_s4() {
+        to.set_s4(s4);
+    }
     let Some(a) = from.attrs() else { return };
     let tsp = Sym::new("tsp");
     for (k, val) in &a.0 {

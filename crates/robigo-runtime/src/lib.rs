@@ -17,6 +17,7 @@ pub mod lang;
 pub mod native;
 pub use robigo_numerics as nmath;
 pub mod print;
+pub mod s4;
 pub mod serialize;
 pub mod startup;
 pub mod sym;

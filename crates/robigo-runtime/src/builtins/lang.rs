@@ -45,7 +45,6 @@ pub static DEFS: &[Builtin] = &[
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
     internal("getconst", do_getconst, 2),
     internal("Recall", do_recall, -1).custom_vis(),
-    special("standardGeneric", do_standard_generic, -1),
 ];
 
 fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -1344,10 +1343,6 @@ impl Interp {
         }
         self.exec_closure(call, clo, promargs, newenv, sysparent.clone())
     }
-}
-
-fn do_standard_generic(_: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error_call(call.clone(), "S4 dispatch (standardGeneric) is not supported yet"))
 }
 
 fn do_recall(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

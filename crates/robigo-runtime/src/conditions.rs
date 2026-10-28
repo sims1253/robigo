@@ -37,6 +37,52 @@ pub struct RestartNode {
 
 pub type RestartStack = Option<Rc<RestartNode>>;
 
+/// A calling error handler implemented in Rust (GNU R's C handlers of
+/// `R_withCallingErrorHandler`): called with the condition; an `Err` is
+/// the handler's own non-local exit.
+pub type RustHandler = Rc<dyn Fn(&mut Interp, &Value) -> RResult<()>>;
+
+struct RustHandlerBox(RustHandler);
+
+/// The handler value of a [`RustHandler`].
+pub fn rust_handler_value(h: RustHandler) -> Value {
+    Value::ExtPtr(Rc::new(ExtPtr {
+        tag: Value::Null,
+        attrs: Default::default(),
+        payload: Some(Rc::new(RustHandlerBox(h)) as Rc<dyn std::any::Any>),
+    }))
+}
+
+fn rust_handler(v: &Value) -> Option<RustHandler> {
+    match v {
+        Value::ExtPtr(p) => p.payload.clone()?.downcast::<RustHandlerBox>().ok().map(|b| b.0.clone()),
+        _ => None,
+    }
+}
+
+impl Interp {
+    /// `R_withCallingErrorHandler(body, handler)`: run `body` with a
+    /// calling handler for conditions of class "error".
+    pub fn with_calling_error_handler<T>(
+        &mut self,
+        handler: RustHandler,
+        body: impl FnOnce(&mut Interp) -> RResult<T>,
+    ) -> RResult<T> {
+        let saved = self.handlers.clone();
+        let entry = HandlerEntry {
+            class: Rc::from("error"),
+            parent_env: Value::Env(self.global.clone()),
+            handler: rust_handler_value(handler),
+            target: None,
+            calling: true,
+        };
+        self.handlers = Some(Rc::new(HandlerNode { entry: Rc::new(entry), next: saved.clone() }));
+        let r = body(self);
+        self.handlers = saved;
+        r
+    }
+}
+
 /// Wrap a handler stack as an R value (an external pointer).
 pub fn handler_stack_value(h: &HandlerStack) -> Value {
     Value::ExtPtr(Rc::new(ExtPtr {
@@ -79,10 +125,10 @@ pub fn display_width(s: &str) -> usize {
 
 pub fn make_condition(msg: &str, call: Value, classes: &[&str]) -> Value {
     let mut v = Vector::new(vec![Value::str(msg), call]);
-    v.attrs = Some(Box::new(Attrs(vec![
-        (s::NAMES, Value::strs_from(["message", "call"])),
-        (s::CLASS, Value::strs_from(classes.iter().copied())),
-    ])));
+    v.attrs = Some(Box::new(Attrs(
+        vec![(s::NAMES, Value::strs_from(["message", "call"])), (s::CLASS, Value::strs_from(classes.iter().copied()))],
+        false,
+    )));
     Value::List(Rc::new(v))
 }
 
@@ -150,6 +196,12 @@ impl Interp {
             self.handlers = rest;
             let cond = make_condition(&e.message, ecall.clone(), &classes);
             if entry.calling {
+                if let Some(h) = rust_handler(&entry.handler) {
+                    match h(self, &cond) {
+                        Ok(()) => continue,
+                        Err(f) => return f,
+                    }
+                }
                 let global = self.global.clone();
                 if let Err(f) = self.call_value(&entry.handler, vec![Arg::pos(cond)], &global) {
                     return f;
@@ -180,6 +232,13 @@ impl Interp {
         while let Some((entry, rest)) = self.find_handler(&classes) {
             self.handlers = rest;
             if entry.calling {
+                if let Some(h) = rust_handler(&entry.handler) {
+                    if let Err(f) = h(self, cond) {
+                        self.handlers = saved;
+                        return Err(f);
+                    }
+                    continue;
+                }
                 let global = self.global.clone();
                 if let Err(f) = self.call_value(&entry.handler, vec![Arg::pos(cond.clone())], &global) {
                     self.handlers = saved;
@@ -383,7 +442,7 @@ impl Interp {
         self.write_err(&out);
         let names = Value::strs_from(warnings.iter().map(|(_, m)| m.as_str()));
         let mut lw = Vector::new(warnings.into_iter().map(|(c, _)| c).collect());
-        lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)])));
+        lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false)));
         let base = self.base.clone();
         base.force_set(crate::sym::Sym::new("last.warning"), Value::List(Rc::new(lw)));
     }

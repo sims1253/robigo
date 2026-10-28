@@ -408,10 +408,7 @@ is_fn!(is_pairlist, "is.pairlist", |x| matches!(x, Value::Pairlist(_) | Value::N
 is_fn!(is_expression, "is.expression", |x| matches!(x, Value::Expr(_)));
 is_fn!(is_raw, "is.raw", |x| matches!(x, Value::Raw(_)));
 is_fn!(is_object, "is.object", |x| x.is_object());
-is_fn!(is_s4, "isS4", |x| {
-    let _ = x;
-    false
-});
+is_fn!(is_s4, "isS4", |x| x.is_s4());
 is_fn!(is_array, "is.array", |x| x.get_attr(s::DIM).is_some_and(|d| !d.is_empty()));
 is_fn!(is_atomic, "is.atomic", |x| x.is_atomic());
 is_fn!(is_recursive, "is.recursive", |x| matches!(

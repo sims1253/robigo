@@ -90,6 +90,12 @@ fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRes
         }
         forward.push(a.clone());
     }
+    // R: print.c:do_printdefault — without parameters, S4 objects are
+    // shown by show().
+    if forward.is_empty() && x.is_s4() && i.methods_dispatch_on() {
+        i.show_s4(&x, env)?;
+        return Ok(x);
+    }
     p.call_args = forward;
     p.value_rec(i, &x)?;
     p.flush(i);

@@ -75,6 +75,13 @@ impl Printer {
         if v.is_object() {
             self.flush(interp);
             let save = self.tagbuf.clone();
+            // R: print.c:PrintObject — S4 objects are shown by show().
+            if v.is_s4() && interp.methods_dispatch_on() {
+                let env = self.env.clone();
+                interp.show_s4(v, &env)?;
+                self.tagbuf = save;
+                return Ok(());
+            }
             let mask = Env::new(Some(self.env.clone()));
             let xsym = Sym::new("x");
             mask.set_local(xsym, v.clone());
@@ -92,6 +99,30 @@ impl Printer {
     }
 
     pub fn value_rec(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
+        // R: print.c:PrintValueRec — S4 objects without the methods package.
+        if (v.is_s4() || matches!(v, Value::Obj(_))) && !interp.methods_dispatch_on() {
+            match v.get_attr(s::CLASS) {
+                None => {
+                    if matches!(v, Value::Obj(_)) {
+                        self.p("<S4 object without a class>\n");
+                    } else {
+                        self.p(&format!("<Object of type '{}' with S4 bit but without a class>\n", v.type_name()));
+                    }
+                }
+                Some(cl) => {
+                    let c = crate::coerce::to_str(&cl).first().cloned().flatten().unwrap_or_else(|| "NA".into());
+                    match v.get_attr(Sym::new("package")) {
+                        None => self.p(&format!("<S4 object of class \"{}\">\n", c)),
+                        Some(pkg) => {
+                            let p =
+                                crate::coerce::to_str(&pkg).first().cloned().flatten().unwrap_or_else(|| "NA".into());
+                            self.p(&format!("<S4 object of class \"{}\" from package '{}'>\n", c, p));
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         match v {
             Value::Null => self.p("NULL\n"),
             Value::Sym(_) => {
@@ -127,6 +158,8 @@ impl Printer {
             Value::Promise(_) => self.p("<promise: 0x0>\n"),
             Value::Dots(_) => self.p("<...>\n"),
             Value::ExtPtr(_) => self.p("<pointer: 0x0>\n"),
+            // R: print.c:PrintValueRec (OBJSXP)
+            Value::Obj(_) => self.p(if v.is_s4() { "<S4 Type Object>\n" } else { "<object>\n" }),
             Value::List(_) => {
                 self.generic_vector(interp, v)?;
                 return Ok(());
@@ -137,7 +170,7 @@ impl Printer {
                     pl.items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| "".into()))).collect();
                 let mut lv = Vector::new(pl.items.iter().map(|a| a.value.clone()).collect());
                 if pl.items.iter().any(|a| a.tag.is_some()) {
-                    lv.attrs = Some(Box::new(Attrs(vec![(s::NAMES, Value::strs(names))])));
+                    lv.attrs = Some(Box::new(Attrs(vec![(s::NAMES, Value::strs(names))], false)));
                 }
                 let l = Value::List(std::rc::Rc::new(lv));
                 self.generic_vector(interp, &l)?;

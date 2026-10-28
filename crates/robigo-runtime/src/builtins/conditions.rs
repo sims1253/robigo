@@ -170,10 +170,13 @@ fn do_dflt_warn(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
 /// Build an R `restart` object.
 pub fn make_restart(name: &str, exit: Value) -> Value {
     let mut v = Vector::new(vec![Value::str(name), exit, Value::Null, Value::str(""), Value::Null, Value::lgl(true)]);
-    v.attrs = Some(Box::new(Attrs(vec![
-        (s::NAMES, Value::strs_from(["name", "exit", "handler", "description", "test", "interactive"])),
-        (s::CLASS, Value::str("restart")),
-    ])));
+    v.attrs = Some(Box::new(Attrs(
+        vec![
+            (s::NAMES, Value::strs_from(["name", "exit", "handler", "description", "test", "interactive"])),
+            (s::CLASS, Value::str("restart")),
+        ],
+        false,
+    )));
     Value::List(Rc::new(v))
 }
 

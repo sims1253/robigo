@@ -22,6 +22,7 @@ mod base;
 mod grdevices;
 mod hashtab;
 pub mod linpack;
+pub mod methods;
 mod stats;
 mod utils;
 
@@ -302,8 +303,13 @@ impl Dll {
 pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>, &crate::env::Env) -> RResult<Value>;
 
 /// Rust ports of registered routines, per package: (routine, function).
-static PORTS: &[(&str, &[(&str, NativeFn)])] =
-    &[("base", base::PORTS), ("grDevices", grdevices::PORTS), ("stats", stats::PORTS), ("utils", utils::PORTS)];
+static PORTS: &[(&str, &[(&str, NativeFn)])] = &[
+    ("base", base::PORTS),
+    ("grDevices", grdevices::PORTS),
+    ("methods", methods::PORTS),
+    ("stats", stats::PORTS),
+    ("utils", utils::PORTS),
+];
 
 /// Argument `k` of a `.C`/`.Fortran` call as doubles.
 pub fn real_arg(args: &[Arg], k: usize) -> Vec<f64> {

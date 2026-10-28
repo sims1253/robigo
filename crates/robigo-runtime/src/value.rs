@@ -63,8 +63,11 @@ impl Complex {
 }
 
 /// Attribute list. Order matters (it is visible through `attributes()`).
+/// The second field is GNU R's S4 bit (`IS_S4_OBJECT`, a bit of the
+/// object's `gp` field): every object that carries attributes can carry
+/// it, and it lives here so that plain objects pay nothing for it.
 #[derive(Clone, Default)]
-pub struct Attrs(pub Vec<(Sym, Value)>);
+pub struct Attrs(pub Vec<(Sym, Value)>, pub bool);
 
 impl Attrs {
     pub fn get(&self, name: Sym) -> Option<&Value> {
@@ -84,8 +87,14 @@ impl Attrs {
         Some(self.0.remove(i).1)
     }
 
+    /// No attributes (the S4 bit may still be set).
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Neither attributes nor the S4 bit: the box can be dropped.
+    pub fn is_blank(&self) -> bool {
+        self.0.is_empty() && !self.1
     }
 }
 
@@ -240,6 +249,15 @@ pub enum Value {
     Dots(Rc<Vec<Arg>>),
     /// An external pointer; only used for opaque handles for now.
     ExtPtr(Rc<ExtPtr>),
+    /// An `OBJSXP` (S4 object without a data part, `typeof` "S4" or
+    /// "object"): nothing but attributes.
+    Obj(Rc<Obj>),
+}
+
+/// The body of an `OBJSXP`.
+#[derive(Clone, Default)]
+pub struct Obj {
+    pub attrs: AttrBox,
 }
 
 pub struct ExtPtr {
@@ -458,7 +476,7 @@ impl Value {
     pub fn named_list(items: Vec<(&str, Value)>) -> Value {
         let names = Value::strs_from(items.iter().map(|(n, _)| *n));
         let mut v = Vector::new(items.into_iter().map(|(_, v)| v).collect());
-        v.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)])));
+        v.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false)));
         Value::List(Rc::new(v))
     }
 
@@ -569,6 +587,13 @@ impl Value {
             Value::Promise(_) => "promise",
             Value::Dots(_) => "...",
             Value::ExtPtr(_) => "externalptr",
+            Value::Obj(o) => {
+                if o.attrs.as_ref().is_some_and(|a| a.1) {
+                    "S4"
+                } else {
+                    "object"
+                }
+            }
         }
     }
 
@@ -609,6 +634,7 @@ impl Value {
             Value::Pairlist(p) => &p.attrs,
             Value::Lang(l) => &l.attrs,
             Value::Closure(c) => &c.attrs,
+            Value::Obj(o) => &o.attrs,
             _ => return None,
         };
         b.as_deref()
@@ -654,8 +680,46 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
+            Value::Obj(o) => &mut Rc::make_mut(o).attrs,
             _ => return None,
         })
+    }
+
+    /// GNU R's `IS_S4_OBJECT`.
+    #[inline]
+    pub fn is_s4(&self) -> bool {
+        match self {
+            Value::Env(e) => e.0.attrs.borrow().as_ref().is_some_and(|a| a.1),
+            Value::ExtPtr(p) => p.attrs.borrow().as_ref().is_some_and(|a| a.1),
+            _ => self.attrs().is_some_and(|a| a.1),
+        }
+    }
+
+    /// GNU R's `SET_S4_OBJECT` / `UNSET_S4_OBJECT` (copies a shared
+    /// object first; objects that cannot carry attributes are unchanged).
+    pub fn set_s4(&mut self, on: bool) {
+        if self.is_s4() == on {
+            return;
+        }
+        let set = |slot: &mut AttrBox| {
+            if on {
+                slot.get_or_insert_with(Default::default).1 = true;
+            } else if let Some(a) = slot.as_mut() {
+                a.1 = false;
+                if a.is_blank() {
+                    *slot = None;
+                }
+            }
+        };
+        match self {
+            Value::Env(e) => set(&mut e.0.attrs.borrow_mut()),
+            Value::ExtPtr(p) => set(&mut p.attrs.borrow_mut()),
+            _ => {
+                if let Some(slot) = self.attrs_slot_mut() {
+                    set(slot)
+                }
+            }
+        }
     }
 
     /// Set (or with `Null`, remove) an attribute without validation.
@@ -695,7 +759,7 @@ impl Value {
     }
 
     pub fn set_attrs(&mut self, attrs: AttrBox) {
-        let attrs = attrs.filter(|a| !a.is_empty());
+        let attrs = attrs.filter(|a| !a.is_blank());
         match self {
             Value::Env(e) => *e.0.attrs.borrow_mut() = attrs,
             Value::ExtPtr(p) => *p.attrs.borrow_mut() = attrs,
@@ -783,6 +847,7 @@ impl Value {
             (Value::Int(a), Value::Int(b)) => Rc::ptr_eq(a, b),
             (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b),
             (Value::Promise(a), Value::Promise(b)) => Rc::ptr_eq(a, b),
+            (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -792,7 +857,7 @@ fn set_in_box(slot: &mut AttrBox, name: Sym, value: Value) {
     if value.is_null() {
         if let Some(a) = slot.as_mut() {
             a.remove(name);
-            if a.is_empty() {
+            if a.is_blank() {
                 *slot = None;
             }
         }

@@ -67,10 +67,6 @@ pub static DEFS: &[Builtin] = &[
     special("Tailcall", do_tailcall, -1).custom_vis(),
     special("declare", do_declare, -1).invisible(),
     internal("returnValue", do_return_value, 1),
-    prim(".isMethodsDispatchOn", do_false_any, -1),
-    internal("setS4Object", do_identity_first, 3),
-    prim(".class2", do_class2, 1),
-    prim(".cache_class", do_cache_class, 2),
     internal("asCharacterFactor", do_as_character_factor, 1),
     internal("interruptsSuspended", do_false_any, -1),
     internal("activeBindingFunction", do_active_binding_function, 2),
@@ -514,14 +510,6 @@ fn do_return_value(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     Ok(arg(&args, 0))
 }
 
-fn do_class2(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::strs(crate::dispatch::dispatch_class(&arg(&args, 0)).into_iter().map(Some).collect()))
-}
-
-fn do_cache_class(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(arg(&args, 1))
-}
-
 fn do_as_character_factor(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     if !x.inherits("factor") {
@@ -608,8 +596,5 @@ fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::real(f64::INFINITY))
 }
 fn do_identity(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(arg(&args, 0))
-}
-fn do_identity_first(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(arg(&args, 0))
 }
