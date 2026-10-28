@@ -1146,7 +1146,118 @@ fn ld_add_digit(a: LD, d: u32) -> LD {
 /// The decimal case of `R_strtod5`: `text` is digits with at most one
 /// `.`, then an optional `e`/`E` exponent (both already validated by the
 /// scanner; no sign, no `0x` prefix — R's parser handles those).
+///
+/// The common shape goes through an integer fast path (`// R:
+/// util.c:R_strtod5`, the decimal tail): with at most 19 digits the
+/// `LDOUBLE` accumulator is exact (integers below 2^64), and for a
+/// resulting decimal exponent in -22..=0 the single division by the
+/// exact power of ten, or in 0..=22 the single multiplication (when the
+/// product fits 128 bits), plus the one rounding to `f64`, are all
+/// reproduced exactly with integer arithmetic — `10^k`'s odd part is
+/// `5^k < 2^52`, so those powers are exact in the 64-bit significand,
+/// and the C code performs exactly one rounding at each step. Anything
+/// else (more digits, extreme exponents, the underflow prescale) takes
+/// the long-double emulation below, which follows the C code op by op.
 fn decimal_to_f64(text: &str) -> f64 {
+    /// 10^0 .. 10^22, the powers that are exact in a 64-bit significand.
+    #[rustfmt::skip]
+    const POW10: [u128; 23] = [
+        1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
+        1_000_000_000, 10_000_000_000, 100_000_000_000, 1_000_000_000_000,
+        10_000_000_000_000, 100_000_000_000_000, 1_000_000_000_000_000,
+        10_000_000_000_000_000, 100_000_000_000_000_000, 1_000_000_000_000_000_000,
+        10_000_000_000_000_000_000, 100_000_000_000_000_000_000,
+        1_000_000_000_000_000_000_000, 10_000_000_000_000_000_000_000,
+    ];
+    const M_LIMIT: u128 = 9_999_999_999_999_999_999; // largest 19-digit value, below 2^64
+
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut m: u128 = 0;
+    let mut expn: i32 = 0;
+    let mut fast = true;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        m = m * 10 + (bytes[i] - b'0') as u128;
+        i += 1;
+        if m > M_LIMIT {
+            fast = false; // the 80-bit accumulation would round here
+            break;
+        }
+    }
+    if fast && i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            m = m * 10 + (bytes[i] - b'0') as u128;
+            expn -= 1;
+            i += 1;
+            if m > M_LIMIT {
+                fast = false;
+                break;
+            }
+        }
+    }
+    if fast && i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        let sign = match bytes.get(i) {
+            Some(b'-') => {
+                i += 1;
+                -1
+            }
+            Some(b'+') => {
+                i += 1;
+                1
+            }
+            _ => 1,
+        };
+        let mut v: i64 = 0;
+        let mut ndig = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            v = v * 10 + (bytes[i] - b'0') as i64;
+            ndig += 1;
+            i += 1;
+            if ndig > 4 {
+                // The slow path caps the accumulated exponent like the C
+                // code (`MAX_EXPONENT_PREFIX`); stay out of that regime.
+                fast = false;
+                break;
+            }
+        }
+        if fast && (ndig == 0 || v > 9999) {
+            fast = false;
+        } else if fast {
+            expn += sign * v as i32;
+        }
+    }
+    if i != bytes.len() {
+        fast = false; // trailing garbage: not a plain decimal after all
+    }
+    if fast && (-22..=22).contains(&expn) {
+        if m == 0 {
+            return 0.0;
+        }
+        if expn >= 0 {
+            let p = POW10[expn as usize];
+            if 128 - m.leading_zeros() + (128 - p.leading_zeros()) <= 128 {
+                // exact product, then the two roundings of the C code:
+                // one to the 64-bit significand, one to `double`.
+                let ld = ld_norm(m * p, 0);
+                return ld_to_f64(ld.m as u64, ld.e);
+            }
+        } else {
+            // `ans /= fac` with fac = 10^|expn| exact: one correctly
+            // rounded 64-bit division. `ld_norm` restates the power with
+            // a sub-2^64 significand (exact; the odd part is 5^k < 2^52).
+            let fac = ld_norm(POW10[(-expn) as usize], 0);
+            let q = ld_div(ld_norm(m, 0), fac);
+            return ld_to_f64(q.m as u64, q.e);
+        }
+    }
+    decimal_to_f64_slow(text)
+}
+
+/// The digit-at-a-time long-double emulation of `R_strtod5`'s decimal
+/// tail, for the literals the fast path above declines.
+fn decimal_to_f64_slow(text: &str) -> f64 {
     let bytes = text.as_bytes();
     let mut i = 0;
     let mut ans = LD::zero();
@@ -1232,4 +1343,103 @@ fn decimal_to_f64(text: &str) -> f64 {
     // (double) ans; the explicit `ans > DBL_MAX` check of the C code
     // gives the same infinity, values at the rounding boundary included.
     ld_to_f64(ans.m as u64, ans.e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The integer fast path of `decimal_to_f64` must be bit-identical to
+    /// the long-double emulation on everything it accepts: random digits,
+    /// points and exponents in and around the accepted ranges, plus
+    /// boundary shapes (19 digits, the 2^64 edge, e+/-22, trailing and
+    /// leading zeros).
+    #[test]
+    fn decimal_fast_path_matches_slow() {
+        let mut seed = 0x243f_6a88_85a3_08d3u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut cases: Vec<String> = Vec::new();
+        for _ in 0..200_000 {
+            let ndigits = 1 + (next() % 19) as usize;
+            let mut s = String::new();
+            if next() & 1 == 0 {
+                for _ in 0..(next() % 3) {
+                    s.push('0');
+                }
+            }
+            for k in 0..ndigits {
+                if k == 0 && next() % 20 == 0 {
+                    s.push('0'); // long zero runs
+                } else {
+                    s.push((b'0' + (next() % 10) as u8) as char);
+                }
+            }
+            if next() & 1 == 0 {
+                let point = 1 + (next() % s.len() as u64) as usize;
+                s.insert(point.min(s.len()), '.');
+            }
+            if next() & 1 == 0 {
+                let e = (next() % 40) as i32 - 20;
+                s.push('e');
+                if e < 0 {
+                    s.push('-');
+                } else if e > 0 && next() & 1 == 0 {
+                    s.push('+');
+                }
+                s.push_str(&e.unsigned_abs().to_string());
+            }
+            cases.push(s);
+        }
+        // Exact boundaries the random loop is unlikely to hit.
+        for s in [
+            "9999999999999999999",
+            "10000000000000000000",
+            "99999999999999999999",
+            "0.0000000000000000001",
+            "1e22",
+            "1e-22",
+            "1234567890123456789e22",
+            "999999999999999999e3",
+            "0e0",
+            "0.000e-22",
+            "1234.e5",
+            ".5e-1",
+        ] {
+            cases.push(s.to_string());
+        }
+        for s in &cases {
+            let fast = decimal_to_f64(s);
+            let slow = decimal_to_f64_slow(s);
+            assert_eq!(
+                fast.to_bits(),
+                slow.to_bits(),
+                "literal {:?}: fast {:e} ({:#x}) vs slow {:e} ({:#x})",
+                s,
+                fast,
+                fast.to_bits(),
+                slow,
+                slow.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_fast_path_boundaries() {
+        // These must equal the slow path AND the values GNU R produces
+        // (pinned in tests/parse/literals.R; a few double-rounding
+        // classics are checked here directly).
+        assert_eq!(
+            decimal_to_f64("0.76077021908142894").to_bits(),
+            decimal_to_f64_slow("0.76077021908142894").to_bits()
+        );
+        assert_eq!(
+            decimal_to_f64("2.2250738585072011e-308").to_bits(),
+            decimal_to_f64_slow("2.2250738585072011e-308").to_bits()
+        );
+    }
 }
