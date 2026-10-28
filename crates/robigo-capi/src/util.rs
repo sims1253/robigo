@@ -90,6 +90,26 @@ pub unsafe extern "C" fn Rf_type2char(t: c_uint) -> *const c_char {
     }
 }
 
+// R: printutils.c:IndexWidth
+#[unsafe(no_mangle)]
+pub extern "C" fn Rf_IndexWidth(n: isize) -> c_int {
+    ((n as f64 + 0.5).log10() + 1.0) as c_int
+}
+
+// R: printutils.c:Rstrlen (the width of the escaped, maybe quoted string)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rstrlen(s: Sexp, quote: c_int) -> c_int {
+    let text = String::from_utf8_lossy(s.char_bytes()).into_owned();
+    let q = if quote != 0 { Some(quote as u8 as char) } else { None };
+    robigo_runtime::format::rstrlen(&text, q) as c_int
+}
+
+// R: util.c:R_nativeEncoding (robigo runs in a UTF-8 locale)
+#[unsafe(no_mangle)]
+pub extern "C" fn R_nativeEncoding() -> *const c_char {
+    c"UTF-8".as_ptr()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_typeToChar(x: Sexp) -> *const c_char {
     if x.typ() == OBJSXP {

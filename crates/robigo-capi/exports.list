@@ -2,6 +2,8 @@
    executable exports (ld --dynamic-list). */
 {
   ALTINTEGER_ELT;
+  ALTINTEGER_MAX;
+  ALTINTEGER_MIN;
   ALTLOGICAL_ELT;
   ALTREAL_ELT;
   ALTREP;
@@ -300,6 +302,7 @@
   R_GetCCallable;
   R_GetConnection;
   R_GetVarLocMISSING;
+  R_GetX11Image;
   R_GlobalEnv;
   R_HashtabSEXP;
   R_Home;
@@ -412,6 +415,7 @@
   R_WeakRefValue;
   R_WholeSrcrefSymbol;
   R_WriteConnection;
+  R_access_X11;
   R_alloc;
   R_allocLD;
   R_allocObject;
@@ -460,6 +464,7 @@
   R_fopen;
   R_forceAndCall;
   R_forceSymbols;
+  R_free_tmpnam;
   R_gc;
   R_gc_running;
   R_getClassDef;
@@ -494,6 +499,7 @@
   R_mkClosure;
   R_mkhashtab;
   R_moduleCdynload;
+  R_nativeEncoding;
   R_nchar;
   R_new_altrep;
   R_new_custom_connection;
@@ -570,6 +576,7 @@
   R_subassign3_dflt;
   R_system;
   R_tmpnam;
+  R_tmpnam2;
   R_tryCatchError;
   R_tryEval;
   R_tryEvalSilent;
@@ -579,6 +586,8 @@
   R_useDynamicSymbols;
   R_wait_usec;
   R_withCallingErrorHandler;
+  R_zlib_alloc;
+  R_zlib_free;
   Rconn_fgetc;
   Rconn_printf;
   Rdownload;
@@ -599,10 +608,12 @@
   Rf_GetMatrixDimnames;
   Rf_GetOption;
   Rf_GetOption1;
+  Rf_GetOptionCutoff;
   Rf_GetOptionDeviceAsk;
   Rf_GetOptionDigits;
   Rf_GetOptionWidth;
   Rf_GetRowNames;
+  Rf_IndexWidth;
   Rf_InitGraphics;
   Rf_KillAllDevices;
   Rf_NewEnvironment;
@@ -611,6 +622,7 @@
   Rf_NumDevices;
   Rf_PairToVectorList;
   Rf_PrintDefaults;
+  Rf_PrintInit;
   Rf_PrintValue;
   Rf_RGBpar;
   Rf_RGBpar3;
@@ -727,7 +739,13 @@
   Rf_fmax2;
   Rf_fmin2;
   Rf_formatComplex;
+  Rf_formatInteger;
+  Rf_formatLogical;
+  Rf_formatRaw;
+  Rf_formatRawS;
   Rf_formatReal;
+  Rf_formatString;
+  Rf_formatStringS;
   Rf_fprec;
   Rf_fround;
   Rf_fsign;
@@ -946,6 +964,11 @@
   Rf_xlength;
   Rf_xlengthgets;
   Rg_set_col_ptrs;
+  Ri18n_iswctype;
+  Ri18n_towlower;
+  Ri18n_towupper;
+  Ri18n_wcswidth;
+  Ri18n_wctype;
   Ri18n_wcwidth;
   Riconv;
   Riconv_close;
@@ -957,6 +980,7 @@
   Rsockopen;
   Rsockread;
   Rsockwrite;
+  Rstrlen;
   Runzip;
   Rvprintf;
   SETCAD4R;
@@ -1016,6 +1040,7 @@
   _draw_hershey_penup_stroke;
   _draw_hershey_string;
   _draw_hershey_stroke;
+  _hershey_typeface_info;
   addContourLines;
   baseRegisterIndex;
   cPsort;
@@ -1067,10 +1092,10 @@
   fdhess;
   findInterval;
   findInterval2;
-  fromDeviceHeight;
-  fromDeviceWidth;
-  fromDeviceX;
-  fromDeviceY;
+  formatComplexS;
+  formatIntegerS;
+  formatLogicalS;
+  formatRealS;
   fstofd;
   getConnection;
   getPRIMNAME;
@@ -1093,9 +1118,11 @@
   lbfgsb;
   lnsrch;
   locale2charset;
+  main;
   max_contour_segments;
   mbcsValid;
   mbcslocale;
+  names;
   nmmin;
   norm_rand;
   opt_stop;
@@ -1105,6 +1132,7 @@
   optif0;
   optif9;
   parseError;
+  private_nearbyintl;
   prt_result;
   ptr_R_ClearerrConsole;
   ptr_R_FlushConsole;
@@ -1151,21 +1179,21 @@
   robigo_gr_roots;
   robigo_host_handle;
   robigo_host_proxy;
+  robigo_print_roots;
   robigo_run_finalizers;
+  robigo_set_OutDec;
   robigo_set_global;
+  robigo_set_max_contour_segments;
   rsort_with_index;
   rwarn_;
   rwarnc_;
   samin;
   savePalette;
+  scientific;
   secfac;
   secunf;
   setulb;
   signrank_free;
-  toDeviceHeight;
-  toDeviceWidth;
-  toDeviceX;
-  toDeviceY;
   tregup;
   unif_rand;
   utf16toucs;

@@ -8,6 +8,8 @@
 #include <Defn.h>
 #include <R_ext/GraphicsEngine.h>
 #include <rlocale.h>
+#include <errno.h>
+#include <R_ext/Riconv.h>
 
 /* R: util.c strIsASCII */
 Rboolean strIsASCII(const char *str)
@@ -18,7 +20,6 @@ Rboolean strIsASCII(const char *str)
     return TRUE;
 }
 
-#define LOW_SURROGATE_START 0xDC00
 static R_wchar_t
 utf16toucs(wchar_t high, wchar_t low)
 {
@@ -105,6 +106,111 @@ utf8toucs(wchar_t *wc, const char *s)
 			| (s[5] & 0x3F));
 	return 6;
     }
+}
+
+/* R: util.c utf8clen: number of additional bytes */
+static const unsigned char utf8_table4[] = {
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+  2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+  3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5 };
+
+int utf8clen(char c)
+{
+    /* This allows through 8-bit chars 10xxxxxx, which are invalid */
+    if ((c & 0xc0) != 0xc0) return 1;
+    return 1 + utf8_table4[c & 0x3f];
+}
+
+/* R: util.c utf8towcs */
+/* despite its name this translates to UTF-16 if there are (invalid)
+ * UTF-8 codings for surrogates in the input */
+size_t
+utf8towcs(wchar_t *wc, const char *s, size_t n)
+{
+    ssize_t m, res = 0;
+    const char *t;
+    wchar_t *p;
+    wchar_t local;
+
+    if(wc)
+	for(p = wc, t = s; ; p++, t += m) {
+	    m  = (ssize_t) utf8toucs(p, t);
+	    if (m < 0) error(_("invalid input '%s' in 'utf8towcs'"), s);
+	    if (m == 0) break;
+	    res ++;
+	    if (res >= n) break;
+	    if (IS_HIGH_SURROGATE(*p)) {
+		*(++p) = utf8toutf16low(t);
+		res ++;
+		if (res >= n) break;
+	    }
+	}
+    else
+	for(t = s; ; t += m) {
+	    m  = (ssize_t) utf8toucs(&local, t);
+	    if (m < 0) error(_("invalid input '%s' in 'utf8towcs'"), s);
+	    if (m == 0) break;
+	    res ++;
+	    if (IS_HIGH_SURROGATE(local))
+		res ++;
+	}
+    return (size_t) res;
+}
+
+/* R: util.c mbcsValid */
+Rboolean mbcsValid(const char *str)
+{
+    return  ((int)mbstowcs(NULL, str, 0) >= 0);
+}
+
+/* R: util.c mbcsToUcs2 */
+# ifdef WORDS_BIGENDIAN
+static const char UCS2ENC[] = "UCS-2BE";
+# else
+static const char UCS2ENC[] = "UCS-2LE";
+# endif
+
+/*
+ * out=NULL returns the number of the MBCS chars
+ */
+/* Note: this does not terminate out, as all current uses are to look
+ * at 'out' a wchar at a time, and sometimes just one char.
+ */
+size_t mbcsToUcs2(const char *in, R_ucs2_t *out, int nout, int enc)
+{
+    void   *cd = NULL ;
+    const char *i_buf;
+    char *o_buf;
+    size_t  i_len, o_len, status, wc_len;
+    /* out length */
+    wc_len = (enc == CE_UTF8)? utf8towcs(NULL, in, 0) : mbstowcs(NULL, in, 0);
+    if (out == NULL || (int)wc_len < 0) return wc_len;
+
+    if ((void*)-1 == (cd = Riconv_open(UCS2ENC, (enc == CE_UTF8) ? "UTF-8": "")))
+	return (size_t) -1;
+
+    i_buf = (char *)in;
+    i_len = strlen(in); /* not including terminator */
+    o_buf = (char *)out;
+    o_len = ((size_t) nout) * sizeof(R_ucs2_t);
+    status = Riconv(cd, &i_buf, (size_t *)&i_len, &o_buf, (size_t *)&o_len);
+    int serrno = errno;
+    Riconv_close(cd);
+    if (status == (size_t)-1) {
+	switch(serrno){
+	case EINVAL:
+	    return (size_t) -2;
+	case EILSEQ:
+	    return (size_t) -1;
+	case E2BIG:
+	    break;
+	default:
+	    errno = EILSEQ;
+	    return (size_t) -1;
+	}
+    }
+    return wc_len; /* status would be better? */
 }
 
 /* R: util.c mbtoucs, in robigo's UTF-8 locale (iconv from "" to UCS-4

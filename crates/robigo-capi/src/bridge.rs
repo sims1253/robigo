@@ -1121,6 +1121,16 @@ unsafe fn ensure_ready(interp: &mut Interp) {
         core().preserve(x);
         robigo_set_global(k as c_int, x);
     }
+    // R: unix/system.c Rf_initialize_R: R_Home = R_HomeDir() (getenv)
+    if let Ok(h) = std::env::var("R_HOME") {
+        R_Home = CString::new(h).unwrap_or_default().into_raw();
+    }
+    // R: main.c:setup_Rmainloop — the graphics engine's device table
+    crate::graphics::init_graphics();
+    // R: sysutils.c:InitTempDir — the session's temporary directory
+    if let Ok(d) = robigo_runtime::builtins::sysutils::session_tempdir() {
+        R_TempDir = CString::new(d).unwrap_or_default().into_raw();
+    }
 }
 
 // ---- calling native code ---------------------------------------------------------
@@ -1225,6 +1235,7 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     CALL_DEPTH.with(|d| d.set(d.get() + 1));
     let res = call_routine_ctx(interp, call, r, args, env);
+    crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
         d.get() == 0
@@ -1518,6 +1529,10 @@ impl NativeBridge for Bridge {
 
     fn invoke(&self, interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
         enter(interp, |interp| unsafe { call_routine(interp, call, r, args, env) })
+    }
+
+    fn option_set(&self, name: &str, value: &Value) {
+        unsafe { crate::graphics::option_set(name, value) }
     }
 
     fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {

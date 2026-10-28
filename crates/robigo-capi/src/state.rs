@@ -242,7 +242,7 @@ pub static mut known_to_be_utf8: c_int = 1;
 #[unsafe(no_mangle)]
 pub static mut known_to_be_latin1: c_int = 0;
 #[unsafe(no_mangle)]
-pub static mut R_dec_min_exponent: c_int = -4;
+pub static mut R_dec_min_exponent: c_int = -308;
 #[unsafe(no_mangle)]
 pub static mut R_num_math_threads: c_int = 1;
 #[unsafe(no_mangle)]

@@ -58,24 +58,30 @@ def macro_names():
 
 
 def appl_exports():
-    """Functions GNU R's C files vendored in appl/ and graphics/ (built by
+    """Functions GNU R's C files vendored in appl/ and main/ (built by
     build.rs) define."""
     names = set()
-    pat = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_ *]*[ *])?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*$', re.M)
+    pat = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_ *]*[ *])?\*?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*$', re.M)
+    data = re.compile(r'^(?!static|extern|typedef|return)[A-Za-z_][A-Za-z0-9_ ]*[ *]([A-Za-z_]\w*)(?:\[[^]]*\])?\s*(?:=[^;(]*)?;', re.M)
     # the headers' renames: `#define curDevice Rf_curDevice`
     rename = {}
-    for d in ("include", "include/R_ext", "graphics/include"):
+    for d in ("include", "include/R_ext", "main/include"):
         for fn in os.listdir(os.path.join(HERE, d)):
             if fn.endswith(".h"):
                 text = open(os.path.join(HERE, d, fn), encoding="latin-1").read()
-                rename.update(re.findall(r'#\s*define\s+([A-Za-z_]\w*)\s+(Rf_\w+|R_\w+)\s*$', text, re.M))
-    for sub in ("appl", "graphics"):
+                rename.update(re.findall(r'#\s*define\s+([A-Za-z_]\w*)\s+((?:Rf_|R_|GE)\w+)\s*$', text, re.M))
+    for sub in ("appl", "main"):
         d = os.path.join(HERE, sub)
         for fn in os.listdir(d):
-            if fn.endswith(".c") and fn != "xspline.c":
-                for m in pat.finditer(open(os.path.join(d, fn), encoding="latin-1").read()):
+            # gzio.h defines R_gzopen etc. (connections.c includes it)
+            if (fn.endswith(".c") and fn != "xspline.c") or fn == "gzio.h":
+                text = open(os.path.join(d, fn), encoding="latin-1").read()
+                for m in pat.finditer(text):
                     if not m.group(0).startswith("static"):
                         names.add(rename.get(m.group(1), m.group(1)))
+                # global data: `int baseRegisterIndex = -1;`
+                for m in data.finditer(text):
+                    names.add(rename.get(m.group(1), m.group(1)))
     return names
 
 

@@ -9,6 +9,7 @@ use std::ffi::{CStr, c_char, c_int, c_uint};
 use robigo_core::Sexp;
 
 use crate::host::op;
+use crate::state::{R_BaseEnv, R_BaseNamespace, R_DevicesSymbol};
 
 type CCode = unsafe extern "C" fn(Sexp, Sexp, Sexp, Sexp) -> Sexp;
 
@@ -80,9 +81,7 @@ unsafe fn builtin_of(x: Sexp) -> Option<&'static robigo_runtime::value::Builtin>
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PRIMOFFSET(x: Sexp) -> c_int {
     let list = funtab();
-    let Some(b) = builtin_of(x) else {
-        crate::errors::error_str("robigo: PRIMOFFSET of a non-primitive")
-    };
+    let Some(b) = builtin_of(x) else { crate::errors::error_str("robigo: PRIMOFFSET of a non-primitive") };
     match list.iter().position(|c| std::ptr::eq(*c, b)) {
         Some(k) => k as c_int,
         None => crate::errors::error_str("robigo: primitive not in the function table"),
@@ -121,15 +120,49 @@ pub unsafe extern "C" fn Rf_GetOptionDeviceAsk() -> c_int {
     (ask != 0) as c_int
 }
 
-// R: envir.c:gsetVar (base bindings, as defineVar there)
+/// `.Devices`, the pairlist devices.c keeps current with SETCAR/SETCDR:
+/// C works on this object (the bridge would hand it a copy of the base
+/// binding) and the binding is refreshed from it after each native call.
+static mut DEVICES: Sexp = Sexp::NULL;
+static mut DEVICES_OUT: bool = false;
+
+unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
+    sym == R_DevicesSymbol && (rho == R_BaseEnv || rho == R_BaseNamespace)
+}
+
+/// After a native call: copy C's `.Devices` into the base binding.
+pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) {
+    if DEVICES_OUT {
+        DEVICES_OUT = false;
+        let v = crate::bridge::from_sexp(DEVICES);
+        interp.base.force_set(robigo_runtime::sym::Sym::new(".Devices"), v);
+    }
+}
+
+// R: envir.c:gsetVar
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
+    if is_devices(sym, rho) {
+        if !DEVICES.is_null() {
+            crate::state::core().release(DEVICES);
+        }
+        crate::state::core().preserve(val);
+        DEVICES = val;
+    }
     crate::envir::Rf_defineVar(sym, val, rho)
 }
 
 // R: envir.c:R_findVar
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_findVar(sym: Sexp, rho: Sexp) -> Sexp {
+    if is_devices(sym, rho) {
+        if DEVICES.is_null() {
+            DEVICES = crate::envir::Rf_findVar(sym, rho);
+            crate::state::core().preserve(DEVICES);
+        }
+        DEVICES_OUT = true;
+        return DEVICES;
+    }
     crate::envir::Rf_findVar(sym, rho)
 }
 
@@ -160,16 +193,43 @@ pub unsafe extern "C" fn R_ReadConsole(prompt: *const c_char, buf: *mut u8, len:
     }
 }
 
+/// devices.c:InitGraphics: the null device, `.Device`, `.Devices`.
+pub unsafe fn init_graphics() {
+    Rf_InitGraphics()
+}
+
 unsafe extern "C" {
+    fn Rf_InitGraphics();
     pub fn robigo_gr_begin() -> Sexp;
     pub fn robigo_gr_end(call: Sexp, op: Sexp, args: Sexp, record: Sexp) -> Sexp;
     fn robigo_gr_roots(out: *mut Sexp, max: c_int) -> c_int;
+    fn robigo_print_roots(out: *mut Sexp) -> c_int;
+    fn robigo_set_OutDec(dec: *const c_char);
+    fn robigo_set_max_contour_segments(k: c_int);
+}
+
+/// options(OutDec=, max.contour.segments=) set GNU R's C globals.
+pub unsafe fn option_set(name: &str, value: &robigo_runtime::value::Value) {
+    use robigo_runtime::value::Value;
+    match (name, value) {
+        ("OutDec", Value::Str(v)) => {
+            let s = v.data.first().cloned().flatten().unwrap_or_default();
+            let c = std::ffi::CString::new(s.as_bytes()).unwrap_or_default();
+            robigo_set_OutDec(c.as_ptr())
+        }
+        ("max.contour.segments", Value::Int(v)) => robigo_set_max_contour_segments(v.data[0]),
+        _ => {}
+    }
 }
 
 /// The devices' display lists, snapshots and event environments.
 pub unsafe fn mark_roots(c: &mut robigo_core::Core) {
     let mut roots = [Sexp::NULL; 3 * 64];
     let n = robigo_gr_roots(roots.as_mut_ptr(), roots.len() as c_int);
+    for &x in &roots[..n as usize] {
+        c.mark(x);
+    }
+    let n = robigo_print_roots(roots.as_mut_ptr());
     for &x in &roots[..n as usize] {
         c.mark(x);
     }

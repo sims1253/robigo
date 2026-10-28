@@ -93,13 +93,23 @@ pub trait NativeBridge: Sync {
     ) -> RResult<Value>;
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// options() set an option the C code reads from a global
+    /// (`OutDec`, `max.contour.segments`).
+    fn option_set(&self, _name: &str, _value: &Value) {}
     /// `.External.graphics`/`.Call.graphics` before the call: the current
     /// device's display-list recording, which is turned off.
     fn graphics_begin(&self, _interp: &mut Interp) -> RResult<bool> {
         Ok(false)
     }
     /// ... and after it: recording restored, the operation recorded.
-    fn graphics_end(&self, _interp: &mut Interp, _call: &Value, _op: &Value, _args: &[Arg], _record: bool) -> RResult<()> {
+    fn graphics_end(
+        &self,
+        _interp: &mut Interp,
+        _call: &Value,
+        _op: &Value,
+        _args: &[Arg],
+        _record: bool,
+    ) -> RResult<()> {
         Ok(())
     }
 }

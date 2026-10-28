@@ -79,6 +79,8 @@ for pkg in $pkgs; do
     # package's shared object instead of serving it with Rust ports
     echo 'int robigo_base_native = 1;' > "$obj/robigo-marker.c"
     $CC $CFLAGS -c "$obj/robigo-marker.c" -o "$obj/robigo-marker.o"
-    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $LIBS
+    # the package's own libraries (grDevices: -lz); AQUA_LIBS is macOS's
+    pkglibs=$(sources "$src/Makefile.in" PKG_LIBS | sed 's/\$(AQUA_LIBS)//')
+    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $pkglibs $LIBS
     echo "build-natives: $out/$pkg/$pkg.so"
 done

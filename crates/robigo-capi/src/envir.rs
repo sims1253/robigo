@@ -226,11 +226,6 @@ pub unsafe extern "C" fn Rf_PrintValue(x: Sexp) {
     op("printValue\0", &[x]);
 }
 
-// R: print.c:PrintDefaults resets the print options; robigo's printer
-// reads them from options() at each print
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_PrintDefaults() {}
-
 // R: sysutils.c:R_ExpandFileName (a static buffer, as GNU R's)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ExpandFileName(s: *const c_char) -> *const c_char {
