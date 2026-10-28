@@ -6,4 +6,5 @@
 scripts/__pycache__/
 tests/corpora/capi/support/*.so
 tests/corpora/capi/support/*.o
+tests/corpora/cran-purer/support/lib/
 glibc-2.41/

@@ -1,0 +1,9 @@
+# Pure-R CRAN packages for the cran-purer corpus (see README.md): name,
+# version, sha256 of the src/<name>_<version>.tar.gz tarball, licence.
+# The tarballs are vendored so recording and CI need no network; the
+# importer verifies the hashes and refuses packages with compiled code.
+R6 2.6.1 59c6eba8b1b912eb7e104f65053235604be853425ee67c152ac4e86a1f2073b4 MIT
+withr 3.0.3 d86c6454164fc85678bfc85e2a6cce42f7461d45fa9a87de71f376e7956c991e MIT
+assertthat 0.2.1 85cf7fcc4753a8c86da9a6f454e46c2a58ffc70c4f47cac4d3e3bcefda2a9e9f GPL-3
+proto 1.0.0 9294d9a3b2b680bb6fac17000bfc97453d77c87ef68cfd609b4c4eb6d11d04d1 GPL-2
+R.methodsS3 1.8.2 822d5e61dad4c91e8883be2b38d7b89f87492046d0fe345704eb5d2658927c2e LGPL-2.1-or-later
