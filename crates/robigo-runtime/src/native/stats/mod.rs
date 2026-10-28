@@ -1,6 +1,7 @@
 //! Native routines of the stats package (src/library/stats/src).
 
 mod cov;
+mod distn;
 mod family;
 mod lm;
 mod misc;
@@ -13,6 +14,18 @@ use crate::interp::Interp;
 use crate::value::*;
 
 pub static PORTS: &[(&str, NativeFn)] = &[
+    ("dnbeta", |i, _, a, _| distn::dnbeta(i, &a)),
+    ("pnbeta", |i, _, a, _| distn::pnbeta(i, &a)),
+    ("qnbeta", |i, _, a, _| distn::qnbeta(i, &a)),
+    ("dnf", |i, _, a, _| distn::dnf(i, &a)),
+    ("pnf", |i, _, a, _| distn::pnf(i, &a)),
+    ("qnf", |i, _, a, _| distn::qnf(i, &a)),
+    ("dnt", |i, _, a, _| distn::dnt(i, &a)),
+    ("pnt", |i, _, a, _| distn::pnt(i, &a)),
+    ("qnt", |i, _, a, _| distn::qnt(i, &a)),
+    ("dnchisq", |i, _, a, _| distn::dnchisq(i, &a)),
+    ("pnchisq", |i, _, a, _| distn::pnchisq(i, &a)),
+    ("qnchisq", |i, _, a, _| distn::qnchisq(i, &a)),
     ("cov", c_cov),
     ("cor", c_cor),
     ("termsform", |i, _, a, _| model::termsform(i, &a)),
