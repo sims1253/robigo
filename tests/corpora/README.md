@@ -25,6 +25,7 @@ corpus, described in `corpora.toml`:
 | `gnur-examples` | the examples of GNU R 4.5.0's help pages (`tools::Rd2ex`) | GPL-2 or later, part of R |
 | `gnur-demos` | every `demo()` of GNU R 4.5.0's base packages (`src/library/*/demo/*.R`), as `demo(..., echo = TRUE)` runs it | GPL-2 or later, part of R |
 | `r-intro` | the runnable examples of GNU R's "An Introduction to R" (`doc/manual/R-intro.texi`), one script per chapter plus appendix A | GPL-2 or later, part of R |
+| `cran-purer` | pinned pure-R CRAN package sources, help-page examples, demos and tests | MIT, GPL-2, GPL-3, LGPL-2.1-or-later, see `cran-purer/README.md` |
 | `capi` | C cases over libR's exported API (`tests/capi/symbols.tsv` is the census; `scripts/capi-census.py` measures coverage) | written for robigo, GPL-2 or later |
 
 `gnur-demos` and `r-intro` are the *script* corpora: whole, realistic R

@@ -64,6 +64,7 @@ jobs:
           - { corpus: gnur-examples, shard: "1/1" }
           - { corpus: gnur-demos, shard: "1/1" }
           - { corpus: r-intro, shard: "1/1" }
+          - { corpus: cran-purer, shard: "1/1" }
           - { corpus: capi, shard: "1/1" }
           - { corpus: fastr, shard: "1/4" }
           - { corpus: fastr, shard: "2/4" }

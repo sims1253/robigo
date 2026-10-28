@@ -92,13 +92,6 @@ cube <- function(n) {
 }
 
 
-## ---- Customizing the environment
-.Last <- function() {
-  graphics.off()                        # a small safety measure.
-  cat(paste(date(),"\nAdios\n"))        # Is it time for lunch?
-}
-
-
 ## ---- Classes, generic functions and object orientation
 methods(class="data.frame")
 

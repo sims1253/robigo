@@ -8,6 +8,76 @@ give every other track a ranked list of what breaks real code.
 Metric: the corpora exist, are deterministic and run on CI, the triage
 below exists; then robigo's pass count on them.
 
+## 2026-10-28: handoff audit and pure-R CRAN corpus
+
+PR #35 merged with every CI check passing. Rebased the continuation onto
+`49e0ee5`, then onto `abb8355` after PRs #9 and #38 merged. Rebuilt this worktree with `scripts/build.sh`, using the shared
+build lock and the host's GNU R 4.5.0 R_HOME.
+
+The optional `cran-purer` draft is retained after verification. It vendors
+five source archives with pinned versions, SHA-256 hashes and original
+licences. All DESCRIPTION files declare `NeedsCompilation: no`. Required
+Imports/Depends contain only R and bundled packages. No external compiled
+dependency is installed. Seven help pages are excluded explicitly for
+random paths, current time, host library paths or compilation of C code.
+Testthat entry points and display/database examples are also excluded.
+
+The package build now checks hashes and publishes the library only after
+all installs succeed. An incomplete installation cannot silently skip the
+remaining packages. The installed library remains readable when the oracle
+container runs as root. `with_path` receives a fixed PATH through the corpus
+manifest, so it does not record the caller's executable search path.
+
+A repeat recording also exposed a bug in the existing manual importer:
+Python does not support POSIX `[[:alnum:]]` character classes. The time
+filter therefore retained a `.Last` function that prints `date()` at
+shutdown. Two immediate runs could print the same second and evade the
+repeat check. Replaced that character class with Python-compatible syntax
+and regenerated the cases and oracle output. The exclusion was already
+part of the importer's documented policy.
+
+### Ranked CRAN failures
+
+The first measurement was 30/42, including a C-compilation example that
+belongs outside this corpus, and a host-dependent PATH difference. After
+excluding that example and pinning PATH, the final measurement is **31/41**,
+with 31 entries in `passing.txt`. Classifications use the first differing
+stream, not later errors.
+No runtime changes were made, because the causes belong to other tracks.
+
+| Rank | Cases | First difference and cause | Owner and next step |
+|---|---|---|---|
+| 1 | `proto/demo/proto-vignette`, `withr/man/devices`, `withr/man/with_locale`, `withr/man/with_par` | Missing graphics natives: C_par, PDF, devholdflush. stdout first for proto/locale; stderr first for devices/par; all exit 1 instead of 0. | core/G2: build base-package natives against robigo's headers. |
+| 2 | `R.methodsS3/tests/getDispatchMethodS3`, `R.methodsS3/tests/setGenericS3` | stdout omits the bytecode annotation when printing base closures. | startup-perf and sweep-data/print: preserve and print the loaded closure's bytecode metadata. |
+| 3 | `proto/man/proto` | stdout lists environment members in a different order. GNU R's first member is bias; robigo's is x. | conformance-lang: compare as.list.environment with src/main/envir.c:do_env2list and its hash-table traversal. |
+| 4 | `withr/man/defer` | stdout is empty; stderr reports !file.exists(path) is not TRUE. defer_parent fails to remove the file after the enclosing local() exits. | conformance-lang/perf-vm: reduce parent.frame/on.exit frame selection in withr's standalone defer implementation, then check cleanup at VM returns. |
+| 5 | `withr/man/with_options` | stdout prints 3.141593 where GNU R prints 3,141593 under options(OutDec=","). | sweep-data/print: honor OutDec in scalar number printing, following GNU R's printing code. |
+| 6 | `withr/man/with_language` | stderr warns that R was installed without NLS; oracle warns that LC_ALL prevents a language change. | startup-perf: audit capabilities("NLS") and warning contexts against the pinned Debian oracle. |
+
+The table covers all ten remaining CRAN failures. There are no unstable
+cases or per-line masks. Forty retained cases match an earlier complete
+recording under existing address normalization. The PATH example was
+re-recorded twice after fixing PATH to `/usr/local/bin:/usr/bin`, avoiding
+platform differences in sbin symlinks. Address normalization is the
+existing shared corpus rule, not a new exception. See `cran-purer/README.md` for licences,
+installation and exclusions.
+
+Verification: `cargo fmt --check`, Python compilation, source-hash checks
+and all three corpus runs passed. No Rust code changed. The manual corpus
+was recorded in two independent full passes after the time-filter fix,
+and all 13 cases matched under existing address normalization.
+
+After the final rebase, all three corpora pass their existing lists with
+zero regressions: **gnur-demos 2/16, r-intro 4/13, cran-purer 31/41**,
+or **37/70** in total. PR #9 on main fixes the complex square-root case
+`02-simple-manipulations-numbers-and-vectors`; it is added to the manual
+passing list. Before this continuation, the two existing corpora passed
+5/29 and the CRAN corpus did not exist. The older
+triage below describes the original measurement; two first differences
+have moved on current main: r-intro/07 now reaches missing file.show
+instead of file.info, and r-intro/09 reaches closure-print metadata after
+the method list. r-intro/08 first fails at C_StemLeaf, owned by core/G2.
+
 ## 2026-10-28: the `gnur-demos` and `r-intro` corpora
 
 - why: the existing corpora are 31k one-line FastR snippets, GNU R's
@@ -179,9 +249,8 @@ then prints the whole `datasets` index — a good startup/lazy-loading case.
 
 ### Not yet covered
 
-- `cran-purer`: help-page examples and `tests/` of pure-R CRAN packages
-  (R6 classes, environments, closures). Needs network in the recording
-  container and package installation time; see the next entry.
+- Additional pure-R packages beyond the five pinned in `cran-purer`.
+  Extend the dependency and licence audit before adding a package.
 - `parse-dumps` for the two corpora (`scripts/parse-corpus.py`): the parser
   track's metric includes every case of `tests/corpora`; adding the corpora
   to `corpus_paths()` and recording dumps in the oracle is a small follow-up
