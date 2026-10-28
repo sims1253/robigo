@@ -1022,8 +1022,11 @@ builtins/TestBuiltin_asraw/003446648e251f6f
 builtins/TestBuiltin_asraw/0308e84ba8dafe53
 builtins/TestBuiltin_asraw/06e139884e94010c
 builtins/TestBuiltin_asraw/085461ec30eac447
+builtins/TestBuiltin_asraw/09de9766d225e01f
+builtins/TestBuiltin_asraw/0c46bf1ab649c7b6
 builtins/TestBuiltin_asraw/1a3e2a11ffa87e6e
 builtins/TestBuiltin_asraw/21dd442057008bf3
+builtins/TestBuiltin_asraw/2f053aa2f1522d55
 builtins/TestBuiltin_asraw/31a062d1444fecc9
 builtins/TestBuiltin_asraw/3361bb255c1b8565
 builtins/TestBuiltin_asraw/3778dabe04808f57
@@ -1096,16 +1099,21 @@ builtins/TestBuiltin_asvector/00df15781d3ec9db
 builtins/TestBuiltin_asvector/03ed7e3cc7b65004
 builtins/TestBuiltin_asvector/04d9054081cbd1f1
 builtins/TestBuiltin_asvector/04e7bb4623f90052
+builtins/TestBuiltin_asvector/086e2974861083ba
 builtins/TestBuiltin_asvector/09a0d5e6f9f3e3c7
 builtins/TestBuiltin_asvector/0a13e947cc280d15
 builtins/TestBuiltin_asvector/0b71863629884ff7
+builtins/TestBuiltin_asvector/0d49507f7b1049d7
 builtins/TestBuiltin_asvector/0e7b00cefcfdbc1b
 builtins/TestBuiltin_asvector/0eef7aabd35a8645
 builtins/TestBuiltin_asvector/0ef7e416c6cf1768
 builtins/TestBuiltin_asvector/0f2a4988c8319112
 builtins/TestBuiltin_asvector/0f93d35252c55c62
+builtins/TestBuiltin_asvector/1029e742b8b1ff7e
+builtins/TestBuiltin_asvector/10a914f517da331c
 builtins/TestBuiltin_asvector/112ad94bf755ceb0
 builtins/TestBuiltin_asvector/1133b242d91dc7b8
+builtins/TestBuiltin_asvector/1156fb5f621ab809
 builtins/TestBuiltin_asvector/11a0ac9b409d2c7e
 builtins/TestBuiltin_asvector/1201a0f568608f1e
 builtins/TestBuiltin_asvector/12c686c8137e44b7
@@ -1120,6 +1128,7 @@ builtins/TestBuiltin_asvector/1933de5ea7a30b45
 builtins/TestBuiltin_asvector/1a2f55a4de12b2cb
 builtins/TestBuiltin_asvector/1ae314b00cc1ef50
 builtins/TestBuiltin_asvector/1b7284ffa1eafb2b
+builtins/TestBuiltin_asvector/1cce6aea815817de
 builtins/TestBuiltin_asvector/1ce5a5714ccf2501
 builtins/TestBuiltin_asvector/1db6f56d07b29095
 builtins/TestBuiltin_asvector/1dbfcd59348bba7a
@@ -1144,6 +1153,7 @@ builtins/TestBuiltin_asvector/321a7702fd37f463
 builtins/TestBuiltin_asvector/323978d8898f6fa5
 builtins/TestBuiltin_asvector/33a93934ecb6ca9b
 builtins/TestBuiltin_asvector/342170d6a36c22aa
+builtins/TestBuiltin_asvector/34b9cb5d73fb3f7f
 builtins/TestBuiltin_asvector/34d87ee244f3b3b1
 builtins/TestBuiltin_asvector/34de6bc697eac04d
 builtins/TestBuiltin_asvector/34dea1cdf4f6f9e4
@@ -1151,6 +1161,7 @@ builtins/TestBuiltin_asvector/35b69fd9ee61bef2
 builtins/TestBuiltin_asvector/36078862fb083368
 builtins/TestBuiltin_asvector/389a2dcde348b915
 builtins/TestBuiltin_asvector/39c49bc9442d6a4e
+builtins/TestBuiltin_asvector/3d3412ac49fff1c6
 builtins/TestBuiltin_asvector/3d8e1c9847ac54d7
 builtins/TestBuiltin_asvector/3d996b9030aa164c
 builtins/TestBuiltin_asvector/3f2638fd632dd3e7
@@ -1176,10 +1187,12 @@ builtins/TestBuiltin_asvector/56e37fe441c0a008
 builtins/TestBuiltin_asvector/58e698b45b1047f2
 builtins/TestBuiltin_asvector/59d6bbd71ea882ee
 builtins/TestBuiltin_asvector/5a3dbf8bb0afdfa6
+builtins/TestBuiltin_asvector/5ab23e73339ef5b1
 builtins/TestBuiltin_asvector/5c413824274bc058
 builtins/TestBuiltin_asvector/5c48a2184c223bab
 builtins/TestBuiltin_asvector/5d8121c796bfd31a
 builtins/TestBuiltin_asvector/5e099c12812fb75a
+builtins/TestBuiltin_asvector/5e3f1548f7745345
 builtins/TestBuiltin_asvector/5e482d2ae335cbb0
 builtins/TestBuiltin_asvector/5f808df881b429a7
 builtins/TestBuiltin_asvector/5fc24b76a3b43462
@@ -1199,6 +1212,8 @@ builtins/TestBuiltin_asvector/7275a9ee4c90e3db
 builtins/TestBuiltin_asvector/732a293f4ac19778
 builtins/TestBuiltin_asvector/740110cbd18ed630
 builtins/TestBuiltin_asvector/755d4d10e6aa8b22
+builtins/TestBuiltin_asvector/77a49a37d1b67295
+builtins/TestBuiltin_asvector/77f3c94fc91c85ee
 builtins/TestBuiltin_asvector/780fe06ba449fea3
 builtins/TestBuiltin_asvector/790a0fab6b0fd89f
 builtins/TestBuiltin_asvector/79410f9b4def6d7e
@@ -1218,14 +1233,17 @@ builtins/TestBuiltin_asvector/829741cb162f4cdd
 builtins/TestBuiltin_asvector/82ca0dec67933f5f
 builtins/TestBuiltin_asvector/838031e2749b47c2
 builtins/TestBuiltin_asvector/83dde63808165e55
+builtins/TestBuiltin_asvector/859c67319108cb63
 builtins/TestBuiltin_asvector/85d12b731fb115c0
 builtins/TestBuiltin_asvector/891a1e557de71bcf
 builtins/TestBuiltin_asvector/89e1dded2bf1c7d8
 builtins/TestBuiltin_asvector/8af0c9beb7776aac
 builtins/TestBuiltin_asvector/8b603a19ec929144
+builtins/TestBuiltin_asvector/8cad3e9069bfc28f
 builtins/TestBuiltin_asvector/8dcfa01d25adcbed
 builtins/TestBuiltin_asvector/8ee5d19414dbb132
 builtins/TestBuiltin_asvector/8f9657e9775283c6
+builtins/TestBuiltin_asvector/8fecff2ad1b9b1f4
 builtins/TestBuiltin_asvector/904ddf46504e1045
 builtins/TestBuiltin_asvector/92144d57f61ac604
 builtins/TestBuiltin_asvector/921afeb82bd470ad
@@ -1255,6 +1273,7 @@ builtins/TestBuiltin_asvector/b60f7506f72ff2d8
 builtins/TestBuiltin_asvector/bba44a4ca004624c
 builtins/TestBuiltin_asvector/bbd63bea60be7bce
 builtins/TestBuiltin_asvector/bc8267997a6882ba
+builtins/TestBuiltin_asvector/bcf7826e8f253fa9
 builtins/TestBuiltin_asvector/bed97eb981c0f840
 builtins/TestBuiltin_asvector/bf44e3b50b68d29d
 builtins/TestBuiltin_asvector/bfae00fe35416ea8
@@ -1283,6 +1302,7 @@ builtins/TestBuiltin_asvector/dbcfdd7dcba9b628
 builtins/TestBuiltin_asvector/dc3433054b3128c8
 builtins/TestBuiltin_asvector/ddb3d9358f57fd7a
 builtins/TestBuiltin_asvector/deb0a50b4be08788
+builtins/TestBuiltin_asvector/dee0a331432f9574
 builtins/TestBuiltin_asvector/e0f536d65ecbda8e
 builtins/TestBuiltin_asvector/e351dfc6e8088bba
 builtins/TestBuiltin_asvector/e6d2d8848897a0bc
@@ -1296,7 +1316,10 @@ builtins/TestBuiltin_asvector/f1a82fc29f709320
 builtins/TestBuiltin_asvector/f1d64fa26f4e0dfb
 builtins/TestBuiltin_asvector/f5a87e52219cf4b0
 builtins/TestBuiltin_asvector/f66ac0dc112be125
+builtins/TestBuiltin_asvector/f6c4a93ed4979dcf
+builtins/TestBuiltin_asvector/f791201d02a5f744
 builtins/TestBuiltin_asvector/f82c49e43f99ad3f
+builtins/TestBuiltin_asvector/f83e8231e7c83d5a
 builtins/TestBuiltin_asvector/f8956d617718a282
 builtins/TestBuiltin_asvector/f92b74b578b477a0
 builtins/TestBuiltin_asvector/fa805c1ebdba6143
@@ -1304,6 +1327,7 @@ builtins/TestBuiltin_asvector/fab25bed78c0345c
 builtins/TestBuiltin_asvector/fb5a5d2d0aea567e
 builtins/TestBuiltin_asvector/fd3dd2c0a1078524
 builtins/TestBuiltin_asvector/fd654f962575b478
+builtins/TestBuiltin_asvector/ff078b072064dbb4
 builtins/TestBuiltin_asvector/ff9d5ca26f8be962
 builtins/TestBuiltin_atan/3865ee582598ce50
 builtins/TestBuiltin_atan/4e7452503338bd89
@@ -5505,6 +5529,7 @@ builtins/TestBuiltin_inspect/b5fbe838bd9607eb
 builtins/TestBuiltin_inspect/d200e98e35d877aa
 builtins/TestBuiltin_inspect/e1e0f7e41b384ee1
 builtins/TestBuiltin_inspect/f75eeb5ab92cc6da
+builtins/TestBuiltin_intToBits/005d4c886e08d621
 builtins/TestBuiltin_intToBits/0d520b6c37bf3ef3
 builtins/TestBuiltin_intToBits/0fc76ff2f60a5c8b
 builtins/TestBuiltin_intToBits/11521253834d4cdb
@@ -5522,6 +5547,7 @@ builtins/TestBuiltin_intToBits/74ab2eb056327b94
 builtins/TestBuiltin_intToBits/7abcbe371a025a94
 builtins/TestBuiltin_intToBits/7b5482400f2658be
 builtins/TestBuiltin_intToBits/9390bb944ee06a02
+builtins/TestBuiltin_intToBits/a06da37d53d2be40
 builtins/TestBuiltin_intToBits/a901fbb9f0db2542
 builtins/TestBuiltin_intToBits/ac798fafccb38c02
 builtins/TestBuiltin_intToBits/b5f56a377a3b2836
@@ -8178,6 +8204,7 @@ builtins/TestBuiltin_on_exit/b6e32acd0d736fd6
 builtins/TestBuiltin_on_exit/ca3ee51e64839742
 builtins/TestBuiltin_on_exit/f03b09e9eb98ed94
 builtins/TestBuiltin_operators/004797f70d885c7b
+builtins/TestBuiltin_operators/00fa00eec410221b
 builtins/TestBuiltin_operators/0196edd511468ac9
 builtins/TestBuiltin_operators/01a7d1e996f50a8d
 builtins/TestBuiltin_operators/023e350738dc8e48
@@ -8191,6 +8218,7 @@ builtins/TestBuiltin_operators/05d43e67a7ba2bdf
 builtins/TestBuiltin_operators/06f8337ac73d6d53
 builtins/TestBuiltin_operators/070b7a93bf374cca
 builtins/TestBuiltin_operators/07ccafe74328b83d
+builtins/TestBuiltin_operators/08069c9ee67ad234
 builtins/TestBuiltin_operators/088bdbf44b6c3a99
 builtins/TestBuiltin_operators/08b4da51a7789266
 builtins/TestBuiltin_operators/09c06f3159386b05
@@ -8211,6 +8239,7 @@ builtins/TestBuiltin_operators/0fc355333d701f56
 builtins/TestBuiltin_operators/101f8a099894cfa6
 builtins/TestBuiltin_operators/1098123bcb6948bc
 builtins/TestBuiltin_operators/10fba81efd24801c
+builtins/TestBuiltin_operators/11fdd0d4232cdef5
 builtins/TestBuiltin_operators/121e611388a739ea
 builtins/TestBuiltin_operators/125f3ad0099a6793
 builtins/TestBuiltin_operators/12957dea9443f666
@@ -8240,6 +8269,7 @@ builtins/TestBuiltin_operators/1b1e32f81ed848c8
 builtins/TestBuiltin_operators/1b3b587e69c56794
 builtins/TestBuiltin_operators/1b46401220661a5d
 builtins/TestBuiltin_operators/1b621b826b9fa0ba
+builtins/TestBuiltin_operators/1b97ba5ad7e756d0
 builtins/TestBuiltin_operators/1bc36815e0fa4ddd
 builtins/TestBuiltin_operators/1cfacb619ff1ee25
 builtins/TestBuiltin_operators/1d4e3bc1a2dac94f
@@ -8440,6 +8470,8 @@ builtins/TestBuiltin_operators/7f68f5773d0d1ba4
 builtins/TestBuiltin_operators/804d9b2d059b356f
 builtins/TestBuiltin_operators/80e71517e499f327
 builtins/TestBuiltin_operators/815e0f3a2d0eb2b8
+builtins/TestBuiltin_operators/820e1aa5102facc8
+builtins/TestBuiltin_operators/823ca368d54f7523
 builtins/TestBuiltin_operators/82d078d91ff23eb5
 builtins/TestBuiltin_operators/83a5b76417a8dfdb
 builtins/TestBuiltin_operators/83f53acd3ce8d394
@@ -8679,6 +8711,7 @@ builtins/TestBuiltin_operators/f98b4c48ea2816f8
 builtins/TestBuiltin_operators/f9e35db0850ec4f6
 builtins/TestBuiltin_operators/fa284de4f21079c4
 builtins/TestBuiltin_operators/fb42d335e4f5722f
+builtins/TestBuiltin_operators/fb6bf7886c2268a2
 builtins/TestBuiltin_operators/fbda81665052ede2
 builtins/TestBuiltin_operators/fbdbdc50ac6bc573
 builtins/TestBuiltin_operators/fca56e46d33df2b2
@@ -16171,6 +16204,7 @@ library/base/TestSimpleArithmetic/6e7ee6d2e55d7faf
 library/base/TestSimpleArithmetic/6f328099a392343d
 library/base/TestSimpleArithmetic/6f36cc66d662530c
 library/base/TestSimpleArithmetic/6ffab49d2d375c49
+library/base/TestSimpleArithmetic/70be09c15c8729bc
 library/base/TestSimpleArithmetic/70dce88d7ac63b7b
 library/base/TestSimpleArithmetic/711ff3e98895f787
 library/base/TestSimpleArithmetic/71a5d7f6c8c2ac33
@@ -16846,6 +16880,7 @@ library/base/TestSimpleComparison/202cdf75c6530856
 library/base/TestSimpleComparison/207e438799968e61
 library/base/TestSimpleComparison/223795cc99acbbb8
 library/base/TestSimpleComparison/239378f8014dd4a4
+library/base/TestSimpleComparison/247acb97b9398b69
 library/base/TestSimpleComparison/260fadaad9e5267b
 library/base/TestSimpleComparison/2799bef595749d35
 library/base/TestSimpleComparison/27fab5a9af745069
@@ -16920,6 +16955,7 @@ library/base/TestSimpleComparison/92aaa68b0726c138
 library/base/TestSimpleComparison/92f152aba50f0e34
 library/base/TestSimpleComparison/93163b3f484d932b
 library/base/TestSimpleComparison/9393ca205f53bfbe
+library/base/TestSimpleComparison/93e7b7b946462083
 library/base/TestSimpleComparison/94f563e5841e9221
 library/base/TestSimpleComparison/97d595b7c3a7c710
 library/base/TestSimpleComparison/9838fea4d427adbb
@@ -16950,6 +16986,7 @@ library/base/TestSimpleComparison/b12d0574e6e0f61f
 library/base/TestSimpleComparison/b15ed2496cf2c0e6
 library/base/TestSimpleComparison/b18444be7152b3be
 library/base/TestSimpleComparison/b1c254fb9e5bb24a
+library/base/TestSimpleComparison/b39c7765502bd768
 library/base/TestSimpleComparison/b6f9029d0abd4950
 library/base/TestSimpleComparison/b7e2374338ca6562
 library/base/TestSimpleComparison/ba0c1e68c42e7af6
@@ -19519,6 +19556,7 @@ library/base/TestSimpleValues/36d0f4883d48778d
 library/base/TestSimpleValues/36e2649470d5cdd7
 library/base/TestSimpleValues/36e37ecf81c81f11
 library/base/TestSimpleValues/36e4e49bc024f4ae
+library/base/TestSimpleValues/36fa56888945afc3
 library/base/TestSimpleValues/36ff1e2e48974b59
 library/base/TestSimpleValues/3709f8d2dcb45154
 library/base/TestSimpleValues/3713821e50d22bf2
@@ -19686,6 +19724,7 @@ library/base/TestSimpleValues/3c8531566c41fd1e
 library/base/TestSimpleValues/3c97bd5dc7c4db35
 library/base/TestSimpleValues/3c9ae794cd856b83
 library/base/TestSimpleValues/3c9ca0de700a2803
+library/base/TestSimpleValues/3caa0651e974767a
 library/base/TestSimpleValues/3cbd6b83a137edb7
 library/base/TestSimpleValues/3cc0fbe0517039a2
 library/base/TestSimpleValues/3ccf34b593245b9c
@@ -20678,6 +20717,7 @@ library/base/TestSimpleValues/5a7f25f4cf75c803
 library/base/TestSimpleValues/5a834a11734ab8dc
 library/base/TestSimpleValues/5aa058ae2636d915
 library/base/TestSimpleValues/5aa762ae383fbb72
+library/base/TestSimpleValues/5aaa4f55a5162c02
 library/base/TestSimpleValues/5ab53b57448f299d
 library/base/TestSimpleValues/5ab5d1c6c00b2bde
 library/base/TestSimpleValues/5ac39a8754a25a6f
@@ -20839,6 +20879,7 @@ library/base/TestSimpleValues/5f94b46e295102ef
 library/base/TestSimpleValues/5f9be6bf11aad12d
 library/base/TestSimpleValues/5fa28c702f8f70f3
 library/base/TestSimpleValues/5fa69cd889c509b5
+library/base/TestSimpleValues/5fba13083fa8f513
 library/base/TestSimpleValues/5fc2b52e5e511609
 library/base/TestSimpleValues/5fc585892c5b4fde
 library/base/TestSimpleValues/5fc8df32cdeda908
@@ -22342,6 +22383,7 @@ library/base/TestSimpleValues/8a7060181a84c994
 library/base/TestSimpleValues/8a736b7f96f016d3
 library/base/TestSimpleValues/8a74fc91439d9d10
 library/base/TestSimpleValues/8a820b5fa82f15a4
+library/base/TestSimpleValues/8a82b052c9546e54
 library/base/TestSimpleValues/8a949575cd639405
 library/base/TestSimpleValues/8a9c3eb67eb84096
 library/base/TestSimpleValues/8a9e9b135f018521
@@ -22700,6 +22742,7 @@ library/base/TestSimpleValues/944d21f434267161
 library/base/TestSimpleValues/946832634ecea402
 library/base/TestSimpleValues/9469f504c6fea1c5
 library/base/TestSimpleValues/947bb093b7eecd3e
+library/base/TestSimpleValues/948ef2b5b104d767
 library/base/TestSimpleValues/949142dfaf3c004f
 library/base/TestSimpleValues/94937f16974d49cb
 library/base/TestSimpleValues/94a2cdab2530e3d6
@@ -23628,6 +23671,7 @@ library/base/TestSimpleValues/b027cef95195e43c
 library/base/TestSimpleValues/b0396ae231abf9ab
 library/base/TestSimpleValues/b03dd4ba05404682
 library/base/TestSimpleValues/b045129c51706cf8
+library/base/TestSimpleValues/b0540f0a8f248126
 library/base/TestSimpleValues/b0569b2cde48ee4e
 library/base/TestSimpleValues/b06480989b7d0c7e
 library/base/TestSimpleValues/b0650ac4894e2e1b
@@ -25539,6 +25583,7 @@ library/base/TestSimpleValues/e8f51a88de80b6d1
 library/base/TestSimpleValues/e8fd595af163267f
 library/base/TestSimpleValues/e90572ad0eac4c5f
 library/base/TestSimpleValues/e9066eb154e47061
+library/base/TestSimpleValues/e90fd2ab7caeeff8
 library/base/TestSimpleValues/e91a4a6b37e9ebd2
 library/base/TestSimpleValues/e91ca4f328742ec2
 library/base/TestSimpleValues/e91ca550609c682b

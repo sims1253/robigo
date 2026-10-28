@@ -114,7 +114,10 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
         return x.powf(y);
     }
     if x.is_nan() || y.is_nan() {
-        return x + y;
+        // R: arithmetic.c:R_pow's `x + y` as gcc compiles it: the addsd
+        // destination holds y, so y's NaN payload wins (observable:
+        // (1+NA)^(-(0/0)) is NaN, (-(0/0))^(1+NA) is NA).
+        return super::complex::sse::add(y, x);
     }
     if !x.is_finite() {
         if x > 0.0 {
@@ -702,12 +705,42 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     if y.is_null() {
         y = Value::ints(vec![]);
     }
-    let ok = |v: &Value| v.is_atomic();
+    let ok = |v: &Value| v.is_atomic() || matches!(v, Value::List(_) | Value::Expr(_));
     if !ok(&x) || !ok(&y) {
         return Err(Flow::error_call(
             call.clone(),
             format!("comparison ({}) is possible only for atomic and list types", op.name()),
         ));
+    }
+    // R: relop.c:do_relop_dflt's coercion chain — a list or expression
+    // operand coerces to the other operand's type; the gate is
+    // isVectorizable (a plain error; an expression never qualifies, and
+    // character is exempt through the deparse path). Two list operands
+    // match no branch of the chain.
+    let is_list = |v: &Value| matches!(v, Value::List(_) | Value::Expr(_));
+    if is_list(&x) && is_list(&y) {
+        return Err(Flow::error_call(call.clone(), "comparison of these types is not implemented"));
+    }
+    let other_type = |v: &Value| match v {
+        Value::Str(_) => VType::Str,
+        Value::Cplx(_) => VType::Cplx,
+        Value::Real(_) => VType::Real,
+        Value::Int(_) => VType::Int,
+        Value::Lgl(_) => VType::Lgl,
+        Value::Raw(_) => VType::Raw,
+        _ => unreachable!("one operand is atomic here"),
+    };
+    if is_list(&x) && !matches!(y, Value::Str(_)) {
+        let t = other_type(&y);
+        let mut w = CoerceWarnings::default();
+        x = super::coerce::relop_list_coerce(&x, t, &mut w)?;
+        w.emit(interp)?;
+    }
+    if is_list(&y) && !matches!(x, Value::Str(_)) {
+        let t = other_type(&x);
+        let mut w = CoerceWarnings::default();
+        y = super::coerce::relop_list_coerce(&y, t, &mut w)?;
+        w.emit(interp)?;
     }
     let (nx, ny) = (x.len(), y.len());
     let attrs = binary_attrs(&x, &y, call)?;
@@ -966,6 +999,9 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
             v.data.iter().map(|e| if e.is_na() { NA_LOGICAL } else { (e.re == 0.0 && e.im == 0.0) as Lgl }).collect(),
         ),
         Value::Raw(v) => Value::raws(v.data.iter().map(|&b| !b).collect()),
+        // R: logic.c:lunary — for back-compatibility, a length-0 argument
+        // of any type gives logical(0) instead of the type error.
+        other if other.len() == 0 => Value::lgls(vec![]),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
     if !names.is_null() {

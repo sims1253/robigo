@@ -22,7 +22,7 @@ const RMAX2: f64 = RBIG * RMIN2;
 /// commute operands, so which NaN payload survives `nan + nan` depends on
 /// the codegen. The kernels therefore recompute through these helpers
 /// whenever the fast result contains a NaN (see [`CArith`]).
-mod sse {
+pub(crate) mod sse {
     /// SSE quiets a propagated signalling NaN by setting the quiet bit.
     #[inline(always)]
     fn quietize(x: f64) -> f64 {
