@@ -20,6 +20,7 @@ pub mod coerce;
 pub mod complex;
 pub mod conditions;
 pub mod datetime;
+pub mod dcf;
 pub mod debug;
 pub mod dotcode;
 pub mod envir;
@@ -146,6 +147,7 @@ static TABLES: &[&[Builtin]] = &[
     unique::DEFS,
     math::DEFS,
     io::DEFS,
+    dcf::DEFS,
     printint::DEFS,
     apply::DEFS,
     array::DEFS,

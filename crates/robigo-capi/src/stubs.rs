@@ -92,14 +92,12 @@ pub static STUBS: &[&str] = &[
     "GEtoDeviceY",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
-    "RC_fopen",
     "R_AllocStringBuffer",
     "R_Busy",
     "R_CheckDeviceAvailable",
     "R_ClearerrConsole",
     "R_EditFiles",
     "R_EnvironmentIsLocked",
-    "R_FileExists",
     "R_FreeStringBuffer",
     "R_GE_checkVersionOrDie",
     "R_GE_clipPathFillRule",
@@ -148,7 +146,6 @@ pub static STUBS: &[&str] = &[
     "R_HashtabSEXP",
     "R_InitInPStream",
     "R_IsPackageEnv",
-    "R_NewHashedEnv",
     "R_PackageEnvName",
     "R_ReadConsole",
     "R_SelectEx",
@@ -160,7 +157,6 @@ pub static STUBS: &[&str] = &[
     "R_cairoCdynload",
     "R_checkActivity",
     "R_check_class_etc",
-    "R_closedir",
     "R_clrhash",
     "R_data_class",
     "R_deferred_default_method",
@@ -177,14 +173,12 @@ pub static STUBS: &[&str] = &[
     "R_moduleCdynload",
     "R_new_custom_connection",
     "R_numhash",
-    "R_opendir",
     "R_popen",
     "R_primitive_generic",
     "R_primitive_methods",
     "R_qsort_I",
     "R_qsort_int",
     "R_qsort_int_I",
-    "R_readdir",
     "R_remhash",
     "R_runHandlers",
     "R_set_prim_method",
@@ -220,7 +214,6 @@ pub static STUBS: &[&str] = &[
     "Rf_killDevice",
     "Rf_matchE",
     "Rf_mbcsToUcs2",
-    "Rf_mbrtowc",
     "Rf_memtrace_report",
     "Rf_nextDevice",
     "Rf_prevDevice",
@@ -228,7 +221,6 @@ pub static STUBS: &[&str] = &[
     "Rf_selectDevice",
     "Rf_sortVector",
     "Rf_strIsASCII",
-    "Rf_strchr",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
     "Rf_utf8toucs",
@@ -711,11 +703,6 @@ pub unsafe extern "C" fn LOGICAL_NO_NA() {
 pub static mut OutDec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn RC_fopen() {
-    not_implemented("RC_fopen")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_AllocStringBuffer() {
     not_implemented("R_AllocStringBuffer")
 }
@@ -746,11 +733,6 @@ pub unsafe extern "C" fn R_EditFiles() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_EnvironmentIsLocked() {
     not_implemented("R_EnvironmentIsLocked")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_FileExists() {
-    not_implemented("R_FileExists")
 }
 
 #[unsafe(no_mangle)]
@@ -1003,11 +985,6 @@ pub unsafe extern "C" fn R_IsPackageEnv() {
 pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_NewHashedEnv() {
-    not_implemented("R_NewHashedEnv")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_Outputfile: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -1081,11 +1058,6 @@ pub unsafe extern "C" fn R_checkActivity() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_check_class_etc() {
     not_implemented("R_check_class_etc")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_closedir() {
-    not_implemented("R_closedir")
 }
 
 #[unsafe(no_mangle)]
@@ -1172,11 +1144,6 @@ pub unsafe extern "C" fn R_numhash() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_opendir() {
-    not_implemented("R_opendir")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_popen() {
     not_implemented("R_popen")
 }
@@ -1204,11 +1171,6 @@ pub unsafe extern "C" fn R_qsort_int() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_qsort_int_I() {
     not_implemented("R_qsort_int_I")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_readdir() {
-    not_implemented("R_readdir")
 }
 
 #[unsafe(no_mangle)]
@@ -1387,11 +1349,6 @@ pub unsafe extern "C" fn Rf_mbcsToUcs2() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_mbrtowc() {
-    not_implemented("Rf_mbrtowc")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_memtrace_report() {
     not_implemented("Rf_memtrace_report")
 }
@@ -1424,11 +1381,6 @@ pub unsafe extern "C" fn Rf_sortVector() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_strIsASCII() {
     not_implemented("Rf_strIsASCII")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_strchr() {
-    not_implemented("Rf_strchr")
 }
 
 #[unsafe(no_mangle)]

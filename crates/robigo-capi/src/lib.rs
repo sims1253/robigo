@@ -24,6 +24,7 @@ pub mod host;
 pub mod list;
 pub mod memory;
 pub mod nmath;
+pub mod platform;
 pub mod rdynload;
 pub mod rng;
 pub mod serialize;

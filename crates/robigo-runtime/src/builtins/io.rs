@@ -64,7 +64,7 @@ pub static DEFS: &[Builtin] = &[
 const NCONNECTIONS: usize = 128;
 const NSINKS: usize = 21;
 /// `R_EOF`
-const EOF: i32 = -1;
+pub(super) const EOF: i32 = -1;
 
 // ----------------------------------------------------------------------
 // The connection table
@@ -247,7 +247,7 @@ pub fn expand_file_name(name: &str) -> String {
 
 /// Open connection `n` with its current mode (R's `con->open(con)`).
 /// Failures are reported with a warning and `Ok(false)`.
-fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
+pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     let mode = con.mode.clone();
     let description = con.description.clone();
@@ -652,7 +652,7 @@ fn i_tempdir() -> RResult<String> {
 }
 
 /// `con->close(con)`
-fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
+pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
         ConnKind::File { fp, .. } => {
@@ -805,7 +805,7 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
 }
 
 /// R: connections.c:Rconn_fgetc
-fn rconn_fgetc(con: &mut Connection) -> i32 {
+pub(super) fn rconn_fgetc(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
             let c = con.save;

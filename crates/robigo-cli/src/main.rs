@@ -230,7 +230,7 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
                 "-f" => {
                     i += 1;
                     match kept.get(i) {
-                        Some(f) => cl.file = Some(f.clone()),
+                        Some(f) => cl.file = Some(unescape_arg(f)),
                         None => {
                             // The message of the R shell wrapper, which
                             // validates -f before exec'ing R (R:
@@ -240,12 +240,12 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
                         }
                     }
                 }
-                _ if a.starts_with("--file=") => cl.file = Some(a[7..].to_string()),
+                _ if a.starts_with("--file=") => cl.file = Some(unescape_arg(&a[7..])),
                 "-e" => {
                     i += 1;
                     match kept.get(i) {
                         Some(e) => {
-                            cl.exprs.push(e.clone());
+                            cl.exprs.push(unescape_arg(e));
                             // robigo's `-e` is `Rscript -e`: Rscript
                             // execs R with `--no-echo` (R: unix/Rscript.c),
                             // which also suppresses prompts and echo.
@@ -276,6 +276,55 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
         }
         i += 1;
     }
+}
+
+/// `robigo CMD command args`: GNU R's `R CMD` (its `bin/R` script runs
+/// `bin/Rcmd`, whose tools run `bin/R` again) in robigo's home, where
+/// that `R` is robigo (`scripts/robigo-home.sh`, docs/core.md §8).
+fn r_cmd(args: &[String]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let me = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let is_ours = |home: &str| {
+        let r = std::path::Path::new(home).join("bin/exec/R");
+        r.canonicalize().ok().is_some_and(|r| Some(r) == me)
+    };
+    let home = robigo_runtime::startup::robigo_home().or_else(|| std::env::var("R_HOME").ok().filter(|h| is_ours(h)));
+    let Some(home) = home else {
+        eprintln!("robigo: 'CMD' needs robigo's R_HOME (scripts/robigo-home.sh)");
+        return ExitCode::FAILURE;
+    };
+    let err = std::process::Command::new(format!("{home}/bin/R")).arg("CMD").args(args).exec();
+    eprintln!("robigo: cannot run {home}/bin/R: {err}");
+    ExitCode::FAILURE
+}
+
+/// Undo the escaping of GNU R's front-end script (`bin/R` passes `-e`
+/// expressions and `-f` paths with `~+~` for spaces, `~n~` for newlines,
+/// `~t~` for tabs); R's binary undoes it for every caller, Rscript's too.
+// R: unix/system.c:unescape_arg
+fn unescape_arg(a: &str) -> String {
+    let mut out = String::with_capacity(a.len());
+    let mut rest = a;
+    while let Some(c) = rest.chars().next() {
+        let r = rest.as_bytes();
+        let sub = match (c, r.get(1), r.get(2)) {
+            ('~', Some(b'+'), Some(b'~')) => Some(' '),
+            ('~', Some(b'n'), Some(b'~')) => Some('\n'),
+            ('~', Some(b't'), Some(b'~')) => Some('\t'),
+            _ => None,
+        };
+        match sub {
+            Some(x) => {
+                out.push(x);
+                rest = &rest[3..];
+            }
+            None => {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    out
 }
 
 /// What `commandArgs()` reports: the arguments of the R process, the way
@@ -374,6 +423,9 @@ fn real_main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("parse") {
         return parse_cmd(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("CMD") {
+        return r_cmd(&args[1..]);
     }
     if args.first().map(String::as_str) == Some("--list-builtins") {
         for b in robigo_runtime::builtins::all_builtins() {

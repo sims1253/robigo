@@ -20,6 +20,7 @@ static TABLE: &str = include_str!("../../../../rlib/native-routines.tsv");
 
 mod base;
 mod grdevices;
+mod hashtab;
 pub mod linpack;
 mod stats;
 mod utils;
@@ -108,6 +109,14 @@ pub fn bridge() -> Option<&'static dyn NativeBridge> {
 /// native code is served by Rust ports until it is built against robigo).
 pub fn has_table(name: &str) -> bool {
     TABLE.lines().any(|l| l.split('\t').next() == Some(name))
+}
+
+/// Whether a shared object is one of GNU R's base packages built from
+/// source against robigo (`crates/robigo-capi/natives/build-base-native.sh`
+/// links in the symbol `robigo_base_native`).
+pub fn is_robigo_build(path: &str) -> bool {
+    let marker = b"robigo_base_native";
+    std::fs::read(path).is_ok_and(|b| b.windows(marker.len()).any(|w| w == marker))
 }
 
 /// The payload of a DLL's `info` external pointer.
