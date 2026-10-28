@@ -1365,6 +1365,181 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
     signal(interp, r)
 }
 
+/// `x * y` (the builtin is about to compute it into register `dst` for
+/// operands that are not both scalars) when the next op adds it to, or
+/// subtracts it from or from, an operand already at hand (a register, a
+/// constant, or a variable read without running code): for attribute-free
+/// double vectors of one length `n` (or scalars) both in one pass, each
+/// element multiplied and then added as the two builtins would (never a
+/// fused multiply-add), into a temporary operand's buffer when one is
+/// unshared. Double arithmetic signals nothing, so reading that operand
+/// before multiplying is not observable. Returns the next op's destination
+/// and value, or the operands back.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn mul_add_next(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    x: RVal,
+    y: RVal,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Result<(Reg, Value), (RVal, RVal)> {
+    // How the product combines with the other operand `c`.
+    let (out, kind, other): (Reg, u8, Result<Reg, Leaf>) = match code.ops.get(pc) {
+        Some(Op::Arith { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a, b, .. }) if *a == dst && *b != dst => {
+            (*o, if *op == ArithOp::Plus { MA_ADD } else { MA_SUB }, Ok(*b))
+        }
+        Some(Op::Arith { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a, b, .. }) if *b == dst && *a != dst => {
+            (*o, if *op == ArithOp::Plus { MA_RADD } else { MA_RSUB }, Ok(*a))
+        }
+        Some(Op::ArithL { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a: Leaf::R(r), b, g, .. })
+            if *r == dst && *g == NO_GUARD && !matches!(b, Leaf::R(_)) =>
+        {
+            (*o, if *op == ArithOp::Plus { MA_ADD } else { MA_SUB }, Err(*b))
+        }
+        _ => return Err((x, y)),
+    };
+    let c = match other {
+        Ok(r) => std::mem::replace(&mut regs[r as usize], RVal::I(0)),
+        Err(Leaf::D(v)) => RVal::D(v),
+        Err(Leaf::Var(sym, slot)) => match read_var(vars, env, sym, slot) {
+            Some(v) => v.clone(),
+            None => return Err((x, y)),
+        },
+        Err(_) => return Err((x, y)),
+    };
+    fn len(v: &RVal) -> Option<usize> {
+        match v {
+            RVal::D(_) => Some(1),
+            RVal::V(Value::Real(r)) if r.attrs.is_none() => Some(r.data.len()),
+            _ => None,
+        }
+    }
+    let lens = (len(&x), len(&y), len(&c));
+    let (Some(lx), Some(ly), Some(lc)) = lens else {
+        if let Ok(r) = other {
+            regs[r as usize] = c;
+        }
+        return Err((x, y));
+    };
+    let n = lx.max(ly).max(lc);
+    if n < 2 || [lx, ly, lc].iter().any(|&l| l != 1 && l != n) {
+        if let Ok(r) = other {
+            regs[r as usize] = c;
+        }
+        return Err((x, y));
+    }
+    let (mut x, mut y, mut c) = (x, y, c);
+    // An unshared temporary of length n takes the result.
+    let reuse = |v: &mut RVal| -> Option<Rc<Vector<f64>>> {
+        match v {
+            RVal::V(Value::Real(r)) if r.data.len() == n && Rc::strong_count(r) == 1 && Rc::weak_count(r) == 0 => {
+                match std::mem::replace(v, RVal::I(0)) {
+                    RVal::V(Value::Real(r)) => Some(r),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    let (mut buf, which) = match reuse(&mut c) {
+        Some(b) => (b, 2),
+        None => match reuse(&mut x) {
+            Some(b) => (b, 0),
+            None => match reuse(&mut y) {
+                Some(b) => (b, 1),
+                None => (Rc::new(Vector { data: Vec::with_capacity(n), attrs: None }), 3),
+            },
+        },
+    };
+    let v = Rc::get_mut(&mut buf).unwrap();
+    if which == 3 {
+        // SAFETY: every element is written below before it is read.
+        unsafe { v.data.set_len(n) };
+    }
+    let p = v.data.as_mut_ptr();
+    let src = |w: usize, r: &RVal| -> (*const f64, bool) {
+        if w == which {
+            return (p as *const f64, false);
+        }
+        match r {
+            RVal::D(d) => (d as *const f64, true),
+            RVal::V(Value::Real(r)) => (r.data.as_ptr(), r.data.len() == 1),
+            _ => unreachable!(),
+        }
+    };
+    let (xs, ys, cs) = (src(0, &x), src(1, &y), src(2, &c));
+    // SAFETY: each source is `n` elements long or a scalar, `p` holds `n`
+    // elements; a source aliasing `p` is read at `i` before `i` is written.
+    unsafe { mul_add_dispatch(p, n, xs, ys, cs, kind) };
+    Ok((out, Value::Real(buf)))
+}
+
+const MA_ADD: u8 = 0;
+const MA_SUB: u8 = 1;
+const MA_RADD: u8 = 2;
+const MA_RSUB: u8 = 3;
+
+/// `out[i] = x[i] * y[i] OP c[i]` (`K`: `MA_*`, the operand order of R's
+/// expression), with scalar sources (`S*`) read at index 0.
+#[inline(always)]
+unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K: u8>(
+    out: *mut f64,
+    n: usize,
+    x: *const f64,
+    y: *const f64,
+    c: *const f64,
+) {
+    for i in 0..n {
+        unsafe {
+            let a = if SX { *x } else { *x.add(i) };
+            let b = if SY { *y } else { *y.add(i) };
+            let z = if SC { *c } else { *c.add(i) };
+            let m = a * b;
+            *out.add(i) = match K {
+                MA_ADD => m + z,
+                MA_SUB => m - z,
+                MA_RADD => z + m,
+                _ => z - m,
+            };
+        }
+    }
+}
+
+unsafe fn mul_add_dispatch(
+    out: *mut f64,
+    n: usize,
+    (x, sx): (*const f64, bool),
+    (y, sy): (*const f64, bool),
+    (c, sc): (*const f64, bool),
+    kind: u8,
+) {
+    macro_rules! k {
+        ($sx:literal, $sy:literal, $sc:literal) => {
+            match kind {
+                MA_ADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_ADD>(out, n, x, y, c) },
+                MA_SUB => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_SUB>(out, n, x, y, c) },
+                MA_RADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RADD>(out, n, x, y, c) },
+                _ => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RSUB>(out, n, x, y, c) },
+            }
+        };
+    }
+    match (sx, sy, sc) {
+        (false, false, false) => k!(false, false, false),
+        (false, false, true) => k!(false, false, true),
+        (false, true, false) => k!(false, true, false),
+        (false, true, true) => k!(false, true, true),
+        (true, false, false) => k!(true, false, false),
+        (true, false, true) => k!(true, false, true),
+        (true, true, false) => k!(true, true, false),
+        (true, true, true) => k!(true, true, true),
+    }
+}
+
 /// Does `sym`, looked up as a function from `env`, still resolve to base?
 /// Memoized per guard in two ways:
 /// - for `env` itself, while neither the search path (epoch) nor `env`'s
@@ -2624,7 +2799,7 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $mul:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -2667,6 +2842,14 @@ fn run_with(
                         (Some(p), Some(q)) => match $fast(p, q) {
                             Some(v) => v,
                             None => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
+                        },
+                        _ if $mul => match mul_add_next(code, pc, dst as Reg, x, y, &mut vars, env, regs) {
+                            Ok(out) => {
+                                pc += 1;
+                                regs[out.0 as usize] = RVal::V(out.1);
+                                continue;
+                            }
+                            Err((x, y)) => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
                         },
                         _ => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
                     }
@@ -2787,15 +2970,27 @@ fn run_with(
                         flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         let y = std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null));
+                        let (x, y) = if *op == ArithOp::Times {
+                            match mul_add_next(code, pc, *dst, x, y, &mut vars, env, regs) {
+                                Ok(out) => {
+                                    pc += 1;
+                                    regs[out.0 as usize] = RVal::V(out.1);
+                                    continue;
+                                }
+                                Err(xy) => xy,
+                            }
+                        } else {
+                            (x, y)
+                        };
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
                     }
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), *op == ArithOp::Times);
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), false);
             }
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
