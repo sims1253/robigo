@@ -11,6 +11,40 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: src/appl in libR; stats from source vs the Rust ports
+
+- GNU R's src/appl C files (`optim.c` + `lbfgsb.c`, `uncmin.c`,
+  `integrate.c`) are vendored unmodified in `crates/robigo-capi/appl`
+  and compiled into libR by build.rs. A `#[used]` table keeps them in
+  the executable, which exports them. The two shims there: `Defn.h`
+  (only `_()`) and an empty `config.h`.
+- LINPACK with the Fortran ABI in `src/linpack.rs`:
+  - dqrdc2, dqrsl, dqrls and the dqrutl drivers wrap the runtime's
+    existing ports;
+  - dqrdc, dpofa, dtrsl, dpbfa and dpbsl are new line-by-line ports;
+  - reference BLAS level 1 (any stride) serves the appl objects and is
+    not exported (`NOT_EXPORTED` in gen-stubs.py), so packages keep
+    their own BLAS.
+- capi corpus 14 -> 15/20 (`fortran`, to 12-15 significant digits);
+  census 92.6% -> 93.5% weighted (569/831 symbols).
+- GNU R's stats.so built from source (build-base-native.sh) now has only
+  `dsvdc_` left among robigo's stubs. In a robigo home that uses it
+  (`ROBIGO_NATIVES`), smooth.spline, optim (BFGS, Nelder-Mead,
+  L-BFGS-B), integrate, nlm and lm.fit print exactly GNU R's output.
+  - **gnur-examples `^stats/`: 141/275 with GNU R's stats.so, 113/275
+    with robigo's Rust ports, 0 regressions.**
+  - Full fastr corpus with the native stats.so: 2 regressions, both a
+    traceback line (`Calls: ... -> complete.cases -> .External`). GNU R
+    gives a foreign call a builtin context only in the AST interpreter;
+    package code is byte-compiled at installation, and bytecode calls
+    builtins without a context. The bridge now pushes its context only
+    when the call is evaluated outside namespace code; both cases pass,
+    and the capi corpus is unchanged.
+  - Recommendation (measured): serve stats from GNU R's own sources, not
+    the Rust ports. That needs the base-package sources and gfortran in
+    the build (CI): a maintainer decision about the CI image. Until
+    then, robigo's default home keeps the Rust ports.
+
 ## 2026-10-28: the gate — install.packages() from source inside robigo
 
 **fastmap and digest install from CRAN sources inside robigo, and their
