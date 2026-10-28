@@ -120,7 +120,10 @@ fn is_builtin_funcall(name: &str) -> bool {
 }
 
 fn is_user_binop(name: &str) -> bool {
-    name.len() >= 2 && name.starts_with('%') && name.ends_with('%')
+    // R: deparse.c — %wrapped% operators that are not primitives
+    // (PRIMSPEC) print with spaces; the primitive %% and %/% keep their
+    // PP_BINARY2 entries and print without any (names.c).
+    name.len() >= 2 && name.starts_with('%') && name.ends_with('%') && ppinfo(name).is_none()
 }
 
 const RESERVED: &[&str] = &[
