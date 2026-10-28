@@ -31,7 +31,9 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
         if let Some(home) = crate::startup::init_r_home() {
             let baseloader = format!("{}/library/base/R/base", home);
             if let Ok(src) = std::fs::read_to_string(&baseloader) {
-                let exprs = robigo_syntax::parse_program(&src).map_err(|e| format!("{}: {}", baseloader, e.message))?;
+                let arena = robigo_syntax::Arena::new();
+                let exprs =
+                    robigo_syntax::parse_program(&arena, &src).map_err(|e| format!("{}: {}", baseloader, e.message))?;
                 for e in &exprs {
                     interp.frames.clear();
                     interp.handlers = None;
