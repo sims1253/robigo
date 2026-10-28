@@ -88,6 +88,7 @@ base/double
 base/drop
 base/dynload
 base/encodeString
+base/eval
 base/exists
 base/expand.grid
 base/expression

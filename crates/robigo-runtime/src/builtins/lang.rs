@@ -630,9 +630,10 @@ pub fn quote_if_needed(v: Value) -> Value {
 // ----------------------------------------------------------------------
 // substitute, missing, on.exit
 
-pub fn substitute(e: &Value, env: Option<&Env>) -> Value {
-    match e {
-        Value::Promise(p) => substitute(&p.expr, env),
+// R: coerce.c:substitute
+pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
+    Ok(match e {
+        Value::Promise(p) => return substitute(&p.expr, env),
         Value::Sym(sym) => {
             if let Some(env) = env {
                 if let Some(t) = env.get_local(*sym) {
@@ -642,12 +643,12 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> Value {
                             while let Value::Promise(q) = ex {
                                 ex = q.expr.clone();
                             }
-                            return ex;
+                            return Ok(ex);
                         }
-                        Value::Dots(_) => return e.clone(),
+                        Value::Dots(_) => return Err(Flow::error("'...' used in an incorrect context")),
                         t => {
                             if !env.special_name().is_some_and(|n| &*n == "R_GlobalEnv") {
-                                return t;
+                                return Ok(t);
                             }
                         }
                     }
@@ -656,34 +657,42 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> Value {
             e.clone()
         }
         Value::Lang(l) => {
-            let items = substitute_list(&l.items(), env);
+            let items = substitute_list(&l.items(), env)?;
+            // Expanding dots at the head inserts LISTSXP nodes. It does
+            // not turn the first dot argument into the function of a call.
+            let dots_head = l.fun.as_sym() == Some(s::DOTS) && env.and_then(|e| e.get_local(s::DOTS)).is_some();
             if items.is_empty() {
-                return Value::Null;
+                Value::Null
+            } else if dots_head {
+                Value::pairlist(items)
+            } else {
+                Value::Lang(Rc::new(Lang::from_items(items, l.attrs.clone())))
             }
-            Value::Lang(Rc::new(Lang::from_items(items, l.attrs.clone())))
         }
         _ => e.clone(),
-    }
+    })
 }
 
-fn substitute_list(items: &[Arg], env: Option<&Env>) -> Vec<Arg> {
+// R: coerce.c:substituteList
+fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<Vec<Arg>> {
     let mut out = Vec::with_capacity(items.len());
     for a in items {
         if a.value.as_sym() == Some(s::DOTS) {
             match env.and_then(|e| e.get_local(s::DOTS)) {
                 Some(Value::Dots(d)) => {
                     for item in d.iter() {
-                        out.push(Arg::new(item.tag, substitute(&item.value, None)));
+                        out.push(Arg::new(item.tag, substitute(&item.value, None)?));
                     }
                 }
-                Some(v) if v.is_missing_arg() => {}
-                _ => out.push(a.clone()),
+                Some(v) if v.is_missing_arg() || v.is_null() => {}
+                None => out.push(a.clone()),
+                _ => return Err(Flow::error("'...' used in an incorrect context")),
             }
         } else {
-            out.push(Arg::new(a.tag, substitute(&a.value, env)));
+            out.push(Arg::new(a.tag, substitute(&a.value, env)?));
         }
     }
-    out
+    Ok(out)
 }
 
 fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -721,7 +730,10 @@ fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -
         }
     };
     let senv = senv.filter(|e| !e.ptr_eq(&interp.global));
-    Ok(substitute(&expr, senv.as_ref()))
+    // R: coerce.c:do_substitute wraps expr in a pairlist before expanding
+    // dots, then returns the first element (NULL for an empty dots list).
+    let items = substitute_list(&[Arg::pos(expr)], senv.as_ref())?;
+    Ok(items.into_iter().next().map(|a| a.value).unwrap_or(Value::Null))
 }
 
 pub fn is_missing_in(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
@@ -1093,11 +1105,12 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     };
     let basename: Rc<str> = if group.is_empty() { generic.clone() } else { group.clone() };
     // The current method name: .Method, or the call's function name.
-    let cur_method: String = match get(&method_env, s::DOT_METHOD) {
-        Some(v) => match interp.force(v)? {
-            Value::Str(m) => m.data.iter().flatten().find(|x| !x.is_empty()).map(|x| x.to_string()).unwrap_or_default(),
-            _ => String::new(),
-        },
+    let method = get(&method_env, s::DOT_METHOD).map(|v| interp.force(v)).transpose()?;
+    let cur_method: String = match &method {
+        Some(Value::Str(m)) => {
+            m.data.iter().flatten().find(|x| !x.is_empty()).map(|x| x.to_string()).unwrap_or_default()
+        }
+        Some(_) => return Err(Flow::error("wrong value for .Method")),
         None => match &mcall {
             Value::Lang(l) => l.fun_sym().map(|s| s.name().to_string()).unwrap_or_default(),
             _ => String::new(),
@@ -1214,11 +1227,24 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
         }
         other => other.clone(),
     };
+    // R: objects.c:do_nextmethod. Ops methods retain one entry per
+    // operand, updating only entries that named the previous method.
+    let next_method = match method {
+        Some(Value::Str(mut m)) => {
+            for name in &mut Rc::make_mut(&mut m).data {
+                if name.as_deref() != Some("") {
+                    *name = Some(method_sym.name());
+                }
+            }
+            Value::Str(m)
+        }
+        _ => Value::str(&method_sym.name()),
+    };
     let _ = call;
     let vars = vec![
         (s::DOT_GENERIC, Value::str(&generic)),
         (s::DOT_CLASS, dot_class),
-        (s::DOT_METHOD, Value::strs(vec![Some(method_sym.name())])),
+        (s::DOT_METHOD, next_method),
         (s::DOT_GENERIC_CALL_ENV, Value::Env(callenv.clone())),
         (s::DOT_GENERIC_DEF_ENV, Value::Env(defenv.clone())),
         (s::DOT_GROUP, Value::str(&group)),

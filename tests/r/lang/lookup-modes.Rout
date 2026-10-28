@@ -1,0 +1,17 @@
+[1] 7
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "invalid 'mode' argument 'bogus'"
+exists("x", mode = "bogus")
+[1] "first argument has length > 1"
+exists(c("x", "y"))
+[1] "object 'absent_lookup_binding' not found"
+get("absent_lookup_binding")
+[1] "global"
+[1] "local"
+[1] "local"
+[1] TRUE
+[1] "forced"
+get("x", e)

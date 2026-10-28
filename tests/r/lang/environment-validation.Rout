@@ -1,0 +1,14 @@
+[1] "use of NULL environment is defunct"
+environment(f) <- NULL
+[1] "replacement object is not an environment"
+environment(f) <- 3
+[1] "attempt to set an attribute on NULL"
+environment(x) <- new.env()
+[1] "numeric 'envir' arg not of length one"
+eval(quote(1), c(0, 1))
+[1] TRUE
+[1] "cannot remove bindings from a locked environment"
+rm("x", envir = e)
+[1] 1
+[1] "cannot remove variables from the base environment"
+rm("absent", envir = baseenv())
