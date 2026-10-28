@@ -1,5 +1,8 @@
-//! Loading the base library: GNU R's base-package R sources evaluated in
-//! the base environment on top of robigo's builtins.
+//! Loading the base library. As GNU R: R_HOME/library/base/R/base (the
+//! baseloader) binds every base object as a promise fetching it from
+//! base.rdb. Without an installed base.rdb (or with ROBIGO_BASE=src):
+//! GNU R's base-package R sources (rlib/) evaluated in the base
+//! environment on top of robigo's builtins.
 
 use std::io::Write;
 
@@ -19,7 +22,10 @@ pub struct BootFailure {
 /// expressions are collected rather than aborting, so that the rest of
 /// base still loads while the runtime is incomplete.
 pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String> {
-    if std::env::var("ROBIGO_BASE").as_deref() == Ok("rdb") {
+    // GNU R's base is lazily loaded from its installed base.rdb; robigo does
+    // the same when R_HOME has it, and evaluates the vendored sources
+    // otherwise (or with ROBIGO_BASE=src)
+    if std::env::var("ROBIGO_BASE").as_deref() != Ok("src") {
         if let Some(home) = crate::startup::init_r_home() {
             let loader = std::path::Path::new(&home).join("library/base/R/base");
             if let Ok(src) = std::fs::read_to_string(&loader) {
