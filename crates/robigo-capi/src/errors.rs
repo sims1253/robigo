@@ -302,21 +302,23 @@ pub struct Ctx {
 }
 
 pub unsafe fn ctx_save() -> Ctx {
+    let s = crate::state::st();
     Ctx {
         pptop: R_PPStackTop,
         ppsize: crate::state::R_PPStackSize,
-        vmax: crate::memory::vmaxget(),
-        gc_inhibit: crate::state::core().gc_inhibit,
+        vmax: s.vstack.0 as *mut c_void,
+        gc_inhibit: s.core.gc_inhibit,
         visible: crate::state::R_Visible,
         intr_susp: crate::state::R_interrupts_suspended,
     }
 }
 
 pub unsafe fn ctx_restore(c: &Ctx) {
+    let s = crate::state::st();
     R_PPStackTop = c.pptop;
     crate::state::R_PPStackSize = c.ppsize;
-    crate::memory::vmaxset(c.vmax);
-    crate::state::core().gc_inhibit = c.gc_inhibit;
+    s.vstack = if c.vmax.is_null() { crate::state::R_NilValue } else { Sexp(c.vmax as *mut u8) };
+    s.core.gc_inhibit = c.gc_inhibit;
     crate::state::R_Visible = c.visible;
     crate::state::R_interrupts_suspended = c.intr_susp;
 }

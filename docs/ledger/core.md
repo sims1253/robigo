@@ -11,6 +11,19 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: isolates, first step (lead A.2)
+
+- libR.so's internal state (heap, host table, R_alloc stack) moves from
+  a process-wide `static mut STATE` to a thread-local isolate pointer;
+  robigo-core's context stack was already thread-local. The exported
+  data symbols (R_NilValue, R_GlobalEnv, R_PPStack, R_Visible, ...) are
+  still process-wide variables: making them per-isolate is the header
+  work (macros over the isolate record), with the immutable singletons
+  in a shared immortal segment (docs/core.md §10).
+- cost: allocVector small 1.01 -> 1.03 of GNU R (a TLS load per API
+  call); R_UnwindProtect regressed to 1.17 until the context save and
+  restore fetched the isolate once (now 0.86). capi corpus 14/20.
+
 ## 2026-10-28: fork-safe marking (lead A.1) and the abandoned-bump-space bug
 
 - measured first (`collecting_in_a_forked_child_does_not_copy_the_heap`,

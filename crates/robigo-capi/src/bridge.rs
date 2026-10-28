@@ -185,7 +185,7 @@ struct CoreRef(Sexp);
 impl Drop for CoreRef {
     fn drop(&mut self) {
         unsafe {
-            if !STATE.is_null() {
+            if !crate::state::isolate().is_null() {
                 core().release(self.0);
             }
         }
