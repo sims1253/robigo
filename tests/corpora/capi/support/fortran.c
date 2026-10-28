@@ -108,6 +108,11 @@ SEXP capi_optim(void) {
     REAL(ans)[7] = xpls[0];
     REAL(ans)[8] = xpls[1];
     REAL(ans)[9] = fpls;
+    // allocVector does not initialize: the last two elements were printed
+    // from whatever memory the allocator handed out (zeros in GNU R's
+    // recorded run, which these keep).
+    REAL(ans)[10] = 0.0;
+    REAL(ans)[11] = 0.0;
     UNPROTECT(1);
     return ans;
 }
