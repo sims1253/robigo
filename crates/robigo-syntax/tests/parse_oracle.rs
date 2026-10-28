@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use robigo_syntax::dump::{dump, dump_error};
-use robigo_syntax::{parse_program, Arena};
+use robigo_syntax::{Arena, parse_program};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
