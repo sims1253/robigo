@@ -574,45 +574,12 @@ fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _nc
     z
 }
 
-// R: array.c:CCROSSPROD_BODY (and CMATPROD_BODY/CTCROSSPROD_BODY).
-// R uses C99 complex multiplication, including recovery when both components
-// become NaN. Follow the compiler runtime's __muldc3 recovery rules.
-// Reference: llvm-project/compiler-rt/lib/builtins/muldc3.c.
-fn cmul(a: Complex, b: Complex) -> Complex {
-    let (mut ar, mut ai, mut br, mut bi) = (a.re, a.im, b.re, b.im);
-    let products = [ar * br, ai * bi, ar * bi, ai * br];
-    let mut result = Complex::new(products[0] - products[1], products[2] + products[3]);
-    if result.re.is_nan() && result.im.is_nan() {
-        let mut recover = false;
-        let normalize = |v: f64| (if v.is_infinite() { 1.0_f64 } else { 0.0_f64 }).copysign(v);
-        let zero_nan = |v: f64| if v.is_nan() { 0.0_f64.copysign(v) } else { v };
-        if ar.is_infinite() || ai.is_infinite() {
-            ar = normalize(ar);
-            ai = normalize(ai);
-            br = zero_nan(br);
-            bi = zero_nan(bi);
-            recover = true;
-        }
-        if br.is_infinite() || bi.is_infinite() {
-            br = normalize(br);
-            bi = normalize(bi);
-            ar = zero_nan(ar);
-            ai = zero_nan(ai);
-            recover = true;
-        }
-        if !recover && products.iter().any(|v| v.is_infinite()) {
-            ar = zero_nan(ar);
-            ai = zero_nan(ai);
-            br = zero_nan(br);
-            bi = zero_nan(bi);
-            recover = true;
-        }
-        if recover {
-            result = Complex::new(f64::INFINITY * (ar * br - ai * bi), f64::INFINITY * (ar * bi + ai * br));
-        }
-    }
-    result
-}
+// R: array.c:CMATPROD_BODY (and CCROSSPROD/CTCROSSPROD_BODY). R uses the
+// C99 complex multiplication of the compiled loop; the kernel in
+// builtins/complex.rs is the bit-exact port of libgcc's __muldc3, and the
+// call site must pass (y, x): the compiled loop's mulsd destination holds
+// the second operand's parts, which decides NaN payload bits (and thus NA
+// vs NaN printing) — `c(NA) %*% c(as.complex(NaN))` is NaN+NaNi in GNU R.
 
 fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usize, ncy: usize) -> Vec<Complex> {
     let (zr, zc, inner) = match op {
@@ -633,7 +600,7 @@ fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usiz
                     1 => (x[j + i * nrx], y[j + k * nry]),
                     _ => (x[i + j * nrx], y[k + j * nry]),
                 };
-                let p = cmul(a, b);
+                let p = super::complex::cmul(b, a);
                 sr += p.re;
                 si += p.im;
             }
