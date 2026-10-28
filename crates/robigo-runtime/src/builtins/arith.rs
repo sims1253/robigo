@@ -981,6 +981,9 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
         }
     }
     let x = args.pop().map(|a| a.value).unwrap_or(Value::Null);
+    // R: logic.c:lunary — logical and raw arguments keep all attributes
+    // (shallow_duplicate); numbers keep names, dim and dimnames.
+    let keep_all_attrs = matches!(x, Value::Lgl(_) | Value::Raw(_));
     let names = get_attrib(&x, s::NAMES);
     let dim = x.get_attr(s::DIM);
     let dimnames = x.get_attr(s::DIMNAMES);
@@ -1004,14 +1007,22 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
         other if other.len() == 0 => Value::lgls(vec![]),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
-    if !names.is_null() {
-        val.set_attr_raw(s::NAMES, names);
-    }
-    if let Some(d) = dim {
-        val.set_attr_raw(s::DIM, d);
-    }
-    if let Some(d) = dimnames {
-        val.set_attr_raw(s::DIMNAMES, d);
+    if keep_all_attrs {
+        if let Some(a) = x.attrs() {
+            for (k, v) in &a.0 {
+                val.set_attr_raw(*k, v.clone());
+            }
+        }
+    } else {
+        if !names.is_null() {
+            val.set_attr_raw(s::NAMES, names);
+        }
+        if let Some(d) = dim {
+            val.set_attr_raw(s::DIM, d);
+        }
+        if let Some(d) = dimnames {
+            val.set_attr_raw(s::DIMNAMES, d);
+        }
     }
     Ok(val)
 }

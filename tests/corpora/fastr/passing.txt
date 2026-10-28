@@ -6999,6 +6999,7 @@ builtins/TestBuiltin_log/04a8e2cc204b3b1e
 builtins/TestBuiltin_log/05d66bbecfded6f7
 builtins/TestBuiltin_log/09566387f8dd08c1
 builtins/TestBuiltin_log/0a14201b0acd0df7
+builtins/TestBuiltin_log/0b614f848a4cef7f
 builtins/TestBuiltin_log/0d6f9a73e346548b
 builtins/TestBuiltin_log/128a668deae344b9
 builtins/TestBuiltin_log/14fd4855a8e3699c
@@ -8341,6 +8342,7 @@ builtins/TestBuiltin_operators/3a28e8ac01b21a80
 builtins/TestBuiltin_operators/3a4ba1fe55d5ae55
 builtins/TestBuiltin_operators/3b12a5c1b6a913aa
 builtins/TestBuiltin_operators/3c461bb1ef76dcca
+builtins/TestBuiltin_operators/3cd9fcec93a34248
 builtins/TestBuiltin_operators/3d1ff96e7da3bcee
 builtins/TestBuiltin_operators/3d9b879b94c05894
 builtins/TestBuiltin_operators/3f6b63f60670262e
@@ -8512,6 +8514,7 @@ builtins/TestBuiltin_operators/99c5ca11772b0321
 builtins/TestBuiltin_operators/99c860ec29dc3084
 builtins/TestBuiltin_operators/9a1bcc30447e6231
 builtins/TestBuiltin_operators/9a4d240780dcc454
+builtins/TestBuiltin_operators/9a72806a385b9069
 builtins/TestBuiltin_operators/9b0aa7b0042fd25a
 builtins/TestBuiltin_operators/9c1c4eac77974c94
 builtins/TestBuiltin_operators/9c559bd7ee842423
@@ -8555,9 +8558,11 @@ builtins/TestBuiltin_operators/aeacda0f2cb9cc2f
 builtins/TestBuiltin_operators/af2b5e9adf5a99a6
 builtins/TestBuiltin_operators/af2e0c7238878e2b
 builtins/TestBuiltin_operators/af757f6e1012d748
+builtins/TestBuiltin_operators/b045881c9c72c0b5
 builtins/TestBuiltin_operators/b0460a5f12bf6d6f
 builtins/TestBuiltin_operators/b0a5b4021500f0aa
 builtins/TestBuiltin_operators/b0c0d82c43de6d75
+builtins/TestBuiltin_operators/b252b1dc2354dbcb
 builtins/TestBuiltin_operators/b284da7cc59274fc
 builtins/TestBuiltin_operators/b2cd43ed70f4e883
 builtins/TestBuiltin_operators/b30a6d392df03c2a
@@ -8575,6 +8580,7 @@ builtins/TestBuiltin_operators/b776f16a7c1fbf60
 builtins/TestBuiltin_operators/b7b2945628a684e6
 builtins/TestBuiltin_operators/b7c827ff3021a2d1
 builtins/TestBuiltin_operators/b812a30de1713b11
+builtins/TestBuiltin_operators/b823d416e5dcaf52
 builtins/TestBuiltin_operators/b8333d94708dafea
 builtins/TestBuiltin_operators/b846c8d393aa96e8
 builtins/TestBuiltin_operators/b8d71e6dbbb16842
@@ -8586,6 +8592,7 @@ builtins/TestBuiltin_operators/bad300160cca0bcb
 builtins/TestBuiltin_operators/bb52e8dbbe32193b
 builtins/TestBuiltin_operators/bbac5457ad874261
 builtins/TestBuiltin_operators/bcc7f9bc534400fd
+builtins/TestBuiltin_operators/bd1697cf236196d0
 builtins/TestBuiltin_operators/bda5dc9add431650
 builtins/TestBuiltin_operators/bdf52168aefdb2c4
 builtins/TestBuiltin_operators/be1a954119a71ab8
@@ -8685,6 +8692,7 @@ builtins/TestBuiltin_operators/e88ebf800c2111ef
 builtins/TestBuiltin_operators/e8b6c7ff7176fc5f
 builtins/TestBuiltin_operators/e9d86e34568a4985
 builtins/TestBuiltin_operators/e9fe91bc99c4ad44
+builtins/TestBuiltin_operators/ea4745ac37473b22
 builtins/TestBuiltin_operators/ea7e0ab27f3bd378
 builtins/TestBuiltin_operators/eae9f13a47b170ce
 builtins/TestBuiltin_operators/eee88e637d515ce6
@@ -16425,6 +16433,7 @@ library/base/TestSimpleArithmetic/d40bec804fe17c75
 library/base/TestSimpleArithmetic/d445efbe69e0f1ec
 library/base/TestSimpleArithmetic/d48e2313042317cf
 library/base/TestSimpleArithmetic/d4d5f317d98d68b5
+library/base/TestSimpleArithmetic/d527272295a6d796
 library/base/TestSimpleArithmetic/d5c3f67f3037e238
 library/base/TestSimpleArithmetic/d5f58fcc386f06c4
 library/base/TestSimpleArithmetic/d61e409addd802aa
