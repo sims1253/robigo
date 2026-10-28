@@ -2,10 +2,52 @@
 
 Metric: `fastr` passes within
 `TestSimpleValues|TestSimpleArithmetic|TestSimpleComparison|TestBuiltin_(operators|log|asvector|asraw|intToBits)`
-(10,501 cases; ~690 failing at the start).
+(10,501 cases; ~690 failing at the start; 10480/10501 on main after #47).
 
 Owns: `crates/robigo-runtime/src/builtins/{arith,coerce,math}.rs`,
 `crates/robigo-runtime/src/coerce.rs`, new `builtins/complex.rs`.
+
+## 2026-10-28 (track/conformance-values-3, PR #61): ts attrs on relops/logic, validating attr sets, coercion gates
+
+- baseline on main (45b4dd2): 10480/10501, 1 ratchet regression
+  (`0bb20eaa0190ebab`, the pre-existing console 4096-byte chunking case).
+- brought in the WIP from `track/conformance-values-2-wip` (env coercion
+  error "environments cannot be coerced to other types" in coerce_vector):
+  verifies on main, +1 (`intToBits/e1253cb9676faa7b`). kept.
+- ported relop.c/logic.c/arithmetic.c's ts tail to `relop`, `do_logic`
+  and `arith_binary` (tsp/class from the ts operand after dims,
+  ERROR_TSVEC_MISMATCH when the only ts operand is shorter), and routed
+  the result's dim/tsp/class through the validating `set_attrib` like
+  R's setAttrib (dimgets product check: `m + 1:16` etc; tspgets
+  zero-length and parameter checks; classgets). kept:
+  10480 -> 10495 (+14; dims [product] cases, ts comparisons and `&`/`|`,
+  both-ts Ops.ts alignment verified byte-identical incl. error paths).
+- perf gate (callgrind vs main, jobs 1): matrix 759.45M -> 758.76M,
+  vecarith 4481.33M -> 4481.21M, vecops 2541.10M -> 2540.89M — no
+  slowdown. conformance suite + robigo-runtime tests pass.
+- hill-climbed the coercion suites outside the filter (same files):
+  isVectorizable gates (empty-list elements -> NA, NULL elements error,
+  expression sources never qualify), as.expression per-element split
+  and names kept, as.pairlist(symbol) error, do_asfunction port (list
+  arg first, plain env errors, CheckFormals), storage.mode<- plain
+  errors + 'single' message + isValidString, rawShift C truncation
+  (misc.rs, unowned: minimal change), deparse_one_line joins with "\n"
+  (deparse.rs, print's file: minimal change, R-exact deparse1line_ex).
+  kept: +33 fastr coercion suites, +1 lang/print slice, +1 gnur-tests;
+  filter holds 10495; perf re-run unchanged. absorbed 12 previously
+  unrecorded passes on main (TestSimpleVectors ×3, Math ×8, misc ×1).
+- remaining failures in the filter, all outside the track's files:
+  - 4 × asvector pairlist `attr(,"myattr")` printing (print.rs —
+    conformance-print; the attribute survives in robigo, printing drops
+    it).
+  - `0bb20eaa0190ebab` (+ `3a43295fa2f63026` outside the ratchet): a
+    source line >4095 bytes; robigo's console read chunks cut the token
+    (cli echo.rs / parser gend=0; see 2026-10-27 entry below).
+  - `TestSimpleArithmetic/f7fa6afb895ab94a`: `%*%` with
+    `options(matprod='blas')` — the expected NA at [3,3] is the
+    recording BLAS's NaN-payload accumulation order (openblas kernel
+    reordering); array.rs is conformance-vectors' file and the result
+    depends on the recording machine's BLAS. not attempted.
 
 ## 2026-10-27: baseline and failure taxonomy
 
