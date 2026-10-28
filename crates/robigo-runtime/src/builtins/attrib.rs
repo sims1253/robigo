@@ -161,6 +161,10 @@ fn do_attributesgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
             continue;
         }
         let n = n.as_deref().unwrap_or("");
+        // R: attrib.c:do_attributesgets calls installTrChar for each name.
+        if n.is_empty() {
+            return Err(Flow::error("attempt to use zero-length variable name"));
+        }
         object = set_attrib(object, Sym::new(n), v.clone())?;
     }
     Ok(object)
