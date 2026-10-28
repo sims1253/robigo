@@ -1,6 +1,7 @@
 //! Native routines of the stats package (src/library/stats/src).
 
 mod cov;
+mod distn;
 mod family;
 mod lm;
 mod misc;
@@ -13,6 +14,28 @@ use crate::interp::Interp;
 use crate::value::*;
 
 pub static PORTS: &[(&str, NativeFn)] = &[
+    ("dnbeta", |i, _, a, _| distn::dnbeta(i, &a)),
+    ("pnbeta", |i, _, a, _| distn::pnbeta(i, &a)),
+    ("qnbeta", |i, _, a, _| distn::qnbeta(i, &a)),
+    ("dnf", |i, _, a, _| distn::dnf(i, &a)),
+    ("pnf", |i, _, a, _| distn::pnf(i, &a)),
+    ("qnf", |i, _, a, _| distn::qnf(i, &a)),
+    ("dnt", |i, _, a, _| distn::dnt(i, &a)),
+    ("pnt", |i, _, a, _| distn::pnt(i, &a)),
+    ("qnt", |i, _, a, _| distn::qnt(i, &a)),
+    ("dnchisq", |i, _, a, _| distn::dnchisq(i, &a)),
+    ("pnchisq", |i, _, a, _| distn::pnchisq(i, &a)),
+    ("qnchisq", |i, _, a, _| distn::qnchisq(i, &a)),
+    ("ptukey", |i, _, a, _| distn::ptukey(i, &a)),
+    ("qtukey", |i, _, a, _| distn::qtukey(i, &a)),
+    ("dwilcox", |i, _, a, _| distn::dwilcox(i, &a)),
+    ("pwilcox", |i, _, a, _| distn::pwilcox(i, &a)),
+    ("qwilcox", |i, _, a, _| distn::qwilcox(i, &a)),
+    ("dsignrank", |i, _, a, _| distn::dsignrank(i, &a)),
+    ("psignrank", |i, _, a, _| distn::psignrank(i, &a)),
+    ("qsignrank", |i, _, a, _| distn::qsignrank(i, &a)),
+    ("wilcox_free", |_, _, _, _| Ok(Value::Null)),
+    ("signrank_free", |_, _, _, _| Ok(Value::Null)),
     ("cov", c_cov),
     ("cor", c_cor),
     ("termsform", |i, _, a, _| model::termsform(i, &a)),
