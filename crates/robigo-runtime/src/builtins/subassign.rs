@@ -24,6 +24,13 @@ use crate::value::*;
 pub static DEFS: &[Builtin] =
     &[special("[<-", do_subassign, -1), special("[[<-", do_subassign2, -1), special("$<-", do_subassign3, 3)];
 
+// R: subassign.c:errorNotSubsettable/errorMissingSubscript/errorOutOfBoundsSEXP.
+// R_signalErrorCondition receives R_CurrentExpression explicitly, which is
+// printed as the symbol below rather than the enclosing replacement call.
+fn replacement_error_call() -> Value {
+    Value::Sym(Sym::new("<current-expression>"))
+}
+
 // ----------------------------------------------------------------------
 // handing the object back on error
 
@@ -412,7 +419,7 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
             // coerceVector(NULL, TYPEOF(y))
             work = Some(match (&y, y.vtype()) {
                 (_, Some(t)) => Value::empty_of(t),
-                (Value::Pairlist(_), _) => return Err(not_subsettable(&Value::Null, None)),
+                (Value::Pairlist(_), _) => return Err(not_subsettable(&Value::Null, Some(&replacement_error_call()))),
                 (Value::Lang(_), _) => return Err(Flow::error("unimplemented type 'NULL' in 'coercePairList'\n")),
                 _ => {
                     return Err(Flow::error(format!("invalid type/length ({}/0) in vector allocation", y.type_name())));
@@ -426,7 +433,7 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
             None => x,
         };
         if !target.is_vector() {
-            return Err(not_subsettable(target, None));
+            return Err(not_subsettable(target, Some(&replacement_error_call())));
         }
         match subs.len() {
             0 => vector_assign(interp, call, target, &Value::missing_arg(), y)?,
@@ -775,7 +782,7 @@ fn assign2_level(
             }
         }
         if nsubs == 0 || subs[0].is_missing_arg() {
-            return Err(missing_subscript(None));
+            return Err(missing_subscript(Some(&replacement_error_call())));
         }
         let mut stretch: usize = 0;
         let mut newname: Option<RStr> = None;
@@ -787,7 +794,7 @@ fn assign2_level(
                 return Ok(());
             }
             if offset < 0 {
-                return Err(out_of_bounds(None, Some("[[ ]]")));
+                return Err(out_of_bounds(Some(&replacement_error_call()), Some("[[ ]]")));
             }
             if offset as usize >= x.len() {
                 stretch = offset as usize + 1;
@@ -803,7 +810,7 @@ fn assign2_level(
                 let names = if dimnames.is_null() { Value::Null } else { generic_elt(&dimnames, i) };
                 pindx[i] = get1index(interp, &subs[i], &names, dims[i] as i64, 0, -1, Some(call))?;
                 if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
-                    return Err(out_of_bounds(None, Some("[[ ]]")));
+                    return Err(out_of_bounds(Some(&replacement_error_call()), Some("[[ ]]")));
                 }
             }
             let mut off: i64 = 0;
@@ -856,7 +863,7 @@ fn assign2_level(
             Err(Flow::error("robigo: matrix indexing of pairlists in [[<- is not implemented yet"))
         }
     } else {
-        Err(not_subsettable(x, None))
+        Err(not_subsettable(x, Some(&replacement_error_call())))
     }
 }
 
@@ -1044,7 +1051,9 @@ pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Valu
             let e = e.clone();
             interp.define(nlist, val, &e)
         }
-        Value::Sym(_) | Value::Closure(_) | Value::Builtin(_) => Err(not_subsettable(x, None)),
+        Value::Sym(_) | Value::Closure(_) | Value::Builtin(_) => {
+            Err(not_subsettable(x, Some(&replacement_error_call())))
+        }
         _ => {
             let is_expr = matches!(x, Value::Expr(_));
             let mut coerced: Option<Value> = None;

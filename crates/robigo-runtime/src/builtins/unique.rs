@@ -349,7 +349,24 @@ fn duplicated_flags(x: &Value, incomp: Option<&Value>, from_last: bool, nmax: i3
     Ok(out)
 }
 
-fn dup_args(args: &[Arg], name: &str, with_nmax: bool) -> RResult<(bool, Option<Value>, i32)> {
+// R: unique.c:duplicated3/any_duplicated3; coerce.c:coerceVector.
+fn coerce_incomparables(i: &mut Interp, v: &Value, ty: VType) -> RResult<Value> {
+    match v {
+        Value::Env(_) => return Err(Flow::error("environments cannot be coerced to other types")),
+        Value::Closure(_) | Value::Builtin(_) => {
+            let target = Value::empty_of(ty);
+            return Err(Flow::error(format!(
+                "cannot coerce type '{}' to vector of type '{}'",
+                v.type_name(),
+                target.type_name()
+            )));
+        }
+        _ => {}
+    }
+    i.coerce(v, ty)
+}
+
+fn dup_args(i: &mut Interp, args: &[Arg], name: &str, with_nmax: bool) -> RResult<(bool, Option<Value>, i32)> {
     let from_last_v = &args[2].value;
     if from_last_v.is_empty() {
         return Err(Flow::error("'fromLast' must be length 1"));
@@ -369,13 +386,19 @@ fn dup_args(args: &[Arg], name: &str, with_nmax: bool) -> RResult<(bool, Option<
             return Err(Flow::error("'nmax' must be positive"));
         }
     }
+    // R: unique.c:duplicated3/any_duplicated3 coerceVector(incomp, TYPEOF(x)).
+    let incomp = if !x.is_empty() && x.is_vector() {
+        incomp.map(|v| coerce_incomparables(i, &v, x.vtype().unwrap())).transpose()?
+    } else {
+        incomp
+    };
     Ok((fl != 0, incomp, nmax))
 }
 
 // R: unique.c:do_duplicated (op = 0)
-fn do_duplicated(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity_internal(&args, 4, "duplicated", call)?;
-    let (fl, incomp, nmax) = dup_args(&args, "duplicated", true)?;
+    let (fl, incomp, nmax) = dup_args(i, &args, "duplicated", true)?;
     let x = &args[0].value;
     if x.is_empty() {
         return Ok(Value::lgls(vec![]));
@@ -388,9 +411,9 @@ fn do_duplicated(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> R
 }
 
 // R: unique.c:do_duplicated (op = 1)
-fn do_unique(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_unique(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity_internal(&args, 4, "unique", call)?;
-    let (fl, incomp, nmax) = dup_args(&args, "unique", true)?;
+    let (fl, incomp, nmax) = dup_args(i, &args, "unique", true)?;
     let x = &args[0].value;
     if x.is_empty() {
         return Ok(match x.vtype() {
@@ -407,9 +430,9 @@ fn do_unique(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
 }
 
 // R: unique.c:do_duplicated (op = 2)
-fn do_any_duplicated(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_any_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity_internal(&args, 3, "anyDuplicated", call)?;
-    let (fl, incomp, _) = dup_args(&args, "anyDuplicated", false)?;
+    let (fl, incomp, _) = dup_args(i, &args, "anyDuplicated", false)?;
     let x = &args[0].value;
     if x.is_empty() {
         return Ok(Value::int(0));
