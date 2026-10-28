@@ -709,6 +709,24 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     let attrs = binary_attrs(&x, &y, call)?;
     check_recycling(interp, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
+    // R: relop.c — a raw operand compared with a real, integer or logical
+    // one is coerced to that type (real first, then integer, then logical)
+    if matches!(x, Value::Raw(_)) != matches!(y, Value::Raw(_)) {
+        let other = if matches!(x, Value::Raw(_)) { &y } else { &x };
+        let t = match other {
+            Value::Real(_) => Some(VType::Real),
+            Value::Int(_) => Some(VType::Int),
+            Value::Lgl(_) => Some(VType::Lgl),
+            _ => None,
+        };
+        if let Some(t) = t {
+            if matches!(x, Value::Raw(_)) {
+                x = crate::coerce::coerce_quiet(&x, t);
+            } else {
+                y = crate::coerce::coerce_quiet(&y, t);
+            }
+        }
+    }
     let out: Vec<Lgl> = if matches!(x, Value::Str(_)) || matches!(y, Value::Str(_)) {
         let a = crate::coerce::to_str(&x);
         let b = crate::coerce::to_str(&y);

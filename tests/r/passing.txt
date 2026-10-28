@@ -28,6 +28,7 @@ tests/r/io/apply.R
 tests/r/io/bind.R
 tests/r/io/connections.R
 tests/r/io/dataframe.R
+tests/r/io/file-rw-positions.R
 tests/r/io/matrix.R
 tests/r/io/messages.R
 tests/r/io/options.R
@@ -166,6 +167,7 @@ tests/r/vec/not-zero-length.R
 tests/r/vec/order-radix.R
 tests/r/vec/order-range.R
 tests/r/vec/pminmax-shapes.R
+tests/r/vec/raw-compare.R
 tests/r/vec/rep.R
 tests/r/vec/sort-base.R
 tests/r/vec/sort-internal.R

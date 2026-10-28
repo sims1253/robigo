@@ -33,6 +33,7 @@ pub static DEFS: &[Builtin] = &[
     internal("tempdir", do_tempdir, 1),
     internal("tempfile", do_tempfile, 3),
     internal("file.exists", do_fileexists, 1),
+    internal("setFileTime", do_setfiletime, 2),
     internal("file.access", do_fileaccess, 2),
     internal("file.info", do_fileinfo, 2),
     internal("file.copy", do_filecopy, 6),
@@ -1934,4 +1935,32 @@ fn do_readlink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         }
     }
     Ok(Value::strs(out))
+}
+
+// R: platform.c:do_setFileTime (utimensat)
+fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let paths = match arg(&args, 0) {
+        Value::Str(p) => p,
+        _ => return Err(Flow::error("invalid 'path' argument")),
+    };
+    let times = match i.coerce(&arg(&args, 1), VType::Real)? {
+        Value::Real(t) => t.data.to_vec(),
+        _ => Vec::new(),
+    };
+    let n = paths.data.len();
+    if times.is_empty() && n > 0 {
+        return Err(Flow::error("'time' must be of length at least one"));
+    }
+    let mut ans = Vec::with_capacity(n);
+    for (k, p) in paths.data.iter().enumerate() {
+        let ftime = times[k % times.len()];
+        let secs = ftime as i32;
+        let nsec = (1e9 * (ftime - secs as f64)) as i32;
+        let ts = || Timespec { tv_sec: secs as i64, tv_nsec: nsec as i64 };
+        let fname = CString::new(p.as_deref().unwrap_or("NA")).unwrap_or_default();
+        // AT_FDCWD
+        let res = unsafe { utimensat(-100, fname.as_ptr(), &[ts(), ts()], 0) } == 0;
+        ans.push(res as Lgl);
+    }
+    Ok(Value::lgls(ans))
 }
