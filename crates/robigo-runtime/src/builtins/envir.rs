@@ -132,6 +132,11 @@ pub fn as_env(interp: &mut Interp, v: &Value, call: &Value) -> RResult<Env> {
             Ok(e)
         }
         Value::Null => Err(Flow::error_call(call.clone(), "using 'as.environment(NULL)' is defunct")),
+        // R: envir.c:do_as_environment (OBJSXP), simple_as_environment
+        Value::Obj(_) => match interp.get_s4_data_slot(v, Some("environment"))? {
+            Value::Env(e) => Ok(e),
+            _ => Err(Flow::error_call(call.clone(), "S4 object does not extend class \"environment\"")),
+        },
         _ => Err(Flow::error_call(call.clone(), "invalid object for 'as.environment'")),
     }
 }
@@ -794,8 +799,12 @@ fn do_parent_frame(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
 
 fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     let expr = arg(&args, 0);
-    let envir = arg(&args, 1);
+    let mut envir = arg(&args, 1);
     let enclos = arg(&args, 2);
+    // R: eval.c:do_eval — an S4 object's data part (usually an environment).
+    if envir.is_s4() && matches!(envir, Value::Obj(_)) {
+        envir = i.get_s4_data_slot(&envir, None)?;
+    }
     let enclos_env = match &enclos {
         Value::Env(e) => Some(e.clone()),
         Value::Null => None,

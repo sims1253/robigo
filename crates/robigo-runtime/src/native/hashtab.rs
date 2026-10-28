@@ -62,6 +62,7 @@ fn addr_of(v: &Value) -> usize {
         Value::Promise(r) => p(r),
         Value::Dots(r) => p(r),
         Value::ExtPtr(r) => p(r),
+        Value::Obj(r) => p(r),
     }
 }
 

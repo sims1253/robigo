@@ -633,21 +633,20 @@ impl Interp {
                 )));
             };
             let missing = flags & BIND_MISSING_DEFAULT != 0;
-            let val = match &val {
-                // A default argument of the generic, not yet forced: the
-                // method's own default, evaluated in the method's frame.
-                Value::Promise(p)
-                    if missing
-                        && p.value.borrow().is_none()
-                        && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho)) =>
-                {
-                    if f.value.is_missing_arg() {
-                        Value::missing_arg()
-                    } else {
-                        crate::interp::default_arg(op, k, &newrho)
+            // A default argument of the generic, not yet forced, becomes the
+            // method's own default, evaluated in the method's frame. (robigo
+            // binds constant defaults without a promise.)
+            let unforced_default = missing
+                && match &val {
+                    Value::Promise(p) => {
+                        p.value.borrow().is_none() && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho))
                     }
-                }
-                _ => val,
+                    v => !v.is_missing_arg(),
+                };
+            let val = if unforced_default {
+                if f.value.is_missing_arg() { Value::missing_arg() } else { crate::interp::default_arg(op, k, &newrho) }
+            } else {
+                val
             };
             newrho.bind_arg(symbol, val, flags & BIND_MISSING_DEFAULT);
         }
