@@ -150,92 +150,15 @@ fn read_console(input: &mut ConsoleInput, echo: bool, prompt: &str) -> Option<St
 /// while building the expression (`GenerateCode` gates them to this one
 /// parse).
 fn parse_status(buf: &str) -> (Status, Vec<String>) {
-    // R's lexer notes when the buffer ends inside a comment it cannot
-    // close (R: gram.y's SkipComment sets EndOfFile = 2); every parse
-    // status is then PARSE_INCOMPLETE, whatever the grammar says. The
-    // REPL reaches this whenever its raw `;`/newline cut lands inside a
-    // comment (a `;` in a comment, say).
-    if ends_in_comment(buf) {
-        return (Status::Incomplete, Vec::new());
+    match robigo_syntax::parse_console(buf) {
+        robigo_syntax::ConsoleStatus::Null => (Status::Null, Vec::new()),
+        robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => (Status::Ok(exprs), warnings),
+        robigo_syntax::ConsoleStatus::Incomplete => (Status::Incomplete, Vec::new()),
+        robigo_syntax::ConsoleStatus::Error(e) => (Status::Error(e), Vec::new()),
+        // The REPL's chunks are never empty (a read returns at least one
+        // byte); an empty buffer would just be a null statement.
+        robigo_syntax::ConsoleStatus::Eof => (Status::Null, Vec::new()),
     }
-    match robigo_syntax::parse_program_with_warnings(buf) {
-        Err(e) if e.incomplete => (Status::Incomplete, Vec::new()),
-        Err(e) => (Status::Error(e), Vec::new()),
-        Ok((exprs, warnings)) => {
-            // R's grammar only accepts a statement that is TERMINATED
-            // (`prog: '\n' | expr ';' | expr '\n'`); the REPL's own
-            // chunks are, except when a line longer than
-            // `CONSOLE_BUFFER_SIZE` is cut mid-line (R: PARSE_EOF from
-            // `R_Parse1`, which `R_ReplConsole` treats as more input
-            // pending).
-            if !buf.ends_with(';') && !buf.ends_with('\n') {
-                return (Status::Incomplete, warnings);
-            }
-            if exprs.is_empty() {
-                // The grammar has no rule that can start a statement with
-                // a `;` (`1;;2` is an error at the second one);
-                // robigo-syntax's file parser skips separators between
-                // expressions, so a chunk that is only a separator is
-                // detected here, from the first token. Any other chunk
-                // that parses to nothing (blank, comment) is `'\n'`:
-                // PARSE_NULL.
-                let t = first_semicolon(buf);
-                if t.0 < buf.len() {
-                    return (Status::Error(robigo_syntax::ParseError::new("unexpected ';'", t.0, t.1)), warnings);
-                }
-                return (Status::Null, warnings);
-            }
-            (Status::Ok(exprs), warnings)
-        }
-    }
-}
-
-/// The byte range of `buf`'s first token if it is a `;` (empty range
-/// when it is not; see `parse_status`).
-fn first_semicolon(buf: &str) -> (usize, usize) {
-    match robigo_syntax::lexer::Lexer::new(buf).tokenize() {
-        Ok((tokens, _)) => match tokens.first() {
-            Some(t) if matches!(t.tok, robigo_syntax::lexer::Tok::Semi) => (t.span.start as usize, t.span.end as usize),
-            _ => (buf.len(), buf.len()),
-        },
-        Err(_) => (buf.len(), buf.len()),
-    }
-}
-
-/// Does `buf` end inside an unclosed comment? A comment runs from a
-/// `#` (outside strings and quoted names) to the end of the line, so
-/// only the text after the last newline can hold one; quotes opened
-/// before it imply an unterminated string, which the parser already
-/// reports as incomplete.
-fn ends_in_comment(buf: &str) -> bool {
-    let tail = match buf.rfind('\n') {
-        Some(i) => &buf[i + 1..],
-        None => buf,
-    };
-    let b = tail.as_bytes();
-    let mut quote: Option<u8> = None;
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        match quote {
-            Some(q) => {
-                if c == b'\\' {
-                    i += 1; // an escaped character, possibly a quote
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None => {
-                if c == b'\'' || c == b'"' || c == b'`' {
-                    quote = Some(c);
-                } else if c == b'#' {
-                    return true;
-                }
-            }
-        }
-        i += 1;
-    }
-    false
 }
 
 fn floor_char_boundary(s: &str, i: usize) -> usize {
