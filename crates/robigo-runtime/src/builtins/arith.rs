@@ -139,6 +139,10 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
     f64::NAN
 }
 
+// Inline across codegen units: the VM's scalar fast path calls this for
+// every double operation, and LLVM stopped inlining it there when this
+// module grew.
+#[inline]
 pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     match op {
         ArithOp::Plus => a + b,
@@ -151,6 +155,7 @@ pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     }
 }
 
+#[inline]
 pub fn int_to_real(x: i32) -> f64 {
     if x == NA_INTEGER { NA_REAL } else { x as f64 }
 }
@@ -311,13 +316,9 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
     let mut val = match (&x, &y) {
         (Value::Cplx(_), _) | (_, Value::Cplx(_)) => {
             let mut w = CoerceWarnings::default();
-            let a = crate::coerce::to_cplx(&x, &mut w);
-            let b = crate::coerce::to_cplx(&y, &mut w);
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                out.push(complex_op(op, a[i % nx], b[i % ny])?);
-            }
-            Value::cplxs(out)
+            let a = cplx_view(&x, &mut w);
+            let b = cplx_view(&y, &mut w);
+            Value::cplxs(complex_binary(op, &a, &b, n)?)
         }
         (Value::Real(_), _) | (_, Value::Real(_)) => {
             if op == ArithOp::Mod {
@@ -549,16 +550,28 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
     Ok(val)
 }
 
-fn complex_op(op: ArithOp, a: Complex, b: Complex) -> RResult<Complex> {
-    // R: complex.c:complex_binary
-    match op {
-        ArithOp::Plus => Ok(Complex::new(a.re + b.re, a.im + b.im)),
-        ArithOp::Minus => Ok(Complex::new(a.re - b.re, a.im - b.im)),
+/// `a op b` on complex vectors with R's recycling (R:
+/// complex.c:complex_binary).
+fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize) -> RResult<Vec<Complex>> {
+    use super::complex::{cdiv, cmul, cpow};
+    Ok(match op {
+        ArithOp::Plus => real_kernel!(a, b, n, |x: Complex, y: Complex| Complex::new(x.re + y.re, x.im + y.im)),
+        ArithOp::Minus => real_kernel!(a, b, n, |x: Complex, y: Complex| Complex::new(x.re - y.re, x.im - y.im)),
         // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
-        ArithOp::Times => Ok(super::complex::cmul(a, b)),
-        ArithOp::Div => Ok(super::complex::cdiv(a, b)),
-        ArithOp::Pow => Ok(super::complex::cpow(a, b)),
-        ArithOp::Mod | ArithOp::IDiv => Err(Flow::error("unimplemented complex operation")),
+        ArithOp::Times => real_kernel!(a, b, n, cmul),
+        ArithOp::Div => real_kernel!(a, b, n, cdiv),
+        ArithOp::Pow => real_kernel!(a, b, n, cpow),
+        ArithOp::Mod | ArithOp::IDiv if n == 0 => Vec::new(),
+        ArithOp::Mod | ArithOp::IDiv => return Err(Flow::error("unimplemented complex operation")),
+    })
+}
+
+/// The complex values of an arithmetic operand: borrowed when it is
+/// complex already, coerced otherwise.
+fn cplx_view<'a>(v: &'a Value, w: &mut CoerceWarnings) -> std::borrow::Cow<'a, [Complex]> {
+    match v {
+        Value::Cplx(c) => std::borrow::Cow::Borrowed(c.data.as_slice()),
+        _ => std::borrow::Cow::Owned(crate::coerce::to_cplx(v, w)),
     }
 }
 

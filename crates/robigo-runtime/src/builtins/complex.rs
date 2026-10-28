@@ -24,6 +24,7 @@ const RMAX2: f64 = RBIG * RMIN2;
 /// whenever the fast result contains a NaN (see [`CArith`]).
 mod sse {
     /// SSE quiets a propagated signalling NaN by setting the quiet bit.
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     #[inline(always)]
     fn quietize(x: f64) -> f64 {
         f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000)
@@ -32,8 +33,10 @@ mod sse {
     // The QNaN indefinite every invalid x86-64 SSE operation produces
     // (0*Inf, Inf-Inf, 0/0, sqrt(-1), ...); LLVM folds literals to
     // 0x7ff8000000000000 instead.
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     const INDEFINITE: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     #[cold]
     #[inline(never)]
     fn propagate(a: f64, b: f64) -> f64 {
@@ -46,9 +49,31 @@ mod sse {
         }
     }
 
+    // On x86-64 the hardware instructions are these semantics: inline
+    // assembly keeps LLVM from commuting or folding them, at the cost of
+    // one instruction per operation.
+    #[cfg(target_arch = "x86_64")]
     macro_rules! sse_op {
-        ($(#[$attr:meta])* $name:ident, $op:tt) => {
-            $(#[$attr])*
+        ($name:ident, $insn:literal, $op:tt) => {
+            #[inline(always)]
+            pub fn $name(a: f64, b: f64) -> f64 {
+                let mut r = a;
+                // SAFETY: a scalar SSE2 operation on registers.
+                unsafe {
+                    core::arch::asm!(
+                        concat!($insn, " {r}, {b}"),
+                        r = inout(xmm_reg) r,
+                        b = in(xmm_reg) b,
+                        options(pure, nomem, nostack, preserves_flags),
+                    );
+                }
+                r
+            }
+        };
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    macro_rules! sse_op {
+        ($name:ident, $insn:literal, $op:tt) => {
             #[inline(always)]
             pub fn $name(a: f64, b: f64) -> f64 {
                 let r = a $op b;
@@ -56,11 +81,16 @@ mod sse {
             }
         };
     }
-    sse_op!(add, +);
-    sse_op!(sub, -);
-    sse_op!(mul, *);
-    sse_op!(div, /);
+    sse_op!(add, "addsd", +);
+    sse_op!(sub, "subsd", -);
+    sse_op!(mul, "mulsd", *);
+    sse_op!(div, "divsd", /);
 }
+
+/// Whether [`sse`] costs no more than plain operations (it is the hardware
+/// instruction), so the kernels can run once with exact NaN semantics
+/// instead of a fast pass and an exact recomputation.
+const SSE_IS_NATIVE: bool = cfg!(target_arch = "x86_64");
 
 /// The arithmetic the complex kernels are instantiated with. `Fast` is the
 /// plain IEEE operations — bit-identical with the compiled C library for
@@ -116,64 +146,79 @@ impl CArith for ExactArith {
 }
 
 // R: libgcc2.c:__muldc3 (the C99 `x * y` R's complex_binary uses).
+#[inline]
 pub fn cmul(a: Complex, b: Complex) -> Complex {
+    if SSE_IS_NATIVE {
+        return cmul_impl::<ExactArith>(a, b);
+    }
     let r = cmul_impl::<FastArith>(a, b);
     if r.re.is_nan() || r.im.is_nan() { cmul_impl::<ExactArith>(a, b) } else { r }
 }
 
+#[inline(always)]
 fn cmul_impl<T: CArith>(a: Complex, b: Complex) -> Complex {
     let (a, b, c, d) = (a.re, a.im, b.re, b.im);
     let ac = T::mul(a, c);
     let bd = T::mul(b, d);
     let ad = T::mul(a, d);
     let bc = T::mul(b, c);
-    let mut x = T::sub(ac, bd);
-    let mut y = T::add(ad, bc);
-    if x.is_nan() && y.is_nan() {
-        // Recover infinities that computed as NaN + iNaN.
-        let (mut a, mut b, mut c, mut d) = (a, b, c, d);
-        let mut recalc = false;
-        if a.is_infinite() || b.is_infinite() {
-            a = copysign(if a.is_infinite() { 1.0 } else { 0.0 }, a);
-            b = copysign(if b.is_infinite() { 1.0 } else { 0.0 }, b);
-            if c.is_nan() {
-                c = copysign(0.0, c);
-            }
-            if d.is_nan() {
-                d = copysign(0.0, d);
-            }
-            recalc = true;
+    let x = T::sub(ac, bd);
+    let y = T::add(ad, bc);
+    // The recovery below changes the result only if an operand or a
+    // product is infinite; NaN operands (escaped iterations) skip it.
+    let inf = |v: f64| v.abs() == f64::INFINITY;
+    if x.is_nan() && y.is_nan() && (inf(a) | inf(b) | inf(c) | inf(d) | inf(ac) | inf(bd) | inf(ad) | inf(bc)) {
+        return cmul_recover::<T>([a, b, c, d], [ac, bd, ad, bc], x, y);
+    }
+    Complex::new(x, y)
+}
+
+/// __muldc3's recovery of infinities that computed as NaN + iNaN.
+#[cold]
+#[inline(never)]
+fn cmul_recover<T: CArith>([a, b, c, d]: [f64; 4], [ac, bd, ad, bc]: [f64; 4], mut x: f64, mut y: f64) -> Complex {
+    let (mut a, mut b, mut c, mut d) = (a, b, c, d);
+    let mut recalc = false;
+    if a.is_infinite() || b.is_infinite() {
+        a = copysign(if a.is_infinite() { 1.0 } else { 0.0 }, a);
+        b = copysign(if b.is_infinite() { 1.0 } else { 0.0 }, b);
+        if c.is_nan() {
+            c = copysign(0.0, c);
         }
-        if c.is_infinite() || d.is_infinite() {
-            c = copysign(if c.is_infinite() { 1.0 } else { 0.0 }, c);
-            d = copysign(if d.is_infinite() { 1.0 } else { 0.0 }, d);
-            if a.is_nan() {
-                a = copysign(0.0, a);
-            }
-            if b.is_nan() {
-                b = copysign(0.0, b);
-            }
-            recalc = true;
+        if d.is_nan() {
+            d = copysign(0.0, d);
         }
-        if !recalc && (ac.is_infinite() || bd.is_infinite() || ad.is_infinite() || bc.is_infinite()) {
-            if a.is_nan() {
-                a = copysign(0.0, a);
-            }
-            if b.is_nan() {
-                b = copysign(0.0, b);
-            }
-            if c.is_nan() {
-                c = copysign(0.0, c);
-            }
-            if d.is_nan() {
-                d = copysign(0.0, d);
-            }
-            recalc = true;
+        recalc = true;
+    }
+    if c.is_infinite() || d.is_infinite() {
+        c = copysign(if c.is_infinite() { 1.0 } else { 0.0 }, c);
+        d = copysign(if d.is_infinite() { 1.0 } else { 0.0 }, d);
+        if a.is_nan() {
+            a = copysign(0.0, a);
         }
-        if recalc {
-            x = T::mul(f64::INFINITY, T::sub(T::mul(a, c), T::mul(b, d)));
-            y = T::mul(f64::INFINITY, T::add(T::mul(a, d), T::mul(b, c)));
+        if b.is_nan() {
+            b = copysign(0.0, b);
         }
+        recalc = true;
+    }
+    if !recalc && (ac.is_infinite() || bd.is_infinite() || ad.is_infinite() || bc.is_infinite()) {
+        if a.is_nan() {
+            a = copysign(0.0, a);
+        }
+        if b.is_nan() {
+            b = copysign(0.0, b);
+        }
+        if c.is_nan() {
+            c = copysign(0.0, c);
+        }
+        if d.is_nan() {
+            d = copysign(0.0, d);
+        }
+        recalc = true;
+    }
+    if recalc {
+        x = T::mul(f64::INFINITY, T::sub(T::mul(a, c), T::mul(b, d)));
+        y = T::mul(f64::INFINITY, T::add(T::mul(a, d), T::mul(b, c)));
     }
     Complex::new(x, y)
 }
@@ -185,6 +230,9 @@ fn copysign(x: f64, y: f64) -> f64 {
 
 // R: libgcc2.c:__divdc3 (the C99 `x / y` R's complex_binary uses).
 pub fn cdiv(a: Complex, b: Complex) -> Complex {
+    if SSE_IS_NATIVE {
+        return cdiv_impl::<ExactArith>(a, b);
+    }
     let r = cdiv_impl::<FastArith>(a, b);
     if r.re.is_nan() || r.im.is_nan() { cdiv_impl::<ExactArith>(a, b) } else { r }
 }
