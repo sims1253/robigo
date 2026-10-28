@@ -38,7 +38,8 @@ pub fn get_attrib(v: &Value, name: Sym) -> Value {
         if let Value::Int(iv) = &a {
             if iv.data.len() == 2 && iv.data[0] == NA_INTEGER {
                 let n = iv.data[1].unsigned_abs() as i32;
-                return Value::ints((1..=n).collect());
+                // R: attrib.c getAttrib0 — R_compact_intrange(1, n)
+                return Value::compact_intseq(n as usize, 1, 1);
             }
         }
     }

@@ -12,4 +12,6 @@ math
 onintr
 pairlist
 registration
+serialize
 unwind
+vectors
