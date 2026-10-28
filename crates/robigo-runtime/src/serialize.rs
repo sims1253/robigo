@@ -289,15 +289,22 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // levels: active and locked bindings (R: ReadItem SETLEVELS
                 // on the frame's cons cells).
                 let mut cells = self.read_frame()?;
+                // A hashed environment's table is restored as written
+                // (R: ReadItem, R_RestoreHashCount).
+                let mut chains = None;
                 let hflags = self.int()? as u32;
                 if hflags & 255 == VECSXP {
                     let n = self.length()?;
+                    let mut table = Vec::with_capacity(n);
                     for _ in 0..n {
-                        cells.extend(self.read_frame()?);
+                        let chain = self.read_frame()?;
+                        table.push(chain.iter().map(|c| c.0).collect::<Vec<Sym>>());
+                        cells.extend(chain);
                     }
                     if hflags & HAS_ATTR_BIT != 0 {
                         self.read_item()?;
                     }
+                    chains = Some(table);
                 } else {
                     self.read_item_flags(hflags)?;
                 }
@@ -317,6 +324,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                     if levs & BINDING_LOCK_MASK != 0 {
                         env.set_binding_locked(sym, true);
                     }
+                }
+                if let Some(table) = chains {
+                    env.set_hash_chains(table);
                 }
                 let mut v = v;
                 set_attr_pairlist(&mut v, attr);
@@ -950,6 +960,25 @@ impl Writer<'_> {
         }
         self.int(f as i32);
     }
+    /// A frame pairlist (or hash chain) of `e`'s bindings of `syms`, in
+    /// order, ending in `NULL`.
+    fn frame_cells(&mut self, e: &Env, syms: &[Sym]) {
+        for &s in syms {
+            let flags = e.binding_flags(s).unwrap_or(0);
+            let mut levs = 0;
+            if flags & crate::env::BIND_ACTIVE != 0 {
+                levs |= ACTIVE_BINDING_MASK;
+            }
+            if flags & crate::env::BIND_LOCKED != 0 {
+                levs |= BINDING_LOCK_MASK;
+            }
+            self.flags(LISTSXP, levs, false, false, true);
+            self.symbol(s);
+            self.item(&e.get_local(s).unwrap_or(Value::Null));
+        }
+        self.int(NILVALUE_SXP as i32);
+    }
+
     fn length(&mut self, n: usize) {
         if n > i32::MAX as usize {
             self.int(-1);
@@ -1102,24 +1131,24 @@ impl Writer<'_> {
                         Some(p) => self.item(&Value::Env(p)),
                         None => self.int(EMPTYENV_SXP as i32),
                     }
-                    // R: WriteItem — the frame's cells with their levels
-                    // (active and locked bindings), newest first as in
-                    // GNU R's FRAME list.
-                    for s in e.symbols().into_iter().rev() {
-                        let flags = e.binding_flags(s).unwrap_or(0);
-                        let mut levs = 0;
-                        if flags & crate::env::BIND_ACTIVE != 0 {
-                            levs |= ACTIVE_BINDING_MASK;
+                    // R: WriteItem — FRAME, then HASHTAB: a hashed
+                    // environment's frame is empty and its table holds the
+                    // bindings, chain by chain. Cells keep their levels
+                    // (active and locked bindings).
+                    match e.hash_chains() {
+                        Some(chains) => {
+                            self.int(NILVALUE_SXP as i32);
+                            self.flags(VECSXP, 0, false, false, false);
+                            self.length(chains.len());
+                            for chain in chains {
+                                self.frame_cells(e, &chain);
+                            }
                         }
-                        if flags & crate::env::BIND_LOCKED != 0 {
-                            levs |= BINDING_LOCK_MASK;
+                        None => {
+                            self.frame_cells(e, &e.symbols());
+                            self.int(NILVALUE_SXP as i32);
                         }
-                        self.flags(LISTSXP, levs, false, false, true);
-                        self.symbol(s);
-                        self.item(&e.get_local(s).unwrap_or(Value::Null));
                     }
-                    self.int(NILVALUE_SXP as i32);
-                    self.int(NILVALUE_SXP as i32);
                     if v.has_attrs() {
                         self.attrs(v);
                     } else {

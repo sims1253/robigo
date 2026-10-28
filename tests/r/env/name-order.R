@@ -1,0 +1,18 @@
+# The order of an environment's names: hashed tables (R_HashSet, R_HashResize,
+# HASHPRI), frame pairlists, attach(), eval() with a list, serialize().
+e <- new.env(); for (n in c("set_a","import",".objectParent","usingMethods","show","getClass","untrace","export")) assign(n, 1, envir = e); print(ls(e, all.names=TRUE, sorted=FALSE))
+e2 <- new.env(hash = TRUE, size = 5L); for (n in c("b","a","c","dd","ee","ff","gg")) assign(n, 1, envir = e2); print(names(e2)); rm("a", envir=e2); print(names(e2))
+e3 <- list2env(list(z=1, y=2, x=3)); print(names(e3))
+f <- function(a, b) { zz <- 1; aa <- 2; names(environment()) }; print(f(1, 2))
+e4 <- as.environment(list(q=1,p=2)); print(names(e4))
+e5 <- new.env(hash = FALSE); assign("u", 1, e5); assign("v", 2, e5); print(names(e5))
+g <- new.env(); for (i in 1:100) assign(paste0("v", i), i, envir = g); print(names(g)[1:20]); print(names(g)[96:100])
+print(names(as.list(g))[1:5]); print(names(eapply(g, identity))[1:5])
+print(ls(globalenv(), sorted = FALSE))
+h <- unserialize(serialize(g, NULL)); print(identical(names(h), names(g)))
+print(identical(serialize(g, NULL), serialize(h, NULL)))
+x <- serialize(e2, NULL); print(length(x)); print(sum(as.integer(x)))
+x5 <- serialize(e5, NULL); print(sum(as.integer(x5)))
+print(eval(quote(ls(sorted=FALSE)), list(k=1, j=2)))
+attach(list(m1 = 1, m0 = 2, m2 = 3), name = "att"); print(ls("att", sorted = FALSE)); detach("att")
+print(names(environment(f)))

@@ -232,13 +232,19 @@ fn do_attach(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         return Err(Flow::error_call(call.clone(), "'pos' must be an integer"));
     }
     let new = Env::new(None);
+    // R: envir.c:do_attach: the frame is the list's elements in order, or
+    // the environment's bindings each consed onto it (so in reverse); then
+    // a table of max(29, length) is built over it and grown as needed.
+    let mut frame = Vec::new();
     match &what {
         Value::Null => {}
         Value::List(_) => {
             if let Some(Value::Str(n)) = what.names() {
                 for (k, v) in n.data.iter().zip(crate::coerce::to_list(&what)) {
                     if let Some(k) = k {
-                        new.set_local(Sym::new(k), v);
+                        let s = Sym::new(k);
+                        new.set_local(s, v);
+                        frame.push(s);
                     }
                 }
             }
@@ -247,11 +253,13 @@ fn do_attach(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             for s in e.symbols() {
                 if let Some(v) = e.get_local(s) {
                     new.set_local(s, v);
+                    frame.insert(0, s);
                 }
             }
         }
         _ => return Err(Flow::error_call(call.clone(), "'attach' only works for lists, data frames and environments")),
     }
+    new.hash_frame((frame.len() as i32).max(29), Some(frame));
     let mut nv = Value::Env(new.clone());
     nv.set_attr_raw(s::NAME, name);
     // Insert after position pos - 1 on the search path.

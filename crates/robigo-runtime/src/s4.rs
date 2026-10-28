@@ -667,7 +667,7 @@ impl Interp {
             } else {
                 val
             };
-            newrho.bind_arg(symbol, val, flags & BIND_MISSING_DEFAULT);
+            newrho.bind_new(symbol, val, flags & BIND_MISSING_DEFAULT);
         }
         for sym in [syms::dot_defined(), syms::dot_method(), syms::dot_target()] {
             let v = find_var_in_frame(self, rho, sym)?.unwrap_or(Value::Null);
@@ -710,7 +710,7 @@ impl Interp {
     }
 
     fn s4_extends_table(&mut self) -> Env {
-        self.s4.extends_table.get_or_insert_with(|| Env::new(None)).clone()
+        self.s4.extends_table.get_or_insert_with(|| Env::new_hashed(None, 0)).clone()
     }
 
     /// `.cache_class(class, extends)`.
