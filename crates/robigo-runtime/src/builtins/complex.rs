@@ -155,13 +155,33 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
     if r.re.is_nan() || r.im.is_nan() { cmul_impl::<ExactArith>(a, b) } else { r }
 }
 
+// R: complex.c:complex_binary PLUSOP. GCC commuted the adds of the
+// compiled loop: the destination operand of each addsd holds the *second*
+// operand's part, so with two NaN operands x2's payload wins (observable:
+// `(0/0+1i)+(1+NA)` is NA, not NaN+NaNi).
+pub fn cadd(a: Complex, b: Complex) -> Complex {
+    let r = Complex::new(b.re + a.re, b.im + a.im);
+    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im)) } else { r }
+}
+
+// R: complex.c:complex_binary MINUSOP. The subtractions are not
+// commutative, so the compiled code has no freedom: x1 - x2 with the
+// minuend as destination operand.
+pub fn csub(a: Complex, b: Complex) -> Complex {
+    let r = Complex::new(a.re - b.re, a.im - b.im);
+    if r.re.is_nan() || r.im.is_nan() { Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im)) } else { r }
+}
+
 #[inline(always)]
 fn cmul_impl<T: CArith>(a: Complex, b: Complex) -> Complex {
     let (a, b, c, d) = (a.re, a.im, b.re, b.im);
     let ac = T::mul(a, c);
     let bd = T::mul(b, d);
     let ad = T::mul(a, d);
-    let bc = T::mul(b, c);
+    // gcc 14's compiled __muldc3 computes `c * b` (the destination operand
+    // of its mulsd is the one holding c), so with two NaN operands c's
+    // payload wins: observable in the result bits.
+    let bc = T::mul(c, b);
     let x = T::sub(ac, bd);
     let y = T::add(ad, bc);
     // The recovery below changes the result only if an operand or a
