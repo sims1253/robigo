@@ -44,6 +44,22 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: S4 deparse; recording fastr with methods (memory)
+
+- Deparse of S4 objects ported (deparse.c's IS_S4_OBJECT branch); the
+  parts that need R (getClassDef, R_do_slot of `.Data`, asS3) are computed
+  by `Interp::deparse_prepared` before the interpreter-free deparser runs
+  (thread-local table keyed by object identity, cleared afterwards).
+  Printing a generic, dput/deparse of S4 objects: byte-identical
+  (tests/r/s4/deparse.R). fastr S4 cases recorded with methods attached
+  (recorded chunks): 115 -> 118/124.
+- Recording fastr with methods: chunks 0, 1, 4-9 recorded; 2, 3, a-f not
+  yet. Chunk a/b was OOM-killed under the 6 GiB container cap (docker
+  events: exit 137), also with the stats distribution groups excluded.
+  The cap did its job; the case is being found with a probe recording
+  (`ulimit -v 3000000` per process, scratch copy, compared with the old
+  expectations).
+
 ## 2026-10-28: reg-S4 (GNU R's S4 regression test) with methods attached
 
 Climbing gnur-tests' reg-S4 (recorded with methods attached); each stop
