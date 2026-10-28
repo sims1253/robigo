@@ -122,8 +122,8 @@ fn text_of(v: &Value) -> Option<String> {
 fn parse_filename(srcfile: &Value) -> String {
     match srcfile {
         Value::Str(s) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_default(),
-        Value::Env(env) => match env.get(&s("filename")) {
-            Some(Value::Str(s)) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_default(),
+        Value::Env(env) => match env.lookup(Sym::new("filename")) {
+            Some((Value::Str(s), _)) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_default(),
             _ => String::new(),
         },
         _ => String::new(),
