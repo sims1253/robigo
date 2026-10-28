@@ -561,6 +561,85 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
     Ok(())
 }
 
+/// The general case of `Op::Index` (`x[i]` / `x[[i]]`, call `consts[k]`),
+/// after a flush. With `x` not an object, `[`/`[[` evaluate the index next
+/// (R: eval.c:R_DispatchOrEvalSP): an index promise is forced here,
+/// holding on to `x` as it was before.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn index_slow(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    vars: &mut Vars<'_>,
+    (x, slot): (Sym, Slot),
+    i: &Leaf,
+    two: bool,
+    k: u32,
+) -> RResult<RVal> {
+    let call = &code.consts[k as usize];
+    if index_promise(vars, env, i) == Some(true) {
+        if let Some(xv) = read_var(vars, env, x, slot).filter(|xv| !matches!(xv, RVal::V(v) if v.is_object())).cloned()
+        {
+            force_indices(interp, vars, env, &[(i, Some(true))])?;
+            if let Some(v) = scalar_index(vars, env, regs, i).and_then(|ix| element(&xv, ix as usize, two)) {
+                return Ok(v);
+            }
+            let ival = leaf_value(interp, vars, env, regs, i)?.into_value();
+            let r = subset_values(interp, call, xv.into_value(), vec![ival], two, env);
+            return signal(interp, r).map(RVal::V);
+        }
+    }
+    match i {
+        // The index was evaluated already: call `[`/`[[` with forced
+        // promises instead of evaluating it again.
+        Leaf::R(r) => {
+            let ival = regs[*r as usize].to_value();
+            let r = subset_with_index(interp, call, x, ival, two, env);
+            signal(interp, r).map(RVal::V)
+        }
+        _ => interp.eval(call, env).map(RVal::V),
+    }
+}
+
+/// The general case of `Op::Index2` (`x[i, j]` / `x[[i, j]]`), after a
+/// flush; index promises as in [`index_slow`].
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn index2_slow(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    vars: &mut Vars<'_>,
+    (x, slot): (Sym, Slot),
+    i: &Leaf,
+    j: &Leaf,
+    two: bool,
+    k: u32,
+) -> RResult<RVal> {
+    let call = &code.consts[k as usize];
+    let ip = index_promise(vars, env, i);
+    let jp = index_promise(vars, env, j);
+    if ip.is_some() && jp.is_some() && (ip == Some(true) || jp == Some(true)) {
+        if let Some(xv) = read_var(vars, env, x, slot).filter(|xv| !matches!(xv, RVal::V(v) if v.is_object())).cloned()
+        {
+            force_indices(interp, vars, env, &[(i, ip), (j, jp)])?;
+            if let Some(v) = matrix_element_at(vars, env, regs, (x, slot, Some(&xv)), i, j) {
+                return Ok(v);
+            }
+            let iv = leaf_value(interp, vars, env, regs, i)?.into_value();
+            let jv = leaf_value(interp, vars, env, regs, j)?.into_value();
+            let r = subset_values(interp, call, xv.into_value(), vec![iv, jv], two, env);
+            return signal(interp, r).map(RVal::V);
+        }
+    }
+    interp.eval(call, env).map(RVal::V)
+}
+
 /// Element `i` of a vector that `x[i]` (`[[` if `two`) reads without
 /// dispatch, attribute handling or allocation beyond a string scalar.
 #[inline(always)]
@@ -1884,38 +1963,59 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
 }
 
 /// Run a closure body in its fresh call frame `env`. For a closure defined
-/// on the search path or in a frame directly below it (say a helper
-/// defined in a function called from the global environment), such a frame
-/// holds only the formals: if none is named like a guarded function, every
-/// guard's result depends only on the search path and the closure's
-/// environment's function bindings, so all are checked once per search
-/// epoch, closure environment and version of its function bindings rather
-/// than once per call, and hold until R code first runs.
+/// on the search path, such a frame holds only the formals: if none is
+/// named like a guarded function, every guard's result depends only on the
+/// search path, so all are checked once per search epoch (and closure)
+/// rather than once per call, and hold until R code first runs. The same
+/// holds, per version of its function bindings, for a closure defined in a
+/// frame directly below the search path (say a helper defined in a function
+/// called from the global environment) that is called repeatedly.
 pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure) -> RResult<Value> {
     let pre = code.nguards > 0
-        && (clo.env.is_search() || clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search()))
-        && fresh_guards_ok(interp, code, clo);
+        && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
     run_pre(interp, code, env, pre)
 }
 
 fn fresh_guards_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
+    let key = (crate::env::search_epoch(), clo.env.id(), Rc::as_ptr(&clo.formals) as *const Arg as usize);
+    if code.fresh_guards.get() == key {
+        return true;
+    }
+    if !guards_hold_fresh(interp, code, clo) {
+        return false;
+    }
+    code.fresh_guards.set(key);
+    true
+}
+
+#[inline(never)]
+fn fresh_nested_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
+    if !clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search()) {
+        return false;
+    }
     let key = (
         crate::env::search_epoch(),
         clo.env.id(),
         clo.env.fn_version(),
         Rc::as_ptr(&clo.formals) as *const Arg as usize,
     );
-    if code.fresh_guards.get() == key {
+    if code.fresh_nested.get() == key {
         return true;
     }
-    if clo.formals.iter().any(|f| f.tag.is_some_and(|t| code.guard_syms.contains(&t))) {
+    // Environments below the search path come and go with calls: check
+    // only for a closure called again with the same environment (checking
+    // every guard costs more than one call saves).
+    if code.fresh_seen.replace(key) != key || !guards_hold_fresh(interp, code, clo) {
         return false;
     }
-    if !code.guard_syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
-        return false;
-    }
-    code.fresh_guards.set(key);
+    code.fresh_nested.set(key);
     true
+}
+
+/// Whether every guard of `code` holds in a fresh call frame of `clo`.
+fn guards_hold_fresh(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
+    !clo.formals.iter().any(|f| f.tag.is_some_and(|t| code.guard_syms.contains(&t)))
+        && code.guard_syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env))
 }
 
 fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool) -> RResult<Value> {
@@ -2323,41 +2423,11 @@ fn run_with(
                         None => None,
                     };
                 }
-                // With `x` not an object, `[`/`[[` evaluate the index next
-                // (R: eval.c:R_DispatchOrEvalSP): force it here, holding
-                // on to `x` as it was before.
-                let mut held = None;
-                if fast.is_none() && index_promise(&mut vars, env, i) == Some(true) {
-                    if let Some(xv) = read_var(&mut vars, env, *x, *slot)
-                        .filter(|xv| !matches!(xv, RVal::V(v) if v.is_object()))
-                        .cloned()
-                    {
+                regs[*dst as usize] = match fast {
+                    Some(v) => v,
+                    None => {
                         flush!();
-                        tryop!(force_indices(interp, &mut vars, env, &[(i, Some(true))]));
-                        fast = scalar_index(&mut vars, env, &regs, i).and_then(|ix| element(&xv, ix as usize, *two));
-                        held = Some(xv);
-                    }
-                }
-                regs[*dst as usize] = match (fast, i, held) {
-                    (Some(v), _, _) => v,
-                    (None, _, Some(xv)) => {
-                        flush!();
-                        let ival = tryop!(leaf_value(interp, &mut vars, env, regs, i)).into_value();
-                        let r =
-                            subset_values(interp, &code.consts[*k as usize], xv.into_value(), vec![ival], *two, env);
-                        RVal::V(tryop!(signal(interp, r)))
-                    }
-                    (None, Leaf::R(r), None) => {
-                        // The index was evaluated already: call `[`/`[[`
-                        // with forced promises instead of evaluating it again.
-                        flush!();
-                        let ival = regs[*r as usize].to_value();
-                        let r = subset_with_index(interp, &code.consts[*k as usize], *x, ival, *two, env);
-                        RVal::V(tryop!(signal(interp, r)))
-                    }
-                    (None, _, None) => {
-                        flush!();
-                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                        tryop!(index_slow(interp, code, env, regs, vars, (*x, *slot), i, *two, *k))
                     }
                 };
             }
@@ -2492,36 +2562,11 @@ fn run_with(
                     tryop!(signal(interp, r));
                     fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, None), i, j);
                 }
-                // Then the indices, if `x` is not an object (see `Op::Index`).
-                let mut held = None;
-                if fast.is_none() {
-                    let ip = index_promise(&mut vars, env, i);
-                    let jp = index_promise(&mut vars, env, j);
-                    if ip.is_some() && jp.is_some() && (ip == Some(true) || jp == Some(true)) {
-                        if let Some(xv) = read_var(&mut vars, env, *x, *slot)
-                            .filter(|xv| !matches!(xv, RVal::V(v) if v.is_object()))
-                            .cloned()
-                        {
-                            flush!();
-                            tryop!(force_indices(interp, &mut vars, env, &[(i, ip), (j, jp)]));
-                            fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, Some(&xv)), i, j);
-                            held = Some(xv);
-                        }
-                    }
-                }
-                regs[*dst as usize] = match (fast, held) {
-                    (Some(v), _) => v,
-                    (None, Some(xv)) => {
+                regs[*dst as usize] = match fast {
+                    Some(v) => v,
+                    None => {
                         flush!();
-                        let iv = tryop!(leaf_value(interp, &mut vars, env, regs, i)).into_value();
-                        let jv = tryop!(leaf_value(interp, &mut vars, env, regs, j)).into_value();
-                        let r =
-                            subset_values(interp, &code.consts[*k as usize], xv.into_value(), vec![iv, jv], *two, env);
-                        RVal::V(tryop!(signal(interp, r)))
-                    }
-                    (None, None) => {
-                        flush!();
-                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                        tryop!(index2_slow(interp, code, env, regs, vars, (*x, *slot), i, j, *two, *k))
                     }
                 };
             }
