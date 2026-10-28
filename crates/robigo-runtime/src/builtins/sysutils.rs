@@ -610,12 +610,32 @@ fn init_locale() {
 /// Whether string collation must use the C locale's byte order. GNU R's
 /// `Scollate` (util.c) uses `strcmp` when the collation locale is "C" and
 /// the ICU root collator otherwise.
+///
+/// The answer is cached until `Sys.setlocale` changes the locale, as GNU R
+/// caches its collator (R: util.c:Scollate's `collationLocaleSet`, reset by
+/// platform.c:do_setlocale through `resetICUcollator`): asking the C
+/// library on every comparison made sorting strings several times slower.
+#[inline]
 pub(crate) fn collation_is_c() -> bool {
+    match COLLATION_IS_C.get() {
+        Some(c) => c,
+        None => collation_is_c_slow(),
+    }
+}
+
+#[cold]
+fn collation_is_c_slow() -> bool {
     init_locale();
-    match cstr(unsafe { setlocale(LC_COLLATE, std::ptr::null()) }) {
+    let c = match cstr(unsafe { setlocale(LC_COLLATE, std::ptr::null()) }) {
         Some(l) => l == "C",
         None => true,
-    }
+    };
+    COLLATION_IS_C.set(Some(c));
+    c
+}
+
+thread_local! {
+    static COLLATION_IS_C: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 fn locale_category(code: i32) -> Option<c_int> {
@@ -654,6 +674,9 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         _ => return Err(Flow::error("invalid 'locale' argument")),
     };
     let cl = CString::new(l.clone()).unwrap_or_default();
+    // R: platform.c:do_setlocale calls resetICUcollator for LC_ALL and
+    // LC_COLLATE; dropping the cache for every category is equivalent.
+    COLLATION_IS_C.set(None);
     let p: Option<String> = unsafe {
         match cat {
             1 => {

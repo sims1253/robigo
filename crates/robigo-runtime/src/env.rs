@@ -134,10 +134,15 @@ impl Frame {
         }
     }
 
+    // Inline across codegen units: the evaluator's variable lookups go
+    // through here, and whether LLVM inlines it otherwise depends on how
+    // unrelated code happens to be partitioned.
+    #[inline]
     pub fn get(&self, sym: Sym) -> Option<&Binding> {
         self.position(sym).map(|i| &self.entries[i])
     }
 
+    #[inline]
     pub fn get_mut(&mut self, sym: Sym) -> Option<&mut Binding> {
         self.position(sym).map(move |i| &mut self.entries[i])
     }

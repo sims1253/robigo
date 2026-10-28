@@ -8,6 +8,7 @@
 //! (`psort`, `qsort` with ties, Shell sort of values) are ported as is.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use super::summary::{as_bool2, check_arity_internal};
 use super::{internal, prim};
@@ -697,6 +698,86 @@ fn gt_callback(i: &mut Interp, x: &Value, a: usize, b: usize, env: &Env) -> RRes
     Ok(crate::coerce::as_integer(&r))
 }
 
+/// The order of two elements of which at least one is NA: NAs go to one
+/// end, whatever the direction.
+fn na_order(na_a: bool, na_b: bool, nalast: bool) -> Ordering {
+    match (na_a, na_b) {
+        (true, true) => Ordering::Equal,
+        (true, false) => {
+            if nalast {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => {
+            if nalast {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+    }
+}
+
+/// A sort key compared as [`elt_cmp`] would, with strings replaced by
+/// their dense ranks in collation order: `scollate` is a total order that
+/// ties only identical strings, so comparing ranks is comparing strings,
+/// without collating for each of the n log n comparisons.
+enum KeyCol<'a> {
+    Int(&'a [i32]),
+    Real(&'a [f64]),
+    Cplx(&'a [Complex]),
+    Rank(Vec<i32>),
+}
+
+impl<'a> KeyCol<'a> {
+    fn new(x: &'a Value) -> Option<Self> {
+        Some(match x {
+            Value::Lgl(v) | Value::Int(v) => KeyCol::Int(&v.data),
+            Value::Real(v) => KeyCol::Real(&v.data),
+            Value::Cplx(v) => KeyCol::Cplx(&v.data),
+            Value::Str(v) => KeyCol::Rank(collation_ranks(&v.data)),
+            _ => return None,
+        })
+    }
+
+    #[inline]
+    fn cmp(&self, a: usize, b: usize, nalast: bool) -> i32 {
+        match self {
+            KeyCol::Int(v) => icmp(v[a], v[b], nalast),
+            KeyCol::Real(v) => rcmp(v[a], v[b], nalast),
+            KeyCol::Cplx(v) => ccmp(v[a], v[b], nalast),
+            // NA ranks are NA_INTEGER: icmp places them as scmp does.
+            KeyCol::Rank(r) => icmp(r[a], r[b], nalast),
+        }
+    }
+}
+
+/// The rank of each string among the distinct strings of `x` in collation
+/// order (0, 1, ...; `NA_INTEGER` for NA).
+fn collation_ranks(x: &[RStr]) -> Vec<i32> {
+    let mut ids: HashMap<&str, u32, crate::sym::StrHash> = HashMap::default();
+    let mut distinct: Vec<&str> = Vec::new();
+    let id: Vec<u32> = x
+        .iter()
+        .map(|s| match s {
+            None => u32::MAX,
+            Some(s) => *ids.entry(&**s).or_insert_with(|| {
+                distinct.push(s);
+                distinct.len() as u32 - 1
+            }),
+        })
+        .collect();
+    let mut by_order: Vec<u32> = (0..distinct.len() as u32).collect();
+    by_order.sort_unstable_by(|&p, &q| scollate(distinct[p as usize], distinct[q as usize]));
+    let mut rank = vec![0i32; distinct.len()];
+    for (r, &d) in by_order.iter().enumerate() {
+        rank[d as usize] = r as i32;
+    }
+    id.into_iter().map(|d| if d == u32::MAX { NA_INTEGER } else { rank[d as usize] }).collect()
+}
+
 // R: sort.c:do_order
 fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     let nalast = crate::coerce::as_logical(&super::arg(&args, 0));
@@ -727,6 +808,33 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
         return Ok(Value::ints(vec![]));
     }
     let mut o: Vec<usize> = (0..n).collect();
+    // Keys of the comparable types, strings replaced by their collation
+    // ranks: no comparison can fail, so any stable sort gives the same
+    // permutation as the general path below.
+    if let Some(cols) = keys.iter().map(KeyCol::new).collect::<Option<Vec<_>>>() {
+        if let [col] = &cols[..] {
+            let key = &keys[0];
+            o.sort_by(|&a, &b| match (is_na_at(key, a), is_na_at(key, b)) {
+                (false, false) => {
+                    let c = col.cmp(a, b, nalast);
+                    (if decreasing { -c } else { c }).cmp(&0)
+                }
+                (na_a, na_b) => na_order(na_a, na_b, nalast),
+            });
+        } else {
+            o.sort_by(|&a, &b| {
+                for col in &cols {
+                    let c = col.cmp(a, b, nalast ^ decreasing);
+                    let c = if decreasing { -c } else { c };
+                    if c != 0 {
+                        return c.cmp(&0);
+                    }
+                }
+                Ordering::Equal
+            });
+        }
+        return Ok(Value::ints(o.into_iter().map(|k| k as i32 + 1).collect()));
+    }
     if keys.len() == 1 {
         let key = &keys[0];
         if !matches!(key, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Str(_) | Value::Cplx(_)) {
