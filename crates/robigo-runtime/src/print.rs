@@ -355,6 +355,10 @@ impl Printer {
         if w < wn {
             w = wn;
         }
+        // R: printvector.c printNamedComplexVectorS separates complex items
+        // with a gap *before* each item (not after the last one); the other
+        // types print the gap after each item.
+        let gap_before = matches!(v, Value::Cplx(_));
         let nperline = (pp.width / (w + pp.gap)).max(1);
         let nlines = n_pr.div_ceil(nperline);
         for i in 0..nlines {
@@ -378,10 +382,17 @@ impl Printer {
                     break;
                 }
                 let item = &items[k];
-                let pad = w.saturating_sub(str_width(item));
-                self.p(&" ".repeat(pad));
-                self.p(item);
-                self.p(&" ".repeat(pp.gap));
+                if gap_before {
+                    if j > 0 {
+                        self.p(&" ".repeat(pp.gap));
+                    }
+                    self.p(item);
+                } else {
+                    let pad = w.saturating_sub(str_width(item));
+                    self.p(&" ".repeat(pad));
+                    self.p(item);
+                    self.p(&" ".repeat(pp.gap));
+                }
             }
         }
         self.p("\n");
@@ -935,6 +946,17 @@ fn list_elt_summary(x: &Value) -> String {
             encode_real0(v.data[0], w, d, e, "NA")
         }
         Value::Real(v) => format!("numeric,{}", v.data.len()),
+        // R: print.c PrintGenericVector: a length-one complex is printed like
+        // the scalar itself (formatComplex on just that element, no gap).
+        Value::Cplx(v) if v.data.len() == 1 => {
+            let z = v.data[0];
+            if is_na_real(z.re) || is_na_real(z.im) {
+                encode_real0(NA_REAL, 2, 0, 0, "NA")
+            } else {
+                let (r, i) = format_complex(&v.data, 7, 0, 0, 2);
+                encode_complex(z, r, i, "NA")
+            }
+        }
         Value::Cplx(v) => format!("complex,{}", v.data.len()),
         Value::Str(v) if v.data.len() == 1 => match &v.data[0] {
             Some(s) => format!("\"{}\"", s),
