@@ -293,13 +293,16 @@ fn do_rngkind(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
     let ans = Value::ints(vec![i.rng.kind as i32, i.rng.n01_kind as i32, i.rng.sample_kind as i32]);
     get_rng_kind(i, None)?;
     if !args[0].value.is_null() {
-        rng_kind(i, as_integer(&args[0].value))?;
+        let k = scalar_integer_warn(i, &args[0].value)?;
+        rng_kind(i, k)?;
     }
     if !args[1].value.is_null() {
-        norm_kind(i, as_integer(&args[1].value))?;
+        let k = scalar_integer_warn(i, &args[1].value)?;
+        norm_kind(i, k)?;
     }
     if !args[2].value.is_null() {
-        samp_kind(i, as_integer(&args[2].value))?;
+        let k = scalar_integer_warn(i, &args[2].value)?;
+        samp_kind(i, k)?;
     }
     Ok(ans)
 }
@@ -308,9 +311,7 @@ fn do_rngkind(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
 fn do_setseed(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity(&args, 4, "set.seed", call)?;
     let seed = if !args[0].value.is_null() {
-        let mut w = CoerceWarnings::default();
-        let s = scalar_integer(&args[0].value, &mut w);
-        w.emit(i)?;
+        let s = scalar_integer_warn(i, &args[0].value)?;
         if s == NA_INTEGER {
             return Err(Flow::error("supplied seed is not a valid integer"));
         }
@@ -320,23 +321,21 @@ fn do_setseed(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
     };
     get_rng_kind(i, None)?;
     if !args[1].value.is_null() {
-        rng_kind(i, as_integer(&args[1].value))?;
+        let k = scalar_integer_warn(i, &args[1].value)?;
+        rng_kind(i, k)?;
     }
     if !args[2].value.is_null() {
-        norm_kind(i, as_integer(&args[2].value))?;
+        let k = scalar_integer_warn(i, &args[2].value)?;
+        norm_kind(i, k)?;
     }
     if !args[3].value.is_null() {
-        samp_kind(i, as_integer(&args[3].value))?;
+        let k = scalar_integer_warn(i, &args[3].value)?;
+        samp_kind(i, k)?;
     }
     let k = i.rng.kind;
     rng_init(i, k, seed)?;
     put_rng_state(i)?;
     Ok(Value::Null)
-}
-
-/// `asInteger` with its coercion warning.
-fn scalar_integer(v: &Value, w: &mut CoerceWarnings) -> i32 {
-    if v.is_atomic() && !v.is_empty() { crate::coerce::to_int(&crate::coerce::first_elt(v), w)[0] } else { NA_INTEGER }
 }
 
 // ----------------------------------------------------------------------
@@ -752,13 +751,69 @@ fn invalid() -> Flow {
     Flow::error("invalid arguments")
 }
 
-/// The number of draws: `n` itself if of length 1, else its length.
-fn random_n(v: &Value) -> RResult<usize> {
+/// The result vector type of stats/random.c's `random1/2/3`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RandType {
+    Int,
+    Real,
+}
+
+impl RandType {
+    fn empty(self) -> Value {
+        match self {
+            RandType::Int => Value::ints(vec![]),
+            RandType::Real => Value::reals(vec![]),
+        }
+    }
+}
+
+/// R: random.c:fillWithNAs
+fn fill_with_nas(ty: RandType, n: usize) -> RResult<Value> {
+    Ok(match ty {
+        RandType::Int => {
+            let mut data = try_alloc::<i32>(n)?;
+            data.resize(n, NA_INTEGER);
+            Value::ints(data)
+        }
+        RandType::Real => {
+            let mut data = try_alloc::<f64>(n)?;
+            data.resize(n, NA_REAL);
+            Value::reals(data)
+        }
+    })
+}
+
+/// `asReal()` of the length argument, with its coercion warning.
+fn scalar_real_warn(i: &mut Interp, v: &Value) -> RResult<f64> {
+    if v.is_atomic() && !v.is_empty() {
+        let mut w = CoerceWarnings::default();
+        let d = crate::coerce::to_real(&crate::coerce::first_elt(v), &mut w)[0];
+        w.emit(i)?;
+        Ok(d)
+    } else {
+        Ok(NA_REAL)
+    }
+}
+
+/// `asInteger()` with its coercion warning.
+fn scalar_integer_warn(i: &mut Interp, v: &Value) -> RResult<i32> {
+    if v.is_atomic() && !v.is_empty() {
+        let mut w = CoerceWarnings::default();
+        let n = crate::coerce::to_int(&crate::coerce::first_elt(v), &mut w)[0];
+        w.emit(i)?;
+        Ok(n)
+    } else {
+        Ok(NA_INTEGER)
+    }
+}
+
+/// R: random.c:resultLength
+fn random_n(i: &mut Interp, v: &Value) -> RResult<usize> {
     if !v.is_vector() {
         return Err(invalid());
     }
     if v.len() == 1 {
-        let dn = as_real(v);
+        let dn = scalar_real_warn(i, v)?;
         if dn.is_nan() || dn < 0.0 || dn > 4503599627370496.0 {
             return Err(invalid());
         }
@@ -772,147 +827,141 @@ fn real_vec(v: &Value) -> Vec<f64> {
     crate::coerce::to_real(v, &mut CoerceWarnings::default())
 }
 
-/// R: random.c:do_random1
-fn random1(i: &mut Interp, call: &Value, args: Vec<Arg>, name: &str, f: fn(&mut Rng, f64) -> f64) -> RResult<Value> {
-    check_arity(&args, 2, name, call)?;
-    if !args[0].value.is_vector() || !is_numeric(&args[1].value) {
-        return Err(invalid());
-    }
-    let n = random_n(&args[0].value)?;
-    let mut x = try_alloc::<f64>(n)?;
-    if n == 0 {
-        return Ok(Value::reals(x));
-    }
-    let a = real_vec(&args[1].value);
-    if a.is_empty() {
-        x.resize(n, NA_REAL);
-        i.warning("NAs produced")?;
-        return Ok(Value::reals(x));
-    }
-    get_rng_state(i)?;
-    let mut naflag = false;
-    for k in 0..n {
-        let v = f(&mut i.rng, a[k % a.len()]);
-        if v.is_nan() {
-            naflag = true;
-        }
-        x.push(v);
-    }
-    if naflag {
-        i.warning("NAs produced")?;
-    }
-    put_rng_state(i)?;
-    Ok(Value::reals(x))
-}
-
-/// R: random.c:do_random2
-fn random2(
+/// R: stats/random.c:random1 / random2 / random3 -- the shared body of the
+/// `r<dist>` entry points of the stats package.  `args[0]` is `n`, the
+/// rest are the distribution's parameters, recycled as in R.
+///
+/// Integer-valued distributions return an INTSXP vector; a value outside
+/// `int` range switches the whole result to REALSXP at that position, and
+/// NaN draws become NA (R warns "NAs produced").
+fn random_dispatch(
     i: &mut Interp,
     call: &Value,
     args: Vec<Arg>,
     name: &str,
-    f: fn(&mut Rng, f64, f64) -> f64,
+    arity: usize,
+    ty: RandType,
+    f: impl Fn(&mut Rng, &[f64]) -> f64,
 ) -> RResult<Value> {
-    check_arity(&args, 3, name, call)?;
-    if !args[0].value.is_vector() || !is_numeric(&args[1].value) || !is_numeric(&args[2].value) {
+    check_arity(&args, arity, name, call)?;
+    if !args[0].value.is_vector() || !args[1..].iter().all(|a| is_numeric(&a.value)) {
         return Err(invalid());
     }
-    let n = random_n(&args[0].value)?;
-    let mut x = try_alloc::<f64>(n)?;
+    let n = random_n(i, &args[0].value)?;
     if n == 0 {
-        return Ok(Value::reals(x));
+        return Ok(ty.empty());
     }
-    let a = real_vec(&args[1].value);
-    let b = real_vec(&args[2].value);
-    if a.is_empty() || b.is_empty() {
-        x.resize(n, NA_REAL);
+    if args[1..].iter().any(|a| a.value.len() < 1) {
+        let ans = fill_with_nas(ty, n)?;
         i.warning("NAs produced")?;
-        return Ok(Value::reals(x));
+        return Ok(ans);
     }
+    let np = arity - 1;
+    let params: Vec<Vec<f64>> = args[1..].iter().map(|a| real_vec(&a.value)).collect();
     get_rng_state(i)?;
+    let mut buf = [0.0f64; 3];
+    macro_rules! draw {
+        ($k:expr) => {{
+            for j in 0..np {
+                buf[j] = params[j][$k % params[j].len()];
+            }
+            let v = f(&mut i.rng, &buf[..np]);
+            if v.is_nan() {
+                if let Some(msg) = crate::nmath::take_alloc_error() {
+                    return Err(Flow::error(msg));
+                }
+            }
+            v
+        }};
+    }
     let mut naflag = false;
-    for k in 0..n {
-        let v = f(&mut i.rng, a[k % a.len()], b[k % b.len()]);
-        if v.is_nan() {
-            naflag = true;
+    let mut int_data: Vec<i32> = Vec::new();
+    let mut real_data: Vec<f64> = Vec::new();
+    let mut real_from = n;
+    if ty == RandType::Int {
+        int_data = try_alloc::<i32>(n)?;
+        int_data.resize(n, 0);
+        for k in 0..n {
+            let rx = draw!(k);
+            if rx.is_nan() {
+                naflag = true;
+                int_data[k] = NA_INTEGER;
+            } else if rx > i32::MAX as f64 || rx <= i32::MIN as f64 {
+                // integer overflow: coerce the result so far to REALSXP and
+                // continue in the real loop below.
+                real_data = try_alloc::<f64>(n)?;
+                real_data.extend(int_data[..k].iter().map(|&v| if v == NA_INTEGER { NA_REAL } else { v as f64 }));
+                real_data.push(rx);
+                real_from = k + 1;
+                break;
+            } else {
+                int_data[k] = rx as i32;
+            }
         }
-        x.push(v);
+    }
+    if ty == RandType::Real {
+        real_data = try_alloc::<f64>(n)?;
+        for k in 0..n {
+            let v = draw!(k);
+            if v.is_nan() {
+                naflag = true;
+            }
+            real_data.push(v);
+        }
+    } else if real_from < n {
+        for k in real_from..n {
+            let v = draw!(k);
+            if v.is_nan() {
+                naflag = true;
+            }
+            real_data.push(v);
+        }
     }
     if naflag {
         i.warning("NAs produced")?;
     }
+    let ans = if ty == RandType::Int && real_data.is_empty() { Value::ints(int_data) } else { Value::reals(real_data) };
     put_rng_state(i)?;
-    Ok(Value::reals(x))
+    Ok(ans)
 }
 
-macro_rules! rand1 {
-    ($fname:ident, $rname:expr, $f:expr) => {
-        fn $fname(i: &mut Interp, c: &Value, a: Vec<Arg>, _e: &Env) -> RResult<Value> {
-            random1(i, c, a, $rname, $f)
+// main/random.c returns REALSXP; stats/random.c selects each distribution's type.
+macro_rules! random_generators {
+    ($(($fname:ident, $rname:literal, $arity:literal, $ty:expr, $f:expr)),* $(,)?) => {
+        $(fn $fname(i: &mut Interp, c: &Value, a: Vec<Arg>, _e: &Env) -> RResult<Value> {
+            random_dispatch(i, c, a, $rname, $arity, RandType::Real, $f)
+        })*
+
+        /// R: library/stats/src/random.c:random1/random2/random3.
+        pub(crate) fn stats_random(i: &mut Interp, call: &Value, args: Vec<Arg>, name: &str) -> RResult<Value> {
+            match name {
+                $($rname => random_dispatch(i, call, args, name, $arity, $ty, $f),)*
+                _ => unreachable!("registered random alias"),
+            }
         }
     };
 }
 
-macro_rules! rand2 {
-    ($fname:ident, $rname:expr, $f:expr) => {
-        fn $fname(i: &mut Interp, c: &Value, a: Vec<Arg>, _e: &Env) -> RResult<Value> {
-            random2(i, c, a, $rname, $f)
-        }
-    };
-}
-
-rand1!(do_rchisq, "rchisq", nr::rchisq);
-rand1!(do_rexp, "rexp", nr::rexp);
-rand1!(do_rgeom, "rgeom", nr::rgeom);
-rand1!(do_rpois, "rpois", nr::rpois);
-rand1!(do_rt, "rt", nr::rt);
-rand1!(do_rsignrank, "rsignrank", nr::rsignrank);
-
-rand2!(do_rbeta, "rbeta", nr::rbeta);
-rand2!(do_rbinom, "rbinom", nr::rbinom);
-rand2!(do_rcauchy, "rcauchy", nr::rcauchy);
-rand2!(do_rf, "rf", nr::rf);
-rand2!(do_rgamma, "rgamma", nr::rgamma);
-rand2!(do_rlnorm, "rlnorm", nr::rlnorm);
-rand2!(do_rlogis, "rlogis", nr::rlogis);
-rand2!(do_rnbinom, "rnbinom", nr::rnbinom);
-rand2!(do_rnbinom_mu, "rnbinom_mu", nr::rnbinom_mu);
-rand2!(do_rnchisq, "rnchisq", nr::rnchisq);
-rand2!(do_rnorm, "rnorm", nr::rnorm);
-rand2!(do_runif, "runif", nr::runif);
-rand2!(do_rweibull, "rweibull", nr::rweibull);
-rand2!(do_rwilcox, "rwilcox", nr::rwilcox);
-
-/// R: random.c:do_random3 (only rhyper)
-fn do_rhyper(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
-    check_arity(&args, 4, "rhyper", call)?;
-    let n = random_n(&args[0].value)?;
-    let mut x = try_alloc::<f64>(n)?;
-    if n == 0 {
-        return Ok(Value::reals(x));
-    }
-    let (sa, sb, sc) = (&args[1].value, &args[2].value, &args[3].value);
-    if !is_numeric(sa) || !is_numeric(sb) || !is_numeric(sc) {
-        return Err(invalid());
-    }
-    let (a, b, c) = (real_vec(sa), real_vec(sb), real_vec(sc));
-    if a.is_empty() || b.is_empty() || c.is_empty() {
-        x.resize(n, NA_REAL);
-        i.warning("NAs produced")?;
-        return Ok(Value::reals(x));
-    }
-    get_rng_state(i)?;
-    let mut naflag = false;
-    for k in 0..n {
-        let v = crate::nmath::hyper::rhyper(&mut i.rng, a[k % a.len()], b[k % b.len()], c[k % c.len()]);
-        if v.is_nan() {
-            naflag = true;
-        }
-        x.push(v);
-    }
-    if naflag {
-        i.warning("NAs produced")?;
-    }
-    put_rng_state(i)?;
-    Ok(Value::reals(x))
+random_generators! {
+    (do_rchisq, "rchisq", 2, RandType::Real, |r, a| nr::rchisq(r, a[0])),
+    (do_rexp, "rexp", 2, RandType::Real, |r, a| nr::rexp(r, a[0])),
+    (do_rgeom, "rgeom", 2, RandType::Int, |r, a| nr::rgeom(r, a[0])),
+    (do_rpois, "rpois", 2, RandType::Int, |r, a| nr::rpois(r, a[0])),
+    (do_rt, "rt", 2, RandType::Real, |r, a| nr::rt(r, a[0])),
+    (do_rsignrank, "rsignrank", 2, RandType::Int, |r, a| nr::rsignrank(r, a[0])),
+    (do_rbeta, "rbeta", 3, RandType::Real, |r, a| nr::rbeta(r, a[0], a[1])),
+    (do_rbinom, "rbinom", 3, RandType::Int, |r, a| nr::rbinom(r, a[0], a[1])),
+    (do_rcauchy, "rcauchy", 3, RandType::Real, |r, a| nr::rcauchy(r, a[0], a[1])),
+    (do_rf, "rf", 3, RandType::Real, |r, a| nr::rf(r, a[0], a[1])),
+    (do_rgamma, "rgamma", 3, RandType::Real, |r, a| nr::rgamma(r, a[0], a[1])),
+    (do_rlnorm, "rlnorm", 3, RandType::Real, |r, a| nr::rlnorm(r, a[0], a[1])),
+    (do_rlogis, "rlogis", 3, RandType::Real, |r, a| nr::rlogis(r, a[0], a[1])),
+    (do_rnbinom, "rnbinom", 3, RandType::Int, |r, a| nr::rnbinom(r, a[0], a[1])),
+    (do_rnbinom_mu, "rnbinom_mu", 3, RandType::Real, |r, a| nr::rnbinom_mu(r, a[0], a[1])),
+    (do_rnchisq, "rnchisq", 3, RandType::Real, |r, a| nr::rnchisq(r, a[0], a[1])),
+    (do_rnorm, "rnorm", 3, RandType::Real, |r, a| nr::rnorm(r, a[0], a[1])),
+    (do_runif, "runif", 3, RandType::Real, |r, a| nr::runif(r, a[0], a[1])),
+    (do_rweibull, "rweibull", 3, RandType::Real, |r, a| nr::rweibull(r, a[0], a[1])),
+    (do_rwilcox, "rwilcox", 3, RandType::Int, |r, a| nr::rwilcox(r, a[0], a[1])),
+    (do_rhyper, "rhyper", 4, RandType::Int, |r, a| crate::nmath::hyper::rhyper(r, a[0], a[1], a[2])),
 }

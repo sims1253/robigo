@@ -10,6 +10,7 @@ eval-etc-2
 eval-fns
 iec60559
 ok-errors
+p-r-random-tests
 r-strict-tst
 reg-S4-examples
 reg-win

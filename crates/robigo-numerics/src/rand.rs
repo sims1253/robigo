@@ -693,7 +693,7 @@ pub fn rsignrank(rng: &mut Rng, n: f64) -> f64 {
         return 0.0;
     }
     let mut r = 0.0;
-    let k = n as i32;
+    let k = c_int_cast(n); // `(int) n`
     let mut i = 0;
     while i < k {
         i += 1;
@@ -716,8 +716,15 @@ pub fn rwilcox(rng: &mut Rng, m: f64, n: f64) -> f64 {
         return 0.0;
     }
     let mut r = 0.0;
-    let mut k = (m + n) as i32;
-    let mut x: Vec<i32> = (0..k).collect();
+    let mut k = c_int_cast(m + n); // `(int) (m + n)`
+    // `calloc((size_t) k, sizeof(int))`: a negative count wraps to a huge
+    // `size_t`, and R's heap wrapper reports the failure.
+    let nelem = k as i64 as u64;
+    let mut x: Vec<i32> = Vec::new();
+    if nelem > usize::MAX as u64 || x.try_reserve_exact(nelem as usize).is_err() {
+        return alloc_error(nelem, 4);
+    }
+    x.extend(0..k);
     let mut i = 0;
     while (i as f64) < n {
         let j = rng.unif_index(k as f64) as i32 as usize;

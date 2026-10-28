@@ -319,6 +319,7 @@ stats/Hypergeometric
 stats/Logistic
 stats/Lognormal
 stats/SSD
+stats/Tukey
 stats/Uniform
 stats/Weibull
 stats/alias

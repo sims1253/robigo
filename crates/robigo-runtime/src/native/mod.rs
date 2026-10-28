@@ -365,6 +365,9 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
         }
     }
     if is_internal_alias(r) {
+        if r.name.starts_with('r') {
+            return crate::builtins::random::stats_random(interp, call, args, &r.name);
+        }
         if let Some(b) = crate::builtins::lookup_internal(&r.name) {
             let env = interp.global.clone();
             return interp.invoke_builtin(b, call, args, &env);
