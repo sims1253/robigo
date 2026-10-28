@@ -15,6 +15,34 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: conformance item: GNU R binds base functions when its JIT compiles a closure
+
+- finding (from caller-forced-promises tests): after `g <- function(n) if (n < 2) ...` has
+  run a few times, a later global `` `<` <- function(a, b) ... `` is ignored by `g` in GNU R;
+  robigo's guards re-check and call the user's `<`. Coordinator decision: compiled behaviour is
+  GNU R's observable behaviour (JIT on by default), so robigo must match it.
+- the rules to port (R 4.5.0 sources):
+  - `compiler/R/cmp.R`: `getInlineInfo` (optimize >= 2 inlines `languageFuns`, incl. the
+    operators and `if`/`{`/`for`, when `findCenvVar` finds them as ftype "global"; guarded
+    inlining via `BASEGUARD` for other base functions), `tryInline`/`getInlineHandler(name,
+    package)` (handlers per package, so a definition found in `.GlobalEnv` is not inlined),
+    `findCenvVar`/`isBaseVar`/`findLocVar` (compile-time environment: locals from formals and
+    assignments in the body, then the closure environment's frames).
+  - `main/eval.c`: `R_CheckJIT` (strategy `STRATEGY_TOP_SMALL_MAYBE` etc.: small top-level
+    closures, `JIT_score < MIN_JIT_SCORE` = 50, are marked MAYBEJIT on their first call and
+    compiled on the second; loops are compiled with `LOOP_JIT_SCORE`), `R_jit_enabled` level 3,
+    and the JIT cache (compiled code reused by body, which is why a second closure with the
+    same body as an already compiled one behaves as compiled from its first call:
+    `g2 <- function(n) if (n < 2) ...` defined after the global `<` printed "global <" once).
+- plan: port the decision procedure (when a closure is compiled; which calls are inlined
+  without guard, guarded or looked up) into compile.rs, and make the VM's guards follow it:
+  unguarded inlines keep base semantics after a rebinding, guarded ones (`BASEGUARD`) fall
+  back to the call, as now. Conformance scripts: operators redefined before the first call,
+  between the first and second call, after compilation, inside the closure's environment, and
+  for two closures sharing a body.
+- status: not started; after the fib/binarytrees call-cost work (not cheap: the compile-time
+  environment analysis, MAYBEJIT and the body-keyed cache all affect the observable result).
+
 ## 2026-10-28: allocation counts (baseline for the allocation work)
 
 - tool: `scripts/alloc-count.py` counts calls of `__rust_alloc`,
