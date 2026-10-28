@@ -398,5 +398,11 @@ pub fn attributes_list(v: &Value) -> Value {
 
 /// `class(x)` (R_data_class with singleString = FALSE).
 pub fn class_of(v: &Value) -> Value {
+    // R: attrib.c:R_data_class returns an explicit class unchanged.
+    if let Some(class) = v.get_attr(s::CLASS) {
+        if !class.is_empty() {
+            return class;
+        }
+    }
     Value::strs(crate::dispatch::implicit_class(v).into_iter().map(Some).collect())
 }
