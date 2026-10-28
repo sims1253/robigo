@@ -44,6 +44,22 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: the S4 cases lost with methods attached, re-checked
+
+- The 12 fastr S4 cases (TestS4, TestR5) that failed only with methods
+  attached, run against GNU R with methods attached: 11 now match. The
+  remaining one prints a reference class generator; its "Class Methods"
+  list is `names(def@refMethods)`, i.e. `ls(sorted = FALSE)` of a hashed
+  environment, which GNU R returns in hash-bucket order (PJW hash of the
+  name, table size and growth from envir.c's R_HashSizeCheck/R_HashResize).
+  robigo's environments do not emulate that order (env.rs, not this
+  track).
+- Also open from that set: reference class `finalize` methods
+  (`reg.finalizer` on environments with `gc()`; robigo does not collect
+  environments), `asS4(NULL)` setting the S4 bit of the global NULL
+  (bug-compatible, not emulated), `substituteDirect` cases (pending
+  re-recording).
+
 ## 2026-10-28: S4 dispatch overhead per call
 
 - callgrind (scripts/callgrind-diff.py, 2e4 - 1e4 calls of a one-method
