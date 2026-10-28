@@ -250,6 +250,17 @@ fn as_char(v: &Value) -> String {
     }
 }
 
+/// The data part (`.Data`, else `.xData`) of an S4 OBJSXP, as
+/// `R_getS4DataSlot(x, <type>)` sees it before checking the type.
+pub fn s4_data_part(x: &Value) -> Option<&Value> {
+    let Value::Obj(o) = x else { return None };
+    let a = o.attrs.as_deref()?;
+    if !a.1 {
+        return None;
+    }
+    a.get(syms::data()).or_else(|| a.get(syms::xdata()))
+}
+
 /// `R_data_class(obj, singleString)` as strings.
 // R: attrib.c:R_data_class
 pub fn data_class(obj: &Value, single: bool) -> Value {
@@ -850,6 +861,17 @@ impl Interp {
             value = v;
         }
         if !value.is_null() && (ty.is_none() || ty == Some(value.type_name())) { Ok(value) } else { Ok(Value::Null) }
+    }
+
+    /// `simple_as_environment(arg)`: the environment an S4 object extending
+    /// "environment" holds, `None` for anything else.
+    pub fn simple_as_environment(&mut self, v: &Value) -> RResult<Option<Env>> {
+        if v.is_s4() && matches!(v, Value::Obj(_)) {
+            if let Value::Env(e) = self.get_s4_data_slot(v, Some("environment"))? {
+                return Ok(Some(e));
+            }
+        }
+        Ok(None)
     }
 
     /// `asS4(s, flag, complete)`.

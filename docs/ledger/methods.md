@@ -37,10 +37,68 @@ What other evaluator paths must keep:
   before S3. Fast paths may skip them only for values without a class
   attribute (`is_object()` false implies `is_s4()` false for everything but
   `asS4()` on a classless value, which has no methods anyway).
+- **OBJSXP** is `Value::Obj(Rc<Vector<Value>>)` with empty `data` (see the
+  perf entry below for why it shares List's payload type).
 - **The S4 bit** is `Attrs.1` (`Value::is_s4`/`set_s4`). Code that rebuilds a
   value's attributes must carry it the way GNU R does: `copy_most_attrib`
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
+
+## 2026-10-28: Rcpp loads and runs; S4 environments; zero-cost OBJSXP; full corpus
+
+- **Rcpp from source inside robigo.** With robigo's R_HOME
+  (`ROBIGO_NATIVES=<dir with tools/tools.so> scripts/robigo-home.sh`,
+  tools.so from core's `build-base-native.sh`), `utils::install.packages("Rcpp")`
+  compiles Rcpp 1.1.2 against robigo's headers and passes R's load tests.
+  `library(Rcpp)`, `evalCpp("1 + 1")`, `cppFunction()` (scalars, vectors,
+  `List::create`), `Rcpp::stop()` caught by `tryCatch`, and an
+  `RCPP_MODULE` class (`new(Acc, 1)`, `$add()`, `$get()`) all work.
+  Needed: libR's S4 entry points (`crates/robigo-capi/src/objects.rs`:
+  `R_do_slot`, `R_do_slot_assign`, `R_has_slot`, `R_do_new_object`,
+  `R_do_MAKE_CLASS`, `R_getClassDef`, `Rf_asS4`), ported over core objects
+  so that they modify in place as GNU R's do; S4 objects extending
+  "environment" in `get`/`exists`/`assign`/`ls`/locking/`environment<-`/
+  `parent.env`/`new.env`/`eval`/`[[`/`$`/`[[<-`/`$<-`/`is.environment`
+  (GNU R's `simple_as_environment`, `R_getS4DataSlot`); `mget`,
+  `list2env` and `delayedAssign` reject them as GNU R does.
+- **R_execMethod with constant defaults.** robigo binds constant defaults
+  without a promise; such a binding of a missing argument is the
+  generic's default too and becomes the method's own (callNextMethod
+  example). 
+- **OBJSXP costs nothing.** With `Value::Obj(Rc<Obj>)` (its own payload
+  type), `perf.py compare` against main showed fib +0.58% (> 0.5%): callgrind
+  (scripts/callgrind-diff.py, fib(21) - fib(20)) put +29 instructions per
+  call into drop glue that LLVM stopped inlining into `Rc<EnvData>::drop_slow`
+  once `Value`'s drop glue had another distinct arm. `Obj` is now
+  `Vector<Value>` (List's payload, `data` empty): the arms are identical
+  and merge. Result: **0 of 78 benchmarks slower or faster than 0.5%**.
+- **Full fastr corpus** (4 shards, host): 0 regressions against main's
+  binary on this host. 13 complex NaN-payload cases (TestSimpleValues,
+  TestSimpleArithmetic, one TestBuiltin_operators) and the
+  `c_library_oracle` unit test fail for main and this branch alike on this
+  host (#47 encodes gcc/glibc bits of CI's image). Of the 528 cases that
+  pass beyond the ratchet, main passes 484: **+44 over main**, all S4.
+- Slices now: S4 slice 608 -> 639/662; gnur-examples methods/stats4
+  0 -> 41/50. Conformance: `tests/r/s4/{classes,dispatch,refclass,bits}.R`
+  (recorded in the oracle image) pass and are in the ratchet.
+- Open (outside this track, noted for their owners):
+  - stats4 `mle`/`update-methods`: the stats `optim` native (Rust port
+    missing; GNU R's stats.so built from source has it, core's ledger);
+  - methods `setMethod`: grDevices `devholdflush`; `showMethods`:
+    `lazyLoadDBflush` (unloadNamespace); `cbind2`: `trace()`;
+    `GenericFunctions`/`implicitGeneric`: the `<bytecode>` line when
+    printing base closures (corpus-scripts ledger);
+    `Methods_for_Nongenerics`: a timestamp inside IGNORE_RDIFF (never
+    byte-identical); `inheritedSlotNames`: Matrix not installed here;
+    `refClass` (gnur-examples): GNU R's recording has codetools, the host
+    R_HOME does not ("not checked for suspicious field assignments");
+  - `f <- function(...) lapply(1, log, ...); f()` fails on main: `...`
+    reaching a special through lapply (conformance-lang/vectors).
+  - Rcpp's help pages: `RdTags(Rd) == "COMMENT"` errors during install
+    (tools' Rd code on robigo).
+- Next: methods as a default package (re-record every corpus with methods
+  in `default_packages`, robigo's startup attaching it), Rcpp's own tests,
+  `trace()` for S4 (`.primTrace`, methods' trace machinery).
 
 ## 2026-10-28: methods loads; setClass/new/setGeneric/setMethod/show
 

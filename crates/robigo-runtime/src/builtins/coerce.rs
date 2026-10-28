@@ -401,8 +401,9 @@ is_fn!(is_integer, "is.integer", |x| matches!(x, Value::Int(_)));
 is_fn!(is_double, "is.double", |x| matches!(x, Value::Real(_)));
 is_fn!(is_complex, "is.complex", |x| matches!(x, Value::Cplx(_)));
 is_fn!(is_character, "is.character", |x| matches!(x, Value::Str(_)));
-is_fn!(is_symbol, "is.symbol", |x| matches!(x, Value::Sym(_)));
-is_fn!(is_environment, "is.environment", |x| matches!(x, Value::Env(_)));
+// R: coerce.c:do_is — S4 objects extending "name"/"environment" count.
+is_fn!(is_symbol, "is.symbol", |x| crate::s4::s4_data_part(&x).unwrap_or(&x).as_sym().is_some());
+is_fn!(is_environment, "is.environment", |x| matches!(crate::s4::s4_data_part(&x).unwrap_or(&x), Value::Env(_)));
 is_fn!(is_list, "is.list", |x| matches!(x, Value::List(_) | Value::Pairlist(_)));
 is_fn!(is_pairlist, "is.pairlist", |x| matches!(x, Value::Pairlist(_) | Value::Null));
 is_fn!(is_expression, "is.expression", |x| matches!(x, Value::Expr(_)));

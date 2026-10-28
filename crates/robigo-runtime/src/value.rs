@@ -254,11 +254,12 @@ pub enum Value {
     Obj(Rc<Obj>),
 }
 
-/// The body of an `OBJSXP`.
-#[derive(Clone, Default)]
-pub struct Obj {
-    pub attrs: AttrBox,
-}
+/// The body of an `OBJSXP`: only its attributes are used (`data` stays
+/// empty). It shares `List`'s representation so that `Value`'s drop glue
+/// does not grow: a distinct payload type changed LLVM's inlining of
+/// environment drops and cost every closure call ~25 instructions
+/// (docs/ledger/methods.md).
+pub type Obj = Vector<Value>;
 
 pub struct ExtPtr {
     pub tag: Value,

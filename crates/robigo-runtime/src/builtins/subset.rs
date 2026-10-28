@@ -776,6 +776,20 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     if nsubs > 1 && nsubs != ndims {
         return Err(Flow::error_call(call.clone(), "incorrect number of subscripts"));
     }
+    // R: subset.c:do_subset2_dflt — classes extending environment.
+    let x = if let Value::Obj(_) = &x {
+        let xs4 = x.is_s4();
+        let d = interp.get_s4_data_slot(&x, None)?;
+        if d.is_null() {
+            return Err(Flow::error_call(
+                call.clone(),
+                format!("this {} class is not subsettable", if xs4 { "S4" } else { "object" }),
+            ));
+        }
+        d
+    } else {
+        x
+    };
     if let Value::Env(e) = &x {
         let name = match &subs[0] {
             Value::Str(v) if nsubs == 1 && v.data.len() == 1 => char_of(&v.data[0]).to_string(),
@@ -873,6 +887,14 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 /// R's `R_subset3_dflt`: `x$name` with partial matching.
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
+    // R: subset.c:R_subset3_dflt — classes extending environment.
+    if x.is_s4() && matches!(x, Value::Obj(_)) {
+        let d = interp.get_s4_data_slot(x, None)?;
+        if d.is_null() {
+            return Err(Flow::error_call(call.clone(), "$ operator not defined for this S4 class"));
+        }
+        return subset3_dflt(interp, &d, input, call);
+    }
     let input = char_of(input).to_string();
     let warn_partial = |interp: &mut Interp| matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
     if let Value::List(_) | Value::Expr(_) = x {

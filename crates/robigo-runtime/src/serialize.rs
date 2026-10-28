@@ -404,7 +404,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 };
                 Value::raws(b)
             }
-            OBJSXP => Value::Obj(Rc::new(Obj::default())),
+            OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
             NILSXP => Value::Null,
             _ => {
                 return Err(Flow::error(format!(

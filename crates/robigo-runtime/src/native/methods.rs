@@ -79,7 +79,7 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     }),
     ("do_substitute_direct", |i, _, a, _| substitute_direct(i, &arg(&a, 0), &arg(&a, 1))),
     ("Rf_allocS4Object", |_, _, _, _| {
-        let mut v = Value::Obj(Rc::new(Obj::default()));
+        let mut v = Value::Obj(Rc::new(Obj::new(vec![])));
         v.set_s4(true);
         Ok(v)
     }),
@@ -169,13 +169,6 @@ fn check_single_string(obj: &Value, non_empty: bool, what: &str) -> RResult<Stri
             what,
             class_string(obj)
         ))),
-    }
-}
-
-fn check_symbol_or_string(obj: &Value, non_empty: bool, what: &str) -> RResult<String> {
-    match obj {
-        Value::Sym(s) => Ok(s.name().to_string()),
-        _ => check_single_string(obj, non_empty, what),
     }
 }
 

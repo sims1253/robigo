@@ -744,6 +744,18 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
 }
 
 fn subassign2_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
+    // R: subassign.c:do_subassign2_dflt — classes extending environment
+    // (the environment is modified; the S4 object is the result).
+    if x.is_s4() && matches!(x, Value::Obj(_)) {
+        let mut d = interp.get_s4_data_slot(x, None)?;
+        if !matches!(d, Value::Env(_)) {
+            return Err(Flow::error_call(
+                call.clone(),
+                "[[<- defined for objects of type \"S4\" only for subclasses of environment",
+            ));
+        }
+        return subassign2_core(interp, call, &mut d, subs, y);
+    }
     if let Value::Env(e) = x {
         let name = match subs {
             [Value::Str(v)] if v.data.len() == 1 => char_of(&v.data[0]).to_string(),
@@ -1087,6 +1099,14 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
 /// R's `R_subassign3_dflt`: `x$name <- val`.
 // R: subassign.c:R_subassign3_dflt
 pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Value) -> RResult<()> {
+    // R: subassign.c:R_subassign3_dflt — classes extending environment.
+    if let Value::Obj(_) = x {
+        let mut d = interp.get_s4_data_slot(x, None)?;
+        if d.is_null() {
+            return Err(Flow::error_call(replacement_error_call(), "no method for assigning subsets of this S4 class"));
+        }
+        return subassign3_core(interp, &mut d, nlist, val);
+    }
     match x {
         Value::Pairlist(_) | Value::Lang(_) => {
             let mut items = pairlike_items(x);
