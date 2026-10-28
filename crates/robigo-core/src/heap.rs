@@ -215,7 +215,11 @@ impl Heap {
 
     fn alloc_small(&mut self, size: usize) -> *mut u8 {
         let ci = class_index(size);
-        let g = size.div_ceil(16) as u32;
+        // every slot of a class is carved at the class size: free-list
+        // slots are reused for any request of the class, so a slot cut
+        // to the request's size would be overrun by a larger request
+        // (classes above 256 bytes span four 16-byte sizes)
+        let g = (SIZES[ci] / 16) as u32;
         loop {
             // ci < SIZES.len() by construction (size <= MAX_SMALL); the
             // checked index both emitted a panic edge that kept alloc from
@@ -388,6 +392,46 @@ impl Heap {
         unsafe {
             debug_assert_eq!((*b).magic, 0x524f4249474f4241, "immortal outside a small block");
             (*b).immortals += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pair of request sizes within a class: a slot carved for the
+    /// first, freed and reused for the second, must not overrun its
+    /// neighbours (the slot is the class size, not the request size).
+    #[test]
+    fn slots_are_class_sized_for_every_request_pair() {
+        for ci in 0..SIZES.len() {
+            let lo = if ci == 0 { 16 } else { SIZES[ci - 1] + 1 };
+            let hi = SIZES[ci];
+            let sizes: Vec<usize> = (lo..=hi).step_by(8).chain([hi]).collect();
+            for &a in &sizes {
+                for &b in &sizes {
+                    let mut h = Heap::new();
+                    let p = h.alloc(a);
+                    let q = h.alloc(a);
+                    let r = h.alloc(a);
+                    unsafe {
+                        std::ptr::write_bytes(q, 0xAB, a);
+                        std::ptr::write_bytes(r, 0xCD, a);
+                        h.free_small(p);
+                        h.free_small(r);
+                        // the most recently freed slot comes back first
+                        let s = h.alloc(b);
+                        assert_eq!(s, r, "class {ci}: reuse");
+                        std::ptr::write_bytes(s, 0xEF, b);
+                        let s2 = h.alloc(b);
+                        assert_eq!(s2, p);
+                        std::ptr::write_bytes(s2, 0x11, b);
+                        let qs = std::slice::from_raw_parts(q, a);
+                        assert!(qs.iter().all(|&x| x == 0xAB), "class {ci}: request {b} in a slot cut for {a} overran");
+                    }
+                }
+            }
         }
     }
 }
