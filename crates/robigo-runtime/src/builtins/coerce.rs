@@ -222,7 +222,13 @@ pub fn relop_list_coerce(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult
     if matches!(v, Value::Expr(_)) || !items.iter().all(|e| e.is_atomic() && e.len() <= 1) {
         return Err(Flow::error(format!("'list' object cannot be coerced to type '{}'", t.name())));
     }
-    crate::coerce::coerce_vector(&Value::list(items), t, w)
+    // The names travel with the coerced vector (do_relop_dflt reads them
+    // from the original operand and applies them to the result).
+    let mut list = Value::list(items);
+    if let Some(n) = v.names() {
+        list.set_attr_raw(s::NAMES, n);
+    }
+    crate::coerce::coerce_vector(&list, t, w)
 }
 
 pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<Value> {
