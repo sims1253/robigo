@@ -62,7 +62,7 @@ thread_local! {
 }
 
 /// Run `f` with the interpreter that is currently calling into C.
-fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
+pub fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     let p = INTERP.with(|c| c.get());
     assert!(!p.is_null(), "robigo: the C API was called outside an R evaluation");
     f(unsafe { &mut *p })
@@ -618,6 +618,14 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
         "field" => field(a[0], int_arg(a[1]))?,
+        "getRNGstate" => {
+            with_interp(robigo_runtime::builtins::random::get_rng_state)?;
+            R_NilValue
+        }
+        "putRNGstate" => {
+            with_interp(robigo_runtime::builtins::random::put_rng_state)?;
+            R_NilValue
+        }
         "newEnv" => {
             let parent = env_of(a[0])?;
             to_sexp(&Value::Env(Env::new(Some(parent))))

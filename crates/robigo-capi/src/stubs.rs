@@ -8,9 +8,6 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "GetRNGstate",
-    "PutRNGstate",
-    "unif_rand",
     "ALTREP_LENGTH",
     "ALTVEC_DATAPTR",
     "ALTSTRING_ELT",
@@ -18,36 +15,14 @@ pub static STUBS: &[&str] = &[
     "R_do_slot",
     "R_do_slot_assign",
     "R_mkClosure",
-    "Rf_fmax2",
-    "Rf_fmin2",
     "R_do_new_object",
-    "Rf_gammafn",
-    "Rf_imax2",
-    "Rf_imin2",
-    "Rf_lgammafn",
-    "Rf_pgamma",
-    "Rf_pnorm5",
-    "Rf_qnorm5",
     "R_ClosureEnv",
     "R_altrep_data1",
     "R_altrep_data2",
     "R_do_MAKE_CLASS",
     "R_has_slot",
-    "R_pow_di",
-    "Rf_dbinom",
-    "Rf_dnbinom",
-    "Rf_dnorm4",
-    "Rf_lbeta",
-    "Rf_pbeta",
-    "Rf_pnbinom",
-    "Rf_rbinom",
-    "Rf_rgamma",
-    "Rf_rgeom",
-    "Rf_rpois",
-    "Rf_runif",
     "dqrdc2_",
     "dqrsl_",
-    "exp_rand",
     "vmmin",
     "GEMode",
     "GEcurrentDevice",
@@ -56,24 +31,10 @@ pub static STUBS: &[&str] = &[
     "R_PromiseExpr",
     "R_Serialize",
     "R_new_altrep",
-    "R_pow",
     "R_set_altrep_Length_method",
     "R_set_altvec_Dataptr_method",
     "Rf_CreateAtVector",
-    "Rf_dpois",
-    "Rf_pbinom",
-    "Rf_ppois",
-    "Rf_pt",
-    "Rf_qbeta",
-    "Rf_qbinom",
-    "Rf_qchisq",
-    "Rf_qnbinom",
-    "Rf_qpois",
     "Rf_rPsort",
-    "Rf_rbeta",
-    "Rf_rnbinom",
-    "Rf_rnorm",
-    "norm_rand",
     "optif9",
     "GECap",
     "GECircle",
@@ -115,35 +76,7 @@ pub static STUBS: &[&str] = &[
     "Rf_RGBpar3",
     "Rf_asS4",
     "Rf_begincontext",
-    "Rf_bessel_k",
-    "Rf_choose",
-    "Rf_dbeta",
-    "Rf_dgamma",
-    "Rf_dgeom",
-    "Rf_dlnorm",
-    "Rf_dnbinom_mu",
-    "Rf_dt",
-    "Rf_dunif",
-    "Rf_dweibull",
     "Rf_endcontext",
-    "Rf_fround",
-    "Rf_lchoose",
-    "Rf_pchisq",
-    "Rf_pexp",
-    "Rf_pgeom",
-    "Rf_plnorm",
-    "Rf_plogis",
-    "Rf_punif",
-    "Rf_pweibull",
-    "Rf_qgamma",
-    "Rf_qgeom",
-    "Rf_qt",
-    "Rf_rcauchy",
-    "Rf_rchisq",
-    "Rf_rexp",
-    "Rf_rhyper",
-    "Rf_rt",
-    "Rf_sign",
     "UNIMPLEMENTED_TYPE",
     "dpofa_",
     "dqrdc_",
@@ -317,87 +250,28 @@ pub static STUBS: &[&str] = &[
     "Rf_RGBpar",
     "Rf_acopy_string",
     "Rf_allocLang",
-    "Rf_bessel_i",
-    "Rf_beta",
     "Rf_con_pushback",
     "Rf_csduplicated",
     "Rf_curDevice",
     "Rf_currentTime",
-    "Rf_dbinom_raw",
-    "Rf_dcauchy",
-    "Rf_dchisq",
     "Rf_deparse1",
     "Rf_deparse1line",
-    "Rf_dexp",
-    "Rf_df",
-    "Rf_dhyper",
-    "Rf_digamma",
-    "Rf_dlogis",
-    "Rf_dnbeta",
-    "Rf_dnchisq",
-    "Rf_dnf",
-    "Rf_dnt",
-    "Rf_dsignrank",
-    "Rf_dwilcox",
     "Rf_formatComplex",
     "Rf_formatReal",
-    "Rf_fsign",
     "Rf_iPsort",
     "Rf_killDevice",
-    "Rf_log1mexp",
-    "Rf_log1pexp",
-    "Rf_log1pmx",
-    "Rf_logspace_add",
-    "Rf_logspace_sub",
     "Rf_matchE",
     "Rf_mbcsToUcs2",
     "Rf_mbrtowc",
     "Rf_memtrace_report",
     "Rf_nextDevice",
-    "Rf_pcauchy",
-    "Rf_pf",
-    "Rf_phyper",
-    "Rf_pnbeta",
-    "Rf_pnbinom_mu",
-    "Rf_pnchisq",
-    "Rf_pnf",
-    "Rf_pnt",
     "Rf_prevDevice",
-    "Rf_psignrank",
-    "Rf_ptukey",
-    "Rf_pwilcox",
-    "Rf_qcauchy",
-    "Rf_qexp",
-    "Rf_qf",
-    "Rf_qhyper",
-    "Rf_qlnorm",
-    "Rf_qlogis",
-    "Rf_qnbeta",
-    "Rf_qnbinom_mu",
-    "Rf_qnchisq",
-    "Rf_qnf",
-    "Rf_qnt",
-    "Rf_qsignrank",
-    "Rf_qtukey",
-    "Rf_qunif",
-    "Rf_qweibull",
-    "Rf_qwilcox",
     "Rf_revsort",
-    "Rf_rf",
-    "Rf_rlnorm",
-    "Rf_rlogis",
-    "Rf_rmultinom",
-    "Rf_rnbinom_mu",
-    "Rf_rnchisq",
-    "Rf_rsignrank",
-    "Rf_rweibull",
-    "Rf_rwilcox",
     "Rf_selectDevice",
     "Rf_sortVector",
     "Rf_strIsASCII",
     "Rf_strchr",
     "Rf_substitute",
-    "Rf_trigamma",
     "Rf_utf8Toutf8NoPUA",
     "Rf_utf8toucs",
     "Rf_utf8towcs",
@@ -456,21 +330,6 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn GetRNGstate() {
-    not_implemented("GetRNGstate")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PutRNGstate() {
-    not_implemented("PutRNGstate")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn unif_rand() {
-    not_implemented("unif_rand")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTREP_LENGTH() {
     not_implemented("ALTREP_LENGTH")
 }
@@ -506,53 +365,8 @@ pub unsafe extern "C" fn R_mkClosure() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_fmax2() {
-    not_implemented("Rf_fmax2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_fmin2() {
-    not_implemented("Rf_fmin2")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_do_new_object() {
     not_implemented("R_do_new_object")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_gammafn() {
-    not_implemented("Rf_gammafn")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_imax2() {
-    not_implemented("Rf_imax2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_imin2() {
-    not_implemented("Rf_imin2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_lgammafn() {
-    not_implemented("Rf_lgammafn")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pgamma() {
-    not_implemented("Rf_pgamma")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnorm5() {
-    not_implemented("Rf_pnorm5")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnorm5() {
-    not_implemented("Rf_qnorm5")
 }
 
 #[unsafe(no_mangle)]
@@ -581,66 +395,6 @@ pub unsafe extern "C" fn R_has_slot() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_pow_di() {
-    not_implemented("R_pow_di")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dbinom() {
-    not_implemented("Rf_dbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnbinom() {
-    not_implemented("Rf_dnbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnorm4() {
-    not_implemented("Rf_dnorm4")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_lbeta() {
-    not_implemented("Rf_lbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pbeta() {
-    not_implemented("Rf_pbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnbinom() {
-    not_implemented("Rf_pnbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rbinom() {
-    not_implemented("Rf_rbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rgamma() {
-    not_implemented("Rf_rgamma")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rgeom() {
-    not_implemented("Rf_rgeom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rpois() {
-    not_implemented("Rf_rpois")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_runif() {
-    not_implemented("Rf_runif")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dqrdc2_() {
     not_implemented("dqrdc2_")
 }
@@ -648,11 +402,6 @@ pub unsafe extern "C" fn dqrdc2_() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dqrsl_() {
     not_implemented("dqrsl_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn exp_rand() {
-    not_implemented("exp_rand")
 }
 
 #[unsafe(no_mangle)]
@@ -696,11 +445,6 @@ pub unsafe extern "C" fn R_new_altrep() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_pow() {
-    not_implemented("R_pow")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_altrep_Length_method() {
     not_implemented("R_set_altrep_Length_method")
 }
@@ -716,73 +460,8 @@ pub unsafe extern "C" fn Rf_CreateAtVector() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dpois() {
-    not_implemented("Rf_dpois")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pbinom() {
-    not_implemented("Rf_pbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_ppois() {
-    not_implemented("Rf_ppois")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pt() {
-    not_implemented("Rf_pt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qbeta() {
-    not_implemented("Rf_qbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qbinom() {
-    not_implemented("Rf_qbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qchisq() {
-    not_implemented("Rf_qchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnbinom() {
-    not_implemented("Rf_qnbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qpois() {
-    not_implemented("Rf_qpois")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_rPsort() {
     not_implemented("Rf_rPsort")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rbeta() {
-    not_implemented("Rf_rbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rnbinom() {
-    not_implemented("Rf_rnbinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rnorm() {
-    not_implemented("Rf_rnorm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn norm_rand() {
-    not_implemented("norm_rand")
 }
 
 #[unsafe(no_mangle)]
@@ -1000,148 +679,8 @@ pub unsafe extern "C" fn Rf_begincontext() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_bessel_k() {
-    not_implemented("Rf_bessel_k")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_choose() {
-    not_implemented("Rf_choose")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dbeta() {
-    not_implemented("Rf_dbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dgamma() {
-    not_implemented("Rf_dgamma")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dgeom() {
-    not_implemented("Rf_dgeom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dlnorm() {
-    not_implemented("Rf_dlnorm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnbinom_mu() {
-    not_implemented("Rf_dnbinom_mu")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dt() {
-    not_implemented("Rf_dt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dunif() {
-    not_implemented("Rf_dunif")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dweibull() {
-    not_implemented("Rf_dweibull")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_endcontext() {
     not_implemented("Rf_endcontext")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_fround() {
-    not_implemented("Rf_fround")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_lchoose() {
-    not_implemented("Rf_lchoose")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pchisq() {
-    not_implemented("Rf_pchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pexp() {
-    not_implemented("Rf_pexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pgeom() {
-    not_implemented("Rf_pgeom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_plnorm() {
-    not_implemented("Rf_plnorm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_plogis() {
-    not_implemented("Rf_plogis")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_punif() {
-    not_implemented("Rf_punif")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pweibull() {
-    not_implemented("Rf_pweibull")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qgamma() {
-    not_implemented("Rf_qgamma")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qgeom() {
-    not_implemented("Rf_qgeom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qt() {
-    not_implemented("Rf_qt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rcauchy() {
-    not_implemented("Rf_rcauchy")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rchisq() {
-    not_implemented("Rf_rchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rexp() {
-    not_implemented("Rf_rexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rhyper() {
-    not_implemented("Rf_rhyper")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rt() {
-    not_implemented("Rf_rt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_sign() {
-    not_implemented("Rf_sign")
 }
 
 #[unsafe(no_mangle)]
@@ -2049,16 +1588,6 @@ pub unsafe extern "C" fn Rf_allocLang() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_bessel_i() {
-    not_implemented("Rf_bessel_i")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_beta() {
-    not_implemented("Rf_beta")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_con_pushback() {
     not_implemented("Rf_con_pushback")
 }
@@ -2079,21 +1608,6 @@ pub unsafe extern "C" fn Rf_currentTime() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dbinom_raw() {
-    not_implemented("Rf_dbinom_raw")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dcauchy() {
-    not_implemented("Rf_dcauchy")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dchisq() {
-    not_implemented("Rf_dchisq")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_deparse1() {
     not_implemented("Rf_deparse1")
 }
@@ -2101,61 +1615,6 @@ pub unsafe extern "C" fn Rf_deparse1() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_deparse1line() {
     not_implemented("Rf_deparse1line")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dexp() {
-    not_implemented("Rf_dexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_df() {
-    not_implemented("Rf_df")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dhyper() {
-    not_implemented("Rf_dhyper")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_digamma() {
-    not_implemented("Rf_digamma")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dlogis() {
-    not_implemented("Rf_dlogis")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnbeta() {
-    not_implemented("Rf_dnbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnchisq() {
-    not_implemented("Rf_dnchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnf() {
-    not_implemented("Rf_dnf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dnt() {
-    not_implemented("Rf_dnt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dsignrank() {
-    not_implemented("Rf_dsignrank")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_dwilcox() {
-    not_implemented("Rf_dwilcox")
 }
 
 #[unsafe(no_mangle)]
@@ -2169,11 +1628,6 @@ pub unsafe extern "C" fn Rf_formatReal() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_fsign() {
-    not_implemented("Rf_fsign")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_iPsort() {
     not_implemented("Rf_iPsort")
 }
@@ -2181,31 +1635,6 @@ pub unsafe extern "C" fn Rf_iPsort() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_killDevice() {
     not_implemented("Rf_killDevice")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_log1mexp() {
-    not_implemented("Rf_log1mexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_log1pexp() {
-    not_implemented("Rf_log1pexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_log1pmx() {
-    not_implemented("Rf_log1pmx")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_logspace_add() {
-    not_implemented("Rf_logspace_add")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_logspace_sub() {
-    not_implemented("Rf_logspace_sub")
 }
 
 #[unsafe(no_mangle)]
@@ -2234,193 +1663,13 @@ pub unsafe extern "C" fn Rf_nextDevice() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pcauchy() {
-    not_implemented("Rf_pcauchy")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pf() {
-    not_implemented("Rf_pf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_phyper() {
-    not_implemented("Rf_phyper")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnbeta() {
-    not_implemented("Rf_pnbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnbinom_mu() {
-    not_implemented("Rf_pnbinom_mu")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnchisq() {
-    not_implemented("Rf_pnchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnf() {
-    not_implemented("Rf_pnf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pnt() {
-    not_implemented("Rf_pnt")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_prevDevice() {
     not_implemented("Rf_prevDevice")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_psignrank() {
-    not_implemented("Rf_psignrank")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_ptukey() {
-    not_implemented("Rf_ptukey")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_pwilcox() {
-    not_implemented("Rf_pwilcox")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qcauchy() {
-    not_implemented("Rf_qcauchy")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qexp() {
-    not_implemented("Rf_qexp")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qf() {
-    not_implemented("Rf_qf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qhyper() {
-    not_implemented("Rf_qhyper")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qlnorm() {
-    not_implemented("Rf_qlnorm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qlogis() {
-    not_implemented("Rf_qlogis")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnbeta() {
-    not_implemented("Rf_qnbeta")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnbinom_mu() {
-    not_implemented("Rf_qnbinom_mu")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnchisq() {
-    not_implemented("Rf_qnchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnf() {
-    not_implemented("Rf_qnf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qnt() {
-    not_implemented("Rf_qnt")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qsignrank() {
-    not_implemented("Rf_qsignrank")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qtukey() {
-    not_implemented("Rf_qtukey")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qunif() {
-    not_implemented("Rf_qunif")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qweibull() {
-    not_implemented("Rf_qweibull")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_qwilcox() {
-    not_implemented("Rf_qwilcox")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_revsort() {
     not_implemented("Rf_revsort")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rf() {
-    not_implemented("Rf_rf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rlnorm() {
-    not_implemented("Rf_rlnorm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rlogis() {
-    not_implemented("Rf_rlogis")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rmultinom() {
-    not_implemented("Rf_rmultinom")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rnbinom_mu() {
-    not_implemented("Rf_rnbinom_mu")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rnchisq() {
-    not_implemented("Rf_rnchisq")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rsignrank() {
-    not_implemented("Rf_rsignrank")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rweibull() {
-    not_implemented("Rf_rweibull")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_rwilcox() {
-    not_implemented("Rf_rwilcox")
 }
 
 #[unsafe(no_mangle)]
@@ -2446,11 +1695,6 @@ pub unsafe extern "C" fn Rf_strchr() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_substitute() {
     not_implemented("Rf_substitute")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_trigamma() {
-    not_implemented("Rf_trigamma")
 }
 
 #[unsafe(no_mangle)]

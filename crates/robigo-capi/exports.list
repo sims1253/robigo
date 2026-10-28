@@ -564,7 +564,9 @@
   Rf_asS4;
   Rf_begincontext;
   Rf_bessel_i;
+  Rf_bessel_j;
   Rf_bessel_k;
+  Rf_bessel_y;
   Rf_beta;
   Rf_charIsASCII;
   Rf_charIsLatin1;
@@ -609,6 +611,7 @@
   Rf_dnorm4;
   Rf_dnt;
   Rf_dpois;
+  Rf_dpois_raw;
   Rf_dsignrank;
   Rf_dt;
   Rf_dunif;
@@ -632,6 +635,7 @@
   Rf_fmin2;
   Rf_formatComplex;
   Rf_formatReal;
+  Rf_fprec;
   Rf_fround;
   Rf_fsign;
   Rf_gammafn;
@@ -693,6 +697,7 @@
   Rf_lcons;
   Rf_length;
   Rf_lengthgets;
+  Rf_lgamma1p;
   Rf_lgammafn;
   Rf_list1;
   Rf_list2;
@@ -727,6 +732,7 @@
   Rf_onintr;
   Rf_onintrNoResume;
   Rf_pbeta;
+  Rf_pbeta_raw;
   Rf_pbinom;
   Rf_pcauchy;
   Rf_pchisq;
@@ -744,9 +750,11 @@
   Rf_pnf;
   Rf_pnorm5;
   Rf_pnt;
+  Rf_pow1p;
   Rf_ppois;
   Rf_prevDevice;
   Rf_protect;
+  Rf_psigamma;
   Rf_psignrank;
   Rf_pt;
   Rf_ptukey;
@@ -757,6 +765,7 @@
   Rf_qbinom;
   Rf_qcauchy;
   Rf_qchisq;
+  Rf_qchisq_appr;
   Rf_qexp;
   Rf_qf;
   Rf_qgamma;
