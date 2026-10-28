@@ -87,20 +87,21 @@ Corpora state (GNU R 4.5.0 = Debian r-base-core 4.5.0-3, the CI oracle):
 
 - CRAN corpus: `scripts/parse-corpus.py fetch-cran` + record + check;
   expect new mismatch classes (encodings, test-only syntax).
-- Throughput: parse MB/s over the corpus with callgrind (parse-batch is
-  the tool); the LD decimal path costs ~10 LD ops per literal — measure
-  before optimizing, then consider a provably-equivalent fast path for
-  short literals.
-- The cli track's second workaround (PR #6): `ends_in_comment`
-  (gram.y's SkipComment sets EndOfFile = 2, promoting statuses to
-  PARSE_INCOMPLETE) belongs in robigo-syntax as a `parse_console`
-  entry point (R's R_Parse1Buffer with gend = 0). Also from their
-  ledger: multi-byte/BOM error contexts work in bytes (R's
-  R_ParseContext ring); robigo's token spans should end on character
-  boundaries; invalid UTF-8 should error "invalid multibyte character
-  in parser" (robigo's lossy conversion accepts it today).
 - srcrefs: not dumped (keep.source = FALSE); if the dump ever includes
   them, byte positions follow xxbyteno.
+- Throughput, next steps: fastr's per-file setup dominates its 240k
+  instr/kB (Parser construction, the token Vec, per-file Arena
+  chunks); a scratch-reuse pass over args Vecs and the per-call Vec in
+  `call2` is the next measured lever, and the remaining allocator
+  traffic is the args/formals scratch vectors plus the token stream.
+- Invalid UTF-8 at the console (`invalid multibyte character in
+  parser`, gram.y's `mbcs_get_next`, which also makes a truncated
+  multi-byte char at end of input become END_OF_INPUT): robigo's
+  &str API cannot see it; callers today feed lossy conversions. A
+  bytes-based lexer entry would close it (validate each multi-byte
+  char in lexer order so a grammar error earlier in the chunk still
+  wins), plus the R_ParseContext byte-ring slicing the cli already
+  does lossily.
 
 ## 2026-10-28: parse-throughput baseline (main 5b0b240, harness committed)
 
@@ -130,6 +131,90 @@ Corpora state (GNU R 4.5.0 = Debian r-base-core 4.5.0-3, the CI oracle):
   bled another worktree's stale `librobigo_syntax` rlib into bin
   builds (lib compiles, bin "cannot find dump_error") — use a private
   `CARGO_TARGET_DIR` for parser-track builds.
+
+## 2026-10-28 (later): parse throughput — callgrind 202,567 -> 103,241 instr/kB, wall 25.6 -> 51.7 MB/s
+
+- why: the track's throughput metric; every step measured with
+  `scripts/parse-perf.py cg` (callgrind instr/kB over all six corpora,
+  the machine's contention makes wall clock noisy) with the corpus
+  ratchet re-run at 100% (41,067 sources) after each change.
+- steps (kept, callgrind instr/kB):
+  1. 202,567 -> 167,442: the verified part of the PR-8 WIP
+     (`origin/track/parser-wip-after-pr8`): tokens borrow the source
+     (Sym, %op% as &'a str), parser interns names as Rc<str> (FNV),
+     the infix loop takes the token by value. The WIP's warning-text
+     changes were NOT kept (main's texts are the verified ones).
+  2. -> 159,607: parse-batch feeds valid UTF-8 into String::from_utf8
+     (no lossy copy), CR-strip returns the input Vec when there is no
+     CR, checksum folds 8 bytes at a time (harness overhead down).
+  3. -> 156,929: lexer scans whitespace/comments/identifiers/numbers
+     on a local index over the source bytes (bounds checks elided;
+     comment ends still lower to memchr).
+  4. -> 141,907: the parser peeks in place — expect/program/brace_body/
+     args/formals/member_name/for-header match discriminants in the
+     token stream and only move what they keep, by bump. The ratchet
+     caught a missing newline skip at the top of the args loop during
+     the rewrite (`f(a,\n b=1)` parsed `b=1` as an `=` call).
+  5. -> 138,180: operator call names resolve once per parse (indexed
+     by a small Op code), and checkForPlaceholder's walk is skipped
+     when no `_` token was lexed.
+  6. -> 137,985 with [ and [[ through that table; a byte-level rewrite
+     of next_token's dispatch measured WORSE (138,834) and was
+     reverted — the char match with peek_char's ASCII fast path is
+     already cheap.
+  7. -> 136,147: an integer fast path for decimal literals
+     (`R_strtod5`'s exact steps in u128 arithmetic for <=19 digits
+     with the exponent in [-22,22]; everything else keeps the LD
+     emulation). 200k randomized + boundary cases check fast and slow
+     bit-for-bit equal; GNU R's values are pinned by tests/parse/
+     literals.R and the corpus.
+  8. -> 103,241: the arena AST. Expr<'a> borrows names and strings
+     (identifiers and escape-free strings point into the source;
+     operator names are &'static), and call nodes, argument slices and
+     formals live in a bump arena whose alloc takes &self (bumpalo's
+     trick) so the recursive descent can build nodes anywhere. No Box,
+     Vec or Rc per node; parse_program/parse_console take &Arena and
+     the runtime/cli create one per parse site.
+- wall clock (contended, load ~2.3 of 2 cores): 25.60 -> 51.65 MB/s
+  total (rlib 61.5, cran 66.7); GNU R 4.5.0 parses rlib at ~6.5 MB/s
+  by the same kind of loop (Rscript + readLines + parse, startup
+  included), so robigo is ~9-10x GNU R's parse throughput on that
+  corpus.
+- fastr's per-source overhead (31k tiny snippets, 240,640 instr/kB vs
+  rlib's 99,828) is now dominated by per-file setup, not scanning.
+- note: the shared `~/.cache/cargo-target` once bled another
+  worktree's stale robigo-syntax rlib into bin builds (lib compiles,
+  bin cannot find `dump_error`); this track builds with a private
+  `CARGO_TARGET_DIR=~/.cache/robigo-tgt-parser`.
+
+## 2026-10-28 (later still): `parse_console` for the cli track
+
+- why: docs/ledger/cli.md asked robigo-syntax to own the console
+  grammar; echo.rs carried three workarounds (ends_in_comment, a
+  first-token `;` check, the terminator requirement).
+- what: `parse_console(&Arena, &str) -> ConsoleStatus` is
+  `R_Parse1Buffer` with gend = 0 (`// R: main.c:Rf_ReplIteration`,
+  gram.y's `prog` rules, `R_Parse1`): one chunk — the input up to and
+  including the first `;` or newline, wherever it lies — is Null
+  (bare newline), Ok (one *terminated* statement + the lexer's
+  warnings, which GNU R's GenerateCode gate keeps to complete
+  statements), Incomplete (an error at end of input; a buffer ending
+  inside an unterminated comment, SkipComment's `EndOfFile = 2`),
+  Error, or Eof (empty buffer). The lexer now reports the
+  unterminated-comment flag (`tokenize_with_flags`).
+- probes: statuses pinned by unit tests from `R --vanilla` stdin runs;
+  interesting finds: `1 # c;` (the REPL's cut inside a comment) is
+  *transiently* INCOMPLETE — the rest of the line (`\n`) completes it
+  on the next chunk with no `+` prompt in the transcript, because the
+  prompt only prints when a new line is read; `x |> _` is "The pipe
+  operator requires a function call as RHS" (not the placeholder
+  message); `f(x, _)` is "invalid use of pipe placeholder" at
+  (<input>:1:0).
+- the `1e-3L` warning choice (`seendot && !seenexp`) and `1;;2` file
+  mode were re-verified against GNU R and were already right on main.
+- echo.rs now delegates (ends_in_comment/first_semicolon deleted);
+  the 7 tests/r/cli conformance scripts and a gnur-tests echo slice
+  pass (simple-true newly passes).
 
 ## 2026-10-27 (later): CRAN corpus at 100% (7552/7552)
 
