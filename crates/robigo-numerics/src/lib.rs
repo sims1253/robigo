@@ -43,6 +43,7 @@ pub mod rand;
 pub mod rng;
 pub mod tdist;
 pub mod toms708;
+pub mod tukey;
 
 pub use self::gamma::{beta as beta_fn, choose, gammafn, lbeta, lchoose, lgammafn, lgammafn_sign};
 pub use self::polygamma::{digamma, psigamma, trigamma};

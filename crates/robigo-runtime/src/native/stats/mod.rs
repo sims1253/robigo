@@ -26,6 +26,8 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("dnchisq", |i, _, a, _| distn::dnchisq(i, &a)),
     ("pnchisq", |i, _, a, _| distn::pnchisq(i, &a)),
     ("qnchisq", |i, _, a, _| distn::qnchisq(i, &a)),
+    ("ptukey", |i, _, a, _| distn::ptukey(i, &a)),
+    ("qtukey", |i, _, a, _| distn::qtukey(i, &a)),
     ("cov", c_cov),
     ("cor", c_cor),
     ("termsform", |i, _, a, _| model::termsform(i, &a)),

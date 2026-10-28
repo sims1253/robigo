@@ -238,3 +238,18 @@ pub fn qnchisq(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
     let lg = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
     math3(i, a, &|p, df, ncp| nmath::nchisq::qnchisq(p, df, ncp, lt, lg))
 }
+
+// ----------------------------------------------------------------------
+// Tukey's studentized range (math4_2)
+
+pub fn ptukey(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(5).map(|a| flag(&a.value)).unwrap_or(false);
+    math4(i, a, &|q, nranges, nmeans, df| nmath::tukey::ptukey(q, nranges, nmeans, df, lt, lg))
+}
+
+pub fn qtukey(i: &mut Interp, a: &[Arg]) -> RResult<Value> {
+    let lt = a.get(4).map(|a| flag(&a.value)).unwrap_or(false);
+    let lg = a.get(5).map(|a| flag(&a.value)).unwrap_or(false);
+    math4(i, a, &|p, nranges, nmeans, df| nmath::tukey::qtukey(p, nranges, nmeans, df, lt, lg))
+}
