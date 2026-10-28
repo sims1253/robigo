@@ -110,7 +110,7 @@ pub fn parse_context_line(src: &str, end: usize) -> usize {
     if end == 0 {
         return 0;
     }
-    line_col(src, end.min(src.len()) - 1).0
+    line_col(src, floor_char_boundary(src, end.min(src.len()) - 1)).0
 }
 
 /// `raiseParseError`'s message (R: gram.y): the message text with the
@@ -152,16 +152,4 @@ pub fn format_parse_error(src: &str, srcname: &str, e: &ParseError) -> String {
         }
     }
     msg
-}
-
-/// `parseError(call, 0)` (R: main/source.c): the console reports a grammar
-/// error with the message and the context it was parsed from, without the
-/// line prefix.
-pub fn format_parse_error_console(src: &str, e: &ParseError) -> String {
-    let context = parse_context(src, e.end);
-    match context.len() {
-        0 => e.message.clone(),
-        1 => format!("{} in \"{}\"", e.message, context[0]),
-        len => format!("{} in:\n\"{}\n{}\"", e.message, context[len - 2], context[len - 1]),
-    }
 }

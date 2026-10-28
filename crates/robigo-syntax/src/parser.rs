@@ -162,7 +162,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     // on it wins over `checkForPlaceholder` (as in `program`).
     if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
         if p.saw_placeholder && contains_placeholder(&e) {
-            return ConsoleStatus::Error(p.statement_check_error());
+            return ConsoleStatus::Error(p.statement_check_error(&e));
         }
         return ConsoleStatus::Ok(vec![e], p.warnings);
     }
@@ -285,8 +285,13 @@ impl<'a> Parser<'a> {
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr<'a>>, ParseError> {
+        self.program_n(usize::MAX)
+    }
+
+    // R: gram.y:R_ParseVector, stop after the requested number of statements.
+    pub fn program_n(&mut self, n: usize) -> Result<Vec<Expr<'a>>, ParseError> {
         let mut out = Vec::new();
-        loop {
+        while out.len() < n {
             while matches!(self.toks[self.pos].tok, Tok::Newline) {
                 self.pos += 1;
             }
@@ -301,7 +306,7 @@ impl<'a> Parser<'a> {
             // completes; a syntax error on the terminator wins over it.
             if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
                 if self.saw_placeholder && contains_placeholder(&e) {
-                    return Err(self.statement_check_error());
+                    return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
                 self.pos += 1;
@@ -309,7 +314,7 @@ impl<'a> Parser<'a> {
             }
             if matches!(self.toks[self.pos].tok, Tok::Eof) {
                 if self.saw_placeholder && contains_placeholder(&e) {
-                    return Err(self.statement_check_error());
+                    return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
                 break;
@@ -323,7 +328,7 @@ impl<'a> Parser<'a> {
     /// The position of a `checkForPlaceholder` failure: the terminator
     /// already peeked at (`;` at its own column; a newline at column 0 of
     /// its own line; end of input likewise).
-    fn statement_check_error(&self) -> ParseError {
+    fn statement_check_error(&self, expr: &Expr) -> ParseError {
         let t = &self.toks[self.pos];
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
@@ -344,7 +349,7 @@ impl<'a> Parser<'a> {
             at_eof: false,
             style: ErrorStyle::Condition,
             // R: gram.y:R_Parse1 passes R_CurrentExpr as the condition's call.
-            call: None,
+            call: Some(Box::new(ErrorExpr::from_expr(expr))),
             fixed_line_col: Some((line, col)),
         }
     }
@@ -471,9 +476,14 @@ impl<'a> Parser<'a> {
         // `// R: gram.y:xxpipe`
         // `// R: gram.y:xxpipe`: raiseParseError with the offending RHS
         // expression as the condition's call.
-        let error_rhs = ErrorExpr::from_expr(&rhs);
+        let error_rhs = rhs;
         let err = |msg: &str| {
-            ParseError::condition(msg, rhs_span.start as usize, rhs_span.end as usize, Some(error_rhs.clone()))
+            ParseError::condition(
+                msg,
+                rhs_span.start as usize,
+                rhs_span.end as usize,
+                Some(ErrorExpr::from_expr(&error_rhs)),
+            )
         };
         match rhs {
             Expr::Call { fun, args, span } => {

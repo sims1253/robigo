@@ -37,12 +37,12 @@ pub static DEFS: &[Builtin] = &[
 ///   the `(<file>:<line>:<col>)` suffix and their own call (R_NilValue
 ///   when the parser passed none);
 /// * `error()` from a parser action (`install("")`) is a plain error.
-fn parse_error_flow(src: &str, srcname: &str, e: robigo_syntax::ParseError) -> Flow {
+fn parse_error_flow(src: &str, srcname: &str, condition_srcname: &str, e: robigo_syntax::ParseError) -> Flow {
     use robigo_syntax::ErrorStyle;
     match e.style {
         ErrorStyle::Grammar => Flow::error(robigo_syntax::format_parse_error(src, srcname, &e)),
         ErrorStyle::Condition => {
-            let msg = robigo_syntax::condition_message(src, srcname, &e);
+            let msg = robigo_syntax::condition_message(src, condition_srcname, &e);
             match e.call {
                 Some(expr) => Flow::error_call(error_expr_value(&expr), msg),
                 None => Flow::error_nocall(msg),
@@ -95,7 +95,7 @@ pub fn parse_text(src: &str, srcname: &str) -> RResult<Vec<Value>> {
     let arena = robigo_syntax::Arena::new();
     match robigo_syntax::parse_program(&arena, src) {
         Ok(exprs) => Ok(exprs.iter().map(expr_to_value).collect()),
-        Err(e) => Err(parse_error_flow(src, srcname, e)),
+        Err(e) => Err(parse_error_flow(src, srcname, "<input>", e)),
     }
 }
 
@@ -137,7 +137,11 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Ok(Value::expr_vec(Vec::new()));
     }
     let text = arg(&args, 2);
-    let srcfile = parse_filename(&arg(&args, 4));
+    let source = arg(&args, 4);
+    let srcfile = parse_filename(&source);
+    // R: gram.y:getFilename uses only environment srcfiles.
+    let condition_srcfile =
+        if matches!(source, Value::Env(_)) && !srcfile.is_empty() { srcfile.as_str() } else { "<input>" };
     let src = match text_of(&text) {
         Some(src) => src,
         None if text.is_null() => {
@@ -170,16 +174,14 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         }
         None => return Err(Flow::error("coercion of 'text' to character was unsuccessful")),
     };
-    let mut exprs = parse_text(&src, &srcfile)?;
-    // R: source.c:do_parse -- NA means "all" for text and 1 for a connection.
-    let num = if num == NA_INTEGER {
-        if text.is_null() && crate::coerce::as_integer(&arg(&args, 0)) < 3 { 1 } else { -1 }
-    } else {
-        num
-    };
-    if num >= 0 && (num as usize) < exprs.len() {
-        exprs.truncate(num as usize);
-    }
+    let num = if num == NA_INTEGER { -1 } else { num };
+    let arena = robigo_syntax::Arena::new();
+    let mut parser = robigo_syntax::parser::Parser::new(&arena, &src)
+        .map_err(|e| parse_error_flow(&src, &srcfile, condition_srcfile, e))?;
+    let exprs = parser
+        .program_n(if num < 0 { usize::MAX } else { num as usize })
+        .map_err(|e| parse_error_flow(&src, &srcfile, condition_srcfile, e))?;
+    let exprs = exprs.iter().map(expr_to_value).collect();
     Ok(Value::expr_vec(exprs))
 }
 
@@ -385,4 +387,39 @@ fn do_withvisible(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     l.set_attr_raw(s::NAMES, names);
     let _ = Sym::new("value");
     Ok(l)
+}
+
+#[cfg(test)]
+mod parser_diagnostic_tests {
+    use super::*;
+
+    // Messages and calls recorded from Debian GNU R 4.5.0-3.
+    #[test]
+    fn grammar_and_condition_errors() {
+        for (src, message, call) in [
+            ("a +\n", "<text>:2:0: unexpected end of input\n1: a +\n   ^", None),
+            ("1\n\t2 3\n", "<text>:2:11: unexpected numeric constant\n1: 1\n2:         2 3\n             ^", None),
+            ("function(x,x) 1\n", "repeated formal argument 'x' (<input>:1:12)", Some("NULL")),
+            ("'\\q'\n", "'\\q' is an unrecognized escape in character string (<input>:1:3)", Some("NULL")),
+            ("1 |> f(_)\n", "pipe placeholder can only be used as a named argument (<input>:1:6)", Some("f(\"_\")")),
+            ("x << 3\n", "<text>:1:3: unexpected input\n1: x <<\n      ^", None),
+        ] {
+            let Err(Flow::Error(e)) = parse_text(src, "<text>") else { panic!("expected error: {src}") };
+            assert_eq!(e.message, message, "{src}");
+            assert_eq!(
+                e.call.as_ref().map(|v| crate::deparse::deparse(v).join("\n")),
+                call.map(str::to_owned),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_count_stops_before_invalid_tail() {
+        let arena = robigo_syntax::Arena::new();
+        for src in ["1; !\n", "1\n!\n"] {
+            let mut parser = robigo_syntax::parser::Parser::new(&arena, src).unwrap();
+            assert_eq!(parser.program_n(1).unwrap().len(), 1);
+        }
+    }
 }

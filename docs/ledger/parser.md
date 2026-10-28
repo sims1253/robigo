@@ -14,6 +14,52 @@ Corpora state (GNU R 4.5.0 = Debian r-base-core 4.5.0-3, the CI oracle):
 | rtests (GNU R tests) | 95 | 95 |
 | gnur-tests | 59 | 59 |
 
+## 2026-10-28: parser diagnostics and bounded text parsing
+
+Baseline: origin/main `49e0ee5`, 147/191 passes with no recorded-pass
+regressions, using the parser filter below and GNU R 4.5.0's R_HOME.
+The previous model's saved 146/191 result predates the parser-speed merge.
+PR #34 is merged; this work continues on `track/parser-diagnostics`.
+
+Failure groups on that baseline, classified from each failing script:
+
+- 11 parse-data/source metadata cases. Port `RecordParents`, parse-data
+  records and source attributes before implementing `getParseData` output.
+- 15 imported scripts contain literal `<<<NEWLINE>>>` markers. Inspect
+  the existing oracle output before changing semantics or the importer.
+- 10 empty-name diagnostics. Grammar dumps already match; runtime error
+  reporting was incorrectly adding source positions to `install("")` errors.
+- 5 `str2lang` type/length errors. Port `coerce.c:do_str2lang`'s messages
+  and builtin call selection.
+- 3 other diagnostic/escape cases, including unterminated `%` operators
+  and an empty name made through `as.symbol`, which belongs to lang.
+
+Changes port `source.c:parseError`, `getParseContext`, `tabExpand`,
+`gram.y:raiseParseError`, `SpecialValue`, and `coerce.c:do_str2lang`.
+Grammar diagnostics, parser conditions and ordinary R errors retain their
+separate reporting paths. Error calls own a copy of the relevant syntax
+only when an error occurs, so they survive arena teardown. Text buffers
+append a newline per element. `parse(n=0)` reads nothing, and positive
+counts stop before parsing an invalid following statement.
+
+Review corrections to the recovered work: expand tabs independently on
+each context line; omit the filename colon when no filename is known;
+use `getFilename`'s environment-only rule for condition filenames; preserve
+`n=NA` as all expressions on file connections; avoid copying pipe trees
+on successful parses. The pre-rebase syntax unit tests and curated parser
+oracle passed. Rebase retained main's arena AST and console parser.
+
+Commands for verification:
+
+```sh
+export R_HOME=$HOME/.local/opt/R-4.5.0
+scripts/corpus.py run fastr --filter 'parser/TestParser|TestBuiltin_(parse|deparse_parse|str2lang|str2expression)|TestSimpleParsing' --jobs 4 --keep-output --update
+scripts/parse-corpus.py check
+cargo test --release -p robigo-syntax -p robigo-runtime
+scripts/corpus.py run gnur-tests --jobs 4 --update
+cargo fmt --check
+```
+
 ## 2026-10-27: resumed the WIP branch; numeric literals byte-exact; 100% on all five corpora
 
 - why: the track's job is byte-exact parse trees over a large corpus.
