@@ -44,6 +44,32 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: reg-S4 (GNU R's S4 regression test) with methods attached
+
+Climbing gnur-tests' reg-S4 (recorded with methods attached); each stop
+fixed and checked against the oracle:
+
+- line 285: `cbind(m)` with an S4 argument: bind.c:do_bind dispatches S3
+  methods on `R_data_class2` and falls back to `methods:::cbind`/`rbind`
+  when any argument is S4 (builtins/array.rs, minimal). tests/r/s4/bind.R.
+- line 470: `setMethod("as.numeric", ...)` must also serve `as.double()`:
+  base binds `as.numeric` to the `as.double` primitive, whose method tables
+  hold both; robigo's builtin passes the name it was called by
+  (`s4::prim_op` maps it).
+- line 660: `2 == <S4 list>`: robigo's relop rejected every list. GNU R
+  4.5.0 compares lists by coercing them to the comparison's type
+  (`coerceVectorList`; non-character targets need `isVectorizable`, else
+  "'list' object cannot be coerced to type 'double'"); expressions go the
+  same way (the expression check is `#ifdef previous_R_versions`).
+  builtins/arith.rs, minimal. tests/r/s4/groups.R.
+- After these, reg-S4 runs to its end; what remains is `getSrcref()`
+  (robigo returns NULL for any function parsed with keep.source, not
+  only methods: parser/print tracks) and a timing line.
+- Measurement trap: a robigo binary copied to `/tmp/x/robigo` loads base
+  natives from `/tmp/natives` (`<exe>/../natives`), where another agent
+  had built GNU R's methods.so (which fails: `DDVAL`). Copies used for
+  measuring must live where `../natives` does not exist.
+
 ## 2026-10-28: Matrix from source: blocked on grid (not S4)
 
 - `install.packages("Matrix")` inside robigo first builds its dependency

@@ -169,6 +169,14 @@ pub mod syms {
     }
 }
 
+/// The primitive whose method tables hold the methods of `generic` (the
+/// dispatch name a builtin passes). `as.numeric` is the `as.double`
+/// primitive in GNU R (base binds `as.numeric` to it); robigo's builtins
+/// pass the name they were called by.
+pub fn prim_op(generic: &str) -> Option<&'static Builtin> {
+    crate::builtins::lookup_primitive(if generic == "as.numeric" { "as.double" } else { generic })
+}
+
 /// `R_deferred_default_method()`.
 pub fn deferred_default() -> Value {
     Value::Sym(syms::deferred_default())
@@ -504,7 +512,7 @@ impl Interp {
     /// The S4 part of `DispatchOrEval`: `x` is the first argument's value,
     /// `args` the evaluated arguments.
     pub fn try_dispatch_s4(&mut self, generic: &str, call: &Value, args: &[Arg], env: &Env) -> RResult<Option<Value>> {
-        let Some(op) = crate::builtins::lookup_primitive(generic) else { return Ok(None) };
+        let Some(op) = prim_op(generic) else { return Ok(None) };
         if !self.has_methods(Some(op)) {
             return Ok(None);
         }
@@ -521,7 +529,7 @@ impl Interp {
         args: &[Arg],
         env: &Env,
     ) -> RResult<Option<Value>> {
-        let Some(op) = crate::builtins::lookup_primitive(generic) else { return Ok(None) };
+        let Some(op) = prim_op(generic) else { return Ok(None) };
         if !self.has_methods(Some(op)) {
             return Ok(None);
         }

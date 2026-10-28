@@ -122,6 +122,7 @@ tests/r/s4/bits.R
 tests/r/s4/classes.R
 tests/r/s4/dispatch.R
 tests/r/s4/features.R
+tests/r/s4/groups.R
 tests/r/s4/introspection.R
 tests/r/s4/refclass2.R
 tests/r/s4/refclass.R
