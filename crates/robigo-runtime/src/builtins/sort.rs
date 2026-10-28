@@ -30,9 +30,10 @@ pub static DEFS: &[Builtin] = &[
     internal("wrap_meta", do_wrap_meta, 3),
 ];
 
-/// `Scollate` (string collation used by sort/order/rank).
+/// `Scollate` (string collation used by sort/order/rank). GNU R uses byte
+/// order in the "C" locale and the ICU root collator elsewhere.
 pub fn scollate(a: &str, b: &str) -> Ordering {
-    super::arith::scollate(a, b)
+    if super::sysutils::collation_is_c() { a.cmp(b) } else { super::options::scollate(a, b) }
 }
 
 fn sign(o: Ordering) -> i32 {
@@ -1156,10 +1157,11 @@ fn radix_group(x: &Value, o: &mut [usize], order: i32, nalast: i32, retgrp: bool
 
 // R: radixsort.c:do_radixsort
 fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
-    if args.len() < 4 {
-        return Err(Flow::error("robigo: radixsort needs at least 4 arguments"));
-    }
-    let nl = crate::coerce::as_logical(&args[0].value);
+    // R: radixsort.c:do_radixsort reads na.last, decreasing, retGrp, sortStr
+    // before looking at the vectors; a missing sortStr is NULL, which
+    // asBool2 rejects with "NA in coercion to boolean".
+    let get = |k: usize| args.get(k).map(|a| a.value.clone()).unwrap_or(Value::Null);
+    let nl = crate::coerce::as_logical(&get(0));
     let nalast: i32 = if nl == NA_LOGICAL {
         0
     } else if nl == TRUE {
@@ -1167,10 +1169,10 @@ fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
     } else {
         -1
     };
-    let decreasing = args[1].value.clone();
-    let retgrp = as_bool2(&args[2].value, call)?;
-    let sort_str = as_bool2(&args[3].value, call)?;
-    let keys: Vec<Value> = args[4..].iter().map(|a| a.value.clone()).collect();
+    let decreasing = get(1);
+    let retgrp = as_bool2(&get(2), call)?;
+    let sort_str = as_bool2(&get(3), call)?;
+    let keys: Vec<Value> = args.iter().skip(4).map(|a| a.value.clone()).collect();
     if keys.is_empty() {
         return Ok(Value::Null);
     }

@@ -1181,7 +1181,13 @@ fn do_split(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult
         .collect();
     let mut vec = Value::list(items);
     if !levels.is_null() {
-        vec.set_attr_raw(s::NAMES, levels);
+        // R: split.c:do_split sets the names via setAttrib(R_NamesSymbol),
+        // which coerces non-character levels to character.
+        let names = match levels {
+            Value::Str(_) => levels,
+            other => Value::strs(crate::coerce::to_str(&other)),
+        };
+        vec.set_attr_raw(s::NAMES, names);
     }
     Ok(vec)
 }

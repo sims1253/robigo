@@ -239,7 +239,9 @@ fn combine_atomic(leaves: &[&Value], mode: VType) -> Value {
 // names
 
 fn item_name(names: &Option<Vec<RStr>>, i: usize) -> Option<Rc<str>> {
-    names.as_ref().and_then(|n| n.get(i).cloned().flatten()).filter(|s| !s.is_empty())
+    // R's `translateChar(NA_STRING)` is "NA": a missing name still names the
+    // element (c(list(b = <named>) ) yields "b.NA").
+    names.as_ref().and_then(|n| n.get(i).map(|s| s.clone().unwrap_or_else(|| Rc::from("NA")))).filter(|s| !s.is_empty())
 }
 
 fn new_base(base: &Option<Rc<str>>, tag: &Option<Rc<str>>) -> Option<Rc<str>> {

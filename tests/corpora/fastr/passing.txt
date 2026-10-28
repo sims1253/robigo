@@ -586,6 +586,7 @@ builtins/TestBuiltin_array/0a56bb7fb2a904d9
 builtins/TestBuiltin_array/176497bf06c5e3e8
 builtins/TestBuiltin_array/1780ba8e39af53a3
 builtins/TestBuiltin_array/18cb2b30cac14e34
+builtins/TestBuiltin_array/19e130cb8ab4f036
 builtins/TestBuiltin_array/21f9cebdf307a442
 builtins/TestBuiltin_array/2c11030746be4013
 builtins/TestBuiltin_array/303387e5f2adf4d4
@@ -3429,6 +3430,7 @@ builtins/TestBuiltin_dimassign/67c57d67a304e912
 builtins/TestBuiltin_dimassign/7c86a4b6ded67a6d
 builtins/TestBuiltin_dimassign/8c1ff23119f7f4b4
 builtins/TestBuiltin_dimassign/993aad978c6187c2
+builtins/TestBuiltin_dimassign/aa4dc8e439a42d56
 builtins/TestBuiltin_dimassign/b0f159c864626c96
 builtins/TestBuiltin_dimassign/d04d58591ec44a7e
 builtins/TestBuiltin_dimassign/d67ca572190c3304
@@ -9089,6 +9091,11 @@ builtins/TestBuiltin_quote/d405cdd382dd094a
 builtins/TestBuiltin_quote/ec80e1e6c5ee4736
 builtins/TestBuiltin_quote/f3fde53fc6731d95
 builtins/TestBuiltin_quote/fe04a25ea678e69b
+builtins/TestBuiltin_radixsort/a7b347f67e0a87f3
+builtins/TestBuiltin_radixsort/b9659695497605a8
+builtins/TestBuiltin_radixsort/d3202bae4ff3c236
+builtins/TestBuiltin_radixsort/e7b3efd551e66d26
+builtins/TestBuiltin_radixsort/f3ec40c80175bd03
 builtins/TestBuiltin_range/01c81f9841e07bea
 builtins/TestBuiltin_range/0f108465bdf93ced
 builtins/TestBuiltin_range/10e6183bf07c51ec
@@ -9477,6 +9484,7 @@ builtins/TestBuiltin_rep/8367ca17a50a630c
 builtins/TestBuiltin_rep/898073bbd5678999
 builtins/TestBuiltin_rep/8ab2033dec5da91a
 builtins/TestBuiltin_rep/8c37f03e9bd77db8
+builtins/TestBuiltin_rep/913f3b08d41f451d
 builtins/TestBuiltin_rep/92f6380a43f2b516
 builtins/TestBuiltin_rep/994d8e4fca9712ae
 builtins/TestBuiltin_rep/a091c5c3edb403e4
@@ -12866,6 +12874,7 @@ builtins/TestBuiltin_sort/03e3d3f53cae99d1
 builtins/TestBuiltin_sort/0b96ac45e25a92e0
 builtins/TestBuiltin_sort/0c53727fb4d86931
 builtins/TestBuiltin_sort/0c75149d103aa2cf
+builtins/TestBuiltin_sort/0e3a3fff80ad85c4
 builtins/TestBuiltin_sort/1924cc27b1b393ce
 builtins/TestBuiltin_sort/1deb7f0006070309
 builtins/TestBuiltin_sort/2fc5170e8c98943e
@@ -12945,6 +12954,7 @@ builtins/TestBuiltin_split/cc64b596a95b518c
 builtins/TestBuiltin_split/d01555c0fbb43b06
 builtins/TestBuiltin_split/d28bef0f826059e1
 builtins/TestBuiltin_split/e2b564ae1d64d748
+builtins/TestBuiltin_split/e5e0f3820066f365
 builtins/TestBuiltin_split/f108a3a4768bd07c
 builtins/TestBuiltin_split/fe2388ceeb07ae8d
 builtins/TestBuiltin_sprintf/00dca767213a517b
@@ -14166,6 +14176,7 @@ builtins/TestBuiltin_unlist/73cec52c1802dcd0
 builtins/TestBuiltin_unlist/76c0ac2a1d201814
 builtins/TestBuiltin_unlist/779ca631e9a20f31
 builtins/TestBuiltin_unlist/783f28de652851fe
+builtins/TestBuiltin_unlist/7a3c9fd69fa86278
 builtins/TestBuiltin_unlist/7b05ae0107960135
 builtins/TestBuiltin_unlist/7b0d0018efeb9c4d
 builtins/TestBuiltin_unlist/7c957b94e51aac8c
@@ -25795,6 +25806,7 @@ library/base/TestSimpleVectors/03aac9dab6245bdf
 library/base/TestSimpleVectors/03ac22fe535959c1
 library/base/TestSimpleVectors/03d745caf6d358dd
 library/base/TestSimpleVectors/03e5e54ab0c0a5c8
+library/base/TestSimpleVectors/041bb1e123b27bd4
 library/base/TestSimpleVectors/0445e1d7084634f2
 library/base/TestSimpleVectors/0493c974193946ea
 library/base/TestSimpleVectors/0494bf236fbb4c12
@@ -26997,6 +27009,7 @@ library/base/TestSimpleVectors/a36356a09f1f0b68
 library/base/TestSimpleVectors/a36f791e38f161d7
 library/base/TestSimpleVectors/a390a3f113fef994
 library/base/TestSimpleVectors/a394294e64dd014b
+library/base/TestSimpleVectors/a3d74f13a7bfa3b5
 library/base/TestSimpleVectors/a3e12e394942dc05
 library/base/TestSimpleVectors/a3e27b3ce7a6df82
 library/base/TestSimpleVectors/a3fe5366f4dac060
@@ -27059,6 +27072,7 @@ library/base/TestSimpleVectors/ac159e1a35066109
 library/base/TestSimpleVectors/ac1afe563b086392
 library/base/TestSimpleVectors/ac1d25558e8fe976
 library/base/TestSimpleVectors/ac2276ffe8339644
+library/base/TestSimpleVectors/ac53c4d52413e331
 library/base/TestSimpleVectors/ac5bb0aaa541f2ee
 library/base/TestSimpleVectors/ac8a5b172021b1fb
 library/base/TestSimpleVectors/acb12a2b8b41f119

@@ -605,6 +605,17 @@ fn init_locale() {
     }
 }
 
+/// Whether string collation must use the C locale's byte order. GNU R's
+/// `Scollate` (util.c) uses `strcmp` when the collation locale is "C" and
+/// the ICU root collator otherwise.
+pub(crate) fn collation_is_c() -> bool {
+    init_locale();
+    match cstr(unsafe { setlocale(LC_COLLATE, std::ptr::null()) }) {
+        Some(l) => l == "C",
+        None => true,
+    }
+}
+
 fn locale_category(code: i32) -> Option<c_int> {
     Some(match code {
         1 => LC_ALL,
