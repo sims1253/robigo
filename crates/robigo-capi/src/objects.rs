@@ -258,3 +258,46 @@ pub unsafe extern "C" fn Rf_asS4(s: Sexp, flag: c_int, complete: c_int) -> Sexp 
     Rf_unprotect(1);
     s
 }
+
+// ---- closures (R 4.5's public accessors) -------------------------------------
+
+/// The runtime closure behind `x` (closures cross the bridge as handles).
+unsafe fn closure_of(x: Sexp, what: &str) -> std::rc::Rc<robigo_runtime::value::Closure> {
+    match crate::bridge::from_sexp(x) {
+        robigo_runtime::value::Value::Closure(c) => c,
+        _ => error_str_owned(format!(
+            "robigo: {} applied to an object of type '{}', not a closure",
+            what,
+            type_to_char(x)
+        )),
+    }
+}
+
+// R: memory.c:R_ClosureFormals
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_ClosureFormals(x: Sexp) -> Sexp {
+    let c = closure_of(x, "R_ClosureFormals");
+    crate::bridge::to_sexp(&robigo_runtime::value::Value::pairlist(c.formals.to_vec()))
+}
+
+// R: memory.c:R_ClosureBody
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_ClosureBody(x: Sexp) -> Sexp {
+    let c = closure_of(x, "R_ClosureBody");
+    crate::bridge::to_sexp(&c.body)
+}
+
+// R: eval.c:R_ClosureExpr (the body without its bytecode; robigo's
+// closure bodies are always the expression)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_ClosureExpr(x: Sexp) -> Sexp {
+    let c = closure_of(x, "R_ClosureExpr");
+    crate::bridge::to_sexp(&c.body)
+}
+
+// R: memory.c:R_ClosureEnv
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_ClosureEnv(x: Sexp) -> Sexp {
+    let c = closure_of(x, "R_ClosureEnv");
+    crate::bridge::to_sexp(&robigo_runtime::value::Value::Env(c.env.clone()))
+}

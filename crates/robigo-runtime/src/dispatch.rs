@@ -346,7 +346,7 @@ impl Interp {
         env: &Env,
     ) -> RResult<Option<Value>> {
         if obj.is_s4() && self.methods_dispatch_on() {
-            if let Some(op) = crate::builtins::lookup_primitive(generic) {
+            if let Some(op) = crate::s4::prim_op(generic) {
                 if self.has_methods(Some(op)) {
                     if let Some(v) = self.possible_dispatch(call, op, pargs.clone(), env)? {
                         return Ok(Some(v));

@@ -681,6 +681,7 @@
   Rf_fprec;
   Rf_fround;
   Rf_fsign;
+  Rf_ftrunc;
   Rf_gammafn;
   Rf_getAttrib;
   Rf_getCharCE;
@@ -779,6 +780,7 @@
   Rf_pbinom;
   Rf_pcauchy;
   Rf_pchisq;
+  Rf_pentagamma;
   Rf_pexp;
   Rf_pf;
   Rf_pgamma;
@@ -867,6 +869,7 @@
   Rf_strIsASCII;
   Rf_strchr;
   Rf_substitute;
+  Rf_tetragamma;
   Rf_translateChar;
   Rf_translateChar0;
   Rf_translateCharFP;

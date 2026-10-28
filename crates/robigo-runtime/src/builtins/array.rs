@@ -1495,13 +1495,19 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
     let generic = if is_cbind { "cbind" } else { "rbind" };
     let mut method: Option<Value> = None;
     let mut values: Vec<Value> = Vec::with_capacity(pargs.len());
+    let try_s4 = deparse_level >= 0;
+    let mut any_s4 = false;
     for a in &pargs {
         let obj = match &a.value {
             Value::Promise(p) => i.force_promise(p)?,
             v => v.clone(),
         };
+        if method.is_none() && try_s4 && obj.is_s4() {
+            any_s4 = true;
+        }
         if method.is_none() && obj.is_object() {
-            for c in crate::dispatch::dispatch_class(&obj) {
+            // R_data_class2: S4 objects dispatch on their superclasses too.
+            for c in i.data_class2(&obj)? {
                 let msym = Sym::dotted(&generic, &c);
                 let base = i.base.clone();
                 if let Some(f) = i.lookup_method(msym, env, &base)? {
@@ -1511,6 +1517,11 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
             }
         }
         values.push(obj);
+    }
+    // No S3 method but an S4 argument: methods:::cbind / rbind.
+    if method.is_none() && any_s4 {
+        let ns = i.methods_namespace();
+        method = Some(i.find_fun(Sym::new(generic), &ns)?);
     }
     if let Some(m) = method {
         let mut margs: Vec<Arg> = Vec::new();
@@ -1523,7 +1534,18 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
             _ => i.apply_function(&m, margs, env, call),
         };
     }
-    // The default method.
+    // The default method. An S4 object of type OBJSXP is coerced like
+    // every argument (R: coerce.c:coerceVector), i.e. to its data part.
+    let mut values = values;
+    for v in values.iter_mut() {
+        if v.is_s4() && matches!(v, Value::Obj(_)) {
+            let d = i.get_s4_data_slot(v, None)?;
+            if d.is_null() {
+                return Err(Flow::error("no method for coercing this S4 class to a vector"));
+            }
+            *v = d;
+        }
+    }
     let mut flags = 0u32;
     let mut total = 0usize;
     for v in &values {

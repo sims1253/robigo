@@ -64,7 +64,8 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
     if a.ptr_eq(b) && !matches!(a, Value::Real(_)) {
         return true;
     }
-    if a.type_name() != b.type_name() {
+    // R: identical.c:R_compute_identical (TYPEOF, IS_S4_OBJECT)
+    if a.type_name() != b.type_name() || a.is_s4() != b.is_s4() {
         return false;
     }
     if !matches!(a, Value::Env(_)) && !attrs_identical(a, b, f) {
@@ -116,6 +117,8 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
         (Value::Promise(x), Value::Promise(y)) => std::rc::Rc::ptr_eq(x, y),
         (Value::ExtPtr(x), Value::ExtPtr(y)) => std::rc::Rc::ptr_eq(x, y),
         (Value::Dots(x), Value::Dots(y)) => std::rc::Rc::ptr_eq(x, y),
+        // OBJSXP: the attributes (slots) were compared above.
+        (Value::Obj(_), Value::Obj(_)) => true,
         _ => false,
     }
 }

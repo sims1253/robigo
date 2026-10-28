@@ -135,3 +135,9 @@ mod tests {
         assert_eq!(fprec(-1.5e300, 1.0), -1.0000000000000006e+300);
     }
 }
+
+/// Truncation toward zero (Rmath's `Rf_ftrunc`; C code calls it).
+// R: ftrunc.c:ftrunc
+pub fn ftrunc(x: f64) -> f64 {
+    x.trunc()
+}
