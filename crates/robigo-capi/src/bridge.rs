@@ -657,6 +657,20 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             };
             to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))
         }
+        // R: deparse.c:deparse1line (MAX_Cutoff, backticks, SIMPLEDEPARSE,
+        // lines joined) and deparse1 (DEFAULT_Cutoff, the caller's options)
+        "deparse1line" => {
+            use robigo_runtime::deparse as d;
+            let v = from_sexp(a[0]);
+            to_sexp(&Value::str(&d::deparse_one_line(&v)))
+        }
+        "deparse" => {
+            use robigo_runtime::deparse as d;
+            let v = from_sexp(a[0]);
+            let opts = int_arg(a[1]) as u32;
+            let lines = d::deparse_lines(&v, d::DEFAULT_CUTOFF, true, opts, None);
+            to_sexp(&Value::strs_from(lines))
+        }
         "getRNGstate" => {
             with_interp(robigo_runtime::builtins::random::get_rng_state)?;
             R_NilValue

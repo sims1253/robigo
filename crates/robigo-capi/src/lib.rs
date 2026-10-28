@@ -10,6 +10,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod altrep;
+pub mod appl;
 pub mod arith;
 pub mod attrib;
 pub mod bridge;

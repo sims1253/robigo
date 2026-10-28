@@ -110,6 +110,7 @@
   INTERNAL;
   IS_ASCII;
   IS_BYTES;
+  IS_CACHED;
   IS_GROWABLE;
   IS_LATIN1;
   IS_LONG_VEC;
@@ -624,6 +625,7 @@
   Rf_csduplicated;
   Rf_curDevice;
   Rf_currentTime;
+  Rf_d1mach;
   Rf_dbeta;
   Rf_dbinom;
   Rf_dbinom_raw;
@@ -792,6 +794,8 @@
   Rf_pow1p;
   Rf_ppois;
   Rf_prevDevice;
+  Rf_printIntegerVector;
+  Rf_printRealVector;
   Rf_protect;
   Rf_psigamma;
   Rf_psignrank;
@@ -951,6 +955,8 @@
   cPsort;
   cgmin;
   d1mach_;
+  dblep0_;
+  dblepr1_;
   dblepr_;
   do_Rprof;
   do_Rprofmem;
@@ -980,13 +986,18 @@
   extR_HTTPDCreate;
   extR_HTTPDStop;
   fdhess;
+  findInterval;
+  findInterval2;
   getConnection;
   getPRIMNAME;
   iPsort;
   interv_;
+  intpr0_;
+  intpr1_;
   intpr_;
   known_to_be_latin1;
   known_to_be_utf8;
+  labelpr_;
   latin1locale;
   lbfgsb;
   locale2charset;
@@ -1010,8 +1021,12 @@
   ptr_do_selectlist;
   rPsort;
   rchkusr_;
+  realp0_;
+  realpr1_;
+  realpr_;
   revsort;
   rexit_;
+  rexitc_;
   robigo_capi_init;
   robigo_dll_close;
   robigo_dll_find;
@@ -1033,6 +1048,7 @@
   robigo_set_global;
   rsort_with_index;
   rwarn_;
+  rwarnc_;
   samin;
   signrank_free;
   unif_rand;
