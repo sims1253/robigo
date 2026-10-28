@@ -44,6 +44,19 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: Rcpp's own test suite (in progress)
+
+- `tinytest::test_package("Rcpp")` cannot run on robigo yet, for two
+  reasons outside S4: tinytest opens `grDevices::pdf(nullfile())` per test
+  file (grDevices' PDF native), and it reads each expression's srcref for
+  line numbers (`env$lst - env$fst` is NA without source references:
+  robigo's `parse(keep.source = TRUE)` keeps none).
+- Measured instead with a minimal stand-in for tinytest's `expect_*`
+  (`sys.source` per test file, `RunAllRcppTests=yes`), the same script on
+  GNU R 4.5.0 (Rcpp 1.1.2 built there) and on robigo (Rcpp 1.1.2 built by
+  `install.packages()` inside robigo), one process per file on robigo
+  because a test file crashed it (segfault, being located).
+
 ## 2026-10-28: the S4 cases lost with methods attached, re-checked
 
 - The 12 fastr S4 cases (TestS4, TestR5) that failed only with methods
