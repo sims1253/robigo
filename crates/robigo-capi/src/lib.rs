@@ -22,6 +22,7 @@ pub mod dotcode;
 pub mod envir;
 pub mod errors;
 pub mod extptr;
+pub mod graphics;
 pub mod host;
 pub mod linpack;
 pub mod list;

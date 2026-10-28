@@ -88,6 +88,7 @@ pub static SYMBOLS: &[(&str, &str)] = &[
     ("R_DoubleColonSymbol", "::"),
     ("R_ClassSymbol", "class"),
     ("R_DeviceSymbol", ".Device"),
+    ("R_DevicesSymbol", ".Devices"),
     ("R_DimNamesSymbol", "dimnames"),
     ("R_DimSymbol", "dim"),
     ("R_DollarSymbol", "$"),
@@ -154,6 +155,7 @@ sym_globals!(
     R_DoubleColonSymbol,
     R_ClassSymbol,
     R_DeviceSymbol,
+    R_DevicesSymbol,
     R_DimNamesSymbol,
     R_DimSymbol,
     R_DollarSymbol,
@@ -279,6 +281,7 @@ unsafe fn mark_api_roots(c: &mut Core) {
     }
     crate::errors::mark_roots(c);
     crate::rdynload::mark_roots(c);
+    crate::graphics::mark_roots(c);
 }
 
 /// Create the heap and the API's constants (memory.c InitMemory,

@@ -917,6 +917,30 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             })?;
             to_sexp(&v)
         }
+        // a primitive called through R_FunTab (PRIMFUN(op)(call, op,
+        // args, env)): the graphics engine's display-list replay
+        "applyBuiltin" => {
+            let Value::Builtin(b) = from_sexp(a[1]) else {
+                return Err(Flow::error("robigo: R_FunTab entry of a non-primitive"));
+            };
+            let call = from_sexp(a[0]);
+            let mut args = Vec::new();
+            let mut l = a[2];
+            while l != R_NilValue {
+                let t = TAG(l);
+                let tag = if t == R_NilValue { None } else { Some(sym_of(t)) };
+                args.push(Arg { tag, value: from_sexp(CAR(l)) });
+                l = CDR(l);
+            }
+            let v = with_interp(|i| {
+                let env = match from_sexp(a[3]) {
+                    Value::Env(e) => e,
+                    _ => i.global.clone(),
+                };
+                i.invoke_builtin(b, &call, args, &env)
+            })?;
+            to_sexp(&v)
+        }
         // R_ToplevelExec hides the handler stack of its caller
         // R_ToplevelExec/R_tryEval start a new top-level context: the
         // caller's frames (sys.calls, the call stop() reports) and
@@ -1171,6 +1195,14 @@ fn sharing(v: &Value) -> u16 {
         _ => return 0,
     };
     n.saturating_sub(1).min(u16::MAX as usize) as u16
+}
+
+/// A glue routine of the graphics engine, called as `.Call` would.
+unsafe fn gr_call(fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    let t = crate::dotcode::robigo_dotcall(fun, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
+    result(t, out)
 }
 
 unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
@@ -1486,6 +1518,29 @@ impl NativeBridge for Bridge {
 
     fn invoke(&self, interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
         enter(interp, |interp| unsafe { call_routine(interp, call, r, args, env) })
+    }
+
+    fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {
+        enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            let r = gr_call(crate::graphics::robigo_gr_begin as *const c_void, &[])?;
+            Ok(matches!(r, Value::Lgl(v) if v.data.first() == Some(&1)))
+        })
+    }
+
+    fn graphics_end(&self, interp: &mut Interp, call: &Value, op: &Value, args: &[Arg], record: bool) -> RResult<()> {
+        enter(interp, |_| unsafe {
+            let base = R_PPStackTop;
+            let xs = [
+                Rf_protect(to_sexp(call)),
+                Rf_protect(to_sexp(op)),
+                Rf_protect(args_list(args, LISTSXP)),
+                Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
+            ];
+            let r = gr_call(crate::graphics::robigo_gr_end as *const c_void, &xs);
+            R_PPStackTop = base;
+            r.map(|_| ())
+        })
     }
 
     fn gc(&self, interp: &mut Interp) {

@@ -8,62 +8,16 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
+    "R_ClosureFormals",
     "R_mkClosure",
-    "GEMode",
-    "GEcurrentDevice",
-    "GEinitDisplayList",
+    "R_ClosureEnv",
     "R_PromiseExpr",
-    "Rf_CreateAtVector",
-    "GECap",
-    "GECircle",
-    "GEExpressionHeight",
-    "GEExpressionWidth",
-    "GELine",
-    "GEMathText",
-    "GENewPage",
-    "GEPath",
-    "GEPolygon",
-    "GEPolyline",
-    "GERaster",
-    "GERect",
-    "GESetClip",
-    "GEStrHeight",
-    "GEStrWidth",
-    "GEText",
-    "GEXspline",
-    "GE_LENDpar",
-    "GE_LJOINpar",
-    "GE_LTYget",
-    "GE_LTYpar",
-    "GEdirtyDevice",
-    "GEregisterSystem",
-    "GEstring_to_pch",
-    "GEunregisterSystem",
-    "R_GE_str2col",
-    "Rf_GAxisPars",
-    "Rf_NewFrameConfirm",
-    "Rf_NoDevices",
-    "Rf_RGBpar3",
-    "GEExpressionMetric",
-    "GEFill",
-    "GEFillStroke",
-    "GEGlyph",
-    "GEPretty",
-    "GEStrMetric",
-    "GEStroke",
-    "GESymbol",
-    "GE_LENDget",
-    "GE_LJOINget",
-    "GEaddDevice2f",
-    "GEcopyDisplayList",
-    "GEcreateDevDesc",
-    "GEdeviceDirty",
+    "R_ClosureBody",
+    "R_ClosureExpr",
     "GEfromDeviceHeight",
     "GEfromDeviceWidth",
     "GEfromDeviceX",
     "GEfromDeviceY",
-    "GErecordGraphicOperation",
-    "GErecording",
     "GEtoDeviceHeight",
     "GEtoDeviceWidth",
     "GEtoDeviceX",
@@ -72,60 +26,15 @@ pub static STUBS: &[&str] = &[
     "LOGICAL_NO_NA",
     "R_AllocStringBuffer",
     "R_Busy",
-    "R_CheckDeviceAvailable",
     "R_ClearerrConsole",
     "R_EditFiles",
     "R_EnvironmentIsLocked",
     "R_FreeStringBuffer",
-    "R_GE_checkVersionOrDie",
-    "R_GE_clipPathFillRule",
-    "R_GE_glyphColour",
-    "R_GE_glyphFont",
-    "R_GE_glyphFontFamily",
-    "R_GE_glyphFontFile",
-    "R_GE_glyphFontIndex",
-    "R_GE_glyphFontPSname",
-    "R_GE_glyphFontStyle",
-    "R_GE_glyphFontWeight",
-    "R_GE_glyphID",
-    "R_GE_glyphInfoFonts",
-    "R_GE_glyphInfoGlyphs",
-    "R_GE_glyphRotation",
-    "R_GE_glyphSize",
-    "R_GE_hasGlyphRotation",
-    "R_GE_linearGradientColour",
-    "R_GE_linearGradientExtend",
-    "R_GE_linearGradientNumStops",
-    "R_GE_linearGradientStop",
-    "R_GE_linearGradientX1",
-    "R_GE_linearGradientX2",
-    "R_GE_linearGradientY1",
-    "R_GE_linearGradientY2",
-    "R_GE_maskType",
-    "R_GE_patternType",
-    "R_GE_radialGradientCX1",
-    "R_GE_radialGradientCX2",
-    "R_GE_radialGradientCY1",
-    "R_GE_radialGradientCY2",
-    "R_GE_radialGradientColour",
-    "R_GE_radialGradientExtend",
-    "R_GE_radialGradientNumStops",
-    "R_GE_radialGradientR1",
-    "R_GE_radialGradientR2",
-    "R_GE_radialGradientStop",
-    "R_GE_rasterInterpolate",
-    "R_GE_tilingPatternExtend",
-    "R_GE_tilingPatternFunction",
-    "R_GE_tilingPatternHeight",
-    "R_GE_tilingPatternWidth",
-    "R_GE_tilingPatternX",
-    "R_GE_tilingPatternY",
     "R_GetVarLocMISSING",
     "R_HashtabSEXP",
     "R_InitInPStream",
     "R_IsPackageEnv",
     "R_PackageEnvName",
-    "R_ReadConsole",
     "R_ShowMessage",
     "R_SignalCStackOverflow",
     "R_Unserialize",
@@ -178,30 +87,20 @@ pub static STUBS: &[&str] = &[
     "Rf_EncodeInteger",
     "Rf_EncodeLogical",
     "Rf_EncodeReal0",
-    "Rf_GPretty",
-    "Rf_RGBpar",
     "Rf_acopy_string",
     "Rf_con_pushback",
     "Rf_csduplicated",
-    "Rf_curDevice",
     "Rf_formatComplex",
     "Rf_formatReal",
-    "Rf_killDevice",
     "Rf_matchE",
     "Rf_mbcsToUcs2",
     "Rf_memtrace_report",
-    "Rf_nextDevice",
-    "Rf_prevDevice",
     "Rf_revsort",
-    "Rf_selectDevice",
     "Rf_sortVector",
-    "Rf_strIsASCII",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
-    "Rf_utf8toucs",
     "Rf_utf8towcs",
     "Rf_wtransChar",
-    "Rg_set_col_ptrs",
     "Ri18n_wcwidth",
     "Rsockclose",
     "Rsockconnect",
@@ -215,14 +114,8 @@ pub static STUBS: &[&str] = &[
     "do_Rprofmem",
     "do_X11",
     "do_bmVersion",
-    "do_contourLines",
     "do_edit",
-    "do_getGraphicsEvent",
-    "do_getGraphicsEventEnv",
-    "do_getSnapshot",
-    "do_playSnapshot",
     "do_saveplot",
-    "do_setGraphicsEventEnv",
     "do_set_prim_method",
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
@@ -234,23 +127,18 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_ClosureFormals() {
+    not_implemented("R_ClosureFormals")
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_mkClosure() {
     not_implemented("R_mkClosure")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEMode() {
-    not_implemented("GEMode")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEcurrentDevice() {
-    not_implemented("GEcurrentDevice")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEinitDisplayList() {
-    not_implemented("GEinitDisplayList")
+pub unsafe extern "C" fn R_ClosureEnv() {
+    not_implemented("R_ClosureEnv")
 }
 
 #[unsafe(no_mangle)]
@@ -259,138 +147,13 @@ pub unsafe extern "C" fn R_PromiseExpr() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_CreateAtVector() {
-    not_implemented("Rf_CreateAtVector")
+pub unsafe extern "C" fn R_ClosureBody() {
+    not_implemented("R_ClosureBody")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn GECap() {
-    not_implemented("GECap")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GECircle() {
-    not_implemented("GECircle")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEExpressionHeight() {
-    not_implemented("GEExpressionHeight")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEExpressionWidth() {
-    not_implemented("GEExpressionWidth")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GELine() {
-    not_implemented("GELine")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEMathText() {
-    not_implemented("GEMathText")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GENewPage() {
-    not_implemented("GENewPage")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEPath() {
-    not_implemented("GEPath")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEPolygon() {
-    not_implemented("GEPolygon")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEPolyline() {
-    not_implemented("GEPolyline")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GERaster() {
-    not_implemented("GERaster")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GERect() {
-    not_implemented("GERect")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GESetClip() {
-    not_implemented("GESetClip")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEStrHeight() {
-    not_implemented("GEStrHeight")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEStrWidth() {
-    not_implemented("GEStrWidth")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEText() {
-    not_implemented("GEText")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEXspline() {
-    not_implemented("GEXspline")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LENDpar() {
-    not_implemented("GE_LENDpar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LJOINpar() {
-    not_implemented("GE_LJOINpar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LTYget() {
-    not_implemented("GE_LTYget")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LTYpar() {
-    not_implemented("GE_LTYpar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEdirtyDevice() {
-    not_implemented("GEdirtyDevice")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEregisterSystem() {
-    not_implemented("GEregisterSystem")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEstring_to_pch() {
-    not_implemented("GEstring_to_pch")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEunregisterSystem() {
-    not_implemented("GEunregisterSystem")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_str2col() {
-    not_implemented("R_GE_str2col")
+pub unsafe extern "C" fn R_ClosureExpr() {
+    not_implemented("R_ClosureExpr")
 }
 
 #[unsafe(no_mangle)]
@@ -401,96 +164,6 @@ pub static mut R_print: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut R_wait_usec: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_GAxisPars() {
-    not_implemented("Rf_GAxisPars")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_NewFrameConfirm() {
-    not_implemented("Rf_NewFrameConfirm")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_NoDevices() {
-    not_implemented("Rf_NoDevices")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_RGBpar3() {
-    not_implemented("Rf_RGBpar3")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEExpressionMetric() {
-    not_implemented("GEExpressionMetric")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEFill() {
-    not_implemented("GEFill")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEFillStroke() {
-    not_implemented("GEFillStroke")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEGlyph() {
-    not_implemented("GEGlyph")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEPretty() {
-    not_implemented("GEPretty")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEStrMetric() {
-    not_implemented("GEStrMetric")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEStroke() {
-    not_implemented("GEStroke")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GESymbol() {
-    not_implemented("GESymbol")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LENDget() {
-    not_implemented("GE_LENDget")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GE_LJOINget() {
-    not_implemented("GE_LJOINget")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEaddDevice2f() {
-    not_implemented("GEaddDevice2f")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEcopyDisplayList() {
-    not_implemented("GEcopyDisplayList")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEcreateDevDesc() {
-    not_implemented("GEcreateDevDesc")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GEdeviceDirty() {
-    not_implemented("GEdeviceDirty")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GEfromDeviceHeight() {
@@ -510,16 +183,6 @@ pub unsafe extern "C" fn GEfromDeviceX() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GEfromDeviceY() {
     not_implemented("GEfromDeviceY")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GErecordGraphicOperation() {
-    not_implemented("GErecordGraphicOperation")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn GErecording() {
-    not_implemented("GErecording")
 }
 
 #[unsafe(no_mangle)]
@@ -566,11 +229,6 @@ pub unsafe extern "C" fn R_Busy() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_CheckDeviceAvailable() {
-    not_implemented("R_CheckDeviceAvailable")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ClearerrConsole() {
     not_implemented("R_ClearerrConsole")
 }
@@ -591,221 +249,6 @@ pub unsafe extern "C" fn R_EnvironmentIsLocked() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_FreeStringBuffer() {
     not_implemented("R_FreeStringBuffer")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_checkVersionOrDie() {
-    not_implemented("R_GE_checkVersionOrDie")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_clipPathFillRule() {
-    not_implemented("R_GE_clipPathFillRule")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphColour() {
-    not_implemented("R_GE_glyphColour")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFont() {
-    not_implemented("R_GE_glyphFont")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontFamily() {
-    not_implemented("R_GE_glyphFontFamily")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontFile() {
-    not_implemented("R_GE_glyphFontFile")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontIndex() {
-    not_implemented("R_GE_glyphFontIndex")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontPSname() {
-    not_implemented("R_GE_glyphFontPSname")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontStyle() {
-    not_implemented("R_GE_glyphFontStyle")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphFontWeight() {
-    not_implemented("R_GE_glyphFontWeight")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphID() {
-    not_implemented("R_GE_glyphID")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphInfoFonts() {
-    not_implemented("R_GE_glyphInfoFonts")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphInfoGlyphs() {
-    not_implemented("R_GE_glyphInfoGlyphs")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphRotation() {
-    not_implemented("R_GE_glyphRotation")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_glyphSize() {
-    not_implemented("R_GE_glyphSize")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_hasGlyphRotation() {
-    not_implemented("R_GE_hasGlyphRotation")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientColour() {
-    not_implemented("R_GE_linearGradientColour")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientExtend() {
-    not_implemented("R_GE_linearGradientExtend")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientNumStops() {
-    not_implemented("R_GE_linearGradientNumStops")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientStop() {
-    not_implemented("R_GE_linearGradientStop")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientX1() {
-    not_implemented("R_GE_linearGradientX1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientX2() {
-    not_implemented("R_GE_linearGradientX2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientY1() {
-    not_implemented("R_GE_linearGradientY1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_linearGradientY2() {
-    not_implemented("R_GE_linearGradientY2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_maskType() {
-    not_implemented("R_GE_maskType")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_patternType() {
-    not_implemented("R_GE_patternType")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientCX1() {
-    not_implemented("R_GE_radialGradientCX1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientCX2() {
-    not_implemented("R_GE_radialGradientCX2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientCY1() {
-    not_implemented("R_GE_radialGradientCY1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientCY2() {
-    not_implemented("R_GE_radialGradientCY2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientColour() {
-    not_implemented("R_GE_radialGradientColour")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientExtend() {
-    not_implemented("R_GE_radialGradientExtend")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientNumStops() {
-    not_implemented("R_GE_radialGradientNumStops")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientR1() {
-    not_implemented("R_GE_radialGradientR1")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientR2() {
-    not_implemented("R_GE_radialGradientR2")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_radialGradientStop() {
-    not_implemented("R_GE_radialGradientStop")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_rasterInterpolate() {
-    not_implemented("R_GE_rasterInterpolate")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternExtend() {
-    not_implemented("R_GE_tilingPatternExtend")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternFunction() {
-    not_implemented("R_GE_tilingPatternFunction")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternHeight() {
-    not_implemented("R_GE_tilingPatternHeight")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternWidth() {
-    not_implemented("R_GE_tilingPatternWidth")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternX() {
-    not_implemented("R_GE_tilingPatternX")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_GE_tilingPatternY() {
-    not_implemented("R_GE_tilingPatternY")
 }
 
 #[unsafe(no_mangle)]
@@ -847,11 +290,6 @@ pub unsafe extern "C" fn R_PackageEnvName() {
 
 #[unsafe(no_mangle)]
 pub static mut R_PolledEvents: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ReadConsole() {
-    not_implemented("R_ReadConsole")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
@@ -1117,16 +555,6 @@ pub unsafe extern "C" fn Rf_EncodeReal0() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_GPretty() {
-    not_implemented("Rf_GPretty")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_RGBpar() {
-    not_implemented("Rf_RGBpar")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_acopy_string() {
     not_implemented("Rf_acopy_string")
 }
@@ -1142,11 +570,6 @@ pub unsafe extern "C" fn Rf_csduplicated() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_curDevice() {
-    not_implemented("Rf_curDevice")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_formatComplex() {
     not_implemented("Rf_formatComplex")
 }
@@ -1154,11 +577,6 @@ pub unsafe extern "C" fn Rf_formatComplex() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_formatReal() {
     not_implemented("Rf_formatReal")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_killDevice() {
-    not_implemented("Rf_killDevice")
 }
 
 #[unsafe(no_mangle)]
@@ -1177,33 +595,13 @@ pub unsafe extern "C" fn Rf_memtrace_report() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_nextDevice() {
-    not_implemented("Rf_nextDevice")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_prevDevice() {
-    not_implemented("Rf_prevDevice")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_revsort() {
     not_implemented("Rf_revsort")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_selectDevice() {
-    not_implemented("Rf_selectDevice")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_sortVector() {
     not_implemented("Rf_sortVector")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_strIsASCII() {
-    not_implemented("Rf_strIsASCII")
 }
 
 #[unsafe(no_mangle)]
@@ -1217,11 +615,6 @@ pub unsafe extern "C" fn Rf_utf8Toutf8NoPUA() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_utf8toucs() {
-    not_implemented("Rf_utf8toucs")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_utf8towcs() {
     not_implemented("Rf_utf8towcs")
 }
@@ -1229,11 +622,6 @@ pub unsafe extern "C" fn Rf_utf8towcs() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_wtransChar() {
     not_implemented("Rf_wtransChar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rg_set_col_ptrs() {
-    not_implemented("Rg_set_col_ptrs")
 }
 
 #[unsafe(no_mangle)]
@@ -1305,43 +693,13 @@ pub unsafe extern "C" fn do_bmVersion() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_contourLines() {
-    not_implemented("do_contourLines")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_edit() {
     not_implemented("do_edit")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_getGraphicsEvent() {
-    not_implemented("do_getGraphicsEvent")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_getGraphicsEventEnv() {
-    not_implemented("do_getGraphicsEventEnv")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_getSnapshot() {
-    not_implemented("do_getSnapshot")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_playSnapshot() {
-    not_implemented("do_playSnapshot")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_saveplot() {
     not_implemented("do_saveplot")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_setGraphicsEventEnv() {
-    not_implemented("do_setGraphicsEventEnv")
 }
 
 #[unsafe(no_mangle)]
@@ -1419,3 +777,4 @@ pub unsafe extern "C" fn utf8Valid() {
 pub unsafe extern "C" fn utf8clen() {
     not_implemented("utf8clen")
 }
+
