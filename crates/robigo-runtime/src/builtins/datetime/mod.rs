@@ -38,16 +38,16 @@ pub static DEFS: &[Builtin] = &[
 fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value, internal: bool) -> RResult<()> {
     if args.len() != n {
         let what = if internal { format!(".Internal({})", name) } else { format!("'{}'", name) };
-        return Err(Flow::error_call(
-            call.clone(),
-            format!(
-                "{} argument{} passed to {} which requires {}",
-                args.len(),
-                if args.len() == 1 { "" } else { "s" },
-                what,
-                n
-            ),
-        ));
+        let msg = format!(
+            "{} argument{} passed to {} which requires {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            what,
+            n
+        );
+        // R: util.c:Rf_checkArityCall -- `.Internal`s use error() (the
+        // context call), primitives errorcall(call).
+        return Err(if internal { Flow::error(msg) } else { Flow::error_call(call.clone(), msg) });
     }
     Ok(())
 }
