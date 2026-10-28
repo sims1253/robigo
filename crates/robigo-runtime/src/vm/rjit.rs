@@ -80,8 +80,9 @@ impl JitState {
 }
 
 thread_local! {
-    /// [`class`] by symbol id, plus one (0: not known yet).
-    static CLASS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// [`class`] by symbol id, plus one (0: not known yet). (Only
+    /// `class` writes it, never while it is being read.)
+    static CLASS: std::cell::UnsafeCell<Vec<u8>> = const { std::cell::UnsafeCell::new(Vec::new()) };
     /// JIT scores and hashes of closure bodies, by address (kept alive in
     /// the entry; the hash is computed when first needed).
     static SCORES: RefCell<HashMap<usize, (Value, i64, Option<u64>), crate::env::FastHash>> =
@@ -103,7 +104,7 @@ const C_DELAYED_ASSIGN: u8 = 101;
 const C_EXPRESSION: u8 = 102;
 const C_QUOTE: u8 = 103;
 const C_BROWSER: u8 = 104;
-const C_OTHER: u8 = 255;
+const C_OTHER: u8 = 254;
 /// Mask bits (above the `FROZEN_FUNS` indices) for local variables named
 /// `expression` and `quote`.
 const EXPRESSION_BIT: u64 = 1 << 62;
@@ -165,18 +166,27 @@ fn class_of_name(n: &str) -> u8 {
 /// The class of `sym`'s name, memoized by id.
 fn class(sym: Sym) -> u8 {
     let i = sym.0 as usize;
-    if let Some(c) = CLASS.with(|c| c.borrow().get(i).copied()).filter(|c| *c != 0) {
-        return c - 1;
+    if let Some(c) = known_class(sym) {
+        return c;
     }
     let c = sym.with_name(class_of_name);
-    CLASS.with(|t| {
-        let mut t = t.borrow_mut();
+    // SAFETY: no reference into the table is alive (see `known_class`).
+    CLASS.with(|t| unsafe {
+        let t = &mut *t.get();
         if t.len() <= i {
             t.resize(i + 1, 0);
         }
         t[i] = c + 1;
     });
     c
+}
+
+/// The memoized class of `sym`, if known.
+#[inline(always)]
+fn known_class(sym: Sym) -> Option<u8> {
+    // SAFETY: a read of one element; `class` writes only outside this.
+    let c = CLASS.with(|t| unsafe { (&*t.get()).get(sym.0 as usize).copied() }).unwrap_or(0);
+    c.checked_sub(1)
 }
 
 /// The local-variable mask bit of a name's class.
@@ -677,7 +687,13 @@ pub fn frozen(interp: &Interp, sym: Sym, env: &Env) -> bool {
 #[inline(never)]
 pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Value> {
     let Value::Sym(sym) = l.fun else { return None };
-    index(sym)?;
+    match known_class(sym) {
+        Some(c) if c as usize >= FROZEN_FUNS.len() => return None,
+        Some(_) => {}
+        None => {
+            index(sym)?;
+        }
+    }
     let base = interp.base.get_local(sym)?;
     if base.ptr_eq(f) {
         return None;
@@ -722,5 +738,7 @@ mod tests {
             assert_eq!(super::class_of_name(n) as usize, i, "{n}");
         }
         assert_eq!(super::class_of_name("x"), super::C_OTHER);
+        // (The memo stores a class plus one in a byte.)
+        assert!(super::C_OTHER < u8::MAX);
     }
 }
