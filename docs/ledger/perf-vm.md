@@ -105,17 +105,28 @@ Tooling of this agent (private target dir, container builds):
   promises of a compiled closure forced after it returned, `eval(quote(..))`
   in compiled frames and default arguments are treated as compiled; the
   JIT cache never evicts (GNU R's has 1024 slots by address hash).
-- perf: first version +0.38% worst (`pidigits`: the per-closure
-  classification walked `topenv` and the body for every closure object);
-  cheap ancestor walk, score and hash memoized per body, interned symbols.
-  Codegen noise: adding the module moved inlining in unrelated code by up
-  to ±0.5% (`Frame::position` out of line in interp.rs functions,
-  `Scan::scanchar` +18M on `flexclust`); `#[inline(never)]` on every rjit
-  function and an out-of-line interpreter hook gave the best layout.
-  Result against main (4 faster, none slower; worst `flexclust` +0.39%,
-  all in `scanchar`): `mandelbrot_noout` -7.0%, `mandelbrot_ascii` -6.3%,
-  `dataframe` -5.0%, `mandelbrot_noout_naive` -3.0%; geomean 0.587 ->
-  0.586, faster on 68.
+- perf, measured against main 32c6002 (container; main: geomean 0.573,
+  faster on 71):
+  - first version: worst +0.38%, from classifying each closure object at
+    its first call (`topenv` and a walk of the body). Now an ancestor walk
+    (global vs base namespace), the score and hash memoized per body,
+    closures made by namespace code marked directly.
+  - **interning moves everything.** The first versions interned ~10 names
+    at startup (the frozen-function table, `findLocals`' special names).
+    Every later symbol's id shifted, and with it the collisions of the
+    frames' 64-bit masks (`env::sym_bit` = id & 63): unrelated lookups
+    took the linear scan (`call_site_fun_fast` +16M on `profiler-shared`,
+    `Scan::scanchar` +18M on `flexclust`, `Frame::position` costs moving
+    between functions). This looked like codegen noise of +-0.5%. rjit
+    now never interns: names are classified by text, memoized per symbol
+    id, and looked up with `Sym::lookup` (new, sym.rs). After that the
+    large programs moved by +0.01%.
+  - a memo bug (class 255 + 1 wrapped to "unknown") re-classified the
+    function name of every interpreted closure call (+0.58% on `Storage`).
+  - result (none faster or slower than 0.5%): worst `mandelbrot_noout`
+    +0.32%, `Storage` +0.29%, `nbody` +0.23%, startup +0.12% (the
+    per-call state check, the interpreter hook, compiling user closures);
+    geomean 0.5734 -> 0.5740, faster on 71.
 
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 
@@ -594,6 +605,22 @@ not on today's `Value`/`Env` layout:
   0.693 -> 0.683, faster on 53 -> 55; kept.
 
 ## Notes for other tracks
+
+- everyone measuring performance: interning a new symbol early (a
+  `Sym::new` in startup code, a thread-local table of names) shifts the id
+  of every later symbol, so frames' 64-bit membership masks
+  (`env::sym_bit`, id & 63) collide differently and unrelated benchmarks
+  move by up to +-0.5% (seen: `flexclust` +0.39% all in `Scan::scanchar`,
+  `profiler-shared` +0.38% in `call_site_fun_fast`). Compare per function
+  before blaming codegen, and prefer `Sym::lookup` for names that need not
+  exist.
+- conformance-values-operators (`builtins/arith.rs`): when both operands
+  of a double operation are NaN, GNU R (gcc, x86-64) keeps the first
+  operand's payload (`NA_real_ * NaN` is `NA`, `NaN + NA` is `NaN`);
+  robigo's kernels are plain Rust `a op b`, whose operand order LLVM may
+  swap, so `a * b + c` prints `NaN` where GNU R prints `NA` (e.g. `f <-
+  function(a, b, c) a * b + c; f(c(NA, NaN), c(NaN, NA), 1)` in GNU R:
+  `NA NaN`).
 
 - conformance-vectors (`builtins/array.rs`): `matprod_real` for a row vector
   (`nrx == 1`, `u %*% M`) runs its inner loop one element per column
