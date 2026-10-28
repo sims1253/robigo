@@ -1929,3 +1929,64 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 fn unused(a: &[Arg]) -> Value {
     arg(a, 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Double arithmetic is bit-identical with GNU R 4.5.0 itself (Debian
+    /// r-base-core 4.5.0-3) in every recycling shape, NaN payloads (NA vs
+    /// NaN) included: every pair of 16 special values (signalling and quiet
+    /// NA, NaNs with several payloads, +-Inf, +-0, finite, huge, subnormal)
+    /// for `+ - * / ^ %% %/%`, and NA_integer_/3L with doubles for
+    /// `+ - * /`, recorded by `scripts/oracle-real-arith.R`.
+    #[test]
+    fn gnu_r_oracle() {
+        use std::io::Read;
+        let raw = include_bytes!("arith_r_oracle.txt.gz");
+        let mut s = String::new();
+        flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s).unwrap();
+        let hex = |h: &str| f64::from_bits(u64::from_str_radix(h, 16).unwrap());
+        let op_of = |o: &str| match o {
+            "add" | "+" => ArithOp::Plus,
+            "sub" | "-" => ArithOp::Minus,
+            "mul" | "*" => ArithOp::Times,
+            "div" | "/" => ArithOp::Div,
+            "pow" => ArithOp::Pow,
+            "mod" => ArithOp::Mod,
+            "idiv" => ArithOp::IDiv,
+            other => panic!("bad op {other}"),
+        };
+        // (x, y, index of the checked element) for each shape
+        let shape = |sh: &str, x: f64, y: f64| -> (Vec<f64>, Vec<f64>, usize) {
+            match sh {
+                "ss" => (vec![x], vec![y], 0),
+                "vv" => (vec![x, x], vec![y, y], 1),
+                "sv" => (vec![x], vec![y, y, y], 1),
+                "vs" => (vec![x, x, x], vec![y], 1),
+                "rc" => (vec![x; 4], vec![y, y], 2),
+                other => panic!("bad shape {other}"),
+            }
+        };
+        let mut checked = 0;
+        for line in s.lines() {
+            let t: Vec<&str> = line.split_whitespace().collect();
+            let (op, x, y, want, int_operand, sh) = if !matches!(t[0], "+" | "-" | "*" | "/") {
+                // double with double: op shape x y result
+                (op_of(t[0]), hex(t[2]), hex(t[3]), hex(t[4]), false, t[1].to_string())
+            } else {
+                // integer with double: op int double shape_order result
+                let i = if t[1] == "NAi" { int_to_real(NA_INTEGER) } else { 3.0 };
+                let (sh, order) = t[3].split_once('_').unwrap();
+                let (x, y) = if order == "id" { (i, hex(t[2])) } else { (hex(t[2]), i) };
+                (op_of(t[0]), x, y, hex(t[4]), true, sh.to_string())
+            };
+            let (a, b, k) = shape(&sh, x, y);
+            let n = a.len().max(b.len());
+            let got = real_binary(op, &a, &b, n, int_operand)[k];
+            assert_eq!(got.to_bits(), want.to_bits(), "{line}");
+            checked += 1;
+        }
+        assert!(checked > 9000, "{checked}");
+    }
+}
