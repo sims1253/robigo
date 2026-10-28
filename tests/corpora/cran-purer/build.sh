@@ -12,6 +12,7 @@ R --version | head -1 | grep -q '4\.5\.0' || {
     echo "cran-purer: building requires GNU R 4.5.0" >&2
     exit 1
 }
+mkdir -p "$here/support"  # holds only the built library, so a fresh checkout lacks it
 staging=$(mktemp -d "$here/support/install.XXXXXX")
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 chmod 755 "$staging"

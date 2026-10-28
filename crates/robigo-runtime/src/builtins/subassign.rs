@@ -388,6 +388,23 @@ fn assign_values(x: &mut Value, idx: &[i64], y: &Value) {
         }
         (Value::Int(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_int(y, &mut w)),
         (Value::Real(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_real(y, &mut w)),
+        // R: subassign.c:VectorAssign (cases 1510, 1513, 1514; MatrixAssign,
+        // ArrayAssign and do_subassign2_dflt alike): an NA, logical,
+        // integer or real (`ISNA`, not other NaNs), is stored as NA in both
+        // parts, unlike `coerceVector` (imaginary part 0).
+        (Value::Cplx(a), Value::Lgl(b) | Value::Int(b)) => {
+            let z: Vec<Complex> = b
+                .data
+                .iter()
+                .map(|&v| if v == NA_INTEGER { Complex::NA } else { Complex::new(v as f64, 0.0) })
+                .collect();
+            assign_elts(&mut Rc::make_mut(a).data, idx, &z)
+        }
+        (Value::Cplx(a), Value::Real(b)) => {
+            let z: Vec<Complex> =
+                b.data.iter().map(|&v| if is_na_real(v) { Complex::NA } else { Complex::new(v, 0.0) }).collect();
+            assign_elts(&mut Rc::make_mut(a).data, idx, &z)
+        }
         (Value::Cplx(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_cplx(y, &mut w)),
         (Value::Str(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_str(y)),
         _ => unreachable!("assign_values: unexpected types"),

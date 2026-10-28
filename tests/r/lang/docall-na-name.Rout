@@ -1,0 +1,8 @@
+[1] "NA"
+[1] "NA" "b" 
+(function (...) 
+sys.call())(`NA` = 1:4)
+(function (...) 
+sys.call())(1, `NA` = 2)
+[1] "NA."
+[1] "NA"
