@@ -14,7 +14,8 @@
 #                  R_HOME is unset)
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-gnu=${1:-${R_HOME:?set R_HOME or pass GNU R\'s R_HOME}}
+gnu=${1:-${R_HOME:-$(R RHOME 2>/dev/null)}}
+[ -n "$gnu" ] || { echo "robigo-home: set R_HOME or pass GNU R's R_HOME" >&2; exit 1; }
 robigo=${2:-$root/.robigo/bin/robigo}
 dest=${3:-$root/.robigo/home}
 gnu=$(cd "$gnu" && pwd)

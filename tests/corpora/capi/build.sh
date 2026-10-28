@@ -1,13 +1,34 @@
 #!/bin/sh
 # The capi corpus's build step (corpora.toml key `build`): compile every
-# C case source with GNU R's toolchain. The .so files land next to the
-# sources in support/ (gitignored) and are linked into each case's working
-# directory by scripts/corpus.py. R CMD SHLIB links against libR, so the
-# undefined symbols of a built .so are exactly the libR API its case
-# exercises; scripts/capi-census.py coverage measures them.
+# C case source. The .so files land next to the sources in support/
+# (gitignored) and are linked into each case's working directory by
+# scripts/corpus.py. With a robigo binary ($ROBIGO, else
+# .robigo/bin/robigo) the cases are built by `robigo CMD SHLIB` against
+# robigo's headers and R_HOME (docs/core.md §8; the home is made by
+# scripts/robigo-home.sh when missing), otherwise by GNU R's
+# `R CMD SHLIB`. Either links against libR, so the undefined symbols of a
+# built .so are exactly the libR API its case exercises;
+# scripts/capi-census.py coverage measures them.
 set -e
 cd "$(dirname "$0")"
+root=$(cd ../../.. && pwd)
+robigo=${ROBIGO:-$root/.robigo/bin/robigo}
+if [ -x "$robigo" ]; then
+  home=$(cd "$(dirname "$robigo")/.." && pwd)/home
+  if [ ! -f "$home/etc/Makeconf" ]; then
+    sh "$root/scripts/robigo-home.sh" "${R_HOME:-$(R RHOME)}" "$robigo" "$home"
+  fi
+  shlib="$robigo CMD SHLIB"
+else
+  shlib="R CMD SHLIB"
+fi
+# rebuild everything when the toolchain changes
+stamp=support/.built-with
+if [ "$(cat "$stamp" 2>/dev/null)" != "$shlib" ]; then
+  rm -f support/*.o support/*.so
+  echo "$shlib" > "$stamp"
+fi
 for c in support/*.c; do
-  echo "R CMD SHLIB $c"
-  R CMD SHLIB "$c" > /dev/null
+  echo "$shlib $c"
+  $shlib "$c" > /dev/null
 done
