@@ -66,3 +66,22 @@
 - Indexing slice: 2,331/2,391 -> 2,354/2,391, zero regressions, 23 new
   passes recorded. Runtime tests (17+2), subset conformance and both
   compiled checks pass; formatting passes. Kept.
+
+## 2026-10-28: extraction allocation and list-matrix replacement checks
+
+- Port subset.c:do_subset2_dflt's allocation error for a recursive index
+  reaching a closure; port the complete subassign.c assignment switch to
+  reject list-matrix NULL replacement while retaining valid list RHS types.
+- Initial incomplete switch rejected valid list assignments and broke
+  package loading; rejected and corrected against the full C switch.
+- Indexing: 2,354/2,391 -> 2,356/2,391, zero regressions; two new passes.
+- Runtime 17+2 tests and subset conformance/compiled checks pass.
+- Kept locally; coordinator requested no further pushes to PR #21.
+
+## 2026-10-28: rep counts warning experiment
+
+- Tried warning-emitting count coercion per seq.c:do_rep. Metric stayed
+  178/186, no regressions. Warning still absent on the error path.
+- Rejected and reverted; investigate warning handling in dispatch before
+  retrying. Factor recursion goes through rep.factor -> NextMethod and
+  needs dispatch-owner changes.

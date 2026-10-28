@@ -832,7 +832,9 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
         Value::Cplx(v) => Value::cplxs(vec![v.data[o]]),
         Value::Str(v) => Value::strs(vec![v.data[o].clone()]),
         Value::Raw(v) => Value::raws(vec![v.data[o]]),
-        _ => return Err(Flow::error(format!("unimplemented type '{}' in 'do_subset2'\n", x.type_name()))),
+        // R: subset.c:do_subset2_dflt calls allocVector(TYPEOF(x), 1)
+        // before entering the atomic extraction switch.
+        _ => return Err(Flow::error(format!("invalid type/length ({}/1) in vector allocation", x.type_name()))),
     })
 }
 
