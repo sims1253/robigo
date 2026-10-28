@@ -513,7 +513,14 @@ pub struct Code {
     /// (search epoch, closure environment id, formals address) for which
     /// all guards are known to hold in a fresh call frame (see
     /// `vm::run_closure`).
-    pub fresh_guards: std::cell::Cell<(u64, usize, u32, usize)>,
+    pub fresh_guards: std::cell::Cell<(u64, usize, usize)>,
+    /// For a closure defined in a frame directly below the search path:
+    /// (search epoch, closure environment id, its function-binding version,
+    /// formals address) for which all guards hold in a fresh call frame,
+    /// and the key of the last call whose guards were not checked yet
+    /// (they are, from its second call with the same key on).
+    pub fresh_nested: std::cell::Cell<(u64, usize, u32, usize)>,
+    pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
@@ -567,7 +574,9 @@ impl Code {
             guard_syms,
             simple,
             jit: Default::default(),
-            fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
+            fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
+            fresh_nested: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
+            fresh_seen: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             result,
             is_body,
             guard_memo,
@@ -876,16 +885,19 @@ impl Compiler {
     /// `Op::Call` of the function named `f` for the call `whole`.
     fn call_site(&mut self, l: &Lang, whole: &Value, dst: Reg, f: Sym, force: u32) {
         let codes = l.args.iter().map(|a| compile_thunk(&a.value)).collect();
-        let leaf_args = if l.args.iter().all(|a| a.tag.is_none()) {
-            l.args.iter().map(|a| self.leaf(&a.value)).collect::<Option<Vec<_>>>()
-        } else {
-            None
-        };
         let inline_args = if l.args.iter().all(|a| a.tag.is_none()) {
             l.args.iter().map(|a| self.inline_arg(&a.value)).collect::<Option<Vec<_>>>()
         } else {
             None
         };
+        let leaf_args = inline_args.as_ref().and_then(|a| {
+            a.iter()
+                .map(|a| match a {
+                    InlineArg::Leaf(l) => Some(*l),
+                    InlineArg::Arith { .. } => None,
+                })
+                .collect::<Option<Vec<_>>>()
+        });
         self.call_sites.push(CallSite {
             call: whole.clone(),
             codes,

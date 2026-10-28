@@ -15,6 +15,38 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: no drift against main: startup and run_with code size
+
+- why: each step above passed the gate against the previous step, but
+  against main 12 startup-dominated benchmarks (~286M instructions, mostly
+  startup) had drifted to +0.50..+0.58%, and `fannkuch`/`binarytrees`/`fib`
+  to +0.4%: too close to CI's 0.5% gate, which compares with main.
+- profile (by function, `BYFN=1 cmp.py`; by source line against main's
+  source, `linediff.sh`; by instruction, `asm.py`):
+  1. startup: the once-per-call guard check for closures defined in a call
+     frame ran on the first call of each such closure; at startup most of
+     them run once, so checking every guard up front (`resolves_to_base`,
+     `search_fun`) cost ~830k. Now it runs from the second call with the
+     same key (`fresh_seen`).
+  2. `run_closure`: the 4-field key (with the environment's function
+     version) cost every search-path closure call ~6 instructions (a larger
+     frame, one more load and compare). Search-path closures keep the
+     3-field key; closures defined in a call frame have their own cell
+     (`fresh_nested`, behind an out-of-line check).
+  3. `Compiler::leaf` ran twice per argument: `leaf_args` is derived from
+     `inline_args` now.
+  4. `Op::Index`: `match (fast, i, held)` moved an `Option<RVal>` through
+     the fast path (20.8M vs 7.2M on `fannkuch`). Restructuring it inline
+     made other ops' code worse (register allocation in `run_with`: +12.8M);
+     the general cases of `Index`/`Index2` (index promises, `[`/`[[` calls)
+     are now `#[cold]` out-of-line functions after one flush, which made
+     `run_with` smaller: `fannkuch` -0.9%, `convolution_slow` -1.9%.
+- remaining against main: `fib` +0.32% (its `fib(n - 1)` call sites now
+  look the callee up and find it not inlinable, ~10 instructions per call;
+  main skipped that because `n - 1` was not a leaf).
+- result: against main 28 faster, none slower (worst `fib` +0.32%);
+  geomean 0.683 -> 0.682, faster on 55; kept.
+
 ## 2026-10-28: pure closures inlined with arithmetic arguments; guards once per call for nested helpers
 
 - why: `shootout/spectralnorm_naive` (1.52x GNU R) calls
