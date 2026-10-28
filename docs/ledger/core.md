@@ -11,6 +11,94 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: the gate — install.packages() from source inside robigo
+
+**fastmap and digest install from CRAN sources inside robigo, and their
+own test files pass** (shim `crates/robigo-capi/gate/shim.R`, GNU R
+4.5.0 measured with the same shim in the oracle image):
+
+| package | robigo | GNU R | the difference |
+|---|---|---|---|
+| fastmap 1.2.0 | 302 | 341 | three blocks stop on latin1 strings (the runtime's strings are UTF-8 only) |
+| digest 0.6.39 | 325 | 325 | none |
+
+Before, robigo ran these tests against packages GNU R had built: 291
+and 241 expectations passed.
+
+How it works (docs/core.md §8): `scripts/robigo-home.sh` builds robigo's
+`R_HOME` (`.robigo/home`, found next to the binary when `R_HOME` is
+unset). It contains:
+
+- GNU R's own front-end scripts (`bin/R`, `Rcmd`, `INSTALL`, `SHLIB`,
+  ...), pointed at the home, with robigo as `bin/exec/R`;
+- `include/` with the vendored 4.5.0 public headers
+  (`crates/robigo-capi/include`, unchanged: the public API is functions
+  only);
+- `lib/libR.so`, which carries only the soname: the API symbols bind
+  to the executable;
+- GNU R's `etc/`, with a `Renviron.site` limited to the home's own site
+  library;
+- GNU R's `share/` and `doc/`;
+- the base packages, with `tools.so` built from source for robigo.
+
+`robigo CMD X` runs `bin/R CMD X` in that home.
+
+Steps measured on the way (each a GNU R port, with a conformance or
+corpus test):
+
+- `R CMD SHLIB`/`INSTALL` reach `tools:::.install_packages` in robigo:
+  `-e`/`-f` arguments are unescaped as R's binary does (`~+~`).
+- readDCF (dcf.c), utils' hashtab (unique.c, the `.External` entry
+  points), getVarsFromFrame and lazyLoadDBinsertValue. The serializer
+  gained the persistent-name hook, NAMESPACESXP/PACKAGESXP, and puts
+  external pointers in the reference table. Its reader always did,
+  which desynchronised every later reference.
+- GNU R's `tools.so` built from source (`build-base-native.sh`, which
+  now links a `robigo_base_native` marker that `dyn.load` checks before
+  using a base package's shared object instead of Rust ports). For it:
+  - `getConnection` hands C a real `struct Rconn`: GNU R's public
+    layout, offsets tested, methods calling the runtime;
+  - `begincontext`/`endcontext` run `cend` when an error unwinds past
+    the context (RCNTXT offsets measured with GNU R's Defn.h);
+  - the parser globals have GNU R's sizes: the 32-byte data stubs were
+    smaller than the 256-byte `R_ParseContext` gramRd writes;
+  - `.External2` is called as `fun(call, op, args, env)`;
+  - RC_fopen, R_opendir/readdir/closedir, Rf_strchr, Rf_mbrtowc and
+    R_NewHashedEnv.
+- Runtime semantics the install path needs:
+  - calls keep a tag on the function position (`names(e[-c(1, 2)])`,
+    which `parseNamespaceFile` uses for `.registration`), and `as.call`
+    drops it;
+  - `!` of a zero-length non-logical gives `logical(0)`;
+  - comparisons coerce a raw operand to the other operand's type (it
+    used to panic);
+  - `c()`/`unlist` keep NA names;
+  - file connections keep GNU R's separate read and write positions:
+    `parse_Rd` writes to `file()` and reads back from the start, and
+    `seek` now follows fileconn exactly;
+  - `Sys.setFileTime` and `extSoftVersion` (robigo reports "" for
+    libraries it does not use).
+- `download.file(method = "libcurl")`: libcurl.c's `curlDownload`
+  ported over the system libcurl, which is `dlopen`ed (no link-time
+  dependency). It has GNU R's multi-URL loop, progress output and
+  messages; the libcurl constants were checked against curl.h.
+- An external pointer that exists only in the runtime (restored by
+  `unserialize`) shows C code a NULL address, as in GNU R. fastmap
+  checks for NULL to rebuild its map; before the fix it dereferenced
+  `R_NilValue` and crashed.
+
+The ratchets still pass: conformance 186/186 including the 5 new
+scripts, and the fastr corpus slices gained 79 newly passing cases with
+0 regressions.
+
+Open:
+
+- robigo still starts without the default packages (methods does not
+  load), so the gate runs `utils::install.packages`;
+- latin1 strings (fastmap's encoding tests);
+- a cpp11 package and an Rcpp package;
+- the capi corpus built against robigo's headers.
+
 ## 2026-10-28: GC at scale (council item 9)
 
 `crates/robigo-capi/bench/scale.sh` builds a 10M-string STRSXP of unique
