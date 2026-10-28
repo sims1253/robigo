@@ -625,8 +625,3 @@ fn append_raw_to_file(file: &Value, bytes: &[u8]) -> RResult<Value> {
     f.write_all(bytes).map_err(|_| Flow::error("write failed"))?;
     Ok(Value::ints(vec![pos as i32, bytes.len() as i32]))
 }
-
-// R: serialize.c:do_lazyLoadDBflush — robigo reads entries without a cache
-fn do_lazy_load_db_flush(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
-}

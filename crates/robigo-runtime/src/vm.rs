@@ -1321,7 +1321,9 @@ fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
         }
     }
     let dflt = Sym::new("seq.default");
-    let base = interp.base_ns.get_local(dflt)?;
+    // Base's binding is a lazy-load promise when base comes from base.rdb;
+    // force it (R: findVar1) or the ptr_eq below never matches.
+    let base = interp.base_var(dflt).ok().flatten()?;
     match interp.lookup_method(dflt, env, &defenv) {
         Ok(Some(f)) if f.ptr_eq(&base) => Some(len as u64),
         _ => None,
