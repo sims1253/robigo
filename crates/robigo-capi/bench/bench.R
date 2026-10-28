@@ -1,0 +1,20 @@
+# Drives capibench.so; bench.py measures each bench_* routine's
+# instructions (inclusive) under callgrind.
+dyn.load("capibench.so")
+x <- seq_len(100000)
+invisible(.Call("bench_alloc_small"))
+invisible(.Call("bench_alloc_medium"))
+invisible(.Call("bench_cons"))
+invisible(.Call("bench_protect"))
+invisible(.Call("bench_mkchar_hit"))
+invisible(.Call("bench_mkchar_miss"))
+invisible(.Call("bench_install"))
+invisible(.Call("bench_integer_loop", x))
+invisible(.Call("bench_set_string_elt"))
+invisible(.Call("bench_preserve"))
+f <- function() NULL
+invisible(.Call("bench_eval", f))
+invisible(.Call("bench_unwind_protect"))
+invisible(tryCatch(.Call("bench_error_caught"), error = function(e) NULL))
+noop <- function() for (i in 1:10000) .Call("bench_noop", 1L, 2, "a")
+noop()

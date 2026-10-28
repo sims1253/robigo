@@ -1,0 +1,363 @@
+//! robigo-core's heap, strings, symbols and unwinding, tested directly.
+
+use robigo_core::types::*;
+use robigo_core::{Core, Sexp, flags, gp};
+use std::cell::RefCell;
+
+thread_local! {
+    static ROOTS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
+}
+
+unsafe fn mark_roots(c: &mut Core) {
+    let roots = ROOTS.with(|r| r.borrow().clone());
+    for r in roots {
+        c.mark(r);
+    }
+}
+
+fn core_with_roots() -> Box<Core> {
+    ROOTS.with(|r| r.borrow_mut().clear());
+    let mut c = Core::new();
+    c.root_fns.push(mark_roots);
+    c
+}
+
+fn root(x: Sexp) {
+    ROOTS.with(|r| r.borrow_mut().push(x));
+}
+
+fn int_vec(c: &mut Core, vals: &[i32]) -> Sexp {
+    let x = c.alloc_vector(INTSXP, vals.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(vals.as_ptr(), x.std_data() as *mut i32, vals.len());
+    }
+    x
+}
+
+unsafe fn ints<'a>(x: Sexp) -> &'a [i32] {
+    unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) }
+}
+
+#[test]
+fn constants() {
+    let c = Core::new();
+    unsafe {
+        assert_eq!(c.nil.typ(), NILSXP);
+        assert_eq!(c.nil.car(), c.nil);
+        assert_eq!(c.nil.attrib_raw(), c.nil);
+        assert!(c.nil.has_flag(flags::IMMORTAL));
+        assert_eq!(c.na_string.char_bytes(), b"NA");
+        assert_eq!(c.blank_string.char_bytes(), b"");
+        assert_eq!(c.unbound.typ(), SYMSXP);
+        assert_ne!(c.unbound, c.missing_arg);
+    }
+}
+
+#[test]
+fn vectors_are_initialized_like_gnu_r() {
+    let mut c = Core::new();
+    let s = c.alloc_vector(STRSXP, 3);
+    let l = c.alloc_vector(VECSXP, 2);
+    let r = c.alloc_vector(REALSXP, 1000);
+    unsafe {
+        let sd = s.std_data() as *const Sexp;
+        assert!((0..3).all(|i| *sd.add(i) == c.blank_string));
+        let ld = l.std_data() as *const Sexp;
+        assert!((0..2).all(|i| *ld.add(i) == c.nil));
+        assert_eq!(r.std_len(), 1000);
+        assert_eq!(r.std_data() as usize % 16, 0);
+    }
+}
+
+#[test]
+fn chars_are_interned_by_bytes_and_encoding() {
+    let mut c = Core::new();
+    let a = c.mk_char(b"hello", 0);
+    let b = c.mk_char(b"hello", gp::UTF8);
+    assert_eq!(a, b, "ASCII drops the encoding bits");
+    unsafe {
+        assert!(a.gp() & gp::ASCII != 0);
+        assert_eq!(*a.std_data().add(5), 0, "NUL-terminated");
+    }
+    let u = c.mk_char("café".as_bytes(), gp::UTF8);
+    let l = c.mk_char("café".as_bytes(), gp::LATIN1);
+    assert_ne!(u, l);
+    assert_eq!(u, c.mk_char("café".as_bytes(), gp::UTF8));
+    assert_ne!(c.mk_char(b"NA", 0), c.na_string);
+}
+
+#[test]
+fn symbols_are_unique_and_immortal() {
+    let mut c = Core::new();
+    let x = c.install(b"x");
+    assert_eq!(x, c.install(b"x"));
+    assert_ne!(x, c.install(b"y"));
+    unsafe {
+        assert_eq!(x.typ(), SYMSXP);
+        assert_eq!(x.car().char_bytes(), b"x");
+        assert!(x.has_flag(flags::IMMORTAL));
+    }
+    for _ in 0..3 {
+        c.collect();
+    }
+    unsafe { assert_eq!(c.install(b"x").car().char_bytes(), b"x") };
+}
+
+#[test]
+fn rooted_objects_survive_and_garbage_is_freed() {
+    let mut c = core_with_roots();
+    let keep = int_vec(&mut c, &[1, 2, 3]);
+    root(keep);
+    let mut list = c.nil;
+    for i in 0..1000 {
+        let v = int_vec(&mut c, &[i]);
+        list = c.alloc_node(LISTSXP, v, list, c.nil);
+    }
+    root(list);
+    // garbage
+    for i in 0..100_000 {
+        int_vec(&mut c, &[i, i]);
+    }
+    c.collect();
+    let after = c.stats.live_objects;
+    unsafe {
+        assert_eq!(ints(keep), &[1, 2, 3]);
+        let mut n = 0;
+        let mut p = list;
+        while p != c.nil {
+            assert_eq!(ints(p.car()), &[999 - n]);
+            n += 1;
+            p = p.cdr();
+        }
+        assert_eq!(n, 1000);
+    }
+    assert!(after < 10_000, "garbage freed: {after} live");
+    assert!(c.stats.collections >= 2, "allocation triggers collections");
+}
+
+#[test]
+fn stack_references_keep_objects_alive() {
+    let mut c = Core::new();
+    let x = int_vec(&mut c, &[42; 64]);
+    // only an interior pointer survives in a local
+    let interior = std::hint::black_box(unsafe { (x.std_data() as *mut i32).add(10) });
+    let x_addr = x.addr();
+    drop(x);
+    for i in 0..200_000 {
+        int_vec(&mut c, &[i]);
+    }
+    c.collect();
+    assert_eq!(c.resolve(interior as usize).map(|s| s.addr()), Some(x_addr));
+    unsafe { assert_eq!(*interior, 42) };
+}
+
+#[test]
+fn dead_chars_leave_the_cache() {
+    let mut c = Core::new();
+    let n0 = {
+        for i in 0..50_000 {
+            c.mk_char(format!("s{i}").as_bytes(), 0);
+        }
+        c.collect();
+        c.collect();
+        c.stats.live_objects
+    };
+    assert!(n0 < 20_000, "{n0}");
+    // a fresh string gets a fresh object
+    let a = c.mk_char(b"s123", 0);
+    unsafe { assert_eq!(a.char_bytes(), b"s123") };
+}
+
+#[test]
+fn preserve_and_release() {
+    let mut c = Core::new();
+    let x = c.alloc_vector(REALSXP, 4);
+    let addr = x.addr();
+    c.preserve(x);
+    for _ in 0..3 {
+        c.collect();
+    }
+    assert!(c.resolve(addr).is_some());
+    c.release(x);
+}
+
+static RELEASED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe extern "C" fn count_release(owner: usize) {
+    RELEASED.fetch_add(owner, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn extdata_release_runs_once_dead() {
+    let mut c = core_with_roots();
+    let mut buf = vec![1.5f64, 2.5];
+    let live = c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1000, Some(count_release));
+    root(live);
+    for _ in 0..10 {
+        c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1, Some(count_release));
+    }
+    // overwrite stack slots that may still hold the dead objects
+    std::hint::black_box([0usize; 64]);
+    for _ in 0..3 {
+        c.collect();
+    }
+    // release callbacks wait for a safe point
+    assert_eq!(RELEASED.load(std::sync::atomic::Ordering::SeqCst), 0);
+    for (f, h) in c.take_releases() {
+        unsafe { f(h) };
+    }
+    let r = RELEASED.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(r <= 10 && r >= 5, "dead extdata released ({r}), live one not");
+    unsafe {
+        assert!(live.has_flag(flags::EXTDATA));
+        assert_eq!(*(live.std_data() as *const f64).add(1), 2.5);
+    }
+}
+
+#[test]
+fn layout_is_compact() {
+    // docs/core.md §2: the layout is robigo's; robigo's headers map
+    // GNU R's macros onto it
+    let mut c = Core::new();
+    let v = c.alloc_vector(INTSXP, 1);
+    let n = c.alloc_node(LISTSXP, v, c.nil, c.nil);
+    unsafe {
+        assert_eq!(*v.0, INTSXP, "type: byte 0");
+        assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
+        assert_eq!(v.std_data() as usize - v.addr(), 32, "payload at +32");
+        assert_eq!(*(n.0.add(16) as *const usize), v.addr(), "CAR at +16");
+        assert_eq!(*(n.0.add(24) as *const usize), c.nil.addr(), "CDR at +24");
+        assert_eq!(*(n.0.add(8) as *const usize), c.nil.addr(), "ATTRIB at +8");
+        n.set_gp(0xABCD);
+        assert_eq!(*(n.0.add(2) as *const u16), 0xABCD, "gp at +2");
+        assert!(n.tracks_refs());
+        let ch = c.mk_char(b"x", 0);
+        assert_eq!(std::ffi::CStr::from_ptr(ch.0.add(32) as *const std::ffi::c_char).to_bytes(), b"x");
+    }
+}
+
+#[test]
+fn symbol_values_are_traced() {
+    let mut c = Core::new();
+    let s = c.install(b"some_symbol");
+    let v = c.alloc_vector(REALSXP, 3);
+    let addr = v.addr();
+    unsafe { s.set_cdr_raw(v) };
+    c.write_barrier(s);
+    drop(v);
+    std::hint::black_box([0usize; 64]);
+    for _ in 0..3 {
+        c.collect();
+    }
+    for i in 0..100_000 {
+        let x = c.alloc_vector(REALSXP, 3);
+        unsafe { *(x.std_data() as *mut f64) = i as f64 };
+    }
+    unsafe { assert_eq!(s.cdr().addr(), addr) };
+    assert!(c.resolve(addr).is_some());
+}
+
+#[test]
+fn weak_refs_queue_finalizers_of_dead_keys() {
+    let mut c = core_with_roots();
+    let key_live = c.alloc_vector(INTSXP, 1);
+    root(key_live);
+    let mk = |c: &mut Core, key: Sexp| {
+        let w = c.alloc_vector(WEAKREFSXP, 4);
+        let fin = c.alloc_vector(RAWSXP, 8);
+        unsafe {
+            let d = w.std_data() as *mut Sexp;
+            *d = key;
+            *d.add(1) = c.nil;
+            *d.add(2) = fin;
+        }
+        c.register_weak_ref(w);
+        w
+    };
+    let w1 = mk(&mut c, key_live);
+    root(w1);
+    let dead_key = c.alloc_vector(INTSXP, 1);
+    let _w2 = mk(&mut c, dead_key);
+    let dead_addr = dead_key.addr();
+    drop(dead_key);
+    std::hint::black_box([0usize; 64]);
+    c.collect();
+    let mut q = Vec::new();
+    while let Some(w) = c.pop_finalizable() {
+        q.push(w);
+    }
+    assert!(q.len() <= 1, "only the dead key's reference is ready");
+    if let Some(&w) = q.first() {
+        unsafe {
+            assert_eq!((*(w.std_data() as *const Sexp)).addr(), dead_addr, "key kept for the finalizer");
+            assert!(w.gp() & gp::READY_TO_FINALIZE != 0);
+        }
+    }
+    assert_eq!(c.weak_refs().len(), 2 - q.len());
+}
+
+#[test]
+fn try_run_and_jump() {
+    let ok = robigo_core::unwind::try_run(|| {});
+    assert!(ok);
+    let mut reached = false;
+    let r = &mut reached as *mut bool;
+    let ok = robigo_core::unwind::try_run(move || unsafe {
+        robigo_core::unwind::jump();
+        #[allow(unreachable_code)]
+        {
+            *r = true;
+        }
+    });
+    assert!(!ok);
+    assert!(!reached);
+    // nested: the inner context catches, the outer completes
+    let ok = robigo_core::unwind::try_run(|| {
+        assert_eq!(robigo_core::unwind::depth(), 1);
+        let inner = robigo_core::unwind::try_run(|| unsafe { robigo_core::unwind::jump() });
+        assert!(!inner);
+    });
+    assert!(ok);
+    assert_eq!(robigo_core::unwind::depth(), 0);
+}
+
+/// Allocate a 4-double vector and its neighbour; return only the
+/// one-past-the-end pointer of the first.
+#[inline(never)]
+fn alloc_with_end_pointer(c: &mut Core) -> usize {
+    let x = c.alloc_vector(REALSXP, 4);
+    unsafe {
+        for i in 0..4 {
+            *(x.std_data() as *mut f64).add(i) = 1.5;
+        }
+    }
+    let n = c.alloc_vector(REALSXP, 4);
+    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    std::hint::black_box(n);
+    unsafe { x.std_data() as usize + 32 }
+}
+
+/// Overwrite the stack below the caller's frame (stale copies of objects).
+#[inline(never)]
+fn clobber_stack() {
+    let a = [0usize; 4096];
+    std::hint::black_box(&a);
+}
+
+#[test]
+fn one_past_the_end_keeps_the_object() {
+    let mut c = Core::new();
+    // the two allocations must be adjacent: no collection between them
+    c.set_torture(false);
+    // 4 doubles: 32 + 32 = 64 bytes, a whole number of granules
+    let end = alloc_with_end_pointer(&mut c);
+    // hide the pointer's value in a form the scan cannot read, except
+    // through the one-past-the-end word kept below
+    let end_word = std::hint::black_box(end);
+    clobber_stack();
+    // poison freed slots so a wrongly freed object is visible
+    c.set_torture(true);
+    c.collect();
+    c.collect();
+    assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "only a one-past-the-end pointer referenced it");
+    std::hint::black_box(end_word);
+}

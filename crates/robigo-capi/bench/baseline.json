@@ -1,0 +1,54 @@
+{
+ "bench_alloc_small": {
+  "gnur": 15246509,
+  "robigo": 18989804
+ },
+ "bench_alloc_medium": {
+  "gnur": 13303414,
+  "robigo": 12122697
+ },
+ "bench_cons": {
+  "gnur": 28048158,
+  "robigo": 44213671
+ },
+ "bench_protect": {
+  "gnur": 4100086,
+  "robigo": 4100175
+ },
+ "bench_mkchar_hit": {
+  "gnur": 33700286,
+  "robigo": 23300301
+ },
+ "bench_mkchar_miss": {
+  "gnur": 114357842,
+  "robigo": 117035244
+ },
+ "bench_install": {
+  "gnur": 20400859,
+  "robigo": 17300735
+ },
+ "bench_integer_loop": {
+  "gnur": 77501625,
+  "robigo": 27000443
+ },
+ "bench_set_string_elt": {
+  "gnur": 5002049,
+  "robigo": 4301911
+ },
+ "bench_preserve": {
+  "gnur": 1903852,
+  "robigo": 3788145
+ },
+ "bench_eval": {
+  "gnur": 26402314,
+  "robigo": 17752712
+ },
+ "bench_unwind_protect": {
+  "gnur": 2720229,
+  "robigo": 2840138
+ },
+ "bench_error_caught": {
+  "gnur": 4015,
+  "robigo": 23012312
+ }
+}

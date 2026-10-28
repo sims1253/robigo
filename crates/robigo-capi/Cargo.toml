@@ -1,0 +1,21 @@
+[package]
+name = "robigo-capi"
+description = "libR.so: GNU R 4.5's C API over robigo-core (G2, docs/core.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# The cdylib is libR.so (DT_SONAME libR.so, build.rs); the rlib serves tests.
+name = "R"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+robigo-core = { path = "../robigo-core" }
+robigo-numerics.workspace = true
+robigo-runtime.workspace = true
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"

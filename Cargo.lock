@@ -875,13 +875,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "robigo-capi"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "libc",
+ "robigo-core",
+ "robigo-numerics",
+ "robigo-runtime",
+]
+
+[[package]]
 name = "robigo-cli"
 version = "0.0.1"
 dependencies = [
  "libmimalloc-sys",
  "pprof",
+ "robigo-capi",
  "robigo-runtime",
  "robigo-syntax",
+]
+
+[[package]]
+name = "robigo-core"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]

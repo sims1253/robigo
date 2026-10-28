@@ -60,6 +60,54 @@ pub struct Routine {
     pub name: Rc<str>,
     pub interface: Interface,
     pub nargs: i32,
+    /// The native code's address (a loaded shared object, called through
+    /// the [`NativeBridge`]); 0 for routines served by Rust ports.
+    pub addr: usize,
+}
+
+/// Loads and calls compiled code (`libR.so`'s side, robigo-capi), so
+/// that the runtime does not depend on the C API crate. Registered once
+/// at startup by the executable; without it only the Rust ports exist.
+pub trait NativeBridge: Sync {
+    /// Open a shared object and run its `R_init_<name>`; the handle
+    /// identifies it to the other calls.
+    fn load(&self, interp: &mut Interp, path: &str, name: &str, local: bool, now: bool) -> RResult<usize>;
+    fn unload(&self, interp: &mut Interp, handle: usize);
+    /// (useDynamicLookup, forceSymbols) after initialization.
+    fn flags(&self, handle: usize) -> (bool, bool);
+    /// The registered routines: (interface, name, address, numArgs).
+    fn routines(&self, handle: usize) -> Vec<(Interface, String, usize, i32)>;
+    /// Look a symbol up (registered first, then dynamically).
+    fn lookup(&self, handle: usize, name: &str, interface: Option<Interface>) -> Option<(usize, i32, Interface)>;
+    /// Call a routine with evaluated arguments (`.Call`, `.External`,
+    /// `.C`, `.Fortran`).
+    fn invoke(
+        &self,
+        interp: &mut Interp,
+        call: &Value,
+        r: &Routine,
+        args: Vec<Arg>,
+        env: &crate::env::Env,
+    ) -> RResult<Value>;
+    /// `gc()`: collect the C heap and run pending finalizers.
+    fn gc(&self, interp: &mut Interp);
+}
+
+static BRIDGE: std::sync::OnceLock<&'static dyn NativeBridge> = std::sync::OnceLock::new();
+
+/// Install the bridge (once, before any `dyn.load`).
+pub fn set_bridge(b: &'static dyn NativeBridge) {
+    let _ = BRIDGE.set(b);
+}
+
+pub fn bridge() -> Option<&'static dyn NativeBridge> {
+    BRIDGE.get().copied()
+}
+
+/// Whether GNU R's build registers routines for this DLL name (its
+/// native code is served by Rust ports until it is built against robigo).
+pub fn has_table(name: &str) -> bool {
+    TABLE.lines().any(|l| l.split('\t').next() == Some(name))
 }
 
 /// The payload of a DLL's `info` external pointer.
@@ -73,6 +121,9 @@ pub struct Dll {
     pub dynamic_lookup: bool,
     pub force_symbols: bool,
     pub routines: Vec<Rc<Routine>>,
+    /// The [`NativeBridge`] handle of a loaded shared object; 0 for DLLs
+    /// served by Rust ports.
+    pub native: usize,
     /// The `handle` and `info` external pointers, kept so that every
     /// `DLLInfo` object for this DLL shares them.
     pub handle: Value,
@@ -109,6 +160,7 @@ impl Dll {
                     name: Rc::from(f[2]),
                     interface,
                     nargs: f[3].parse().unwrap_or(-1),
+                    addr: 0,
                 }));
             }
         }
@@ -119,9 +171,28 @@ impl Dll {
             dynamic_lookup,
             force_symbols,
             routines,
+            native: 0,
             handle: ext_ptr("DLLHandle", Some("DLLHandle"), None),
             info,
         }
+    }
+
+    /// A shared object loaded through the bridge, with the routines its
+    /// `R_init_<name>` registered.
+    pub fn loaded(name: &str, path: &str, native: usize, b: &dyn NativeBridge) -> Dll {
+        let mut d = Dll::new(name, path);
+        let (dynamic, force) = b.flags(native);
+        d.native = native;
+        d.dynamic_lookup = dynamic;
+        d.force_symbols = force;
+        d.routines = b
+            .routines(native)
+            .into_iter()
+            .map(|(interface, n, addr, nargs)| {
+                Rc::new(Routine { package: d.name.clone(), name: Rc::from(n.as_str()), interface, nargs, addr })
+            })
+            .collect();
+        d
     }
 
     /// The `DLLInfo` object.
@@ -189,7 +260,17 @@ impl Dll {
     /// A routine of this DLL by name.
     // R: Rdynload.c:R_dlsym (registered symbols)
     pub fn find(&self, name: &str, interface: Option<Interface>) -> Option<Rc<Routine>> {
-        self.routines.iter().find(|r| &*r.name == name && interface.is_none_or(|i| i == r.interface)).cloned()
+        if let Some(r) =
+            self.routines.iter().find(|r| &*r.name == name && interface.is_none_or(|i| i == r.interface)).cloned()
+        {
+            return Some(r);
+        }
+        // R: Rdynload.c:R_dlsym — then dlsym, if the DLL allows it
+        if self.native != 0 && self.dynamic_lookup {
+            let (addr, nargs, interface) = bridge()?.lookup(self.native, name, interface)?;
+            return Some(Rc::new(Routine { package: self.name.clone(), name: Rc::from(name), interface, nargs, addr }));
+        }
+        None
     }
 }
 
@@ -278,6 +359,11 @@ fn is_internal_alias(r: &Routine) -> bool {
 
 /// Call a routine with already evaluated arguments.
 pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
+    if r.addr != 0 {
+        if let Some(b) = bridge() {
+            return b.invoke(interp, call, r, args, env);
+        }
+    }
     if is_internal_alias(r) {
         if let Some(b) = crate::builtins::lookup_internal(&r.name) {
             let env = interp.global.clone();
