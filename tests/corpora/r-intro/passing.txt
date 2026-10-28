@@ -1,0 +1,3 @@
+01-introduction-and-preliminaries
+03-objects-their-modes-and-attributes
+04-ordered-and-unordered-factors

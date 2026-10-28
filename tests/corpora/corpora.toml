@@ -52,3 +52,20 @@ default_packages = "datasets,utils,grDevices,graphics,stats"
 timeout = 120
 packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datasets", "tools", "splines",
             "stats4", "grid", "parallel", "compiler"]
+
+# Whole R programs: everyday scripts, not snippets (see
+# tests/corpora/{gnur-demos,r-intro}/README.md). Both import from GNU R
+# 4.5.0's sources with scripts/import-corpus-scripts.py.
+[gnur-demos]
+description = "Every demo() of GNU R 4.5.0's base packages, run as demo(topic, ask=FALSE, echo=TRUE)"
+mode = "echo"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 300
+importer = "corpus-scripts"
+
+[r-intro]
+description = "The runnable code of GNU R's \"An Introduction to R\" manual, one script per chapter"
+mode = "echo"
+default_packages = "datasets,utils,grDevices,graphics,stats"
+timeout = 300
+importer = "corpus-scripts"
