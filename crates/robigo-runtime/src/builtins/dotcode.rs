@@ -64,7 +64,17 @@ fn do_dynload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     }
     let base = path.rsplit('/').next().unwrap_or(&path);
     let name = base.strip_suffix(".so").filter(|n| !n.is_empty()).unwrap_or(base);
-    i.dlls.push(Dll::new(name, &path));
+    // GNU R's own packages keep their Rust ports until their sources are
+    // built against robigo (docs/core.md §8); everything else is loaded
+    match native::bridge() {
+        Some(b) if !native::has_table(name) => {
+            let local = !matches!(arg(&args, 1), Value::Lgl(v) if v.data.first() == Some(&0));
+            let now = !matches!(arg(&args, 2), Value::Lgl(v) if v.data.first() == Some(&0));
+            let h = b.load(i, &path, name, local, now)?;
+            i.dlls.push(Dll::loaded(name, &path, h, b));
+        }
+        _ => i.dlls.push(Dll::new(name, &path)),
+    }
     Ok(i.dlls.last().unwrap().to_value())
 }
 
@@ -73,7 +83,12 @@ fn do_dynunload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let path = full_dll_path(&path_arg(&arg(&args, 0))?);
     match i.dlls.iter().position(|d| &*d.path == path) {
         Some(k) => {
-            i.dlls.remove(k);
+            let d = i.dlls.remove(k);
+            if d.native != 0 {
+                if let Some(b) = native::bridge() {
+                    b.unload(i, d.native);
+                }
+            }
             Ok(Value::Null)
         }
         None => Err(Flow::error(format!("shared object '{}' was not loaded", path))),
@@ -199,16 +214,21 @@ fn resolve(
                 None if package.is_empty() => {
                     return Err(Flow::error_call(
                         call.clone(),
-                        format!("{} symbol name \"{}\" not in load table", interface_name(interface), n),
+                        format!("{} symbol name \"{}\" not in load table", symbol_kind(interface), n),
                     ));
                 }
                 None => {
                     return Err(Flow::error_call(
                         call.clone(),
                         format!(
-                            "{} symbol name \"{}\" not in DLL for package \"{}\"",
-                            interface_name(interface),
+                            "\"{}\" not available for {}() for package \"{}\"",
                             n,
+                            match interface {
+                                Interface::C => ".C",
+                                Interface::Fortran => ".Fortran",
+                                Interface::Call => ".Call",
+                                Interface::External => ".External",
+                            },
                             package
                         ),
                     ));
@@ -235,6 +255,13 @@ fn resolve(
     Ok((routine, args))
 }
 
+/// R: dotcode.c:resolveNativeRoutine — "Fortran" for .Fortran, "C" for
+/// every other interface.
+fn symbol_kind(i: Interface) -> &'static str {
+    if i == Interface::Fortran { "Fortran" } else { "C" }
+}
+
+#[allow(dead_code)]
 fn interface_name(i: Interface) -> &'static str {
     match i {
         Interface::C => "C",

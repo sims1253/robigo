@@ -14,4 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 robigo-core = { path = "../robigo-core" }
 robigo-numerics.workspace = true
+robigo-runtime.workspace = true
 libc = "0.2"
+
+[build-dependencies]
+cc = "1"

@@ -85,6 +85,8 @@ options:
 const STACK_SIZE: usize = 512 << 20;
 
 fn main() -> ExitCode {
+    // compiled code goes through libR's API in this executable (robigo-capi)
+    R::bridge::install();
     let thread = std::thread::Builder::new().name("robigo".into()).stack_size(STACK_SIZE).spawn(real_main);
     match thread.map(|t| t.join()) {
         Ok(Ok(code)) => code,

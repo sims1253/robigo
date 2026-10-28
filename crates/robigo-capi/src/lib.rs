@@ -11,6 +11,7 @@
 
 pub mod arith;
 pub mod attrib;
+pub mod bridge;
 pub mod coerce;
 pub mod dotcode;
 pub mod errors;
