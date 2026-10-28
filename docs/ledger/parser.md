@@ -59,6 +59,15 @@ unit tests pass. The PR's Debian CI build and tests pass. A host-linked
 binary cannot run in the older Debian image (GLIBC_2.44 dependency), so
 that attempted cross-libc test run was rejected, with no code changes.
 
+The complete gnur-tests execution run passes 20/59, adds `conditions` and
+`p-r-random-tests` to the 18 recorded passes, and loses none. All five
+locally available parse corpora match: fastr 31374/31374, gnur-tests 59/59,
+gnur-examples 1153/1153, rlib 834/834, rtests 95/95 (33515/33515 total).
+The external source records were regenerated twice with the Debian oracle
+image. CRAN sources are absent on this machine, so that external corpus
+was not rerun. `cargo fmt --check` and `git diff --check` pass.
+Kept; the passing lists only gain entries.
+
 Remaining 23 filter failures: 11 parse-data/source metadata cases;
 9 CLI empty-backtick reports and one CLI octal-escape report that still
 append console context; empty-string assignment and `as.symbol("")`
