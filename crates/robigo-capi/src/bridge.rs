@@ -1098,6 +1098,24 @@ unsafe fn call_routine_ctx(
     args: Vec<Arg>,
     env: &Env,
 ) -> RResult<Value> {
+    // GNU R gives a foreign call a builtin context only when the AST
+    // interpreter evaluates it (eval.c, PP_FOREIGN); package code is
+    // byte-compiled at installation, and bytecode calls builtins without
+    // one, so `.Call`/`.External` from a namespace function do not appear
+    // in tracebacks
+    let compiled_caller = matches!(interp.frames.last(),
+        Some(c) if !c.builtin && matches!(&c.function, Value::Closure(f) if robigo_runtime::dispatch::is_namespace(&f.env)));
+    if compiled_caller {
+        let (handlers, restarts) = (interp.handlers.clone(), interp.restarts.clone());
+        let r = call_routine_in(interp, call, r, args, env);
+        let r = match r {
+            Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
+            other => other,
+        };
+        interp.handlers = handlers;
+        interp.restarts = restarts;
+        return r;
+    }
     interp.frames.push(robigo_runtime::interp::Context {
         call: call.clone(),
         function: Value::Null,
