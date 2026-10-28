@@ -1,6 +1,6 @@
 //! Tokenizer following the rules of GNU R's `gram.y` lexer.
 
-use crate::ast::{Const, ParseError, Span};
+use crate::ast::{Const, ErrorStyle, ParseError, Span};
 
 /// A symbol name: a source slice, or an owned string when escapes made
 /// it differ from the source (backtick names only).
@@ -196,7 +196,8 @@ impl<'a> Lexer<'a> {
             end: self.pos.max(offset + 1),
             incomplete,
             at_eof: false,
-            with_pos_suffix: false,
+            style: ErrorStyle::Grammar,
+            call: None,
             fixed_line_col: None,
         }
     }
@@ -212,7 +213,8 @@ impl<'a> Lexer<'a> {
             end: self.pos.max(at + 1),
             incomplete: false,
             at_eof: false,
-            with_pos_suffix: true,
+            style: ErrorStyle::Condition,
+            call: None,
             fixed_line_col: None,
         }
     }
@@ -321,15 +323,7 @@ impl<'a> Lexer<'a> {
                     // `SymbolValue` installs the name right in the lexer
                     // (`// R: gram.y:SymbolValue`, `names.c:install`), and
                     // `install("")` errors without a position.
-                    return Err(ParseError {
-                        message: "attempt to use zero-length variable name".into(),
-                        offset: start,
-                        end: start + 2,
-                        incomplete: false,
-                        at_eof: false,
-                        with_pos_suffix: false,
-                        fixed_line_col: Some((0, 0)),
-                    });
+                    return Err(ParseError::r_error("attempt to use zero-length variable name"));
                 }
                 Tok::Sym(name)
             }
@@ -613,7 +607,8 @@ impl<'a> Lexer<'a> {
             end: self.pos.max(start + 1),
             incomplete: false,
             at_eof: false,
-            with_pos_suffix: false,
+            style: ErrorStyle::Grammar,
+            call: None,
             fixed_line_col: None,
         }
     }
@@ -773,7 +768,8 @@ impl<'a> Lexer<'a> {
                         end: self.pos,
                         incomplete: false,
                         at_eof: false,
-                        with_pos_suffix: true,
+                        style: ErrorStyle::Condition,
+                        call: None,
                         fixed_line_col: None,
                     });
                 }
@@ -837,9 +833,13 @@ impl<'a> Lexer<'a> {
             b'<' => match (b1, b2) {
                 (b'<', b'-') => (Tok::LeftAssign("<<-"), 3),
                 // `<<` without the `-` is the lexer's ERROR token
-                // (`// R: gram.y:yylex`, case '<'): bison then reports
-                // "unexpected input" at its start.
-                (b'<', _) => return Err(self.error_token(start)),
+                // (`// R: gram.y:yylex`, case '<'): both `<` are consumed
+                // (the second `nextchar` fails) and bison reports
+                // "unexpected input" at the token's start.
+                (b'<', _) => {
+                    self.pos = (start + 2).min(self.bytes.len());
+                    return Err(self.error_token(start));
+                }
                 (b'-', _) => (Tok::LeftAssign("<-"), 2),
                 (b'=', _) => (Tok::Cmp("<="), 2),
                 _ => (Tok::Cmp("<"), 1),
@@ -887,15 +887,31 @@ impl<'a> Lexer<'a> {
             b';' => (Tok::Semi, 1),
             b'\\' => (Tok::Lambda, 1),
             b'%' => {
-                let rest = &self.src[self.pos..];
-                if let Some(end) = rest[1..].find(['%', '\n']) {
-                    if rest.as_bytes()[1 + end] == b'%' {
-                        let op = &rest[..end + 2];
-                        self.pos += op.len();
-                        return Ok(Tok::Special(op));
+                // `// R: gram.y:SpecialValue`: read to the closing `%`. A
+                // newline first is ungotten and returns the ERROR token
+                // (with everything read so far in the parse context); end
+                // of input still installs what was read as a SPECIAL token,
+                // which the grammar then rejects.
+                let mut i = self.pos + 1;
+                loop {
+                    match self.bytes.get(i) {
+                        None => {
+                            self.pos = i;
+                            return Ok(Tok::Special(&self.src[start..i]));
+                        }
+                        Some(b'%') => {
+                            i += 1;
+                            break;
+                        }
+                        Some(b'\n') => {
+                            self.pos = i;
+                            return Err(self.error_token(start));
+                        }
+                        Some(_) => i += 1,
                     }
                 }
-                return Err(self.err("unexpected input", start, false));
+                self.pos = i;
+                return Ok(Tok::Special(&self.src[start..i]));
             }
             _ => return Err(self.err("unexpected input", start, false)),
         };

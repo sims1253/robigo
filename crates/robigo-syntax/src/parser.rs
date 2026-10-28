@@ -263,7 +263,8 @@ impl<'a> Parser<'a> {
             end: t.span.end as usize,
             incomplete: matches!(t.tok, Tok::Eof),
             at_eof: matches!(t.tok, Tok::Eof),
-            with_pos_suffix: false,
+            style: ErrorStyle::Grammar,
+            call: None,
             fixed_line_col: None,
         }
     }
@@ -341,7 +342,9 @@ impl<'a> Parser<'a> {
             end: (t.span.end as usize).max(t.span.start as usize + 1),
             incomplete: false,
             at_eof: false,
-            with_pos_suffix: true,
+            style: ErrorStyle::Condition,
+            // R: gram.y:R_Parse1 passes R_CurrentExpr as the condition's call.
+            call: None,
             fixed_line_col: Some((line, col)),
         }
     }
@@ -398,16 +401,12 @@ impl<'a> Parser<'a> {
                     // `// R: gram.y:xxpipebind`: `=>` is disabled unless
                     // `_R_USE_PIPEBIND_` asks for it.
                     if !pipebind_enabled() {
-                        return Err(ParseError {
-                            message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it"
-                                .into(),
-                            offset: t.span.start as usize,
-                            end: t.span.end as usize,
-                            incomplete: false,
-                            at_eof: false,
-                            with_pos_suffix: true,
-                            fixed_line_col: None,
-                        });
+                        return Err(ParseError::condition(
+                            "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it",
+                            t.span.start as usize,
+                            t.span.end as usize,
+                            None,
+                        ));
                     }
                     let span = lhs.span().to(rhs.span());
                     call2(arena, "=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
@@ -463,35 +462,26 @@ impl<'a> Parser<'a> {
     /// `TagArg`/`xxfuncall`): a zero-length argument tag or function
     /// name. GNU R raises this from `error()`, with no position.
     fn zero_length_name_error(&self) -> ParseError {
-        ParseError {
-            message: "attempt to use zero-length variable name".into(),
-            offset: 0,
-            end: 1,
-            incomplete: false,
-            at_eof: false,
-            with_pos_suffix: false,
-            fixed_line_col: Some((0, 0)),
-        }
+        ParseError::r_error("attempt to use zero-length variable name")
     }
 
     fn pipe(&mut self, lhs: Expr<'a>, rhs: Expr<'a>, _op_span: Span) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
         let rhs_span = rhs.span();
         // `// R: gram.y:xxpipe`
-        let err = |msg: &str| ParseError {
-            message: msg.to_string(),
-            offset: rhs_span.start as usize,
-            end: rhs_span.end as usize,
-            incomplete: false,
-            at_eof: false,
-            with_pos_suffix: true,
-            fixed_line_col: None,
+        // `// R: gram.y:xxpipe`: raiseParseError with the offending RHS
+        // expression as the condition's call.
+        let error_rhs = ErrorExpr::from_expr(&rhs);
+        let err = |msg: &str| {
+            ParseError::condition(msg, rhs_span.start as usize, rhs_span.end as usize, Some(error_rhs.clone()))
         };
         match rhs {
             Expr::Call { fun, args, span } => {
                 // A placeholder as (or inside) the called function itself.
                 if contains_placeholder(fun) {
-                    return Err(err("pipe placeholder cannot be used in the RHS function"));
+                    let mut e = err("pipe placeholder cannot be used in the RHS function");
+                    e.call = None;
+                    return Err(e);
                 }
                 // `x |> _$a[[1]]`: the placeholder may head a chain of
                 // extractions.
@@ -707,7 +697,8 @@ impl<'a> Parser<'a> {
                     end: formal_span.end as usize,
                     incomplete: false,
                     at_eof: false,
-                    with_pos_suffix: true,
+                    style: ErrorStyle::Condition,
+                    call: None,
                     fixed_line_col: None,
                 });
             }

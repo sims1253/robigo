@@ -20,11 +20,11 @@ pub fn dump(e: &Expr) -> Vec<u8> {
 /// raised from parser actions.
 pub fn dump_error(src: &str, e: &ParseError) -> Vec<u8> {
     let (line, col) = error_line_col(src, e);
-    let mut s = format!("ERROR {} {} {}", line, col, e.message).into_bytes();
-    if e.with_pos_suffix {
-        s.extend_from_slice(format!(" (<input>:{}:{})", line, col).as_bytes());
-    }
-    s
+    let msg = match e.style {
+        ErrorStyle::Condition => crate::condition_message(src, "<input>", e),
+        _ => e.message.clone(),
+    };
+    format!("ERROR {} {} {}", line, col, msg).into_bytes()
 }
 
 /// Escape string bytes the way R's `encodeString(x, quote = '"')` does in

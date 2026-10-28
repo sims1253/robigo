@@ -105,6 +105,24 @@ impl<'a> Arg<'a> {
     }
 }
 
+/// How GNU R reports a failure. The three paths differ in the message
+/// shape and in the call the runtime error carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ErrorStyle {
+    /// `yyerror` from the grammar: GNU R's `parseError()` prints the
+    /// message with the source context (or, when the caller knows a line
+    /// number, the `file:line:col:` form).
+    #[default]
+    Grammar,
+    /// `raiseParseError`/`raiseLexError` from gram.y: an error *condition*
+    /// whose message already ends with `(<file>:<line>:<col>)`, and whose
+    /// call is the one `raiseParseError` was given (`None`: R_NilValue).
+    Condition,
+    /// R's `error()` from a parser action, e.g. `install("")` on an empty
+    /// symbol: the bare message, reported against the context call.
+    RError,
+}
+
 /// A parse error with a byte offset into the source.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseError {
@@ -119,15 +137,18 @@ pub struct ParseError {
     /// appends a virtual newline when the source does not end with one, so
     /// the error sits on the following line at column 0.
     pub at_eof: bool,
-    /// True for errors raised from parser actions (`raiseParseError` in
-    /// gram.y), whose message carries a `" (<input>:<line>:<col>)"` suffix.
-    pub with_pos_suffix: bool,
+    /// Which of GNU R's three reporting paths raised this error.
+    pub style: ErrorStyle,
+    /// For [`ErrorStyle::Condition`]: the call the condition reports
+    /// (`raiseParseError`'s call argument); `None` is R_NilValue.
+    pub call: Option<Box<ErrorExpr>>,
     /// A position not derived from `offset`, as when GNU R reports the
     /// statement terminator for pipe-placeholder misuse.
     pub fixed_line_col: Option<(usize, usize)>,
 }
 
 impl ParseError {
+    /// A grammar error (`yyerror`).
     pub fn new(message: impl Into<String>, offset: usize, end: usize) -> Self {
         ParseError {
             message: message.into(),
@@ -135,8 +156,39 @@ impl ParseError {
             end,
             incomplete: false,
             at_eof: false,
-            with_pos_suffix: false,
+            style: ErrorStyle::Grammar,
+            call: None,
             fixed_line_col: None,
+        }
+    }
+
+    /// An error condition raised from a parser action (`raiseParseError`):
+    /// the message carries the `(<file>:<line>:<col>)` suffix, and `call`
+    /// is the offending expression (R_NilValue when `None`).
+    pub fn condition(message: impl Into<String>, offset: usize, end: usize, call: Option<ErrorExpr>) -> Self {
+        ParseError {
+            message: message.into(),
+            offset,
+            end,
+            incomplete: false,
+            at_eof: false,
+            style: ErrorStyle::Condition,
+            call: call.map(Box::new),
+            fixed_line_col: None,
+        }
+    }
+
+    /// R's `error()` from a parser action: no position, no context.
+    pub fn r_error(message: impl Into<String>) -> Self {
+        ParseError {
+            message: message.into(),
+            offset: 0,
+            end: 1,
+            incomplete: false,
+            at_eof: false,
+            style: ErrorStyle::RError,
+            call: None,
+            fixed_line_col: Some((0, 0)),
         }
     }
 }
@@ -150,3 +202,40 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 use std::fmt;
+
+/// Owned expression retained only when a parser condition outlives its arena.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ErrorExpr {
+    Atom(Const<'static>),
+    String(Option<Vec<u8>>),
+    Symbol(String),
+    Call(Box<ErrorExpr>, Vec<(Option<String>, Option<ErrorExpr>)>),
+    Function(Vec<(String, Option<ErrorExpr>)>, Box<ErrorExpr>),
+}
+impl ErrorExpr {
+    pub fn from_expr(e: &Expr<'_>) -> Self {
+        match e {
+            Expr::Const(Const::Str(s), _) => Self::String(s.map(|s| s.to_vec())),
+            Expr::Const(c, _) => Self::Atom(match *c {
+                Const::Null => Const::Null,
+                Const::Lgl(x) => Const::Lgl(x),
+                Const::Int(x) => Const::Int(x),
+                Const::Dbl(x) => Const::Dbl(x),
+                Const::DblNa => Const::DblNa,
+                Const::Cplx(x, y) => Const::Cplx(x, y),
+                Const::CplxNa => Const::CplxNa,
+                Const::Str(_) => unreachable!(),
+            }),
+            Expr::Sym(s, _) => Self::Symbol(s.to_string()),
+            Expr::Placeholder(_) => Self::String(Some(b"_".to_vec())),
+            Expr::Call { fun, args, .. } => Self::Call(
+                Box::new(Self::from_expr(fun)),
+                args.iter().map(|a| (a.name.map(str::to_string), a.value.as_ref().map(Self::from_expr))).collect(),
+            ),
+            Expr::Function { formals, body, .. } => Self::Function(
+                formals.iter().map(|f| (f.name.to_string(), f.default.as_ref().map(Self::from_expr))).collect(),
+                Box::new(Self::from_expr(body)),
+            ),
+        }
+    }
+}
