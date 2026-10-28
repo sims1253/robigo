@@ -357,55 +357,69 @@ mod tests {
         assert_eq!(context("a\there", 6), ["a       here"]);
     }
 
-    #[test]
-    fn parse_status_of(buf: &str) -> (Status<'_>, Vec<String>) {
-        parse_status(&robigo_syntax::Arena::new(), buf)
+    /// The chunk statuses without the borrowed trees: what the REPL
+    /// branches on.
+    #[derive(PartialEq, Debug)]
+    enum Kind {
+        Null,
+        Ok(usize),
+        Incomplete,
+        Error,
+    }
+
+    fn kind(buf: &str) -> (Kind, Vec<String>) {
+        let arena = robigo_syntax::Arena::new();
+        match parse_status(&arena, buf) {
+            (Status::Null, w) => (Kind::Null, w),
+            (Status::Ok(es), w) => (Kind::Ok(es.len()), w),
+            (Status::Incomplete, w) => (Kind::Incomplete, w),
+            (Status::Error(_), w) => (Kind::Error, w),
+        }
     }
 
     #[test]
     fn lone_semicolon_is_an_error() {
         // `;` alone is PARSE_ERROR ("unexpected ';'"), not PARSE_NULL.
-        assert!(matches!(parse_status_of(";\n"), (Status::Error(_), _)));
-        assert!(matches!(parse_status_of(" ;"), (Status::Error(_), _)));
+        assert_eq!(kind(";\n").0, Kind::Error);
+        assert_eq!(kind(" ;").0, Kind::Error);
         // Blank and comment-only lines are PARSE_NULL.
-        assert!(matches!(parse_status_of("\n"), (Status::Null, _)));
-        assert!(matches!(parse_status_of("   \n"), (Status::Null, _)));
-        assert!(matches!(parse_status_of("# c\n"), (Status::Null, _)));
+        assert_eq!(kind("\n").0, Kind::Null);
+        assert_eq!(kind("   \n").0, Kind::Null);
+        assert_eq!(kind("# c\n").0, Kind::Null);
     }
 
     #[test]
     fn terminated_statements_are_ok() {
-        assert!(matches!(parse_status_of("1 + 1\n"), (Status::Ok(_), _)));
-        assert!(matches!(parse_status_of("x <- 1;"), (Status::Ok(_), _)));
+        assert_eq!(kind("1 + 1\n").0, Kind::Ok(1));
+        assert_eq!(kind("x <- 1;").0, Kind::Ok(1));
         // Multi-expression chunks cannot occur from the REPL's copy loop;
         // single chunks with a trailing separator parse as one.
-        let (st, _) = parse_status_of("1;\n");
-        assert!(matches!(st, Status::Ok(es) if es.len() == 1));
+        assert_eq!(kind("1;\n").0, Kind::Ok(1));
     }
 
     #[test]
     fn unterminated_statements_are_incomplete() {
-        assert!(matches!(parse_status_of("if (TRUE) {\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status_of("1 +\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status("\"abc\n"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status_of("if (x) 1 else\n"), (Status::Incomplete, _)));
+        assert_eq!(kind("if (TRUE) {\n").0, Kind::Incomplete);
+        assert_eq!(kind("1 +\n").0, Kind::Incomplete);
+        assert_eq!(kind("\"abc\n").0, Kind::Incomplete);
+        assert_eq!(kind("if (x) 1 else\n").0, Kind::Incomplete);
         // A line longer than the console buffer is cut mid-line: a chunk
         // without its terminating `;` or newline needs more input.
-        assert!(matches!(parse_status_of("1 + 1 + "), (Status::Incomplete, _)));
+        assert_eq!(kind("1 + 1 + ").0, Kind::Incomplete);
     }
 
     #[test]
     fn comments_cut_by_a_semicolon_are_incomplete() {
         // The REPL's cut lands inside the comment; R's lexer sets
         // EndOfFile = 2 there, whatever the grammar makes of the buffer.
-        assert!(matches!(parse_status_of("# c;"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status_of("1 # two;"), (Status::Incomplete, _)));
-        assert!(matches!(parse_status_of("f({\n1 # c;"), (Status::Incomplete, _)));
+        assert_eq!(kind("# c;").0, Kind::Incomplete);
+        assert_eq!(kind("1 # two;").0, Kind::Incomplete);
+        assert_eq!(kind("f({\n1 # c;").0, Kind::Incomplete);
         // A comment closed by a newline is fine.
-        assert!(matches!(parse_status_of("# c\n"), (Status::Null, _)));
-        assert!(matches!(parse_status_of("f({\n# c;\n"), (Status::Incomplete, _)));
+        assert_eq!(kind("# c\n").0, Kind::Null);
+        assert_eq!(kind("f({\n# c;\n").0, Kind::Incomplete);
         // Strings and quoted names hide a `#`.
-        assert!(matches!(parse_status("\"a#b\";"), (Status::Ok(_), _)));
-        assert!(matches!(parse_status_of("`a#b`;\n"), (Status::Ok(_), _)));
+        assert_eq!(kind("\"a#b\";").0, Kind::Ok(1));
+        assert_eq!(kind("`a#b`;\n").0, Kind::Ok(1));
     }
 }
