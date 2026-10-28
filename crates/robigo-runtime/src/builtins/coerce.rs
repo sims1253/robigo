@@ -491,11 +491,13 @@ fn do_typeof(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     Ok(Value::str(arg(&args, 0).type_name()))
 }
 
-fn do_isvector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let mode = match arg(&args, 1) {
         Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
-        _ => return Err(Flow::error_call(call.clone(), "invalid 'mode' argument")),
+        // R: error_return(R_MSG_mode) — a plain error, so the reported
+        // call is the user's is.vector(...) call, not the internal one.
+        _ => return Err(Flow::error("invalid 'mode' argument")),
     };
     let type_ok = match &*mode {
         "any" => x.is_vector(),

@@ -6662,6 +6662,7 @@ builtins/TestBuiltin_isunsorted/d2c2bb4f1a23139f
 builtins/TestBuiltin_isunsorted/eaffb408aec8bb47
 builtins/TestBuiltin_isunsorted/ed1dd938a007032e
 builtins/TestBuiltin_isvector/054105321abf4492
+builtins/TestBuiltin_isvector/062fa70b4aeeeb07
 builtins/TestBuiltin_isvector/0645189a081172be
 builtins/TestBuiltin_isvector/0aa0d460920e1b89
 builtins/TestBuiltin_isvector/1611dacb545b5d8b
@@ -6687,6 +6688,7 @@ builtins/TestBuiltin_isvector/5c369746bb6d1661
 builtins/TestBuiltin_isvector/5c41091c9a22618d
 builtins/TestBuiltin_isvector/5c8faeece35fd65c
 builtins/TestBuiltin_isvector/674f28a089b295fe
+builtins/TestBuiltin_isvector/6af0ebe2db369699
 builtins/TestBuiltin_isvector/827d1a4f9dbccead
 builtins/TestBuiltin_isvector/8b353613633ec2da
 builtins/TestBuiltin_isvector/9034c76ae31ef1a9
