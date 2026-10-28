@@ -3,6 +3,7 @@ tests/r/basics/arith-vectors.R
 tests/r/basics/arith.R
 tests/r/basics/control.R
 tests/r/basics/functions.R
+tests/r/basics/inline-call-args.R
 tests/r/basics/int-arith-kernels.R
 tests/r/basics/local-fun-calls.R
 tests/r/basics/mod-ldouble.R

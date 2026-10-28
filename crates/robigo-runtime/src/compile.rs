@@ -445,12 +445,31 @@ pub struct CallSite {
     /// The arguments, when all are positional constants or variables (for
     /// running pure closures inline).
     pub leaf_args: Option<Vec<Leaf>>,
+    /// The arguments, when all are positional leaves or single arithmetic
+    /// operations on leaves (for running pure closures inline: see
+    /// `vm::inline_arg`).
+    pub inline_args: Option<Vec<InlineArg>>,
     /// The slot of the function's name, if the code has one (filled in once
     /// compilation is done).
     pub fslot: Option<Slot>,
     /// `forceAndCall(force, f, ...)`: the number of promise arguments of a
     /// closure forced before the call.
     pub force: u32,
+}
+
+/// An argument of a call that may run a pure closure inline.
+pub enum InlineArg {
+    Leaf(Leaf),
+    /// `a op b`, evaluated eagerly only where it takes its scalar fast path
+    /// (no warning, error or other observable effect) and `sym` resolves to
+    /// base's (memoized as for a `Guard`).
+    Arith {
+        op: ArithOp,
+        a: Leaf,
+        b: Leaf,
+        sym: Sym,
+        memo: std::cell::Cell<GuardMemo>,
+    },
 }
 
 /// The jump targets of a compiled `switch` (R: eval.c:do_switch).
@@ -494,7 +513,7 @@ pub struct Code {
     /// (search epoch, closure environment id, formals address) for which
     /// all guards are known to hold in a fresh call frame (see
     /// `vm::run_closure`).
-    pub fresh_guards: std::cell::Cell<(u64, usize, usize)>,
+    pub fresh_guards: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
@@ -548,7 +567,7 @@ impl Code {
             guard_syms,
             simple,
             jit: Default::default(),
-            fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
+            fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             result,
             is_body,
             guard_memo,
@@ -795,6 +814,22 @@ impl Compiler {
         }
     }
 
+    /// `e` as an [`InlineArg`], if it can be one.
+    fn inline_arg(&mut self, e: &Value) -> Option<InlineArg> {
+        if let Some(l) = self.leaf(e) {
+            return Some(InlineArg::Leaf(l));
+        }
+        let Value::Lang(l) = e else { return None };
+        let h = head(l)?;
+        let op = arith_op(&h.name())?;
+        if !plain_args(l, 2) {
+            return None;
+        }
+        let (a, b) = (self.leaf(&l.args[0].value)?, self.leaf(&l.args[1].value)?);
+        let memo = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
+        Some(InlineArg::Arith { op, a, b, sym: h, memo: std::cell::Cell::new(memo) })
+    }
+
     /// `e` as a [`Leaf`], if it is one.
     fn leaf(&mut self, e: &Value) -> Option<Leaf> {
         match e {
@@ -846,11 +881,17 @@ impl Compiler {
         } else {
             None
         };
+        let inline_args = if l.args.iter().all(|a| a.tag.is_none()) {
+            l.args.iter().map(|a| self.inline_arg(&a.value)).collect::<Option<Vec<_>>>()
+        } else {
+            None
+        };
         self.call_sites.push(CallSite {
             call: whole.clone(),
             codes,
             memo: Default::default(),
             leaf_args,
+            inline_args,
             fslot: None,
             force,
         });

@@ -1,0 +1,5 @@
+Warning message:
+In a + 1L : NAs produced by integer overflow
+Warning messages:
+1: In big + k : NAs produced by integer overflow
+2: In big + k : NAs produced by integer overflow
