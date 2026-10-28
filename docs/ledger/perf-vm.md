@@ -15,6 +15,37 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: `x[[i]] <<- v` / `x[i] <<- v` in the VM
+
+- why: `shootout/nbody_naive` (1.32x GNU R) updates velocity and position
+  vectors element by element with `body_vx[[i]] <<- body_vx[[i]] - dx *
+  body_mass[[j]] * mag`: each one ran the interpreter's complex
+  superassignment (`complex_assign_pre`, `eval`, `dispatch_or_eval_sp`,
+  `subset2_dflt`), 1.28M instructions per `advance()` call.
+- what:
+  - `x[[i]] <<- expr` / `x[i] <<- expr` (index as in `index_form`) with a
+    right-hand side the VM evaluates without calls (`is_simple`: arithmetic
+    and comparisons of variables, constants and `x[i]`/`x[[i]]` reads)
+    compiles to `Op::SuperSetIndex`, guarded on `<<-` and `[[<-`/`[<-`.
+  - The binding `x <<- ` would assign (first enclosing frame binding `x`,
+    else global) is updated in place by `set_element` when it is a plain
+    binding of a non-object vector of a compatible type with an in-range
+    index (or the append position), as `x[i] <- v` is locally; anything
+    else is the complex superassignment after a flush, unchanged.
+  - The current frame's cached copy of `x` is dropped first (it would make
+    the vector look shared, so `make_mut` would copy it on every store).
+  - `sym <<- expr` uses `is_simple` too.
+- tests: `tests/r/basics/super-assign-index.R` (the binding used and a copy
+  that must not change, growth, type changes, lists, names, a locked
+  binding, a missing global, an S3 `[[<-` method, the expression's value,
+  out-of-range and NA indices).
+- result against main 414ae44 (2 faster, none slower): `nbody_naive`
+  -61.8% (1.32 -> **0.50**; 1.28M -> 0.35M instructions per `advance()`),
+  `queens` -19.5% (0.77 -> 0.62); geomean 0.597 -> 0.587, faster than GNU
+  R on 67 -> 68; kept.
+- carries over to G3: element superassignment in place under the same
+  conditions as local element assignment.
+
 ## 2026-10-28: `x[[i]] <- v` in native loops
 
 - why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
