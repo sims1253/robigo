@@ -251,6 +251,17 @@ unsafe fn proxy(v: &Value) -> Sexp {
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
     core().preserve(x);
     PINNED.with(|m| m.borrow_mut().insert(h, x));
+    // the object's attributes (a closure's, an environment's class, ...),
+    // as C reads them with getAttrib (R_GE_maskType: a mask function's
+    // "type")
+    let attrs = match v {
+        Value::Closure(_) => v.attrs().cloned(),
+        Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
+        _ => None,
+    };
+    if attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
+        set_attrs(x, attrs.as_ref());
+    }
     x
 }
 
@@ -298,14 +309,14 @@ impl Drop for CoreRef {
     }
 }
 
-fn core_ref_of(v: &Value) -> Option<Sexp> {
+pub fn core_ref_of(v: &Value) -> Option<Sexp> {
     match v {
         Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().map(|c| c.0),
         _ => None,
     }
 }
 
-unsafe fn wrap_core(x: Sexp) -> Value {
+pub unsafe fn wrap_core(x: Sexp) -> Value {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
         return Value::ExtPtr(p);
     }
@@ -1595,13 +1606,15 @@ impl NativeBridge for Bridge {
         })
     }
 
-    fn owned_get(&self, interp: &mut Interp, id: usize) -> RResult<Value> {
-        Ok(enter(interp, |_| unsafe { crate::owned::get(id) }))
+    fn owned_get(&self, interp: &mut Interp, holder: &Value) -> RResult<Value> {
+        Ok(enter(interp, |_| unsafe { crate::owned::get(holder) }))
     }
 
-    fn owned_set(&self, interp: &mut Interp, id: usize, value: Value) -> RResult<()> {
-        enter(interp, |_| unsafe { crate::owned::set(id, to_sexp(&value)) });
-        Ok(())
+    fn owned_holder(&self, interp: &mut Interp, value: Value) -> RResult<Value> {
+        Ok(enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            wrap_core(to_sexp(&value))
+        }))
     }
 
     fn option_set(&self, name: &str, value: &Value) {

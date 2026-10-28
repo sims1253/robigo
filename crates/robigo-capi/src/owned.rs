@@ -2,17 +2,18 @@
 //!
 //! GNU R's C code may look a list up and change it where it lives: grid
 //! keeps each device's state in `.GRID.STATE` with
-//! `SET_VECTOR_ELT(findVar(...), i, state)`, and R code reads the state
-//! back. The bridge hands C a copy of an R value, so such a change would
-//! be lost (and the objects only the copy holds collected). A list C
-//! looked up and then changes becomes the variable's value: C keeps the
-//! object (preserved), and the R binding turns into an active binding
-//! that converts C's current object when read (`native::c_owned_binding`).
+//! `SET_VECTOR_ELT(findVar(...), i, state)` and its viewport tree in
+//! environments of pushed viewports it updates in place, and R code reads
+//! them back. The bridge hands C a copy of an R value, so such a change
+//! would be lost (and the objects only the copy holds collected). A list
+//! C looked up and then changes becomes the variable's value: the R
+//! binding turns into an active binding over C's object
+//! (`native::c_owned_binding`), which converts it when read.
 
-use crate::state::core;
 use robigo_core::Sexp;
 use robigo_runtime::env::Env;
 use robigo_runtime::sym::Sym;
+use robigo_runtime::value::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -23,8 +24,6 @@ pub static mut ORIGINS: usize = 0;
 thread_local! {
     /// Lists C looked up in this native call: where they are bound.
     static ORIGIN: RefCell<HashMap<usize, (Env, Sym)>> = RefCell::new(HashMap::new());
-    /// The C-owned variables: binding and C's object, by id.
-    static OWNED: RefCell<Vec<(Env, Sym, Sexp)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// `findVar` found the list `x` bound to `sym` in `env`.
@@ -42,8 +41,13 @@ pub unsafe fn clear_origins() {
 }
 
 /// C's object for a C-owned variable bound in `env`.
-pub fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
-    OWNED.with(|o| o.borrow().iter().find(|(e, s, _)| *s == sym && e.ptr_eq(env)).map(|(_, _, x)| *x))
+pub unsafe fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
+    let flags = env.binding_flags(sym)?;
+    if flags & robigo_runtime::env::BIND_ACTIVE == 0 {
+        return None;
+    }
+    let holder = robigo_runtime::native::c_owned_holder(&env.get_local(sym)?)?;
+    crate::bridge::core_ref_of(&holder)
 }
 
 /// SET_VECTOR_ELT on a list C looked up: the variable becomes C-owned.
@@ -54,28 +58,13 @@ pub unsafe fn mutated(x: Sexp) {
     if lookup(&env, sym).is_some() {
         return;
     }
-    core().preserve(x);
-    let id = OWNED.with(|o| {
-        let mut o = o.borrow_mut();
-        o.push((env.clone(), sym, x));
-        o.len() - 1
-    });
-    robigo_runtime::native::c_owned_binding(&env, sym, id);
+    robigo_runtime::native::c_owned_binding(&env, sym, crate::bridge::wrap_core(x));
 }
 
 /// Reading a C-owned variable from R.
-pub unsafe fn get(id: usize) -> robigo_runtime::value::Value {
-    match OWNED.with(|o| o.borrow().get(id).map(|e| e.2)) {
+pub unsafe fn get(holder: &Value) -> Value {
+    match crate::bridge::core_ref_of(holder) {
         Some(x) => crate::bridge::from_sexp(x),
-        None => robigo_runtime::value::Value::Null,
-    }
-}
-
-/// Assigning a C-owned variable from R.
-pub unsafe fn set(id: usize, x: Sexp) {
-    core().preserve(x);
-    let old = OWNED.with(|o| o.borrow_mut().get_mut(id).map(|e| std::mem::replace(&mut e.2, x)));
-    if let Some(old) = old {
-        core().release(old);
+        None => Value::Null,
     }
 }
