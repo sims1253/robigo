@@ -552,10 +552,14 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
 fn complex_op(op: ArithOp, a: Complex, b: Complex) -> RResult<Complex> {
     // R: complex.c:complex_binary
     match op {
-        ArithOp::Plus => Ok(Complex::new(a.re + b.re, a.im + b.im)),
-        ArithOp::Minus => Ok(Complex::new(a.re - b.re, a.im - b.im)),
-        // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
-        ArithOp::Times => Ok(super::complex::cmul(a, b)),
+        ArithOp::Plus => Ok(super::complex::cadd(a, b)),
+        ArithOp::Minus => Ok(super::complex::csub(a, b)),
+        // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3. The
+        // compiled TIMESOP call site passes (y, x) — multiplication is
+        // commutative in values, but NaN payload propagation is not, and
+        // `(0/0+1i)*(1+NA)` is NA in GNU R while the textual order gives
+        // NaN+NaNi.
+        ArithOp::Times => Ok(super::complex::cmul(b, a)),
         ArithOp::Div => Ok(super::complex::cdiv(a, b)),
         ArithOp::Pow => Ok(super::complex::cpow(a, b)),
         ArithOp::Mod | ArithOp::IDiv => Err(Flow::error("unimplemented complex operation")),
