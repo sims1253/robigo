@@ -1,149 +1,60 @@
-# Every push and pull request: build, unit tests and conformance, the test
-# corpora with their ratchets, and the performance gate. See
-# docs/verification.md.
+# EXPERIMENT (throwaway, not for merge): is a benchmark's callgrind count
+# the same on every GitHub runner? One fixed binary (main 45b4dd2's CI
+# artifact), several runners, mimalloc purging on and off.
 name: ci
-
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 permissions:
   contents: read
   actions: read
-
+defaults:
+  run:
+    shell: bash
 env:
-  CARGO_TERM_COLOR: always
   LANGUAGE: en
   LC_ALL: C.UTF-8
   TZ: UTC
-
 jobs:
-  build:
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+  probe:
+    runs-on: ubuntu-24.04
     container: debian:trixie
-    steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --check
-      - name: Build
-        run: cargo build --release --workspace
-      - name: Unit tests, parser oracle, conformance (all tiers)
-        run: cargo test --release --workspace
-      - name: Core and C API under gctorture (collect on every allocation)
-        run: ROBIGO_GCTORTURE=1 cargo test --release -p robigo-core -p robigo-capi
-      - name: Parse corpus ratchet
-        run: |
-          python3 scripts/parse-corpus.py check fastr gnur-tests gnur-examples | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Keep the binary for later jobs
-        run: |
-          mkdir -p dist
-          cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" dist/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: robigo
-          path: dist/robigo
-          retention-days: 7
-
-  corpora:
-    needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { corpus: gnur-tests, shard: "1/1" }
-          - { corpus: gnur-examples, shard: "1/1" }
-          - { corpus: gnur-demos, shard: "1/1" }
-          - { corpus: r-intro, shard: "1/1" }
-          - { corpus: cran-purer, shard: "1/1" }
-          - { corpus: capi, shard: "1/1" }
-          - { corpus: fastr, shard: "1/4" }
-          - { corpus: fastr, shard: "2/4" }
-          - { corpus: fastr, shard: "3/4" }
-          - { corpus: fastr, shard: "4/4" }
-    container: debian:trixie
+        k: [1, 2, 3, 4]
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/download-artifact@v4
-        with:
-          name: robigo
-          path: dist
-      - run: chmod +x dist/robigo
-      - name: Run ${{ matrix.corpus }} (${{ matrix.shard }})
-        run: |
-          python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
-            --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Name the results
-        if: always()
-        run: echo "RESULT_NAME=corpus-${{ matrix.corpus }}-${{ matrix.shard }}" | sed 's#/#of#' >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ${{ env.RESULT_NAME }}
-          path: .robigo/results/
-          retention-days: 14
-
-  perf:
-    needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
-    container: debian:trixie
-    steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-        with:
-          rust: "false"
-      - uses: actions/download-artifact@v4
-        with:
-          name: robigo
-          path: dist
-      - run: chmod +x dist/robigo
-      - run: python3 scripts/perf.py fetch
-      - name: Measure robigo (and GNU R on main)
-        run: |
-          export VALGRIND=valgrind
-          runtime=robigo
-          [ "${{ github.ref }}" = refs/heads/main ] && runtime=both
-          python3 scripts/perf.py run --metric instr --runtime $runtime --robigo dist/robigo \
-            --jobs "$(nproc)" --out perf.json --quiet
-      - name: Compare with main
-        if: github.ref != 'refs/heads/main'
+      - name: binary of main 45b4dd2
         env:
           GH_TOKEN: ${{ github.token }}
+        run: gh run download 40684403456 -R "$GITHUB_REPOSITORY" -n robigo -D dist && chmod +x dist/robigo
+      - run: python3 scripts/perf.py fetch
+      - name: cpu
         run: |
-          id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
-                 --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -z "$id" ]; then echo "no baseline on main yet"; exit 0; fi
-          gh run download "$id" -R "$GITHUB_REPOSITORY" -n perf-main -D base
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(erms|fsrm|avx2|avx512f|avx512bw|avx512vl|rtm|bmi2)$' | tr '\n' ' '; echo
+          nproc
+      - name: counts
+        run: |
+          export VALGRIND=valgrind
+          for mode in default purge-off; do
+            for i in 1 2; do
+              if [ $mode = purge-off ]; then export MIMALLOC_PURGE_DELAY=-1; else unset MIMALLOC_PURGE_DELAY; fi
+              python3 scripts/perf.py run --metric instr --runtime robigo --robigo dist/robigo \
+                --filter 'binarytrees_naive$|shootout/binarytrees$|robigo/fib$|knucleotide$' --jobs 2 --out p.json --quiet > /dev/null
+              python3 -c "import json; d=json.load(open('p.json'))['results']; print('$mode', $i, ' '.join(f\"{k.split('/')[-1]}={v['robigo']['instr']}\" for k,v in sorted(d.items())))"
+            done
+          done
+      - name: profile
+        run: |
           python3 - <<'PY'
-          import json
-          # GNU R's counts come from main's run on the same runner image.
-          b = json.load(open("base/perf.json")); n = json.load(open("perf.json"))
-          for k, v in n["results"].items():
-              if "gnur" in b["results"].get(k, {}):
-                  v["gnur"] = b["results"][k]["gnur"]
-          json.dump(n, open("perf.json", "w"))
+          import sys; sys.path.insert(0, 'scripts'); import perf
+          p = perf.programs(perf.conf(), None, 'binarytrees_naive$')[0]
+          open('bt.R', 'w').write(p[2])
           PY
-          python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/perf.py compare base/perf.json perf.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Report
-        if: github.ref == 'refs/heads/main'
-        run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
-          path: perf.json
-          retention-days: 90
+          R_DEFAULT_PACKAGES=utils,stats valgrind --tool=callgrind --callgrind-out-file=cg.out dist/robigo --vanilla bt.R > /dev/null 2>&1
+          callgrind_annotate --threshold=100 --auto=no cg.out | sed -n '1,40p' | grep -E 'TOTALS|mem|str|mi_|malloc' | head -20
