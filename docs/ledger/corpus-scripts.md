@@ -40,7 +40,9 @@ part of the importer's documented policy.
 
 The first measurement was 30/42, including a C-compilation example that
 belongs outside this corpus, and a host-dependent PATH difference. After
-excluding that example and pinning PATH, the final measurement is **31/41**, with 31 entries in `passing.txt`. Classifications use the first differing stream, not later errors.
+excluding that example and pinning PATH, the final measurement is **31/41**,
+with 31 entries in `passing.txt`. Classifications use the first differing
+stream, not later errors.
 No runtime changes were made, because the causes belong to other tracks.
 
 | Rank | Cases | First difference and cause | Owner and next step |
@@ -53,11 +55,11 @@ No runtime changes were made, because the causes belong to other tracks.
 | 6 | `withr/man/with_language` | stderr warns that R was installed without NLS; oracle warns that LC_ALL prevents a language change. | startup-perf: audit capabilities("NLS") and warning contexts against the pinned Debian oracle. |
 
 The table covers all ten remaining CRAN failures. There are no unstable
-cases or per-line masks. All 41 retained cases match an earlier complete
+cases or per-line masks. Forty retained cases match an earlier complete
 recording under existing address normalization. The PATH example was
 re-recorded twice after fixing PATH to `/usr/local/bin:/usr/bin`, avoiding
-platform differences in sbin symlinks. Address normalization is the existing shared
-corpus rule, not a new exception. See `cran-purer/README.md` for licences,
+platform differences in sbin symlinks. Address normalization is the
+existing shared corpus rule, not a new exception. See `cran-purer/README.md` for licences,
 installation and exclusions.
 
 Verification: `cargo fmt --check`, Python compilation, source-hash checks
