@@ -80,30 +80,8 @@ impl JitState {
 }
 
 thread_local! {
-    static SYMS: Vec<Sym> = FROZEN_FUNS.iter().map(|n| Sym::new(n)).collect();
-    /// Membership of [`FROZEN_FUNS`] by symbol id.
-    static BITS: Vec<u64> = {
-        let ids: Vec<usize> = FROZEN_FUNS.iter().map(|n| Sym::new(n).0 as usize).collect();
-        let mut b = vec![0u64; ids.iter().max().unwrap() / 64 + 1];
-        for i in ids {
-            b[i / 64] |= 1 << (i % 64);
-        }
-        b
-    };
-    /// Symbols `findLocals` treats specially.
-    static K: Names = Names {
-        assign: s::ASSIGN,
-        eq_assign: s::EQ_ASSIGN,
-        r#for: s::FOR,
-        assign_fn: Sym::new("assign"),
-        delayed_assign: Sym::new("delayedAssign"),
-        function: s::FUNCTION,
-        tilde: s::TILDE,
-        local: Sym::new("local"),
-        expression: Sym::new("expression"),
-        quote: s::QUOTE,
-        browser: Sym::new("browser"),
-    };
+    /// [`class`] by symbol id, plus one (0: not known yet).
+    static CLASS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// JIT scores and hashes of closure bodies, by address (kept alive in
     /// the entry; the hash is computed when first needed).
     static SCORES: RefCell<HashMap<usize, (Value, i64, Option<u64>), crate::env::FastHash>> =
@@ -117,18 +95,102 @@ thread_local! {
         RefCell::new(HashMap::default());
 }
 
-struct Names {
-    assign: Sym,
-    eq_assign: Sym,
-    r#for: Sym,
-    assign_fn: Sym,
-    delayed_assign: Sym,
-    function: Sym,
-    tilde: Sym,
-    local: Sym,
-    expression: Sym,
-    quote: Sym,
-    browser: Sym,
+// Classes of names (besides the index of a `FROZEN_FUNS` entry). Names are
+// classified by text and never interned here: a new symbol would shift the
+// ids, and so the frame masks (`env::sym_bit`), of all later symbols.
+const C_ASSIGN_FN: u8 = 100;
+const C_DELAYED_ASSIGN: u8 = 101;
+const C_EXPRESSION: u8 = 102;
+const C_QUOTE: u8 = 103;
+const C_BROWSER: u8 = 104;
+const C_OTHER: u8 = 255;
+/// Mask bits (above the `FROZEN_FUNS` indices) for local variables named
+/// `expression` and `quote`.
+const EXPRESSION_BIT: u64 = 1 << 62;
+const QUOTE_BIT: u64 = 1 << 63;
+
+fn class_of_name(n: &str) -> u8 {
+    // (Indices into `FROZEN_FUNS`; checked by a test.)
+    match n {
+        "function" => 0,
+        "{" => 1,
+        "if" => 2,
+        "&&" => 3,
+        "||" => 4,
+        "<-" => 5,
+        "=" => 6,
+        "<<-" => 7,
+        "break" => 8,
+        "next" => 9,
+        "repeat" => 10,
+        "while" => 11,
+        "for" => 12,
+        "+" => 13,
+        "-" => 14,
+        "*" => 15,
+        "/" => 16,
+        "^" => 17,
+        "==" => 18,
+        "!=" => 19,
+        "<" => 20,
+        "<=" => 21,
+        ">=" => 22,
+        ">" => 23,
+        "&" => 24,
+        "|" => 25,
+        "!" => 26,
+        "(" => 27,
+        "[" => 28,
+        "[[" => 29,
+        "$" => 30,
+        "local" => 31,
+        "return" => 32,
+        "switch" => 33,
+        ":" => 34,
+        "::" => 35,
+        ":::" => 36,
+        "[<-" => 37,
+        "[[<-" => 38,
+        "$<-" => 39,
+        "@<-" => 40,
+        "assign" => C_ASSIGN_FN,
+        "delayedAssign" => C_DELAYED_ASSIGN,
+        "expression" => C_EXPRESSION,
+        "quote" => C_QUOTE,
+        "browser" => C_BROWSER,
+        _ => C_OTHER,
+    }
+}
+
+/// The class of `sym`'s name, memoized by id.
+fn class(sym: Sym) -> u8 {
+    let i = sym.0 as usize;
+    if let Some(c) = CLASS.with(|c| c.borrow().get(i).copied()).filter(|c| *c != 0) {
+        return c - 1;
+    }
+    let c = sym.with_name(class_of_name);
+    CLASS.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.len() <= i {
+            t.resize(i + 1, 0);
+        }
+        t[i] = c + 1;
+    });
+    c
+}
+
+/// The local-variable mask bit of a name's class.
+fn class_bit(c: u8) -> u64 {
+    match c {
+        c if (c as usize) < FROZEN_FUNS.len() => 1 << c,
+        C_EXPRESSION => EXPRESSION_BIT,
+        C_QUOTE => QUOTE_BIT,
+        _ => 0,
+    }
+}
+
+fn local_index() -> u8 {
+    FROZEN_FUNS.iter().position(|f| *f == "local").unwrap() as u8
 }
 
 /// A JIT cache entry: the compiled body and its compile environment
@@ -141,16 +203,11 @@ struct Entry {
     mask: u64,
 }
 
-/// Is `sym` one of [`FROZEN_FUNS`]?
-#[inline(never)]
-fn is_frozen_fun(sym: Sym) -> bool {
-    let i = sym.0 as usize;
-    BITS.with(|b| b.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0))
-}
-
+/// The index of `sym` in [`FROZEN_FUNS`].
 #[inline(never)]
 fn index(sym: Sym) -> Option<usize> {
-    SYMS.with(|v| v.iter().position(|s| *s == sym))
+    let c = class(sym) as usize;
+    (c < FROZEN_FUNS.len()).then_some(c)
 }
 
 /// A call of `clo` is about to run its body (R: eval.c:R_execClosure):
@@ -380,7 +437,7 @@ fn hash_expr(e: &Value, h: u64) -> u64 {
 fn may_call_browser(e: &Value) -> bool {
     let Value::Lang(l) = e else { return false };
     if let Some(f) = l.fun.as_sym() {
-        if f == K.with(|k| k.browser) {
+        if class(f) == C_BROWSER {
             return true;
         }
         if f == s::FUNCTION {
@@ -400,31 +457,72 @@ fn may_call_browser(e: &Value) -> bool {
 fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
     let local = locals_mask(interp, clo)?;
     let top = interp.topenv(&clo.env);
-    let mut mask = 0u64;
-    SYMS.with(|syms| {
-        for (i, sym) in syms.iter().enumerate() {
-            if local >> i & 1 != 0 {
-                continue;
-            }
-            // R: cmp.R:findCenvVar: the first frame with any binding of it;
-            // frames below the top-level environment are local.
-            let mut e = Some(clo.env.clone());
-            let mut is_local = true;
-            while let Some(env) = e {
-                if env.ptr_eq(&top) {
-                    is_local = false;
-                }
-                if env.has_local(*sym) {
-                    if !is_local && (env.ptr_eq(&interp.base) || env.ptr_eq(&interp.base_ns)) {
-                        mask |= 1 << i;
-                    }
-                    break;
-                }
-                e = env.parent();
+    let syms = frozen_syms();
+    // R: cmp.R:findCenvVar: the first frame with any binding of the name;
+    // a frame below the top-level environment makes it local.
+    let mut below = 0u64;
+    let mut e = clo.env.clone();
+    while !e.ptr_eq(&top) {
+        for (i, s) in syms.iter().enumerate() {
+            if s.is_some_and(|s| e.has_local(s)) {
+                below |= 1 << i;
             }
         }
-    });
-    Some(mask)
+        match e.parent() {
+            Some(p) => e = p,
+            None => break,
+        }
+    }
+    Some(top_mask(interp, &top, &syms) & !below & !local)
+}
+
+/// The symbols of [`FROZEN_FUNS`] that exist (a name never interned is
+/// bound nowhere).
+fn frozen_syms() -> [Option<Sym>; FROZEN_FUNS.len()] {
+    thread_local! {
+        static SYMS: Cell<[Option<Sym>; FROZEN_FUNS.len()]> = const { Cell::new([None; FROZEN_FUNS.len()]) };
+    }
+    let mut v = SYMS.with(|c| c.get());
+    if v.iter().any(|s| s.is_none()) {
+        for (i, n) in FROZEN_FUNS.iter().enumerate() {
+            if v[i].is_none() {
+                v[i] = Sym::lookup(n);
+            }
+        }
+        SYMS.with(|c| c.set(v));
+    }
+    v
+}
+
+/// The names whose first binding from the top-level environment `top` on
+/// is base's, memoized for the search epoch. (Function bindings on the
+/// search path change the epoch; a non-function bound to `+` or `if` there
+/// is not noticed.)
+fn top_mask(interp: &Interp, top: &Env, syms: &[Option<Sym>]) -> u64 {
+    thread_local! {
+        static MEMO: Cell<(u64, usize, u64)> = const { Cell::new((u64::MAX, 0, 0)) };
+    }
+    let key = (crate::env::search_epoch(), top.id());
+    let m = MEMO.with(|c| c.get());
+    if (m.0, m.1) == key {
+        return m.2;
+    }
+    let mut mask = 0u64;
+    for (i, s) in syms.iter().enumerate() {
+        let Some(s) = s else { continue };
+        let mut e = Some(top.clone());
+        while let Some(env) = e {
+            if env.has_local(*s) {
+                if env.ptr_eq(&interp.base) || env.ptr_eq(&interp.base_ns) {
+                    mask |= 1 << i;
+                }
+                break;
+            }
+            e = env.parent();
+        }
+    }
+    MEMO.with(|c| c.set((key.0, key.1, mask)));
+    mask
 }
 
 /// The [`FROZEN_FUNS`] among the formals and local variables of `clo`'s
@@ -436,25 +534,21 @@ fn locals_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
     // R: cmp.R:findLocalsList. `quote` and `expression` are never base
     // variables in the compiler's sense (not language functions); `local`
     // is unless it is a formal or not base's.
-    let k = K.with(|k| [k.expression, k.local, k.quote]);
-    let local_is_base = !clo.formals.iter().any(|f| f.tag == Some(k[1])) && interp.resolves_to_base(k[1], &clo.env);
-    let shadowed: Vec<Sym> = k.iter().copied().filter(|n| *n != k[1] || !local_is_base).collect();
-    let mut sf: Vec<Sym> = k.to_vec();
+    let local_bit = 1u64 << local_index();
+    let local_is_base = !clo.formals.iter().any(|f| f.tag.is_some_and(|t| class(t) == local_index()))
+        && Sym::lookup("local").is_some_and(|l| interp.resolves_to_base(l, &clo.env));
+    let all = EXPRESSION_BIT | QUOTE_BIT | local_bit;
+    let shadowed = if local_is_base { all & !local_bit } else { all };
+    let mut sf = all;
     let vals = loop {
-        let vals = find_locals(&elist, &sf)?;
-        let n = sf.len();
-        let mut next = shadowed.clone();
-        for f in &sf {
-            if vals.contains(f) && !next.contains(f) {
-                next.push(*f);
-            }
-        }
-        sf = next;
-        if sf.len() == n {
+        let vals = find_locals(&elist, sf)?;
+        let n = sf.count_ones();
+        sf = shadowed | (sf & vals);
+        if sf.count_ones() == n {
             break vals;
         }
     };
-    Some(vals.into_iter().filter_map(index).fold(formals_mask(clo), |m, i| m | 1 << i))
+    Some((vals & !(EXPRESSION_BIT | QUOTE_BIT)) | formals_mask(clo))
 }
 
 /// The local mask of a closure created by compiled code (its own formals
@@ -484,71 +578,67 @@ fn formals_mask(clo: &Closure) -> u64 {
     clo.formals.iter().filter_map(|f| f.tag.and_then(index)).fold(0, |m, i| m | 1 << i)
 }
 
-// R: cmp.R:findLocalsList1 + findLocals1
+// R: cmp.R:findLocalsList1 + findLocals1, as a mask of the local
+// variables' `class_bit`s (`shadowed`: likewise).
 #[inline(never)]
-fn find_locals(elist: &[&Value], shadowed: &[Sym]) -> Option<Vec<Sym>> {
-    K.with(|k| {
-        let mut vars: Vec<Sym> = Vec::new();
-        let mut todo: Vec<&Value> = elist.to_vec();
-        while let Some(e) = todo.pop() {
-            let Value::Lang(l) = e else { continue };
-            let head = match &l.fun {
-                Value::Sym(f) => Some(*f),
-                Value::Str(v) if v.data.len() == 1 => v.data[0].as_ref().map(|s| Sym::new(s)),
-                _ => None,
-            };
-            let Some(v) = head else {
-                // A call with a computed function: all its parts.
-                todo.push(&l.fun);
-                todo.extend(l.args.iter().map(|a| &a.value));
-                continue;
-            };
-            let args = l.args.iter().map(|a| &a.value);
-            if v == k.assign || v == k.eq_assign {
-                add(&mut vars, assigned_var(l)?);
-                todo.extend(args);
-            } else if v == k.r#for {
-                if let Some(Value::Sym(var)) = l.args.first().map(|a| &a.value) {
-                    add(&mut vars, *var);
-                }
-                todo.extend(args.skip(1));
-            } else if v == k.assign_fn || v == k.delayed_assign {
-                if let [name, value] = &l.args[..] {
-                    if let Value::Str(n) = &name.value {
-                        if n.data.len() == 1 {
-                            if let Some(n) = &n.data[0] {
-                                add(&mut vars, Sym::new(n));
-                            }
-                            todo.push(&value.value);
+fn find_locals(elist: &[&Value], shadowed: u64) -> Option<u64> {
+    let local = local_index();
+    let mut vars = 0u64;
+    let mut todo: Vec<&Value> = elist.to_vec();
+    while let Some(e) = todo.pop() {
+        let Value::Lang(l) = e else { continue };
+        let head = match &l.fun {
+            Value::Sym(f) => Some((*f, class(*f))),
+            Value::Str(v) if v.data.len() == 1 => {
+                v.data[0].as_ref().map(|n| (Sym::lookup(n).unwrap_or(s::EMPTY), class_of_name(n)))
+            }
+            _ => None,
+        };
+        let Some((v, c)) = head else {
+            // A call with a computed function: all its parts.
+            todo.push(&l.fun);
+            todo.extend(l.args.iter().map(|a| &a.value));
+            continue;
+        };
+        let args = l.args.iter().map(|a| &a.value);
+        if v == s::ASSIGN || v == s::EQ_ASSIGN {
+            vars |= class_bit(assigned_var(l)?);
+            todo.extend(args);
+        } else if v == s::FOR {
+            if let Some(Value::Sym(var)) = l.args.first().map(|a| &a.value) {
+                vars |= class_bit(class(*var));
+            }
+            todo.extend(args.skip(1));
+        } else if c == C_ASSIGN_FN || c == C_DELAYED_ASSIGN {
+            if let [name, value] = &l.args[..] {
+                if let Value::Str(n) = &name.value {
+                    if n.data.len() == 1 {
+                        if let Some(n) = &n.data[0] {
+                            vars |= class_bit(class_of_name(n));
                         }
+                        todo.push(&value.value);
                     }
                 }
-            } else if v == k.function || v == k.tilde {
-            } else if v == k.local && !shadowed.contains(&v) && l.args.len() == 1 {
-            } else if (v == k.expression || v == k.quote) && !shadowed.contains(&v) {
-            } else {
-                todo.extend(args);
             }
+        } else if v == s::FUNCTION || v == s::TILDE {
+        } else if c == local && shadowed & class_bit(c) == 0 && l.args.len() == 1 {
+        } else if (c == C_EXPRESSION || c == C_QUOTE) && shadowed & class_bit(c) == 0 {
+        } else {
+            todo.extend(args);
         }
-        Some(vars)
-    })
-}
-
-#[inline(never)]
-fn add(vars: &mut Vec<Sym>, v: Sym) {
-    if !vars.contains(&v) {
-        vars.push(v);
     }
+    Some(vars)
 }
 
-// R: cmp.R:getAssignedVar (`None`: "bad assignment", a compiler error)
+// R: cmp.R:getAssignedVar: the class of the assigned name (`None`: "bad
+// assignment", a compiler error)
 #[inline(never)]
-fn assigned_var(l: &Lang) -> Option<Sym> {
+fn assigned_var(l: &Lang) -> Option<u8> {
     let mut v = l.args.first()?.value.clone();
     loop {
         match v {
-            Value::Sym(s) if !s.is_empty() => return Some(s),
-            Value::Str(ref x) if x.data.len() == 1 => return x.data[0].as_ref().map(|n| Sym::new(n)),
+            Value::Sym(s) if !s.is_empty() => return Some(class(s)),
+            Value::Str(ref x) if x.data.len() == 1 => return x.data[0].as_ref().map(|n| class_of_name(n)),
             Value::Lang(l) => v = l.args.first()?.value.clone(),
             _ => return None,
         }
@@ -587,9 +677,7 @@ pub fn frozen(interp: &Interp, sym: Sym, env: &Env) -> bool {
 #[inline(never)]
 pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Value> {
     let Value::Sym(sym) = l.fun else { return None };
-    if !is_frozen_fun(sym) {
-        return None;
-    }
+    index(sym)?;
     let base = interp.base.get_local(sym)?;
     if base.ptr_eq(f) {
         return None;
@@ -614,11 +702,25 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
         if ctx.cloenv.ptr_eq(env) {
             if let Value::Closure(c) = &ctx.function {
                 let v = c.jit.0.get();
-                if v & 0xff == COMPILED {
-                    clo.jit.set(INHERITED, v >> 8);
+                match v & 0xff {
+                    COMPILED => clo.jit.set(INHERITED, v >> 8),
+                    // (Namespace code creates namespace code.)
+                    IGNORE => clo.jit.set(IGNORE, 0),
+                    _ => {}
                 }
             }
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn classes_match_frozen_funs() {
+        for (i, n) in super::FROZEN_FUNS.iter().enumerate() {
+            assert_eq!(super::class_of_name(n) as usize, i, "{n}");
+        }
+        assert_eq!(super::class_of_name("x"), super::C_OTHER);
     }
 }
