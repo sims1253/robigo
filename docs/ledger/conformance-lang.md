@@ -1,5 +1,27 @@
 # conformance-lang
 
+## 2026-10-28: preserve EnsureLocal errors and expose compiler constants
+
+- Ports: `eval.c:EnsureLocal` now evaluates the base symbol without discarding its signaled lexical error; `eval.c:do_getconst` exposes the existing constant-buffer slice operation; `envir.c:defineVar` supplies the exact locked-environment message.
+- Result: 1,330/1,371 -> 1,335/1,371, five additional passes, zero regressions. Overall gain: 109 cases from the original 1,226 baseline. Relevant examples hold at 6/8. Kept.
+- `evaluator-errors.R` matches Docker GNU R 4.5.0 byte for byte. Runtime/full conformance verification is running; both new scripts are recorded in the conformance ratchet.
+- Shared file: `interp.rs` changes only the locked-environment error text in this cycle.
+
+### Current remaining failures and ownership
+
+36 FastR cases remain, all outside the owned implementation paths:
+
+- 24 class/class-replacement cases need `attrib.rs`, `builtins/attrib.rs`, or pairlist attribute printing. Preserve the class vector's own attributes and print nested attributes.
+- Four parser diagnostics need the syntax/CLI tracks: zero-length tags (two), repeated formals, and unexpected-input context.
+- Two cases need bytecode printing in `print.rs`: the printed `exists` closure and the `base/get` help example (the latter is outside the FastR count).
+- One S4 environment-replacement case needs actual S4 state in `value.rs`/`builtins/coerce.rs`.
+- One `.Device` binding case needs package/device startup.
+- One `gettext(NULL, NULL)` case needs `builtins/misc.rs`.
+- Two timeout cases need `builtins/sysutils.rs`.
+- Two subset/array cases need the vector track.
+
+The FastR printing item contributes one case, so these groups total 36. The remaining help-page examples are `base/get` (bytecode printing only; status and stderr now match) and `base/environment` (`builtins/misc.rs` registers `env.profile` as a NULL placeholder, so its hash-profile example cannot resolve `size`). Further progress requires other owners' paths.
+
 ## 2026-10-28: lexical diagnostics and missing-argument conditions
 
 - Ports: `context.c:getLexicalCall`, `eval.c:eval` symbol errors, `envir.c:ddfind`, `match.c:matchArgs_NR`, `errors.c:R_MissingArgError_c` and `R_vmakeErrorCondition`; numeric `eval` now starts at `R_GlobalContext`.

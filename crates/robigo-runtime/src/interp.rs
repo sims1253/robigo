@@ -941,7 +941,8 @@ impl Interp {
             if env.has_local(sym) {
                 return Err(Flow::error(format!("cannot change value of locked binding for '{}'", sym)));
             }
-            return Err(Flow::error(format!("cannot add binding of '{}' to a locked environment", sym)));
+            // R: envir.c:defineVar
+            return Err(Flow::error("cannot add bindings to a locked environment"));
         }
         Ok(())
     }
