@@ -57,6 +57,37 @@ baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
   doubles, the "first element used" warning for longer vectors). Anything
   else calls `seq`.
 
+## 2026-10-28: compile-time binding: GNU R's behaviour recorded (`tests/r/jit/base-rebinding.R`)
+
+Recorded with GNU R 4.5.0; not yet in `tests/r/passing.txt` (robigo
+differs in cases 3, 4 and 6).
+
+| case | GNU R | robigo (main 7d8c589) |
+|---|---|---|
+| 1. small top-level closure, `<` rebound before its first call | user `<` every call | same |
+| 2. rebound after its first call | user `<` every call (compiled at the 2nd call, which sees the user `<`) | same |
+| 3. rebound after its second call (compiled) | user `<` never called | calls it |
+| 4. closure with a loop (compiled at the 1st call), rebound after | never called | calls it |
+| 5. closure created in a call, rebound after its 1st call | user `<` every call | same |
+| 6. second closure with the same body as a compiled one | user `<` on its 1st call only (then the cached compiled code) | every call |
+| 7. `+` bound in the closure's own environment | local `+` every call | same |
+| 8. `length` rebound (not a language function) | user `length` (guarded inline) | same |
+
+So the difference is confined to code GNU R has compiled. Operators and the
+other `languageFuns` that resolved to base at compile time are inlined
+without a guard. The port:
+- per compiled body, count calls as `R_CheckJIT` does: compile at the 1st
+  call when `JIT_score(body) >= MIN_JIT_SCORE` (50) or for loops, else
+  `MAYBEJIT` and compile at the 2nd; port `JIT_score` and the default
+  strategy from `eval.c`;
+- at that moment, snapshot which `languageFuns` among the code's guard
+  symbols resolve to base from the closure's environment (`getInlineInfo`,
+  optimize 2), and freeze those guards: `Guard`/`ArithL`/`RelL` checks and the
+  pure-closure inliner treat them as holding from then on;
+- emulate the JIT cache: a body identical to one already compiled starts
+  compiled, from the 2nd call (case 6);
+- other base functions stay guarded (`BASEGUARD`), as robigo does now.
+
 ## 2026-10-28: `x[[i]] <<- v` / `x[i] <<- v` in the VM
 
 - why: `shootout/nbody_naive` (1.32x GNU R) updates velocity and position
