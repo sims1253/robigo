@@ -86,6 +86,21 @@ pub fn make_condition(msg: &str, call: Value, classes: &[&str]) -> Value {
     Value::List(Rc::new(v))
 }
 
+// R: errors.c:R_MissingArgError_c, R_vmakeErrorCondition
+pub fn missing_arg_error(sym: crate::sym::Sym, call: Value, subclass: &'static str) -> Flow {
+    let message = if sym.is_empty() {
+        "argument is missing, with no default".to_string()
+    } else {
+        format!("argument \"{}\" is missing, with no default", sym)
+    };
+    Flow::Error(Box::new(RError {
+        message,
+        call: Some(call),
+        signaled: false,
+        classes: vec![subclass, "missingArgError"],
+    }))
+}
+
 impl Interp {
     /// The call of the closure that called the current builtin, as used by
     /// `stop()` and `warning()` (R's `findCall`).
@@ -124,7 +139,12 @@ impl Interp {
     pub fn signal_error(&mut self, e: Box<RError>) -> Flow {
         let ecall = e.call.clone().unwrap_or_else(|| self.context_call());
         let mut classes: Vec<&str> = e.classes.clone();
-        classes.extend(["simpleError", "error", "condition"]);
+        // R: errors.c:R_vmakeErrorCondition. C-level classed errors do
+        // not inherit from simpleError.
+        if classes.is_empty() {
+            classes.push("simpleError");
+        }
+        classes.extend(["error", "condition"]);
         let class_rcs: Vec<Rc<str>> = classes.iter().map(|c| Rc::from(*c)).collect();
         while let Some((entry, rest)) = self.find_handler(&class_rcs) {
             self.handlers = rest;

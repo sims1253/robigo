@@ -388,6 +388,12 @@ fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, Rc<str>, bool
 fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool) -> RResult<Option<Value>> {
     let mut cur = Some(env.clone());
     while let Some(e) = cur {
+        // R: envir.c:findVarInFrame3 reads SYMBOL_BINDING_VALUE in base;
+        // the missing-argument symbol has itself as its binding value.
+        if sym.is_empty() && (e.ptr_eq(&i.base) || e.ptr_eq(&i.base_ns)) {
+            let v = Value::missing_arg();
+            return Ok(mode_matches(&v, mode).then_some(v));
+        }
         let b = e.0.frame().borrow().get(sym).cloned();
         if let Some(b) = b {
             let mut v = b.value;
@@ -415,10 +421,7 @@ fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     match find_var_mode(i, sym, &env, &mode, inherits)? {
         Some(v) => {
             if v.is_missing_arg() {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    format!("argument \"{}\" is missing, with no default", name),
-                ));
+                return Err(crate::conditions::missing_arg_error(sym, call.clone(), "getMissingError"));
             }
             Ok(v)
         }
@@ -432,9 +435,12 @@ fn do_get(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     }
 }
 
-fn do_get0(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_get0(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let (sym, env, mode, inherits) = lookup_args(i, &args)?;
     match find_var_mode(i, sym, &env, &mode, inherits)? {
+        Some(v) if v.is_missing_arg() => {
+            Err(crate::conditions::missing_arg_error(sym, call.clone(), "getMissingError"))
+        }
         Some(v) => Ok(v),
         None => Ok(arg(&args, 4)),
     }
@@ -816,11 +822,11 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             if n == NA_INTEGER {
                 return Err(Flow::error(format!("invalid 'envir' argument of type '{}'", envir.type_name())));
             }
-            // sys.frame(n) relative to the caller of eval
+            // R: eval.c:do_eval uses R_sysframe(n, R_GlobalContext).
             if n == 0 {
                 i.global.clone()
             } else {
-                let cptr = lexical_context(i);
+                let cptr = i.current_frame();
                 match nth_frame(i, n, cptr)? {
                     Some(k) => i.frames[k].cloenv.clone(),
                     None => i.global.clone(),

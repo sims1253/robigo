@@ -1,5 +1,13 @@
 # conformance-lang
 
+## 2026-10-28: lexical diagnostics and missing-argument conditions
+
+- Ports: `context.c:getLexicalCall`, `eval.c:eval` symbol errors, `envir.c:ddfind`, `match.c:matchArgs_NR`, `errors.c:R_MissingArgError_c` and `R_vmakeErrorCondition`; numeric `eval` now starts at `R_GlobalContext`.
+- Result: 1,323/1,371 -> 1,330/1,371, seven additional passes, zero regressions. Relevant examples improve 5/8 -> 6/8. Kept.
+- `get` and `get0` now signal `getMissingError`/`missingArgError`; classed C errors omit `simpleError`. The `base/get` example now exits successfully; its remaining difference is bytecode printing, outside this track.
+- Verification: 19 runtime tests pass; `lookup-conditions.R` matches Docker GNU R 4.5.0; formatting passes. Corpus ratchets record seven FastR gains and `base/eval`.
+- Shared file: minimal changes in `interp.rs` for lexical error calls, empty dots diagnostics, and unused-argument rendering. Success-path variable lookup is unchanged.
+
 ## 2026-10-28: environment validation, dots substitution, and Ops NextMethod
 
 - Why: replacement errors used internal calls; removal ignored environment locks; dots expansion lost pairlist semantics; `NextMethod` collapsed binary `.Method` vectors.

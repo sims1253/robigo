@@ -1,0 +1,19 @@
+[1] "getMissingError" "missingArgError" "error"           "condition"      
+[1] "argument \"x\" is missing, with no default"
+get(x, envir, mode, inherits)
+[1] "getMissingError" "missingArgError" "error"           "condition"      
+[1] "argument \"x\" is missing, with no default"
+get0(x, envir, mode, inherits, ifnotfound)
+[1] "getMissingError" "missingArgError" "error"           "condition"      
+[1] "argument is missing, with no default"
+get(x, envir, mode, inherits)
+[1] "evalError"       "missingArgError" "error"           "condition"      
+[1] "argument \"x\" is missing, with no default"
+f()
+[1] "simpleError" "error"       "condition"  
+[1] "the ... list contains fewer than 1 element"
+f()
+[1] "simpleError" "error"       "condition"  
+[1] "unused argument (alist())"
+f(1, )
+[1] "global"

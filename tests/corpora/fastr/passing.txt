@@ -8670,6 +8670,7 @@ builtins/TestBuiltin_qsort/d15e8dec4fd52f58
 builtins/TestBuiltin_quit/1e8592f7404b0caa
 builtins/TestBuiltin_quote/0a6e0f205f9fc639
 builtins/TestBuiltin_quote/0d0e2367346ec142
+builtins/TestBuiltin_quote/0edb37a49cc7ad48
 builtins/TestBuiltin_quote/100a21310e598732
 builtins/TestBuiltin_quote/1d35ab1dbbde7b91
 builtins/TestBuiltin_quote/22dd7ca7c698de83
@@ -13252,6 +13253,7 @@ builtins/TestBuiltin_switch/56bf45a80fd759fa
 builtins/TestBuiltin_switch/5772ff3b64af15e0
 builtins/TestBuiltin_switch/601f3ab89747c2af
 builtins/TestBuiltin_switch/60adbb0a3ef12053
+builtins/TestBuiltin_switch/677f61cda4c750b6
 builtins/TestBuiltin_switch/6b54ec32deb889dd
 builtins/TestBuiltin_switch/73a7abc8b2a6ffcd
 builtins/TestBuiltin_switch/74e4b8537210d304
@@ -14633,6 +14635,7 @@ functions/TestFunctions/03c48d0fb60cff18
 functions/TestFunctions/046bbcc611bcdb59
 functions/TestFunctions/04d887a3192c3793
 functions/TestFunctions/04e3ee9a75b34c81
+functions/TestFunctions/058d6e9040ff68aa
 functions/TestFunctions/070475c1eca1e6f2
 functions/TestFunctions/0767b0f5fd3468c4
 functions/TestFunctions/08e996863c1044b5
@@ -14641,6 +14644,7 @@ functions/TestFunctions/0e30dba5428f9bc8
 functions/TestFunctions/0ffbed9daf4f0de5
 functions/TestFunctions/101acdc5af0ea433
 functions/TestFunctions/104a4b7a3b26208d
+functions/TestFunctions/1326a05c5e7aad7f
 functions/TestFunctions/13639a7cff5c30ed
 functions/TestFunctions/1369cf0df60ca145
 functions/TestFunctions/150ad6740be0bb6b
@@ -14738,6 +14742,7 @@ functions/TestFunctions/71d4d420e2812ee5
 functions/TestFunctions/72233c5587c1176b
 functions/TestFunctions/74850fa42c095843
 functions/TestFunctions/74a8d8ab5a37e215
+functions/TestFunctions/7630c53d74e78312
 functions/TestFunctions/766bdfc8d9daa278
 functions/TestFunctions/76aad29868cc02a9
 functions/TestFunctions/76d8a2d98546fcd7
@@ -14912,6 +14917,7 @@ functions/TestS3Dispatch/24a1d8371ac358b8
 functions/TestS3Dispatch/24aa801b2396b313
 functions/TestS3Dispatch/2b0deea7872a6547
 functions/TestS3Dispatch/2d064663ce057601
+functions/TestS3Dispatch/35f12e6e0a3c5224
 functions/TestS3Dispatch/38b1ac35a5e5027f
 functions/TestS3Dispatch/3f7e39325d167dd7
 functions/TestS3Dispatch/4084382bc36cddee
@@ -14931,6 +14937,7 @@ functions/TestS3Dispatch/74747d4c9149c35b
 functions/TestS3Dispatch/7823a2611030a486
 functions/TestS3Dispatch/78f16a0ae6c81228
 functions/TestS3Dispatch/7a2b29aadd8d44fb
+functions/TestS3Dispatch/7bc62135c9b78e30
 functions/TestS3Dispatch/7cd75c3fab06566a
 functions/TestS3Dispatch/83fc5157e04aa339
 functions/TestS3Dispatch/88660b34fff9c01e

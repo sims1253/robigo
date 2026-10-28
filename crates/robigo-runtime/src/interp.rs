@@ -235,7 +235,15 @@ impl Interp {
         }
     }
 
+    // R: context.c:getLexicalCall
+    fn lexical_call(&self, env: &Env) -> Value {
+        self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
+    }
+
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
+        if sym.is_empty() {
+            return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"));
+        }
         if sym == s::DOTS {
             return Err(Flow::error("'...' used in an incorrect context"));
         }
@@ -255,14 +263,14 @@ impl Interp {
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
                     v if v.is_missing_arg() => {
-                        Err(Flow::error(format!("argument \"{}\" is missing, with no default", sym)))
+                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"))
                     }
                     v => Ok(v),
                 };
             }
             match cur.parent() {
                 Some(p) => cur = p,
-                None => return Err(Flow::error(format!("object '{}' not found", sym))),
+                None => return Err(Flow::error_call(self.lexical_call(env), format!("object '{}' not found", sym))),
             }
         }
     }
@@ -285,7 +293,12 @@ impl Interp {
                     )))
                 }
             }
-            Some(_) => Err(Flow::error(format!("..{} used in an incorrect context, no ... to look in", i))),
+            // R: envir.c:ddfind. Missing and NULL dots bindings have length zero.
+            Some(_) => Err(Flow::error(format!(
+                "the ... list contains fewer than {} element{}",
+                i,
+                if i == 1 { "" } else { "s" }
+            ))),
             None => Err(Flow::error(format!("..{} used in an incorrect context, no ... to look in", i))),
         }
     }
@@ -720,17 +733,14 @@ impl Interp {
                     Arg::new(a.tag, v)
                 })
                 .collect();
-            let text: Vec<String> = unused
-                .iter()
-                .map(|a| match a.tag {
-                    Some(t) => format!("{} = {}", t, crate::deparse::deparse_one_line(&a.value)),
-                    None => crate::deparse::deparse_one_line(&a.value),
-                })
-                .collect();
+            // R: match.c:matchArgs_NR deparses the unused pairlist and
+            // reports the suffix beginning at its first opening parenthesis.
             let n = unused.len();
+            let text = crate::deparse::deparse_one_line(&Value::pairlist(unused));
+            let text = &text[text.find('(').unwrap_or(0)..];
             return Err(Flow::error_call(
                 call.clone(),
-                format!("unused argument{} ({})", if n == 1 { "" } else { "s" }, text.join(", ")),
+                format!("unused argument{} {}", if n == 1 { "" } else { "s" }, text),
             ));
         }
         Ok(actuals)
