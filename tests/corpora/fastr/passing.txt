@@ -12994,6 +12994,7 @@ builtins/TestBuiltin_serialize/7393e7b936375ed8
 builtins/TestBuiltin_serialize/76bf10a368c0c115
 builtins/TestBuiltin_serialize/76cd7b0e7a5cc841
 builtins/TestBuiltin_serialize/770deecad2d9331b
+builtins/TestBuiltin_serialize/7cbbf930f5880e65
 builtins/TestBuiltin_serialize/7eaab9640dff0ce2
 builtins/TestBuiltin_serialize/7ec3a397dec650c2
 builtins/TestBuiltin_serialize/7ee20a299bde1bab
@@ -13043,6 +13044,7 @@ builtins/TestBuiltin_serialize/ae90eb6358627f0e
 builtins/TestBuiltin_serialize/af669635e5b95ea9
 builtins/TestBuiltin_serialize/b3741193951aecbc
 builtins/TestBuiltin_serialize/b37833a7fecfb420
+builtins/TestBuiltin_serialize/b59304097141f925
 builtins/TestBuiltin_serialize/b6227976e6bdfc80
 builtins/TestBuiltin_serialize/ba16017a6ec32590
 builtins/TestBuiltin_serialize/badba61174d862d9

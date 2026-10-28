@@ -358,6 +358,7 @@ methods/method.skeleton
 methods/new
 methods/nonStructure-class
 methods/promptClass
+methods/refClass
 methods/representation
 methods/selectSuperClasses
 methods/setAs

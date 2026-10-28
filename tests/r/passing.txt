@@ -216,3 +216,4 @@ tests/r/s4/s3-dispatch.R
 tests/r/s4/trace.R
 tests/r/s4/coerce-oldclass.R
 tests/r/s4/replace.R
+tests/r/s4/serialize-bindings.R
