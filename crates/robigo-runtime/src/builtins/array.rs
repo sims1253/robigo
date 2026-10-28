@@ -1408,8 +1408,10 @@ fn arg_expr(v: &Value) -> Value {
 fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bool) -> RResult<Value> {
     // missing(deparse.level)
     let dl_expr = arg(&args, 0);
+    // R: bind.c:do_bind uses R_missing(), not R_isMissing(): a formal left
+    // to its default is still missing for this test.
     let missing_dl = match &dl_expr {
-        Value::Sym(sym) => super::lang::is_missing_in(i, *sym, env, 0),
+        Value::Sym(sym) => super::lang::missing_sym(i, call, *sym, env)?,
         _ => false,
     };
     let dl = i.eval(&dl_expr, env)?;
@@ -1489,21 +1491,33 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
     }
 }
 
-fn coerce_for_bind(u: &Value, mode: VType) -> Value {
+fn coerce_for_bind(u: &Value, mode: VType, strict: bool) -> RResult<Value> {
     if mode == VType::Null {
-        return u.clone();
+        return Ok(u.clone());
     }
     if u.vtype() == Some(mode) {
-        return u.clone();
+        return Ok(u.clone());
     }
-    match u {
+    // R: bind.c:rbind coerces every argument with coerceVector(), which
+    // rejects closures and environments; bind.c:cbind's VECSXP branch has a
+    // default case that keeps such values as single elements.
+    if mode == VType::List && strict {
+        match u {
+            Value::Closure(_) | Value::Builtin(_) => {
+                return Err(Flow::error(format!("cannot coerce type '{}' to vector of type 'list'", u.type_name())));
+            }
+            Value::Env(_) => return Err(Flow::error("environments cannot be coerced to other types")),
+            _ => {}
+        }
+    }
+    Ok(match u {
         Value::Lang(_) | Value::Sym(_) | Value::Closure(_) | Value::Env(_) | Value::Builtin(_)
             if mode == VType::List =>
         {
             Value::list(vec![u.clone()])
         }
         _ => coerce_quiet(u, mode),
-    }
+    })
 }
 
 fn row_names(dn: &Value) -> Value {
@@ -1618,7 +1632,7 @@ fn cbind(
         if mode == VType::Null {
             continue;
         }
-        let cu = coerce_for_bind(u, mode);
+        let cu = coerce_for_bind(u, mode, false)?;
         let k = cu.len();
         let idx = if umatrix { k } else { rows };
         if k == 0 {
@@ -1775,7 +1789,7 @@ fn rbind(
                 continue;
             }
             let urows = if umatrix { nrows(u) } else { 1 };
-            let cu = coerce_for_bind(u, mode);
+            let cu = coerce_for_bind(u, mode, true)?;
             let k = cu.len();
             let idx = if umatrix { urows } else { (k > 0) as usize };
             let a = srcs.len();

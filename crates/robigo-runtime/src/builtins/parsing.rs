@@ -19,6 +19,7 @@ pub static DEFS: &[Builtin] = &[
     internal("str2expression", do_str2expression, 1),
     internal("deparse", do_deparse, 5),
     internal("dput", do_dput, 3).invisible(),
+    internal("dump", do_dump, 5).invisible(),
     special("expression", do_expression, -1),
     internal("all.names", do_allnames, 4),
     internal("withVisible", do_withvisible, 1).special(),
@@ -158,6 +159,76 @@ fn do_dput(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     }
     crate::builtins::io::write_connection(i, con, &text)?;
     Ok(x)
+}
+
+/// `dump()`: write the named objects of `envir` as assignments to a
+/// connection (or stdout), returning the names written.
+// R: deparse.c:do_dump
+fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let names_v = arg(&args, 0);
+    let file = arg(&args, 1);
+    if !file.inherits("connection") {
+        return Err(Flow::error("'file' must be a character string or connection"));
+    }
+    let Value::Str(names) = &names_v else { return Err(Flow::error("character arguments expected")) };
+    let con = crate::coerce::as_integer(&file);
+    if names.data.is_empty() || con == NA_INTEGER {
+        return Err(Flow::error("zero-length argument"));
+    }
+    let source = arg(&args, 2);
+    if !source.is_null() && !matches!(source, Value::Env(_)) {
+        return Err(Flow::error("invalid 'envir' argument"));
+    }
+    let mut opts = crate::coerce::as_integer(&arg(&args, 3));
+    if opts == NA_INTEGER || !(0..=2048).contains(&opts) {
+        return Err(Flow::error("'opts' should be small non-negative integer"));
+    }
+    if crate::coerce::as_logical(&arg(&args, 4)) != TRUE {
+        opts |= crate::deparse::DELAYPROMISES as i32;
+    }
+    let opts = opts as u32;
+
+    // R_findVar for each name; objects that are unbound are skipped with a
+    // warning.
+    let mut found: Vec<(Rc<str>, Value)> = Vec::with_capacity(names.data.len());
+    for name in &names.data {
+        let Some(name) = name else { continue };
+        if source.is_null() {
+            // R: envir.c:R_findVar -- a NULL environment is defunct.
+            return Err(Flow::error("use of NULL environment is defunct"));
+        }
+        let Value::Env(env) = &source else { unreachable!() };
+        let mut val = match env.lookup(Sym::new(name)) {
+            Some((v, _)) => i.force(v)?,
+            None => {
+                i.warning(format!("object '{}' not found", name))?;
+                continue;
+            }
+        };
+        if val.is_missing_arg() {
+            val = Value::Null;
+        }
+        found.push((name.clone(), val));
+    }
+
+    let mut outnames: Vec<RStr> = Vec::with_capacity(found.len());
+    let mut text = String::new();
+    for (name, val) in found {
+        outnames.push(Some(name.clone()));
+        if crate::deparse::is_valid_name(&name) {
+            text.push_str(&format!("{} <-\n", name));
+        } else if opts & crate::deparse::S_COMPAT != 0 {
+            text.push_str(&format!("\"{}\" <-\n", name));
+        } else {
+            text.push_str(&format!("`{}` <-\n", name));
+        }
+        for l in deparse_lines(&val, crate::deparse::DEFAULT_CUTOFF, true, opts, None) {
+            text.push_str(&l);
+            text.push('\n');
+        }
+    }
+    crate::builtins::io::write_connection(i, con, &text)?;
+    Ok(Value::strs(outnames))
 }
 
 /// `expression(...)`: unevaluated arguments as an expression vector.

@@ -739,6 +739,9 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
         }
         None => {
             let tv = m.get(1).cloned().unwrap_or_else(|| Value::int(1));
+            // R: seq.c:do_rep coerces non-integer `times` to double first,
+            // which warns (e.g. "NAs introduced by coercion").
+            let tv = if matches!(tv, Value::Int(_)) { tv } else { i.coerce(&tv, VType::Real)? };
             let t = counts_of(&tv).map_err(|_| err("times"))?;
             nt = t.len();
             if nt == 1 {

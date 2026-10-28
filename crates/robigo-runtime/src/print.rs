@@ -179,7 +179,7 @@ impl Printer {
                         );
                     }
                     Some(Value::Int(d)) if d.data.len() > 2 => {
-                        self.array(interp, v, &d.data)?;
+                        self.array(interp, v, &d.data, self.pp.quote, self.pp.right)?;
                     }
                     _ => match v.get_attr(s::NAMES) {
                         Some(names) => self.named_vector(v, &names),
@@ -355,6 +355,10 @@ impl Printer {
         if w < wn {
             w = wn;
         }
+        // R: printvector.c printNamedComplexVectorS separates complex items
+        // with a gap *before* each item (not after the last one); the other
+        // types print the gap after each item.
+        let gap_before = matches!(v, Value::Cplx(_));
         let nperline = (pp.width / (w + pp.gap)).max(1);
         let nlines = n_pr.div_ceil(nperline);
         for i in 0..nlines {
@@ -378,10 +382,23 @@ impl Printer {
                     break;
                 }
                 let item = &items[k];
-                let pad = w.saturating_sub(str_width(item));
-                self.p(&" ".repeat(pad));
-                self.p(item);
-                self.p(&" ".repeat(pp.gap));
+                if gap_before {
+                    if j > 0 {
+                        self.p(&" ".repeat(pp.gap));
+                    }
+                    // NA complexes are padded to the full field width (which
+                    // may have grown to fit a long name); others are not.
+                    let na = matches!(v, Value::Cplx(x) if is_na_real(x.data[k].re) || is_na_real(x.data[k].im));
+                    if na {
+                        self.p(&" ".repeat(w.saturating_sub(str_width(item))));
+                    }
+                    self.p(item);
+                } else {
+                    let pad = w.saturating_sub(str_width(item));
+                    self.p(&" ".repeat(pad));
+                    self.p(item);
+                    self.p(&" ".repeat(pp.gap));
+                }
             }
         }
         self.p("\n");
@@ -637,7 +654,7 @@ impl Printer {
     }
 
     /// R: printarray.c:printArray for arrays of three or more dimensions.
-    fn array(&mut self, interp: &mut Interp, v: &Value, dims: &[i32]) -> RResult<()> {
+    fn array(&mut self, interp: &mut Interp, v: &Value, dims: &[i32], quote: bool, right: bool) -> RResult<()> {
         let _ = interp;
         let ndim = dims.len();
         let nr = dims[0] as usize;
@@ -734,8 +751,8 @@ impl Printer {
                 &dn1,
                 rn.as_deref(),
                 cn.as_deref(),
-                self.pp.quote,
-                self.pp.right,
+                quote,
+                right,
                 do_ij,
             );
             self.p("\n");
@@ -766,11 +783,26 @@ impl Printer {
         if let Some(Value::Int(d)) = v.get_attr(s::DIM) {
             if d.data.len() > 1 {
                 // Array-like list: print summaries.
-                let t: Vec<RStr> = l.data.iter().map(|x| rstr(&list_elt_summary(x))).collect();
-                let tv = Value::strs(t);
+                let t: Vec<RStr> = l
+                    .data
+                    .iter()
+                    .map(|x| match object_summary(interp, x, &self.env) {
+                        Some(s) => Some(std::rc::Rc::from(s.as_str())),
+                        None => rstr(&list_elt_summary(x)),
+                    })
+                    .collect();
+                let mut tv = Value::strs(t);
                 if d.data.len() == 2 {
                     let (rl, cl, rn, cn) = matrix_dimnames(v);
                     self.matrix(&tv, d.data[0] as usize, d.data[1] as usize, rl, cl, rn, cn, false, self.pp.right);
+                } else {
+                    // print.c PrintGenericVector: print the summary vector as
+                    // an array, keeping the original's dimnames.
+                    tv.set_attr_raw(s::DIM, Value::ints(d.data.clone()));
+                    if let Some(dn) = v.get_attr(s::DIMNAMES) {
+                        tv.set_attr_raw(s::DIMNAMES, dn);
+                    }
+                    self.array(interp, &tv, &d.data, false, false)?;
                 }
                 return self.attributes(interp, v, false);
             }
@@ -917,6 +949,30 @@ pub fn matrix_dimnames(v: &Value) -> (Option<Vec<RStr>>, Option<Vec<RStr>>, Opti
     (rl, cl, rn, cn)
 }
 
+/// R: print.c PrintGenericVector — an `isObject()` element is summarised by
+/// `format()`: a single short string is used verbatim, otherwise the element
+/// prints as `"<class>,<length>"`.
+fn object_summary(interp: &mut Interp, x: &Value, env: &Env) -> Option<String> {
+    if !x.is_object() {
+        return None;
+    }
+    let class_name =
+        crate::dispatch::dispatch_class(x).first().map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+    let base = interp.base.clone();
+    if let Ok(f) = interp.find_fun(Sym::new("format"), &base) {
+        if let Ok(Value::Str(s)) = interp.call_value(&f, vec![Arg::pos(x.clone())], env) {
+            if s.data.len() == 1 {
+                if let Some(Some(t)) = s.data.first() {
+                    if t.len() < 100 {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Some(format!("{},{}", class_name, x.len()))
+}
+
 fn list_elt_summary(x: &Value) -> String {
     match x {
         Value::Null => "NULL".into(),
@@ -935,6 +991,17 @@ fn list_elt_summary(x: &Value) -> String {
             encode_real0(v.data[0], w, d, e, "NA")
         }
         Value::Real(v) => format!("numeric,{}", v.data.len()),
+        // R: print.c PrintGenericVector: a length-one complex is printed like
+        // the scalar itself (formatComplex on just that element, no gap).
+        Value::Cplx(v) if v.data.len() == 1 => {
+            let z = v.data[0];
+            if is_na_real(z.re) || is_na_real(z.im) {
+                encode_real0(NA_REAL, 2, 0, 0, "NA")
+            } else {
+                let (r, i) = format_complex(&v.data, 7, 0, 0, 2);
+                encode_complex(z, r, i, "NA")
+            }
+        }
         Value::Cplx(v) => format!("complex,{}", v.data.len()),
         Value::Str(v) if v.data.len() == 1 => match &v.data[0] {
             Some(s) => format!("\"{}\"", s),

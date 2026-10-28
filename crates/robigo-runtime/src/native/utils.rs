@@ -10,6 +10,7 @@ use crate::sym::s;
 use crate::value::*;
 
 pub static PORTS: &[(&str, NativeFn)] = &[
+    ("crc64", |_, _, a, _| crate::builtins::util::native_crc64(&a)),
     ("readtablehead", |i, _, a, _| readtablehead(i, &a)),
     ("countfields", |i, _, a, _| countfields(i, &a)),
     ("typeconvert", |i, _, a, _| typeconvert(i, &a)),

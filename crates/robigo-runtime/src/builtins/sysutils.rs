@@ -33,6 +33,9 @@ pub static DEFS: &[Builtin] = &[
     internal("tempdir", do_tempdir, 1),
     internal("tempfile", do_tempfile, 3),
     internal("file.exists", do_fileexists, 1),
+    internal("file.access", do_fileaccess, 2),
+    internal("file.info", do_fileinfo, 2),
+    internal("file.copy", do_filecopy, 6),
     internal("list.files", do_listfiles, 8),
     internal("list.dirs", do_listdirs, 3),
     internal("file.remove", do_fileremove, 1),
@@ -48,6 +51,9 @@ pub static DEFS: &[Builtin] = &[
     internal("path.expand", do_pathexpand, 1),
     internal("readRenviron", do_read_renviron, 1),
     internal("Sys.glob", do_glob, 2),
+    internal("Sys.chmod", do_syschmod, 3).invisible(),
+    internal("Sys.readlink", do_readlink, 1),
+    internal("Sys.localeconv", do_localeconv, 0),
     internal("system", do_system, 4).custom_vis(),
     internal("capabilities", do_capabilities, 0),
     internal("capabilitiesX11", do_capabilities_x11, 0),
@@ -596,6 +602,17 @@ fn init_locale() {
     let empty = CString::new("").unwrap();
     for cat in [LC_CTYPE, LC_COLLATE, LC_TIME, LC_MONETARY, LC_MESSAGES, LC_PAPER, LC_MEASUREMENT] {
         unsafe { setlocale(cat, empty.as_ptr()) };
+    }
+}
+
+/// Whether string collation must use the C locale's byte order. GNU R's
+/// `Scollate` (util.c) uses `strcmp` when the collation locale is "C" and
+/// the ICU root collator otherwise.
+pub(crate) fn collation_is_c() -> bool {
+    init_locale();
+    match cstr(unsafe { setlocale(LC_COLLATE, std::ptr::null()) }) {
+        Some(l) => l == "C",
+        None => true,
     }
 }
 
@@ -1416,4 +1433,505 @@ fn do_listdirs(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
     out.sort_by(|a, b| super::sort::scollate(a, b));
     Ok(Value::strs_from(out))
+}
+
+// ----------------------------------------------------------------------
+// Files: access, info, copy, chmod, readlink; localeconv
+
+/// `checkArity` for a `.Internal`: GNU R's `checkArity` reports through
+/// `error()`, i.e. against the context call, not `errorcall(call, ...)`.
+// R: util.c:Rf_checkArityCall
+fn check_internal_arity(args: &[Arg], n: usize, name: &str) -> RResult<()> {
+    if args.len() != n {
+        return Err(Flow::error(format!(
+            "{} argument{} passed to .Internal({}) which requires {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            name,
+            n
+        )));
+    }
+    Ok(())
+}
+
+// do_copy refuses paths past R_PATH_MAX ("over-long path"); the constant
+// is defined above with list.files.
+// R: platform.c:APPENDBUFSIZE
+const APPEND_BUFSIZE: usize = 128 * 1024;
+
+unsafe extern "C" {
+    fn access(path: *const c_char, mode: c_int) -> c_int;
+    fn chmod(path: *const c_char, mode: u32) -> c_int;
+    fn umask(mask: u32) -> u32;
+    fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: usize) -> isize;
+    fn utimensat(dirfd: c_int, path: *const c_char, times: *const [Timespec; 2], flags: c_int) -> c_int;
+    fn localeconv() -> *const Lconv;
+    fn getgrgid(gid: u32) -> *const Group;
+}
+
+#[repr(C)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+#[repr(C)]
+struct Group {
+    gr_name: *const c_char,
+    gr_passwd: *const c_char,
+    gr_gid: u32,
+    gr_mem: *const *const c_char,
+}
+
+#[repr(C)]
+struct Lconv {
+    decimal_point: *const c_char,
+    thousands_sep: *const c_char,
+    grouping: *const c_char,
+    int_curr_symbol: *const c_char,
+    currency_symbol: *const c_char,
+    mon_decimal_point: *const c_char,
+    mon_thousands_sep: *const c_char,
+    mon_grouping: *const c_char,
+    positive_sign: *const c_char,
+    negative_sign: *const c_char,
+    int_frac_digits: c_char,
+    frac_digits: c_char,
+    p_cs_precedes: c_char,
+    p_sep_by_space: c_char,
+    n_cs_precedes: c_char,
+    n_sep_by_space: c_char,
+    p_sign_posn: c_char,
+    n_sign_posn: c_char,
+    int_p_cs_precedes: c_char,
+    int_p_sep_by_space: c_char,
+    int_n_cs_precedes: c_char,
+    int_n_sep_by_space: c_char,
+    int_p_sign_posn: c_char,
+    int_n_sign_posn: c_char,
+}
+
+fn cstr_or_empty(p: *const c_char) -> String {
+    if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
+}
+
+// R: platform.c:do_localeconv
+fn do_localeconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 0, "Sys.localeconv")?;
+    let lc = unsafe { localeconv() };
+    if lc.is_null() {
+        return Err(Flow::error("localeconv failed"));
+    }
+    let lc = unsafe { &*lc };
+    let mut names: Vec<&str> = Vec::with_capacity(18);
+    let mut vals: Vec<String> = Vec::with_capacity(18);
+    macro_rules! num {
+        ($field:ident, $name:expr) => {
+            names.push($name);
+            vals.push(format!("{}", lc.$field as i32));
+        };
+    }
+    names.push("decimal_point");
+    vals.push(cstr_or_empty(lc.decimal_point));
+    names.push("thousands_sep");
+    vals.push(cstr_or_empty(lc.thousands_sep));
+    names.push("grouping");
+    vals.push(cstr_or_empty(lc.grouping));
+    names.push("int_curr_symbol");
+    vals.push(cstr_or_empty(lc.int_curr_symbol));
+    names.push("currency_symbol");
+    vals.push(cstr_or_empty(lc.currency_symbol));
+    names.push("mon_decimal_point");
+    vals.push(cstr_or_empty(lc.mon_decimal_point));
+    names.push("mon_thousands_sep");
+    vals.push(cstr_or_empty(lc.mon_thousands_sep));
+    names.push("mon_grouping");
+    vals.push(cstr_or_empty(lc.mon_grouping));
+    names.push("positive_sign");
+    vals.push(cstr_or_empty(lc.positive_sign));
+    names.push("negative_sign");
+    vals.push(cstr_or_empty(lc.negative_sign));
+    num!(int_frac_digits, "int_frac_digits");
+    num!(frac_digits, "frac_digits");
+    num!(p_cs_precedes, "p_cs_precedes");
+    num!(p_sep_by_space, "p_sep_by_space");
+    num!(n_cs_precedes, "n_cs_precedes");
+    num!(n_sep_by_space, "n_sep_by_space");
+    num!(p_sign_posn, "p_sign_posn");
+    num!(n_sign_posn, "n_sign_posn");
+    let mut v = Value::strs_from(vals);
+    v.set_attr_raw(s::NAMES, Value::strs_from(names));
+    Ok(v)
+}
+
+// R: platform.c:do_fileaccess
+fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 2, "file.access")?;
+    let Value::Str(files) = &args[0].value else { return Err(Flow::error("invalid 'names' argument")) };
+    let mode = as_integer(&args[1].value);
+    if !(0..=7).contains(&mode) {
+        return Err(Flow::error("invalid 'mode' argument"));
+    }
+    // mode bit 1 = X_OK, 2 = W_OK, 4 = R_OK.
+    let modemask = ((mode & 1 != 0) as c_int) * 1 | ((mode & 2 != 0) as c_int) * 2 | ((mode & 4 != 0) as c_int) * 4;
+    let mut out = Vec::with_capacity(files.data.len());
+    for f in &files.data {
+        out.push(match f {
+            // R treats NA as a non-existent file.
+            None => -1,
+            Some(f) => {
+                let path = expand_file_name(f);
+                match CString::new(path) {
+                    Ok(c) => unsafe { access(c.as_ptr(), modemask) },
+                    Err(_) => -1,
+                }
+            }
+        });
+    }
+    Ok(Value::ints(out))
+}
+
+/// `getpwuid`, as R uses it for `file.info(extra_cols = TRUE)`.
+fn user_name(uid: u32) -> RStr {
+    // `getpwuid` is declared above (pw_name is its first member).
+    let p = unsafe { getpwuid(uid) };
+    if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.pw_name).into()) }
+}
+
+fn group_name(gid: u32) -> RStr {
+    let p = unsafe { getgrgid(gid) };
+    if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.gr_name).into()) }
+}
+
+// R: platform.c:do_fileinfo
+fn do_fileinfo(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use std::os::unix::fs::MetadataExt;
+    check_internal_arity(&args, 2, "file.info")?;
+    let Value::Str(files) = &args[0].value else { return Err(Flow::error("invalid filename argument")) };
+    let extras = as_integer(&args[1].value);
+    if extras == NA_INTEGER {
+        return Err(Flow::error("invalid 'extra_cols' argument"));
+    }
+    let extras = extras != 0;
+    let n = files.data.len();
+    let mut size = vec![NA_REAL; n];
+    let mut isdir = vec![NA_INTEGER; n];
+    let mut mode = vec![NA_INTEGER; n];
+    let mut mtime = vec![NA_REAL; n];
+    let mut ctime = vec![NA_REAL; n];
+    let mut atime = vec![NA_REAL; n];
+    let mut uid = vec![NA_INTEGER; n];
+    let mut gid = vec![NA_INTEGER; n];
+    let mut unames: Vec<RStr> = vec![None; n];
+    let mut grnames: Vec<RStr> = vec![None; n];
+    let ts = |sec: i64, nsec: i64| sec as f64 + 1e-9 * nsec as f64;
+    for (k, f) in files.data.iter().enumerate() {
+        let Some(f) = f else { continue };
+        // R: "Target not link" -- stat(), not lstat().
+        let Ok(md) = std::fs::metadata(expand_file_name(f)) else { continue };
+        size[k] = md.size() as f64;
+        isdir[k] = md.is_dir() as i32;
+        mode[k] = (md.mode() & 0o7777) as i32;
+        mtime[k] = ts(md.mtime(), md.mtime_nsec());
+        ctime[k] = ts(md.ctime(), md.ctime_nsec());
+        atime[k] = ts(md.atime(), md.atime_nsec());
+        uid[k] = md.uid() as i32;
+        gid[k] = md.gid() as i32;
+        unames[k] = user_name(md.uid());
+        grnames[k] = group_name(md.gid());
+    }
+    // `mode` carries class "octmode" (R: platform.c:classgets(mode, "octmode")).
+    let mut mode_v = Value::ints(mode);
+    mode_v.set_attr_raw(s::CLASS, Value::str("octmode"));
+    let mut cols = vec![
+        Value::reals(size),
+        Value::lgls(isdir),
+        mode_v,
+        Value::reals(mtime),
+        Value::reals(ctime),
+        Value::reals(atime),
+    ];
+    let mut names = vec!["size", "isdir", "mode", "mtime", "ctime", "atime"];
+    if extras {
+        cols.push(Value::ints(uid));
+        cols.push(Value::ints(gid));
+        cols.push(Value::strs(unames));
+        cols.push(Value::strs(grnames));
+        names.extend(["uid", "gid", "uname", "grname"]);
+    }
+    let mut ans = Value::list(cols);
+    ans.set_attr_raw(s::NAMES, Value::strs_from(names));
+    Ok(ans)
+}
+
+/// The permission mask `do_copy` applies: `0777 & ~umask`.
+fn umask_mask() -> u32 {
+    let um = unsafe { umask(0) };
+    unsafe { umask(um) };
+    0o777 & !um
+}
+
+fn chmod_path(path: &str, mode: u32) -> bool {
+    let Ok(c) = CString::new(path) else { return false };
+    (unsafe { chmod(c.as_ptr(), mode) }) == 0
+}
+
+// R: platform.c:copyFileTime
+fn copy_file_time(from: &str, to: &str) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(md) = std::fs::metadata(expand_file_name(from)) else { return };
+    let ftime = md.mtime() as f64 + 1e-9 * md.mtime_nsec() as f64;
+    let sec = ftime as i32 as i64;
+    let nsec = (1e9 * (ftime - ftime as i32 as f64)) as i64;
+    let times = [Timespec { tv_sec: sec, tv_nsec: nsec }, Timespec { tv_sec: sec, tv_nsec: nsec }];
+    if let Ok(c) = CString::new(to) {
+        unsafe { utimensat(-100, c.as_ptr(), &times, 0) };
+    }
+}
+
+/// Copy `from` + `name` to `to` + `name`, recursively for directories.
+/// Returns the number of failures (0 on success).
+// R: platform.c:do_copy
+#[allow(clippy::too_many_arguments)]
+fn do_copy(
+    i: &mut Interp,
+    from: &str,
+    name: &str,
+    to: &str,
+    over: bool,
+    recursive: bool,
+    perms: bool,
+    dates: bool,
+    depth: i32,
+) -> RResult<i32> {
+    if depth > 100 {
+        i.warning("too deep nesting")?;
+        return Ok(1);
+    }
+    use std::os::unix::fs::MetadataExt;
+    let this = format!("{}{}", from, name);
+    if this.len() >= R_PATH_MAX {
+        i.warning("over-long path")?;
+        return Ok(1);
+    }
+    let mask = umask_mask();
+    let md = std::fs::symlink_metadata(&this).ok();
+    let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    let mut nfail = 0;
+    if is_dir {
+        if !recursive {
+            return Ok(1);
+        }
+        let dest = format!("{}{}", to, name);
+        if dest.len() >= R_PATH_MAX {
+            i.warning("over-long path")?;
+            return Ok(1);
+        }
+        // R calls mkdir(dest, 0700) and only later chmods the final mode.
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&dest) {
+            Ok(()) => {}
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    i.warning(format!("problem creating directory {}: {}", this, os_error_message(&e)))?;
+                    return Ok(1);
+                }
+                match std::fs::metadata(&dest) {
+                    Ok(d) if over && !d.is_dir() => {
+                        i.warning(format!("cannot overwrite non-directory {} with directory {}", dest, this))?;
+                        return Ok(1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let dest_slash = format!("{}/", dest);
+        match std::fs::read_dir(&this) {
+            Ok(entries) => {
+                for e in entries {
+                    let Ok(e) = e else { continue };
+                    let dname = e.file_name().to_string_lossy().into_owned();
+                    if dname == "." || dname == ".." {
+                        continue;
+                    }
+                    let p = format!("{}/{}", name, dname);
+                    nfail += do_copy(i, from, &p, to, over, recursive, perms, dates, depth + 1)?;
+                }
+            }
+            Err(e) => {
+                i.warning(format!("problem reading directory {}: {}", this, os_error_message(&e)))?;
+                nfail += 1;
+            }
+        }
+        let mode = if perms { (md.as_ref().map(|m| m.mode()).unwrap_or(0o777) & mask) & 0o7777 } else { mask };
+        chmod_path(&dest_slash, mode);
+        if dates {
+            copy_file_time(&this, &dest_slash);
+        }
+    } else {
+        let dest = format!("{}{}", to, name);
+        if dest.len() >= R_PATH_MAX {
+            i.warning("over-long path")?;
+            return Ok(1);
+        }
+        if over || std::fs::metadata(&dest).is_err() {
+            match std::fs::read(&this) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&dest, &bytes) {
+                        i.warning(format!("problem copying {} to {}: {}", this, dest, os_error_message(&e)))?;
+                        return Ok(1);
+                    }
+                    // R copies with fread/fwrite in APPENDBUFSIZE chunks; the
+                    // result is the same bytes.
+                    let _ = APPEND_BUFSIZE;
+                }
+                Err(e) => {
+                    i.warning(format!("problem copying {} to {}: {}", this, dest, os_error_message(&e)))?;
+                    return Ok(1);
+                }
+            }
+        } else {
+            // !over and the destination exists.
+            return Ok(1);
+        }
+        if perms {
+            let mode = (md.as_ref().map(|m| m.mode()).unwrap_or(0o777) & mask) & 0o7777;
+            chmod_path(&dest, mode);
+        }
+        if dates {
+            copy_file_time(&this, &dest);
+        }
+    }
+    Ok(nfail)
+}
+
+// R: platform.c:do_filecopy
+fn do_filecopy(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 6, "file.copy")?;
+    let nfiles = match &args[0].value {
+        Value::Str(s) => s.data.len(),
+        Value::Null => 0,
+        _ => 0,
+    };
+    if nfiles == 0 {
+        return Ok(Value::lgls(vec![]));
+    }
+    let Value::Str(files) = &args[0].value else { return Err(Flow::error("invalid 'from' argument")) };
+    let Value::Str(to) = &args[1].value else { return Err(Flow::error("invalid 'to' argument")) };
+    if to.data.len() != 1 {
+        return Err(Flow::error("invalid 'to' argument"));
+    }
+    let over = as_logical(&args[2].value);
+    if over == NA_LOGICAL {
+        return Err(Flow::error("invalid 'overwrite' argument"));
+    }
+    let recursive = as_logical(&args[3].value);
+    if recursive == NA_LOGICAL {
+        return Err(Flow::error("invalid 'recursive' argument"));
+    }
+    let perms = as_logical(&args[4].value);
+    if perms == NA_LOGICAL {
+        return Err(Flow::error("invalid 'copy.mode' argument"));
+    }
+    let dates = as_logical(&args[5].value);
+    if dates == NA_LOGICAL {
+        return Err(Flow::error("invalid 'copy.date' argument"));
+    }
+    let (over, recursive, perms, dates) = (over != 0, recursive != 0, perms != 0, dates != 0);
+    let to = to.data[0].as_deref().unwrap_or("NA");
+    let q = expand_file_name(to);
+    if q.len() > R_PATH_MAX - 2 {
+        return Err(Flow::error("invalid 'to' argument"));
+    }
+    let dir = if q.ends_with('/') { q } else { format!("{}/", q) };
+    let mut ans: Vec<i32> = Vec::with_capacity(files.data.len());
+    for f in &files.data {
+        let Some(f) = f else {
+            ans.push(FALSE);
+            continue;
+        };
+        let mut from = expand_file_name(f);
+        if from.is_empty() {
+            ans.push(FALSE);
+            continue;
+        }
+        // A trailing separator is a mistake.
+        if from.ends_with('/') {
+            from.pop();
+        }
+        let (srcdir, name) = match from.rfind('/') {
+            Some(k) => (from[..=k].to_string(), from[k + 1..].to_string()),
+            None => ("./".to_string(), from.clone()),
+        };
+        ans.push((do_copy(i, &srcdir, &name, &dir, over, recursive, perms, dates, 1)? == 0) as i32);
+    }
+    Ok(Value::lgls(ans))
+}
+
+// R: platform.c:do_syschmod
+fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 3, "Sys.chmod")?;
+    let Value::Str(paths) = &args[0].value else { return Err(Flow::error("invalid 'paths' argument")) };
+    let modes = crate::coerce::to_int(&args[1].value, &mut Default::default());
+    let n = paths.data.len();
+    let m = modes.len();
+    if m == 0 && n > 0 {
+        return Err(Flow::error("'mode' must be of length at least one"));
+    }
+    let use_umask = as_logical(&args[2].value);
+    if use_umask == NA_LOGICAL {
+        return Err(Flow::error("invalid 'use_umask' argument"));
+    }
+    let um = unsafe { umask(0) };
+    unsafe { umask(um) };
+    let mut out = Vec::with_capacity(n);
+    for (k, p) in paths.data.iter().enumerate() {
+        let mut mode = modes[k % m] as u32;
+        if mode == NA_INTEGER as u32 {
+            mode = 0o777;
+        }
+        if use_umask != 0 {
+            mode &= !um;
+        }
+        let ok = match p {
+            Some(p) => chmod_path(&expand_file_name(p), mode),
+            None => false,
+        };
+        out.push(ok as i32);
+    }
+    Ok(Value::lgls(out))
+}
+
+// R: platform.c:do_readlink
+fn do_readlink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 1, "Sys.readlink")?;
+    let Value::Str(paths) = &args[0].value else { return Err(Flow::error("invalid 'paths' argument")) };
+    let mut out: Vec<RStr> = Vec::with_capacity(paths.data.len());
+    for p in &paths.data {
+        let Some(p) = p else {
+            out.push(None);
+            continue;
+        };
+        let path = expand_file_name(p);
+        let Ok(c) = CString::new(path) else {
+            out.push(None);
+            continue;
+        };
+        let mut buf = vec![0u8; R_PATH_MAX + 1];
+        let res = unsafe { readlink(c.as_ptr(), buf.as_mut_ptr() as *mut c_char, R_PATH_MAX) };
+        if res as usize == R_PATH_MAX {
+            let s = String::from_utf8_lossy(&buf[..res as usize]).into_owned();
+            i.warning(format!("possible truncation of value for element {}", out.len() + 1))?;
+            out.push(Some(s.into()));
+        } else if res >= 0 {
+            let s = String::from_utf8_lossy(&buf[..res as usize]).into_owned();
+            out.push(Some(s.into()));
+        } else if std::io::Error::last_os_error().raw_os_error() == Some(22) {
+            // EINVAL: not a symbolic link.
+            out.push(Some("".into()));
+        } else {
+            out.push(None);
+        }
+    }
+    Ok(Value::strs(out))
 }
