@@ -73,7 +73,6 @@ pub static DEFS: &[Builtin] = &[
     prim(".cache_class", do_cache_class, 2),
     internal("asCharacterFactor", do_as_character_factor, 1),
     internal("interruptsSuspended", do_false_any, -1),
-    internal(".addGlobHands", do_null_any, 5).invisible(),
     internal("activeBindingFunction", do_active_binding_function, 2),
     internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),

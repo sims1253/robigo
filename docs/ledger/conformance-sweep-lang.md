@@ -1,5 +1,20 @@
 # conformance-sweep-lang
 
+## 2026-10-28: global calling handler registration
+
+- Port errors.c:do_addGlobHands into the existing condition internals. Reject registration with local handlers on the stack, install the new global chain, and update every saved context to prevent restoration of the old chain.
+- First experiment installed the chain in closure contexts but eval_toplevel reset it before the next expression. Rejected that incomplete approach. Keep a separate top-level HandlerStack on Interp and restore it at each top-level boundary, matching R_ToplevelContext->handlerstack.
+- global-handlers.R changes from an immediate failed assertion to a byte-identical match with Docker GNU R 4.5.0. It covers persistence, class selection, multiple handlers, local-handler precedence, removal, duplicates, closure attributes/environments, and rejected registration with local handlers. Kept.
+- GNU R conditions now completes all global handler assertions and reaches its source-reference section, where file.info is unimplemented outside this track. Overall GNU R test passes remain 18/59. The affected base/conditions example remains passing; reg-tests-1d retains its pre-existing formals warning failure.
+- Full conformance: 174/175, only datetime/zones.R failing. Three new scripts are recorded in the conformance ratchet. Dataframe instructions after all changes: 617,176,220 -> 617,223,145 (+0.0076%), inside the 0.5% gate.
+- Shared changes: one Interp field, initialization, and top-level restoration; move .addGlobHands registration from misc.rs into builtins/conditions.rs. No VM/compiler/JIT or parser changes.
+
+## 2026-10-28: CI timezone blocker and remaining ownership
+
+- PR #30's build failed solely at tests/r/datetime/zones.R line 2040, matching the known local baseline failure. Saved origin/main bf985045 binary and candidate produce byte-identical stdout (589,363 bytes), stderr, and successful exit status on that script. Do not change the oracle, ratchet, CI, or datetime implementation from this track. The datetime owner must reconcile the runner tzdata/oracle difference before CI can be green.
+- Requested FastR filter: 2,085/2,187 -> 2,093/2,187, eight gains, zero regressions. There is one additional namesassign gain outside the primary filter, nine FastR ratchet additions total. Base examples remain 257/381 with the same 15 baseline host failures; GNU R tests remain 18/59.
+- Next ownership handoffs: VM/value-model owners for trace flags and duplication hooks; parser/CLI owner for literal <<<NEWLINE>>> diagnostics; package-native owner for methods initialization; filesystem owner for file.info; printing/core owners for language head tags and compact row-name printing. After these dependencies, resume parse-data/source-reference examples and the remaining global-handler regression script.
+
 ## 2026-10-28: memory tracing validation
 
 - Port debug.c:do_tracemem, do_untracemem and do_retracemem validation, including check1arg tags, function/environment/NULL rejection, previous-argument matching, and diagnostic order. Move these three registrations/functions from shared misc.rs into owned builtins/debug.rs; register the module in shared builtins/mod.rs.

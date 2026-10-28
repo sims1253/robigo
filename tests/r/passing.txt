@@ -51,6 +51,7 @@ tests/r/lang/environment-validation.R
 tests/r/lang/environments.R
 tests/r/lang/evaluator-errors.R
 tests/r/lang/frame-lifetime.R
+tests/r/lang/global-handlers.R
 tests/r/lang/lookup-conditions.R
 tests/r/lang/lookup-modes.R
 tests/r/lang/memory-trace-validation.R
