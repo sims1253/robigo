@@ -205,6 +205,25 @@ without a guard. The port:
 - carries over to G3: element superassignment in place under the same
   conditions as local element assignment.
 
+## 2026-10-28: `a * b + c` on long double vectors: measured, no temporary to remove
+
+- probe: `r <- a * b + c` on 10^6-element plain double vectors, in a loop
+  (callgrind and allocator calls, 20 vs 10 evaluations).
+- allocations: ~4.6 allocator calls per evaluation, i.e. the result
+  vector's two allocations plus small change. The `+ c` step already writes
+  into the unshared `a * b` temporary (`real_binary_inplace`), so there is
+  no extra temporary.
+- instructions: 5.5M per evaluation, half in `real_binary` (`a * b`), half
+  in `real_binary_inplace` (`+ c`): two passes over the data.
+- next (a new op, not started): a fused kernel for `x * y + z` (and
+  `x + y * z`, `x * y - z`) on plain double vectors of equal length, in one
+  pass computing `(x[i] * y[i]) + z[i]` as two separately rounded
+  operations. A hardware FMA rounds differently and must not be used. It
+  applies only where R's result is that elementwise: no attributes, equal
+  lengths (recycling and the length warning stay on the builtins), and both
+  operators guarded to base. Double arithmetic signals no warnings, and
+  NA/NaN propagate elementwise as in the two passes.
+
 ## 2026-10-28: plan: VM-to-VM calls without Rust recursion (measured, not started)
 
 - per-call cost of `fib` on main 414ae44: 3,265 instructions (GNU R
