@@ -13,6 +13,7 @@ pub mod arith;
 pub mod attrib;
 pub mod bridge;
 pub mod coerce;
+pub mod connections;
 pub mod dotcode;
 pub mod envir;
 pub mod errors;

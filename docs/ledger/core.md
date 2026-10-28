@@ -11,7 +11,27 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
-## 2026-10-28: the bridge — capi corpus 0/20 -> 14/20; fastmap and digest run on robigo
+## 2026-10-28: conservative scan limited to C frames (deterministic finalizers); connections
+
+- the extptr case passed, then failed on the next run: its finalizer
+  only runs if no stale copy of the external pointer lies in robigo's
+  own interpreter frames, which the conservative scan read up to the
+  thread's stack top. robigo-core gains `set_scan_top`; the bridge
+  bounds the scan at its outermost entry (C frames below are scanned,
+  the runtime's frames above hold core objects only through precise
+  roots), and R-level `gc()` with no C code active scans no stack at
+  all (the council's "scan conservatively only C segments"). extptr now
+  passes 3/3 runs; collections outside native calls no longer read the
+  interpreter's stack.
+- R_GetConnection/R_WriteConnection/R_ReadConnection/Rconn_fgetc over
+  the runtime's connection table (not in the census; the serialize case
+  uses them). The case still differs: GNU R serializes `1:3` as a compact
+  ALTREP sequence (183 bytes vs robigo's 93).
+- capi corpus: 13/20 (alloc, attributes, ccallable, coerce, console,
+  errors, eval, extptr, math, onintr, pairlist, registration, unwind).
+  The earlier entry's "14" was an expectation, not a measurement.
+
+## 2026-10-28: the bridge — capi corpus 0/20 -> 13/20; fastmap and digest run on robigo
 
 - linkage (council item 15): the robigo executable links robigo-capi and
   exports exactly the API with `ld --dynamic-list` (exports.list,
@@ -29,7 +49,7 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 - capi corpus: 0 -> 5 (bridge) -> 9 (errors signalled at raise time in a
   builtin context, onintr, sort.c, duplicated/identical) -> 12
   (environments, eval, parse, print, gc() finalizers) -> 13 (Rmath,
-  RNG) -> 14 (serialize). Census coverage by implemented exports: 90.7%
+  RNG). Census coverage by implemented exports: 90.7%
   weighted.
 - found by real packages: arguments must carry the caller's sharing
   (REFCNT from the runtime value's reference count): digest's AES

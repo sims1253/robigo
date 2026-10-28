@@ -256,6 +256,7 @@
   R_GE_tilingPatternY;
   R_GUIType;
   R_GetCCallable;
+  R_GetConnection;
   R_GetVarLocMISSING;
   R_GlobalEnv;
   R_HashtabSEXP;
@@ -321,6 +322,7 @@
   R_PromiseExpr;
   R_ProtectWithIndex;
   R_QuoteSymbol;
+  R_ReadConnection;
   R_ReadConsole;
   R_RecursiveSymbol;
   R_RegisterCCallable;
@@ -365,6 +367,7 @@
   R_WeakRefKey;
   R_WeakRefValue;
   R_WholeSrcrefSymbol;
+  R_WriteConnection;
   R_alloc;
   R_allocLD;
   R_allocObject;

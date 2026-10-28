@@ -48,6 +48,10 @@ pub struct Core {
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
+    /// the highest address the conservative scan reads: the thread's
+    /// stack top by default; the embedder narrows it to the C segments
+    /// (0: no stack scan) — see [`Core::set_scan_top`]
+    scan_top: usize,
     /// collect on every allocation and poison freed slots (ROBIGO_GCTORTURE)
     torture: bool,
     pub stats: GcStats,
@@ -135,6 +139,7 @@ impl Core {
             gc_inhibit: 0,
             stack_top: thread_stack().1,
             stack_lo: thread_stack().0,
+            scan_top: usize::MAX,
             torture: std::env::var_os("ROBIGO_GCTORTURE").is_some_and(|v| v != "0"),
             stats: GcStats::default(),
             nil: Sexp::NULL,
@@ -422,6 +427,17 @@ impl Core {
         std::mem::take(&mut self.releases)
     }
 
+    /// Limit the conservative stack scan to addresses below `top` (the
+    /// stack grows down: frames entered after `top` was taken). `0` turns
+    /// the scan off, `usize::MAX` scans to the thread's stack top. An
+    /// embedder whose own frames hold no core objects except precisely
+    /// rooted ones (robigo's runtime before G3) scans only the frames of
+    /// C code it called, which keeps collections cheap and finalizer
+    /// timing deterministic. Returns the previous limit.
+    pub fn set_scan_top(&mut self, top: usize) -> usize {
+        std::mem::replace(&mut self.scan_top, top)
+    }
+
     /// The thread's stack bounds the core scans: (lowest, highest).
     pub fn stack_bounds(&self) -> (usize, usize) {
         (self.stack_lo, self.stack_top)
@@ -591,7 +607,7 @@ impl Core {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
             let sp = std::hint::black_box(&marker) as *const usize as usize;
-            let top = c.stack_top;
+            let top = c.stack_top.min(c.scan_top);
             let (min, max) = (c.heap.min_addr, c.heap.max_addr);
             let mut w = (sp + 7) & !7;
             while w < top {

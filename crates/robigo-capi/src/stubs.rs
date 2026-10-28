@@ -66,7 +66,6 @@ pub static STUBS: &[&str] = &[
     "R_set_altrep_Inspect_method",
     "R_set_altrep_data2",
     "R_set_altvec_Dataptr_or_null_method",
-    "Rconn_fgetc",
     "Rdqags",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
@@ -625,11 +624,6 @@ pub unsafe extern "C" fn R_set_altvec_Dataptr_or_null_method() {
 
 #[unsafe(no_mangle)]
 pub static mut R_wait_usec: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rconn_fgetc() {
-    not_implemented("Rconn_fgetc")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rdqags() {

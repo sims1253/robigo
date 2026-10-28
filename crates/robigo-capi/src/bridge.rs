@@ -68,10 +68,21 @@ pub fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     f(unsafe { &mut *p })
 }
 
-/// Make `interp` current while `f` runs (re-entrant).
+/// Make `interp` current while `f` runs (re-entrant). The outermost
+/// entry also bounds the C heap's conservative stack scan to the frames
+/// below it: the runtime's own frames above hold core objects only
+/// through precise roots (protect stack, preserved wrappers, proxies), so
+/// stale words there cannot keep garbage alive (docs/core.md §3).
 fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     let prev = INTERP.with(|c| c.replace(interp as *mut Interp));
+    let marker = 0usize;
+    let here = std::hint::black_box(&marker) as *const usize as usize;
+    let outer = prev.is_null();
+    let old = if outer { core().set_scan_top(here) } else { 0 };
     let r = f(interp);
+    if outer {
+        core().set_scan_top(old);
+    }
     INTERP.with(|c| c.set(prev));
     r
 }
@@ -618,6 +629,26 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
         "field" => field(a[0], int_arg(a[1]))?,
+        "connectionNumber" => {
+            crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)
+        }
+        "writeConnection" => {
+            let n = int_arg(a[0]);
+            let bytes = std::slice::from_raw_parts(a[1].std_data(), crate::memory::xlength(a[1]) as usize).to_vec();
+            with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, n, &bytes))?;
+            R_NilValue
+        }
+        "readConnection" => {
+            let (n, size) = (int_arg(a[0]), int_arg(a[1]).max(0) as usize);
+            let mut buf = vec![0u8; size];
+            let got = with_interp(|i| robigo_runtime::builtins::io::con_read_bytes(i, n, &mut buf))?;
+            buf.truncate(got);
+            to_sexp(&Value::Raw(Rc::new(Vector::new(buf))))
+        }
+        "connGetc" => {
+            let n = int_arg(a[0]);
+            crate::list::Rf_ScalarInteger(with_interp(|i| robigo_runtime::builtins::io::conn_getc(i, n))?)
+        }
         "serialize" => {
             let v = from_sexp(a[0]);
             let (fmt, version) = (int_arg(a[1]), int_arg(a[2]));
@@ -1199,8 +1230,15 @@ impl NativeBridge for Bridge {
 
     fn gc(&self, interp: &mut Interp) {
         if READY.with(|r| r.get()) {
+            let outer = INTERP.with(|c| c.get().is_null());
             enter(interp, |_| unsafe {
+                // gc() from R with no C code active: nothing on the
+                // machine stack can hold a core object
+                let old = if outer { core().set_scan_top(0) } else { 0 };
                 crate::host::robigo_gc();
+                if outer {
+                    core().set_scan_top(old);
+                }
             });
             drain_dead();
         }
