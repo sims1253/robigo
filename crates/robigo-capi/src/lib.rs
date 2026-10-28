@@ -16,6 +16,7 @@ pub mod attrib;
 pub mod bridge;
 pub mod coerce;
 pub mod connections;
+pub mod context;
 pub mod dotcode;
 pub mod envir;
 pub mod errors;

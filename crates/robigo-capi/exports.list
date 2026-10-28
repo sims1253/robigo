@@ -318,6 +318,8 @@
   R_ParseContextLast;
   R_ParseContextLine;
   R_ParseError;
+  R_ParseErrorCol;
+  R_ParseErrorFile;
   R_ParseErrorMsg;
   R_ParseVector;
   R_PolledEvents;

@@ -60,11 +60,8 @@ pub static STUBS: &[&str] = &[
     "Rf_NoDevices",
     "Rf_RGBpar3",
     "Rf_asS4",
-    "Rf_begincontext",
-    "Rf_endcontext",
     "dpofa_",
     "dqrdc_",
-    "getConnection",
     "nmmin",
     "GEExpressionMetric",
     "GEFill",
@@ -540,16 +537,6 @@ pub unsafe extern "C" fn Rf_asS4() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_begincontext() {
-    not_implemented("Rf_begincontext")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_endcontext() {
-    not_implemented("Rf_endcontext")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dpofa_() {
     not_implemented("dpofa_")
 }
@@ -557,11 +544,6 @@ pub unsafe extern "C" fn dpofa_() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dqrdc_() {
     not_implemented("dqrdc_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn getConnection() {
-    not_implemented("getConnection")
 }
 
 #[unsafe(no_mangle)]
@@ -991,21 +973,6 @@ pub static mut R_Outputfile: [usize; 4] = [0; 4];
 pub unsafe extern "C" fn R_PackageEnvName() {
     not_implemented("R_PackageEnvName")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContext: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContextLast: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseContextLine: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseError: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_ParseErrorMsg: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut R_PolledEvents: [usize; 4] = [0; 4];

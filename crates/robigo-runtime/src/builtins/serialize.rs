@@ -21,6 +21,9 @@ pub static DEFS: &[Builtin] = &[
     internal("loadFromConn2", do_load_from_conn2, 3).invisible(),
     internal("loadInfoFromConn2", do_load_info_from_conn2, 1),
     super::prim("lazyLoadDBfetch", do_lazy_load_db_fetch, 4),
+    internal("getVarsFromFrame", do_get_vars_from_frame, 3),
+    internal("lazyLoadDBinsertValue", do_lazy_load_db_insert_value, 5),
+    internal("lazyLoadDBflush", do_lazy_load_db_flush, 1),
 ];
 
 /// R: serialize.c R_serialize — `icon == NULL` returns the bytes as a raw
@@ -454,4 +457,129 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
         }
         v => Ok(v),
     }
+}
+
+// R: serialize.c:R_getVarsFromFrame
+fn do_get_vars_from_frame(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let env = match arg(&args, 1) {
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("bad environment")),
+    };
+    let vars = match arg(&args, 0) {
+        Value::Str(v) => v,
+        _ => return Err(Flow::error("bad variable names")),
+    };
+    let force = as_logical(&arg(&args, 2)) == 1;
+    let mut out = Vec::with_capacity(vars.data.len());
+    for v in vars.data.iter() {
+        let name = v.as_deref().unwrap_or("NA");
+        let mut val = env
+            .get_local(crate::sym::Sym::new(name))
+            .ok_or_else(|| Flow::error(format!("object '{}' not found", name)))?;
+        if force {
+            if let Value::Promise(_) = val {
+                let g = i.global.clone();
+                val = i.eval(&val, &g)?;
+            }
+        }
+        out.push(val);
+    }
+    let mut ans = Value::list(out);
+    ans.set_attr_raw(crate::sym::s::NAMES, Value::Str(vars.clone()));
+    Ok(ans)
+}
+
+// R: serialize.c:R_lazyLoadDBinsertValue
+fn do_lazy_load_db_insert_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let value = arg(&args, 0);
+    let file = arg(&args, 1);
+    if as_integer(&arg(&args, 2)) != 0 {
+        return Err(Flow::error("robigo: ascii lazy-load databases are not implemented yet"));
+    }
+    let compress = as_integer(&arg(&args, 3));
+    let hook = arg(&args, 4);
+    let version = crate::serialize::default_serialize_version();
+    let bytes = if hook.is_null() {
+        crate::serialize::serialize_version(&value, version)
+    } else {
+        // R: serialize.c:CallHook — FUN(x) evaluated in the global environment
+        let g = i.global.clone();
+        let mut call_hook = |x: &Value| -> RResult<Value> { i.call_value(&hook, vec![Arg::pos(x.clone())], &g) };
+        crate::serialize::serialize_hooked(&value, version, &mut call_hook)?
+    };
+    let bytes = match compress {
+        3 => compress3(&bytes),
+        2 => return Err(Flow::error("robigo: bzip2 lazy-load databases are not implemented yet")),
+        0 => bytes,
+        _ => compress1(&bytes)?,
+    };
+    append_raw_to_file(&file, &bytes)
+}
+
+/// R: connections.c:R_compress1 — the length (big-endian), then zlib at
+/// level 6.
+fn compress1(data: &[u8]) -> RResult<Vec<u8>> {
+    use std::io::Write;
+    let mut out = (data.len() as u32).to_be_bytes().to_vec();
+    let mut enc = flate2::write::ZlibEncoder::new(&mut out, flate2::Compression::new(6));
+    enc.write_all(data)
+        .and_then(|_| enc.finish().map(|_| ()))
+        .map_err(|_| Flow::error("internal libdeflate error in R_compress1 with libdeflate"))?;
+    Ok(out)
+}
+
+/// R: connections.c:R_compress3 — the length, 'Z' and a raw LZMA2 stream
+/// (preset 6); stored as is ('0') if that would not be smaller.
+fn compress3(data: &[u8]) -> Vec<u8> {
+    use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
+    let mut out = (data.len() as u32).to_be_bytes().to_vec();
+    let encoded = (|| {
+        let opts = LzmaOptions::new_preset(6).ok()?;
+        let mut filters = Filters::new();
+        filters.lzma2(&opts);
+        let mut strm = Stream::new_raw_encoder(&filters).ok()?;
+        // R does not let the output expand beyond the input + 5 bytes
+        let mut buf = vec![0u8; data.len() + 5];
+        match strm.process(data, &mut buf, Action::Finish) {
+            Ok(Status::StreamEnd) if strm.total_in() as usize == data.len() => {
+                buf.truncate(strm.total_out() as usize);
+                Some(buf)
+            }
+            _ => None,
+        }
+    })();
+    match encoded {
+        Some(z) => {
+            out.push(b'Z');
+            out.extend(z);
+        }
+        None => {
+            out.push(b'0');
+            out.extend_from_slice(data);
+        }
+    }
+    out
+}
+
+/// R: serialize.c:appendRawToFile — (position, length) of the bytes.
+fn append_raw_to_file(file: &Value, bytes: &[u8]) -> RResult<Value> {
+    let path = match file {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => s.data[0].clone().unwrap(),
+        _ => return Err(Flow::error("not a proper file name")),
+    };
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&*path)
+        .map_err(|e| Flow::error(format!("cannot open file '{}': {}", path, super::io::os_error_message(&e))))?;
+    let pos = f.metadata().map(|m| m.len()).map_err(|_| Flow::error("could not determine file position"))?;
+    f.write_all(bytes).map_err(|_| Flow::error("write failed"))?;
+    Ok(Value::ints(vec![pos as i32, bytes.len() as i32]))
+}
+
+// R: serialize.c:do_lazyLoadDBflush — robigo reads entries without a cache
+fn do_lazy_load_db_flush(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    Ok(Value::Null)
 }

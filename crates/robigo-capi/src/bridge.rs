@@ -337,9 +337,12 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         }
         Value::Lang(l) => {
             let rest = Rf_protect(args_list(&l.args, LISTSXP));
-            let f = to_sexp(&l.fun);
+            let f = Rf_protect(to_sexp(&l.fun));
             let r = core().alloc_node(LANGSXP, f, rest, R_NilValue);
-            Rf_unprotect(1);
+            Rf_unprotect(2);
+            if let Some(tag) = l.fun_tag {
+                SET_TAG(r, sym_sexp(tag));
+            }
             set_attrs(r, l.attrs.as_deref());
             return r;
         }
@@ -461,7 +464,8 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
-            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x) }));
+            let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
+            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag }));
         }
         _ => return wrap_core(x),
     };
@@ -642,6 +646,22 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let got = with_interp(|i| robigo_runtime::builtins::io::con_read_bytes(i, n, &mut buf))?;
             buf.truncate(got);
             to_sexp(&Value::Raw(Rc::new(Vector::new(buf))))
+        }
+        "connInfo" => {
+            let n = int_arg(a[0]);
+            let (class, desc, mode, flags) = with_interp(|i| robigo_runtime::builtins::io::conn_info(i, n))?;
+            let mut items = vec![Value::str(&class), Value::str(&desc), Value::str(&mode)];
+            items.push(Value::Lgl(Rc::new(Vector::new(flags.iter().map(|&f| f as i32).collect()))));
+            to_sexp(&Value::list(items))
+        }
+        "connOpen" => {
+            let n = int_arg(a[0]);
+            crate::list::Rf_ScalarLogical(with_interp(|i| robigo_runtime::builtins::io::conn_open(i, n))? as i32)
+        }
+        "connClose" => {
+            let n = int_arg(a[0]);
+            with_interp(|i| robigo_runtime::builtins::io::conn_close(i, n))?;
+            R_NilValue
         }
         "connGetc" => {
             let n = int_arg(a[0]);
@@ -1136,8 +1156,28 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
             let list = Rf_protect(args_list(&all, LISTSXP));
             let mut out = Sexp::NULL;
             let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
-            let t = crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info);
-            stack_imbalance(interp, ".External", &info);
+            // .External2 (PRIMVAL 1): fun(call, op, args, env)
+            let external2 = match call {
+                Value::Lang(l) => match &l.fun {
+                    Value::Sym(s) => &*s.name() == ".External2",
+                    Value::Builtin(b) => b.name == ".External2",
+                    _ => false,
+                },
+                _ => false,
+            };
+            let t = if external2 {
+                let c = Rf_protect(to_sexp(call));
+                let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
+                    Some(b) => to_sexp(&Value::Builtin(b)),
+                    None => R_NilValue,
+                };
+                Rf_protect(op);
+                let rho = Rf_protect(to_sexp(&Value::Env(env.clone())));
+                crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
+            } else {
+                crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
+            };
+            stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
             result(t, out)
         }
         Interface::C | Interface::Fortran => dot_c(interp, call, r, args, env),

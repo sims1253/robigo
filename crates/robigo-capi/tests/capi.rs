@@ -240,3 +240,21 @@ fn the_api() {
         assert_eq!(R_PPStackTop, 0, "arguments unprotected after the call");
     }
 }
+
+/// `struct Rconn` as GNU R 4.5's R_ext/Connections.h lays it out (offsets
+/// measured with gcc against the header, x86_64).
+#[test]
+fn rconn_layout_is_gnu_rs() {
+    use R::connections::Rconn;
+    use std::mem::{offset_of, size_of};
+    assert_eq!(offset_of!(Rconn, open), 64);
+    assert_eq!(offset_of!(Rconn, read), 136);
+    assert_eq!(offset_of!(Rconn, n_push_back), 152);
+    assert_eq!(offset_of!(Rconn, encname), 176);
+    assert_eq!(offset_of!(Rconn, inconv), 280);
+    assert_eq!(offset_of!(Rconn, navail), 410);
+    assert_eq!(offset_of!(Rconn, id), 424);
+    assert_eq!(offset_of!(Rconn, status), 448);
+    assert_eq!(offset_of!(Rconn, buff_pos), 480);
+    assert_eq!(size_of::<Rconn>(), 488);
+}

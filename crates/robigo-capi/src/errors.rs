@@ -68,6 +68,7 @@ unsafe fn vformat(buf: &mut [u8], n: usize, fmt: *const c_char, ap: std::ffi::Va
 /// Jump with a host flow token. Plain frames only (see `unwind`).
 pub unsafe fn jump_host(token: usize) -> ! {
     PENDING = token;
+    crate::context::run_cends();
     unwind::jump()
 }
 

@@ -823,8 +823,15 @@ enum RefKey {
     Env(Env),
 }
 
-pub struct Writer {
+/// The persistence hook of `serialize(refhook=)` and lazy-load databases:
+/// a name (character vector) for an object, or `NULL`.
+pub type PersistHook<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
+
+pub struct Writer<'a> {
     pub out: Vec<u8>,
+    hook: Option<PersistHook<'a>>,
+    /// the first error the hook raised (writing stops being meaningful)
+    err: Option<Flow>,
     /// Reference table shared by symbols and environments, as in R.
     refs: Vec<RefKey>,
     /// 2 or 3 (R: stream->version); decides the header layout.
@@ -860,7 +867,7 @@ fn write_header(w: &mut Writer) {
     }
 }
 
-impl Writer {
+impl Writer<'_> {
     fn int(&mut self, i: i32) {
         if self.little_endian {
             self.out.extend_from_slice(&i.to_le_bytes());
@@ -929,6 +936,32 @@ impl Writer {
         self.int(SYMSXP as i32);
         self.charsxp(&Some(s.name()));
     }
+    /// R: serialize.c:GetPersistentName (environments and external
+    /// pointers go to the hook)
+    fn persistent_name(&mut self, v: &Value) -> Option<Vec<RStr>> {
+        if self.err.is_some() {
+            return None;
+        }
+        let hook = self.hook.as_mut()?;
+        match hook(v) {
+            Ok(Value::Str(s)) if !s.data.is_empty() => Some(s.data.to_vec()),
+            Ok(_) => None,
+            Err(e) => {
+                self.err = Some(e);
+                None
+            }
+        }
+    }
+
+    /// R: serialize.c:OutStringVec
+    fn string_vec(&mut self, s: &[RStr]) {
+        self.int(0);
+        self.int(s.len() as i32);
+        for x in s {
+            self.charsxp(x);
+        }
+    }
+
     fn ref_item(&mut self, i: usize) {
         let packed = (i << 8) | REFSXP as usize;
         if i <= (i32::MAX >> 8) as usize {
@@ -961,6 +994,20 @@ impl Writer {
             Value::Sym(s) if s.is_empty() => self.int(MISSINGARG_SXP as i32),
             Value::Sym(s) => self.symbol(*s),
             Value::Env(e) => {
+                // R: serialize.c:WriteItem — a persistent name first (not
+                // for the special, namespace and package environments)
+                let special = matches!(
+                    e.special_name().as_deref(),
+                    Some("R_GlobalEnv" | "base" | "namespace:base" | "R_EmptyEnv")
+                );
+                if !special && namespace_spec(e).is_none() && package_env_name(e).is_none() {
+                    if let Some(name) = self.persistent_name(v) {
+                        self.refs.push(RefKey::Env(e.clone()));
+                        self.int(PERSISTSXP as i32);
+                        self.string_vec(&name);
+                        return;
+                    }
+                }
                 // R refers to the global, base and empty environments by code.
                 if e.special_name().as_deref() == Some("R_GlobalEnv") {
                     self.int(GLOBALENV_SXP as i32);
@@ -972,6 +1019,14 @@ impl Writer {
                     self.int(EMPTYENV_SXP as i32);
                 } else if let Some(i) = self.refs.iter().position(|x| matches!(x, RefKey::Env(y) if y.ptr_eq(e))) {
                     self.ref_item(i + 1);
+                } else if let Some(name) = package_env_name(e) {
+                    self.refs.push(RefKey::Env(e.clone()));
+                    self.int(PACKAGESXP as i32);
+                    self.string_vec(&name);
+                } else if let Some(spec) = namespace_spec(e) {
+                    self.refs.push(RefKey::Env(e.clone()));
+                    self.int(NAMESPACESXP as i32);
+                    self.string_vec(&spec);
                 } else {
                     self.refs.push(RefKey::Env(e.clone()));
                     self.int(ENVSXP as i32);
@@ -1037,6 +1092,17 @@ impl Writer {
                 self.int(b.name.len() as i32);
                 self.out.extend_from_slice(b.name.as_bytes());
             }
+            Value::ExtPtr(_) if self.hook.is_some() && self.err.is_none() => match self.persistent_name(v) {
+                Some(name) => {
+                    self.int(PERSISTSXP as i32);
+                    self.string_vec(&name);
+                }
+                None => {
+                    let hook = self.hook.take();
+                    self.item(v);
+                    self.hook = hook;
+                }
+            },
             Value::ExtPtr(_) => {
                 self.flags(EXTPTRSXP, 0, false, false, false);
                 self.int(NILVALUE_SXP as i32);
@@ -1107,16 +1173,53 @@ impl Writer {
 
 /// Serialize to an XDR stream of `version` (2 or 3).
 pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer { out: Vec::new(), refs: Vec::new(), version, little_endian: false };
+    let mut w = Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: false };
     w.out.extend_from_slice(b"X\n");
     write_header(&mut w);
     w.item(v);
     w.out
 }
 
+/// Serialize to an XDR stream of `version` with a persistence hook
+/// (R: serialize.c R_Serialize with OutPersistHookFunc).
+pub fn serialize_hooked(v: &Value, version: i32, hook: PersistHook<'_>) -> RResult<Vec<u8>> {
+    let mut w =
+        Writer { out: Vec::new(), hook: Some(hook), err: None, refs: Vec::new(), version, little_endian: false };
+    w.out.extend_from_slice(b"X\n");
+    write_header(&mut w);
+    w.item(v);
+    match w.err {
+        Some(e) => Err(e),
+        None => Ok(w.out),
+    }
+}
+
+/// R: envir.c:R_NamespaceEnvSpec — the `spec` of a namespace's
+/// `.__NAMESPACE__.` (the base namespace is written by code).
+fn namespace_spec(e: &Env) -> Option<Vec<RStr>> {
+    let info = e.get_local(Sym::new(".__NAMESPACE__."))?;
+    let Value::Env(info) = info else { return None };
+    match info.get_local(Sym::new("spec"))? {
+        Value::Str(s) if !s.data.is_empty() => Some(s.data.to_vec()),
+        _ => None,
+    }
+}
+
+/// R: envir.c:R_IsPackageEnv / R_PackageEnvName — a `name` attribute
+/// starting with "package:".
+fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
+    let name = Value::Env(e.clone()).get_attr(Sym::new("name"))?;
+    match name {
+        Value::Str(s) if s.data.first().is_some_and(|x| x.as_deref().is_some_and(|x| x.starts_with("package:"))) => {
+            Some(s.data.to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// Serialize to a native binary ("B") stream of `version` (2 or 3).
 pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer { out: Vec::new(), refs: Vec::new(), version, little_endian: true };
+    let mut w = Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: true };
     w.out.extend_from_slice(b"B\n");
     write_header(&mut w);
     w.item(v);

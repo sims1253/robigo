@@ -536,6 +536,29 @@ pub fn connection_description(i: &mut Interp, n: i32) -> RResult<String> {
 }
 
 /// `Rconn_fgetc` on connection `n` (`-1` at end of input).
+/// The fields of connection `n` that GNU R's `struct Rconn` shows C code:
+/// class, description, mode and (text, isopen, incomplete, canread,
+/// canwrite, canseek, blocking).
+pub fn conn_info(i: &mut Interp, n: i32) -> RResult<(String, String, String, [bool; 7])> {
+    let c = i.conns.get(n)?;
+    Ok((
+        c.class.clone(),
+        c.description.clone(),
+        c.mode.clone(),
+        [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking],
+    ))
+}
+
+/// `con->open(con)` for C code: whether it opened.
+pub fn conn_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    con_open(i, n)
+}
+
+/// `con->close(con)` for C code.
+pub fn conn_close(i: &mut Interp, n: i32) -> RResult<()> {
+    con_close_raw(i, n)
+}
+
 pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
     Ok(rconn_fgetc(i.conns.get(n)?))
 }

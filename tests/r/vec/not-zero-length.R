@@ -1,0 +1,7 @@
+# `!` of a zero-length non-logical (logic.c lunary): logical(0)
+!character(0)
+!list()
+x <- structure(character(0), names = character(0))
+attributes(!x)
+try(!"a")
+try(!list(1))

@@ -962,6 +962,9 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
             v.data.iter().map(|e| if e.is_na() { NA_LOGICAL } else { (e.re == 0.0 && e.im == 0.0) as Lgl }).collect(),
         ),
         Value::Raw(v) => Value::raws(v.data.iter().map(|&b| !b).collect()),
+        // R: logic.c:lunary — "for back-compatibility" a zero-length
+        // argument of any other type gives logical(0), without attributes
+        Value::Str(_) | Value::List(_) | Value::Expr(_) if x.len() == 0 => return Ok(Value::lgls(vec![])),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
     if !names.is_null() {
