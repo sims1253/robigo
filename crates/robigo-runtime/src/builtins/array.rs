@@ -572,6 +572,7 @@ fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _nc
 // R: array.c:CCROSSPROD_BODY (and CMATPROD_BODY/CTCROSSPROD_BODY).
 // R uses C99 complex multiplication, including recovery when both components
 // become NaN. Follow the compiler runtime's __muldc3 recovery rules.
+// Reference: llvm-project/compiler-rt/lib/builtins/muldc3.c.
 fn cmul(a: Complex, b: Complex) -> Complex {
     let (mut ar, mut ai, mut br, mut bi) = (a.re, a.im, b.re, b.im);
     let products = [ar * br, ai * bi, ar * bi, ai * br];

@@ -31,6 +31,19 @@
   intermediate overflow, preserving signed zero during normalization.
 - Source for C99 recovery: LLVM compiler-rt lib/builtins/muldc3.c.
 - Crossprod slice: 171/207 -> 207/207; 36 new passes recorded, no regressions.
-- Full filter, runtime tests, conformance, and instruction check pending.
+- Full filter: 6,669/6,819 -> 6,705/6,819, zero regressions. Also
+  recorded one previously unrecorded baseline pass via --update.
+- Runtime tests: 17 unit tests and 2 lazyload tests pass. cargo fmt --check
+  passes. Conformance: 163/164 scripts pass; datetime/zones.R fails on
+  this host with byte-identical baseline/current output. Both compiled
+  checks pass. No tests or oracle expectations weakened.
+- Help examples base/{crossprod,matmult,matrix,array}: 3/4 before and after;
+  base/matrix is the unchanged failure.
+- robigo/matrix callgrind: 638,778,139 -> 638,729,249 instructions;
+  perf.py compare reports no slowdown above 0.5%.
+- Kept. CI full corpora and performance checks pending on PR #21.
+- Next work: separate SimpleVectors error-call differences from evaluator
+  assignment-order bugs; port incomparables coercion warnings in unique.rs.
+  Printing differences and factor dispatch recursion need their owners.
 - Empty binding cases inspected have correct dimensions and values; their
   dput line wrapping belongs to the printing track, so no binding change.
