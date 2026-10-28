@@ -875,6 +875,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "robigo-capi"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "robigo-core",
+ "robigo-numerics",
+]
+
+[[package]]
 name = "robigo-cli"
 version = "0.0.1"
 dependencies = [
@@ -882,6 +891,14 @@ dependencies = [
  "pprof",
  "robigo-runtime",
  "robigo-syntax",
+]
+
+[[package]]
+name = "robigo-core"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]

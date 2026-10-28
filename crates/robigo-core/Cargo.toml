@@ -1,0 +1,13 @@
+[package]
+name = "robigo-core"
+description = "robigo's object model and memory manager: header'd SEXPs on a mark-region heap (G2, docs/core.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
