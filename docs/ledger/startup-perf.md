@@ -6,6 +6,34 @@ per scenario. Machine notes: this box runs ~7 agents; wall numbers are
 medians under load (load avg 27-31 during the 2026-10-28 baseline) and
 are indicative only; instructions are the gate.
 
+## 2026-10-28: zlib-rs and handoff audit
+
+- Kept the `flate2` switch from `rust_backend` to `zlib-rs`. The former
+  zeroes its roughly 250 KB inflate state for every lazy-load fetch.
+  zlib-rs allocates the window lazily, like GNU R's C zlib.
+- Inherited measurements: NULL startup 59.7M -> 53.6M instructions;
+  default startup 264.0M -> 247.8M. Re-running the saved pre-rebase binary
+  in `startup-perf-box` reproduced 53.505M and 247.824M. GNU R measured
+  88.103M and 275.860M, giving ratios 0.607 and 0.898.
+- Re-ran the saved performance comparison:
+  `scripts/perf.py compare .robigo/perf/main-instr.json .robigo/perf/lazy2-instr.json`.
+  All 78 benchmarks improved, none exceeded the 0.5% regression limit,
+  none broke. These files predate the rebase and are local artifacts.
+- The inherited measurement helper labelled process CPU time as wall
+  time. The baseline's parenthesized milliseconds below are CPU time,
+  **not wall time**. `scripts/startup-perf.py` now uses `perf_counter`
+  and verifies stdout and stderr against GNU R before reporting results.
+- Rebased onto main `49e0ee5`. Fixed the missing parser arena in the new
+  baseloader path, which caused the previous CI build failure.
+- Added R's `lazyLoadDBflush` internal, required to invalidate the new
+  database cache when unloading namespaces. The focused conformance test
+  overwrites a database and verifies cached reads, flushing, replacement
+  reads, and repeated flushing. Recorded with Debian GNU R 4.5.0-3.
+- Supporting shared paths: `crates/robigo-runtime/Cargo.toml`, Cargo.lock,
+  `scripts/startup-perf.py`, and `tests/r/serialize/lazy-cache.*`.
+- Container builds must use `CARGO_TARGET_DIR=$HOME/.cache/robigo-trixie-target`.
+  Reusing the host target produced incompatible stale parser artifacts.
+
 ## 2026-10-28: load base from GNU R's own lazy-load database (baseloader)
 
 - why: robigo evaluated base's R sources (~1.5 MB) at every startup:
@@ -58,7 +86,7 @@ are indicative only; instructions are the gate.
 
 ## Baseline 2026-10-28 (main fa86c67, container)
 
-instructions robigo/Rscript (wall ms median, load 27-31; RSS MB):
+instructions robigo/Rscript (CPU ms median, previously mislabelled wall; load 27-31; RSS MB):
 
 | scenario | pkgs | robigo | Rscript | ratio |
 |---|---|---|---|---|

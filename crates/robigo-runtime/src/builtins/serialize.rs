@@ -434,6 +434,14 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+// R: serialize.c:do_lazyLoadDBflush. Unloading a namespace must discard
+// its cached database so a later load can see a replacement file.
+fn do_lazy_load_db_flush(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let file = crate::coerce::as_string(&arg(&args, 0)).ok_or_else(|| Flow::error("bad file name"))?;
+    RDB_CACHE.with(|c| c.borrow_mut().remove(file.as_ref()));
+    Ok(Value::Null)
+}
+
 /// Read `len` bytes at `off` of a lazy-load database file, caching the
 /// whole file like GNU R does (serialize.c readRawFromFile).
 fn read_raw_from_file(file: &str, off: usize, len: usize) -> RResult<Vec<u8>> {
