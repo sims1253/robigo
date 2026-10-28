@@ -1,5 +1,44 @@
 # conformance-sweep-lang
 
+## 2026-10-28: follow-up delivery verification
+
+- Final candidate 049e4ed reconfirms 2,093/2,187 in the requested FastR filter, zero regressions. Combined names/tracing slice is 258/272, nine gains overall. Base examples remain 257/381 and GNU R scripts remain 18/59; related handler cases preserve their previous pass/fail status while conditions advances to the filesystem dependency.
+- Runtime tests: 23 unit + two integration pass. Language conformance: 31/31; vm_guards_hold and compiled_matches_interpreted both pass. Full conformance: 174/175, solely the pre-existing timezone mismatch with byte-identical main/candidate output. Formatting and whitespace checks pass.
+- Three verified cycles delivered: names-label attributes, memory-tracing validation, and persistent global calling handlers. No remaining named group can become fully passing without the ownership dependencies below. Stop this batch with PR #30 open; do not merge. CI's timezone failure needs the datetime/runner owner, not a weakened expectation.
+
+## 2026-10-28: global calling handler registration
+
+- Port errors.c:do_addGlobHands into the existing condition internals. Reject registration with local handlers on the stack, install the new global chain, and update every saved context to prevent restoration of the old chain.
+- First experiment installed the chain in closure contexts but eval_toplevel reset it before the next expression. Rejected that incomplete approach. Keep a separate top-level HandlerStack on Interp and restore it at each top-level boundary, matching R_ToplevelContext->handlerstack.
+- global-handlers.R changes from an immediate failed assertion to a byte-identical match with Docker GNU R 4.5.0. It covers persistence, class selection, multiple handlers, local-handler precedence, removal, duplicates, closure attributes/environments, and rejected registration with local handlers. Kept.
+- GNU R conditions now completes all global handler assertions and reaches its source-reference section, where file.info is unimplemented outside this track. Overall GNU R test passes remain 18/59. The affected base/conditions example remains passing; reg-tests-1d retains its pre-existing formals warning failure.
+- Full conformance: 174/175, only datetime/zones.R failing. Three new scripts are recorded in the conformance ratchet. Dataframe instructions after all changes: 617,176,220 -> 617,223,145 (+0.0076%), inside the 0.5% gate.
+- Shared changes: one Interp field, initialization, and top-level restoration; move .addGlobHands registration from misc.rs into builtins/conditions.rs. No VM/compiler/JIT or parser changes.
+
+## 2026-10-28: CI timezone blocker and remaining ownership
+
+- PR #30's build failed solely at tests/r/datetime/zones.R line 2040, matching the known local baseline failure. Saved origin/main bf985045 binary and candidate produce byte-identical stdout (589,363 bytes), stderr, and successful exit status on that script. Do not change the oracle, ratchet, CI, or datetime implementation from this track. The datetime owner must reconcile the runner tzdata/oracle difference before CI can be green.
+- Requested FastR filter: 2,085/2,187 -> 2,093/2,187, eight gains, zero regressions. There is one additional namesassign gain outside the primary filter, nine FastR ratchet additions total. Base examples remain 257/381 with the same 15 baseline host failures; GNU R tests remain 18/59.
+- Next ownership handoffs: VM/value-model owners for trace flags and duplication hooks; parser/CLI owner for literal <<<NEWLINE>>> diagnostics; package-native owner for methods initialization; filesystem owner for file.info; printing/core owners for language head tags and compact row-name printing. After these dependencies, resume parse-data/source-reference examples and the remaining global-handler regression script.
+
+## 2026-10-28: memory tracing validation
+
+- Port debug.c:do_tracemem, do_untracemem and do_retracemem validation, including check1arg tags, function/environment/NULL rejection, previous-argument matching, and diagnostic order. Move these three registrations/functions from shared misc.rs into owned builtins/debug.rs; register the module in shared builtins/mod.rs.
+- Names/tracing slice: 255/272 -> 258/272 after the names fix; compared with original main, 249/272 -> 258/272. The tracing group itself improves 1/8 -> 4/8, three gains, zero regressions. Kept.
+- Both focused scripts match Docker GNU R 4.5.0. Runtime tests pass (23 unit, two integration). Full conformance is 173/174, with only the known datetime/zones.R host mismatch; both compiled checks pass. New scripts added through ROBIGO_CONF_UPDATE=1.
+- Dataframe instruction count: 617,176,220 -> 617,164,203 (-0.002%); perf.py compare reports no slowdown above 0.5% or broken answers.
+- Valid memory tracing requests report an explicit unimplemented-feature error. Duplicate reporting needs allocation/copy hooks in value.rs and replacement builtins outside this track. No fabricated object identities or trace output.
+- Basic function tracing also needs coordination with the VM owner: vm.rs can inline pure closure calls before interp.call_closure, so an evaluator-only trace hook would silently miss calls. Tracer-expression cases additionally need methods native initialization. No partial tracing engine was added.
+- GNU R tests triage: conditions stops at globalCallingHandlers signaling (the existing .addGlobHands placeholder in misc.rs); later source-reference checks need file.info and parser source metadata. reg-tests-1d needs formals warning behavior in funs.rs, reg-tests-1e needs env.profile object hash state, method-dispatch needs S4 class handling. Other first failures are primarily unimplemented package natives, external tools, or printing/strings.
+
+## 2026-10-28: follow-up baseline and names attribute coercion
+
+- Branch starts at origin/main bf985045, after PR #27 merged. Rebuilt baseline: FastR 2,085/2,187, zero regressions; GNU R tests 18/59, zero regressions; base examples 257/381, with the same 15 host failures. Saved binary and results under `.robigo/lang-debug/`.
+- Reclassified debugging: nearly all InteractiveDebug failures contain literal <<<NEWLINE>>> and fail before debugging starts; the mismatch is parser/CLI context formatting. Trace cases with tracer expressions need methods native initialization. The eleven getParseData parse cases need methods initialization, and the twelfth parse case fails at file.info. Runtime parse-builtin edits do not unblock these cases.
+- Names port: attrib.c:namesgets preserves the coerced labels' attributes; builtin.c:xlengthgets keeps only names when extending a short label vector. Atomic labels use coerceVector rather than factor dispatch. Pairlist labels follow isVectorizable in Rinlinedfuns.h.
+- Names/attribute slice: 248/264 -> 254/264, six gains, zero regressions. Five gains belong to the primary filter; namesassign/99c388871ae85598 is an additional gain outside it. Kept.
+- names-attribute-values.R matches Docker GNU R 4.5.0 byte for byte. Crate tests and final corpus verification are in progress.
+
 ## 2026-10-28: final verified language metric
 
 - FastR requested filter: **2,036/2,187 -> 2,085/2,187**, 49 implementation gains, zero regressions. All 26 missing() cases pass, including forwarded defaults and cyclic defaults. The initial depth-cutoff experiment was rejected; promise-identity cycle detection restores the existing cyclic-default pass.

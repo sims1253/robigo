@@ -15,6 +15,7 @@ pub static DEFS: &[Builtin] = &[
     internal("stop", do_stop, 2),
     internal("warning", do_warning, 4).invisible(),
     internal(".addCondHands", do_add_cond_hands, 5).invisible(),
+    internal(".addGlobHands", do_add_global_hands, 5).invisible(),
     internal(".resetCondHands", do_reset_cond_hands, 1).invisible(),
     internal(".signalCondition", do_signal_condition, 3),
     internal(".dfltStop", do_dflt_stop, 2),
@@ -112,6 +113,27 @@ fn do_add_cond_hands(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     // is restored when that frame exits; our contexts saved the old stack
     // on entry, which has the same effect.
     Ok(old)
+}
+
+// R: errors.c:do_addGlobHands. Replace the top-level handler stack and
+// every saved context that would otherwise restore the old global stack.
+fn do_add_global_hands(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let old = i.global_handlers.clone();
+    let same = |stack: &crate::conditions::HandlerStack| match (stack, &old) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    };
+    if i.frames.iter().any(|f| !same(&f.handlers)) {
+        return Err(Flow::error("should not be called with handlers on the stack"));
+    }
+    i.handlers = None;
+    do_add_cond_hands(i, call, args, env)?;
+    for frame in &mut i.frames {
+        frame.handlers = i.handlers.clone();
+    }
+    i.global_handlers = i.handlers.clone();
+    Ok(Value::Null)
 }
 
 fn do_reset_cond_hands(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

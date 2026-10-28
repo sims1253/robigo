@@ -40,6 +40,8 @@ pub struct Interp {
     pub frames: Vec<Context>,
     pub visible: bool,
     pub handlers: HandlerStack,
+    /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
+    pub global_handlers: HandlerStack,
     pub restarts: RestartStack,
     pub warnings: Vec<(Value, String)>,
     pub options: Vec<(String, Value)>,
@@ -137,6 +139,7 @@ impl Interp {
             frames: Vec::new(),
             visible: true,
             handlers: None,
+            global_handlers: None,
             restarts: None,
             warnings: Vec::new(),
             options: Vec::new(),
@@ -1028,7 +1031,7 @@ impl Interp {
     /// console REPL stores in `.Last.value`.
     pub fn eval_toplevel(&mut self, e: &Value, env: &Env, _echo: bool) -> Option<Value> {
         self.frames.clear();
-        self.handlers = None;
+        self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
         self.ccode_calls.clear();

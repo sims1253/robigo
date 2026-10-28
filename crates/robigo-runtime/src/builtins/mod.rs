@@ -19,6 +19,7 @@ pub mod character;
 pub mod coerce;
 pub mod conditions;
 pub mod datetime;
+pub mod debug;
 pub mod dotcode;
 pub mod envir;
 pub mod funs;
@@ -124,6 +125,7 @@ static TABLES: &[&[Builtin]] = &[
     envir::DEFS,
     funs::DEFS,
     misc::DEFS,
+    debug::DEFS,
     namespace::DEFS,
     parsing::DEFS,
     serialize::DEFS,
