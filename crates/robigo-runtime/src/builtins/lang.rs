@@ -726,44 +726,48 @@ fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -
     Ok(items.into_iter().next().map(|a| a.value).unwrap_or(Value::Null))
 }
 
-pub fn is_missing_in(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
-    if sym.is_empty() {
-        return true;
-    }
-    if depth > 100 {
-        return false;
-    }
-    let (sym, ddv) = match sym.ddval() {
-        Some(i) => (s::DOTS, Some(i)),
-        None => (sym, None),
-    };
-    let frame = env.0.frame().borrow();
-    let Some(b) = frame.get(sym) else { return false };
-    let mut v = b.value.clone();
-    drop(frame);
-    if let Some(i) = ddv {
-        match &v {
-            Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
-            _ => return true,
+pub fn is_missing_in(_interp: &Interp, sym: Sym, env: &Env, _depth: usize) -> bool {
+    // R: envir.c:R_isMissing follows unforced symbol promises and uses
+    // PRSEEN to recognize cycles. Track their identities without mutating them.
+    let mut sym = sym;
+    let mut env = env.clone();
+    let mut seen = Vec::new();
+    loop {
+        if sym.is_empty() {
+            return true;
         }
-    // R: envir.c:R_isMissing tests MISSING == 1, excluding default
-    // arguments (MISSING == 2) when following a forwarded promise.
-    } else if v.is_missing_arg() {
-        return true;
-    }
-    if v.is_missing_arg() {
-        return true;
-    }
-    if let Value::Promise(p) = &v {
-        if p.value().is_none() {
-            if let Value::Sym(s2) = &p.expr {
-                if let Some(penv) = p.env.borrow().clone() {
-                    return is_missing_in(interp, *s2, &penv, depth + 1);
-                }
+        let (lookup, ddv) = match sym.ddval() {
+            Some(i) => (s::DOTS, Some(i)),
+            None => (sym, None),
+        };
+        let Some(mut v) = env.get_local(lookup) else { return false };
+        if let Some(i) = ddv {
+            match &v {
+                Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
+                _ => return true,
             }
         }
+        // MISSING == 2 (a default argument) is not missing here.
+        if v.is_missing_arg() {
+            return true;
+        }
+        let Value::Promise(mut p) = v else { return false };
+        while let Value::Promise(q) = &p.expr {
+            p = q.clone();
+        }
+        if p.value().is_some() {
+            return false;
+        }
+        let Value::Sym(next) = p.expr else { return false };
+        let Some(penv) = p.env.borrow().clone() else { return false };
+        let id = Rc::as_ptr(&p);
+        if seen.contains(&id) {
+            return true;
+        }
+        seen.push(id);
+        sym = next;
+        env = penv;
     }
-    false
 }
 
 fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -1462,7 +1466,7 @@ fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         }
     }
     let index = &args[0].value;
-    if !matches!(index, Value::Int(_) | Value::Real(_)) || index.len() != 1 {
+    if !index.is_numeric_type() || (matches!(index, Value::Int(_)) && index.inherits("factor")) || index.len() != 1 {
         return Err(Flow::error_call(call.clone(), "indexing '...' with an invalid index"));
     }
     let n = as_integer(index);

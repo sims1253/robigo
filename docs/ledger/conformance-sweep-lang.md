@@ -20,3 +20,11 @@
 - Port: `match.c:patchArgsByActuals` / `patchArgument` patches supplied slots in original order. Retain explicit missing arguments and promise current local values, including exact and partial named matches.
 - Dots/function slice: 342/359 -> 353/359, 11 gains and zero regressions. `base/print`: fail -> pass, including table subsetting with an explicit missing row index. Kept.
 - Follow-up under verification: nested missing checks distinguish defaults from absent arguments per `envir.c:R_isMissing`; attribute and removal validation follow attrib.c/envir.c. `.dfltWarn` needs one minimal shared registration change in builtins/conditions.rs to match names.c eval=11.
+
+## 2026-10-28: attribute validation and condition visibility
+
+- Ports: `attrib.c:tspgets` validates numeric triples, positive frequency, row count and endpoint consistency; `do_attributesgets` rejects an empty first attribute name; `envir.c:do_remove` uses context errors and returns immediately for NULL names; `names.c` makes `.dfltWarn` visible.
+- Final candidate run: 2,084/2,187, with one regression in cyclic defaults. The first nested-missing experiment removed the default flag but retained an arbitrary depth cutoff. Rejected that cutoff and replaced it with promise-identity cycle detection from `envir.c:R_isMissing`; final rerun pending.
+- Base examples: 252/381 -> 257/381, five gains (`aperm`, `dots`, `marginSums`, `print`, `proportions`), no newly failing cases. GNU R tests: 18/59 unchanged. Recorded baseline passes separately through --update as well as gains.
+- Related rep/names/S3/tsp slice: 347/363, zero ratchet regressions. Runtime tests: 23 unit + two integration pass. Full conformance: 171/172; only known datetime/zones.R host difference. Compiled guard and interpreted/compiled comparison tests pass. Formatting passes.
+- Previous pushed commit 5a0383d passes all CI jobs, including four FastR shards and instruction-count performance checks. Final validation fixes are being verified separately.
