@@ -11,6 +11,56 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: compact sequences (GNU R's compact_intseq / compact_realseq)
+
+- `:`, `seq_len`, `seq_along` (also the VM's lazy ranges when they
+  materialize) and compact row names make GNU R's compact sequences;
+  `as.numeric` of one gives a compact real sequence (altclasses.c's
+  Coerce method), and unserialize restores them.
+- Serialization (version 3) writes them in GNU R's ALTREP form: class
+  info `list3(compact_intseq, base, 13)`, state `c(n, n1, inc)`, no
+  attributes. A conformance test compares byte lengths and bytes:
+  `1:1e6` is 133 bytes as in GNU R. Copies (`c(1:3)`, `rev`, `+ 0L`), a
+  modified copy (`y[2] <- 9L`) and vectors with attributes serialize
+  regularly, as GNU R's are immutable and duplicate on modify.
+- C API: GNU R's two ALTREP classes (`crates/robigo-capi/src/compact.rs`,
+  a port of altclasses.c's methods: Length, Elt, Dataptr with expansion,
+  Dataptr_or_null, Get_region, Is_sorted, No_NA, Sum, Duplicate,
+  Coerce, Serialized_state, Unserialize). The bridge hands a compact
+  sequence to C as one (no copy of the data) and takes an unexpanded
+  one back as compact. capi corpus 15 -> 17/20 (`vectors`, `serialize`).
+- Representation, measured: a `compact: bool` in `Vector<T>` made every
+  vector 8 bytes bigger, and the suite showed vecarith +0.76%; CI's perf
+  job fails above 0.5%. Compact sequences are therefore registered by
+  allocation in a thread-local map of `Weak`s. The `Weak` pins the
+  address, so no other vector can be mistaken for a registered one.
+  Modification goes through `Rc::make_mut`, which moves a weakly
+  referenced value to a new allocation, so a registered vector is
+  unmodified and the check is O(1). Dead entries are pruned when the map
+  has doubled. Suite vs main on this machine: 0 slower, binarytrees
+  -0.69%.
+- Ratchets: conformance all pass (+1 script); fastr shards
+  7626/7499/7661/7537 (+12 vs before, the only regressions are main's
+  known TestSimpleValues/operators set); gnur-examples, gnur-tests,
+  r-intro, gnur-demos unchanged.
+- Not done:
+  - **deferred strings** (`as.character(<int/real>)` is an ALTREP
+    `deferred_string` in GNU R; `serialize(row.names(df))` is 216 bytes
+    there, 58 in robigo) need a back-reference from the string vector to
+    its source;
+  - **package ALTREP classes through serialization** (mori-style
+    Serialized_state/Unserialize hooks) need the runtime to hold foreign
+    ALTREP objects instead of materializing them: G3 territory.
+- **G6 (methods ledger, 2026-10-28) — answer from core.** Agreed:
+  methods stays a Rust port while the bridge copies arguments (measured
+  here: the copies alone make vectorised stats natives ~7% slower, and
+  `R_set_slot`'s in-place modification cannot work through a copy).
+  `dyn.load` serves a base package from GNU R's sources only when
+  `.robigo/natives/<pkg>` holds a build (#53), and `build-natives.sh`
+  builds only the packages it is given; methods is never built by
+  default. docs/core.md §13 lists methods.so's 22 core entry points for
+  the later comparison under G3. Ask further questions as "G6 asks"
+  entries here.
 ## 2026-10-28: base-package natives from GNU R's sources by default (stats)
 
 Lead's decision: base packages' native code comes from GNU R's sources.

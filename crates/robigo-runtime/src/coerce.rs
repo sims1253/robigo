@@ -616,6 +616,13 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
     if v.vtype() == Some(t) {
         return Ok(v.clone());
     }
+    // R: altclasses.c compact_intseq_Coerce — a compact integer sequence
+    // becomes a compact real one
+    if let (Value::Int(iv), VType::Real) = (v, t) {
+        if let Some((n, n1, inc)) = crate::value::compact_intseq_of(iv) {
+            return Ok(Value::compact_realseq(n, n1, inc));
+        }
+    }
     // R: coerce.c:coerceVector — vectors, lists, expressions, language
     // objects and symbols coerce; environments have their own message;
     // everything else fails as a plain error against the context call.

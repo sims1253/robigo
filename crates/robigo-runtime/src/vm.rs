@@ -51,7 +51,8 @@ impl RVal {
             RVal::D(x) => Value::real(x),
             RVal::I(x) => Value::int(x),
             RVal::L(x) => Value::lgl_raw(x),
-            RVal::Range { start, step, n } => Value::ints((0..n as i64).map(|k| (start + k * step) as i32).collect()),
+            // `:`, seq_len, seq_along: GNU R's compact sequences
+            RVal::Range { start, step, n } => Value::compact_intseq(n as usize, start, step),
         }
     }
 

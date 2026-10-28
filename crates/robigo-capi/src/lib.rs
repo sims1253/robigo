@@ -15,6 +15,7 @@ pub mod arith;
 pub mod attrib;
 pub mod bridge;
 pub mod coerce;
+pub mod compact;
 pub mod connections;
 pub mod context;
 pub mod dotcode;
