@@ -44,6 +44,23 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: bare robigo starts with GNU R's default packages; startup cost
+
+- `robigo script.R` without `R_DEFAULT_PACKAGES` forced it to NULL ("cannot
+  load the default packages yet"); it now gets the profile's defaults,
+  methods included, as GNU R does (crates/robigo-cli/src/main.rs, one
+  block removed; the conformance runner now sets NULL itself, as
+  regen-expected.sh records). Corpora, conformance and benchmarks set the
+  variable explicitly and are unchanged.
+- Startup, 5 runs each: robigo 230 ms without methods, 315 ms with;
+  GNU R 4.5.0 (oracle image) 369 ms without, 672 ms with.
+- Where methods' 162M startup instructions go (callgrind, `-e
+  'invisible(1)'`, methods vs NULL): ~35M is zlib set-up, not inflating:
+  `miniz_oxide::InflateState::new_boxed` and its zeroed allocation once
+  per lazy-load fetch (273 fetches). One reused inflate state would remove
+  it (builtins/serialize.rs, startup track). The rest is unserialize
+  (`read_item`, bytecode `read_bc_lang`) and `..onLoad`'s R code.
+
 ## 2026-10-28: relation to core.md §13 (methods.so's entry points)
 
 - core.md §13 lists the 22 non-API entry points GNU R's methods.so would
