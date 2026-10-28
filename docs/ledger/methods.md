@@ -71,7 +71,7 @@ What other evaluator paths must keep:
   root, its locales; reg-large needs its RAM), then the ratchet cases
   above must pass or be decided by the maintainer: the scripts are the
   same, their oracle changes. A bare `robigo script.R` already attaches
-  methods since #55's cli change.
+  methods since #52's cli change.
 
 ## 2026-10-28: Rcpp's own test suite (in progress)
 
