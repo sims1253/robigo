@@ -262,6 +262,7 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 code: Default::default(),
                 inline: Default::default(),
                 defaults: Default::default(),
+                jit: Default::default(),
             })),
         });
     }
@@ -807,5 +808,6 @@ fn do_asfunction(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),
+        jit: Default::default(),
     })))
 }

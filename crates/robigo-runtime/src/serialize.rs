@@ -482,6 +482,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     code: Default::default(),
                     inline: Default::default(),
                     defaults: Default::default(),
+                    jit: Default::default(),
                 }));
                 set_attr_pairlist(&mut v, head_attr);
                 Ok(v)

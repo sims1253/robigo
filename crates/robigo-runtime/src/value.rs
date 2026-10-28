@@ -233,6 +233,9 @@ pub struct Closure {
     /// Bytecode for the promises of default arguments, per formal (see
     /// `vm::default_codes`).
     pub defaults: std::cell::OnceCell<Rc<[Option<Rc<crate::compile::Code>>]>>,
+    /// Whether GNU R's JIT would have compiled the closure by now, and the
+    /// base functions it bound then (see `vm::jit_check`).
+    pub jit: crate::vm::JitState,
 }
 
 pub struct Promise {
