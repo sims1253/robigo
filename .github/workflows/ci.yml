@@ -17,6 +17,13 @@ permissions:
   contents: read
   actions: read
 
+# bash with pipefail (GitHub runs `bash -eo pipefail` for `shell: bash`):
+# the default `sh -e` takes a pipeline's status from its last command, so
+# `corpus.py run ... | tee` passed even when the ratchet failed.
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
   LANGUAGE: en

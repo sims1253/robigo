@@ -70,6 +70,26 @@ def normalize(b):
     return PROC_TIME.sub(lambda m: m.group(1) + b"<proc.time masked>" + m.group(2), b)
 
 
+# Lines between these markers are not compared, as GNU R's tools::Rdiff
+# drops them for `R CMD check` (R: tools/R/testing.R:Rdiff, documented in
+# ?Rdiff): output that is allowed to differ, such as today's date.
+IGNORE_BEGIN, IGNORE_END = b"> ## IGNORE_RDIFF_BEGIN", b"> ## IGNORE_RDIFF_END"
+
+
+def rdiff_ignore(b):
+    """`txt[cumsum(txt == BEGIN) <= cumsum(txt == END)]`: drops each BEGIN
+    marker and what follows it, keeps the END marker."""
+    if IGNORE_BEGIN not in b:
+        return b
+    out, begins, ends = [], 0, 0
+    for line in b.split(b"\n"):
+        begins += line == IGNORE_BEGIN
+        ends += line == IGNORE_END
+        if begins <= ends:
+            out.append(line)
+    return b"\n".join(out)
+
+
 def manifest():
     with open(os.path.join(CORPORA, "corpora.toml"), "rb") as f:
         return tomllib.load(f)
@@ -210,6 +230,14 @@ def write_expected(name, exp):
             gz.write((json.dumps(exp[k], sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
+def host_dependent(conf):
+    """Cases whose output shows the host (`host_dependent` in corpora.toml:
+    kernel, CPU count, installed tools, packages or locales), so GNU R's
+    recorded output holds only on the machine that recorded it. They are
+    neither run nor scored."""
+    return set(conf.get("host_dependent", []))
+
+
 def load_passing(name):
     p = os.path.join(cdir(name), "passing.txt")
     if not os.path.exists(p):
@@ -310,14 +338,16 @@ def cmd_record(a):
 
 
 def masked(b, mask):
+    """What is compared: normalized, recorded masks applied (their line
+    numbers count the normalized output), IGNORE_RDIFF blocks dropped."""
     b = normalize(b)
     if not mask:
-        return b
+        return rdiff_ignore(b)
     lines = b.split(b"\n")
     for i in mask:
         if i < len(lines):
             lines[i] = b"<masked>"
-    return b"\n".join(lines)
+    return rdiff_ignore(b"\n".join(lines))
 
 
 def classify(exp, o, e, s):
@@ -344,7 +374,8 @@ def cmd_run(a):
     exp = load_expected(a.name)
     if not exp:
         sys.exit(f"{a.name} has no expected output; run: scripts/corpus.py record {a.name}")
-    cases = [c for c in load_cases(a.name) if c[0] in exp and not exp[c[0]].get("unstable")]
+    skip = host_dependent(conf)
+    cases = [c for c in load_cases(a.name) if c[0] in exp and not exp[c[0]].get("unstable") and c[0] not in skip]
     stale = [c[0] for c in cases if exp[c[0]]["sha"] != sha(c[1])]
     if stale:
         sys.exit(f"{len(stale)} case(s) changed since recording (e.g. {stale[0]}); run: scripts/corpus.py record {a.name}")
@@ -402,8 +433,8 @@ def cmd_show(a):
     print("== source\n" + src.decode("utf-8", "replace"))
     o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo))
     if exp:
-        for label, want, got in (("stdout", dec(exp["out"]), o), ("stderr", dec(exp["err"]), e)):
-            if normalize(want) == normalize(got):
+        for label, key, want, got in (("stdout", "out", dec(exp["out"]), o), ("stderr", "err", dec(exp["err"]), e)):
+            if masked(want, exp.get("mask_" + key)) == masked(got, exp.get("mask_" + key)):
                 print(f"== {label}: same")
                 continue
             import difflib
@@ -422,8 +453,9 @@ def cmd_score(a):
         if not os.path.isdir(cdir(name)):
             continue
         exp = load_expected(name)
-        scored = sum(1 for e in exp.values() if not e.get("unstable"))
-        rows.append((name, len(load_passing(name)), scored, conf.get("description", "")))
+        skip = host_dependent(conf)
+        ids = {k for k, e in exp.items() if not e.get("unstable") and k not in skip}
+        rows.append((name, len(load_passing(name) & ids), len(ids), conf.get("description", "")))
     if a.markdown:
         print("| corpus | passing | cases | |\n|---|---|---|---|")
         for n, p, t, d in rows:

@@ -7,6 +7,10 @@
 #   timeout           seconds per case
 #   support           directory whose files are linked into each case's
 #                     working directory
+#   host_dependent    case ids whose output shows the machine (installed
+#                     tools, packages or locales, CPU count): GNU R's
+#                     recorded output holds only where it was recorded, so
+#                     they are neither run nor scored
 
 # Default packages: GNU R's, without `methods` until robigo can load it
 # (goalpost G6). Then add it back here and re-record: today every case would
@@ -22,6 +26,8 @@ commit = "f9d9199e51b371f076b19456933ee395d28360bf"
 path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutput.test"
 # FastR-only features (Java interop, FastR's own functions).
 exclude_prefix = ["library.fastr.", "rffi."]
+# Sets the en_US.utf8 collation locale, which not every machine has.
+host_dependent = ["builtins/TestBuiltin_order/add626733541c799"]
 
 [gnur-tests]
 description = "GNU R 4.5.0's own regression tests (tests/*.R), as `make check` runs them"
@@ -52,6 +58,9 @@ default_packages = "datasets,utils,grDevices,graphics,stats"
 timeout = 120
 packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datasets", "tools", "splines",
             "stats4", "grid", "parallel", "compiler"]
+# Examples that print the host (kernel and user, tools on the PATH,
+# installed packages, CPU count): not comparable across machines.
+host_dependent = ["base/Sys.info", "base/Sys.which", "base/find.package", "parallel/detectCores"]
 
 # Whole R programs: everyday scripts, not snippets (see
 # tests/corpora/{gnur-demos,r-intro}/README.md). Both import from GNU R

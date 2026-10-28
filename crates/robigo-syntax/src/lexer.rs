@@ -600,12 +600,18 @@ impl<'a> Lexer<'a> {
     /// The `ERROR` token of gram.y's lexer, as `yyerror` reports it:
     /// "unexpected input" at the token's start (used for malformed
     /// numbers and for `<<` without the `-`).
+    /// The `ERROR` token. A scan that read past the end of the buffer
+    /// (`xxgetc` returned EOF, so gram.y's `EndOfFile` is set; the number
+    /// scanner leaves `self.pos` one past the end) makes `R_Parse1` report
+    /// the syntax error as PARSE_INCOMPLETE: the REPL reads more and parses
+    /// again, which matters when a console read of `CONSOLE_BUFFER_SIZE`
+    /// cuts a literal such as `1e-16` after the `e-`.
     fn error_token(&self, start: usize) -> ParseError {
         ParseError {
             message: "unexpected input".into(),
             offset: start,
             end: self.pos.max(start + 1),
-            incomplete: false,
+            incomplete: self.pos > self.bytes.len(),
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
@@ -837,8 +843,10 @@ impl<'a> Lexer<'a> {
                 // (the second `nextchar` fails) and bison reports
                 // "unexpected input" at the token's start.
                 (b'<', _) => {
+                    // The failed `nextchar('-')` read EOF if the buffer ends here.
+                    let eof = start + 2 >= self.bytes.len();
                     self.pos = (start + 2).min(self.bytes.len());
-                    return Err(self.error_token(start));
+                    return Err(ParseError { incomplete: eof, ..self.error_token(start) });
                 }
                 (b'-', _) => (Tok::LeftAssign("<-"), 2),
                 (b'=', _) => (Tok::Cmp("<="), 2),
