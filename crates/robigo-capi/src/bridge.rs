@@ -166,6 +166,11 @@ unsafe fn proxy(v: &Value) -> Sexp {
         h
     });
     let x = robigo_host_proxy(t as c_int, h, Some(release_proxy));
+    if t == EXTPTRSXP {
+        // a runtime external pointer (e.g. restored by unserialize) has
+        // no C address: R_ExternalPtrAddr gives NULL, as in GNU R
+        x.set_car_raw(Sexp::NULL);
+    }
     PROXIED.with(|m| m.borrow_mut().insert(h, (key, v.clone())));
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
     x

@@ -142,6 +142,7 @@ tests/r/subset/targets.R
 tests/r/subset/vector-index.R
 tests/r/vec/allany-which.R
 tests/r/vec/bins.R
+tests/r/vec/c-na-names.R
 tests/r/vec/colon-seq.R
 tests/r/vec/colsums-ldouble.R
 tests/r/vec/dispatch.R

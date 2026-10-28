@@ -1,12 +1,13 @@
 # A minimal tinytest/testthat shim: run each test file, count expectations.
-.libPaths(c("/tmp/rlib", .libPaths()))
 args <- commandArgs(TRUE)
 pkg <- args[1]; dir <- args[2]
-library(pkg, character.only = TRUE, lib.loc = "/tmp/rlib")
+lib <- if (length(args) >= 3) args[3] else "/tmp/rlib"
+.libPaths(c(lib, .libPaths()))
+library(pkg, character.only = TRUE, lib.loc = lib)
 res <- new.env(); res$pass <- 0L; res$fail <- character()
 rec <- function(ok, what) {
   if (isTRUE(ok)) res$pass <- res$pass + 1L
-  else res$fail <- c(res$fail, paste(res$file, what))
+  else res$fail <- c(res$fail, paste(res$file, res$desc, what))
   invisible(ok)
 }
 expect_equal <- function(current, target, ..., info = NULL) rec(isTRUE(all.equal(target, current, ...)), "equal")
@@ -26,6 +27,7 @@ ignore <- function(f) f
 exit_file <- function(...) stop("exit_file")
 at_home <- function() FALSE
 test_that <- function(desc, code) {
+  res$desc <- desc
   r <- try(eval(substitute(code), new.env(parent = parent.frame())), silent = TRUE)
   if (inherits(r, "try-error")) res$fail <- c(res$fail, paste(res$file, desc, "ERROR:", trimws(conditionMessage(attr(r, "condition")))))
 }

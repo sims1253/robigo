@@ -238,36 +238,51 @@ fn combine_atomic(leaves: &[&Value], mode: VType) -> Value {
 // ----------------------------------------------------------------------
 // names
 
+thread_local! {
+    /// The name NA_STRING: spelled "NA" (its CHAR) when names are built
+    /// from it, itself (NA) when passed through; told apart by identity.
+    static NA_NAME: Rc<str> = Rc::from("NA");
+}
+
+fn na_name() -> Rc<str> {
+    NA_NAME.with(|n| n.clone())
+}
+
+/// A name as a CHARSXP: the NA name is NA.
+fn name_rstr(s: &Rc<str>) -> RStr {
+    if NA_NAME.with(|n| Rc::ptr_eq(n, s)) { None } else { Some(s.clone()) }
+}
+
 fn item_name(names: &Option<Vec<RStr>>, i: usize) -> Option<Rc<str>> {
     // R's `translateChar(NA_STRING)` is "NA": a missing name still names the
     // element (c(list(b = <named>) ) yields "b.NA").
-    names.as_ref().and_then(|n| n.get(i).map(|s| s.clone().unwrap_or_else(|| Rc::from("NA")))).filter(|s| !s.is_empty())
+    names.as_ref().and_then(|n| n.get(i).map(|s| s.clone().unwrap_or_else(na_name))).filter(|s| !s.is_empty())
 }
 
+// R: bind.c:NewBase
 fn new_base(base: &Option<Rc<str>>, tag: &Option<Rc<str>>) -> Option<Rc<str>> {
-    match (base.as_deref().filter(|s| !s.is_empty()), tag.as_deref().filter(|s| !s.is_empty())) {
+    let b = base.clone().filter(|s| !s.is_empty());
+    let t = tag.clone().filter(|s| !s.is_empty());
+    match (b, t) {
         (Some(b), Some(t)) => Some(Rc::from(format!("{}.{}", b, t))),
-        (None, Some(t)) => Some(Rc::from(t)),
-        (Some(b), None) => Some(Rc::from(b)),
+        (None, Some(t)) => Some(t),
+        (Some(b), None) => Some(b),
         _ => None,
     }
 }
 
+// R: bind.c:NewName — NA_STRING's CHAR is "NA": it counts as a name, is
+// spelled "NA" inside new names and is returned as itself
 fn new_name(base: &Option<Rc<str>>, tag: &Option<Rc<str>>, seqno: usize, count: usize) -> RStr {
-    let b = base.as_deref().filter(|s| !s.is_empty());
-    let t = tag.as_deref().filter(|s| !s.is_empty());
-    Some(match (b, t) {
-        (Some(b), Some(t)) => Rc::from(format!("{}.{}", b, t)),
-        (Some(b), None) => {
-            if count == 1 {
-                Rc::from(b)
-            } else {
-                Rc::from(format!("{}{}", b, seqno))
-            }
-        }
-        (None, Some(t)) => Rc::from(t),
-        (None, None) => Rc::from(""),
-    })
+    let b = base.as_ref().filter(|s| !s.is_empty());
+    let t = tag.as_ref().filter(|s| !s.is_empty());
+    match (b, t) {
+        (Some(b), Some(t)) => Some(Rc::from(format!("{}.{}", b, t))),
+        (Some(b), None) if count == 1 => name_rstr(b),
+        (Some(b), None) => Some(Rc::from(format!("{}{}", b, seqno))),
+        (None, Some(t)) => name_rstr(t),
+        (None, None) => Some(Rc::from("")),
+    }
 }
 
 fn names_of(v: &Value) -> Option<Vec<RStr>> {

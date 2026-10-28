@@ -27,6 +27,7 @@ pub mod envir;
 pub mod funs;
 pub mod grep;
 pub mod identical;
+pub mod internet;
 pub mod io;
 pub mod lang;
 pub mod lapack;
@@ -148,6 +149,7 @@ static TABLES: &[&[Builtin]] = &[
     math::DEFS,
     io::DEFS,
     dcf::DEFS,
+    internet::DEFS,
     printint::DEFS,
     apply::DEFS,
     array::DEFS,

@@ -821,6 +821,7 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
 enum RefKey {
     Sym(Sym),
     Env(Env),
+    ExtPtr(Rc<ExtPtr>),
 }
 
 /// The persistence hook of `serialize(refhook=)` and lazy-load databases:
@@ -1103,10 +1104,21 @@ impl Writer<'_> {
                     self.hook = hook;
                 }
             },
-            Value::ExtPtr(_) => {
-                self.flags(EXTPTRSXP, 0, false, false, false);
+            // R: serialize.c:WriteItem — external pointers go into the
+            // reference table (ReadItem adds them to its own), then the
+            // protected value, the tag and the attributes
+            Value::ExtPtr(p) => {
+                if let Some(i) = self.refs.iter().position(|x| matches!(x, RefKey::ExtPtr(y) if Rc::ptr_eq(y, p))) {
+                    self.ref_item(i + 1);
+                    return;
+                }
+                self.refs.push(RefKey::ExtPtr(p.clone()));
+                self.flags(EXTPTRSXP, 0, obj, has_attr, false);
                 self.int(NILVALUE_SXP as i32);
-                self.int(NILVALUE_SXP as i32);
+                self.item(&p.tag);
+                if has_attr {
+                    self.attrs(v);
+                }
             }
             Value::Lgl(x) | Value::Int(x) => {
                 self.flags(if matches!(v, Value::Lgl(_)) { LGLSXP } else { INTSXP }, 0, obj, has_attr, false);
