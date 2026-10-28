@@ -7,12 +7,17 @@
 //! first). Output goes to the file named by the second argument, or stdout
 //! for `-`. This is the tool behind `scripts/parse-corpus.py` and the
 //! parse-throughput measurements.
+//!
+//! `--parse-only` skips the dump and folds a checksum over the trees
+//! instead: the same parsing work (values included, so number scanning
+//! cannot be elided), no formatting, for throughput runs.
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use robigo_syntax::dump::{dump, dump_error};
 use robigo_syntax::parse_program;
+use robigo_syntax::{Arg, Const, Expr};
 
 fn transcode_latin1(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len());
@@ -22,16 +27,82 @@ fn transcode_latin1(bytes: &[u8]) -> String {
     s
 }
 
+/// A cheap checksum over the trees keeps the optimizer from eliding the
+/// work in throughput runs: O(nodes) of arithmetic over the parts that
+/// matter (spans, constant bits, name and string bytes), no formatting.
+fn hash_bytes(h: u64, bytes: &[u8]) -> u64 {
+    let mut h = h;
+    for &b in bytes {
+        h = h.wrapping_mul(0x100000001b3).wrapping_add(b as u64);
+    }
+    h
+}
+
+fn hash_arg(h: u64, a: &Arg) -> u64 {
+    let mut h = h;
+    if let Some(n) = &a.name {
+        h = hash_bytes(h, n.as_bytes());
+        h ^= 0x5a;
+    }
+    match &a.value {
+        Some(v) => hash_expr(h, v),
+        None => h ^ 0x2d,
+    }
+}
+
+fn hash_expr(mut h: u64, e: &Expr) -> u64 {
+    h = h.wrapping_mul(0x100000001b3).wrapping_add((e.span().start as u64) << 32 ^ e.span().end as u64);
+    match e {
+        Expr::Const(c, _) => {
+            h ^= 0x63;
+            match c {
+                Const::Null => h = h.wrapping_mul(3),
+                Const::Lgl(None) | Const::Int(None) | Const::DblNa | Const::CplxNa | Const::Str(None) => {
+                    h = h.wrapping_mul(5)
+                }
+                Const::Lgl(Some(b)) => h = h.wrapping_mul(*b as u64 + 7),
+                Const::Int(Some(i)) => h = h.wrapping_add(*i as u64),
+                Const::Dbl(x) => h = h.wrapping_add(x.to_bits()),
+                Const::Cplx(re, im) => h = h.wrapping_add(re.to_bits() ^ im.to_bits().rotate_left(17)),
+                Const::Str(Some(s)) => h = hash_bytes(h, s),
+            }
+        }
+        Expr::Sym(name, _) => h = hash_bytes(h ^ 0x73, name.as_bytes()),
+        Expr::Placeholder(_) => h ^= 0x70,
+        Expr::Call { fun, args, .. } => {
+            h ^= 0x28;
+            h = hash_expr(h, fun);
+            for a in args {
+                h = hash_arg(h, a);
+            }
+        }
+        Expr::Function { formals, body, .. } => {
+            h ^= 0x66;
+            for f in formals {
+                h = hash_bytes(h, f.name.as_bytes());
+                h ^= 0x3d;
+                if let Some(d) = &f.default {
+                    h = hash_expr(h, d);
+                }
+            }
+            h = hash_expr(h, body);
+        }
+    }
+    h
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("usage: parse-batch MANIFEST OUTFILE|-");
+    let parse_only = args.iter().any(|a| a == "--parse-only");
+    let rest: Vec<&str> = args[1..].iter().filter(|a| **a != "--parse-only").map(String::as_str).collect();
+    if rest.len() < 2 {
+        eprintln!("usage: parse-batch [--parse-only] MANIFEST OUTFILE|-");
         std::process::exit(2);
     }
-    let manifest = std::fs::read_to_string(&args[1]).expect("read manifest");
+    let manifest = std::fs::read_to_string(rest[0]).expect("read manifest");
     let stdout = std::io::stdout();
-    let file = std::fs::File::create(&args[2]).ok();
-    let mut out: Box<dyn Write> = if args[2] == "-" {
+    let file = std::fs::File::create(rest[1]).ok();
+    let mut out: Box<dyn Write> = if rest[1] == "-" {
         Box::new(BufWriter::new(stdout.lock()))
     } else {
         match file {
@@ -39,8 +110,6 @@ fn main() {
             None => Box::new(BufWriter::new(stdout.lock())),
         }
     };
-    // A cheap checksum over the trees keeps the optimizer from eliding the
-    // work in throughput runs.
     let mut checksum: u64 = 0;
     let mut n = 0u64;
     let mut bytes_out: Vec<u8> = Vec::new();
@@ -80,6 +149,13 @@ fn main() {
         n += 1;
         match parse_program(&src) {
             Ok(exprs) => {
+                if parse_only {
+                    checksum = checksum.wrapping_mul(0x100000001b3).wrapping_add(src.len() as u64);
+                    for e in &exprs {
+                        checksum = hash_expr(checksum, e);
+                    }
+                    continue;
+                }
                 bytes_out.clear();
                 bytes_out.extend_from_slice(id.as_bytes());
                 bytes_out.push(b'\t');
@@ -94,6 +170,10 @@ fn main() {
                 checksum = checksum.wrapping_add(bytes_out.len() as u64);
             }
             Err(e) => {
+                if parse_only {
+                    checksum = checksum.wrapping_mul(31).wrapping_add(e.offset as u64);
+                    continue;
+                }
                 let line = dump_error(&src, &e);
                 bytes_out.clear();
                 bytes_out.extend_from_slice(id.as_bytes());
