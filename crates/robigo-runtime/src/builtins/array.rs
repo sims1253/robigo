@@ -1408,8 +1408,10 @@ fn arg_expr(v: &Value) -> Value {
 fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bool) -> RResult<Value> {
     // missing(deparse.level)
     let dl_expr = arg(&args, 0);
+    // R: bind.c:do_bind uses R_missing(), not R_isMissing(): a formal left
+    // to its default is still missing for this test.
     let missing_dl = match &dl_expr {
-        Value::Sym(sym) => super::lang::is_missing_in(i, *sym, env, 0),
+        Value::Sym(sym) => super::lang::missing_sym(i, call, *sym, env)?,
         _ => false,
     };
     let dl = i.eval(&dl_expr, env)?;
