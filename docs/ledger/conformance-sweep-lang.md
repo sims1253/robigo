@@ -1,5 +1,15 @@
 # conformance-sweep-lang
 
+## 2026-10-28: memory tracing validation
+
+- Port debug.c:do_tracemem, do_untracemem and do_retracemem validation, including check1arg tags, function/environment/NULL rejection, previous-argument matching, and diagnostic order. Move these three registrations/functions from shared misc.rs into owned builtins/debug.rs; register the module in shared builtins/mod.rs.
+- Names/tracing slice: 255/272 -> 258/272 after the names fix; compared with original main, 249/272 -> 258/272. The tracing group itself improves 1/8 -> 4/8, three gains, zero regressions. Kept.
+- Both focused scripts match Docker GNU R 4.5.0. Runtime tests pass (23 unit, two integration). Full conformance is 173/174, with only the known datetime/zones.R host mismatch; both compiled checks pass. New scripts added through ROBIGO_CONF_UPDATE=1.
+- Dataframe instruction count: 617,176,220 -> 617,164,203 (-0.002%); perf.py compare reports no slowdown above 0.5% or broken answers.
+- Valid memory tracing requests report an explicit unimplemented-feature error. Duplicate reporting needs allocation/copy hooks in value.rs and replacement builtins outside this track. No fabricated object identities or trace output.
+- Basic function tracing also needs coordination with the VM owner: vm.rs can inline pure closure calls before interp.call_closure, so an evaluator-only trace hook would silently miss calls. Tracer-expression cases additionally need methods native initialization. No partial tracing engine was added.
+- GNU R tests triage: conditions stops at globalCallingHandlers signaling (the existing .addGlobHands placeholder in misc.rs); later source-reference checks need file.info and parser source metadata. reg-tests-1d needs formals warning behavior in funs.rs, reg-tests-1e needs env.profile object hash state, method-dispatch needs S4 class handling. Other first failures are primarily unimplemented package natives, external tools, or printing/strings.
+
 ## 2026-10-28: follow-up baseline and names attribute coercion
 
 - Branch starts at origin/main bf985045, after PR #27 merged. Rebuilt baseline: FastR 2,085/2,187, zero regressions; GNU R tests 18/59, zero regressions; base examples 257/381, with the same 15 host failures. Saved binary and results under `.robigo/lang-debug/`.

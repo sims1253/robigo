@@ -13848,6 +13848,9 @@ builtins/TestBuiltin_toupper/e625f1fb47e7cab5
 builtins/TestBuiltin_toupper/f54aced710bc8663
 builtins/TestBuiltin_toupper/fb97213c205162e5
 builtins/TestBuiltin_toupper/fba258008b700c26
+builtins/TestBuiltin_tracemem/4ec2fac56738b509
+builtins/TestBuiltin_tracemem/84cd0cbe8c19baf4
+builtins/TestBuiltin_tracemem/bc80ef182d684c41
 builtins/TestBuiltin_tracemem/c815bd0bbb6b5e66
 builtins/TestBuiltin_trigamma/03e7ecbce783b2e0
 builtins/TestBuiltin_trigamma/298f5efec73e8418

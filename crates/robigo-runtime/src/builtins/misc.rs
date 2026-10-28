@@ -43,9 +43,6 @@ pub static DEFS: &[Builtin] = &[
     internal("undebug", do_undebug, 1).invisible(),
     internal("isdebugged", do_isdebugged, 1),
     internal("debugonce", do_debug, 3).invisible(),
-    prim("tracemem", do_tracemem, 1),
-    prim("untracemem", do_untracemem, 1).invisible(),
-    prim("retracemem", do_retracemem, -1).custom_vis(),
     internal("traceOnOff", do_false, 1),
     internal("debugOnOff", do_false, 1),
     prim(".primTrace", do_identity, 1).invisible(),
@@ -410,20 +407,6 @@ fn do_undebug(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let k = closure_key(&arg(&args, 0));
     Ok(Value::lgl(k.is_some_and(|k| DEBUGGED.with(|d| d.borrow().contains(&k)))))
-}
-
-fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "tracemem", call)?;
-    Err(Flow::error_call(call.clone(), "R was not compiled with support for memory profiling"))
-}
-
-fn do_untracemem(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
-}
-
-fn do_retracemem(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    i.visible = false;
-    Ok(Value::Null)
 }
 
 /// robigo does not track allocations by R's cell classes; report NA rather

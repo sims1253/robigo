@@ -1,0 +1,22 @@
+cannot trace NULL
+argument must not be a function
+'tracemem' is not useful for promise and environment objects
+supplied argument name 'y' does not match 'x'
+argument must not be a function
+supplied argument name 'y' does not match 'x'
+invalid 'previous' argument
+invalid 'previous' argument
+argument must not be a function
+unused argument (extra = TRUE)
+$value
+NULL
+
+$visible
+[1] FALSE
+
+$value
+NULL
+
+$visible
+[1] FALSE
+

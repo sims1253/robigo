@@ -53,7 +53,9 @@ tests/r/lang/evaluator-errors.R
 tests/r/lang/frame-lifetime.R
 tests/r/lang/lookup-conditions.R
 tests/r/lang/lookup-modes.R
+tests/r/lang/memory-trace-validation.R
 tests/r/lang/missing-dots.R
+tests/r/lang/names-attribute-values.R
 tests/r/lang/on-exit.R
 tests/r/lang/pos-to-env.R
 tests/r/lang/quote.R
