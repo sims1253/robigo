@@ -1103,8 +1103,23 @@ unsafe fn call_routine_ctx(
     // byte-compiled at installation, and bytecode calls builtins without
     // one, so `.Call`/`.External` from a namespace function do not appear
     // in tracebacks
-    let compiled_caller = matches!(interp.frames.last(),
-        Some(c) if !c.builtin && matches!(&c.function, Value::Closure(f) if robigo_runtime::dispatch::is_namespace(&f.env)));
+    // (the code the call appears in is package code when its environment
+    // descends from a namespace before reaching the global environment)
+    let compiled_caller = {
+        let mut e = Some(env.clone());
+        let mut found = false;
+        while let Some(x) = e {
+            if robigo_runtime::dispatch::is_namespace(&x) {
+                found = true;
+                break;
+            }
+            if x.ptr_eq(&interp.global) {
+                break;
+            }
+            e = x.parent();
+        }
+        found
+    };
     if compiled_caller {
         let (handlers, restarts) = (interp.handlers.clone(), interp.restarts.clone());
         let r = call_routine_in(interp, call, r, args, env);
