@@ -44,6 +44,35 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: fastr with methods attached, whole corpus (host)
+
+- All 31,374 fastr cases re-recorded with methods in `default_packages`
+  (oracle image, uid 1000, `--memory 6g`, `ulimit -v 3000000` per process,
+  2 jobs, 8 chunks by the id's last hex digit; scratch worktree, nothing
+  committed). robigo with methods attached: **30,668 / 31,374** on this
+  host.
+- Ratchet cases failing with methods (11 at first, after the fixes of
+  this round 6, all understood):
+  - fixed: `obj$x <- v` on an OBJSXP (error call), `rbind(<S4 OBJSXP>)`
+    and `as.vector()` (data part or "no method for coercing this S4 class
+    to a vector"), `cbind` cases (pass on re-run);
+  - `TestR5/ef10c392`: reference class method names in hash-bucket order
+    (`names(env)` of a hashed environment; env.rs);
+  - `TestR5/474b742f`: reference class `finalize()` runs on `gc()`
+    (robigo does not collect environments; memory/core);
+  - `TestBuiltin_order/add626733541c799`: recording artifact, the oracle
+    image here lacks the en_US.utf8 locale the original recording had;
+  - `TestBuiltin_serialize/4a71e01f, bfd38dfb`: serializing a class
+    generator (an S4 closure) writes one node type differently (LISTSXP
+    for GNU R's LANGSXP) (serialize.rs);
+  - `TestBuiltin_operators/0bb20eaa`: host complex NaN bits (CI judges).
+- **For the switch** (corpora.toml + robigo's startup): re-record every
+  corpus in exactly the original recording environment (CI's container,
+  root, its locales; reg-large needs its RAM), then the ratchet cases
+  above must pass or be decided by the maintainer: the scripts are the
+  same, their oracle changes. A bare `robigo script.R` already attaches
+  methods since #55's cli change.
+
 ## 2026-10-28: Rcpp's own test suite (in progress)
 
 - `tinytest::test_package("Rcpp")` cannot run on robigo yet, for two
