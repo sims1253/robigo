@@ -139,6 +139,10 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
     f64::NAN
 }
 
+// Inline across codegen units: the VM's scalar fast path calls this for
+// every double operation, and LLVM stopped inlining it there when this
+// module grew.
+#[inline]
 pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     match op {
         ArithOp::Plus => a + b,
@@ -151,6 +155,7 @@ pub fn real_op(op: ArithOp, a: f64, b: f64) -> f64 {
     }
 }
 
+#[inline]
 pub fn int_to_real(x: i32) -> f64 {
     if x == NA_INTEGER { NA_REAL } else { x as f64 }
 }
