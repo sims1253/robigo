@@ -56,7 +56,7 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
 - The council (Astra, Opus 5.5, Fable 5.1) reviewed docs/core.md @
   e3eeac8; synthesis and reviews copied to `docs/core-council.md`, the
-  25 decisions tracked in docs/core.md §10. Order of work set by the
+  25 decisions tracked in docs/core.md §12. Order of work set by the
   coordinator: (a) correctness of what exists, (b) gctorture + rooting
   rule, (c) contexts and unwind, (d) measurements vs GNU R, (e) store
   barrier, node/env shape, CHARSXP table, encodings, fallible allocation,

@@ -1,6 +1,6 @@
 # Council review of docs/core.md (2026-10-28)
 
-Reviewed revision: docs/core.md @ e3eeac8. Copied from the coordinator's synthesis; the three reviews follow it. Status of each item: `docs/core.md` §10 and `docs/ledger/core.md`.
+Reviewed revision: docs/core.md @ e3eeac8. Copied from the coordinator's synthesis; the three reviews follow it. Status of each item: `docs/core.md` §12 and `docs/ledger/core.md`.
 
 
 Council: GPT-6 Astra, Claude Opus 5.5, Claude Fable 5.1 (Gemini 4 Argon was unavailable). Full reviews: review-astra.md, review-opus.md, review-fable.md in this directory. Lead decisions (Max): existing R scripts must run unchanged on robigo and it must be the fastest R; effort is no argument; packages may be recompiled from source for robigo (source compatibility with GNU R's C API, not binary layout compatibility); no new package manager — install.packages()/R CMD INSTALL run on robigo against robigo's headers + Makeconf + R CMD front end.
