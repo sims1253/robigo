@@ -219,13 +219,15 @@ fn do_raw_shift(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_int_to_bits(i: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     // R: raw.c:do_intToBits — coerceVector to integer (with its coercion
-    // warnings) then the low 32 bits of each element.
-    let mut w = CoerceWarnings::default();
-    let x = crate::coerce::to_int(&arg(&args, 0), &mut w);
-    w.emit(i)?;
+    // warnings and errors) then the low 32 bits of each element.
+    let x = i.coerce(&arg(&args, 0), VType::Int)?;
+    let x = match &x {
+        Value::Int(v) => &v.data,
+        _ => unreachable!("coerce to integer yields an integer vector"),
+    };
     let mut out = Vec::with_capacity(32 * x.len());
     for v in x {
-        let u = v as u32;
+        let u = *v as u32;
         for k in 0..32 {
             out.push(((u >> k) & 1) as u8);
         }
