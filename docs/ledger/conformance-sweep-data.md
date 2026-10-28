@@ -1,6 +1,75 @@
 # conformance-sweep-data
 
+## 2026-10-29: second sweep (branch track/conformance-sweep-data-2)
+
+- Started from origin/main e3909b9 (PR #29 and the complex-matprod branch
+  were merged; `as.complex(NA) %*% NaN` verified to print `NaN+NaNi`).
+- Baseline on main: expanded data filter **8,386/8,425** (39 failing),
+  gnur-tests 21/59, gnur-examples 602/1,149 with 11 ratchet entries failing
+  for host reasons only (local `R.home("doc")` lacks NEWS.2/AUTHORS content,
+  `searchpaths()` shows the local R_HOME). Recorded 75 new gnur-examples
+  passes and one unrecorded fastr pass (`TestSimpleDataFrames/c4345940`).
+- Kept fix: **cbind/rbind split language objects into their components**
+  (coerce.c:coerceVector → PairToVectorList; tags become names, so
+  `cbind(substitute(x(y=3,z)))` gets row names y/blank). `coerceVector` on a
+  symbol now warns `'symbol' object cannot be coerced to type 'list'` and
+  yields NULL as coerce.c:coerceSymbol does. fastr +2 recorded
+  (`TestBuiltin_cbind/9927c42`, `88301329`), filter → **8,387/8,425**,
+  0 regressions; matrix conformance scripts pass except the pre-existing
+  host-dependent complex_nan.R (below).
+- Shared-target collision: another worktree's robigo-capi build script
+  (compiling `appl/pretty.c`) reran against this tree's sources and failed;
+  built with a private `CARGO_TARGET_DIR=/tmp/robigo-data-verify-target`
+  from then on.
+
+### Found for other owners (verified repro on current main)
+
+- **perf-vm (vm.rs `element`)**: a compact-range `x` indexed with 1 returns
+  the whole vector: `f <- function() { x <- 1:5; x[1] }` prints `1 2 3 4 5`
+  (also `x[[1]]`, any scalar index whose value is 1, promise or literal).
+  `element()` returns `x.clone()` for any non-`V` RVal at `i == 0` — right
+  for scalar `I`/`D`/`L` RVals, wrong for `RVal::Range`. Global `x`,
+  `x[2]`, `x[1, drop=FALSE]` and the interpreted path are unaffected.
+  Fails fastr `TestSimpleVectors/9313fe3a` and likely more outside the
+  corpus (base R code uses `x[i]` on ranges in closures everywhere).
+- **conformance-lang (lang.rs `fast_replace`)**: complex-assignment error
+  calls show the rhs *value*: `` `[[<-`(`*tmp*`, i, value = 10) `` where
+  GNU R shows the *expression* `value = v` (fastr TestSimpleVectors/
+  0b6df291325c0b6c, daaeabd510342a4c). `rcall` should carry `rhs_expr`.
+- **conformance-values (coerce)**: `as.character(list(as.raw(1)))` must be
+  `"as.raw(0x01)"` (coerceVectorList deparse1line's non-string elements);
+  ours gives `"01"`, so `pmatch`'s base wrapper matches `'01'` and
+  match.arg returns instead of erroring (fastr TestBuiltin_matcharg/
+  85380d0ca4207480). Same file: `as.character` errors must report the
+  `as.character(table)` call, not the caller's (matcharg/139373f181119b60).
+- **options.rs**: `options(matprod = "default.simd")` must be accepted
+  silently (gnur-tests reg-BLAS; our warning only fits builds without
+  OpenMP SIMD), and `options(max.print = Inf)` must warn
+  `NAs introduced by coercion to integer range` (gnur-tests print-tests).
+- **misc.rs**: `asCharacterFactor` must error `malformed factor` when the
+  levels attribute is missing or not a character vector (8 fastr factor
+  cases, envir::as_character_factor ignores the levels type).
+- **complex.rs (host-dependent)**: on this machine `cargo test -p
+  robigo-runtime` fails `builtins::complex::tests::c_library_oracle`
+  (sqrt ULP) and ratcheted `tests/r/matrix/complex_nan.R` differs at line 7
+  (`NA NaN` vs `NA NA`) — both fail with this branch's changes stashed, and
+  main's CI is green, so they look compiler/machine-dependent, not semantic.
+
+### Still open in this slice (unchanged causes)
+
+- fastr 37 remaining: factor 8 (misc.rs), tracemem 7 (debug.rs), `*tmp*`
+  evaluation order 2 and match traceback 1 (evaluator), `[[<-` rhs display
+  2 (lang.rs), unused-argument value printing 2 (arg matching), rbind/cbind
+  GNU-R-segfault expectations 2 (expected status -11; not reproducible),
+  parse-error truncation 2, srcref 1 (subset), lapply 4 (apply.rs),
+  `x[1]`-on-range 1 (vm.rs), as.character-list 2 (coerce).
+- utf8 gnur-test: `utf8ToInt` must validate bytes and return NA for invalid
+  sequences; robigo stores byte strings as Latin-1 chars (lang.rs
+  const_to_value), so byte-level validation needs per-CHARSXP encodings
+  (value.rs) — same blocker as iconv/`Encoding<-`.
+
 ## 2026-10-28: resume after PR #29 merged
+
 
 - PR #29 was already merged with passing checks. The worktree was clean,
   with no commits absent from origin/main. Rebased onto 49e0ee5 and started

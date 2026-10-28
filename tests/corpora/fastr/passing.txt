@@ -2144,6 +2144,7 @@ builtins/TestBuiltin_cbind/931e6626a2dac3d5
 builtins/TestBuiltin_cbind/96322286722604e8
 builtins/TestBuiltin_cbind/96b248c9b4febebc
 builtins/TestBuiltin_cbind/97c30cdbe5b0b8c7
+builtins/TestBuiltin_cbind/9927c42c0cfc4fbe
 builtins/TestBuiltin_cbind/a0a843ac54d7ed10
 builtins/TestBuiltin_cbind/a21b3fec273f4486
 builtins/TestBuiltin_cbind/a4c74dfc227ba29b
@@ -17322,6 +17323,7 @@ library/base/TestSimpleDataFrames/b9bcc3723d5a8724
 library/base/TestSimpleDataFrames/beb5ef5491fd270a
 library/base/TestSimpleDataFrames/c07787d3f0d8d8f5
 library/base/TestSimpleDataFrames/c32ab983e51a78c8
+library/base/TestSimpleDataFrames/c43459405a9fe77f
 library/base/TestSimpleDataFrames/c747ccfca352dc5d
 library/base/TestSimpleDataFrames/c8318299ec170f1b
 library/base/TestSimpleDataFrames/cc753ffbb79cb406

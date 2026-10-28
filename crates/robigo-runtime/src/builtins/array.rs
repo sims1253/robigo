@@ -1587,7 +1587,7 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
     }
 }
 
-fn coerce_for_bind(u: &Value, mode: VType, strict: bool) -> RResult<Value> {
+fn coerce_for_bind(i: &mut Interp, u: &Value, mode: VType, strict: bool) -> RResult<Value> {
     if mode == VType::Null {
         return Ok(u.clone());
     }
@@ -1607,11 +1607,31 @@ fn coerce_for_bind(u: &Value, mode: VType, strict: bool) -> RResult<Value> {
         }
     }
     Ok(match u {
-        Value::Lang(_) | Value::Sym(_) | Value::Closure(_) | Value::Env(_) | Value::Builtin(_)
-            if mode == VType::List =>
-        {
-            Value::list(vec![u.clone()])
+        // R: coerce.c:coerceVector takes LANGSXP to VECSXP through
+        // PairToVectorList: the call's components, tags as names.
+        Value::Lang(l) if mode == VType::List => {
+            let items = l.items();
+            let mut out = Value::list(items.iter().map(|a| a.value.clone()).collect());
+            if items.iter().any(|a| a.tag.is_some()) {
+                let names: Vec<RStr> = items
+                    .iter()
+                    .map(|a| match a.tag {
+                        Some(t) => rstr(&t.name()),
+                        None => rstr(""),
+                    })
+                    .collect();
+                out.set_attr_raw(s::NAMES, Value::strs(names));
+            }
+            out
         }
+        // R: coerce.c:coerceSymbol warns and leaves NULL for any type but
+        // character/expression; bind.c's copy loop then has a zero-length
+        // source (GNU R fills NULL cells, which error while printing).
+        Value::Sym(_) if mode == VType::List => {
+            i.warning(format!("'{}' object cannot be coerced to type 'list'", u.type_name()))?;
+            Value::Null
+        }
+        Value::Closure(_) | Value::Env(_) | Value::Builtin(_) if mode == VType::List => Value::list(vec![u.clone()]),
         _ => coerce_quiet(u, mode),
     })
 }
@@ -1728,7 +1748,7 @@ fn cbind(
         if mode == VType::Null {
             continue;
         }
-        let cu = coerce_for_bind(u, mode, false)?;
+        let cu = coerce_for_bind(i, u, mode, false)?;
         let k = cu.len();
         let idx = if umatrix { k } else { rows };
         if k == 0 {
@@ -1885,7 +1905,7 @@ fn rbind(
                 continue;
             }
             let urows = if umatrix { nrows(u) } else { 1 };
-            let cu = coerce_for_bind(u, mode, true)?;
+            let cu = coerce_for_bind(i, u, mode, true)?;
             let k = cu.len();
             let idx = if umatrix { urows } else { (k > 0) as usize };
             let a = srcs.len();
