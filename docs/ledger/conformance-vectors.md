@@ -21,3 +21,16 @@
   data-frame missing arguments (2), sort collation (1), parse source
   attributes (1), dimassign printing (1).
 - No implementation changes yet. No recorded oracle output changed.
+
+## 2026-10-28: C99 complex matrix multiplication recovery
+
+- R: array.c:CMATPROD_BODY, CCROSSPROD_BODY, CTCROSSPROD_BODY use
+  C99 complex multiplication. The previous Rust helper performed only
+  component arithmetic and lost infinite results when both raw components
+  became NaN. Added compiler-runtime recovery for infinite inputs and
+  intermediate overflow, preserving signed zero during normalization.
+- Source for C99 recovery: LLVM compiler-rt lib/builtins/muldc3.c.
+- Crossprod slice: 171/207 -> 207/207; 36 new passes recorded, no regressions.
+- Full filter, runtime tests, conformance, and instruction check pending.
+- Empty binding cases inspected have correct dimensions and values; their
+  dput line wrapping belongs to the printing track, so no binding change.
