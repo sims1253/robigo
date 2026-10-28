@@ -240,6 +240,38 @@ allocation and per collection are recorded in the ledger
 Symbols are an immortal interned table keyed by the PRINTNAME's CHARSXP
 pointer; `install(name)` is one hash probe after `mkChar`.
 
+### 4.1 Encodings in the runtime (next step, proposal)
+
+The runtime's strings are `RStr = Option<Rc<str>>`: valid UTF-8, no
+encoding mark. GNU R's CHARSXPs carry `LATIN1`/`UTF8`/`BYTES`/`ASCII`
+and may hold bytes that are not UTF-8. This blocks fastmap's encoding
+tests, 17 iconv cases (conformance-strings ledger) and `Encoding<-`.
+The proposal:
+
+- **Representation**: a newtype `RString(Rc<str>)` whose first byte is
+  a structural mark (native-valid, UTF-8, latin1, bytes,
+  native-invalid), and whose content is valid UTF-8 always. Latin-1
+  text is stored decoded; bytes and invalid native strings are mapped
+  byte to U+0000..U+00FF. The original bytes are therefore a function
+  of (mark, content), and `Deref<Target = str>` gives the content to
+  the existing text code. The value stays 16 bytes (fat pointer); no
+  side table.
+- **Encoding-aware operations** read the mark:
+  - `Encoding`/`Encoding<-`, `enc2utf8`/`enc2native`, `iconv`,
+    `charToRaw`, `nchar(type = "bytes")`;
+  - printing of bytes (`\xe7`), `useBytes`, `validUTF8`;
+  - serialize (GNU R's LATIN1/BYTES levels with the original bytes)
+    and readLines/scan `encoding=`;
+  - the bridge: CHARSXP marks map both ways; `translateCharUTF8` is the
+    content.
+
+  Everything else keeps seeing UTF-8 text, as GNU R in a UTF-8 locale
+  translates first.
+- **Change plan**: about 120 construction sites (`Some(Rc::from(..))`,
+  `rstr(..)`) across 46 runtime/capi files become `RString`
+  constructors, mechanically, in one PR coordinated with the tracks
+  editing those files.
+
 ## 5. Non-local exits across C and Rust
 
 GNU R unwinds with `longjmp`; package code is compiled for that and does
