@@ -224,25 +224,28 @@ pub enum Op {
         two: bool,
         k: u32,
     },
-    /// `x[i, j]` for a variable `x`: an element of a plain matrix by
-    /// in-range scalar indices is read directly; anything else evaluates
-    /// the call `consts[k]`.
+    /// `x[i, j]` / `x[[i, j]]` for a variable `x`: an element of a plain
+    /// atomic matrix by in-range scalar indices is read directly; anything
+    /// else evaluates the call `consts[k]`.
     Index2 {
         dst: Reg,
         x: Sym,
         slot: Slot,
         i: Leaf,
         j: Leaf,
+        two: bool,
         k: u32,
     },
-    /// `x[i, j] <- val`: in place for a plain local matrix and in-range
-    /// scalar indices, otherwise the complex assignment `consts[k]`.
+    /// `x[i, j] <- val` / `x[[i, j]] <- val` (`two`): in place for a plain
+    /// local matrix and in-range scalar indices, otherwise the complex
+    /// assignment `consts[k]`.
     SetIndex2 {
         val: Reg,
         x: Sym,
         slot: Slot,
         i: Leaf,
         j: Leaf,
+        two: bool,
         k: u32,
     },
     /// `x$name <- val` (name `consts[name]`): in place for an existing
@@ -655,15 +658,21 @@ fn index_form(e: &Value) -> Option<(Sym, bool, &Value)> {
     is_pure(i, 0).then_some((x, two, i))
 }
 
-/// `x[i, j]` with a variable `x` and pure indices (see [`is_pure`]).
-fn index2_form(e: &Value) -> Option<(Sym, &Value, &Value)> {
+/// `x[i, j]` / `x[[i, j]]` (`two`) with a variable `x` and pure indices
+/// (see [`is_pure`]).
+fn index2_form(e: &Value) -> Option<(Sym, bool, &Value, &Value)> {
     let Value::Lang(l) = e else { return None };
-    if &*head(l)?.name() != "[" || !plain_args(l, 3) {
+    let two = match head(l)?.name().as_ref() {
+        "[" => false,
+        "[[" => true,
+        _ => return None,
+    };
+    if !plain_args(l, 3) {
         return None;
     }
     let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
     let (i, j) = (&l.args[1].value, &l.args[2].value);
-    (is_pure(i, 0) && is_pure(j, 0)).then_some((x, i, j))
+    (is_pure(i, 0) && is_pure(j, 0)).then_some((x, two, i, j))
 }
 
 /// The `n` of `forceAndCall(n, ...)` when it is a small constant.
@@ -967,15 +976,15 @@ impl Compiler {
                 self.patch(g2, end);
             }
             "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && index2_form(&l.args[0].value).is_some() => {
-                let (x, i, j) = index2_form(&l.args[0].value).unwrap();
+                let (x, two, i, j) = index2_form(&l.args[0].value).unwrap();
                 let g = self.guard(h, whole, dst);
-                let g2 = self.guard(Sym::new("[<-"), whole, dst);
+                let g2 = self.guard(Sym::new(if two { "[[<-" } else { "[<-" }), whole, dst);
                 self.expr(&l.args[1].value, dst, Want::Value);
                 let i = self.index_operand(i);
                 let j = self.index_operand(j);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
-                self.emit(Op::SetIndex2 { val: dst, x, slot, i, j, k });
+                self.emit(Op::SetIndex2 { val: dst, x, slot, i, j, two, k });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -995,14 +1004,14 @@ impl Compiler {
                 self.patch(g, end);
                 self.patch(g2, end);
             }
-            "[" if index2_form(whole).is_some() => {
-                let (x, i, j) = index2_form(whole).unwrap();
+            "[" | "[[" if index2_form(whole).is_some() => {
+                let (x, two, i, j) = index2_form(whole).unwrap();
                 let g = self.guard(h, whole, dst);
                 let i = self.index_operand(i);
                 let j = self.index_operand(j);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
-                self.emit(Op::Index2 { dst, x, slot, i, j, k });
+                self.emit(Op::Index2 { dst, x, slot, i, j, two, k });
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);

@@ -493,6 +493,73 @@ fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Opti
     (x >= 1.0 && x < 4503599627370496.0).then_some(x.trunc() - 1.0)
 }
 
+/// How a variable index operand of `x[i]` / `x[i, j]` stands before its
+/// fast path: `Some(true)` when it is an unforced promise of `env`'s own
+/// frame that `[`/`[[` would evaluate (after `x`, if `x` is not an object:
+/// R's `evalListKeepMissing`) rather than pass on as missing, so that the
+/// VM may force it; `Some(false)` when it needs no forcing; `None` when it
+/// may be missing (the general path decides).
+// R: eval.c:R_DispatchOrEvalSP, envir.c:R_isMissing
+fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
+    let Leaf::Var(sym, slot) = l else { return Some(false) };
+    if vars.get(*slot as usize).is_some() {
+        return Some(false);
+    }
+    let frame = env.0.frame().borrow();
+    let Some(b) = frame.get(*sym) else { return Some(false) };
+    let Value::Promise(p) = &b.value else { return (!b.value.is_missing_arg()).then_some(false) };
+    if b.flags != 0 {
+        return None;
+    }
+    if p.value.borrow().is_some() {
+        return Some(false);
+    }
+    match &p.expr {
+        Value::Promise(_) => None,
+        // R_isMissing follows a symbol into the promise's environment
+        // (its own frame only).
+        Value::Sym(s2) => {
+            if s2.is_empty() || s2.ddval().is_some() || *s2 == s::DOTS {
+                return None;
+            }
+            let penv = p.env.borrow();
+            let penv = penv.as_ref()?;
+            let pf = penv.0.frame().borrow();
+            match pf.get(*s2) {
+                None => Some(true),
+                Some(b2) if b2.flags != 0 || b2.value.is_missing_arg() => None,
+                Some(b2) => match &b2.value {
+                    Value::Promise(q) if q.value.borrow().is_none() => None,
+                    _ => Some(true),
+                },
+            }
+        }
+        _ => Some(true),
+    }
+}
+
+/// Force the variable index operands of `x[...]` (in order, as R
+/// evaluates them) that [`index_promise`] allowed (`idx`: each with its
+/// result), stopping at one that may be missing.
+fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&Leaf, Option<bool>)]) -> RResult<()> {
+    for (l, state) in idx {
+        match state {
+            Some(true) => {
+                let Leaf::Var(sym, slot) = l else { unreachable!() };
+                let r = force_var(interp, env, *sym);
+                let (v, cacheable) = signal_var(interp, r)?;
+                if cacheable {
+                    vars.sync();
+                    vars.cache(*slot as usize, unbox(v));
+                }
+            }
+            Some(false) => {}
+            None => break,
+        }
+    }
+    Ok(())
+}
+
 /// Element `i` of a vector that `x[i]` (`[[` if `two`) reads without
 /// dispatch, attribute handling or allocation beyond a string scalar.
 #[inline(always)]
@@ -530,19 +597,29 @@ fn own_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: Slot) -> bool {
         }
         _ => {}
     }
-    if env.binding_flags(sym) != Some(0) {
-        return false;
-    }
-    match env.get_local(sym) {
-        Some(Value::Promise(p)) if p.value().is_none() => return false,
-        Some(v) if v.is_missing_arg() => return false,
-        _ => {}
-    }
+    // One lookup for a plain binding of a value that is not function-like
+    // (taking one of those changes function bindings: `Env::take_local`).
+    let taken = {
+        let mut frame = env.0.frame().borrow_mut();
+        let Some(b) = frame.get_mut(sym) else { return false };
+        if b.flags != 0 {
+            return false;
+        }
+        match &b.value {
+            Value::Promise(p) if p.value().is_none() => return false,
+            v if v.is_missing_arg() => return false,
+            Value::Closure(_) | Value::Builtin(_) | Value::Promise(_) => None,
+            _ => Some(std::mem::replace(&mut b.value, Value::Null)),
+        }
+    };
     vars.slots[slot] = SlotVal::Empty;
-    let v = match env.take_local(sym) {
-        Some(Value::Promise(p)) => p.value().unwrap_or(Value::Null),
+    let v = match taken {
         Some(v) => v,
-        None => return false,
+        None => match env.take_local(sym) {
+            Some(Value::Promise(p)) => p.value().unwrap_or(Value::Null),
+            Some(v) => v,
+            None => return false,
+        },
     };
     vars.slots[slot] = SlotVal::Dirty(RVal::V(v));
     vars.any = true;
@@ -709,6 +786,24 @@ fn matrix_element(x: &RVal, i: usize, j: usize) -> Option<RVal> {
         Value::Str(x) => RVal::V(Value::strs(vec![x.data[k].clone()])),
         _ => return None,
     })
+}
+
+/// [`matrix_element`] of the variable `x` (`held`: of that value) at
+/// scalar indices `i`, `j`, without running code.
+#[inline(always)]
+fn matrix_element_at(
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    (x, slot, held): (Sym, Slot, Option<&RVal>),
+    i: &Leaf,
+    j: &Leaf,
+) -> Option<RVal> {
+    let (a, b) = (scalar_index(vars, env, regs, i)?, scalar_index(vars, env, regs, j)?);
+    match held {
+        Some(xv) => matrix_element(xv, a as usize, b as usize),
+        None => matrix_element(read_var(vars, env, x, slot)?, a as usize, b as usize),
+    }
 }
 
 /// `x$name <- val` in place: an existing element (first exact match of a
@@ -909,28 +1004,29 @@ fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl>
 /// see the expressions.
 fn subset_with_index(interp: &mut Interp, call: &Value, x: Sym, ival: Value, two: bool, env: &Env) -> RResult<Value> {
     let xval = interp.eval_sym(x, env)?;
-    subset_values(interp, call, xval, Some(ival), two, env)
+    subset_values(interp, call, xval, vec![ival], two, env)
 }
 
-/// Call `[`/`[[` for `call` (`x[i]`) with the value of `x` and that of the
-/// index, or (`None`) a promise to evaluate it.
+/// Call `[`/`[[` for `call` (`x[i]`, `x[i, j]`) with the value of `x` and
+/// those of the indices, or (none given, `x[i]` only) a promise to
+/// evaluate the index.
 fn subset_values(
     interp: &mut Interp,
     call: &Value,
     xval: Value,
-    ival: Option<Value>,
+    ivals: Vec<Value>,
     two: bool,
     env: &Env,
 ) -> RResult<Value> {
     let Value::Lang(l) = call else { unreachable!() };
-    let i = match ival {
-        Some(v) => Promise::forced(l.args[1].value.clone(), v),
-        None => Promise::new(l.args[1].value.clone(), env.clone()),
-    };
-    let args = vec![
-        Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))),
-        Arg::new(l.args[1].tag, Value::Promise(Rc::new(i))),
-    ];
+    let mut args = Vec::with_capacity(l.args.len());
+    args.push(Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))));
+    if ivals.is_empty() {
+        args.push(Arg::new(l.args[1].tag, Value::Promise(Rc::new(Promise::new(l.args[1].value.clone(), env.clone())))));
+    }
+    for (a, v) in l.args[1..].iter().zip(ivals) {
+        args.push(Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))));
+    }
     let b = crate::builtins::lookup_primitive(if two { "[[" } else { "[" }).expect("subset builtin");
     interp.invoke_builtin(b, call, args, env)
 }
@@ -972,6 +1068,18 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
                                 return Ok(());
                             }
                         }
+                    }
+                    // Any other plain binding of a value that is not
+                    // function-like (those change function bindings: see
+                    // `Env::set_local_flags`) is overwritten in place.
+                    (old, val)
+                        if !matches!(old, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
+                            && !matches!(val, RVal::V(Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))) =>
+                    {
+                        let prev = std::mem::replace(old, val.to_value());
+                        drop(frame);
+                        drop(prev);
+                        return Ok(());
                     }
                     _ => {}
                 }
@@ -2137,9 +2245,31 @@ fn run_with(
                         None => None,
                     };
                 }
-                regs[*dst as usize] = match (fast, i) {
-                    (Some(v), _) => v,
-                    (None, Leaf::R(r)) => {
+                // With `x` not an object, `[`/`[[` evaluate the index next
+                // (R: eval.c:R_DispatchOrEvalSP): force it here, holding
+                // on to `x` as it was before.
+                let mut held = None;
+                if fast.is_none() && index_promise(&mut vars, env, i) == Some(true) {
+                    if let Some(xv) = read_var(&mut vars, env, *x, *slot)
+                        .filter(|xv| !matches!(xv, RVal::V(v) if v.is_object()))
+                        .cloned()
+                    {
+                        flush!();
+                        tryop!(force_indices(interp, &mut vars, env, &[(i, Some(true))]));
+                        fast = scalar_index(&mut vars, env, &regs, i).and_then(|ix| element(&xv, ix as usize, *two));
+                        held = Some(xv);
+                    }
+                }
+                regs[*dst as usize] = match (fast, i, held) {
+                    (Some(v), _, _) => v,
+                    (None, _, Some(xv)) => {
+                        flush!();
+                        let ival = tryop!(leaf_value(interp, &mut vars, env, regs, i)).into_value();
+                        let r =
+                            subset_values(interp, &code.consts[*k as usize], xv.into_value(), vec![ival], *two, env);
+                        RVal::V(tryop!(signal(interp, r)))
+                    }
+                    (None, Leaf::R(r), None) => {
                         // The index was evaluated already: call `[`/`[[`
                         // with forced promises instead of evaluating it again.
                         flush!();
@@ -2147,7 +2277,7 @@ fn run_with(
                         let r = subset_with_index(interp, &code.consts[*k as usize], *x, ival, *two, env);
                         RVal::V(tryop!(signal(interp, r)))
                     }
-                    (None, _) => {
+                    (None, _, None) => {
                         flush!();
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
                     }
@@ -2243,7 +2373,7 @@ fn run_with(
                 if matches!(&regs[*x as usize], RVal::V(v) if v.is_object()) {
                     flush!();
                     let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
-                    let r = subset_values(interp, &code.consts[*k as usize], xv, None, *two, env);
+                    let r = subset_values(interp, &code.consts[*k as usize], xv, vec![], *two, env);
                     regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
                     interp.visible = true;
                     pc = *end as usize;
@@ -2268,46 +2398,60 @@ fn run_with(
                         flush!();
                         let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
                         let iv = std::mem::replace(&mut regs[*i as usize], RVal::I(0)).into_value();
-                        let r = subset_values(interp, &code.consts[*k as usize], xv, Some(iv), *two, env);
+                        let r = subset_values(interp, &code.consts[*k as usize], xv, vec![iv], *two, env);
                         RVal::V(tryop!(signal(interp, r)))
                     }
                 };
             }
-            Op::Index2 { dst, x, slot, i, j, k } => {
+            Op::Index2 { dst, x, slot, i, j, two, k } => {
                 interp.visible = true;
-                let mut fast = None;
-                for attempt in 0..2 {
-                    fast = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
-                        (Some(a), Some(b)) => read_var(&mut vars, env, *x, *slot)
-                            .and_then(|xv| matrix_element(xv, a as usize, b as usize)),
-                        _ => None,
-                    };
-                    if fast.is_some()
-                        || attempt == 1
-                        || vars.get(*slot as usize).is_some()
-                        || !unforced_promise(env, *x)
-                    {
-                        break;
-                    }
+                let mut fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, None), i, j);
+                if fast.is_none() && vars.get(*slot as usize).is_none() && unforced_promise(env, *x) {
                     // `x` is an argument not yet forced: force it (`[`
                     // evaluates it first anyway), then retry.
                     flush!();
                     let r = interp.eval_sym(*x, env);
                     tryop!(signal(interp, r));
+                    fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, None), i, j);
                 }
-                regs[*dst as usize] = match fast {
-                    Some(v) => v,
-                    None => {
+                // Then the indices, if `x` is not an object (see `Op::Index`).
+                let mut held = None;
+                if fast.is_none() {
+                    let ip = index_promise(&mut vars, env, i);
+                    let jp = index_promise(&mut vars, env, j);
+                    if ip.is_some() && jp.is_some() && (ip == Some(true) || jp == Some(true)) {
+                        if let Some(xv) = read_var(&mut vars, env, *x, *slot)
+                            .filter(|xv| !matches!(xv, RVal::V(v) if v.is_object()))
+                            .cloned()
+                        {
+                            flush!();
+                            tryop!(force_indices(interp, &mut vars, env, &[(i, ip), (j, jp)]));
+                            fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, Some(&xv)), i, j);
+                            held = Some(xv);
+                        }
+                    }
+                }
+                regs[*dst as usize] = match (fast, held) {
+                    (Some(v), _) => v,
+                    (None, Some(xv)) => {
+                        flush!();
+                        let iv = tryop!(leaf_value(interp, &mut vars, env, regs, i)).into_value();
+                        let jv = tryop!(leaf_value(interp, &mut vars, env, regs, j)).into_value();
+                        let r =
+                            subset_values(interp, &code.consts[*k as usize], xv.into_value(), vec![iv, jv], *two, env);
+                        RVal::V(tryop!(signal(interp, r)))
+                    }
+                    (None, None) => {
                         flush!();
                         RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
                     }
                 };
             }
-            Op::SetIndex2 { val, x, slot, i, j, k } => {
+            Op::SetIndex2 { val, x, slot, i, j, two, k } => {
                 let done = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
                     (Some(a), Some(b)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
-                            Some(off) => set_element(xv, off, &regs[*val as usize], false),
+                            Some(off) => set_element(xv, off, &regs[*val as usize], *two),
                             None => false,
                         },
                         _ => false,

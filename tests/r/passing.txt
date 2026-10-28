@@ -114,8 +114,10 @@ tests/r/subset/copy-semantics.R
 tests/r/subset/dispatch.R
 tests/r/subset/env-lang.R
 tests/r/subset/errors.R
+tests/r/subset/index-promises.R
 tests/r/subset/lang-nested.R
 tests/r/subset/list-index.R
+tests/r/subset/matrix-elt2.R
 tests/r/subset/matrix-index.R
 tests/r/subset/misc.R
 tests/r/subset/missing-args.R
