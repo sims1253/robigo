@@ -14,11 +14,12 @@ cd "$(dirname "$0")"
 root=$(cd ../../.. && pwd)
 robigo=${ROBIGO:-$root/.robigo/bin/robigo}
 if [ -x "$robigo" ]; then
-  home=$(cd "$(dirname "$robigo")/.." && pwd)/home
-  if [ ! -f "$home/etc/Makeconf" ]; then
+  robigo=$(cd "$(dirname "$robigo")" && pwd)/$(basename "$robigo")
+  home=$root/.robigo/home
+  if [ ! -f "$home/etc/Makeconf" ] || [ "$(readlink "$home/bin/exec/R")" != "$robigo" ]; then
     sh "$root/scripts/robigo-home.sh" "${R_HOME:-$(R RHOME)}" "$robigo" "$home"
   fi
-  shlib="$robigo CMD SHLIB"
+  shlib="$home/bin/R CMD SHLIB"
 else
   shlib="R CMD SHLIB"
 fi
