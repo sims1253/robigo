@@ -11,7 +11,7 @@ below exists; then robigo's pass count on them.
 ## 2026-10-28: handoff audit and pure-R CRAN corpus
 
 PR #35 merged with every CI check passing. Rebased the continuation onto
-`49e0ee5`. Rebuilt this worktree with `scripts/build.sh`, using the shared
+`49e0ee5`, then onto `abb8355` after PRs #9 and #38 merged. Rebuilt this worktree with `scripts/build.sh`, using the shared
 build lock and the host's GNU R 4.5.0 R_HOME.
 
 The optional `cran-purer` draft is retained after verification. It vendors
@@ -67,7 +67,12 @@ and all three corpus runs passed. No Rust code changed. The manual corpus
 was recorded in two independent full passes after the time-filter fix,
 and all 13 cases matched under existing address normalization.
 
-The demo/manual rerun remains 2/16 and 3/13 with no regressions. The older
+After the final rebase, all three corpora pass their existing lists with
+zero regressions: **gnur-demos 2/16, r-intro 4/13, cran-purer 31/41**,
+or **37/70** in total. PR #9 on main fixes the complex square-root case
+`02-simple-manipulations-numbers-and-vectors`; it is added to the manual
+passing list. Before this continuation, the two existing corpora passed
+5/29 and the CRAN corpus did not exist. The older
 triage below describes the original measurement; two first differences
 have moved on current main: r-intro/07 now reaches missing file.show
 instead of file.info, and r-intro/09 reaches closure-print metadata after
