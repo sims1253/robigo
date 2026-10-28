@@ -65,37 +65,63 @@ pub struct Frame {
     mask: u64,
     /// The frame belongs to an environment on the search path.
     pub search: bool,
-    /// The order in which GNU R lists the bindings (`ls(sorted = FALSE)`,
-    /// `names()`, `as.list()`); lookups do not depend on it.
-    order: Order,
+    // The order in which GNU R lists the bindings (`ls(sorted = FALSE)`,
+    // `names()`, `as.list()`, `serialize()`); lookups do not depend on it.
+    // These fields live in what was the struct's padding, and a hashed
+    // frame's table in `HASH_TABLES`, so that closure frames stay as small
+    // as they were.
+    /// Without a table the frame is a GNU R frame pairlist
+    /// (`NewEnvironment`): its first `nbase` bindings in the order they were
+    /// given (a closure's matched arguments), each later one prepended by
+    /// `defineVar`.
+    nbase: u32,
+    /// Listed in the order of insertion: the base environment, which GNU R
+    /// lists in its global symbol table's order.
+    insertion: bool,
+    /// A hashed environment (`R_NewHashedEnv`): its table is in
+    /// `HASH_TABLES` under the frame's address.
+    hashed: bool,
 }
 
-/// How GNU R would hold this frame, as far as the order of its names goes.
-enum Order {
-    /// A frame pairlist (`NewEnvironment`): its first `nbase` bindings in
-    /// the order they were given (a closure's matched arguments), each
-    /// later one prepended by `defineVar`.
-    Frame { nbase: u32 },
-    /// A hashed environment (`R_NewHashedEnv`).
-    Hashed(Box<HashShape>),
-    /// The order of insertion (the base environment, which GNU R lists in
-    /// its global symbol table's order).
-    Insertion,
+thread_local! {
+    /// The tables of hashed frames, by frame address (frames do not move:
+    /// they live in their environment's allocation).
+    static HASH_TABLES: RefCell<HashMap<usize, HashState, FastHash>> = RefCell::new(HashMap::default());
 }
 
-impl Default for Order {
-    fn default() -> Order {
-        Order::Frame { nbase: 0 }
-    }
+const NIL: u32 = u32::MAX;
+
+fn sym_hash(sym: Sym) -> u32 {
+    sym.with_name(hashpjw)
 }
 
-/// GNU R's hash table of an environment: its size, `HASHPRI` (the number
-/// of non-empty chains) and the chains, each stored last element first so
-/// that prepending is a push.
+/// Forget a dropped hashed frame's table (out of line: frames are dropped
+/// on every closure return).
+#[cold]
+#[inline(never)]
+fn drop_table(key: usize) {
+    HASH_TABLES.with(|t| t.borrow_mut().remove(&key));
+}
+
+/// A hashed environment's table, kept lazily: `shape` is the table after
+/// the bindings `entries[..at]`; the later ones were all added since, in
+/// order (bindings are appended; removals bring the table up to date
+/// first), so the current table is `shape` with them inserted. Making a
+/// binding costs nothing more.
+struct HashState {
+    shape: HashShape,
+    at: usize,
+}
+
+/// GNU R's hash table of an environment: its size, `HASHPRI` and the
+/// chains, as linked lists over the nodes `syms` (`heads[b]` the first
+/// node of chain `b`, `next[n]` the node after `n`, `NIL` at the end).
 struct HashShape {
     size: u32,
     pri: u32,
-    chains: Vec<Vec<Sym>>,
+    heads: Vec<u32>,
+    next: Vec<u32>,
+    syms: Vec<Sym>,
 }
 
 const HASHMINSIZE: u32 = 29;
@@ -119,40 +145,59 @@ impl HashShape {
     // R: envir.c:R_NewHashTable
     fn new(size: i32) -> HashShape {
         let size = if size <= 0 { HASHMINSIZE } else { size as u32 };
-        HashShape { size, pri: 0, chains: vec![Vec::new(); size as usize] }
+        HashShape { size, pri: 0, heads: vec![NIL; size as usize], next: Vec::new(), syms: Vec::new() }
     }
 
-    /// Prepend a new symbol to its chain, then grow the table as
-    /// `defineVar` does.
+    /// Put a new node at the head of `sym`'s chain; returns whether the
+    /// chain was empty.
+    fn link(&mut self, sym: Sym) -> bool {
+        let b = (sym_hash(sym) % self.size) as usize;
+        let node = self.syms.len() as u32;
+        self.syms.push(sym);
+        self.next.push(self.heads[b]);
+        let was_empty = self.heads[b] == NIL;
+        self.heads[b] = node;
+        was_empty
+    }
+
+    /// A new binding, then the table grown as `defineVar` does.
     /// `R_HashSet` tests for an empty chain after its search loop has run
     /// the chain pointer to its end, so `HASHPRI` counts every new binding.
     // R: envir.c:R_HashSet, defineVar
     fn insert(&mut self, sym: Sym) {
-        self.chains[(sym.with_name(hashpjw) % self.size) as usize].push(sym);
+        self.link(sym);
         self.pri += 1;
         if self.needs_resize() {
             self.resize();
         }
     }
 
-    /// Prepend to a chain, counting it if it was empty (`R_HashResize`,
-    /// `R_HashFrame`).
+    /// Prepend to a chain, counting it if it was empty (`R_HashFrame`).
     fn prepend(&mut self, sym: Sym) {
-        let chain = &mut self.chains[(sym.with_name(hashpjw) % self.size) as usize];
-        if chain.is_empty() {
+        if self.link(sym) {
             self.pri += 1;
         }
-        chain.push(sym);
     }
 
     // R: envir.c:R_HashDelete
     fn delete(&mut self, sym: Sym) {
-        let chain = &mut self.chains[(sym.with_name(hashpjw) % self.size) as usize];
-        if let Some(k) = chain.iter().rposition(|&s| s == sym) {
-            chain.remove(k);
-            if chain.is_empty() {
-                self.pri -= 1;
-            }
+        let b = (sym_hash(sym) % self.size) as usize;
+        let (mut prev, mut n) = (NIL, self.heads[b]);
+        while n != NIL && self.syms[n as usize] != sym {
+            prev = n;
+            n = self.next[n as usize];
+        }
+        if n == NIL {
+            return;
+        }
+        let after = self.next[n as usize];
+        if prev == NIL {
+            self.heads[b] = after;
+        } else {
+            self.next[prev as usize] = after;
+        }
+        if self.heads[b] == NIL {
+            self.pri -= 1;
         }
     }
 
@@ -161,21 +206,70 @@ impl HashShape {
         self.pri as f64 > self.size as f64 * 0.85
     }
 
-    /// Each old chain, head first, is moved element by element to the
-    /// head of its new chain.
+    /// Each old chain, head first, is moved node by node to the head of
+    /// its new chain.
     // R: envir.c:R_HashResize
     fn resize(&mut self) {
-        let old = std::mem::replace(self, HashShape::new(1 + (self.size as f64 * 1.2) as i32));
-        for chain in old.chains {
-            for &sym in chain.iter().rev() {
-                self.prepend(sym);
+        let size = 1 + (self.size as f64 * 1.2) as u32;
+        let old = std::mem::replace(&mut self.heads, vec![NIL; size as usize]);
+        self.size = size;
+        self.pri = 0;
+        for mut n in old {
+            while n != NIL {
+                let after = self.next[n as usize];
+                let b = (sym_hash(self.syms[n as usize]) % size) as usize;
+                if self.heads[b] == NIL {
+                    self.pri += 1;
+                }
+                self.next[n as usize] = self.heads[b];
+                self.heads[b] = n;
+                n = after;
             }
         }
     }
 
+    /// The chains, each head first.
+    fn chains(&self) -> Vec<Vec<Sym>> {
+        self.heads
+            .iter()
+            .map(|&h| {
+                let mut c = Vec::new();
+                let mut n = h;
+                while n != NIL {
+                    c.push(self.syms[n as usize]);
+                    n = self.next[n as usize];
+                }
+                c
+            })
+            .collect()
+    }
+
     /// The names in `HashTableNames` order: chain by chain, head first.
-    fn names(&self) -> impl Iterator<Item = Sym> + '_ {
-        self.chains.iter().flat_map(|c| c.iter().rev().copied())
+    fn names(&self) -> Vec<Sym> {
+        self.chains().into_iter().flatten().collect()
+    }
+
+    /// A table holding `chains` (head first) as they are.
+    fn from_chains(chains: Vec<Vec<Sym>>) -> HashShape {
+        let mut h = HashShape::new(chains.len().max(1) as i32);
+        h.size = chains.len() as u32;
+        h.heads = vec![NIL; chains.len()];
+        for (b, c) in chains.into_iter().enumerate() {
+            let mut prev = NIL;
+            for sym in c {
+                let node = h.syms.len() as u32;
+                h.syms.push(sym);
+                h.next.push(NIL);
+                if prev == NIL {
+                    h.heads[b] = node;
+                    h.pri += 1;
+                } else {
+                    h.next[prev as usize] = node;
+                }
+                prev = node;
+            }
+        }
+        h
     }
 }
 
@@ -229,6 +323,9 @@ impl Drop for Frame {
         if self.search && self.entries.iter().any(|b| function_like(&b.value)) {
             bump_search_epoch();
         }
+        if self.hashed {
+            drop_table(self.key());
+        }
     }
 }
 
@@ -278,9 +375,6 @@ impl Frame {
         }
         self.entries.push(Binding { sym, value, flags });
         self.mask |= sym_bit(sym);
-        if let Order::Hashed(h) = &mut self.order {
-            h.insert(sym);
-        }
         let n = self.entries.len();
         match &mut self.index {
             Some(ix) => {
@@ -297,26 +391,53 @@ impl Frame {
     /// `FrameNames` (head first) for a frame pairlist.
     // R: envir.c:R_lsInternal3
     fn names_in_order(&self) -> Vec<Sym> {
-        match &self.order {
-            Order::Hashed(h) => h.names().collect(),
-            Order::Frame { nbase } => {
-                let (base, added) = self.entries.split_at((*nbase as usize).min(self.entries.len()));
-                added.iter().rev().chain(base).map(|b| b.sym).collect()
-            }
-            Order::Insertion => self.entries.iter().map(|b| b.sym).collect(),
+        if self.hashed {
+            return self.with_table(|h| h.names());
         }
+        if self.insertion {
+            return self.entries.iter().map(|b| b.sym).collect();
+        }
+        let (base, added) = self.entries.split_at((self.nbase as usize).min(self.entries.len()));
+        added.iter().rev().chain(base).map(|b| b.sym).collect()
+    }
+
+    fn key(&self) -> usize {
+        self as *const Frame as usize
+    }
+
+    /// Call `f` with this hashed frame's table, brought up to date.
+    fn with_table<R>(&self, f: impl FnOnce(&mut HashShape) -> R) -> R {
+        HASH_TABLES.with(|t| {
+            let mut t = t.borrow_mut();
+            let st = t.get_mut(&self.key()).expect("a hashed frame has a table");
+            for b in &self.entries[st.at.min(self.entries.len())..] {
+                st.shape.insert(b.sym);
+            }
+            st.at = self.entries.len();
+            f(&mut st.shape)
+        })
+    }
+
+    fn set_table(&mut self, shape: HashShape) {
+        self.hashed = true;
+        let (key, at) = (self.key(), self.entries.len());
+        HASH_TABLES.with(|t| t.borrow_mut().insert(key, HashState { shape, at }));
     }
 
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
+        if self.hashed {
+            self.with_table(|h| h.delete(sym));
+        }
         let b = self.entries.remove(i);
         if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
         }
-        match &mut self.order {
-            Order::Hashed(h) => h.delete(sym),
-            Order::Frame { nbase } if (i as u32) < *nbase => *nbase -= 1,
-            _ => {}
+        if self.hashed {
+            let (key, at) = (self.key(), self.entries.len());
+            HASH_TABLES.with(|t| t.borrow_mut().get_mut(&key).map(|st| st.at = at));
+        } else if (i as u32) < self.nbase {
+            self.nbase -= 1;
         }
         if let Some(ix) = &mut self.index {
             ix.remove(&sym);
@@ -381,7 +502,9 @@ impl Env {
             index: None,
             mask: 0,
             search: false,
-            order: Order::default(),
+            nbase: 0,
+            insertion: false,
+            hashed: false,
         };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
@@ -421,7 +544,15 @@ impl Env {
 
     /// An environment on the search path (global, base, attached).
     pub fn new_search(parent: Option<Env>, name: &str) -> Env {
-        let frame = Frame { entries: Default::default(), index: None, mask: 0, search: true, order: Order::default() };
+        let frame = Frame {
+            entries: Default::default(),
+            index: None,
+            mask: 0,
+            search: true,
+            nbase: 0,
+            insertion: false,
+            hashed: false,
+        };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
         e
@@ -578,9 +709,7 @@ impl Env {
         }
         let mut f = self.0.frame().borrow_mut();
         f.push_new(sym, value, flags);
-        if let Order::Frame { nbase } = &mut f.order {
-            *nbase += 1;
-        }
+        f.nbase += 1;
     }
 
     /// Bind a new symbol without looking for an existing binding, as
@@ -668,26 +797,22 @@ impl Env {
 
     /// Is this a hashed environment (`R_NewHashedEnv`)? Then its size.
     pub fn hash_size(&self) -> Option<usize> {
-        match &self.0.frame().borrow().order {
-            Order::Hashed(h) => Some(h.size as usize),
-            _ => None,
-        }
+        let f = self.0.frame().borrow();
+        f.hashed.then(|| f.with_table(|h| h.size as usize))
     }
 
     /// The chains of a hashed environment's table, head first (what
     /// `serialize()` writes as its `HASHTAB`).
     pub fn hash_chains(&self) -> Option<Vec<Vec<Sym>>> {
-        match &self.0.frame().borrow().order {
-            Order::Hashed(h) => Some(h.chains.iter().map(|c| c.iter().rev().copied().collect()).collect()),
-            _ => None,
-        }
+        let f = self.0.frame().borrow();
+        f.hashed.then(|| f.with_table(|h| h.chains()))
     }
 
     /// A new hashed environment with a table of `size` (29 if `size <= 0`).
     // R: envir.c:R_NewHashedEnv
     pub fn new_hashed(parent: Option<Env>, size: i32) -> Env {
         let e = Env::new(parent);
-        e.0.frame().borrow_mut().order = Order::Hashed(Box::new(HashShape::new(size)));
+        e.0.frame().borrow_mut().set_table(HashShape::new(size));
         e
     }
 
@@ -706,24 +831,18 @@ impl Env {
         while h.needs_resize() {
             h.resize();
         }
-        f.order = Order::Hashed(Box::new(h));
+        f.set_table(h);
     }
 
     /// Set a hashed environment's table as read by `unserialize()`:
     /// `chains` head first.
     pub fn set_hash_chains(&self, chains: Vec<Vec<Sym>>) {
-        let pri = chains.iter().filter(|c| !c.is_empty()).count() as u32;
-        let size = chains.len() as u32;
-        let chains = chains.into_iter().map(|mut c| {
-            c.reverse();
-            c
-        });
-        self.0.frame().borrow_mut().order = Order::Hashed(Box::new(HashShape { size, pri, chains: chains.collect() }));
+        self.0.frame().borrow_mut().set_table(HashShape::from_chains(chains));
     }
 
     /// List the bindings in the order they were made (the base environment).
     pub fn set_insertion_order(&self) {
-        self.0.frame().borrow_mut().order = Order::Insertion;
+        self.0.frame().borrow_mut().insertion = true;
     }
 
     pub fn lock(&self, bindings: bool) {
