@@ -403,3 +403,40 @@ track with the capi corpus slice and the census coverage as its metric:
 **base-natives** (switching `stats.so`, `utils.so`, `tools.so`,
 `grDevices.so` from Rust ports to GNU R's own shared objects, corpus by
 corpus). G3 (the runtime on the core) then removes the bridge.
+
+## 10. Council review, 2026-10-28
+
+GPT-6 Astra, Opus 5.5 and Fable 5.1 reviewed this document @ e3eeac8;
+the synthesis and the reviews are in `docs/core-council.md`. The
+direction was endorsed unanimously; the base-natives layout problem
+they found is resolved by the lead's source-compatibility decision (§1,
+§8). The 25 items of the synthesis are requirements. Status (updated as
+they land; evidence in `docs/ledger/core.md`):
+
+| # | item | status |
+|---|---|---|
+| 1 | base-package natives rebuilt from R 4.5.0 sources against robigo's headers + `Defn.h`; ~25 non-API internals | planned (§8) |
+| 2 | immortals traced (symbols, mutable constants) | done |
+| 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | planned (c) |
+| 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | planned (c) |
+| 5 | every export may jump (warnings, allocation, PROTECT overflow) | planned (c) |
+| 6 | rooting rule + gctorture mode in CI | planned (b) |
+| 7 | core bound to the evaluator thread; R_CStack*; C stack check | planned (a) |
+| 8 | one barrier-capable store() for heap stores; reserved header state | planned (e) |
+| 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | planned (d) |
+| 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | planned (e); ATTRIB done |
+| 11 | the bridge is a thin scaffold with listed limits | §6 |
+| 12 | allocation failure is an R error with GNU R's messages | planned (e) |
+| 13 | medium-object pages, LARGE bit, consistent accounting | planned (d/e) |
+| 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
+| 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | planned (f) |
+| 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | classification done; rest (a) |
+| 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | planned (c) |
+| 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
+| 19 | conservative scan resolves w-1 at granule boundaries | planned (a) |
+| 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
+| 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | planned (a); `!spare` done |
+| 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | planned (with the bridge) |
+| 23 | console output through C stdio; signal ownership | planned |
+| 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
+| 25 | start G3 once the accessor layer and the fastmap gate exist | noted |

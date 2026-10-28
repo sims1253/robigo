@@ -11,6 +11,18 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: the design council's decisions
+
+- The council (Astra, Opus 5.5, Fable 5.1) reviewed docs/core.md @
+  e3eeac8; synthesis and reviews copied to `docs/core-council.md`, the
+  25 decisions tracked in docs/core.md §10. Order of work set by the
+  coordinator: (a) correctness of what exists, (b) gctorture + rooting
+  rule, (c) contexts and unwind, (d) measurements vs GNU R, (e) store
+  barrier, node/env shape, CHARSXP table, encodings, fallible allocation,
+  (f) linkage (runtime inside libR.so). I take (f) before (d)/(e): it
+  decides how the runtime-side bridge is written, and writing that bridge
+  against dlsym first would be thrown away.
+
 ## 2026-10-28: layout decided by the lead — source compatibility; council fixes
 
 - why: the design council (Astra) verified that GNU R's own natives are
