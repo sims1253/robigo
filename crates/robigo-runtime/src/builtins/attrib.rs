@@ -151,6 +151,8 @@ fn do_attributesgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
     if matches!(object, Value::Pairlist(_) | Value::Lang(_)) {
         object = remove_attrib(object, s::NAMES);
     }
+    // R keeps the S4 bit unless the new attribute list is empty.
+    let s4 = object.is_s4() && !vals.is_empty();
     object.clear_attrs();
     let dim_i = names.iter().position(|n| n.as_deref() == Some("dim"));
     if let Some(i) = dim_i {
@@ -166,6 +168,9 @@ fn do_attributesgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
             return Err(Flow::error("attempt to use zero-length variable name"));
         }
         object = set_attrib(object, Sym::new(n), v.clone())?;
+    }
+    if s4 {
+        object.set_s4(true);
     }
     Ok(object)
 }
@@ -254,14 +259,23 @@ fn do_class(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(class_of(&args[0].value))
 }
 
+// R: attrib.c:do_class
 fn do_oldclass(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "oldClass", call)?;
-    Ok(args[0].value.get_attr(s::CLASS).unwrap_or(Value::Null))
+    let x = &args[0].value;
+    if x.is_s4() {
+        if let Some(s3class) = x.get_attr(crate::s4::syms::s3class()) {
+            return Ok(s3class);
+        }
+    }
+    Ok(x.get_attr(s::CLASS).unwrap_or(Value::Null))
 }
 
+// R: attrib.c:do_classgets
 fn do_oldclassgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "oldClass<-", call)?;
-    let x = take(&mut args, 0);
+    let mut x = take(&mut args, 0);
+    x.set_s4(false);
     let mut v = take(&mut args, 1);
     if v.is_empty() {
         v = Value::Null;
@@ -275,7 +289,8 @@ fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RR
     let obj = take(&mut args, 0);
     let mut value = take(&mut args, 1);
     if value.is_empty() {
-        return set_attrib(obj, s::CLASS, Value::Null);
+        let obj = set_attrib(obj, s::CLASS, Value::Null)?;
+        return unset_s4(i, obj, &value);
     }
     if !matches!(value, Value::Str(_)) {
         value = i.coerce(&value, VType::Str)?;
@@ -294,11 +309,13 @@ fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RR
             )));
         }
         if classes.len() == 1 || (classes.len() == 2 && classes[1].as_deref() == Some("array")) {
-            return set_attrib(obj, s::CLASS, Value::Null);
+            let obj = set_attrib(obj, s::CLASS, Value::Null)?;
+            return unset_s4(i, obj, &value);
         }
     }
     if classes.len() > 1 {
-        return set_attrib(obj, s::CLASS, value);
+        let obj = set_attrib(obj, s::CLASS, value.clone())?;
+        return unset_s4(i, obj, &value);
     }
     let basic = match first.as_str() {
         "logical" => Some(VType::Lgl),
@@ -313,11 +330,13 @@ fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RR
     };
     if let Some(t) = basic {
         let obj = set_attrib(obj, s::CLASS, Value::Null)?;
+        let obj = unset_s4(i, obj, &value)?;
         return i.coerce(&obj, t);
     }
     match first.as_str() {
         "numeric" => {
             let obj = set_attrib(obj, s::CLASS, Value::Null)?;
+            let obj = unset_s4(i, obj, &value)?;
             match obj {
                 Value::Int(_) | Value::Real(_) => Ok(obj),
                 _ => i.coerce(&obj, VType::Real),
@@ -327,7 +346,9 @@ fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RR
             if obj.get_attr(s::DIM).is_none_or(|d| d.is_empty()) {
                 return Err(Flow::error("cannot set class to \"array\" unless the dimension attribute has length > 0"));
             }
-            set_attrib(obj, s::CLASS, Value::Null)
+            let mut obj = set_attrib(obj, s::CLASS, Value::Null)?;
+            obj.set_s4(false);
+            Ok(obj)
         }
         "function" | "name" | "environment" | "NULL" | "call" | "language" | "symbol" => {
             let ok = match first.as_str() {
@@ -348,6 +369,32 @@ fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RR
         }
         _ => set_attrib(obj, s::CLASS, value),
     }
+}
+
+/// `do_unsetS4(obj, newClass)` when `obj` is an S4 object.
+// R: coerce.c:do_unsetS4
+fn unset_s4(i: &mut Interp, mut obj: Value, new_class: &Value) -> RResult<Value> {
+    if !obj.is_s4() {
+        return Ok(obj);
+    }
+    obj.set_s4(false);
+    let cls = crate::coerce::to_str(new_class);
+    let c = |k: usize| cls.get(k).cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into());
+    if new_class.is_null() {
+        i.warning("Setting class(x) to NULL;   result will no longer be an S4 object")?;
+    } else if cls.len() > 1 {
+        i.warning(format!(
+            "Setting class(x) to multiple strings (\"{}\", \"{}\", ...); result will no longer be an S4 object",
+            c(0),
+            c(1)
+        ))?;
+    } else {
+        i.warning(format!(
+            "Setting class(x) to \"{}\" sets attribute to NULL; result will no longer be an S4 object",
+            c(0)
+        ))?;
+    }
+    Ok(obj)
 }
 
 fn do_levelsgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -385,7 +432,7 @@ fn do_unclass(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
     }
 }
 
-fn do_inherits(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_inherits(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let what = match arg(&args, 1) {
         Value::Str(w) => w.data.clone(),
@@ -400,7 +447,15 @@ fn do_inherits(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     if which == NA_LOGICAL {
         return Err(Flow::error_call(call.clone(), "'which' must be a length 1 logical vector"));
     }
-    let klass = crate::dispatch::dispatch_class(&x);
+    // R: objects.c:inherits3
+    let klass: Vec<std::rc::Rc<str>> = if x.is_s4() {
+        i.data_class2(&x)?
+    } else {
+        crate::coerce::to_str(&crate::s4::data_class(&x, false))
+            .into_iter()
+            .map(|c| c.unwrap_or_else(|| std::rc::Rc::from("NA")))
+            .collect()
+    };
     if which != 0 {
         let out: Vec<i32> = what
             .iter()

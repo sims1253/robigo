@@ -39,6 +39,7 @@ pub mod parsing;
 pub mod paste;
 pub mod printint;
 pub mod random;
+pub mod s4;
 pub mod scan;
 pub mod seq;
 pub mod serialize;
@@ -160,6 +161,7 @@ static TABLES: &[&[Builtin]] = &[
     util::DEFS,
     dotcode::DEFS,
     scan::DEFS,
+    s4::DEFS,
 ];
 
 pub fn install(interp: &mut Interp) {

@@ -200,7 +200,7 @@ pub(crate) fn dispatch_or_eval_sp(
 
 /// robigo passes language values to specials wrapped in `quote()`; R would
 /// see the value itself.
-fn unwrap_quote(v: Value) -> Value {
+pub(crate) fn unwrap_quote(v: Value) -> Value {
     if let Value::Lang(l) = &v {
         if l.fun_sym() == Some(s::QUOTE) && l.args.len() == 1 {
             return l.args[0].value.clone();
@@ -776,6 +776,20 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     if nsubs > 1 && nsubs != ndims {
         return Err(Flow::error_call(call.clone(), "incorrect number of subscripts"));
     }
+    // R: subset.c:do_subset2_dflt — classes extending environment.
+    let x = if let Value::Obj(_) = &x {
+        let xs4 = x.is_s4();
+        let d = interp.get_s4_data_slot(&x, None)?;
+        if d.is_null() {
+            return Err(Flow::error_call(
+                call.clone(),
+                format!("this {} class is not subsettable", if xs4 { "S4" } else { "object" }),
+            ));
+        }
+        d
+    } else {
+        x
+    };
     if let Value::Env(e) = &x {
         let name = match &subs[0] {
             Value::Str(v) if nsubs == 1 && v.data.len() == 1 => char_of(&v.data[0]).to_string(),
@@ -873,6 +887,14 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 /// R's `R_subset3_dflt`: `x$name` with partial matching.
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
+    // R: subset.c:R_subset3_dflt — classes extending environment.
+    if x.is_s4() && matches!(x, Value::Obj(_)) {
+        let d = interp.get_s4_data_slot(x, None)?;
+        if d.is_null() {
+            return Err(Flow::error_call(call.clone(), "$ operator not defined for this S4 class"));
+        }
+        return subset3_dflt(interp, &d, input, call);
+    }
     let input = char_of(input).to_string();
     let warn_partial = |interp: &mut Interp| matches!(interp.get_option("warnPartialMatchDollar"), Some(v) if crate::coerce::as_logical(&v) == TRUE);
     if let Value::List(_) | Value::Expr(_) = x {
@@ -944,13 +966,12 @@ pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) 
     }
 }
 
-/// `@`: S3 dispatch for objects; formal (S4) classes need the methods
-/// package, which robigo does not provide.
+/// `@`: S3 dispatch for S3 objects, else the slot.
 // R: attrib.c:do_AT
 fn do_at(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 2, "@", call)?;
     let object = interp.eval(&args[0].value, env)?;
-    if object.is_object() && !call_is_default(call) {
+    if object.is_object() && !object.is_s4() && !call_is_default(call) {
         let (input, _) = fix_subset3_arg(interp, call, &args[1].value, env)?;
         let prom = Value::Promise(Rc::new(Promise::forced(args[0].value.clone(), object.clone())));
         let pargs = vec![Arg::new(args[0].tag, prom), Arg::new(args[1].tag, Value::strs(vec![input]))];
@@ -958,5 +979,27 @@ fn do_at(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             return Ok(ans);
         }
     }
-    Err(Flow::error("formal classes cannot be used without the 'methods' package"))
+    if !interp.methods_dispatch_on() {
+        return Err(Flow::error("formal classes cannot be used without the 'methods' package"));
+    }
+    let nlist = match &args[1].value {
+        v @ Value::Str(s) if s.data.len() == 1 => v.clone(),
+        Value::Sym(s) => Value::Sym(*s),
+        _ => return Err(Flow::error("invalid type or length for slot name")),
+    };
+    let nlist = interp.slot_name(&nlist)?;
+    if nlist != crate::s4::syms::data() && !object.is_s4() {
+        let klass = object.get_attr(s::CLASS).filter(|k| !k.is_empty());
+        let c = match klass {
+            Some(k) => crate::coerce::to_str(&k)[0].as_deref().unwrap_or("NA").to_string(),
+            None => {
+                crate::coerce::to_str(&crate::s4::data_class(&object, false))[0].as_deref().unwrap_or("NA").to_string()
+            }
+        };
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("no applicable method for `@` applied to an object of class \"{}\"", c),
+        ));
+    }
+    interp.do_slot(&object, nlist)
 }

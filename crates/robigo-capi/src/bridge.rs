@@ -359,11 +359,15 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             }
             return args_list(d, DOTSXP);
         }
+        Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
         Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
         }
     };
     set_attrs(x, v.attrs());
+    if v.is_s4() {
+        SET_S4_OBJECT(x);
+    }
     x
 }
 
@@ -385,7 +389,7 @@ unsafe fn attrs_from(x: Sexp) -> AttrBox {
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
 }
 
 unsafe fn sym_of(x: Sexp) -> Sym {
@@ -472,9 +476,13 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag }));
         }
+        OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
         _ => return wrap_core(x),
     };
     v.set_attrs(attrs_from(x));
+    if x.gp() & gp::S4 != 0 {
+        v.set_s4(true);
+    }
     v
 }
 

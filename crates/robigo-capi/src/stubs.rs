@@ -9,13 +9,8 @@ use crate::errors::not_implemented;
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
     "R_ClosureFormals",
-    "R_do_slot",
-    "R_do_slot_assign",
     "R_mkClosure",
-    "R_do_new_object",
     "R_ClosureEnv",
-    "R_do_MAKE_CLASS",
-    "R_has_slot",
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
@@ -49,12 +44,10 @@ pub static STUBS: &[&str] = &[
     "R_ClosureBody",
     "R_ClosureExpr",
     "R_GE_str2col",
-    "R_getClassDef",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
     "Rf_NoDevices",
     "Rf_RGBpar3",
-    "Rf_asS4",
     "GEExpressionMetric",
     "GEFill",
     "GEFillStroke",
@@ -253,38 +246,13 @@ pub unsafe extern "C" fn R_ClosureFormals() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_do_slot() {
-    not_implemented("R_do_slot")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_do_slot_assign() {
-    not_implemented("R_do_slot_assign")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_mkClosure() {
     not_implemented("R_mkClosure")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_do_new_object() {
-    not_implemented("R_do_new_object")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ClosureEnv() {
     not_implemented("R_ClosureEnv")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_do_MAKE_CLASS() {
-    not_implemented("R_do_MAKE_CLASS")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_has_slot() {
-    not_implemented("R_has_slot")
 }
 
 #[unsafe(no_mangle)]
@@ -456,11 +424,6 @@ pub unsafe extern "C" fn R_GE_str2col() {
 pub static mut R_MB_CUR_MAX: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_getClassDef() {
-    not_implemented("R_getClassDef")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_print: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -484,11 +447,6 @@ pub unsafe extern "C" fn Rf_NoDevices() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_RGBpar3() {
     not_implemented("Rf_RGBpar3")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_asS4() {
-    not_implemented("Rf_asS4")
 }
 
 #[unsafe(no_mangle)]

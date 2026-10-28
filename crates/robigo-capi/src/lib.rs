@@ -26,6 +26,7 @@ pub mod linpack;
 pub mod list;
 pub mod memory;
 pub mod nmath;
+pub mod objects;
 pub mod platform;
 pub mod rdynload;
 pub mod rng;

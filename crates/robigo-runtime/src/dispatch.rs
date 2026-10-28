@@ -94,6 +94,14 @@ fn implicit_type_class(v: &Value) -> &'static str {
         Value::Promise(_) => "promise",
         Value::Dots(_) => "...",
         Value::ExtPtr(_) => "externalptr",
+        // R: attrib.c:R_data_class (OBJSXP)
+        Value::Obj(_) => {
+            if v.is_s4() {
+                "S4"
+            } else {
+                "object"
+            }
+        }
     }
 }
 
@@ -223,7 +231,7 @@ impl Interp {
         callenv: &Env,
         defenv: &Env,
     ) -> RResult<Option<Value>> {
-        let klass = dispatch_class(obj);
+        let klass = if obj.is_s4() { self.data_class2(obj)? } else { dispatch_class(obj) };
         for (i, c) in klass.iter().enumerate() {
             let method = Sym::dotted(generic, c);
             if let Some(f) = self.lookup_method(method, callenv, defenv)? {
@@ -310,6 +318,12 @@ impl Interp {
         if !x.value.is_object() {
             return Ok(None);
         }
+        // R: eval.c:DispatchOrEval — formal methods come first.
+        if x.value.is_s4() && self.methods_dispatch_on() {
+            if let Some(v) = self.try_dispatch_s4(generic, call, args, env)? {
+                return Ok(Some(v));
+            }
+        }
         if let Value::Lang(l) = call {
             if let Some(sym) = l.fun_sym() {
                 if sym.name().ends_with(".default") {
@@ -318,11 +332,53 @@ impl Interp {
             }
         }
         let pargs = self.forced_promargs(call, args, env);
-        self.dispatch_with_temp_context(generic, &x.value.clone(), call, pargs, env)
+        self.dispatch_s3_temp_context(generic, &x.value.clone(), call, pargs, env)
     }
 
-    /// Dispatch with promise arguments (for specials such as `[`).
+    /// `DispatchOrEval` with promised arguments: S4 methods of the
+    /// primitive (for S4 objects), then S3 methods.
     pub fn dispatch_with_temp_context(
+        &mut self,
+        generic: &str,
+        obj: &Value,
+        call: &Value,
+        pargs: Vec<Arg>,
+        env: &Env,
+    ) -> RResult<Option<Value>> {
+        if obj.is_s4() && self.methods_dispatch_on() {
+            if let Some(op) = crate::builtins::lookup_primitive(generic) {
+                if self.has_methods(Some(op)) {
+                    if let Some(v) = self.possible_dispatch(call, op, pargs.clone(), env)? {
+                        return Ok(Some(v));
+                    }
+                }
+            }
+        }
+        self.dispatch_s3_temp_context(generic, obj, call, pargs, env)
+    }
+
+    /// [`Self::dispatch_with_temp_context`] for `@<-`, whose arguments are
+    /// promised already.
+    pub fn dispatch_promised(
+        &mut self,
+        generic: &str,
+        obj: &Value,
+        call: &Value,
+        pargs: Vec<Arg>,
+        env: &Env,
+    ) -> RResult<Option<Value>> {
+        if let Value::Lang(l) = call {
+            if let Some(sym) = l.fun_sym() {
+                if sym.name().ends_with(".default") && !obj.is_s4() {
+                    return Ok(None);
+                }
+            }
+        }
+        self.dispatch_with_temp_context(generic, obj, call, pargs, env)
+    }
+
+    /// S3 dispatch with promise arguments (for specials such as `[`).
+    fn dispatch_s3_temp_context(
         &mut self,
         generic: &str,
         obj: &Value,
@@ -384,6 +440,20 @@ impl Interp {
         let a1 = args.get(1).map(|a| a.value.is_object()).unwrap_or(false);
         if !a0 && !a1 {
             return Ok(None);
+        }
+        // R: eval.c:DispatchGroup — try for a formal method first.
+        if self.methods_dispatch_on() {
+            let use_s4 = match args.len() {
+                1 => args[0].value.is_s4(),
+                2 => args[0].value.is_s4() || args[1].value.is_s4(),
+                _ => true,
+            };
+            if use_s4 {
+                let is_ops = group == "Ops" || group == "matrixOps";
+                if let Some(v) = self.try_dispatch_group_s4(generic, is_ops, call, args, env)? {
+                    return Ok(Some(v));
+                }
+            }
         }
         if let Value::Lang(l) = call {
             if let Some(sym) = l.fun_sym() {

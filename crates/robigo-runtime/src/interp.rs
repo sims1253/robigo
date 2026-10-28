@@ -83,6 +83,8 @@ pub struct Interp {
     pub cli_args: Option<Vec<String>>,
     /// The connection table and sink state (connections.c).
     pub conns: crate::builtins::io::ConnState,
+    /// S4 dispatch state (methods package hooks, primitive methods).
+    pub s4: crate::s4::S4State,
 }
 
 const MAX_DEPTH: usize = 5000;
@@ -168,6 +170,7 @@ impl Interp {
             source_name: "<text>".to_string(),
             cli_args: None,
             conns: Default::default(),
+            s4: Default::default(),
         };
         interp.ns_registry.set_parent(Some(interp.empty.clone()));
         interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));
@@ -1156,6 +1159,11 @@ impl Interp {
     }
 
     fn print_value_toplevel(&mut self, v: &Value, env: &Env) -> RResult<()> {
+        // R: print.c:PrintValueEnv -> PrintObject — S4 objects are shown by
+        // methods::show().
+        if v.is_s4() && self.methods_dispatch_on() {
+            return self.show_s4(v, env);
+        }
         if (v.is_object() || matches!(v, Value::Closure(_))) && self.base.has_local(Sym::new("print")) {
             let print = self.find_fun(Sym::new("print"), env)?;
             let call = Value::lang(Value::sym("print"), vec![Arg::pos(Value::sym("x"))]);

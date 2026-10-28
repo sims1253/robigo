@@ -48,6 +48,8 @@ struct Outcome {
 // differ between the oracle recorder and the conformance runner.
 fn script_command(script: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_robigo"));
+    // As scripts/regen-expected.sh records GNU R's output: base only.
+    command.env("R_DEFAULT_PACKAGES", "NULL");
     command.env_remove("TZDIR");
     let sidecar = script.with_extension("tzdir");
     match std::fs::read_to_string(&sidecar) {

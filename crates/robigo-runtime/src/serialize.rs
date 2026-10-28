@@ -51,6 +51,8 @@ const EXTPTRSXP: u32 = 22;
 const WEAKREFSXP: u32 = 23;
 const RAWSXP: u32 = 24;
 const OBJSXP: u32 = 25;
+/// The S4 bit in an item's levels (R: Defn.h S4_OBJECT_MASK).
+const S4_OBJECT_MASK: u32 = 1 << 4;
 
 const IS_OBJECT_BIT: u32 = 1 << 8;
 const HAS_ATTR_BIT: u32 = 1 << 9;
@@ -203,6 +205,16 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     fn read_item_flags(&mut self, flags: u32) -> RResult<Value> {
+        let mut v = self.read_item_flags0(flags)?;
+        // R: serialize.c:ReadItem (SETLEVELS): the S4 bit of the object.
+        let ty = flags & 255;
+        if ty <= OBJSXP && ty != CHARSXP && (flags >> 12) & S4_OBJECT_MASK != 0 {
+            v.set_s4(true);
+        }
+        Ok(v)
+    }
+
+    fn read_item_flags0(&mut self, flags: u32) -> RResult<Value> {
         let ty = flags & 255;
         let levs = flags >> 12;
         let hasattr = flags & HAS_ATTR_BIT != 0;
@@ -392,7 +404,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 };
                 Value::raws(b)
             }
-            OBJSXP => Value::list(vec![]),
+            OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
             NILSXP => Value::Null,
             _ => {
                 return Err(Flow::error(format!(
@@ -990,6 +1002,7 @@ impl Writer<'_> {
     pub fn item(&mut self, v: &Value) {
         let has_attr = v.has_attrs();
         let obj = v.is_object();
+        let levs = if v.is_s4() { S4_OBJECT_MASK } else { 0 };
         match v {
             Value::Null => self.int(NILVALUE_SXP as i32),
             Value::Sym(s) if s.is_empty() => self.int(MISSINGARG_SXP as i32),
@@ -1058,7 +1071,7 @@ impl Writer<'_> {
             Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None),
             Value::Closure(c) => {
-                self.flags(CLOSXP, 0, obj, has_attr, true);
+                self.flags(CLOSXP, levs, obj, has_attr, true);
                 if has_attr {
                     self.attrs(v);
                 }
@@ -1121,7 +1134,7 @@ impl Writer<'_> {
                 }
             }
             Value::Lgl(x) | Value::Int(x) => {
-                self.flags(if matches!(v, Value::Lgl(_)) { LGLSXP } else { INTSXP }, 0, obj, has_attr, false);
+                self.flags(if matches!(v, Value::Lgl(_)) { LGLSXP } else { INTSXP }, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 for &e in &x.data {
                     self.int(e);
@@ -1131,7 +1144,7 @@ impl Writer<'_> {
                 }
             }
             Value::Real(x) => {
-                self.flags(REALSXP, 0, obj, has_attr, false);
+                self.flags(REALSXP, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 for &e in &x.data {
                     self.real(e);
@@ -1141,7 +1154,7 @@ impl Writer<'_> {
                 }
             }
             Value::Cplx(x) => {
-                self.flags(CPLXSXP, 0, obj, has_attr, false);
+                self.flags(CPLXSXP, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 for e in &x.data {
                     self.real(e.re);
@@ -1152,7 +1165,7 @@ impl Writer<'_> {
                 }
             }
             Value::Str(x) => {
-                self.flags(STRSXP, 0, obj, has_attr, false);
+                self.flags(STRSXP, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 for e in &x.data {
                     self.charsxp(e);
@@ -1162,15 +1175,21 @@ impl Writer<'_> {
                 }
             }
             Value::Raw(x) => {
-                self.flags(RAWSXP, 0, obj, has_attr, false);
+                self.flags(RAWSXP, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 self.out.extend_from_slice(&x.data);
                 if has_attr {
                     self.attrs(v);
                 }
             }
+            Value::Obj(_) => {
+                self.flags(OBJSXP, levs, obj, has_attr, false);
+                if has_attr {
+                    self.attrs(v);
+                }
+            }
             Value::List(x) | Value::Expr(x) => {
-                self.flags(if matches!(v, Value::List(_)) { VECSXP } else { EXPRSXP }, 0, obj, has_attr, false);
+                self.flags(if matches!(v, Value::List(_)) { VECSXP } else { EXPRSXP }, levs, obj, has_attr, false);
                 self.length(x.data.len());
                 for e in &x.data {
                     self.item(e);

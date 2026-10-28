@@ -71,6 +71,7 @@ pub fn sexptype(v: &Value) -> u8 {
         Value::Expr(_) => 20,
         Value::ExtPtr(_) => 22,
         Value::Raw(_) => 24,
+        Value::Obj(_) => 25,
     }
 }
 

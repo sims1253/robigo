@@ -184,6 +184,13 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
             return Ok(r);
         }
     }
+    // R: envir.c:do_as_environment (OBJSXP)
+    if let Value::Obj(_) = &v {
+        return match i.get_s4_data_slot(&v, Some("environment"))? {
+            Value::Env(e) => Ok(Value::Env(e)),
+            _ => Err(Flow::error_call(call.clone(), "S4 object does not extend class \"environment\"")),
+        };
+    }
     Ok(Value::Env(as_env(i, &v, call)?))
 }
 
@@ -191,7 +198,7 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 fn do_set_environment(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     super::check_arity(&args, 2, "environment<-", call)?;
     let mut f = std::mem::replace(&mut args[0].value, Value::Null);
-    let e = std::mem::replace(&mut args[1].value, Value::Null);
+    let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
     if !matches!(e, Value::Env(_) | Value::Null) {
         return Err(Flow::error("replacement object is not an environment"));
     }
@@ -222,8 +229,17 @@ fn do_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
 }
 
+/// builtin.c's `simple_as_environment`: an S4 object extending
+/// "environment" stands for its environment; anything else is unchanged.
+fn s4_as_env(i: &mut Interp, v: Value) -> RResult<Value> {
+    match i.simple_as_environment(&v)? {
+        Some(e) => Ok(Value::Env(e)),
+        None => Ok(v),
+    }
+}
+
 fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let parent = match arg(&args, 1) {
+    let parent = match s4_as_env(i, arg(&args, 1))? {
         Value::Env(e) => e,
         Value::Null => return Err(Flow::error_call(call.clone(), "use of NULL environment is defunct")),
         _ => return Err(Flow::error_call(call.clone(), "'enclos' must be an environment")),
@@ -233,7 +249,7 @@ fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 }
 
 fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match arg(&args, 0) {
+    match s4_as_env(i, arg(&args, 0))? {
         Value::Env(e) => {
             if e.ptr_eq(&i.empty) {
                 return Err(Flow::error_call(call.clone(), "the empty environment has no parent"));
@@ -244,11 +260,11 @@ fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     }
 }
 
-fn do_set_parent_env(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match (arg(&args, 0), arg(&args, 1)) {
+fn do_set_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    match (s4_as_env(i, arg(&args, 0))?, s4_as_env(i, arg(&args, 1))?) {
         (Value::Env(e), Value::Env(p)) => {
             e.set_parent(Some(p));
-            Ok(Value::Env(e))
+            Ok(arg(&args, 0))
         }
         (Value::Env(_), _) => Err(Flow::error_call(call.clone(), "'parent' is not an environment")),
         _ => Err(Flow::error_call(call.clone(), "argument is not an environment")),
@@ -283,6 +299,13 @@ fn do_environment_name(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
 fn env_arg(i: &mut Interp, v: &Value, call: &Value, what: &str) -> RResult<Env> {
     match v {
         Value::Env(e) => Ok(e.clone()),
+        // R: envir.c:simple_as_environment (assign, remove, ls, the locking
+        // functions, makeActiveBinding; mget, list2env and delayedAssign
+        // check for an environment first, below).
+        Value::Obj(_) => match i.simple_as_environment(v)? {
+            Some(e) => Ok(e),
+            None => Err(Flow::error_call(call.clone(), format!("invalid '{}' argument", what))),
+        },
         Value::Null => Err(Flow::error_call(call.clone(), "use of NULL environment is defunct")),
         _ => {
             let e = as_env(i, v, call);
@@ -377,7 +400,11 @@ fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, Rc<str>, bool
         }
         Value::Env(e) => e,
         Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
-        _ => return Err(Flow::error("invalid 'envir' argument")),
+        // R: envir.c:simple_as_environment
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("invalid 'envir' argument")),
+        },
     };
     let mode = lookup_mode(&arg(args, 2))?;
     let inherits = lgl_arg(&arg(args, 3), "inherits")?;
@@ -451,6 +478,9 @@ fn do_mget(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         Value::Str(s) => s.data.clone(),
         _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
     };
+    if let Value::Obj(_) = arg(&args, 1) {
+        return Err(Flow::error("second argument must be an environment"));
+    }
     let env = env_arg(i, &arg(&args, 1), call, "envir")?;
     let mode = str_arg(&arg(&args, 2), "mode")?;
     let ifnotfound = arg(&args, 3);
@@ -579,6 +609,9 @@ fn do_env2list(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
 
 fn do_list2env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
+    if let Value::Obj(_) = arg(&args, 1) {
+        return Err(Flow::error("'envir' argument must be an environment"));
+    }
     let env = env_arg(i, &arg(&args, 1), call, "envir")?;
     let names = x.names();
     let items = crate::coerce::to_list(&x);
@@ -794,8 +827,12 @@ fn do_parent_frame(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
 
 fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     let expr = arg(&args, 0);
-    let envir = arg(&args, 1);
+    let mut envir = arg(&args, 1);
     let enclos = arg(&args, 2);
+    // R: eval.c:do_eval — an S4 object's data part (usually an environment).
+    if envir.is_s4() && matches!(envir, Value::Obj(_)) {
+        envir = i.get_s4_data_slot(&envir, None)?;
+    }
     let enclos_env = match &enclos {
         Value::Env(e) => Some(e.clone()),
         Value::Null => None,
@@ -895,6 +932,11 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
 fn do_delayed_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let name = str_arg(&arg(&args, 0), "x")?;
     let value = arg(&args, 1);
+    for (k, what) in [(2, "eval.env"), (3, "assign.env")] {
+        if let Value::Obj(_) = arg(&args, k) {
+            return Err(Flow::error(format!("invalid '{}' argument", what)));
+        }
+    }
     let eval_env = env_arg(i, &arg(&args, 2), call, "eval.env")?;
     let assign_env = env_arg(i, &arg(&args, 3), call, "assign.env")?;
     let p = Value::Promise(Rc::new(Promise::new(value, eval_env)));

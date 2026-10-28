@@ -1,0 +1,17 @@
+# the S4 bit without the methods package attached
+x <- asS4(1:3)
+isS4(x)
+isS4(asS4(x, FALSE))
+y <- structure(1, class = structure("foo", package = "bar"))
+isS4(y)
+.Internal(setS4Object(y, TRUE, 0L))
+isS4(unclass(asS4(y)))
+z <- asS4(y)
+attributes(z) <- attributes(z)
+isS4(z)
+attributes(z) <- NULL
+isS4(z)
+try(x@foo)
+.isMethodsDispatchOn()
+inherits(1L, "numeric")
+inherits(1L, "integer")

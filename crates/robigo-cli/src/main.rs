@@ -493,12 +493,6 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
-        // robigo cannot load the default packages (utils, stats, ...) yet, so
-        // it starts as `R_DEFAULT_PACKAGES=NULL` does unless told otherwise.
-        if std::env::var_os("R_DEFAULT_PACKAGES").is_none() {
-            // SAFETY: single-threaded at this point.
-            unsafe { std::env::set_var("R_DEFAULT_PACKAGES", "NULL") };
-        }
         if !robigo_runtime::startup::run(&mut interp, cl.startup) {
             return finish(&mut interp, false);
         }
