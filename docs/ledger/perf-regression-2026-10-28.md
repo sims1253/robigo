@@ -130,7 +130,8 @@ benchmark at #29 is startup, with utils and stats loaded (`invisible(1)`:
 `mandelbrot_ascii` -48.0%, `dataframe` -47.6%, `mandelbrot_noout_naive`
 -24.7%, `mandelbrot_naive_ascii` -4.7%, `spectralnorm_naive` -2.3%,
 `spectralnorm` -1.5%, `profiler-shared` -1.1%, and 12 more between -0.5%
-and -0.9%. Before the rebase, against 963b3cf: 8 faster, 0 slower.
+and -0.9%. Before the rebase, against 963b3cf: 8 faster, 0 slower. CI's perf job on
+this PR rebased on 414ae44 (#45): 21 faster, 0 slower, 0 broken.
 
 Against 37a5f96, the regressed benchmarks are now below their old counts:
 `dataframe` 705.3M -> 667.2M (-5.4%), `mandelbrot_noout` 950.0M -> 628.6M
