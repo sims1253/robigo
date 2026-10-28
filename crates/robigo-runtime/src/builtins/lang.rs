@@ -43,6 +43,7 @@ pub static DEFS: &[Builtin] = &[
     special("...elt", do_dots_elt, -1).custom_vis(),
     special("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
+    internal("getconst", do_getconst, 2),
     internal("Recall", do_recall, -1).custom_vis(),
     special("standardGeneric", do_standard_generic, -1),
 ];
@@ -437,27 +438,16 @@ fn complex_assign_inner(
     superassign: bool,
     pre: Option<&[Value]>,
 ) -> RResult<()> {
-    // Base value (EnsureLocal for `<-`).
+    // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
+    // environment. Preserve the error signaled there, including its call.
     let base_val = if superassign {
         let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        match interp.eval_sym(target, &parent) {
-            Ok(v) => v,
-            Err(Flow::Error(e)) if e.message.starts_with("object '") => {
-                return Err(Flow::error(format!("object '{}' not found", target)));
-            }
-            Err(f) => return Err(f),
-        }
+        interp.eval(&Value::Sym(target), &parent)?
     } else if env.has_local(target) {
-        interp.eval_sym(target, env)?
+        interp.eval(&Value::Sym(target), env)?
     } else {
         let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        let v = match interp.eval_sym(target, &parent) {
-            Ok(v) => v,
-            Err(Flow::Error(e)) if e.message.starts_with("object '") => {
-                return Err(Flow::error(format!("object '{}' not found", target)));
-            }
-            Err(f) => return Err(f),
-        };
+        let v = interp.eval(&Value::Sym(target), &parent)?;
         interp.define(target, v.clone(), env)?;
         v
     };
@@ -1447,4 +1437,17 @@ fn do_tilde(_: &mut Interp, call: &Value, _: Vec<Arg>, env: &Env) -> RResult<Val
         f.set_attr_raw(Sym::new(".Environment"), Value::Env(env.clone()));
     }
     Ok(f)
+}
+
+// R: eval.c:do_getconst
+fn do_getconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    super::check_arity(&args, 2, "getconst", call)?;
+    let n = as_integer(&args[1].value);
+    let Value::List(buf) = &args[0].value else {
+        return Err(Flow::error("constant buffer must be a generic vector"));
+    };
+    if n < 0 || n as usize > buf.data.len() {
+        return Err(Flow::error("bad constant count"));
+    }
+    Ok(Value::list(buf.data[..n as usize].to_vec()))
 }

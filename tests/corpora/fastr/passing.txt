@@ -4468,6 +4468,8 @@ builtins/TestBuiltin_getNamespaceVersion/306638d0a1c1cae7
 builtins/TestBuiltin_getRestart/68d0b11fe455f6a7
 builtins/TestBuiltin_getRestart/e7709dea67104e93
 builtins/TestBuiltin_getSymbolInfo/5800d4e61662e016
+builtins/TestBuiltin_getconst/3155022d82be7bfe
+builtins/TestBuiltin_getconst/4015a2a976817c09
 builtins/TestBuiltin_gettext/098e313c2f92628e
 builtins/TestBuiltin_gettext/4eb3f0105d50b418
 builtins/TestBuiltin_gettext/6d13ba4e469830b6
@@ -8733,7 +8735,9 @@ builtins/TestBuiltin_quote/95492e622e0d4126
 builtins/TestBuiltin_quote/99db8373737291dd
 builtins/TestBuiltin_quote/9a5bf3209c3bde3c
 builtins/TestBuiltin_quote/9ffa8be847fdd802
+builtins/TestBuiltin_quote/a5e009eb59edcea2
 builtins/TestBuiltin_quote/bbe2ae8d1684e10a
+builtins/TestBuiltin_quote/c111ca231dc1e680
 builtins/TestBuiltin_quote/c2e148bf04f04e00
 builtins/TestBuiltin_quote/cca370cf09a9eaa5
 builtins/TestBuiltin_quote/d405cdd382dd094a
@@ -15212,6 +15216,7 @@ library/base/TestEnvironments/35748a2f54100ea3
 library/base/TestEnvironments/35ffe445f5f4bd72
 library/base/TestEnvironments/372c22d01ad12b09
 library/base/TestEnvironments/38c29ad9a609ad6e
+library/base/TestEnvironments/39d974b8082ff42f
 library/base/TestEnvironments/3a400fbf3803b6e9
 library/base/TestEnvironments/3b0a42c090af188c
 library/base/TestEnvironments/3c8f261ebc76b91b
