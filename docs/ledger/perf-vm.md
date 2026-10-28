@@ -42,6 +42,92 @@ baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
   `convolution_slow` -80.6% (1.18 -> **0.23**); geomean 0.597 -> 0.584,
   faster than GNU R on 67 -> 68; kept.
 
+## 2026-10-28 (second agent): baseline main 7d8c589, container
+
+geomean **0.587** over 75 correct programs, faster on 68 (`mandelbrot_ascii`
+now prints the right output and is counted). Wrong output: `fannkuchredux`,
+`fannkuchredux_naive`, `spectralnorm_math`. Biggest losers:
+`mandelbrot_noout` 1.61 (1.17 in the first baseline: a regression from
+another track, to bisect), `mandelbrot_ascii` 1.38, `mandelbrot_naive_ascii`
+1.22, `mandelbrot_noout_naive` 1.20, `convolution_slow` 1.18,
+`nbody_naive_2` 1.06.
+
+Tooling of this agent (private target dir, container builds):
+`~/.cache/robigo-perfvm2/{build,measure,cg,fndiff}.sh`, `delta.py`,
+`geo.py`, `dump.py` (writes a benchmark's program to a file).
+
+## 2026-10-28: GNU R's JIT compile moment and its binding of base language functions (PR #51)
+
+- why: GNU R compiles a closure at its 1st or 2nd call, and compiled code
+  keeps the base `+`, `<`, `if`, `[<-`, ... it found at that moment
+  (`tests/r/jit/base-rebinding.R`, recorded earlier: robigo differed in
+  cases 3, 4, 6). Coordinator decision: compiled behaviour is GNU R's
+  observable behaviour.
+- what (`vm/rjit.rs`, new; `Closure::jit`, a `Cell<u64>`):
+  - per closure, GNU R's JIT state: unseen, `MAYBEJIT`, `NOJIT`, compiled
+    with its frozen set (bit per entry of `FROZEN_FUNS`: the
+    `languageFuns` that have a base inline or setter handler; `%%`, `%/%`,
+    `%*%`, `~`, `@` have none and are called as found), or namespace code
+    (ignored: compiled at install, and lookups find base anyway).
+  - `jit_check` at each call of an unsettled closure
+    (`exec_closure_ex`): `R_CheckJIT` with strategy
+    `STRATEGY_TOP_SMALL_MAYBE`, `JIT_score` (including its quirk: `if`
+    scores its condition and consequent only; a nested `function`'s body
+    counts), then `R_cmpfun`: `mayCallBrowser`, the JIT cache by body hash
+    with `jit_env_match` (same top-level environment, every local variable
+    known; a mismatch means `NOJIT`), `identical(.., 16)`.
+  - the frozen set at compile time: not a formal or local
+    (`findLocalsList`, with its shadowing of `quote`/`expression`/`local`),
+    and the first frame binding the name (any value, as `exists`) is base
+    and not below the top-level environment (`findCenvVar`,
+    `getInlineInfo`).
+  - closures created by compiled code are compiled with their creator's
+    set minus their own locals (`cmpfun` compiles nested functions;
+    `do_function` -> `jit_inherit`).
+  - the effect: `Interp::eval_call`, finding a closure for a language
+    function's name, calls base's instead when the frame belongs to a
+    compiled closure that froze it (not for calls with `...` or empty
+    arguments, which GNU R compiles as calls). Every failed VM guard falls
+    back to the interpreter, so VM and VM+JIT agree with it.
+  - inline call paths count calls too: VM and `lapply` inlining only for
+    settled closures; native code assumes the loop calls an inlined closure
+    at least twice.
+- tests: `tests/r/jit/base-rebinding.R` and `-2.R` (the `if` score quirk,
+  a closure defined in a call with a loop, closures made by compiled code,
+  a body assigning `<`, a cache entry with other formals, `assign()` into a
+  compiled frame, operators in promises and in a closure made in `lapply`'s
+  argument, a score >= 50 without a loop), recorded with GNU R 4.5.0; all
+  tiers print GNU R's output; both in the ratchet.
+- known gaps (rare; all tiers alike): a language function rebound to a
+  *builtin* (`` `*` <- `+` ``) is still called in compiled frames (the
+  interpreter hook checks closures only: checking every builtin call
+  costs); a top-level loop does not freeze bindings for its own duration;
+  promises of a compiled closure forced after it returned, `eval(quote(..))`
+  in compiled frames and default arguments are treated as compiled; the
+  JIT cache never evicts (GNU R's has 1024 slots by address hash).
+- perf, measured against main 32c6002 (container; main: geomean 0.573,
+  faster on 71):
+  - first version: worst +0.38%, from classifying each closure object at
+    its first call (`topenv` and a walk of the body). Now an ancestor walk
+    (global vs base namespace), the score and hash memoized per body,
+    closures made by namespace code marked directly.
+  - **interning moves everything.** The first versions interned ~10 names
+    at startup (the frozen-function table, `findLocals`' special names).
+    Every later symbol's id shifted, and with it the collisions of the
+    frames' 64-bit masks (`env::sym_bit` = id & 63): unrelated lookups
+    took the linear scan (`call_site_fun_fast` +16M on `profiler-shared`,
+    `Scan::scanchar` +18M on `flexclust`, `Frame::position` costs moving
+    between functions). This looked like codegen noise of +-0.5%. rjit
+    now never interns: names are classified by text, memoized per symbol
+    id, and looked up with `Sym::lookup` (new, sym.rs). After that the
+    large programs moved by +0.01%.
+  - a memo bug (class 255 + 1 wrapped to "unknown") re-classified the
+    function name of every interpreted closure call (+0.58% on `Storage`).
+  - result (none faster or slower than 0.5%): worst `mandelbrot_noout`
+    +0.32%, `Storage` +0.29%, `nbody` +0.23%, startup +0.12% (the
+    per-call state check, the interpreter hook, compiling user closures);
+    geomean 0.5734 -> 0.5740, faster on 71.
+
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 
 - the inner loop (`for (j in seq(length = ny)) { ij <- i + j - 1; z[[ij]]
@@ -56,6 +142,37 @@ baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
   `seq.default`'s checks hold (length 1, finite, non-negative; `ceiling` for
   doubles, the "first element used" warning for longer vectors). Anything
   else calls `seq`.
+
+## 2026-10-28: compile-time binding: GNU R's behaviour recorded (`tests/r/jit/base-rebinding.R`)
+
+Recorded with GNU R 4.5.0; robigo differed in cases 3, 4 and 6 (ported:
+see the entry above).
+
+| case | GNU R | robigo (main 7d8c589) |
+|---|---|---|
+| 1. small top-level closure, `<` rebound before its first call | user `<` every call | same |
+| 2. rebound after its first call | user `<` every call (compiled at the 2nd call, which sees the user `<`) | same |
+| 3. rebound after its second call (compiled) | user `<` never called | calls it |
+| 4. closure with a loop (compiled at the 1st call), rebound after | never called | calls it |
+| 5. closure created in a call, rebound after its 1st call | user `<` every call | same |
+| 6. second closure with the same body as a compiled one | user `<` on its 1st call only (then the cached compiled code) | every call |
+| 7. `+` bound in the closure's own environment | local `+` every call | same |
+| 8. `length` rebound (not a language function) | user `length` (guarded inline) | same |
+
+So the difference is confined to code GNU R has compiled. Operators and the
+other `languageFuns` that resolved to base at compile time are inlined
+without a guard. The port:
+- per compiled body, count calls as `R_CheckJIT` does: compile at the 1st
+  call when `JIT_score(body) >= MIN_JIT_SCORE` (50) or for loops, else
+  `MAYBEJIT` and compile at the 2nd; port `JIT_score` and the default
+  strategy from `eval.c`;
+- at that moment, snapshot which `languageFuns` among the code's guard
+  symbols resolve to base from the closure's environment (`getInlineInfo`,
+  optimize 2), and freeze those guards: `Guard`/`ArithL`/`RelL` checks and the
+  pure-closure inliner treat them as holding from then on;
+- emulate the JIT cache: a body identical to one already compiled starts
+  compiled, from the 2nd call (case 6);
+- other base functions stay guarded (`BASEGUARD`), as robigo does now.
 
 ## 2026-10-28: `x[[i]] <<- v` / `x[i] <<- v` in the VM
 
@@ -488,6 +605,22 @@ not on today's `Value`/`Env` layout:
   0.693 -> 0.683, faster on 53 -> 55; kept.
 
 ## Notes for other tracks
+
+- everyone measuring performance: interning a new symbol early (a
+  `Sym::new` in startup code, a thread-local table of names) shifts the id
+  of every later symbol, so frames' 64-bit membership masks
+  (`env::sym_bit`, id & 63) collide differently and unrelated benchmarks
+  move by up to +-0.5% (seen: `flexclust` +0.39% all in `Scan::scanchar`,
+  `profiler-shared` +0.38% in `call_site_fun_fast`). Compare per function
+  before blaming codegen, and prefer `Sym::lookup` for names that need not
+  exist.
+- conformance-values-operators (`builtins/arith.rs`): when both operands
+  of a double operation are NaN, GNU R (gcc, x86-64) keeps the first
+  operand's payload (`NA_real_ * NaN` is `NA`, `NaN + NA` is `NaN`);
+  robigo's kernels are plain Rust `a op b`, whose operand order LLVM may
+  swap, so `a * b + c` prints `NaN` where GNU R prints `NA` (e.g. `f <-
+  function(a, b, c) a * b + c; f(c(NA, NaN), c(NaN, NA), 1)` in GNU R:
+  `NA NaN`).
 
 - conformance-vectors (`builtins/array.rs`): `matprod_real` for a row vector
   (`nrx == 1`, `u %*% M`) runs its inner loop one element per column

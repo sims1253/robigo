@@ -174,6 +174,13 @@ impl Sym {
         INTERNER.with(|i| i.borrow_mut().intern(name))
     }
 
+    /// The symbol named `name` if it has been interned, without interning
+    /// it (new symbols shift the ids, and so the frame masks, of all later
+    /// ones).
+    pub fn lookup(name: &str) -> Option<Sym> {
+        INTERNER.with(|i| i.borrow().map.get(name).copied())
+    }
+
     /// The symbol `a.b` (an S3 method name), without allocating.
     pub fn dotted(a: &str, b: &str) -> Sym {
         thread_local! {

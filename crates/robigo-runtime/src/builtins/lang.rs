@@ -217,7 +217,7 @@ thread_local! {
         Default::default();
 }
 
-fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let formals: Rc<[Arg]> = match &args[0].value {
         Value::Pairlist(p) => {
             let key = Rc::as_ptr(p) as *const u8 as usize;
@@ -242,7 +242,7 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
-    Ok(Value::Closure(Rc::new(Closure {
+    let clo = Closure {
         formals,
         body,
         env: env.clone(),
@@ -250,7 +250,10 @@ fn do_function(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),
-    })))
+        jit: Default::default(),
+    };
+    crate::vm::jit_inherit(interp, &clo, env);
+    Ok(Value::Closure(Rc::new(clo)))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
