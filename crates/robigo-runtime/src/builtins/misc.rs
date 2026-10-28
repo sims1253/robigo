@@ -92,14 +92,21 @@ fn do_get_option(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 // ----------------------------------------------------------------------
 // complex.c
 
-fn do_complex(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_complex(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let n = as_integer(&arg(&args, 0));
     if n == NA_INTEGER || n < 0 {
         return Err(Flow::error("invalid length"));
     }
-    let mut w = CoerceWarnings::default();
-    let re = crate::coerce::to_real(&arg(&args, 1), &mut w);
-    let im = crate::coerce::to_real(&arg(&args, 2), &mut w);
+    // R: complex.c:do_complex — coerceVector of real/imaginary to real
+    // (a complex imaginary warns about the discarded imaginary part).
+    let re = match i.coerce(&arg(&args, 1), VType::Real)? {
+        Value::Real(v) => v.data.clone(),
+        _ => vec![],
+    };
+    let im = match i.coerce(&arg(&args, 2), VType::Real)? {
+        Value::Real(v) => v.data.clone(),
+        _ => vec![],
+    };
     let n = (n as usize).max(re.len()).max(im.len());
     let out: Vec<Complex> = (0..n)
         .map(|k| {
@@ -219,13 +226,15 @@ fn do_raw_shift(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_int_to_bits(i: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     // R: raw.c:do_intToBits — coerceVector to integer (with its coercion
-    // warnings) then the low 32 bits of each element.
-    let mut w = CoerceWarnings::default();
-    let x = crate::coerce::to_int(&arg(&args, 0), &mut w);
-    w.emit(i)?;
+    // warnings and errors) then the low 32 bits of each element.
+    let x = i.coerce(&arg(&args, 0), VType::Int)?;
+    let x = match &x {
+        Value::Int(v) => &v.data,
+        _ => unreachable!("coerce to integer yields an integer vector"),
+    };
     let mut out = Vec::with_capacity(32 * x.len());
     for v in x {
-        let u = v as u32;
+        let u = *v as u32;
         for k in 0..32 {
             out.push(((u >> k) & 1) as u8);
         }

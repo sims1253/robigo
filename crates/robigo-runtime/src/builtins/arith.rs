@@ -114,7 +114,10 @@ pub fn r_pow(x: f64, y: f64) -> f64 {
         return x.powf(y);
     }
     if x.is_nan() || y.is_nan() {
-        return x + y;
+        // R: arithmetic.c:R_pow's `x + y` as gcc compiles it: the addsd
+        // destination holds y, so y's NaN payload wins (observable:
+        // (1+NA)^(-(0/0)) is NaN, (-(0/0))^(1+NA) is NA).
+        return super::complex::sse::add(y, x);
     }
     if !x.is_finite() {
         if x > 0.0 {
@@ -553,12 +556,14 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
 /// `a op b` on complex vectors with R's recycling (R:
 /// complex.c:complex_binary).
 fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize) -> RResult<Vec<Complex>> {
-    use super::complex::{cdiv, cmul, cpow};
+    use super::complex::{cadd, cdiv, cmul, cpow, csub};
     Ok(match op {
-        ArithOp::Plus => real_kernel!(a, b, n, |x: Complex, y: Complex| Complex::new(x.re + y.re, x.im + y.im)),
-        ArithOp::Minus => real_kernel!(a, b, n, |x: Complex, y: Complex| Complex::new(x.re - y.re, x.im - y.im)),
+        // GCC commuted the compiled adds (the second operand's NaN payload
+        // wins) and calls __muldc3 with (y, x); see complex.rs.
+        ArithOp::Plus => real_kernel!(a, b, n, cadd),
+        ArithOp::Minus => real_kernel!(a, b, n, csub),
         // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
-        ArithOp::Times => real_kernel!(a, b, n, cmul),
+        ArithOp::Times => real_kernel!(a, b, n, |x: Complex, y: Complex| cmul(y, x)),
         ArithOp::Div => real_kernel!(a, b, n, cdiv),
         ArithOp::Pow => real_kernel!(a, b, n, cpow),
         ArithOp::Mod | ArithOp::IDiv if n == 0 => Vec::new(),
@@ -711,12 +716,42 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     if y.is_null() {
         y = Value::ints(vec![]);
     }
-    let ok = |v: &Value| v.is_atomic();
+    let ok = |v: &Value| v.is_atomic() || matches!(v, Value::List(_) | Value::Expr(_));
     if !ok(&x) || !ok(&y) {
         return Err(Flow::error_call(
             call.clone(),
             format!("comparison ({}) is possible only for atomic and list types", op.name()),
         ));
+    }
+    // R: relop.c:do_relop_dflt's coercion chain — a list or expression
+    // operand coerces to the other operand's type; the gate is
+    // isVectorizable (a plain error; an expression never qualifies, and
+    // character is exempt through the deparse path). Two list operands
+    // match no branch of the chain.
+    let is_list = |v: &Value| matches!(v, Value::List(_) | Value::Expr(_));
+    if is_list(&x) && is_list(&y) {
+        return Err(Flow::error_call(call.clone(), "comparison of these types is not implemented"));
+    }
+    let other_type = |v: &Value| match v {
+        Value::Str(_) => VType::Str,
+        Value::Cplx(_) => VType::Cplx,
+        Value::Real(_) => VType::Real,
+        Value::Int(_) => VType::Int,
+        Value::Lgl(_) => VType::Lgl,
+        Value::Raw(_) => VType::Raw,
+        _ => unreachable!("one operand is atomic here"),
+    };
+    if is_list(&x) && !matches!(y, Value::Str(_)) {
+        let t = other_type(&y);
+        let mut w = CoerceWarnings::default();
+        x = super::coerce::relop_list_coerce(&x, t, &mut w)?;
+        w.emit(interp)?;
+    }
+    if is_list(&y) && !matches!(x, Value::Str(_)) {
+        let t = other_type(&x);
+        let mut w = CoerceWarnings::default();
+        y = super::coerce::relop_list_coerce(&y, t, &mut w)?;
+        w.emit(interp)?;
     }
     let (nx, ny) = (x.len(), y.len());
     let attrs = binary_attrs(&x, &y, call)?;
@@ -975,6 +1010,9 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
         }
     }
     let x = args.pop().map(|a| a.value).unwrap_or(Value::Null);
+    // R: logic.c:lunary — logical and raw arguments keep all attributes
+    // (shallow_duplicate); numbers keep names, dim and dimnames.
+    let keep_all_attrs = matches!(x, Value::Lgl(_) | Value::Raw(_));
     let names = get_attrib(&x, s::NAMES);
     let dim = x.get_attr(s::DIM);
     let dimnames = x.get_attr(s::DIMNAMES);
@@ -995,17 +1033,25 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
         Value::Raw(v) => Value::raws(v.data.iter().map(|&b| !b).collect()),
         // R: logic.c:lunary — "for back-compatibility" a zero-length
         // argument of any other type gives logical(0), without attributes
-        Value::Str(_) | Value::List(_) | Value::Expr(_) if x.len() == 0 => return Ok(Value::lgls(vec![])),
+        other if other.len() == 0 => return Ok(Value::lgls(vec![])),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
-    if !names.is_null() {
-        val.set_attr_raw(s::NAMES, names);
-    }
-    if let Some(d) = dim {
-        val.set_attr_raw(s::DIM, d);
-    }
-    if let Some(d) = dimnames {
-        val.set_attr_raw(s::DIMNAMES, d);
+    if keep_all_attrs {
+        if let Some(a) = x.attrs() {
+            for (k, v) in &a.0 {
+                val.set_attr_raw(*k, v.clone());
+            }
+        }
+    } else {
+        if !names.is_null() {
+            val.set_attr_raw(s::NAMES, names);
+        }
+        if let Some(d) = dim {
+            val.set_attr_raw(s::DIM, d);
+        }
+        if let Some(d) = dimnames {
+            val.set_attr_raw(s::DIMNAMES, d);
+        }
     }
     Ok(val)
 }

@@ -406,18 +406,19 @@ pub fn to_int(v: &Value, w: &mut CoerceWarnings) -> Vec<i32> {
             .data
             .iter()
             .map(|z| {
-                if z.is_na() {
+                // R: coerce.c:IntegerFromComplex — a NaN in either part
+                // gives NA without a warning; the range check comes before
+                // the imaginary warning.
+                if z.re.is_nan() || z.im.is_nan() {
+                    NA_INTEGER
+                } else if z.re > i32::MAX as f64 + 1.0 || z.re <= i32::MIN as f64 {
+                    w.int_range = true;
                     NA_INTEGER
                 } else {
                     if z.im != 0.0 {
                         w.imag_discarded = true;
                     }
-                    let mut warn = false;
-                    let r = real_to_int(z.re, &mut warn);
-                    if warn {
-                        w.int_range = true;
-                    }
-                    r
+                    z.re as i32
                 }
             })
             .collect(),
@@ -614,6 +615,59 @@ pub fn to_raw(v: &Value, w: &mut CoerceWarnings) -> Vec<u8> {
 pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Value> {
     if v.vtype() == Some(t) {
         return Ok(v.clone());
+    }
+    // R: coerce.c:coerceVector — vectors, lists, expressions, language
+    // objects and symbols coerce; everything else fails as a plain
+    // error against the context call.
+    if !matches!(
+        v,
+        Value::Null
+            | Value::Lgl(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::Cplx(_)
+            | Value::Str(_)
+            | Value::Raw(_)
+            | Value::List(_)
+            | Value::Expr(_)
+            | Value::Pairlist(_)
+            | Value::Lang(_)
+            | Value::Sym(_)
+    ) {
+        return Err(Flow::error(format!("cannot coerce type '{}' to vector of type '{}'", v.type_name(), t.name())));
+    }
+    // R: coerceVectorList / coercePairList — the elements of a list (an
+    // expression never qualifies: isNewList() is FALSE for EXPRSXP) must
+    // all be vectors of length at most 1, except for the character
+    // target, which deparses anything. The failure is a plain error.
+    if matches!(v, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_))
+        && !matches!(t, VType::List | VType::Expr | VType::Str)
+    {
+        let items: Vec<Value> = match v {
+            Value::List(l) | Value::Expr(l) => l.data.clone(),
+            Value::Pairlist(p) => p.items.iter().map(|a| a.value.clone()).collect(),
+            Value::Lang(l) => l.items().into_iter().map(|a| a.value).collect(),
+            _ => unreachable!(),
+        };
+        let name = match v {
+            Value::Pairlist(_) => "pairlist",
+            Value::Lang(_) => "language",
+            _ => "list",
+        };
+        if matches!(v, Value::Expr(_)) || !items.iter().all(|e| e.is_atomic() && e.len() <= 1) {
+            return Err(Flow::error(format!("'{}' object cannot be coerced to type '{}'", name, t.name())));
+        }
+        if !matches!(v, Value::List(_)) {
+            // R: coercePairList — element-wise (asLogical, asInteger, ...),
+            // names from the tags; lists take the element-wise path below.
+            let list = Value::list(items);
+            let mut out = coerce_vector(&list, t, w)?;
+            out.set_attrs(None);
+            if let Some(n) = v.names() {
+                out.set_attr_raw(s::NAMES, n);
+            }
+            return Ok(out);
+        }
     }
     let attrs = v.attrs().cloned();
     let mut out = match t {

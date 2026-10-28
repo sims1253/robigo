@@ -122,6 +122,10 @@ fn do_as_logical(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Val
     as_atomic(i, c, a, e, "as.logical", VType::Lgl)
 }
 fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
+    // R: base's as.raw has no default argument, so the arity check of
+    // do_asatomic's checkArity is observable (as.integer etc. supply
+    // their defaults at the R level first).
+    check_arity(&a, 1, "as.raw", c)?;
     if !a.is_empty()
         && !a[0].value.is_numeric_type()
         && !matches!(a[0].value, Value::Raw(_) | Value::Str(_) | Value::Cplx(_) | Value::Null | Value::List(_))
@@ -206,6 +210,27 @@ fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     as_vector(i, x, &mode, call)
 }
 
+/// R: coerceVectorList's gate for comparison operands (relop.c's chain):
+/// every element must be a vector of length at most 1 — an expression
+/// never qualifies (isNewList() is FALSE for EXPRSXP) — else the
+/// coercion fails as a plain error.
+pub fn relop_list_coerce(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Value> {
+    let items = match v {
+        Value::List(l) | Value::Expr(l) => l.data.clone(),
+        _ => unreachable!("relop_list_coerce on a non-list"),
+    };
+    if matches!(v, Value::Expr(_)) || !items.iter().all(|e| e.is_atomic() && e.len() <= 1) {
+        return Err(Flow::error(format!("'list' object cannot be coerced to type '{}'", t.name())));
+    }
+    // The names travel with the coerced vector (do_relop_dflt reads them
+    // from the original operand and applies them to the result).
+    let mut list = Value::list(items);
+    if let Some(n) = v.names() {
+        list.set_attr_raw(s::NAMES, n);
+    }
+    crate::coerce::coerce_vector(&list, t, w)
+}
+
 pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<Value> {
     // R: coerce.c:do_asvector + ascommon. "function"/"closure" makes a
     // zero-formal closure with x as the body (asFunction/makeClosure).
@@ -223,6 +248,20 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
             })),
         });
     }
+    // R: ascommon's tail — sources that are neither vectors, lists nor
+    // language objects fail against the internal call.
+    if matches!(x, Value::Env(_) | Value::Closure(_) | Value::Builtin(_)) {
+        let type_name = match mode {
+            "any" => "any",
+            "name" | "symbol" => "symbol",
+            "pairlist" => "pairlist",
+            m => VType::from_name(m).map(|t| t.name()).unwrap_or(m),
+        };
+        return Err(Flow::error_call(
+            call.clone(),
+            format!("cannot coerce type '{}' to vector of type '{}'", x.type_name(), type_name),
+        ));
+    }
     let t = match mode {
         "any" => None,
         "name" | "symbol" => {
@@ -237,10 +276,21 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 }
                 v if v.is_atomic() => Err(Flow::error(format!("invalid data of mode '{}' (too short)", v.type_name()))),
                 Value::Null => Err(Flow::error("invalid type/length (symbol/0) in vector allocation")),
-                Value::List(l) if l.data.iter().all(|e| e.is_atomic() && e.len() == 1) => {
+                Value::List(l) if l.data.iter().all(|e| e.is_atomic() && e.len() <= 1) => {
                     Err(Flow::error(format!("invalid type/length (symbol/{}) in vector allocation", l.data.len())))
                 }
                 Value::List(_) => Err(Flow::error("'list' object cannot be coerced to type 'symbol'")),
+                // R: coercePairList — a vectorizable pairlist fails in
+                // allocVector(SYMSXP, n) for any n (symbols cannot be
+                // allocated as vectors); a call is never vectorizable.
+                Value::Pairlist(p) if p.items.iter().all(|a| a.value.is_atomic() && a.value.len() <= 1) => {
+                    Err(Flow::error(format!("invalid type/length (symbol/{}) in vector allocation", p.items.len())))
+                }
+                Value::Pairlist(_) => Err(Flow::error("'pairlist' object cannot be coerced to type 'symbol'")),
+                Value::Lang(_) => Err(Flow::error("'language' object cannot be coerced to type 'symbol'")),
+                // R: coerceVectorList — isNewList() is FALSE for
+                // expressions, so they are never vectorizable.
+                Value::Expr(_) => Err(Flow::error("'list' object cannot be coerced to type 'symbol'")),
                 _ => Err(Flow::error_call(
                     call.clone(),
                     format!("cannot coerce type '{}' to vector of type 'symbol'", x.type_name()),
@@ -248,6 +298,12 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
             };
         }
         "pairlist" => {
+            // R: do_asvector returns a pairlist of the right type
+            // unchanged (attributes kept: the final switch does not
+            // clear LISTSXP).
+            if let Value::Pairlist(_) = &x {
+                return Ok(x);
+            }
             // R: coerce.c:coercePairList — language objects whose
             // elements are not all scalars cannot be coerced.
             if let Value::Lang(l) = &x {
@@ -274,7 +330,13 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                     Arg::new(tag, v)
                 })
                 .collect();
-            return Ok(Value::pairlist(args));
+            let mut r = Value::pairlist(args);
+            // R: VectorToPairList copies most attributes (the tags carry
+            // the names); ascommon strips them for other sources.
+            if matches!(x, Value::List(_) | Value::Expr(_)) {
+                crate::attrib::copy_most_attrib(&x, &mut r);
+            }
+            return Ok(r);
         }
         // R's str2type + do_asvector's valid-type switch: modes like
         // "NULL", "environment", "language" or "single" are invalid
@@ -318,16 +380,27 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 VType::List => {
                     // R: as.vector(x, "list") on an atomic drops dim and
                     // dimnames (as.list(matrix) is a flat list) but keeps
-                    // names.
+                    // names. An expression keeps everything (the duplicate
+                    // only changes the type). Pairlists and calls go
+                    // through PairToVectorList: names from the tags, then
+                    // copyMostAttrib (which keeps the other attributes).
                     let mut l = Value::list(to_list(&x));
                     if let Some(n) = x.names() {
                         l.set_attr_raw(s::NAMES, n);
                     }
+                    if let Value::Expr(_) = &x {
+                        l.set_attrs(x.attrs().cloned().map(Box::new));
+                    } else if matches!(x, Value::Pairlist(_) | Value::Lang(_)) {
+                        crate::attrib::copy_most_attrib(&x, &mut l);
+                    }
                     Ok(l)
                 }
                 VType::Expr => {
+                    // R: coerceToExpression wraps non-lists; a pairlist or
+                    // call is wrapped whole (coercePairList's EXPRSXP case).
                     let items = match &x {
                         Value::List(l) => l.data.clone(),
+                        Value::Pairlist(_) | Value::Lang(_) => vec![x.clone()],
                         other => vec![other.clone()],
                     };
                     Ok(Value::expr_vec(items))
@@ -339,15 +412,40 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                             format!("cannot coerce type '{}' to vector of type '{}'", x.type_name(), t.name()),
                         ));
                     }
-                    if let Value::List(l) = &x {
-                        for e in &l.data {
-                            if !(e.is_atomic() && e.len() == 1) && !(t == VType::Str) {
-                                return Err(Flow::error(format!(
-                                    "'list' object cannot be coerced to type '{}'",
-                                    t.name()
-                                )));
-                            }
+                    // R: coerceVectorList (VECSXP/EXPRSXP sources) and
+                    // coercePairList (LISTSXP/LANGSXP sources): every
+                    // element must be a vector of length at most 1, else
+                    // the coercion fails as a plain error. Character is
+                    // exempt (the deparse path comes first), and an
+                    // expression never qualifies (isNewList() is FALSE for
+                    // EXPRSXP, so even the empty expression errors).
+                    let src_name = match &x {
+                        Value::List(_) | Value::Expr(_) => "list",
+                        Value::Pairlist(_) => "pairlist",
+                        Value::Lang(_) => "language",
+                        _ => "",
+                    };
+                    if !src_name.is_empty() && t != VType::Str {
+                        let items: Vec<Value> = match &x {
+                            Value::List(l) | Value::Expr(l) => l.data.clone(),
+                            Value::Pairlist(p) => p.items.iter().map(|a| a.value.clone()).collect(),
+                            Value::Lang(l) => l.items().into_iter().map(|a| a.value).collect(),
+                            _ => unreachable!(),
+                        };
+                        let vectorizable =
+                            !matches!(x, Value::Expr(_)) && items.iter().all(|e| e.is_atomic() && e.len() <= 1);
+                        if !vectorizable {
+                            return Err(Flow::error(format!(
+                                "'{}' object cannot be coerced to type '{}'",
+                                src_name,
+                                t.name()
+                            )));
                         }
+                        // Element-wise (asLogical, asInteger, ...); the tag
+                        // names are cleared with the attributes after.
+                        let mut r = i.coerce(&Value::list(items), t)?;
+                        r.clear_attrs();
+                        return Ok(r);
                     }
                     let mut r = i.coerce(&x, t)?;
                     r.clear_attrs();
