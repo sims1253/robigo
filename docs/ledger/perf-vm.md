@@ -15,6 +15,31 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: `x[[i]] <- v` in native loops
+
+- why: `simple/vectorFor`/`vectorWhile` (`x[[i]] <- i` in a loop, 1.08x
+  GNU R) never ran natively: the JIT accepted `SetIndex` only for `[`
+  (`supported`: `two` rejected).
+- what: native code's `SetIndex` handles attribute-free double and
+  integer vectors with an in-range scalar index and a double/integer/
+  logical value. On exactly those, `x[[i]] <- v` does what `x[i] <- v`
+  does, and anything else (out of range, other types, lists, a zero or NA
+  index) deoptimizes to the VM op as for `[`. So `[[` is accepted too.
+- tests: `tests/r/subset/assign-elt2-loops.R`: loops inside functions,
+  long enough to be compiled (`ROBIGO_JIT_TRACE` shows them compiled, one
+  continuing in the VM after a deopt), with the edge cases after
+  compilation (growth past the end, a double into an integer vector, NA,
+  names, a list, an index of 0, logical values). JIT on and off print
+  GNU R's output.
+- result against the previous commit (5 faster, none slower):
+  `vectorWhile` -80.6%, `vectorFor` -77.3%, `spectralnorm` -59.9% (its
+  `eval_A_col[[j + 1]] <- eval_A(i, j)` loop now compiles with the inlined
+  call), `fastaredux*` -0.9%. Ratios: `vectorFor` 1.08 -> **0.25**,
+  `vectorWhile` 1.07 -> **0.21**, `spectralnorm` 0.54 -> **0.22**; geomean
+  0.630 -> 0.597, faster than GNU R on 65 -> 67; kept.
+- carries over to G3: the rule (a `[[<-` on an attribute-free atomic
+  vector with an in-range scalar index is `[<-`).
+
 ## 2026-10-28: `sym <<- expr` in the VM, scalars updated in place
 
 - why: `simple/superWhile` (`while (x < n) x <<- x + 1` on a free variable,

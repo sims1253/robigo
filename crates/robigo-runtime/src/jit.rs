@@ -515,7 +515,10 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::AndOrShort { target, .. } => inside(*target),
         Op::ForStep { body, .. } => inside(*body),
         Op::ForRange { kind, .. } => *kind != RangeKind::SeqAlong,
-        Op::SetIndex { two, .. } => !*two,
+        // (`x[[i]] <- v` too: on the attribute-free double and integer
+        // vectors and in-range scalar indices native code handles, it does
+        // what `x[i] <- v` does; anything else deoptimizes.)
+        Op::SetIndex { .. } => true,
         _ => false,
     }
 }

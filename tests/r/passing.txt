@@ -123,6 +123,7 @@ tests/r/strings/sprintf.R
 tests/r/strings/strsplit.R
 tests/r/strings/utf8.R
 tests/r/subset/array-subset.R
+tests/r/subset/assign-elt2-loops.R
 tests/r/subset/assign-list.R
 tests/r/subset/assign-matrix.R
 tests/r/subset/assign-vector.R
