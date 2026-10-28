@@ -617,8 +617,11 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
         return Ok(v.clone());
     }
     // R: coerce.c:coerceVector — vectors, lists, expressions, language
-    // objects and symbols coerce; everything else fails as a plain
-    // error against the context call.
+    // objects and symbols coerce; environments have their own message;
+    // everything else fails as a plain error against the context call.
+    if let Value::Env(_) = v {
+        return Err(Flow::error("environments cannot be coerced to other types"));
+    }
     if !matches!(
         v,
         Value::Null
@@ -636,10 +639,11 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
     ) {
         return Err(Flow::error(format!("cannot coerce type '{}' to vector of type '{}'", v.type_name(), t.name())));
     }
-    // R: coerceVectorList / coercePairList — the elements of a list (an
-    // expression never qualifies: isNewList() is FALSE for EXPRSXP) must
-    // all be vectors of length at most 1, except for the character
-    // target, which deparses anything. The failure is a plain error.
+    // R: coerceVectorList / coercePairList — the gate is isVectorizable:
+    // every element must be a vector (atomic, list or expression) of
+    // length at most 1; NULL is not a vector, and an expression source
+    // never qualifies (isVectorizable is FALSE for EXPRSXP). The
+    // character target is exempt: it deparses anything.
     if matches!(v, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_))
         && !matches!(t, VType::List | VType::Expr | VType::Str)
     {
@@ -654,14 +658,27 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
             Value::Lang(_) => "language",
             _ => "list",
         };
-        if matches!(v, Value::Expr(_)) || !items.iter().all(|e| e.is_atomic() && e.len() <= 1) {
+        // R: isVector — atomic vectors plus lists and expressions.
+        let is_vector = |e: &Value| e.is_atomic() || matches!(e, Value::List(_) | Value::Expr(_));
+        if matches!(v, Value::Expr(_)) || !items.iter().all(|e| is_vector(e) && e.len() <= 1) {
             return Err(Flow::error(format!("'{}' object cannot be coerced to type '{}'", name, t.name())));
         }
         if !matches!(v, Value::List(_)) {
             // R: coercePairList — element-wise (asLogical, asInteger, ...),
             // names from the tags; lists take the element-wise path below.
-            let list = Value::list(items);
-            let mut out = coerce_vector(&list, t, w)?;
+            // Raw truncates asInteger per element with no range warning
+            // (unlike coerceVectorList's WARN_RAW).
+            let mut out = if t == VType::Raw {
+                Value::raws(
+                    items
+                        .iter()
+                        .map(|e| if e.is_atomic() && !e.is_empty() { to_int(e, w)[0] } else { NA_INTEGER } as u8)
+                        .collect(),
+                )
+            } else {
+                let list = Value::list(items);
+                coerce_vector(&list, t, w)?
+            };
             out.set_attrs(None);
             if let Some(n) = v.names() {
                 out.set_attr_raw(s::NAMES, n);

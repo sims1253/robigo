@@ -221,7 +221,12 @@ fn do_raw_shift(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if n == NA_INTEGER || !(-8..=8).contains(&n) {
         return Err(Flow::error("argument 'n' must be a small integer"));
     }
-    Ok(Value::raws(x.iter().map(|&b| if n >= 0 { b.wrapping_shl(n as u32) } else { b >> (-n) }).collect()))
+    // R: raw.c:do_rawShift — the shift happens on the promoted int and
+    // is truncated back to Rbyte on assignment, so shift 8 zeroes the
+    // byte (Rust's u8 shift would mask the count instead).
+    Ok(Value::raws(
+        x.iter().map(|&b| if n >= 0 { ((b as u32) << n) as u8 } else { ((b as u32) >> -n) as u8 }).collect(),
+    ))
 }
 
 fn do_int_to_bits(i: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

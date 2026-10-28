@@ -88,14 +88,24 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
         Value::Sym(_) => {
             return Err(Flow::error(format!("cannot coerce type 'symbol' to vector of type '{}'", t.name())));
         }
-        Value::List(l) | Value::Expr(l) if t != VType::Str => {
-            for e in &l.data {
-                if !(e.is_atomic() && e.len() == 1) && !e.is_null() {
+        _ => {}
+    }
+    // R: coerceVectorList's isVectorizable gate — every element of a
+    // list must be a vector (atomic, list or expression) of length at
+    // most 1; NULL is not a vector. An expression source never
+    // qualifies. The character target is exempt (it deparses).
+    {
+        let is_vector = |e: &Value| e.is_atomic() || matches!(e, Value::List(_) | Value::Expr(_));
+        if t != VType::Str {
+            if let Value::List(l) = &x {
+                if !l.data.iter().all(|e| is_vector(e) && e.len() <= 1) {
                     return Err(Flow::error(format!("'list' object cannot be coerced to type '{}'", t.name())));
                 }
             }
+            if matches!(x, Value::Expr(_)) {
+                return Err(Flow::error(format!("'list' object cannot be coerced to type '{}'", t.name())));
+            }
         }
-        _ => {}
     }
     let mut r = i.coerce(&x, t)?;
     r.clear_attrs();
@@ -178,20 +188,27 @@ fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     check_arity(&args, 2, "storage.mode<-", call)?;
     let x = args[0].value.clone();
     let mode = match &args[1].value {
-        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
-        _ => return Err(Flow::error_call(call.clone(), "'value' must be non-null character string")),
+        // R: isValidString — length at least 1 and the first element not
+        // NA; a longer vector uses its first element.
+        Value::Str(m) if m.data.len() >= 1 && m.data[0].is_some() => m.data[0].clone().unwrap(),
+        _ => return Err(Flow::error("'value' must be non-null character string")),
     };
     let t = match &*mode {
-        "real" | "single" => {
-            return Err(Flow::error_call(call.clone(), "use of 'real' is defunct: use 'double' instead"));
+        // R: coerce.c:do_storage_mode — both defunct messages are plain
+        // errors, reported against the assignment call (the context).
+        "real" => {
+            return Err(Flow::error("use of 'real' is defunct: use 'double' instead"));
         }
-        m => VType::from_name(m).ok_or_else(|| Flow::error_call(call.clone(), "invalid value"))?,
+        "single" => {
+            return Err(Flow::error("use of 'single' is defunct: use mode<- instead"));
+        }
+        m => VType::from_name(m).ok_or_else(|| Flow::error("invalid value"))?,
     };
     if x.vtype() == Some(t) {
         return Ok(x);
     }
     if x.inherits("factor") {
-        return Err(Flow::error_call(call.clone(), "invalid to change the storage mode of a factor"));
+        return Err(Flow::error("invalid to change the storage mode of a factor"));
     }
     i.coerce(&x, t)
 }
@@ -300,9 +317,20 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
         "pairlist" => {
             // R: do_asvector returns a pairlist of the right type
             // unchanged (attributes kept: the final switch does not
-            // clear LISTSXP).
+            // clear LISTSXP). A NULL source returns NULL (coerceVector's
+            // NILSXP/LISTSXP early return); a symbol has no path in
+            // ascommon and fails against the internal call.
             if let Value::Pairlist(_) = &x {
                 return Ok(x);
+            }
+            if let Value::Null = &x {
+                return Ok(x);
+            }
+            if let Value::Sym(_) = &x {
+                return Err(Flow::error_call(
+                    call.clone(),
+                    format!("cannot coerce type 'symbol' to vector of type 'pairlist'"),
+                ));
             }
             // R: coerce.c:coercePairList — language objects whose
             // elements are not all scalars cannot be coerced.
@@ -396,14 +424,17 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                     Ok(l)
                 }
                 VType::Expr => {
-                    // R: coerceToExpression wraps non-lists; a pairlist or
-                    // call is wrapped whole (coercePairList's EXPRSXP case).
-                    let items = match &x {
-                        Value::List(l) => l.data.clone(),
-                        Value::Pairlist(_) | Value::Lang(_) => vec![x.clone()],
-                        other => vec![other.clone()],
-                    };
-                    Ok(Value::expr_vec(items))
+                    // R: coerceToExpression — an atomic vector becomes one
+                    // expression per element (scalars); a list becomes an
+                    // expression keeping its attributes (coerceVectorList's
+                    // SET_TYPEOF identity); a pairlist, call, symbol or
+                    // NULL is wrapped whole (coercePairList's EXPRSXP case,
+                    // coerceSymbol, coerceVector's NILSXP path).
+                    if matches!(x, Value::Pairlist(_) | Value::Lang(_) | Value::Sym(_) | Value::Null) {
+                        return Ok(Value::expr_vec(vec![x.clone()]));
+                    }
+                    let mut w = CoerceWarnings::default();
+                    crate::coerce::coerce_vector(&x, t, &mut w)
                 }
                 _ => {
                     if matches!(x, Value::Env(_) | Value::Closure(_) | Value::Builtin(_)) {
@@ -460,11 +491,13 @@ fn do_typeof(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     Ok(Value::str(arg(&args, 0).type_name()))
 }
 
-fn do_isvector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let mode = match arg(&args, 1) {
         Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
-        _ => return Err(Flow::error_call(call.clone(), "invalid 'mode' argument")),
+        // R: error_return(R_MSG_mode) — a plain error, so the reported
+        // call is the user's is.vector(...) call, not the internal one.
+        _ => return Err(Flow::error("invalid 'mode' argument")),
     };
     let type_ok = match &*mode {
         "any" => x.is_vector(),
@@ -732,15 +765,22 @@ fn do_docall(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     i.eval(&c, &envir)
 }
 
-fn do_asfunction(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_asfunction(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: coerce.c:do_asfunction — the argument list is checked first
+    // (isNewList: an expression does not qualify), then the environment;
+    // every error is a plain error against the context.
     let x = arg(&args, 0);
+    if !matches!(x, Value::List(_)) {
+        return Err(Flow::error("list argument expected"));
+    }
     let envir = match arg(&args, 1) {
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
         Value::Env(e) => e,
-        _ => return Err(Flow::error_call(call.clone(), "invalid environment")),
+        _ => return Err(Flow::error("invalid environment")),
     };
     let items: Vec<Value> = to_list(&x);
     if items.is_empty() {
-        return Err(Flow::error_call(call.clone(), "argument must have length at least 1"));
+        return Err(Flow::error("argument must have length at least 1"));
     }
     let names = crate::attrib::names_vec(&x);
     let n = items.len();
@@ -752,6 +792,10 @@ fn do_asfunction(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
             Arg::new(tag, v.clone())
         })
         .collect();
+    // R: CheckFormals — every formal needs a (symbol) tag.
+    if formals.iter().any(|a| a.tag.is_none()) {
+        return Err(Flow::error("invalid formal argument list for \"as.function\""));
+    }
     Ok(Value::Closure(Rc::new(Closure {
         formals: formals.into(),
         body: items[n - 1].clone(),

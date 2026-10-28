@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use super::{arg, prim, special};
-use crate::attrib::{copy_most_attrib, get_attrib};
+use crate::attrib::{copy_most_attrib, get_attrib, set_attrib};
 use crate::coerce::{CoerceWarnings, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -224,13 +224,17 @@ fn binary_attrs(x: &Value, y: &Value, call: &Value) -> RResult<BinAttrs> {
     Ok(BinAttrs { dims, xnames, ynames, any_attr: xattr || yattr })
 }
 
-fn apply_bin_attrs(val: &mut Value, a: BinAttrs) {
+fn apply_bin_attrs(val: &mut Value, a: BinAttrs) -> RResult<()> {
     if !a.any_attr {
-        return;
+        return Ok(());
     }
     let n = val.len();
     if let Some(d) = a.dims {
-        val.set_attr_raw(s::DIM, d);
+        // R: setAttrib(val, R_DimSymbol, dims) routes through dimgets,
+        // whose product check fires when the recycled result is longer
+        // than the array operand (e.g. `m + 1:16`): "dims [product %d]
+        // do not match the length of object [%d]".
+        *val = set_attrib(std::mem::replace(val, Value::Null), s::DIM, d)?;
         if let Some(dn) = a.xnames {
             val.set_attr_raw(s::DIMNAMES, dn);
         } else if let Some(dn) = a.ynames {
@@ -241,6 +245,36 @@ fn apply_bin_attrs(val: &mut Value, a: BinAttrs) {
     } else if let Some(yn) = a.ynames.filter(|yn| yn.len() == n) {
         val.set_attr_raw(s::NAMES, yn);
     }
+    Ok(())
+}
+
+/// R: arithmetic.c:R_binary, relop.c:do_relop_dflt, logic.c:lbinary —
+/// the time-series operand: an error when the only ts operand is the
+/// shorter one (ERROR_TSVEC_MISMATCH), else the tsp and class to give
+/// the result (x's when both are; Null when the operand lacks the
+/// attribute, so it is removed from the result).
+fn ts_operand(x: &Value, y: &Value, call: &Value) -> RResult<Option<(Value, Value)>> {
+    let (xts, yts) = (is_ts(x), is_ts(y));
+    if !xts && !yts {
+        return Ok(None);
+    }
+    if xts != yts && (if xts { x.len() < y.len() } else { y.len() < x.len() }) {
+        return Err(Flow::error_call(call.clone(), "time-series/vector length mismatch"));
+    }
+    let src = if xts { x } else { y };
+    Ok(Some((src.get_attr(s::TSP).unwrap_or(Value::Null), src.get_attr(s::CLASS).unwrap_or(Value::Null))))
+}
+
+/// R: "must set *after* dims!" — through the validating setters (tspgets
+/// checks the parameters and rejects zero-length results; classgets).
+fn apply_ts_attrs(val: &mut Value, ts: Option<(Value, Value)>) -> RResult<()> {
+    if let Some((tsp, klass)) = ts {
+        if !tsp.is_null() {
+            *val = set_attrib(std::mem::replace(val, Value::Null), s::TSP, tsp)?;
+        }
+        *val = set_attrib(std::mem::replace(val, Value::Null), s::CLASS, klass)?;
+    }
+    Ok(())
 }
 
 /// Copy attributes from the operands (as in real_binary: the longer
@@ -313,7 +347,7 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
         }
     }
     let attrs = binary_attrs(&x, &y, call)?;
-    let (xts, yts) = (is_ts(&x), is_ts(&y));
+    let ts = ts_operand(&x, &y, call)?;
     check_recycling(interp, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
     let mut val = match (&x, &y) {
@@ -347,16 +381,8 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
         return Ok(val);
     }
     copy_operand_attrs(&x, &y, &mut val);
-    apply_bin_attrs(&mut val, attrs);
-    if xts || yts {
-        let src = if xts { &x } else { &y };
-        if let Some(t) = src.get_attr(s::TSP) {
-            val.set_attr_raw(s::TSP, t);
-        }
-        if let Some(c) = src.get_attr(s::CLASS) {
-            val.set_attr_raw(s::CLASS, c);
-        }
-    }
+    apply_bin_attrs(&mut val, attrs)?;
+    apply_ts_attrs(&mut val, ts)?;
     Ok(val)
 }
 
@@ -755,6 +781,7 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     }
     let (nx, ny) = (x.len(), y.len());
     let attrs = binary_attrs(&x, &y, call)?;
+    let ts = ts_operand(&x, &y, call)?;
     check_recycling(interp, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
     // R: relop.c — a raw operand compared with a real, integer or logical
@@ -861,7 +888,8 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
         }
     };
     let mut val = Value::lgls(out);
-    apply_bin_attrs(&mut val, attrs);
+    apply_bin_attrs(&mut val, attrs)?;
+    apply_ts_attrs(&mut val, ts)?;
     Ok(val)
 }
 
@@ -955,6 +983,7 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
     }
     let (nx, ny) = (x.len(), y.len());
     let attrs = binary_attrs(&x, &y, call)?;
+    let ts = ts_operand(&x, &y, call)?;
     check_recycling(i, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
     if let (Value::Raw(a), Value::Raw(b)) = (&x, &y) {
@@ -962,7 +991,8 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
             .map(|k| if and { a.data[k % nx] & b.data[k % ny] } else { a.data[k % nx] | b.data[k % ny] })
             .collect();
         let mut val = Value::raws(out);
-        apply_bin_attrs(&mut val, attrs);
+        apply_bin_attrs(&mut val, attrs)?;
+        apply_ts_attrs(&mut val, ts)?;
         return Ok(val);
     }
     if matches!(x, Value::Raw(_)) || matches!(y, Value::Raw(_)) {
@@ -992,7 +1022,8 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
         })
     };
     let mut val = Value::lgls(out);
-    apply_bin_attrs(&mut val, attrs);
+    apply_bin_attrs(&mut val, attrs)?;
+    apply_ts_attrs(&mut val, ts)?;
     Ok(val)
 }
 
