@@ -1046,8 +1046,26 @@ impl D {
                     }
                     Value::Str(sv) if all_na && sv.data[i].is_none() => "NA_character_".into(),
                     Value::Raw(rv) => format!("0x{:02x}", rv.data[i]),
+                    // R: deparse.c:vector2buff -- hexNumeric and digits17.
+                    Value::Real(rv) if self.opts & HEXNUMERIC != 0 && rv.data[i].is_finite() => {
+                        crate::format::encode_hex_real(rv.data[i])
+                    }
                     Value::Real(rv) if self.opts & DIGITS17 != 0 && rv.data[i].is_finite() => {
                         robigo_syntax::cfmt::fmt_g(rv.data[i], 17, false, false)
+                    }
+                    Value::Cplx(cv)
+                        if self.opts & HEXNUMERIC != 0 && cv.data[i].re.is_finite() && cv.data[i].im.is_finite() =>
+                    {
+                        crate::format::encode_hex_complex(cv.data[i])
+                    }
+                    Value::Cplx(cv)
+                        if self.opts & DIGITS17 != 0 && cv.data[i].re.is_finite() && cv.data[i].im.is_finite() =>
+                    {
+                        format!(
+                            "{}{}i",
+                            robigo_syntax::cfmt::fmt_g(cv.data[i].re, 17, false, false),
+                            crate::format::encode_digits17_signed(cv.data[i].im)
+                        )
                     }
                     _ => encode_element_for_deparse(v, i),
                 };
