@@ -78,7 +78,9 @@ pub struct Core {
     syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
 
     /// R_PreserveObject's set, with counts
-    precious: HashMap<Sexp, u32, BuildFx>,
+    /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
+    /// released from the top (O(1) for the usual LIFO churn)
+    precious: Vec<Sexp>,
     /// extra precise roots: called during marking with this core
     pub root_fns: Vec<unsafe fn(&mut Core)>,
     /// weak references (WEAKREFSXP) not yet finalized
@@ -160,7 +162,7 @@ impl Core {
             missing_arg: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
-            precious: HashMap::default(),
+            precious: Vec::new(),
             root_fns: Vec::new(),
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
@@ -443,16 +445,18 @@ impl Core {
 
     // ---- roots ---------------------------------------------------------
 
+    // R: memory.c:R_PreserveObject / R_ReleaseObject (the list form):
+    // each preserve adds an entry, each release removes the most recent
+    // matching one
+    #[inline]
     pub fn preserve(&mut self, x: Sexp) {
-        *self.precious.entry(x).or_insert(0) += 1;
+        self.precious.push(x);
     }
 
+    #[inline]
     pub fn release(&mut self, x: Sexp) {
-        if let Some(n) = self.precious.get_mut(&x) {
-            *n -= 1;
-            if *n == 0 {
-                self.precious.remove(&x);
-            }
+        if let Some(k) = self.precious.iter().rposition(|&p| p == x) {
+            self.precious.swap_remove(k);
         }
     }
 
@@ -732,8 +736,8 @@ impl Core {
         let t0 = Instant::now();
         self.epoch += 1;
         unsafe {
-            let prec: Vec<Sexp> = self.precious.keys().copied().collect();
-            for p in prec {
+            for i in 0..self.precious.len() {
+                let p = self.precious[i];
                 self.mark_obj(p);
             }
             for i in 0..self.finalize_queue.len() {

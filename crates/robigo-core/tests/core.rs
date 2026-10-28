@@ -300,12 +300,12 @@ fn try_run_and_jump() {
     let ok = robigo_core::unwind::try_run(|| {});
     assert!(ok);
     let mut reached = false;
-    let r = &mut reached as *mut bool;
+    let _r = &mut reached as *mut bool;
     let ok = robigo_core::unwind::try_run(move || unsafe {
         robigo_core::unwind::jump();
         #[allow(unreachable_code)]
         {
-            *r = true;
+            *_r = true;
         }
     });
     assert!(!ok);

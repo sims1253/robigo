@@ -11,6 +11,25 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: Preserve/Release as GNU R's list; the src/appl plan
+
+- R_PreserveObject used a HashMap<Sexp, count>; GNU R conses onto a
+  precious list (O(1) for LIFO churn, O(n) worst case). Now a stack
+  released from the top, with the same multiset semantics: bench
+  Preserve/Release 1.82 -> 0.97 of GNU R.
+- stats.so built from source still imports 20 stubbed symbols, all GNU
+  R's src/appl (vmmin, nmmin, cgmin, samin, lbfgsb in appl/optim.c +
+  lbfgsb.c; optif9/fdhess in uncmin.c; Rdqags/Rdqagi in integrate.c;
+  LINPACK dqrdc/dqrdc2/dqrls/dqrsl/dqrcf/dsvdc/dpbfa/dpbsl in Fortran).
+  appl/optim.c includes Defn.h and lbfgsb/uncmin call BLAS and LINPACK,
+  so they belong to the base-natives build (an `appl` object built from
+  the R sources like stats.so and loaded before the base natives), not
+  to robigo's cargo build (CI has no R sources or gfortran). That needs
+  the executable to stop exporting stubs for those names (the
+  executable comes first in symbol lookup and would shadow them):
+  next step, together with switching a base package from its Rust
+  ports to its natives.
+
 ## 2026-10-28: GNU R's stats natives built from source run on robigo (council item 1)
 
 - GNU R's Defn.h defines USE_RINTERNALS unless TESTING_WRITE_BARRIER is
