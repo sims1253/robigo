@@ -15,6 +15,51 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-28: allocation counts (baseline for the allocation work)
+
+- tool: `scripts/alloc-count.py` counts calls of `__rust_alloc`,
+  `__rust_alloc_zeroed` and `__rust_realloc` per benchmark from callgrind's
+  call graph, by calling function. Startup with `utils`/`stats` is ~0.55M
+  allocations.
+- finding (layout): a boxed double/integer scalar (`Value::real`/`int`) is
+  **two** allocations, the `Rc<Vector>` and the `Vec` buffer inside it. The
+  new core's inline vector payload (G2) halves every remaining box.
+- `fib` (35,421 calls of `fib(21)`; 143k `Value::real` allocations) makes
+  ~7 allocations per call: 2 boxed doubles (2 each: the result at `Return`,
+  boxed in `run_with` because closures return `Value`, and the caller-forced
+  argument), the forced promise, the environment (`Env::with_frame`), the
+  `promargs` vector.
+- next, by measured count:
+  1. unboxed results between compiled callers and callees (the `Return`
+     box). Needs a VM-to-VM call path that returns `RVal` past
+     `call_closure`/`exec_closure`/`end_context` (interp.rs, shared file:
+     a calling-convention change for its own PR);
+  2. `promargs` without a heap vector (inline storage or a pool);
+  3. boxed scalars in `profiler-shared` (`promise_args_with` 3.5M, `real`
+     2.0M, `with_frame` 1.5M), `superWhile` and `nbody_naive`
+     (`real`, `call_builtin`, `complex_assign_pre`);
+  4. elementwise temporaries (`a * b + c`) only where bit-identical with
+     warnings/NA in the same order.
+- carries over to G3: the measurement and the attack list. The
+  two-allocation box is today's layout and disappears with G2.
+
+Largest allocators (total allocator calls, including startup):
+
+| benchmark | allocations | top allocating function |
+|---|---|---|
+| rbench/simple/profiler-shared | 9.56M | promise_args_with |
+| rbench/real/flexclust_no_s4 | 5.74M | finish_grow |
+| rbench/real/flexclust | 5.40M | finish_grow |
+| rbench/shootout/nbody_naive | 3.77M | real |
+| rbench/shootout/nbody_naive_2 | 3.32M | finish_grow |
+| rbench/shootout/spectralnorm_alt_3 | 3.24M | promise_args_with |
+| rbench/shootout/mandelbrot_naive_ascii | 2.67M | arith_binary |
+| rbench/shootout/nbody_3 | 2.49M | finish_grow |
+| robigo/fib | 2.25M | real |
+| rbench/shootout/nbody_2 | 2.23M | finish_grow |
+| robigo/binarytrees | 2.10M | real |
+| rbench/shootout/fasta_2 | 2.08M | finish_grow |
+
 ## For G3: which techniques carry over to the new core
 
 The VM will be rebuilt on `robigo-core` (G2, PR #28). Most of what this
