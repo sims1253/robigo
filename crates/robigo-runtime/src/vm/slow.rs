@@ -78,6 +78,7 @@ pub(super) fn arith_slow(
 }
 
 /// `x op y` for values that are not both plain scalars.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn arith_values(
     interp: &mut Interp,
@@ -92,9 +93,11 @@ fn arith_values(
     env: &Env,
     regs: &mut [RVal],
 ) -> RResult<Slow> {
-    if let (Some(p), Some(q)) = (cplx_scalar(&x), cplx_scalar(&y)) {
-        if let Some(v) = complex_op(op, p, q) {
-            return Ok(Slow::Val(v));
+    if matches!(x, RVal::V(Value::Cplx(_))) || matches!(y, RVal::V(Value::Cplx(_))) {
+        if let (Some(p), Some(q)) = (cplx_scalar(&x), cplx_scalar(&y)) {
+            if let Some(v) = complex_op(op, p, q) {
+                return Ok(Slow::Val(v));
+            }
         }
     }
     let (x, y) = if op == ArithOp::Times {
@@ -174,6 +177,10 @@ fn mul_add_next(
     env: &Env,
     regs: &mut [RVal],
 ) -> Result<(Reg, Value), (RVal, RVal)> {
+    let dbl = |v: &RVal| matches!(v, RVal::D(_)) || matches!(v, RVal::V(Value::Real(r)) if r.attrs.is_none());
+    if !dbl(&x) || !dbl(&y) {
+        return Err((x, y));
+    }
     // How the product combines with the other operand `c`.
     let (out, kind, other): (Reg, u8, Result<Reg, Leaf>) = match code.ops.get(pc) {
         Some(Op::Arith { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a, b, .. }) if *a == dst && *b != dst => {
