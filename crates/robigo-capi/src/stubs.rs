@@ -16,15 +16,11 @@ pub static STUBS: &[&str] = &[
     "R_ClosureEnv",
     "R_do_MAKE_CLASS",
     "R_has_slot",
-    "dqrdc2_",
-    "dqrsl_",
-    "vmmin",
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
     "R_PromiseExpr",
     "Rf_CreateAtVector",
-    "optif9",
     "GECap",
     "GECircle",
     "GEExpressionHeight",
@@ -54,15 +50,11 @@ pub static STUBS: &[&str] = &[
     "R_ClosureExpr",
     "R_GE_str2col",
     "R_getClassDef",
-    "Rdqags",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
     "Rf_NoDevices",
     "Rf_RGBpar3",
     "Rf_asS4",
-    "dpofa_",
-    "dqrdc_",
-    "nmmin",
     "GEExpressionMetric",
     "GEFill",
     "GEFillStroke",
@@ -192,7 +184,6 @@ pub static STUBS: &[&str] = &[
     "R_withCallingErrorHandler",
     "Rconn_printf",
     "Rdownload",
-    "Rdqagi",
     "Rf_EncodeChar",
     "Rf_EncodeComplex",
     "Rf_EncodeElement0",
@@ -233,7 +224,6 @@ pub static STUBS: &[&str] = &[
     "Rsockwrite",
     "Runzip",
     "XTRUELENGTH",
-    "cgmin",
     "do_Rprof",
     "do_Rprofmem",
     "do_X11",
@@ -247,22 +237,13 @@ pub static STUBS: &[&str] = &[
     "do_saveplot",
     "do_setGraphicsEventEnv",
     "do_set_prim_method",
-    "dpbfa_",
-    "dpbsl_",
-    "dqrcf_",
-    "dqrls_",
-    "dqrqy_",
     "dsvdc_",
-    "dtrsl_",
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
-    "fdhess",
     "getPRIMNAME",
-    "lbfgsb",
     "locale2charset",
     "mbcsValid",
     "parseError",
-    "samin",
     "utf8Valid",
     "utf8clen",
 ];
@@ -308,21 +289,6 @@ pub unsafe extern "C" fn R_has_slot() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrdc2_() {
-    not_implemented("dqrdc2_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrsl_() {
-    not_implemented("dqrsl_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmmin() {
-    not_implemented("vmmin")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn GEMode() {
     not_implemented("GEMode")
 }
@@ -345,11 +311,6 @@ pub unsafe extern "C" fn R_PromiseExpr() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_CreateAtVector() {
     not_implemented("Rf_CreateAtVector")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn optif9() {
-    not_implemented("optif9")
 }
 
 #[unsafe(no_mangle)]
@@ -507,11 +468,6 @@ pub static mut R_print: [usize; 4] = [0; 4];
 pub static mut R_wait_usec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdqags() {
-    not_implemented("Rdqags")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_GAxisPars() {
     not_implemented("Rf_GAxisPars")
 }
@@ -534,21 +490,6 @@ pub unsafe extern "C" fn Rf_RGBpar3() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_asS4() {
     not_implemented("Rf_asS4")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpofa_() {
-    not_implemented("dpofa_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrdc_() {
-    not_implemented("dqrdc_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nmmin() {
-    not_implemented("nmmin")
 }
 
 #[unsafe(no_mangle)]
@@ -1221,11 +1162,6 @@ pub unsafe extern "C" fn Rdownload() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdqagi() {
-    not_implemented("Rdqagi")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_EncodeChar() {
     not_implemented("Rf_EncodeChar")
 }
@@ -1429,11 +1365,6 @@ pub unsafe extern "C" fn XTRUELENGTH() {
 pub static mut baseRegisterIndex: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cgmin() {
-    not_implemented("cgmin")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprof() {
     not_implemented("do_Rprof")
 }
@@ -1499,38 +1430,8 @@ pub unsafe extern "C" fn do_set_prim_method() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpbfa_() {
-    not_implemented("dpbfa_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dpbsl_() {
-    not_implemented("dpbsl_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrcf_() {
-    not_implemented("dqrcf_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrls_() {
-    not_implemented("dqrls_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dqrqy_() {
-    not_implemented("dqrqy_")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dsvdc_() {
     not_implemented("dsvdc_")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dtrsl_() {
-    not_implemented("dtrsl_")
 }
 
 #[unsafe(no_mangle)]
@@ -1544,18 +1445,8 @@ pub unsafe extern "C" fn extR_HTTPDStop() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fdhess() {
-    not_implemented("fdhess")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn getPRIMNAME() {
     not_implemented("getPRIMNAME")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lbfgsb() {
-    not_implemented("lbfgsb")
 }
 
 #[unsafe(no_mangle)]
@@ -1608,11 +1499,6 @@ pub static mut ptr_do_dataviewer: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn samin() {
-    not_implemented("samin")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn utf8Valid() {

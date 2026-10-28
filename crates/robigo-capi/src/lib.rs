@@ -22,6 +22,7 @@ pub mod envir;
 pub mod errors;
 pub mod extptr;
 pub mod host;
+pub mod linpack;
 pub mod list;
 pub mod memory;
 pub mod nmath;
