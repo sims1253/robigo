@@ -24,7 +24,7 @@ q <- p
 q$age <- 99
 p$age
 r <- p$copy(); r$age <- 1; p$age
-Person$methods(older = function(n) age + n)
+suppressMessages(Person$methods(older = function(n) age + n))
 Person$new(name = "C", age = 5)$older(10)
 Person$fields()
 Acc <- suppressMessages(setRefClass("Acc", fields = list(bal = "numeric", double = function(v) { if (missing(v)) bal * 2 else stop("read-only") })))
