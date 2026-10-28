@@ -44,6 +44,14 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: Matrix from source: blocked on grid (not S4)
+
+- `install.packages("Matrix")` inside robigo first builds its dependency
+  lattice, whose lazy-loading step loads grid: `.Call(C_initGrid)` is not
+  implemented (grid's natives: core's `scripts/build-natives.sh grid` or
+  a port; graphics engine, not this track). Retry Matrix once grid
+  loads; it is the S4 stress test after Rcpp (dgCMatrix & co).
+
 ## 2026-10-28: methods as a default package, per corpus (host, same binary)
 
 Recorded with methods in `default_packages` (oracle image, uid 1000,
