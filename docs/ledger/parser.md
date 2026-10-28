@@ -102,6 +102,35 @@ Corpora state (GNU R 4.5.0 = Debian r-base-core 4.5.0-3, the CI oracle):
 - srcrefs: not dumped (keep.source = FALSE); if the dump ever includes
   them, byte positions follow xxbyteno.
 
+## 2026-10-28: parse-throughput baseline (main 5b0b240, harness committed)
+
+- why: the track's second metric; `scripts/parse-perf.py wall|cg` over
+  all six corpora (41,067 sources, 51.3 MB), `parse-batch --parse-only`
+  with a checksum that folds constant values, name and string bytes.
+- baseline (best of 3; callgrind single runs, deterministic):
+  wall 25.60 MB/s total (rlib 28.6, rtests 22.3, fastr 9.9,
+  gnur-tests 23.2, gnur-examples 25.7, cran 29.3);
+  callgrind 202,567 instr/kB total (rlib 203.7k, rtests 246.8k,
+  fastr 358.8k, gnur-tests 249.3k, gnur-examples 187.6k, cran 186.4k).
+- callgrind profile (rlib, 1.54G instr): allocator paths ~35%
+  (_int_malloc 11%, free 7%, malloc 4.6%, _int_free_chunk 3.2%,
+  malloc_consolidate 3.2%, memcpy_avx 5.7% — much of it Vec/token
+  copying), tokenize 10.6%, Tok::clone 2.6%, Tok/Token drop glue 3%,
+  Expr drop glue 2.3%, `String::from_utf8_lossy(...).into_owned()`
+  (a full copy of every source) 3.2%, contains_placeholder 1%,
+  the LD number paths only ~1.3%. Every Sym/Special token and every
+  escape-free string allocates; the parser clones whole Tokens
+  (String included) to peek.
+- so the plan is: tokens and string literals borrow the source, names
+  intern as `Rc<str>`, no Token clones in the parser, zero-copy UTF-8
+  in the harness, a placeholder-seen flag, and only then a
+  provably-equivalent short-literal number fast path.
+- corpus ratchet holds at 100% on all six corpora on the baseline
+  build; note for this machine: the shared `~/.cache/cargo-target`
+  bled another worktree's stale `librobigo_syntax` rlib into bin
+  builds (lib compiles, bin "cannot find dump_error") — use a private
+  `CARGO_TARGET_DIR` for parser-track builds.
+
 ## 2026-10-27 (later): CRAN corpus at 100% (7552/7552)
 
 - why: CRAN sources are the largest and most varied slice of the metric.
