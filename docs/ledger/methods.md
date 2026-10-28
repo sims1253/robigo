@@ -44,6 +44,30 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+## 2026-10-28: #52 merged; CI results; trace(); recording with methods
+
+- #52 merged. CI, branch vs main's latest run: fastr 30320 -> 30369
+  (+49), gnur-examples 559 -> 605 (+46), gnur-tests 20 -> 21 (+1), no case
+  lost in any corpus; perf job green.
+- `traceOnOff`/`debugOnOff` (debug.c) replaced placeholders that returned
+  FALSE: `.doTrace` now runs, so `trace(f, quote(...))` and
+  `trace("g", ..., signature = "numeric")` (methods' `.TraceWithMethods`)
+  print GNU R's output (tests/r/s4/trace.R). Open: `trace("f")` without a
+  tracer goes through `.primTrace` and the RTRACE bit, which needs the
+  evaluator/VM call path to print `trace: f(1)` (VM owner).
+- Methods as a default package, measurement in a scratch worktree
+  (corpora.toml `default_packages` + methods, recorded in the oracle
+  image): gnur-examples 591 -> 603 passing on this host with the same
+  binary; the 2 "losses" are recording-environment artifacts (Docker uid
+  for file.access, seccomp's "Function not implemented" for system()).
+- **Memory incident:** recording gnur-tests with `--jobs 4` ran its
+  `reg-large` case (8+ GB) next to three other recordings; the box (14 GB,
+  shared) ran out and the core agent was OOM-killed. Now: `free -g` check
+  before each recording, `docker run --memory 6g --memory-swap 6g`,
+  `--jobs 1` for gnur-tests with `--filter '^(?!reg-large$)'`; reg-large
+  is left to CI. fastr is recorded in 8 chunks (last hex digit of the id)
+  because `record` writes only at the end.
+
 ## 2026-10-28: bare robigo starts with GNU R's default packages; startup cost
 
 - `robigo script.R` without `R_DEFAULT_PACKAGES` forced it to NULL ("cannot
