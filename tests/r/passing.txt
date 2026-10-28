@@ -251,3 +251,4 @@ tests/r/lang/parse_data.R
 tests/r/vec/print-max-index.R
 tests/r/basics/base-isvector-context.R
 tests/r/basics/compiled-isvector-missing.R
+tests/r/lang/substitute-dots-cell.R

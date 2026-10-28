@@ -78,6 +78,7 @@ struct PNode {
     attr: Value,
     tag: Value,
     car: Value,
+    ty: u32,
 }
 
 pub struct Reader<'a, 'i> {
@@ -555,7 +556,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             if nodes.is_empty() {
                 head_attr = attr.clone();
             }
-            nodes.push(PNode { attr, tag, car });
+            nodes.push(PNode { attr, tag, car, ty });
             if matches!(ty, CLOSXP | PROMSXP) {
                 // The CDR is the body / expression, read as a single item.
                 break;
@@ -612,6 +613,13 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
+                // LANGSXP cells after a call's first (see `Lang::lang_cells`)
+                let lang_cells = nodes
+                    .iter()
+                    .skip(1)
+                    .take(64)
+                    .enumerate()
+                    .fold(0u64, |m, (k, n)| if n.ty == LANGSXP { m | 1 << k } else { m });
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
@@ -624,7 +632,11 @@ impl<'a, 'i> Reader<'a, 'i> {
                     }
                 }
                 let mut v = match head_type {
-                    LANGSXP => Value::Lang(Rc::new(Lang::from_items(items, None))),
+                    LANGSXP => {
+                        let mut l = Lang::from_items(items, None);
+                        l.lang_cells = lang_cells;
+                        Value::Lang(Rc::new(l))
+                    }
                     DOTSXP => Value::Dots(Rc::new(items)),
                     _ => Value::pairlist(items),
                 };
@@ -1183,7 +1195,7 @@ impl Writer<'_> {
     fn altrep_seq(&mut self, class: &str, ty: u32, n: usize, n1: f64, inc: f64) {
         self.flags(ALTREP_SXP, 0, false, false, false);
         let info = vec![Arg::pos(Value::sym(class)), Arg::pos(Value::sym("base")), Arg::pos(Value::int(ty as i32))];
-        self.pairlist_items(LISTSXP, &info, None);
+        self.pairlist_items(LISTSXP, &info, None, 0);
         self.item(&Value::reals(vec![n as f64, n1, inc]));
         self.int(NILVALUE_SXP as i32);
     }
@@ -1206,10 +1218,18 @@ impl Writer<'_> {
             self.int(i as i32);
         }
     }
-    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>) {
+    /// The cells of a pairlist or call: the first of type `ty`, the others
+    /// LISTSXP unless bit k - 1 of `lang_cells` is set.
+    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>, lang_cells: u64) {
         for (k, a) in items.iter().enumerate() {
             let has_attr = k == 0 && attr_of.is_some_and(|v| v.has_attrs());
-            let t = if k == 0 { ty } else { LISTSXP };
+            let t = if k == 0 {
+                ty
+            } else if k <= 64 && lang_cells & (1 << (k - 1)) != 0 {
+                LANGSXP
+            } else {
+                LISTSXP
+            };
             self.flags(t, 0, false, has_attr, a.tag.is_some());
             if has_attr {
                 self.attrs(attr_of.unwrap());
@@ -1296,9 +1316,9 @@ impl Writer<'_> {
                     }
                 }
             }
-            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v)),
-            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v)),
-            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None),
+            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), 0),
+            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), l.lang_cells),
+            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, 0),
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);
                 if has_attr {

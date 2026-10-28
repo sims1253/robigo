@@ -617,7 +617,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
-            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag }));
+            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag, lang_cells: 0 }));
         }
         OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
         _ => return wrap_core(x),
