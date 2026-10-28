@@ -31,6 +31,8 @@ use crate::value::*;
 
 mod rjit;
 pub use rjit::{JitState, frozen_fun, jit_check, jit_inherit};
+mod slow;
+use slow::{Kind, Slow, arith_slow, leaf_op_slow, math1_slow};
 
 #[derive(Clone)]
 pub enum RVal {
@@ -1099,68 +1101,6 @@ fn str_eq_fast(op: RelOp, a: &RVal, b: &RVal) -> Option<RVal> {
     }))
 }
 
-/// An attribute-free complex, double, integer or logical scalar as a
-/// complex number (R: coerce.c:ComplexFromReal etc.), and whether it is
-/// complex.
-fn cplx_scalar(v: &RVal) -> Option<(Complex, bool)> {
-    Some(match v {
-        RVal::D(x) => (Complex::new(*x, 0.0), false),
-        RVal::I(x) | RVal::L(x) => (Complex::new(int_to_real(*x), 0.0), false),
-        RVal::V(Value::Cplx(z)) if z.data.len() == 1 && z.attrs.is_none() => (z.data[0], true),
-        _ => return None,
-    })
-}
-
-/// `x op y` for scalars, at least one complex, as `complex_binary`
-/// computes it (R: complex.c:complex_binary; nothing to warn about).
-fn complex_op(op: ArithOp, (x, cx): (Complex, bool), (y, cy): (Complex, bool)) -> Option<RVal> {
-    use crate::builtins::complex::{cdiv, cmul, cpow};
-    if !(cx || cy) {
-        return None;
-    }
-    let z = match op {
-        ArithOp::Plus => Complex::new(x.re + y.re, x.im + y.im),
-        ArithOp::Minus => Complex::new(x.re - y.re, x.im - y.im),
-        // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
-        ArithOp::Times => cmul(x, y),
-        ArithOp::Div => cdiv(x, y),
-        ArithOp::Pow => cpow(x, y),
-        ArithOp::Mod | ArithOp::IDiv => return None,
-    };
-    Some(RVal::V(Value::cplx(z)))
-}
-
-/// [`complex_op`] on two registers.
-#[inline(never)]
-fn complex_regs(op: ArithOp, x: &RVal, y: &RVal) -> Option<RVal> {
-    complex_op(op, cplx_scalar(x)?, cplx_scalar(y)?)
-}
-
-/// [`complex_op`] on two leaves, read without running code.
-#[inline(never)]
-fn complex_leaves(op: ArithOp, vars: &mut Vars<'_>, env: &Env, regs: &[RVal], a: &Leaf, b: &Leaf) -> Option<RVal> {
-    let mut read = |l: &Leaf| match l {
-        Leaf::D(x) => Some((Complex::new(*x, 0.0), false)),
-        Leaf::I(x) => Some((Complex::new(int_to_real(*x), 0.0), false)),
-        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot).and_then(cplx_scalar),
-        Leaf::R(r) => cplx_scalar(&regs[*r as usize]),
-    };
-    let x = read(a)?;
-    let y = read(b)?;
-    complex_op(op, x, y)
-}
-
-/// `abs(z)` of an attribute-free complex scalar: its modulus.
-#[inline(never)]
-fn complex_abs(f: Math1, x: &RVal) -> Option<RVal> {
-    match x {
-        RVal::V(Value::Cplx(z)) if f == Math1::Abs && z.data.len() == 1 && z.attrs.is_none() => {
-            Some(RVal::D(z.data[0].re.hypot(z.data[0].im)))
-        }
-        _ => None,
-    }
-}
-
 /// Unboxed `sqrt(x)` etc.; `None` where the builtin must run (it warns
 /// about NaNs produced, or the input is not a plain number).
 fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
@@ -1425,181 +1365,6 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
     let argv: Vec<Arg> = args.into_iter().map(|r| Arg::pos(r.into_value())).collect();
     let r = interp.invoke_builtin(b, call, argv, env);
     signal(interp, r)
-}
-
-/// `x * y` (the builtin is about to compute it into register `dst` for
-/// operands that are not both scalars) when the next op adds it to, or
-/// subtracts it from or from, an operand already at hand (a register, a
-/// constant, or a variable read without running code): for attribute-free
-/// double vectors of one length `n` (or scalars) both in one pass, each
-/// element multiplied and then added as the two builtins would (never a
-/// fused multiply-add), into a temporary operand's buffer when one is
-/// unshared. Double arithmetic signals nothing, so reading that operand
-/// before multiplying is not observable. Returns the next op's destination
-/// and value, or the operands back.
-#[cold]
-#[inline(never)]
-#[allow(clippy::too_many_arguments)]
-fn mul_add_next(
-    code: &Code,
-    pc: usize,
-    dst: Reg,
-    x: RVal,
-    y: RVal,
-    vars: &mut Vars<'_>,
-    env: &Env,
-    regs: &mut [RVal],
-) -> Result<(Reg, Value), (RVal, RVal)> {
-    // How the product combines with the other operand `c`.
-    let (out, kind, other): (Reg, u8, Result<Reg, Leaf>) = match code.ops.get(pc) {
-        Some(Op::Arith { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a, b, .. }) if *a == dst && *b != dst => {
-            (*o, if *op == ArithOp::Plus { MA_ADD } else { MA_SUB }, Ok(*b))
-        }
-        Some(Op::Arith { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a, b, .. }) if *b == dst && *a != dst => {
-            (*o, if *op == ArithOp::Plus { MA_RADD } else { MA_RSUB }, Ok(*a))
-        }
-        Some(Op::ArithL { op: op @ (ArithOp::Plus | ArithOp::Minus), dst: o, a: Leaf::R(r), b, g, .. })
-            if *r == dst && *g == NO_GUARD && !matches!(b, Leaf::R(_)) =>
-        {
-            (*o, if *op == ArithOp::Plus { MA_ADD } else { MA_SUB }, Err(*b))
-        }
-        _ => return Err((x, y)),
-    };
-    let c = match other {
-        Ok(r) => std::mem::replace(&mut regs[r as usize], RVal::I(0)),
-        Err(Leaf::D(v)) => RVal::D(v),
-        Err(Leaf::Var(sym, slot)) => match read_var(vars, env, sym, slot) {
-            Some(v) => v.clone(),
-            None => return Err((x, y)),
-        },
-        Err(_) => return Err((x, y)),
-    };
-    fn len(v: &RVal) -> Option<usize> {
-        match v {
-            RVal::D(_) => Some(1),
-            RVal::V(Value::Real(r)) if r.attrs.is_none() => Some(r.data.len()),
-            _ => None,
-        }
-    }
-    let lens = (len(&x), len(&y), len(&c));
-    let (Some(lx), Some(ly), Some(lc)) = lens else {
-        if let Ok(r) = other {
-            regs[r as usize] = c;
-        }
-        return Err((x, y));
-    };
-    let n = lx.max(ly).max(lc);
-    if n < 2 || [lx, ly, lc].iter().any(|&l| l != 1 && l != n) {
-        if let Ok(r) = other {
-            regs[r as usize] = c;
-        }
-        return Err((x, y));
-    }
-    let (mut x, mut y, mut c) = (x, y, c);
-    // An unshared temporary of length n takes the result.
-    let reuse = |v: &mut RVal| -> Option<Rc<Vector<f64>>> {
-        match v {
-            RVal::V(Value::Real(r)) if r.data.len() == n && Rc::strong_count(r) == 1 && Rc::weak_count(r) == 0 => {
-                match std::mem::replace(v, RVal::I(0)) {
-                    RVal::V(Value::Real(r)) => Some(r),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    };
-    let (mut buf, which) = match reuse(&mut c) {
-        Some(b) => (b, 2),
-        None => match reuse(&mut x) {
-            Some(b) => (b, 0),
-            None => match reuse(&mut y) {
-                Some(b) => (b, 1),
-                None => (Rc::new(Vector { data: Vec::with_capacity(n), attrs: None }), 3),
-            },
-        },
-    };
-    let v = Rc::get_mut(&mut buf).unwrap();
-    if which == 3 {
-        // SAFETY: every element is written below before it is read.
-        unsafe { v.data.set_len(n) };
-    }
-    let p = v.data.as_mut_ptr();
-    let src = |w: usize, r: &RVal| -> (*const f64, bool) {
-        if w == which {
-            return (p as *const f64, false);
-        }
-        match r {
-            RVal::D(d) => (d as *const f64, true),
-            RVal::V(Value::Real(r)) => (r.data.as_ptr(), r.data.len() == 1),
-            _ => unreachable!(),
-        }
-    };
-    let (xs, ys, cs) = (src(0, &x), src(1, &y), src(2, &c));
-    // SAFETY: each source is `n` elements long or a scalar, `p` holds `n`
-    // elements; a source aliasing `p` is read at `i` before `i` is written.
-    unsafe { mul_add_dispatch(p, n, xs, ys, cs, kind) };
-    Ok((out, Value::Real(buf)))
-}
-
-const MA_ADD: u8 = 0;
-const MA_SUB: u8 = 1;
-const MA_RADD: u8 = 2;
-const MA_RSUB: u8 = 3;
-
-/// `out[i] = x[i] * y[i] OP c[i]` (`K`: `MA_*`, the operand order of R's
-/// expression), with scalar sources (`S*`) read at index 0.
-#[inline(always)]
-unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K: u8>(
-    out: *mut f64,
-    n: usize,
-    x: *const f64,
-    y: *const f64,
-    c: *const f64,
-) {
-    for i in 0..n {
-        unsafe {
-            let a = if SX { *x } else { *x.add(i) };
-            let b = if SY { *y } else { *y.add(i) };
-            let z = if SC { *c } else { *c.add(i) };
-            let m = a * b;
-            *out.add(i) = match K {
-                MA_ADD => m + z,
-                MA_SUB => m - z,
-                MA_RADD => z + m,
-                _ => z - m,
-            };
-        }
-    }
-}
-
-unsafe fn mul_add_dispatch(
-    out: *mut f64,
-    n: usize,
-    (x, sx): (*const f64, bool),
-    (y, sy): (*const f64, bool),
-    (c, sc): (*const f64, bool),
-    kind: u8,
-) {
-    macro_rules! k {
-        ($sx:literal, $sy:literal, $sc:literal) => {
-            match kind {
-                MA_ADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_ADD>(out, n, x, y, c) },
-                MA_SUB => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_SUB>(out, n, x, y, c) },
-                MA_RADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RADD>(out, n, x, y, c) },
-                _ => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RSUB>(out, n, x, y, c) },
-            }
-        };
-    }
-    match (sx, sy, sc) {
-        (false, false, false) => k!(false, false, false),
-        (false, false, true) => k!(false, false, true),
-        (false, true, false) => k!(false, true, false),
-        (false, true, true) => k!(false, true, true),
-        (true, false, false) => k!(true, false, false),
-        (true, false, true) => k!(true, false, true),
-        (true, true, false) => k!(true, true, false),
-        (true, true, true) => k!(true, true, true),
-    }
 }
 
 /// Does `sym`, looked up as a function from `env`, still resolve to base?
@@ -2861,7 +2626,7 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $op:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -2882,10 +2647,7 @@ fn run_with(
             let y = leaf_num(&mut vars, env, &regs, $b);
             let fast = match (x, y) {
                 (Some(x), Some(y)) => $fast(x, y),
-                _ => match $op {
-                    Some(op) => complex_leaves(op, &mut vars, env, &regs, $a, $b),
-                    None => None,
-                },
+                _ => None,
             };
             regs[dst] = match fast {
                 Some(v) => {
@@ -2899,24 +2661,14 @@ fn run_with(
                 }
                 None => {
                     flush!();
-                    let x = tryop!(leaf_value(interp, &mut vars, env, regs, $a));
-                    let y = tryop!(leaf_value(interp, &mut vars, env, regs, $b));
-                    // Operands that needed evaluating (forced promises) are
-                    // usually scalars.
-                    match (scalar(&x), scalar(&y)) {
-                        (Some(p), Some(q)) => match $fast(p, q) {
-                            Some(v) => v,
-                            None => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
-                        },
-                        _ if $op == Some(ArithOp::Times) => match mul_add_next(code, pc, dst as Reg, x, y, &mut vars, env, regs) {
-                            Ok(out) => {
-                                pc += 1;
-                                regs[out.0 as usize] = RVal::V(out.1);
-                                continue;
-                            }
-                            Err((x, y)) => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
-                        },
-                        _ => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
+                    let r = leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs);
+                    match tryop!(r) {
+                        Slow::Val(v) => v,
+                        Slow::Next(r, v) => {
+                            pc += 1;
+                            regs[r as usize] = v;
+                            continue;
+                        }
                     }
                 }
             };
@@ -3022,7 +2774,7 @@ fn run_with(
             Op::Arith { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
                     (Some(x), Some(y)) => arith_fast(*op, x, y),
-                    _ => complex_regs(*op, &regs[*a as usize], &regs[*b as usize]),
+                    _ => None,
                 };
                 regs[*dst as usize] = match fast {
                     Some(v) => {
@@ -3033,29 +2785,23 @@ fn run_with(
                     }
                     None => {
                         flush!();
-                        let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
-                        let y = std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null));
-                        let (x, y) = if *op == ArithOp::Times {
-                            match mul_add_next(code, pc, *dst, x, y, &mut vars, env, regs) {
-                                Ok(out) => {
-                                    pc += 1;
-                                    regs[out.0 as usize] = RVal::V(out.1);
-                                    continue;
-                                }
-                                Err(xy) => xy,
+                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, &mut vars, env, regs);
+                        match tryop!(r) {
+                            Slow::Val(v) => v,
+                            Slow::Next(r, v) => {
+                                pc += 1;
+                                regs[r as usize] = v;
+                                continue;
                             }
-                        } else {
-                            (x, y)
-                        };
-                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
+                        }
                     }
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Some(*op));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call));
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), None::<ArithOp>);
+                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), Kind::Rel(*op, *call));
             }
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
@@ -3418,10 +3164,7 @@ fn run_with(
                 };
             }
             Op::Math1 { f, dst, a, call } => {
-                regs[*dst as usize] = match scalar(&regs[*a as usize])
-                    .and_then(|x| math1_fast(*f, x))
-                    .or_else(|| complex_abs(*f, &regs[*a as usize]))
-                {
+                regs[*dst as usize] = match scalar(&regs[*a as usize]).and_then(|x| math1_fast(*f, x)) {
                     Some(v) => {
                         regs[*a as usize] = RVal::I(0);
                         v
@@ -3429,7 +3172,7 @@ fn run_with(
                     None => {
                         flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
-                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
+                        tryop!(math1_slow(interp, *f, x, &code.consts[*call as usize], env))
                     }
                 };
             }
