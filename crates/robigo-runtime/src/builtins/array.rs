@@ -655,7 +655,15 @@ fn cmul_nonfinite(a: Complex, b: Complex, reverse: bool) -> Complex {
 }
 
 #[inline(never)]
-fn cprod(op: u8, x: &[Complex], nrx: usize, ncx: usize, y: &[Complex], nry: usize, ncy: usize) -> Vec<Complex> {
+pub(crate) fn cprod(
+    op: u8,
+    x: &[Complex],
+    nrx: usize,
+    ncx: usize,
+    y: &[Complex],
+    nry: usize,
+    ncy: usize,
+) -> Vec<Complex> {
     // R: array.c:cmatprod/ccrossprod/tccrossprod use the plain BLAS
     // product for finite inputs, reserving C99 recovery for nonfinite data.
     if x.iter().chain(y).all(|z| z.re.is_finite() && z.im.is_finite()) {

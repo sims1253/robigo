@@ -581,7 +581,7 @@ fn integer_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: &Value, y: 
 
 /// `a op b` on complex vectors with R's recycling (R:
 /// complex.c:complex_binary).
-fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize) -> RResult<Vec<Complex>> {
+pub(crate) fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize) -> RResult<Vec<Complex>> {
     use super::complex::{cadd, cdiv, cmul, cpow, csub, zip_unrolled};
     Ok(match op {
         // GCC commuted the compiled adds (the second operand's NaN payload
