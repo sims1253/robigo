@@ -130,7 +130,6 @@ pub static STUBS: &[&str] = &[
     "R_IsPackageEnv",
     "R_PackageEnvName",
     "R_ReadConsole",
-    "R_SelectEx",
     "R_ShowMessage",
     "R_SignalCStackOverflow",
     "R_Unserialize",
@@ -189,7 +188,6 @@ pub static STUBS: &[&str] = &[
     "Rf_con_pushback",
     "Rf_csduplicated",
     "Rf_curDevice",
-    "Rf_currentTime",
     "Rf_formatComplex",
     "Rf_formatReal",
     "Rf_killDevice",
@@ -235,7 +233,6 @@ pub static STUBS: &[&str] = &[
     "getPRIMNAME",
     "locale2charset",
     "mbcsValid",
-    "parseError",
     "utf8Valid",
     "utf8clen",
 ];
@@ -881,11 +878,6 @@ pub unsafe extern "C" fn R_ReadConsole() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_SelectEx() {
-    not_implemented("R_SelectEx")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
     not_implemented("R_ShowMessage")
 }
@@ -1179,11 +1171,6 @@ pub unsafe extern "C" fn Rf_curDevice() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_currentTime() {
-    not_implemented("Rf_currentTime")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_formatComplex() {
     not_implemented("Rf_formatComplex")
 }
@@ -1412,11 +1399,6 @@ pub static mut max_contour_segments: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mbcsValid() {
     not_implemented("mbcsValid")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn parseError() {
-    not_implemented("parseError")
 }
 
 #[unsafe(no_mangle)]

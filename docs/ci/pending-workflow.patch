@@ -29,7 +29,7 @@ index a809413..e1d165e 100644
 +          key: r-4.5.0-sources
 +      - name: Base-package natives
 +        run: |
-+          scripts/build-natives.sh stats
++          scripts/build-natives.sh stats splines tools parallel
 +          echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
        - name: Unit tests, parser oracle, conformance (all tiers)
          run: cargo test --release --workspace

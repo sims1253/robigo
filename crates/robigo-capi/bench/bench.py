@@ -20,7 +20,7 @@ UID = f"{os.getuid()}:{os.getgid()}"
 
 
 def docker(args, cwd):
-    return subprocess.run(["docker", "run", "--rm", "-u", UID, "-e", "HOME=/tmp", "-e", "LC_ALL=C.UTF-8",
+    return subprocess.run(["docker", "run", "--rm", "--memory", "4g", "--memory-swap", "4g", "-u", UID, "-e", "HOME=/tmp", "-e", "LC_ALL=C.UTF-8",
                            "-e", "R_DEFAULT_PACKAGES=NULL", "-v", f"{cwd}:{cwd}", "-w", cwd,
                            "robigo-oracle:4.5.0"] + args, capture_output=True, text=True)
 
