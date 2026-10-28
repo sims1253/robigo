@@ -1427,23 +1427,42 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
     }
     let Some(mut cur) = env.parent() else { return false };
     let mut depth = 1;
+    // Whether every environment past `env`'s parent, up to where the lookup
+    // stops, is locked (namespaces, their imports, the base namespace): it
+    // cannot gain a binding, so the outcome depends only on the parent's
+    // function bindings and `env`'s own. (GNU R's namespace code is
+    // compiled with base functions inlined anyway.)
+    let mut locked_above = true;
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
-            return interp.resolves_to_base(sym, env);
+            let ok = interp.resolves_to_base(sym, env);
+            if locked_above {
+                // Frames of namespace closures: memoize the namespace.
+                let (outer, outer_version) = match &*env.parent_ref() {
+                    Some(p) => (p.id(), p.fn_version()),
+                    None => (0, 0),
+                };
+                memo.set(GuardMemo { epoch, env: 0, version: 0, search: 0, ok, outer, outer_version });
+            }
+            return ok;
         }
         cur = match cur.parent() {
             Some(p) => p,
             None => return false,
         };
         depth += 1;
+        if !cur.is_search() && !cur.0.locked.get() {
+            locked_above = false;
+        }
     }
     let ok = if m.epoch == epoch && m.search == cur.id() { m.ok } else { interp.resolves_to_base(sym, &cur) };
     // The per-environment memo is only sound when no frame other than
     // `env` lies between it and the search path.
     let (env_id, version) = if depth <= 1 { (env.id(), env.fn_version()) } else { (0, 0) };
-    // Two frames below the search path: memoize the outer one.
+    // Two frames below the search path, or more with locked ones between:
+    // memoize the outer one.
     let (outer, outer_version) = match &*env.parent_ref() {
-        Some(p) if depth == 2 => (p.id(), p.fn_version()),
+        Some(p) if depth == 2 || locked_above => (p.id(), p.fn_version()),
         _ => (0, 0),
     };
     memo.set(GuardMemo { epoch, env: env_id, version, search: cur.id(), ok, outer, outer_version });
