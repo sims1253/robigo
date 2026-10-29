@@ -6,6 +6,35 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 7, setter baseline and native CSV split
+
+- Baseline: main f668f60, saved binary `.robigo/r7/main`. A new Debian
+  GNU R 4.5.0-3 oracle explicitly compares interpreted and compiled
+  setters. Main matches **8/14** cases. Four compiled `[<-` cases lose
+  the RHS expression; two `[[<-` cases expose an unresolved
+  `<current-expression>` marker. The candidate resolves both in the
+  assignment helper before handlers run. Verification is in progress.
+- Reanalyzed the saved round 6 native CSV callgrind profile, total
+  1,933,306,497 instructions. Inclusive totals (nested, do not add):
+  writetable 1,043,869,788 (53.99%), Rconn_printf 713,041,782 (36.88%),
+  m_vfprintf 697,441,782 (36.08%), EncodeElement2 307,843,439 (15.92%),
+  Rf_EncodeElement0 283,673,719 (14.67%), typeconvert 66,451,525 (3.44%).
+  utils io.c:writetable emits each cell, separator and newline through
+  Rconn_printf("%s", ...). capi connections.rs:m_vfprintf calls vasprintf,
+  copies to a Vec, frees the allocation, and forwards the bytes.
+  Next experiment for core/startup: a literal-%s/%s%s bridge path that
+  avoids formatting and allocation, verified against connection and CSV
+  corpora. No edits to their files in this batch.
+- Unboxed promises still require shared Value/Promise storage changes:
+  both environment bindings and Context.promargs retain the promise.
+  A VM-only shortcut cannot remove the scalar allocation while preserving
+  escaping promises, parent.frame mutation, substitute/missing and the
+  methods context hooks. Agree on storage with core before implementation.
+- Rejected oracle launch: the host R wrapper ignores R_HOME, and the
+  copied R 4.5 executable loads the host 4.6 libR without its Debian
+  dependencies. Discarded those GNU R counts. Use robigo-oracle:4.5.0
+  for GNU R measurements; host robigo still uses the supplied R_HOME.
+
 ## 2026-10-30: native CSV cost and complete benchmark stream checks
 
 - Controlled CSV probe with the saved #60 CI binary and its flat cache:
