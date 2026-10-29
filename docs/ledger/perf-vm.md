@@ -22,7 +22,14 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Reuse `cadd`/`csub` for complex scalars. A new 99-case byte comparison
   also catches the recovered multiplication's stale operand order:
   `complex_binary` calls `cmul(y, x)`. Correct the scalar path accordingly.
-- Full paired performance and crate/conformance verification are running.
+- The packed candidate passes all crate tests (38 runtime, 7 CLI, two
+  integration tests) and conformance in all three tiers, but initially
+  regresses vector mandelbrot +0.526%/+0.539%. Inlining `math1_slow`
+  improves the scalar benchmark but leaves vectors +0.565%/+0.570%.
+- Reject non-double operands before calling `mul_add_next`, avoiding its
+  cold failed call for every complex-vector multiplication. Paired family
+  check now passes: ASCII +0.420%, noout +0.446%, naive ASCII -29.593%.
+  Full-suite remeasurement and final crate verification are running.
   Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
   private build target `~/.cache/robigo-trixie-target`.
 

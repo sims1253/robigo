@@ -100,7 +100,10 @@ fn arith_values(
             }
         }
     }
-    let (x, y) = if op == ArithOp::Times {
+    // Only plain doubles can enter the one-pass kernel. Reject other
+    // types here, before passing values through its cold out-of-line call.
+    let dbl = |v: &RVal| matches!(v, RVal::D(_)) || matches!(v, RVal::V(Value::Real(r)) if r.attrs.is_none());
+    let (x, y) = if op == ArithOp::Times && dbl(&x) && dbl(&y) {
         match mul_add_next(code, pc, dst, x, y, vars, env, regs) {
             Ok((r, v)) => return Ok(Slow::Next(r, RVal::V(v))),
             Err(xy) => xy,
@@ -113,7 +116,7 @@ fn arith_values(
 
 /// The slow path of `Math1` (after a flush): `abs` of a complex scalar is
 /// its modulus, anything else the builtin.
-#[inline(never)]
+#[inline]
 pub(super) fn math1_slow(interp: &mut Interp, f: Math1, x: RVal, call: &Value, env: &Env) -> RResult<RVal> {
     if let RVal::V(Value::Cplx(z)) = &x {
         if f == Math1::Abs && z.data.len() == 1 && z.attrs.is_none() {
