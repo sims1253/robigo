@@ -250,12 +250,18 @@ load both runtimes slow equally.
 
 ## Open items (ranked)
 
-1. **CHARSXP interning** (R: serialize.c ReadItem calls mkChar, which
-   interns in R's CHARSXP cache; robigo allocates a fresh `Rc<str>` per
-   read — repeated argument names like "x", "object" are re-allocated
-   hundreds of times per package). Needs a string cache with weak
-   entries or an arena; ~0.8M of memcpy is `Rc::from` copies in
-   read_charsxp alone, plus the allocations.
+1. **CHARSXP interning — measured, rejected (round 6).** A thread-local
+   `HashMap<Box<str>, Weak<str>>` (FxHash) in `read_charsxp`, mirroring
+   R: envir.c:mkCharLenCE's `R_StringHash`, made `library(stats)` from
+   NULL **slower**: flat 176.56M → 181.82M (+5.3M), plain 209.89M →
+   215.05M. The byte-at-a-time hash plus the `Box<str>` key copy (a
+   second allocation per miss) cost more than the saved `Rc` allocs;
+   the duplicate rate is too low for the early hits to pay for it.
+   Ceiling check: `read_charsxp` self + `from_utf8` + the string share
+   of malloc/drop is ~2-3M on this scenario — GNU R itself pays 7.6M in
+   `mkCharLenCE`, so robigo's fresh-`Rc`-per-read is already cheaper
+   than R's cache. Do not retry without open addressing with inline
+   keys (no `Box` copy, chunked hash); even then the ceiling is ~2M.
 2. **Symbol interner hashing** (`sym::Interner` uses SipHash; ~1.5M on
    def in sip+memcmp+memcpy during unserialize). FxHash it — but sym.rs
    is hot for every track; measure the perf suite, coordinate with
