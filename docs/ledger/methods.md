@@ -7,6 +7,65 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-29: round 4 — the reg-packages blank line; complex Math group; Rcpp sugar 493/493
+
+Branch `track/methods-install-newline` (PR #87), from main 74e8c73.
+
+- **The reg-packages blank line was `system(intern = TRUE)` swallowing the
+  child's stderr.** The line is `R CMD build`'s closing `message("")`
+  (tools' build.R, literally commented "blank line"): reg-packages runs
+  build via `system(..., intern = TRUE, ignore.stderr = FALSE)`, and GNU
+  R's do_system pipes stdout only (`R_popen(cmd, "r")`), leaving stderr
+  inherited. robigo's `Command::output()` piped stderr as well and
+  discarded it, so every intern child's stderr vanished. Fixed with
+  `Stdio::inherit()` on stderr; `tests/r/cli/system-intern.R` (recorded
+  against Debian R 4.5.0-3, seccomp unconfined) covers capture-passthrough,
+  `ignore.stderr`, `system2` variants and the status attribute+warning;
+  ratcheted. Verified end to end in the oracle container: robigo running
+  `R CMD build` as a child now shows the blank line.
+- **Re-measured Rcpp test_sugar (task b): the blocker was the complex
+  Math group, not statics/env ordering.** Fresh Rcpp 1.1.2 built inside
+  robigo against this worktree's home (tools.so from /tmp/m4/natives for
+  `Rmd5`); the mini-runner reproduced 176 passes then
+  "unimplemented complex function" aborting the file, at the
+  `runit_complex` expression — cos/sin/tan/acos/asin/atan/cosh/sinh/
+  tanh/asinh/atanh all lacked complex kernels (only log/exp/sqrt were
+  wired).
+- **Ported glibc 2.41's complex trig/hyperbolic kernels + R's wrappers**
+  (`complex.rs`): s_ccos/s_csin/s_ctan/s_ccosh/s_csinh/s_ctanh, the
+  k_casinh kernel, s_casinh/s_casin/s_cacos/s_catan, and complex.c's
+  z_tan/z_acos/z_asin/z_atan plus z_acosh/z_asinh/z_atanh as the
+  compiled `z_acos(z) * I` products (cmul/cadd — ri*0 propagates ri's
+  NaN into the real part, which the recorded bits show). Wired into
+  `math1_c_fn`; the NA/warning/attribute layer was already right.
+  Verified: (1) `scripts/oracle-complex-trig.c` recorded in the
+  robigo-oracle:4.5.0 container, 384,640 results compared bit-exactly
+  by the new `c_library_trig_oracle` unit test (CI green; on this host
+  1.5% of rows drift <=4 ULP — the glibc 2.44-vs-2.41 #47 category);
+  (2) the same transcription compiled in C inside the container matches
+  the container glibc's own functions over 18M inputs, 0 diffs;
+  (3) `tests/r/math/complex-trig.R` recorded from Debian R 4.5.0-3
+  (values at 15 digits, warnings, NA, unimplemented names verbatim,
+  log10/log2/logb, names attribute) passes in all tiers on this host;
+  (4) host GNU R 4.5.0 vs robigo: 135-value bit probe identical.
+- **`Rf_revsort`** was a gen-stubs.py stub although sort.rs implements
+  the heap sort as `revsort`; Utils.h renames revsort to Rf_revsort, so
+  packages (Rcpp sugar sort) call the Rf_ name. Exported both names.
+- **Rcpp results (mini tinytest runner, one process per file):**
+  test_sugar 176 -> **493/493, identical PASS sequence to GNU R**;
+  whole suite 1,101/13 (round 2, one crash then) -> **1,612 pass /
+  12 fail**, no crashes (GNU R: 1,624/4). Remaining fails:
+  listof 2, matrix 3, misc 1, s4 2, string 1, vector 3.
+- Regression checks: S4 slice **644/662** (0 regressions), gnur-examples
+  methods/stats4 **43/50** (0 regressions), conformance-values slice
+  (incl. all complex cases) 10,496/10,501 (0 regressions); full
+  conformance suite green; PR #87 CI: build (unit tests incl. the new
+  bit oracles), 4 fastr shards + all other corpora, perf — all SUCCESS.
+- Machine notes: glibc 2.41 sources for the ported templates live at
+  `~/.cache/robigo-research/glibc/glibc-2.41/math/`; the oracle C program
+  is in the repo (`scripts/oracle-complex-trig.c`), re-record inside
+  robigo-oracle:4.5.0 only.
+
 ## Hook contract (for the VM and other evaluator paths)
 
 S4 lives in `crates/robigo-runtime/src/s4.rs` (evaluator side: GNU R's
