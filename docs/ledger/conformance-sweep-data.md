@@ -1,5 +1,24 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): closure bytecode identity
+
+- R: print.c:PrintClosure. Print the bytecode line from GNU R's visible
+  JIT state, independently of robigo's eager execution bytecode.
+- Preserve BCODESXP identity when serialize.c:ReadItem's closure body is
+  reduced to its source expression. The JitState helper initializes it
+  as already compiled. No changes to vm.rs or the object layout.
+- Former blocker slice (all mget/get/syscall/ConditionHandling cases):
+  **131/139 -> 131/139**, identical per-case outcomes. Sys.getenv passes
+  under all six synthetic environments with bytecode printing enabled.
+- Focused help examples **1/4 -> 3/4**: base/get and base/match gained,
+  Sys.getenv held; base/identical still errors on missing bcVersion.
+  Both gains were absorbed into the ratchet. TestBuiltin_exists holds
+  at **279/279**, including one pre-existing unrecorded pass.
+- New closure-bytecode.R was recorded in robigo-oracle:4.5.0. It matches
+  stdout, stderr and status under the interpreter, VM and JIT (3/3).
+- Shared files: print.rs closure branch, serialize.rs body tag, vm/rjit.rs
+  two small state accessors. The evaluator/VM execution files are untouched.
+
 ## 2026-10-29 (round 5): environment-independent Sys.getenv recording
 
 - Started from main `24a5b8e` on `track/conformance-sweep-data-5`.

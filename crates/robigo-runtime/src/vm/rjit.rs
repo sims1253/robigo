@@ -62,6 +62,17 @@ const IGNORE: u64 = 5;
 pub struct JitState(Cell<u64>);
 
 impl JitState {
+    /// R: serialize.c:ReadItem preserves a BCODESXP closure body.
+    pub fn from_bytecode() -> Self {
+        Self(Cell::new(INHERITED))
+    }
+
+    /// R: print.c:PrintClosure tests isByteCode(BODY(s)), independently
+    /// of robigo's eager execution bytecode.
+    pub fn is_bytecode(&self) -> bool {
+        matches!(self.0.get() & 0xff, INHERITED | COMPILED)
+    }
+
     /// Calls still have to go through [`jit_check`].
     #[inline(always)]
     pub fn unsettled(&self) -> bool {
