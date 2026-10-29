@@ -8,12 +8,8 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "R_ClosureFormals",
     "R_mkClosure",
-    "R_ClosureEnv",
     "R_PromiseExpr",
-    "R_ClosureBody",
-    "R_ClosureExpr",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
     "R_AllocStringBuffer",
@@ -97,33 +93,13 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureFormals() {
-    not_implemented("R_ClosureFormals")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_mkClosure() {
     not_implemented("R_mkClosure")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureEnv() {
-    not_implemented("R_ClosureEnv")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_PromiseExpr() {
     not_implemented("R_PromiseExpr")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureBody() {
-    not_implemented("R_ClosureBody")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureExpr() {
-    not_implemented("R_ClosureExpr")
 }
 
 #[unsafe(no_mangle)]
