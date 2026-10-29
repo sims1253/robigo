@@ -27,10 +27,13 @@
 //! `with_entry` serves an entry as a zero-copy slice; a missing or stale
 //! cache falls back to the per-fetch path, so behaviour is byte-identical
 //! either way (entries the battery did not record take that path too).
-//! Enabled by pointing `ROBIGO_RDBFLAT` at the cache directory; absent,
-//! the module costs one `getenv` per process. Flat files are read lazily,
-//! one at the first fetch from their rdb — a NULL-packages run reads
-//! base.rdb's cache and nothing else.
+//! Enabled by pointing `ROBIGO_RDBFLAT` at the cache directory, or, when
+//! that is unset, by a `rdbflat/` directory beside the executable's
+//! parent's parent (`.robigo/bin/robigo`, `.robigo/rdbflat` — the layout
+//! `scripts/build-rdbflat.sh` writes, as `scripts/build-natives.sh` does
+//! for natives); absent, the module costs a `getenv` and a `read_dir`.
+//! Flat files are read lazily, one at the first fetch from their rdb —
+//! a NULL-packages run reads base.rdb's cache and nothing else.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -87,10 +90,23 @@ fn u32_at(b: &[u8], off: usize) -> u32 {
 }
 
 impl Cache {
-    /// Read the flat directory: each file's header only.
+    /// Read the flat directory: each file's header only. `$ROBIGO_RDBFLAT`
+    /// names it; unset, `rdbflat/` beside the executable's parent's parent
+    /// (`.robigo/bin/robigo` → `.robigo/rdbflat`) is used when present.
     fn open() -> Cache {
+        let dir = match std::env::var_os("ROBIGO_RDBFLAT") {
+            Some(d) => PathBuf::from(d),
+            None => {
+                let Some(dir) = std::env::current_exe().ok().and_then(|e| {
+                    let root = e.parent().and_then(|p| p.parent())?;
+                    Some(root.join("rdbflat"))
+                }) else {
+                    return Cache { claims: HashMap::new(), loaded: HashMap::new() };
+                };
+                dir
+            }
+        };
         let mut claims = HashMap::new();
-        let Some(dir) = std::env::var_os("ROBIGO_RDBFLAT") else { return Cache { claims, loaded: HashMap::new() } };
         let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::new() } };
         for e in entries.flatten() {
             // the header: magic, guard, path (the path starts at byte 32)

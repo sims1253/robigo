@@ -57,6 +57,14 @@ jobs:
         run: |
           scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
           echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
+      # The flat lazy-load cache (rdbflat.rs): startup stops inflating a
+      # zlib stream per lazyLoadDBfetch. Built by a battery that forces
+      # every lazy binding of every base package (complete coverage).
+      - name: Flat lazy-load cache
+        run: |
+          mkdir -p .robigo/bin
+          cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" .robigo/bin/robigo
+          scripts/build-rdbflat.sh
       - name: Unit tests, parser oracle, conformance (all tiers)
         run: cargo test --release --workspace
       - name: Core and C API under gctorture (collect on every allocation)
@@ -71,6 +79,7 @@ jobs:
           for d in .robigo/natives/*/; do
             p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d$p.so" "dist/natives/$p/"
           done
+          cp -r .robigo/rdbflat dist/rdbflat
       - uses: actions/upload-artifact@v4
         with:
           name: robigo
@@ -109,6 +118,7 @@ jobs:
       - name: Run ${{ matrix.corpus }} (${{ matrix.shard }})
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
             --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Name the results
@@ -140,6 +150,7 @@ jobs:
       - name: Measure robigo (and GNU R on main)
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           export VALGRIND=valgrind
           runtime=robigo
           [ "${{ github.ref }}" = refs/heads/main ] && runtime=both
