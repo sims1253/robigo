@@ -1617,8 +1617,12 @@ fn run_inline_with(
     }
     let mut regs_buf: SmallVec<[RVal; 16]> = SmallVec::new();
     let mut slots_buf: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
-    regs_buf.reserve_exact(code.nregs);
-    slots_buf.reserve_exact(code.vars.len());
+    if code.nregs > regs_buf.inline_size() {
+        regs_buf.reserve_exact(code.nregs);
+    }
+    if code.vars.len() > slots_buf.inline_size() {
+        slots_buf.reserve_exact(code.vars.len());
+    }
     // Initialized in place (see `run_pre`).
     unsafe {
         let p = regs_buf.as_mut_ptr();

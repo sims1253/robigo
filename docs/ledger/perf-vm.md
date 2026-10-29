@@ -6,6 +6,22 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: inline closure buffers skip reservation calls
+
+- Baseline: recovered #60, df9b0dc, current thin-LTO profile.
+- run_inline_with unconditionally calls SmallVec::reserve_exact twice,
+  even when its fresh stack buffers already fit the registers and slots.
+  Gate these calls on inline capacity, as run_pre already does.
+- A VM loop with native JIT disabled, f(x) = x + 1, measured by 20,000
+  minus 10,000 iterations, costs **1,223 -> 1,160 instructions/iteration**
+  (-5.1%). Each reserve helper used 28 instructions per iteration; both
+  disappear. No allocator request is removed: these buffers already fit.
+- Focused suite: spectralnorm_naive **1,002,483,620 -> 989,534,349**
+  instructions (-1.292%). fib, binarytrees and profiler-microbenchmark
+  change by at most +0.009%, within startup variation.
+- Full suite, crate tests and independent benchmark outputs are running.
+  Artifacts: .robigo/r6/inline-reserve*, inline-calls-{base,after}.txt.
+
 ## 2026-10-29: round 6 follow-up, recursive argument allocations
 
 - After #60, the paired suite has no correct benchmark slower than GNU R
@@ -40,7 +56,7 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Next: agree on unboxed forced-promise storage with core, then measure the
   same per-call instruction/allocator deltas and rerun introspection,
   promise, closure-context and full conformance tests before a separate PR.
-  No allocation implementation is kept in this follow-up.
+  The boxed-scalar/promise allocation change needs core coordination.
 
 ## 2026-10-29: round 6, recover #60 on the current profile
 
@@ -82,7 +98,13 @@ conformance` (interpreter, VM and VM+JIT against each other).
   two integration tests, all three conformance/guard checks. Formatting
   and source diff checks pass (verbatim oracle .Rout whitespace excluded).
   Independent benchmark outputs remain 77/78 before and after, with the
-  known spectralnorm_math mismatch excluded. CI is running on df9b0dc.
+  known spectralnorm_math mismatch excluded. CI run 40962356010 on df9b0dc passes build, all ten corpus shards,
+  and performance. #60 is Ready for review. CI paired geomean is
+  0.456939 -> 0.454816 GNU R, 73/77 -> 74/77 faster; naive ASCII -29.821%,
+  vector ASCII +0.363%, noout +0.389%, no gate regressions. CI still has
+  flexclust, flexclust_no_s4 and csv slower than GNU R (unlike this host).
+  Local focused FastR arithmetic/operators: 1,057/1,058 before and after,
+  zero regressions.
   Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
   private build target `~/.cache/robigo-trixie-target`.
 
