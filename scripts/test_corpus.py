@@ -43,7 +43,7 @@ class GcNormalization(unittest.TestCase):
                   b'Ncells 340001 18.2 707788 37.8 615097 32.9\n'
                   b'Vcells 610351 4.7 8388608 64.0 1973852 15.1\n')
         runtime = (b'[1] "finalizer: 456"\n'
-                   b'         used (Mb) gc trigger (Mb) max used (Mb)\n'
+                   b'       used (Mb) gc trigger (Mb) max used (Mb)\n'
                    b'Ncells NA NA NA NA NA NA\nVcells NA NA NA NA NA NA\n')
         self.assertEqual(corpus.normalize(oracle), corpus.normalize(runtime))
         self.assertNotEqual(corpus.normalize(oracle), corpus.normalize(runtime.replace(b'456', b'123')))
