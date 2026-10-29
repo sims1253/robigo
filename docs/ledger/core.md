@@ -11,7 +11,7 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
-## 2026-10-29: round 5 encoding window (in progress)
+## 2026-10-29: round 5 encoding window: raw-byte increment
 
 - Baseline 74e8c73: charToRaw("\304") returns c3 84 instead of c4;
   rawToChar(as.raw(196), TRUE) errors. Focused fastr rawToChar/charToRaw/
@@ -23,7 +23,7 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   files are mechanical adaptations to RString. Shared env/compile edits
   only adapt their string fields and constructors.
 - The handed ELF marker-reader correction already exists in main, with
-  native::tests::marker_in_dynamic_string_table. No duplicate fix needed.
+  native::tests::native_marker_with_distinct_file_and_virtual_addresses. No duplicate fix needed.
 - Environment finalizers remain open: do_reg_finalizer currently discards
   registrations and runtime closure/environment cycles are not collected.
   Needs runtime reachability integrated with core weakref finalizers;
@@ -990,3 +990,28 @@ into the build).
   validation and prefix-window bounds checks. Next candidate uses the
   known UTF-8 invariant of Rust strings and the structural-byte invariant
   of RString to avoid those checks; measurement follows.
+- Hershey demo: 0/1 -> 1/1; stdout, stderr and status match the oracle.
+  Recorded the new pass. It now gets through rawToChar(multiple = TRUE).
+- CI build for aaad964 passes in Debian, including the numeric oracle
+  that differs on this host. The new constructor optimization is pending
+  local release verification and its own CI run.
+
+### Round 5 final constructor verification
+
+- Kept optimized window: string workload 75,331,679 -> 75,403,997
+  instructions (+0.096%, within the 0.5% limit); default-package startup
+  518,619,492 -> 513,864,994 (-0.917%). Outputs match in both profiles.
+  Profiles are /tmp/core-{before,optimized}.callgrind and
+  /tmp/core-startup-{before,optimized}.callgrind. Both binaries use the
+  same R_HOME and native package set for startup.
+- String workload (R_DEFAULT_PACKAGES=NULL): x <- rep("abc", 1000);
+  for (i in 1:100) y <- paste(x, collapse=""); print(nchar(y)).
+  Startup: default packages, -e 1. Both run with valgrind --tool=callgrind.
+- Optimized runtime tests: 36/36 pass with the already reproduced host
+  complex sqrt oracle excluded (the unfiltered run is 36/37); C API
+  integration 2/2 and runtime integration 2/2 pass. Exhaustive byte/mark
+  tests also pass as a standalone optimized rustc test of the same source.
+- Remaining work belongs in follow-up core batches: environment-cycle
+  reachability and finalizers; syntax encoding marks for valid octal/hex
+  UTF-8 literals; byte-aware iconv/useBytes/nchar and connection consumers.
+  No finalizer behavior is claimed by this PR.
