@@ -671,7 +671,10 @@ impl<'a, 'i> Reader<'a, 'i> {
                     ATTRLISTSXP => (LISTSXP, true),
                     t => (t, false),
                 };
-                let mut spine: Vec<Level> = Vec::new();
+                // Chains are short (a call's spine is its argument count);
+                // inline storage keeps the common case allocation-free,
+                // where a growing Vec paid realloc + copy per few cells.
+                let mut spine: smallvec::SmallVec<[Level; 8]> = smallvec::SmallVec::new();
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
