@@ -11,6 +11,25 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 3 landing preparation
+
+- Rebased graphics onto main 7ff8a140. Preserved main's STORED sweep and
+  proxy PINNED roots alongside graphics' ownership cleanup and proxy
+  attributes. No graphics algorithms changed; code-layout performance
+  noise remains assigned to the release-profile work.
+- Built grDevices, graphics and grid using GNU R 4.5.0's sources in
+  robigo-build:4.5.0. The shared Cargo target contains root-owned files;
+  local Rust verification uses ~/.cache/robigo-core-round3-target.
+- Verification: release build, cargo fmt --check, core (17 tests), C API
+  (2 tests), CLI (7 tests), conformance in every tier and VM guards pass.
+  Runtime: 33/34 pass; complex::c_library_oracle differs by one ULP in
+  sqrt at this host's glibc 2.44 (main baseline check follows).
+- Diagnosed #70's gnur-tests regression using its CI binary and natives
+  in the exact Debian oracle image: run 36 differed only in the printed
+  user.self timing (0 versus 0.001 seconds), status 0. Oracle recording
+  with 100 repeats masks exactly that timing line; the recording fix
+  belongs to #70. No random-number assertion is masked.
+
 ## 2026-10-29: the graphics engine in libR; grDevices, graphics, grid from source
 
 - What: GNU R's own graphics engine (`src/main` engine.c, devices.c,
