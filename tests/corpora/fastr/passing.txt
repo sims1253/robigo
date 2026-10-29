@@ -3491,6 +3491,7 @@ builtins/TestBuiltin_dim/1ece0b9a0c18bb8c
 builtins/TestBuiltin_dim/205c483d73cbd47b
 builtins/TestBuiltin_dim/20b1f98bbd750736
 builtins/TestBuiltin_dim/23cea28a6e72c4bf
+builtins/TestBuiltin_dim/2cb9ea144becbd90
 builtins/TestBuiltin_dim/2d6766353ffd2c56
 builtins/TestBuiltin_dim/30cc464bdd67d585
 builtins/TestBuiltin_dim/314c3ab4d9d36120
@@ -3501,6 +3502,7 @@ builtins/TestBuiltin_dim/35ac74df11ef1fb0
 builtins/TestBuiltin_dim/38830e346d8e96bc
 builtins/TestBuiltin_dim/38e9bbcad2a2309a
 builtins/TestBuiltin_dim/39944abcfdaa9fbe
+builtins/TestBuiltin_dim/3b0a005631f4f0d1
 builtins/TestBuiltin_dim/3c9a5f8d772b8830
 builtins/TestBuiltin_dim/4070dfbcd5e63af9
 builtins/TestBuiltin_dim/433fb356ed1fef2a
@@ -3515,6 +3517,7 @@ builtins/TestBuiltin_dim/54a716d7842590aa
 builtins/TestBuiltin_dim/54f25c9389791716
 builtins/TestBuiltin_dim/57dd7fe70203bc21
 builtins/TestBuiltin_dim/585f713946e2503d
+builtins/TestBuiltin_dim/58620a234942465f
 builtins/TestBuiltin_dim/58f2226ad2063036
 builtins/TestBuiltin_dim/5fddeff694b5e44d
 builtins/TestBuiltin_dim/635e429ee7b07ba2
@@ -3546,6 +3549,7 @@ builtins/TestBuiltin_dim/ab08964dd8b5f5c8
 builtins/TestBuiltin_dim/b12eaf546e1ecc7f
 builtins/TestBuiltin_dim/bf40dee546ad8d83
 builtins/TestBuiltin_dim/bf4f3de304a3ef7b
+builtins/TestBuiltin_dim/c478161ad44c84b0
 builtins/TestBuiltin_dim/c47e22e78603201f
 builtins/TestBuiltin_dim/c4a95b1774370c82
 builtins/TestBuiltin_dim/c7c835003dc9dd1e
