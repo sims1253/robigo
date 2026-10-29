@@ -16,7 +16,28 @@ conformance` (interpreter, VM and VM+JIT against each other).
   mixed integer scalars use the right operand as the SSE destination for
   addition/multiplication. Logical operands retain double semantics.
   Extend the unchanged 9,440-case GNU R oracle through compiled VM
-  expressions and eligible simple bodies. Verification is in progress.
+  expressions and eligible simple bodies. **All 9,440 cases pass**;
+  independent closure replay improves **16/1,888 -> 0/1,888** mismatches.
+- Local paired full-suite instruction geomean: **0.503263 -> 0.503515**
+  GNU R, **76/77 -> 76/77** faster. Gate: **0 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed**. Keep for correctness, not a speed claim.
+  The largest increase is `nbody_naive` +0.402%. Saved immutable binaries,
+  independent output checks and main-only remeasurement of the two cases
+  overlapping the candidate binary copy prevent baseline contamination.
+- Verification: `cargo test --release -p robigo-runtime -p robigo-cli`
+  passes (37 runtime, 7 CLI, 2 integration tests, all three conformance /
+  guard checks). `cargo fmt --check` and `git diff --check` pass.
+  The ratcheted `jit/muladd-payloads.R` fixture, recorded with the exact
+  oracle, compares 768 competing-payload cases against unfused primitives.
+- CI run `40934630158`, code head `657fd24`: build, all ten corpus shards,
+  and performance pass. CI also reports no slowdowns beyond 0.5%; its
+  reported fixed `spectralnorm_math` reflects a missing correctness flag,
+  not a demonstrated fix. Independent local output checks remain 77/78.
+  Absorbing its FastR artifacts adds 311 passing entries already enabled
+  by main's native-package work; do not attribute those to this VM fix.
+- Busy-host single-run wall-time geomean is 0.538x GNU R, 73/77 faster.
+  Repeat on an idle host. `nbody_naive_2` now baselines at 0.988x GNU R
+  instructions; profile from this baseline rather than the old 1.07x.
 - Rejected: recovered #60's VM patch on current main, with the requested
   `Scan::raw` and `io::conn_getc` inline attributes. A new exact-oracle
   probe over 768 vector multiply/add/subtract cases with competing NaN
