@@ -209,6 +209,21 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
+    /// A `CHARSXP` item (its own flags, then the string), read directly:
+    /// `SYMSXP`'s name would otherwise build a one-string vector per
+    /// symbol only to take the string back out and drop it.
+    fn read_charsxp_item(&mut self) -> RResult<RStr> {
+        let flags = self.int()? as u32;
+        if flags & 255 != CHARSXP {
+            return Err(corrupt());
+        }
+        let s = self.read_charsxp(flags >> 12)?;
+        if flags & HAS_ATTR_BIT != 0 {
+            self.read_item()?;
+        }
+        Ok(s)
+    }
+
     fn read_charsxp(&mut self, levs: u32) -> RResult<RStr> {
         let len = self.int()?;
         if len == -1 {
@@ -299,11 +314,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 return Ok(v);
             }
             SYMSXP => {
-                let name = self.read_item()?;
-                let n = match &name {
-                    Value::Str(s) => s.data.first().cloned().flatten().unwrap_or_else(|| Rc::from("NA")),
-                    _ => return Err(corrupt()),
-                };
+                let n = self.read_charsxp_item()?.unwrap_or_else(|| Rc::from("NA"));
                 let v = Value::Sym(Sym::new(&n));
                 self.refs.push(v.clone());
                 return Ok(v);
