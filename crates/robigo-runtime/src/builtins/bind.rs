@@ -1,8 +1,6 @@
 //! `c()`, `unlist()`, `list()`, `length()` and friends (GNU R's bind.c and
 //! parts of builtin.c).
 
-use std::rc::Rc;
-
 use super::{arg, check_arity, internal, prim};
 use crate::attrib::{get_attrib, set_attrib};
 use crate::env::Env;

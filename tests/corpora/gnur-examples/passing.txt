@@ -347,6 +347,7 @@ grDevices/palettes
 grDevices/pdf
 grDevices/pdf.options
 grDevices/pictex
+grDevices/plotmath
 grDevices/png
 grDevices/postscript
 grDevices/postscriptFonts

@@ -63,7 +63,7 @@ impl RString {
     }
     pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
         let (mark, text) = if bytes.is_ascii() {
-            (Encoding::Native, std::borrow::Cow::Borrowed(std::str::from_utf8(bytes).unwrap()))
+            (Encoding::Native, std::borrow::Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) }))
         } else if matches!(encoding, Encoding::Latin1 | Encoding::Bytes) {
             (encoding, std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()))
         } else {
@@ -75,6 +75,10 @@ impl RString {
                 ),
             }
         };
+        Self::from_text(&text, mark)
+    }
+    #[inline]
+    fn from_text(text: &str, mark: Encoding) -> Self {
         let mut stored = Rc::<[u8]>::new_uninit_slice(text.len() + 1);
         let payload = Rc::get_mut(&mut stored).unwrap();
         payload[0].write(mark as u8);
@@ -87,7 +91,8 @@ impl RString {
         Self(unsafe { Rc::from_raw(Rc::into_raw(stored) as *const str) })
     }
     pub fn encoding(&self) -> Encoding {
-        match self.0.as_bytes()[0] {
+        // Every constructor stores a structural byte before the payload.
+        match unsafe { *self.0.as_bytes().get_unchecked(0) } {
             0 => Encoding::Native,
             1 => Encoding::Utf8,
             2 => Encoding::Latin1,
@@ -112,8 +117,9 @@ impl RString {
     }
 }
 impl From<&str> for RString {
+    #[inline]
     fn from(s: &str) -> Self {
-        Self::from_bytes(s.as_bytes(), Encoding::Utf8)
+        Self::from_text(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
     }
 }
 impl From<String> for RString {
@@ -128,8 +134,10 @@ impl From<Rc<str>> for RString {
 }
 impl std::ops::Deref for RString {
     type Target = str;
+    #[inline]
     fn deref(&self) -> &str {
-        &self.0[1..]
+        // Constructors always store one ASCII structural byte.
+        unsafe { self.0.get_unchecked(1..) }
     }
 }
 impl AsRef<str> for RString {

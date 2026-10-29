@@ -379,7 +379,6 @@ pub fn int_arg(v: &Value, what: &str) -> RResult<i32> {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
     /// Each primitive and each .Internal is defined by exactly one module.
     #[test]
     fn no_duplicate_registrations() {

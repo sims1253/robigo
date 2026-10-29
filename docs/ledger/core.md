@@ -973,3 +973,20 @@ into the build).
   registers no code, `.Call` fails with "native routine ... is not
   implemented yet".
 - census coverage by robigo exports: 0 / 5339 (no `libR.so`).
+
+### Round 5 first verification cycle
+
+- Exact-oracle byte_window script: 0/1 -> 1/1. Conformance 225/225,
+  all three tiers and VM guards pass. C API integration 2/2 passes;
+  runtime 36/37 passes (only the previously documented host complex sqrt
+  one-ULP mismatch). The exhaustive encoding-window test passes.
+- Graphics examples with stats/grDevices/graphics/grid natives present:
+  177/184 -> 178/184; plotmath newly passes, no lost passes.
+- Combined raw/encoding/iconv/serialization/nchar/paste fastr slice:
+  480/505 -> 488/505, eight iconv gains, zero lost passes. Recorded the
+  eight gains, plotmath and the byte_window conformance regression.
+- First performance candidate rejected: paste workload instructions
+  75,331,679 -> 76,640,204 (+1.74%). Profile identifies redundant UTF-8
+  validation and prefix-window bounds checks. Next candidate uses the
+  known UTF-8 invariant of Rust strings and the structural-byte invariant
+  of RString to avoid those checks; measurement follows.
