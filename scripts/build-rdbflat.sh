@@ -25,11 +25,14 @@ run() {
 
 # the battery: default startup (all base namespaces plus their lazy
 # reference environments), the per-package namespaces again for scripts
-# that skip some, and the two non-default package sets
+# that skip some, the two non-default package sets, and a full sweep
+# that forces every lazy binding of every base package (a complete
+# cache: no run then takes the fallback path)
 run -e '1'
 run -e 'library(methods); library(stats); library(utils); library(grDevices); library(graphics); library(datasets); stopifnot(is.function(lm), is.function(read.table))'
 run -e 'e <- new.env(); attach(e); data(mtcars); detach(e); nrow(mtcars)'
 R_DEFAULT_PACKAGES=NULL run -e '1'
 R_DEFAULT_PACKAGES=utils,stats run -e 'library(stats); lm(dist ~ speed, cars); coef(lm(dist ~ speed, cars))'
+run "$root/scripts/build-rdbflat-force.R"
 
 python3 "$root/scripts/build-rdbflat.py" "$log" "$out"

@@ -33,13 +33,41 @@
 //! base.rdb's cache and nothing else.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// A multiply-xor hasher (FxHash) for the flat index: it is rebuilt once
+/// per process and probed a few thousand times, and SipHash's
+/// finalization costs more than the lookup itself.
+#[derive(Default)]
+struct Fx(u64);
+
+const FX_SEED: u64 = 0x517cc1b727220a95;
+
+impl Hasher for Fx {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(FX_SEED);
+        }
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (self.0.rotate_left(5) ^ i as u64).wrapping_mul(FX_SEED);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(FX_SEED);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// (off, clen) -> (foff, ulen), FxHashed.
+type FlatIndex = HashMap<(u64, u32), (u64, u32), BuildHasherDefault<Fx>>;
+
 struct Flat {
     data: Vec<u8>,
-    /// (off, clen) -> (foff, ulen)
-    index: HashMap<(u64, u32), (u64, u32)>,
+    index: FlatIndex,
 }
 
 struct Cache {
@@ -118,7 +146,7 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
 
 /// The entry index at `p` (just past the path); every entry's slice must
 /// lie inside the file.
-fn parse_index(bytes: &[u8], mut p: usize) -> Option<HashMap<(u64, u32), (u64, u32)>> {
+fn parse_index(bytes: &[u8], mut p: usize) -> Option<FlatIndex> {
     if p + 8 > bytes.len() {
         return None;
     }
@@ -127,7 +155,7 @@ fn parse_index(bytes: &[u8], mut p: usize) -> Option<HashMap<(u64, u32), (u64, u
     if p.checked_add(n.checked_mul(24)?)? > bytes.len() {
         return None;
     }
-    let mut index = HashMap::with_capacity(n);
+    let mut index = FlatIndex::with_capacity_and_hasher(n, Default::default());
     for _ in 0..n {
         let off = u64_at(bytes, p);
         let clen = u32_at(bytes, p + 8);
