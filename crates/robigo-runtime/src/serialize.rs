@@ -153,6 +153,41 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
+    /// `n` integers (binary formats: one bounds check, then a bulk
+    /// conversion).
+    fn ints(&mut self, n: usize) -> RResult<Vec<i32>> {
+        let be = match self.format {
+            Format::Xdr => true,
+            Format::Binary => false,
+            Format::Ascii => return (0..n).map(|_| self.int()).collect(),
+        };
+        let nb = n.checked_mul(4).ok_or_else(|| Flow::error("error reading from connection"))?;
+        let b = self.bytes(nb)?;
+        Ok(b.chunks_exact(4)
+            .map(|c| {
+                let a = [c[0], c[1], c[2], c[3]];
+                if be { i32::from_be_bytes(a) } else { i32::from_le_bytes(a) }
+            })
+            .collect())
+    }
+
+    /// `n` doubles (see [`Reader::ints`]).
+    fn reals(&mut self, n: usize) -> RResult<Vec<f64>> {
+        let be = match self.format {
+            Format::Xdr => true,
+            Format::Binary => false,
+            Format::Ascii => return (0..n).map(|_| self.real()).collect(),
+        };
+        let nb = n.checked_mul(8).ok_or_else(|| Flow::error("error reading from connection"))?;
+        let b = self.bytes(nb)?;
+        Ok(b.chunks_exact(8)
+            .map(|c| {
+                let a: [u8; 8] = c.try_into().unwrap();
+                if be { f64::from_be_bytes(a) } else { f64::from_le_bytes(a) }
+            })
+            .collect())
+    }
+
     fn length(&mut self) -> RResult<usize> {
         let len = self.int()?;
         if len < -1 {
@@ -337,19 +372,12 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             LGLSXP | INTSXP => {
                 let n = self.length()?;
-                let mut out = Vec::with_capacity(n);
-                for _ in 0..n {
-                    out.push(self.int()?);
-                }
+                let out = self.ints(n)?;
                 if ty == LGLSXP { Value::lgls(out) } else { Value::ints(out) }
             }
             REALSXP => {
                 let n = self.length()?;
-                let mut out = Vec::with_capacity(n);
-                for _ in 0..n {
-                    out.push(self.real()?);
-                }
-                Value::reals(out)
+                Value::reals(self.reals(n)?)
             }
             CPLXSXP => {
                 let n = self.length()?;
