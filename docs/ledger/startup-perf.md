@@ -98,6 +98,50 @@ lands; the natives work is PR #78 below.
   export (GNU R's libR exports it) so CRAN natives get R-faithful
   LAPACK errors too — the local copy covers base packages either way.
 
+## 2026-10-29 (round 4): rebase onto 7ff8a140 (#79 in); re-measured
+
+- Rebased #78 onto main 7ff8a140 (merge of this morning's wave + #79).
+  Contrary to the handoff note, **#79 carried only the flate2/zlib-rs
+  switch** (one commit: Cargo.toml/lock + this ledger) — the ELF marker
+  scan and the build-natives.sh static-linking changes never landed on
+  main, so the whole PR still applies. Real conflicts: this ledger
+  (both branches created it) and `sources()` in build-natives.sh
+  (#79's `@BUILD_AQUA_TRUE@` handling vs #78's LINKFLAGS — kept both).
+  Also dropped the duplicated doc lines and two unneeded `mut`s the
+  rebase left in `is_robigo_build`.
+- Re-measured (robigo-oracle:4.5.0 container, R 4.5.0-3, binaries built
+  in robigo-build:4.5.0 with the private target dir):
+
+  `-e 1`, `R_DEFAULT_PACKAGES=utils,stats`:
+  | binary | instructions | natives overhead |
+  |---|---|---|
+  | main, no natives | 254,199,385 | — |
+  | main, +dynamic natives | 257,536,932 | +3.34M |
+  | this PR, no natives | 235,109,769 | — |
+  | **this PR, +static natives** | **235,649,764** | **+0.55M** |
+  | Rscript | 262,809,555 | 0.897x |
+
+  `-e 1`, default packages (incl. methods):
+  | binary | instructions | natives overhead |
+  |---|---|---|
+  | main, no natives | 563,487,045 | — |
+  | main, +dynamic natives | 567,419,471 | +3.93M |
+  | this PR, no natives | 543,573,324 | — |
+  | **this PR, +static natives** | **544,125,839** | **+0.55M** |
+  | Rscript | 661,159,388 | 0.823x |
+
+- Correctness after the rebase: qr/lm/chol battery byte-identical to
+  Rscript with the static natives and with the Rust ports.
+  `cargo test --release -p robigo-runtime`: green except
+  `complex::c_library_oracle`, a last-bit sqrt mismatch against the
+  recorded glibc oracle that also fails on main on this host (glibc
+  2.44 vs the recording's; CI's trixie is the judge).
+- Where default-packages startup goes now (callgrind, branch, 544M):
+  zlib-rs inflate path ~71M (adler32 16.2M, tables 10.6M, inflate
+  ~45M — the per-entry streams of the lazy-load DBs), serialize
+  Reader ~45M (int 25.5M, read_item_flags0 20.0M, read_bc_lang 12.7M),
+  vm 19.6M, mimalloc ~30M, memcpy 11.1M, drops 12M.
+
 ## Open items (ranked)
 
 1. Same as PR #36's list (S3 dispatch memsets during package loading,
