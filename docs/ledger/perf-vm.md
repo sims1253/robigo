@@ -6,6 +6,26 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 6, recover #60 on the current profile
+
+- Rebased draft #60 onto main `e25e6cc`, retaining both sides' conformance
+  entries and the scalar payload fixes from #86.
+- The recovered kernel's plain Rust arithmetic allowed LLVM to commute
+  competing NaNs. Select SSE destinations independently for multiply and
+  add, following `arithmetic.c:real_binary` and the builtin port's shapes.
+  Use packed operations with eight-element chunks and scalar tails.
+- Extend the exact-oracle payload fixture from 768 to 6,144 comparisons:
+  all eight scalar/vector combinations at lengths 2, 8 and 9. Main and
+  the packed candidate pass. Expected output recorded with Debian R 4.5.0-3.
+- Rejected intermediate scalar SSE kernel: `vecarith` 4,353,108,825 ->
+  4,443,092,973 instructions (+2.07%), despite passing the payload fixture.
+- Reuse `cadd`/`csub` for complex scalars. A new 99-case byte comparison
+  also catches the recovered multiplication's stale operand order:
+  `complex_binary` calls `cmul(y, x)`. Correct the scalar path accordingly.
+- Full paired performance and crate/conformance verification are running.
+  Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
+  private build target `~/.cache/robigo-trixie-target`.
+
 ## 2026-10-29: round 5, scalar payloads and rejected muladd recovery
 
 - Baseline: current main `74e8c73`, Debian trixie GNU R 4.5.0-3.

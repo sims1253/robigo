@@ -18,15 +18,16 @@ refs <- list(function(a, b, c) add(mul(a, b), c),
              function(a, b, c) sub(c, mul(a, b)))
 funs <- list(f, g, h, k)
 checked <- 0L
-for (i in seq_along(v)) for (j in seq_along(v)) for (l in seq_along(v)) {
-  a <- c(v[i], v[i]); b <- c(v[j], v[j]); z <- c(v[l], v[l])
+for (width in c(2L, 8L, 9L)) for (i in seq_along(v)) for (j in seq_along(v)) for (l in seq_along(v)) {
+  a <- rep(v[i], width); b <- rep(v[j], width); z <- rep(v[l], width)
   for (op in seq_along(funs)) {
     fun <- funs[[op]]; ref <- refs[[op]]
-    for (shape in 1:3) {
-      x <- if (shape == 3L) a[1] else a
-      y <- if (shape == 2L) b[1] else b
-      stopifnot(identical(writeBin(fun(x, y, z), raw()),
-                          writeBin(ref(x, y, z), raw())))
+    for (shape in 0:7) {
+      x <- if (bitwAnd(shape, 1L) != 0L) a[1] else a
+      y <- if (bitwAnd(shape, 2L) != 0L) b[1] else b
+      w <- if (bitwAnd(shape, 4L) != 0L) z[1] else z
+      stopifnot(identical(writeBin(fun(x, y, w), raw()),
+                          writeBin(ref(x, y, w), raw())))
       checked <- checked + 1L
     }
   }

@@ -138,15 +138,16 @@ fn cplx_scalar(v: &RVal) -> Option<(Complex, bool)> {
 /// `x op y` for scalars, at least one complex, as `complex_binary`
 /// computes it (R: complex.c:complex_binary; nothing to warn about).
 fn complex_op(op: ArithOp, (x, cx): (Complex, bool), (y, cy): (Complex, bool)) -> Option<RVal> {
-    use crate::builtins::complex::{cdiv, cmul, cpow};
+    use crate::builtins::complex::{cadd, cdiv, cmul, cpow, csub};
     if !(cx || cy) {
         return None;
     }
     let z = match op {
-        ArithOp::Plus => Complex::new(x.re + y.re, x.im + y.im),
-        ArithOp::Minus => Complex::new(x.re - y.re, x.im - y.im),
+        ArithOp::Plus => cadd(x, y),
+        ArithOp::Minus => csub(x, y),
         // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
-        ArithOp::Times => cmul(x, y),
+        // R: complex.c:complex_binary, GCC calls __muldc3(y, x).
+        ArithOp::Times => cmul(y, x),
         ArithOp::Div => cdiv(x, y),
         ArithOp::Pow => cpow(x, y),
         ArithOp::Mod | ArithOp::IDiv => return None,
@@ -250,10 +251,6 @@ fn mul_add_next(
         },
     };
     let v = Rc::get_mut(&mut buf).unwrap();
-    if which == 3 {
-        // SAFETY: every element is written below before it is read.
-        unsafe { v.data.set_len(n) };
-    }
     let p = v.data.as_mut_ptr();
     let src = |w: usize, r: &RVal| -> (*const f64, bool) {
         if w == which {
@@ -269,6 +266,10 @@ fn mul_add_next(
     // SAFETY: each source is `n` elements long or a scalar, `p` holds `n`
     // elements; a source aliasing `p` is read at `i` before `i` is written.
     unsafe { mul_add_dispatch(p, n, xs, ys, cs, kind) };
+    if which == 3 {
+        // SAFETY: the kernel initialized all n elements of spare capacity.
+        unsafe { v.data.set_len(n) };
+    }
     Ok((out, Value::Real(buf)))
 }
 
@@ -287,19 +288,102 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
     y: *const f64,
     c: *const f64,
 ) {
-    for i in 0..n {
+    // Match the packed arithmetic builtin's throughput while keeping each
+    // multiplication rounded before addition. No hardware FMA is used.
+    let end = n / 8 * 8;
+    for base in (0..end).step_by(8) {
+        for k in 0..4 {
+            let i = base + 2 * k;
+            unsafe {
+                let a = if SX { [*x; 2] } else { [*x.add(i), *x.add(i + 1)] };
+                let b = if SY { [*y; 2] } else { [*y.add(i), *y.add(i + 1)] };
+                let z = if SC { [*c; 2] } else { [*c.add(i), *c.add(i + 1)] };
+                let m = if SX && !SY { packed::<2>(b, a) } else { packed::<2>(a, b) };
+                let r = match K {
+                    MA_ADD => {
+                        if SX && SY && !SC {
+                            packed::<0>(z, m)
+                        } else {
+                            packed::<0>(m, z)
+                        }
+                    }
+                    MA_SUB => packed::<1>(m, z),
+                    MA_RADD => {
+                        if SC && !(SX && SY) {
+                            packed::<0>(m, z)
+                        } else {
+                            packed::<0>(z, m)
+                        }
+                    }
+                    _ => packed::<1>(z, m),
+                };
+                *out.add(i) = r[0];
+                *out.add(i + 1) = r[1];
+            }
+        }
+    }
+    for i in end..n {
         unsafe {
             let a = if SX { *x } else { *x.add(i) };
             let b = if SY { *y } else { *y.add(i) };
             let z = if SC { *c } else { *c.add(i) };
-            let m = a * b;
+            // R: arithmetic.c:real_binary. For doubles the scalar-left
+            // loop keeps y's payload; equal lengths and scalar-right keep x's.
+            use crate::builtins::complex::sse;
+            let m = if SX && !SY { sse::mul(b, a) } else { sse::mul(a, b) };
             *out.add(i) = match K {
-                MA_ADD => m + z,
-                MA_SUB => m - z,
-                MA_RADD => z + m,
-                _ => z - m,
+                MA_ADD => {
+                    if SX && SY && !SC {
+                        sse::add(z, m)
+                    } else {
+                        sse::add(m, z)
+                    }
+                }
+                MA_SUB => sse::sub(m, z),
+                MA_RADD => {
+                    if SC && !(SX && SY) {
+                        sse::add(m, z)
+                    } else {
+                        sse::add(z, m)
+                    }
+                }
+                _ => sse::sub(z, m),
             };
         }
+    }
+}
+
+// R: arithmetic.c:real_binary, with the destination chosen by each shape.
+#[inline(always)]
+fn packed<const OP: u8>(d: [f64; 2], s: [f64; 2]) -> [f64; 2] {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use core::arch::x86_64::__m128d;
+        // SAFETY: the arrays and SSE2 registers have the same layout.
+        let mut d = core::mem::transmute::<[f64; 2], __m128d>(d);
+        let s = core::mem::transmute::<[f64; 2], __m128d>(s);
+        match OP {
+            0 => {
+                core::arch::asm!("addpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+            }
+            1 => {
+                core::arch::asm!("subpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+            }
+            _ => {
+                core::arch::asm!("mulpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+            }
+        }
+        core::mem::transmute::<__m128d, [f64; 2]>(d)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        use crate::builtins::complex::sse;
+        let op = match OP {
+            0 => sse::add,
+            1 => sse::sub,
+            _ => sse::mul,
+        };
+        [op(d[0], s[0]), op(d[1], s[1])]
     }
 }
 

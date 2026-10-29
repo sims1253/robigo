@@ -41,3 +41,19 @@ print(g(structure(1+1i, foo = "bar"), 2))
 h <- function(a, b) a %% b
 print(tryCatch(h(1+1i, 2), error = conditionMessage))
 print(tryCatch(h(1+1i, 2i), error = conditionMessage))
+# Competing payloads must also match the unfused primitive calls byte for byte.
+add <- .Primitive("+"); sub <- .Primitive("-"); mul <- .Primitive("*")
+refs <- function(a, b) list(add(a, b), sub(a, b), mul(a, b))
+vals <- list(complex(real = NA, imaginary = NaN),
+             complex(real = NaN, imaginary = NA),
+             complex(real = -(0/0), imaginary = 1), NA_real_, NaN, NA_integer_, TRUE)
+checked <- 0L
+for (a in vals) for (b in vals) {
+  if (!is.complex(a) && !is.complex(b)) next
+  got <- ops(a, b)[1:3]; want <- refs(a, b)
+  for (j in 1:3) {
+    stopifnot(identical(writeBin(got[[j]], raw()), writeBin(want[[j]], raw())))
+    checked <- checked + 1L
+  }
+}
+print(checked)
