@@ -201,9 +201,25 @@ struct SourceRefs<'a> {
 
 impl<'a> SourceRefs<'a> {
     fn new(text: &str, source: &'a Value) -> Self {
+        // R: gram.y:StringValue/RawStringValue increment xxbyteno by
+        // clen-1 before reading the continuation bytes with xxgetc.
+        // Those bytes increment it again. Backtick names use StringValue.
+        let mut quoted = vec![false; text.len()];
+        if let Ok((tokens, _)) = robigo_syntax::lexer::Lexer::new(text).tokenize() {
+            for token in tokens {
+                if matches!(token.tok, robigo_syntax::lexer::Tok::Str(_))
+                    || text.as_bytes().get(token.span.start as usize) == Some(&b'`')
+                {
+                    quoted[token.span.start as usize..token.span.end as usize].fill(true);
+                }
+            }
+        }
         let mut positions = vec![(1, 0, 0)];
         let (mut line, mut byte, mut column) = (1, 0, 0);
-        for ch in text.chars() {
+        for (offset, ch) in text.char_indices() {
+            if quoted[offset] {
+                byte += ch.len_utf8() as i32 - 1;
+            }
             for _ in 0..ch.len_utf8() {
                 byte += 1;
                 positions.push((line, byte, column + 1));

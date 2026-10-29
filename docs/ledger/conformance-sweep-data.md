@@ -1,5 +1,60 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 6): parsed source-reference attributes
+
+- Port gram.y:makeSrcref, attachSrcrefs, xxexprlist and xxdefun in
+  builtins/parsing.rs. Environment srcfiles now enable source references
+  on expression vectors and braces, with a source reference as the third
+  function argument. Preserve byte positions, UTF-8 display columns, tab
+  stops, source-file identity and bounded parse ranges. The syntax change
+  only exposes the byte offset consumed by program_n.
+- Focused subset case b4bfbcb9: **0/1 -> 1/1**; recorded the gain.
+  New Debian GNU R 4.5.0-3 fixture: **0/1 -> 1/1**, passing interpreter,
+  VM and JIT. All existing conformance scripts plus the fixture pass in
+  all tiers: **702/702** checks. Added the fixture to the ratchet.
+- Parser slice holds at **168/191 -> 168/191**, zero regressions.
+  Startup callgrind: **45,025,118 -> 45,032,920** instructions (+0.017%).
+  Kept. Fixed-binary data comparison: **8,406/8,426 -> 8,407/8,426**,
+  exactly the subset gain and zero per-case regressions. The existing
+  order/add626 host collation failure remains on both binaries. The
+  baseline also reports the newly ratcheted subset case, as expected.
+- Rejected the first broad sweep as a before/after measurement: its
+  mutable binary path changed when the candidate build completed. Re-run
+  both revisions from fixed binary copies in .robigo/sweep6.
+- Extra syntax probes exposed gram.y:StringValue/RawStringValue's
+  double increment of byte positions for literal multibyte characters.
+  Backtick names use the same path; ordinary identifiers do not. Preserve
+  that GNU R quirk and extend the Docker-recorded fixture with quoted,
+  raw-string and backtick UTF-8 cases. The initial candidate failed this
+  extension; final corrected candidate verification follows below.
+- Final quoted-UTF-8 correction: extended fixture passes in all three
+  tiers, and all extra syntax probes match the Debian oracle. Final
+  parser-plus-subset slice is **169/192**, zero regressions. Startup is
+  **45,037,852** instructions against **45,025,118** (+0.028%). Kept.
+  The correction changes only quoted source offsets; the fixed-binary
+  broad comparison above covers the original ASCII subset gain.
+- Initial runtime unit checks: 36 pass, two pre-existing host libc
+  mismatches in complex c_library_oracle (sqrt, one ULP) and
+  c_library_trig_oracle (csin, one ULP). Run the remaining crate checks
+  with those two excluded locally; Debian CI checks both unmodified.
+- Still open: gram.y parse-data records (RecordParents, finalizeData) for
+  the eleven getParseData cases; #line aliases and source metadata transfer
+  onto evaluated closures. The current slice covers parsed objects.
+- Evaluator follow-up: lapply/245e62b143e432a3 still adds an erroneous
+  `Calls: lapply -> is.vector` after missing-X forcing. Trace the signal
+  point against eval.c before changing traceback filtering. Oracle
+  compiler::disassemble(lapply) shows GETINTLBUILTIN.OP/CALLBUILTIN.OP
+  for is.vector(X, "any"): GNU R bypasses the R is.vector closure.
+  Robigo executes that closure, adding its frame before forcing X. This
+  case needs the VM owner's equivalent internal-call optimization, not
+  global suppression of builtin names in traceback. R_ConciseTraceback
+  explicitly includes CTXT_BUILTIN as well as function contexts.
+- Compiler investigation: base/identical still fails at bcVersion().
+  eval.c:do_bcversion returns R_bcVersion, but cmpfun next needs
+  mkCode/bcClose and an actual BCODESXP representation, absent from Value.
+  A version-only patch does not unblock the example. Coordinate that
+  representation with core and VM owners; no guessed bytecode substitute.
+
 ## 2026-10-29 (round 6): source-reference ownership
 
 - Claim the finished parser track's source-reference work in runtime
