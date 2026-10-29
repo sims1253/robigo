@@ -11,6 +11,20 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: native marker reader used reversed ELF fields
+
+- Fresh utils smoke test still selected Rust ports with utils.so present.
+  readelf showed PT_LOAD's file offset and virtual address differ by
+  0x1000 in Debian's writable segment. is_robigo_build had reversed those
+  fields, so it could not find PT_DYNAMIC and silently ignored natives.
+- Corrected the address-to-offset map and used p_filesz, not p_memsz,
+  for file-backed ranges. A synthetic ELF fixture with different file and
+  virtual addresses fails with main's reader and passes with the fix.
+  Standalone rustc test of the exact function and fixture: 0/1 -> 1/1.
+- Before this fix, the focused utils/I/O/connection slice is 345/357,
+  zero regressions. This is a fresh baseline; it does not verify natives.
+  Runtime native/mod.rs is a shared-path change required to load them.
+
 ## 2026-10-29: round 4 utils rebase
 
 - Replayed the two utils implementation commits onto main 098bd95.
