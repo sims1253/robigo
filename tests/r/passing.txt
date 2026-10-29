@@ -198,6 +198,7 @@ tests/r/vec/sort-internal.R
 tests/r/vec/subset-mask-matrix.R
 tests/r/vec/sum-ldouble.R
 tests/r/vec/sum-prod.R
+tests/r/vec/transpose-types.R
 tests/r/vectors/apply-inline.R
 tests/r/vectors/apply.R
 tests/r/vectors/factors.R
