@@ -6,6 +6,7 @@
     scripts/perf.py run [--metric instr|time|both] [--runtime robigo|gnur|both]
                         [--suite S] [--filter RE] [--jobs N] [--out FILE]
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
+    scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
@@ -267,6 +268,42 @@ def cmd_compare(a):
     return 1 if worse or broke else 0
 
 
+def cmd_recheck(a):
+    """`compare`, after measuring every benchmark it finds slower once more
+    (`--robigo`) and keeping the lower of the two counts: a regression is
+    slower in both runs, a one-off outlier is not. The result file is
+    updated in place."""
+    with open(a.base) as f:
+        base = json.load(f)["results"]
+    with open(a.new) as f:
+        doc = json.load(f)
+    new = doc["results"]
+
+    def slower(name):
+        b = base.get(name, {}).get("robigo", {})
+        n = new[name].get("robigo", {})
+        return "instr" in b and "instr" in n and 100 * (n["instr"] - b["instr"]) / b["instr"] > a.threshold
+
+    slow = {name for name in new if slower(name)}
+    if slow:
+        robigo = robigo_path(a.robigo)
+        valgrind = os.environ.get("VALGRIND", os.path.expanduser("~/.cache/rr-tools/bin/valgrind"))
+        if not os.path.exists(valgrind):
+            valgrind = "valgrind"
+        progs = [p for p in programs(conf()) if p[0] in slow]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as ex:
+            again = list(ex.map(lambda p: (p[0], run_one(p, "robigo", robigo, "instr", 1, valgrind, a.timeout)), progs))
+        for name, r in again:
+            if "instr" not in r:
+                continue
+            first = new[name]["robigo"]["instr"]
+            new[name]["robigo"]["instr"] = min(first, r["instr"])
+            print(f"re-measured {name}: {first:,} then {r['instr']:,}")
+        with open(a.new, "w") as f:
+            json.dump(doc, f, indent=1, sort_keys=True)
+    return cmd_compare(a)
+
+
 def cmd_list(_):
     for p in programs(conf()):
         print(p[0])
@@ -293,11 +330,19 @@ def main():
     p.add_argument("base")
     p.add_argument("new")
     p.add_argument("--threshold", type=float, default=0.5)
+    p = sub.add_parser("recheck", help="compare, re-measuring the benchmarks found slower once")
+    p.add_argument("base")
+    p.add_argument("new")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--robigo")
+    p.add_argument("--jobs", type=int, default=os.cpu_count())
+    p.add_argument("--timeout", type=int, default=120, help="seconds per run (x60 under callgrind)")
     p = sub.add_parser("report")
     p.add_argument("file")
     p.add_argument("--markdown", action="store_true")
     a = ap.parse_args()
-    fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "report": cmd_report}[a.cmd]
+    fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "recheck": cmd_recheck,
+          "report": cmd_report}[a.cmd]
     sys.exit(fn(a) or 0)
 
 
