@@ -2016,6 +2016,21 @@ struct LoopRec {
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
 
+/// Native matrix views accept only a dimension attribute, with validated
+/// storage bounds. No native op can change the dimensions during a loop.
+fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u64)> {
+    let attrs = x.attrs.as_ref()?;
+    if attrs.1 || attrs.0.len() != 1 || attrs.0[0].0 != s::DIM {
+        return None;
+    }
+    let Value::Int(d) = &attrs.0[0].1 else { return None };
+    let [nr, nc] = d.data[..] else { return None };
+    if nr < 0 || nc < 0 || (nr as usize).checked_mul(nc as usize)? != x.data.len() {
+        return None;
+    }
+    Some((nr as u64, nc as u64))
+}
+
 /// The scalar or vector type of a variable's current value for native code.
 fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     use crate::jit::JType;
@@ -2037,6 +2052,8 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
                 JType::VecI
             }
         }
+        RVal::V(Value::Real(x)) if jit_matrix_dims(x).is_some() => JType::MatD,
+        RVal::V(Value::Int(x)) if jit_matrix_dims(x).is_some() => JType::MatI,
         _ => return None,
     })
 }
@@ -2221,16 +2238,18 @@ fn jit_enter(
             }
             let view = match &mut vars.slots[s.slot as usize] {
                 SlotVal::Dirty(RVal::V(Value::Real(x))) | SlotVal::Clean(RVal::V(Value::Real(x)))
-                    if s.ty == JType::VecD =>
+                    if matches!(s.ty, JType::VecD | JType::MatD) =>
                 {
                     let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut f64 };
-                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
+                    let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
                 }
                 SlotVal::Dirty(RVal::V(Value::Int(x))) | SlotVal::Clean(RVal::V(Value::Int(x)))
-                    if s.ty == JType::VecI =>
+                    if matches!(s.ty, JType::VecI | JType::MatI) =>
                 {
                     let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut i32 };
-                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64 }
+                    let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
                 }
                 _ => return None,
             };

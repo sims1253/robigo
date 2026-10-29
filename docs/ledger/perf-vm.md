@@ -6,6 +6,113 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 4, matrix CI diagnosis and current-profile verification
+
+- #80 run `40906985766` failed before comparing performance: downloading
+  `perf-main` from run `40899570595` returned HTTP 503, "Egress is over
+  the account limit." No perf artifact was uploaded after that failure.
+  The build and all ten corpus shards passed. The baseline artifact is
+  downloadable now. This failure is not evidence of a measured regression.
+- Reapplied #80 on main `098bd95`, including #81's thin LTO profile and
+  #70's base-package natives. Paired measurements use the same newly built stats, splines,
+  tools, and parallel natives and Debian GNU R 4.5.0-3.
+- Re-recording `tests/r/jit/matrix-elements.R` with the exact oracle
+  reproduces every recorded byte. The independent full-suite output check
+  matches GNU R on 77/78 programs. `spectralnorm_math` is still the known
+  local mismatch; exclude it from performance claims.
+- Busy-host single-run wall-time geomean: 0.565x GNU R over the 77 correct
+  programs. This is provisional, not an idle-host comparison.
+- Setup: `robigo-oracle:4.5.0` lacks zlib headers and gfortran required by
+  current main. Use `robigo-build:4.5.0` and the track's private target
+  `~/.cache/robigo-trixie-target`. No source workaround was needed.
+
+- Current-profile CI run `40914475266` passed build, all ten corpus shards,
+  and perf against main `098bd95` (baseline run `40912854891`). On the
+  common 77 correct programs, instruction geomean **0.512146 -> 0.504341**
+  GNU R, faster than GNU R **76 -> 76**. `matrixFor` **723,808,375 ->
+  288,698,956** instructions (**-60.11%**). Gate: **10 faster, 0 slower
+  above 0.5%, 0 broken**. The CI report's "FIXED spectralnorm_math" comes
+  from the candidate's absent output flag; the independent local output
+  check still differs, so it is not counted as fixed here.
+- Fresh local full-suite comparison confirms CI: geomean **0.511560 ->
+  0.503785**, **76/77 -> 76/77** faster than GNU R. `matrixFor`
+  **723,270,029 -> 288,292,670** instructions (**-60.14%**).
+  `scripts/perf.py compare`: **10 faster, 0 slower above 0.5%, 0 broken,
+  0 fixed**. Both runtimes were measured; candidate correctness flags
+  come from the independent byte-for-byte output check because a
+  robigo-only instruction run does not retain stdout in its JSON.
+- Keep the matrix patch on the current profile. The old CI failure was an
+  artifact-download failure; no additional matrix code change was needed.
+- Remaining batch: rebase #60 on current main, add the requested
+  `Scan::raw`/`io::conn_getc` inline attributes, and verify independently.
+  Then fix the scalar payload cases below, profile `nbody_naive_2`, and
+  repeat wall-time checks when the host is idle.
+
+### Follow-up: VM arithmetic oracle
+
+The complete 9,440-case recorded arithmetic oracle was replayed through
+VM closures using the saved main and matrix binaries. Both produce exactly
+the same output: 16 divergences from GNU R, all scalar mixed integer/double
+`+` or `*` with `NA_integer_` and another NaN payload in either operand
+order. All vector/recycling shapes match. `vm::arith_fast` uses `real_op`
+with the double/double left-destination convention; R's mixed scalar fast
+path uses the right destination (`arith_exact::x_is_dest(true, 1, 1)`).
+Next: preserve that operand order for mixed integer scalars, add a VM-level
+oracle test, and measure it independently. No arithmetic code changed here.
+
+Release verification passed: `cargo test --release -p robigo-runtime
+-p robigo-cli` (34 runtime tests, 7 CLI tests, all 3 conformance/guard/tier
+checks, 2 documentation tests). `cargo fmt --check` and `git diff --check`
+pass. Local artifacts are under `.robigo/perf-round4/`.
+
+## 2026-10-29: native matrix elements (round 3, PR #80)
+
+- baseline: main `7ff8a140`, Debian GNU R 4.5.0-3, existing release
+  profile. Local full baseline: instruction geomean 0.5536, 74/77 correct
+  programs faster than GNU R. CI paired baseline: 0.5541, also 74/77.
+- change: dimension-only integer/double matrices have native views with
+  validated storage bounds. `Index2`/`SetIndex2` check each dimension and
+  use column-major offsets. Existing ownership handles aliases; unsupported
+  indices and values exit to the VM before accessing storage. Changes to
+  `vm.rs` only set up the native matrix views and types.
+- rejected first candidate: matrixFor -57.62%, but spectralnorm_alt_3
+  +0.65%. Paired profiling found VM execution cheaper by 7.35 million
+  instructions; Cranelift compilation cost outweighed that saving on its
+  short matrix initialization loop.
+- correction: disable Cranelift's development IR verifier in release
+  builds, retaining it in debug builds. Its default is useful during
+  compiler development but charges production executions for internal IR
+  checks at multiple compilation stages.
+- final paired CI result (run 40905386550, base run 40899570595): geomean
+  **0.5541 -> 0.5461**, faster than GNU R **74 -> 74** on the same 77
+  correct programs. `scripts/perf.py compare`: **10 faster, 0 slower**
+  beyond 0.5%, 0 broken. matrixFor **762,737,326 -> 319,981,245**
+  instructions (**-58.05%**, 0.9966x -> 0.4181x GNU R).
+  spectralnorm_alt_3 +0.225%, inside the gate; robigo/nbody -7.95%,
+  robigo/spectralnorm -3.77%, robigo/mandelbrot -3.06%.
+- isolated matrix write: **759 -> 39 instructions/element**, GNU R 608;
+  `callgrind-diff.py` confirms 40 instructions/element, nearly all native.
+- verification: `cargo test --release -p robigo-runtime -p robigo-cli`
+  passes, including conformance in interpreter, VM and JIT; fmt/diff checks
+  pass. New ratcheted fixture recorded with Debian R 4.5.0-3 covers integer
+  and double storage, reads/writes, aliases, fractional/invalid indices,
+  row bounds with an otherwise valid linear offset, deoptimization after
+  mutations, accumulators, single-element matrices, and changed dimensions
+  on subsequent compiled entries.
+- final full output check: 77/78 programs match GNU R, no runtime errors.
+  `spectralnorm_math` still differs locally, as in the baseline; do not
+  count CI's missing output flag as evidence this PR fixed it.
+- wall time on the busy shared host: final geomean 0.491x GNU R. This is
+  provisional; repeat `scripts/perf.py run --metric time --runtime both`
+  when the host is idle. The duplicate final local instruction sweep was
+  stopped after downloading CI's completed paired full-suite results.
+  Local and CI artifacts are in `/tmp/robigo-vm3/` (base-all.json,
+  matrix2-time.json, ci-base/perf.json, ci-final/perf.json).
+- next: align VM scalar NA/NaN payloads with the arith_exact oracle;
+  profile nbody_naive_2. #60 remains draft at c2ed404: main still lacks
+  the release-profile change. Once it lands, rebase #60, add the requested
+  Scan::raw/conn_getc inlines, and rerun the fair performance gate.
+
 ## Setup notes (this machine)
 
 The host has GNU R 4.6.1 and glibc 2.44. Both runtimes are measured in a

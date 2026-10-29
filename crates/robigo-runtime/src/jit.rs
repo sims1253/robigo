@@ -46,6 +46,9 @@ pub enum JType {
     VecD,
     /// An integer vector without attributes, read and written in place.
     VecI,
+    /// A matrix with only a dim attribute.
+    MatD,
+    MatI,
 }
 
 impl JType {
@@ -54,7 +57,7 @@ impl JType {
     }
 
     pub fn is_vector(self) -> bool {
-        matches!(self, JType::VecD | JType::VecI)
+        matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI)
     }
 }
 
@@ -81,6 +84,8 @@ pub struct SlotInfo {
 pub struct VecView {
     pub ptr: *mut u8,
     pub len: u64,
+    pub nrow: u64,
+    pub ncol: u64,
 }
 
 /// Returned by native code when the loop finished normally.
@@ -361,6 +366,9 @@ const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
 fn new_module() -> JITModule {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").unwrap();
+    // Cranelift's development verifier runs after each compilation pass.
+    // Keep it in debug builds; release loops pay only for code generation.
+    flags.set("enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" }).unwrap();
     let isa = cranelift_native::builder().unwrap().finish(settings::Flags::new(flags)).unwrap();
     let mut jb = JITBuilder::with_isa(isa, default_libcall_names());
     for (name, f, _, _) in HELPERS {
@@ -469,6 +477,18 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             u.wregs.push(*idx);
             u.wslots.push(*slot);
         }
+        Op::Index2 { dst, slot, i, j, .. } => {
+            u.rslots.push(*slot);
+            leaf_uses(i, &mut u);
+            leaf_uses(j, &mut u);
+            u.wregs.push(*dst);
+        }
+        Op::SetIndex2 { val, slot, i, j, .. } => {
+            u.rslots.push(*slot);
+            leaf_uses(i, &mut u);
+            leaf_uses(j, &mut u);
+            u.rregs.push(*val);
+        }
         Op::Index { dst, slot, i, .. } => {
             u.rslots.push(*slot);
             leaf_uses(i, &mut u);
@@ -506,7 +526,9 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::ForInit { .. }
         | Op::Visible { .. }
         | Op::LoopExit
-        | Op::Index { .. } => true,
+        | Op::Index { .. }
+        | Op::Index2 { .. }
+        | Op::SetIndex2 { .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
@@ -577,7 +599,11 @@ pub fn compile(
     // reuses them across statements), found by a forward analysis.
     let mut slot_ty: HashMap<Slot, JType> = HashMap::new();
     for pc in r.start..r.end {
-        if let Op::Index { slot, .. } | Op::SetIndex { slot, .. } = &ops[pc] {
+        if let Op::Index { slot, .. }
+        | Op::SetIndex { slot, .. }
+        | Op::Index2 { slot, .. }
+        | Op::SetIndex2 { slot, .. } = &ops[pc]
+        {
             match entry(*slot) {
                 Some(t) if t.is_vector() => {
                     slot_ty.insert(*slot, t);
@@ -654,11 +680,25 @@ pub fn compile(
             Op::AndOrShort { x, .. } => rt(x) == JType::L,
             Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
             Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
+            Op::Index2 { slot, i, j, .. } => {
+                matches!(slot_ty[slot], JType::MatD | JType::MatI)
+                    && matches!(lt(i), Some(JType::D | JType::I))
+                    && matches!(lt(j), Some(JType::D | JType::I))
+            }
+            Op::SetIndex2 { val, slot, i, j, .. } => {
+                matches!(lt(i), Some(JType::D | JType::I))
+                    && matches!(lt(j), Some(JType::D | JType::I))
+                    && matches!(
+                        (slot_ty[slot], rt(val)),
+                        (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
+                    )
+            }
             Op::SetIndex { val, slot, i, .. } => {
                 matches!(lt(i), Some(JType::D | JType::I))
                     && matches!(
                         (slot_ty[slot], rt(val)),
-                        (JType::VecD, JType::D | JType::I | JType::L) | (JType::VecI, JType::I | JType::L)
+                        (JType::VecD | JType::MatD, JType::D | JType::I | JType::L)
+                            | (JType::VecI | JType::MatI, JType::I | JType::L)
                     )
             }
             // (seq_len only takes the fast path for integers and doubles)
@@ -722,7 +762,7 @@ pub fn compile(
         for s in uses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
-        if let Op::SetIndex { slot, .. } = &ops[pc] {
+        if let Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } = &ops[pc] {
             writable[*slot as usize] = true;
         }
     }
@@ -866,10 +906,10 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::ForRange { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
         Op::ForInit { seq, .. } => vec![(*seq as usize + 1, Some(JType::I))],
         Op::ForStep { idx, .. } => vec![(*idx as usize, Some(JType::I))],
-        Op::Index { dst, slot, .. } => {
+        Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
             let t = match slot_ty.get(slot) {
-                Some(JType::VecD) => Some(JType::D),
-                Some(JType::VecI) => Some(JType::I),
+                Some(JType::VecD | JType::MatD) => Some(JType::D),
+                Some(JType::VecI | JType::MatI) => Some(JType::I),
                 _ => None,
             };
             vec![(*dst as usize, t)]
@@ -969,6 +1009,7 @@ struct Vars {
     /// vectors.
     slot: HashMap<Slot, (Variable, JType)>,
     vec: HashMap<Slot, (Variable, Variable, JType)>,
+    dims: HashMap<Slot, (Variable, Variable)>,
     flag: HashMap<Slot, Variable>,
     /// Per register and type: one variable, or three for a range.
     reg: HashMap<(Reg, JType), Variable>,
@@ -1242,6 +1283,29 @@ impl Gen<'_, '_> {
         k
     }
 
+    fn element_offset(&mut self, op: &Op, slot: Slot, lv: Variable, pc: usize) -> CValue {
+        let (i, j) = match op {
+            Op::Index { i, .. } | Op::SetIndex { i, .. } => (i, None),
+            Op::Index2 { i, j, .. } | Op::SetIndex2 { i, j, .. } => (i, Some(j)),
+            _ => unreachable!(),
+        };
+        let iv = self.leaf(i);
+        if let Some(j) = j {
+            let (nr, nc) = self.v.dims[&slot];
+            let nr = self.b.use_var(nr);
+            let nc = self.b.use_var(nc);
+            let row = self.index(iv, nr, pc);
+            let jv = self.leaf(j);
+            let col = self.index(jv, nc, pc);
+            // R: subset.c:MATRIX_SUBSET_LOOP; subassign.c:MatrixAssign
+            let off = self.b.ins().imul(col, nr);
+            self.b.ins().iadd(row, off)
+        } else {
+            let len = self.b.use_var(lv);
+            self.index(iv, len, pc)
+        }
+    }
+
     fn op(&mut self, pc: usize, op: &Op) {
         let next = pc + 1;
         let mut falls = true;
@@ -1510,25 +1574,21 @@ impl Gen<'_, '_> {
                 self.b.ins().jump(bb, &[]);
                 falls = false;
             }
-            Op::Index { dst, slot, i, .. } => {
+            Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
-                let iv = self.leaf(i);
-                let len = self.b.use_var(lv);
-                let k = self.index(iv, len, pc);
+                let k = self.element_offset(op, *slot, lv, pc);
                 let p = self.b.use_var(pv);
-                let (sz, ty) = if t == JType::VecD { (8, types::F64) } else { (4, types::I32) };
+                let (sz, ty) = if matches!(t, JType::VecD | JType::MatD) { (8, types::F64) } else { (4, types::I32) };
                 let off = self.b.ins().imul_imm_s(k, sz);
                 let addr = self.b.ins().iadd(p, off);
                 let x = self.b.ins().load(ty, MemFlagsData::trusted(), addr, 0);
                 self.set_reg(*dst, x);
             }
-            Op::SetIndex { val, slot, i, .. } => {
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
-                let iv = self.leaf(i);
-                let len = self.b.use_var(lv);
-                let k = self.index(iv, len, pc);
+                let k = self.element_offset(op, *slot, lv, pc);
                 let (x, xt) = self.reg(*val);
-                let (sz, x) = if t == JType::VecD { (8, self.to_f64(x, xt)) } else { (4, x) };
+                let (sz, x) = if matches!(t, JType::VecD | JType::MatD) { (8, self.to_f64(x, xt)) } else { (4, x) };
                 let p = self.b.use_var(pv);
                 let off = self.b.ins().imul_imm_s(k, sz);
                 let addr = self.b.ins().iadd(p, off);
@@ -1734,6 +1794,7 @@ fn codegen(
             let mut v = Vars {
                 slot: HashMap::new(),
                 vec: HashMap::new(),
+                dims: HashMap::new(),
                 flag: HashMap::new(),
                 reg: HashMap::new(),
                 range: HashMap::new(),
@@ -1754,11 +1815,22 @@ fn codegen(
                 } else {
                     let pv = b.declare_var(ptr);
                     let lv = b.declare_var(types::I64);
-                    let p = b.ins().load(ptr, mf, vecs, (s.idx * 16) as i32);
-                    let l = b.ins().load(types::I64, mf, vecs, (s.idx * 16 + 8) as i32);
+                    let p = b.ins().load(ptr, mf, vecs, (s.idx * std::mem::size_of::<VecView>()) as i32);
+                    let l = b.ins().load(types::I64, mf, vecs, (s.idx * std::mem::size_of::<VecView>() + 8) as i32);
                     b.def_var(pv, p);
                     b.def_var(lv, l);
                     v.vec.insert(s.slot, (pv, lv, s.ty));
+                    if matches!(s.ty, JType::MatD | JType::MatI) {
+                        let nr = b.declare_var(types::I64);
+                        let nc = b.declare_var(types::I64);
+                        let r =
+                            b.ins().load(types::I64, mf, vecs, (s.idx * std::mem::size_of::<VecView>() + 16) as i32);
+                        let c =
+                            b.ins().load(types::I64, mf, vecs, (s.idx * std::mem::size_of::<VecView>() + 24) as i32);
+                        b.def_var(nr, r);
+                        b.def_var(nc, c);
+                        v.dims.insert(s.slot, (nr, nc));
+                    }
                 }
             }
             // A variable for every (register, type) that occurs; live-ins
