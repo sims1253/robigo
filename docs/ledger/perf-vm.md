@@ -15,6 +15,40 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-29: wrong output: `x[[i]]` of an unmaterialized `a:b` (PR #65)
+
+- `fannkuchredux` and `fannkuchredux_naive` failed in compiled code only:
+  `if (k <- perm1[[1L]])`: "the condition has length > 1". `perm1 <- 1:n`
+  leaves an `RVal::Range` in the slot, and `vm::element` (the `x[[i]]` /
+  `x[i]` fast path) treated every unboxed register value as a scalar, so
+  `x[[1]]` returned the whole range: silently wrong values elsewhere
+  (`x <- 1:5; c(x[[1]], x[[5]])` gave ten values). A range now yields its
+  i-th integer; out of range takes the slow path.
+- tests: `tests/r/subset/range-elements.R` (recorded, ratcheted; main
+  fails it).
+- `scripts/perf.py compare`: a program that failed or printed a different
+  result in the base run is not counted, so its base count measured a
+  different run (here one that stopped at the error): it is now listed as
+  FIXED instead of compared (the fix was reported +128% SLOWER).
+- result: every other benchmark within +-0.05% of main 7345297 and 0.00%
+  of db8cced; both fannkuch benchmarks now count, both faster than GNU R
+  (0.895x and 0.639x).
+- the other wrong one, `spectralnorm_math`, needed `.Internal(La_rs)`
+  (symmetric eigen, outside the VM); main has it now (CI lists it FIXED).
+
+## 2026-10-29: next: `simple/matrixFor` (1.02x) natively
+
+- `x[[i, j]] <- 5` in a double loop costs ~830 instructions per element in
+  the VM (`run_with` 400, `get_attr` for `dim` 65, `set_element` 51,
+  `matrix_offset` 36, `own_var` 31); native code rejects the loop
+  (`ROBIGO_JIT_TRACE`: "unsupported at ...: SetIndex2"): jit.rs has no
+  matrix type (`jit_type` takes attribute-free vectors only).
+- plan: a matrix type (double/integer, a `dim` attribute and nothing else;
+  nrow taken at loop entry, as nothing native can change it), `Index2` and
+  `SetIndex2` with in-range scalar indices (offset `(i-1) + (j-1)*nrow`),
+  everything else deoptimizing as `SetIndex` does. Expected ~50
+  instructions per element.
+
 ## 2026-10-28: `for (j in seq(length = n))` as a native range
 
 - why: `real/convolution_slow` (1.18x GNU R) runs its inner loop over
