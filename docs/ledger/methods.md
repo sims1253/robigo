@@ -395,10 +395,10 @@ Ratchet cases the switch would lose, and where each stands:
 | case | cause | status |
 |---|---|---|
 | fastr `S4/TestR5/ef10c392` | reference class methods listed in `names(env)` order: GNU R's hash-chain order | fixed, #67 |
-| fastr `TestBuiltin_serialize/4a71e01f`, `bfd38dfb` | class generators' bodies have a LANGSXP cell (`substitute()`'s unbound `...`) | fixed, #71 |
+| fastr `TestBuiltin_serialize/4a71e01f`, `bfd38dfb` | class generators' bodies have a LANGSXP cell (`substitute()`'s unbound `...`) | fixed, #71 (a side registry: a field in `Lang` cost fib +0.68%) |
 | fastr `S4/TestR5/474b742f` | `finalize()` on `gc()`, and the case prints `gc()`'s table with GNU R's own cell counts | **needs the lead**: no implementation reproduces `Ncells 340001`; robigo reports NA by design. Options: mask `gc()` tables in `corpus.py` like `proc.time()`, or exclude the case. Finalizers themselves need environment collection (core) |
 | gnur-tests `reg-S4-examples` | with methods GNU R reaches `plot()` on an S4 object; robigo has no graphics device (`devholdflush`) | blocked on the graphics track |
-| gnur-tests `reg-packages` | on this host only (system R 4.6.1 in `R CMD` subprocesses, Debian `R_SHARE_DIR`) | CI decides (#71's run) |
+| gnur-tests `reg-packages` | with methods GNU R runs the whole test (161 lines; without, it stopped early with status 1, and robigo matched that). robigo stops at `tools::checkRdContents()`: `tools`' native `parseRd` (the Rd grammar) is not implemented; one blank line after `R CMD INSTALL`'s output also differs | reproduced in a trixie container with r-base-core 4.5.0-3 and in #71's CI: needs a `parseRd` port (tools) |
 | fastr `add62673`, `0bb20eaa` | recording/host artifacts | fixed on main (#58/#62) |
 
 Recording: every case of the five corpora recorded twice in
