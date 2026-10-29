@@ -94,6 +94,12 @@ fn arith_values(
     regs: &mut [RVal],
 ) -> RResult<Slow> {
     if matches!(x, RVal::V(Value::Cplx(_))) || matches!(y, RVal::V(Value::Cplx(_))) {
+        // Complex vectors always use the builtin. Avoid checking both scalar
+        // conversions and the double-kernel eligibility on this common path.
+        let cvec = |v: &RVal| matches!(v, RVal::V(Value::Cplx(z)) if z.data.len() != 1);
+        if cvec(&x) || cvec(&y) {
+            return Ok(Slow::Val(RVal::V(call_builtin(interp, &code.consts[call as usize], vec![x, y], env)?)));
+        }
         if let (Some(p), Some(q)) = (cplx_scalar(&x), cplx_scalar(&y)) {
             if let Some(v) = complex_op(op, p, q) {
                 return Ok(Slow::Val(v));

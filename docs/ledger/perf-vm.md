@@ -29,7 +29,15 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Reject non-double operands before calling `mul_add_next`, avoiding its
   cold failed call for every complex-vector multiplication. Paired family
   check now passes: ASCII +0.420%, noout +0.446%, naive ASCII -29.593%.
-  Full-suite remeasurement and final crate verification are running.
+  Local full-suite remeasurement passes: geomean 0.489543 -> 0.487323,
+  76/77 -> 77/77 faster, 2 faster, 0 slower above 0.5%, 0 broken.
+- CI run 40959483877 passes build and all corpus shards, but rejects noout
+  at just over +0.50%. Keep the PR draft and improve the vector path.
+- Route complex vectors directly to the builtin before checking scalar
+  conversions or double-kernel eligibility. The family recheck improves
+  ASCII to +0.343%, noout to +0.351%; naive ASCII remains -29.099%.
+  All 6,144 vector payload and 99 complex scalar comparisons pass.
+  Final full-suite verification is running.
   Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
   private build target `~/.cache/robigo-trixie-target`.
 
