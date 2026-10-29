@@ -6,6 +6,46 @@ per scenario. Machine notes: this box runs ~7 agents; wall numbers are
 medians under load (load avg 27-31 during the 2026-10-28 baseline) and
 are indicative only; instructions are the gate.
 
+## 2026-10-29: rebase onto e3909b9; VM guards vs lazy base; memchr
+
+- Rebased onto main e3909b9 (main still boots base from the vendored
+  sources; core's PR #56 is the same lazy-base idea, unmerged).
+  Ported #56's extra forcing site (the VM's `seq.default` test) onto
+  `Interp::base_var`.
+- **VM guards failed for every base closure under lazy base.**
+  `Interp::resolves_to_base` compared the function `find_fun_cached`
+  found with base's raw frame binding; with base from base.rdb the
+  binding is a lazy-load promise, and `find_fun_cached` returns `None`
+  for promises, so every guard on a base *closure* name (`seq`,
+  `numeric`, ...) failed: the guarded op fell back to a full
+  interpreter call and `for (i in seq(length = n))` loops iterated
+  materialized vectors with boxed indices.
+  `rbench/real/convolution_slow` was +387% (430.9M -> 2,100.6M
+  instructions); `ROBIGO_VM_TRACE=1` showed `guard failed for seq` at
+  every loop entry. Fix: `resolves_to_base` now looks the function up
+  with `find_fun` (which forces promises, as R's findFun does) and
+  compares against `base_var`'s forced value. convolution_slow:
+  2,100.6M -> 202.5M (main's source path: 276.0M). This is also the
+  likely cause of PR #56's lazy being *slower* with default packages
+  (107 ms vs 95 ms): package loading thrashes these guards.
+- **`native::is_robigo_build` scanned whole .so files byte-by-byte**
+  (`windows().any()`, not vectorized) on every base-package dyn.load:
+  18.1M instructions (6% of default-packages startup) on main. Switched
+  to `memchr::memmem::find` (memchr is already in the tree via regex);
+  `-e 1` with default packages 288.4M -> 270.4M. Report to the core
+  track: the check runs per dyn.load and reads megabytes.
+- Result vs Rscript 4.5.0-3 in the container (instructions; GNU R is
+  the second number): `-e 1` NULL **53.5M/88.2M (0.61x)**; `-e 1` with
+  default packages **270.9M/275.9M (0.98x)** (main 295.7M);
+  `library(stats); lm` NULL **256.4M/262.7M**; with default packages
+  **274.5M/279.1M**; `nrow(mtcars)` **273.0M/277.8M**. Every scenario
+  is now faster than GNU R.
+- Gates: conformance all three tiers; fastr slices (serialize,
+  connections, functions, simple values, library/seq) 5956/5978,
+  0 regressions; gnur-examples 615/1149, 0 regressions (77 passes new
+  from main); perf 74 faster / 0 slower / 0 broken vs main e3909b9,
+  geomean 0.964.
+
 ## 2026-10-28: zlib-rs and handoff audit
 
 - Kept the `flate2` switch from `rust_backend` to `zlib-rs`. The former

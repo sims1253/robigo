@@ -114,10 +114,11 @@ pub fn has_table(name: &str) -> bool {
 
 /// Whether a shared object is one of GNU R's base packages built from
 /// source against robigo (`scripts/build-natives.sh`
-/// links in the symbol `robigo_base_native`).
+/// links in the symbol `robigo_base_native`). The scan is vectorized:
+/// these files are megabytes and every base-package dyn.load checks one.
 pub fn is_robigo_build(path: &str) -> bool {
     let marker = b"robigo_base_native";
-    std::fs::read(path).is_ok_and(|b| b.windows(marker.len()).any(|w| w == marker))
+    std::fs::read(path).is_ok_and(|b| memchr::memmem::find(&b, marker).is_some())
 }
 
 /// robigo's build of a base package's native code from GNU R's sources

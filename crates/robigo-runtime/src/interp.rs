@@ -480,12 +480,16 @@ impl Interp {
     /// environment's binding? Used by compiled code to validate its
     /// assumptions about `+`, `if`, `<-` and friends.
     pub fn resolves_to_base(&mut self, sym: Sym, env: &Env) -> bool {
-        match self.find_fun_cached(sym, env) {
-            Some(v) => match self.base.0.frame().borrow().get(sym) {
-                Some(b) => b.value.ptr_eq(&v),
-                None => false,
-            },
-            None => false,
+        // A function lookup forces lazy-load promises (R: findFun evaluates
+        // them), so base's binding must be forced before comparing; base
+        // is loaded lazily when it comes from base.rdb.
+        let found = match self.find_fun(sym, env) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        match self.base_var(sym) {
+            Ok(Some(b)) => b.ptr_eq(&found),
+            _ => false,
         }
     }
 
