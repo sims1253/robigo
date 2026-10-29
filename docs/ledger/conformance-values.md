@@ -97,3 +97,45 @@ Owns: `crates/robigo-runtime/src/builtins/{arith,coerce,math}.rs`,
   case was added to passing.txt (23d4907) after that run. For the
   cli/parser tracks: the case passes only with a gend=0-aware console
   parser.
+
+## 2026-10-29: + and * on doubles keep GNU R's NaN payload (NA vs NaN)
+
+- why (perf-vm's note): with two NaN operands, which payload survives
+  decides whether R prints NA or NaN, and robigo's `+`/`*` kernels were
+  plain Rust, which LLVM may commute. `c(NA, NaN) * c(NaN, NA)` (operands
+  computed in place) printed `NaN NA` (GNU R `NA NaN`); `NA_integer_ + NaN`
+  gave `NA` (GNU R `NaN`); `NA_integer_ + c(NaN, NaN)` and
+  `c(NA, NA, NA, NA) + c(NaN, NaN)` were also wrong.
+- the rule, from GNU R 4.5.0's own results (`scripts/oracle-real-arith.R`:
+  16 special doubles in every pair, five shapes, plus NA_integer_/3L with
+  doubles): x86-64 SSE keeps the destination operand's payload, and gcc's
+  destination differs by loop. Doubles: x for scalar-scalar, `n2 == 1` and
+  equal lengths; y for `n1 == 1` and general recycling (arithmetic.c:
+  real_binary's four loops). An integer operand: y for scalar-scalar
+  (do_arith's scalar fast path), x in every vector shape (MOD_ITERATE2).
+  Logicals count as doubles (coerced first). `-`, `/`, `%/%` always keep
+  x's; `^` and `%%` were already right (R_pow's `x + y`, myfmod).
+- what: `+`/`*` as inline-assembly `addpd`/`mulpd` (two elements per
+  instruction) with the destination chosen by `x_is_dest`, in
+  `real_binary`, `real_binary_inplace` and the scalar fast path; loops
+  unrolled by four (LLVM does not unroll loops around inline assembly),
+  slices zipped by `chunks_exact`, operation and destination as const
+  generics. First version (bounds-checked pairs, run-time flags): vecarith
+  +6.6%, spectralnorm_alt_2 +4.1%; final: geomean 0.9986 over all 78
+  programs (vecarith -0.85%, worst +0.13% nbody). The VM's `arith_fast`
+  (vm.rs, `real_op`) is unchanged.
+- rebased on afe56d9 (#50, #55, #65), CI's gate found Bounce_nonames,
+  fasta_naive_2, nbody_naive, matrixFor, fannkuch +0.54..+0.91%: all in
+  `vm::run_with`'s own instructions (same calls), i.e. LLVM compiled the
+  VM loop differently once arith.rs grew, although nothing new is called
+  from it. With the kernels in their own module (`arith_exact.rs`) all of
+  them are at or below main (-0.03..-0.09% locally against afe56d9; CI: 2
+  faster, 0 slower). Another case for the build-profile decision
+  (codegen units/LTO, `build-profile.md`).
+- tests: `gnu_r_oracle` in arith.rs (9,440 GNU R results through
+  `real_binary` in each shape); `tests/r/math/nan-payload-arith.R` (every
+  shape, temporaries and variables, integers, logicals, long vectors, a
+  recycled matrix column; main's binary differed on 18 lines); the oracle
+  scripts through the binary in all three tiers: 0 of 12,256 differ;
+  conformance in all tiers; fastr arithmetic slice (12,200 cases): the
+  same pass set as main.

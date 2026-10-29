@@ -12,6 +12,8 @@ use crate::interp::Interp;
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+use super::arith_exact::{add_mul, exact, x_is_dest};
+
 pub static DEFS: &[Builtin] = &[
     prim("+", do_plus, -1),
     prim("-", do_minus, -1),
@@ -314,7 +316,20 @@ fn scalar_arith(op: ArithOp, x: &Value, y: &Value) -> Option<Value> {
     if op == ArithOp::Mod && fmod_warns(a, b) {
         return None;
     }
-    Some(Value::real(real_op(op, a, b)))
+    // R: arithmetic.c:do_arith's scalar fast path: with an integer operand
+    // the compiled + and * keep y's NaN payload, with two doubles x's.
+    let r = match op {
+        ArithOp::Plus | ArithOp::Times => {
+            let mul = op == ArithOp::Times;
+            if matches!(x, Value::Int(_)) || matches!(y, Value::Int(_)) {
+                exact::one(mul, b, a)
+            } else {
+                exact::one(mul, a, b)
+            }
+        }
+        _ => real_op(op, a, b),
+    };
+    Some(Value::real(r))
 }
 
 pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y: Value) -> RResult<Value> {
@@ -371,9 +386,10 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
                     return Ok(Value::reals(out));
                 }
             }
+            let int_operand = matches!(x, Value::Int(_)) || matches!(y, Value::Int(_));
             let a = real_view(&x);
             let b = real_view(&y);
-            Value::reals(real_binary(op, &a, &b, n))
+            Value::reals(real_binary(op, &a, &b, n, int_operand))
         }
         _ => integer_binary(interp, call, op, &x, &y, n)?,
     };
@@ -433,11 +449,11 @@ macro_rules! real_kernel {
 }
 
 /// `a op b` on doubles (R: arithmetic.c:real_binary).
-fn real_binary(op: ArithOp, a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+fn real_binary(op: ArithOp, a: &[f64], b: &[f64], n: usize, int_operand: bool) -> Vec<f64> {
     match op {
-        ArithOp::Plus => real_kernel!(a, b, n, |x: f64, y: f64| x + y),
+        ArithOp::Plus => add_mul(false, a, b, n, int_operand),
         ArithOp::Minus => real_kernel!(a, b, n, |x: f64, y: f64| x - y),
-        ArithOp::Times => real_kernel!(a, b, n, |x: f64, y: f64| x * y),
+        ArithOp::Times => add_mul(true, a, b, n, int_operand),
         ArithOp::Div => real_kernel!(a, b, n, |x: f64, y: f64| x / y),
         ArithOp::Pow => real_kernel!(a, b, n, r_pow),
         ArithOp::Mod => real_kernel!(a, b, n, myfmod),
@@ -481,9 +497,27 @@ fn real_binary_inplace(op: ArithOp, x: &mut Value, y: &mut Value, n: usize) -> O
                 }};
             }
             match op {
-                ArithOp::Plus => go!(|p: f64, q: f64| p + q),
+                ArithOp::Plus | ArithOp::Times => {
+                    use exact::{in_place_k, in_place_v};
+                    let mul = op == ArithOp::Times;
+                    // `out` (a double) holds x if `$left`; the other operand
+                    // may be an integer.
+                    let int_operand = matches!($other, Value::Int(_));
+                    let (nx, ny) = if $left { (n, m) } else { (m, n) };
+                    let x_dest = x_is_dest(int_operand, nx, ny);
+                    let own_dest = if $left { x_dest } else { !x_dest };
+                    if m == n {
+                        exact::dispatch!(in_place_v, mul, own_dest, &mut out, &other[..]);
+                    } else if m == 1 {
+                        exact::dispatch!(in_place_k, mul, own_dest, &mut out, other[0]);
+                    } else {
+                        for (i, o) in out.iter_mut().enumerate() {
+                            let w = other[i % m];
+                            *o = if own_dest { exact::one(mul, *o, w) } else { exact::one(mul, w, *o) };
+                        }
+                    }
+                }
                 ArithOp::Minus => go!(|p: f64, q: f64| p - q),
-                ArithOp::Times => go!(|p: f64, q: f64| p * q),
                 ArithOp::Div => go!(|p: f64, q: f64| p / q),
                 ArithOp::Pow => go!(r_pow),
                 ArithOp::Mod => go!(myfmod),
@@ -1686,4 +1720,65 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 #[allow(dead_code)]
 fn unused(a: &[Arg]) -> Value {
     arg(a, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Double arithmetic is bit-identical with GNU R 4.5.0 itself (Debian
+    /// r-base-core 4.5.0-3) in every recycling shape, NaN payloads (NA vs
+    /// NaN) included: every pair of 16 special values (signalling and quiet
+    /// NA, NaNs with several payloads, +-Inf, +-0, finite, huge, subnormal)
+    /// for `+ - * / ^ %% %/%`, and NA_integer_/3L with doubles for
+    /// `+ - * /`, recorded by `scripts/oracle-real-arith.R`.
+    #[test]
+    fn gnu_r_oracle() {
+        use std::io::Read;
+        let raw = include_bytes!("arith_r_oracle.txt.gz");
+        let mut s = String::new();
+        flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s).unwrap();
+        let hex = |h: &str| f64::from_bits(u64::from_str_radix(h, 16).unwrap());
+        let op_of = |o: &str| match o {
+            "add" | "+" => ArithOp::Plus,
+            "sub" | "-" => ArithOp::Minus,
+            "mul" | "*" => ArithOp::Times,
+            "div" | "/" => ArithOp::Div,
+            "pow" => ArithOp::Pow,
+            "mod" => ArithOp::Mod,
+            "idiv" => ArithOp::IDiv,
+            other => panic!("bad op {other}"),
+        };
+        // (x, y, index of the checked element) for each shape
+        let shape = |sh: &str, x: f64, y: f64| -> (Vec<f64>, Vec<f64>, usize) {
+            match sh {
+                "ss" => (vec![x], vec![y], 0),
+                "vv" => (vec![x, x], vec![y, y], 1),
+                "sv" => (vec![x], vec![y, y, y], 1),
+                "vs" => (vec![x, x, x], vec![y], 1),
+                "rc" => (vec![x; 4], vec![y, y], 2),
+                other => panic!("bad shape {other}"),
+            }
+        };
+        let mut checked = 0;
+        for line in s.lines() {
+            let t: Vec<&str> = line.split_whitespace().collect();
+            let (op, x, y, want, int_operand, sh) = if !matches!(t[0], "+" | "-" | "*" | "/") {
+                // double with double: op shape x y result
+                (op_of(t[0]), hex(t[2]), hex(t[3]), hex(t[4]), false, t[1].to_string())
+            } else {
+                // integer with double: op int double shape_order result
+                let i = if t[1] == "NAi" { int_to_real(NA_INTEGER) } else { 3.0 };
+                let (sh, order) = t[3].split_once('_').unwrap();
+                let (x, y) = if order == "id" { (i, hex(t[2])) } else { (hex(t[2]), i) };
+                (op_of(t[0]), x, y, hex(t[4]), true, sh.to_string())
+            };
+            let (a, b, k) = shape(&sh, x, y);
+            let n = a.len().max(b.len());
+            let got = real_binary(op, &a, &b, n, int_operand)[k];
+            assert_eq!(got.to_bits(), want.to_bits(), "{line}");
+            checked += 1;
+        }
+        assert!(checked > 9000, "{checked}");
+    }
 }
