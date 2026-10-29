@@ -283,6 +283,60 @@ Branch `track/methods-install-newline` (PR #87), from main 74e8c73.
   `~/.cache/robigo-research/glibc/glibc-2.41/math/`; the oracle C program
   is in the repo (`scripts/oracle-complex-trig.c`), re-record inside
   robigo-oracle:4.5.0 only.
+## 2026-10-29: round 3, default-package switch rebased and gc tables masked
+
+- Started from main 098bd95 in this worktree and merged #71's existing
+  branch. The compressed gnur-tests record merge preserves the original
+  JSON lines: main changed only `r-strict-tst`, disjoint from #71's changes.
+- Main re-baseline with #71's methods-aware records: S4 slice **643/662**,
+  one lost ratchet case, `S4/TestR5/474b742f1785a587`. Main's release
+  profile measures **11,685 instructions per S4 dispatch** (20,000 minus
+  10,000 calls, divided by 10,000, using `scripts/callgrind-diff.py`).
+  The older 13,192 number used a different release profile.
+- Implemented the authorized `gc()` allocator-table mask in
+  `scripts/corpus.py`. Both Ncells/Vcells rows and header padding are
+  normalized without changing line counts or recorded masks. Three
+  Python tests verify numeric/NA equivalence, the optional limit columns,
+  and preservation of finalizer output and unrelated lines.
+- The gc case still fails after masking: GNU R prints
+  `[1] "finalizer: 456"`; robigo does not. `builtins/misc.rs`'s
+  `do_reg_finalizer` validates its arguments then discards the callback.
+  This needs runtime environment finalization and collection, owned by
+  core/memory. Do not hide this output or drop the case from scoring.
+- Rechecked `reg-packages` in Debian trixie with tools' native library:
+  parseRd now works, stdout matches, and status is 0. Stderr still loses
+  the blank line immediately before `* installing *source* package`.
+  Its recorded temporary-name masks remain intact. Follow up in CLI's
+  package-install transcript handling. The host alone is unsuitable for
+  this test because its external R is 4.6.1 and its R share paths differ.
+- Graphics natives were built from GNU R's sources locally. `reg-S4-examples`
+  gets past devholdflush but stops at `graphics::C_plot_new`. The reason
+  is outside S4: `native/mod.rs:is_robigo_build` builds LOAD tuples as
+  `(p_offset, p_vaddr, p_filesz)` but consumes them as
+  `(p_vaddr, p_offset, p_filesz)`. For graphics.so, the RW segment has
+  offset 0x41450 and vaddr 0x42450; the DYNAMIC lookup fails. A Python
+  reproduction finds graphics/splines false with today's mapping, true
+  with the corrected mapping; the other five packages detect correctly.
+  Core's next step is to swap the tuple's first two fields, add an ELF
+  fixture with unequal offsets/addresses, and recheck this case. CI also
+  needs grDevices/graphics/grid added to `build-natives.sh`'s package list.
+- After preserving #71's serializer fix, the combined S4/serializer slice
+  improves **643/664 -> 645/664** against the saved main binary. S4 alone
+  stays **643/662**; both serialized-class-generator cases improve 0/2
+  to 2/2. The remaining lost S4 case is still the finalizer above.
+- Dispatch cost is **11,685 -> 11,690 instructions/call (+0.04%)**, below
+  the 0.5% limit. With locally built natives present, methods/stats4 help
+  examples pass **43/50**, with no ratchet losses. The full fastr and
+  gnur-examples measurements are left to CI, queued on the updated PR.
+- Rcpp sugar was not re-baselined successfully this round: the recovered
+  mini-runner stops at `sourceCpp("cpp/sugar.cpp")` when run outside its
+  tinytest directory. A fresh sourceCpp build needs this worktree's own
+  robigo R_HOME and build setup. The previous 176/493 result remains
+  historical, not a new measurement.
+- Host-built binaries require glibc 2.44. For the Debian check only, mount
+  host `/usr/lib` read-only as `/hostlib` and invoke the binary through
+  `/hostlib/ld-linux-x86-64.so.2 --library-path /hostlib`; package builds
+  and the R library stay Debian's 4.5.0-3.
 
 ## Hook contract (for the VM and other evaluator paths)
 
