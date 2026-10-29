@@ -30,6 +30,8 @@ tests/r/conditions/warnings.R
 tests/r/datetime/internals.R
 tests/r/datetime/zones-arith.R
 tests/r/datetime/zones.R
+tests/r/debug/tracemem-repeat.R
+tests/r/debug/tracemem-state.R
 tests/r/io/apply.R
 tests/r/io/bind.R
 tests/r/io/connections.R

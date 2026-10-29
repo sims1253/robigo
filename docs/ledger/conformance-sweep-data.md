@@ -1,5 +1,45 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 4): silent repeated tracing and distinct symbol identities
+
+- Started from origin/main `74e8c73` on `track/conformance-data-round4`.
+- R: debug.c:do_tracemem sets RTRACE unconditionally. Removed the
+  invented `object already traced` warning. Symbols now use their interned
+  name allocation as identity; environments use their own allocation.
+  Untracing a different symbol, NULL, or an environment no longer clears
+  a traced symbol's mark.
+- Focused oracle metric: **0/2 -> 2/2** scripts match stdout, stderr, and
+  status byte for byte. Both scripts were recorded by
+  scripts/regen-expected.sh in robigo-oracle:4.5.0. Kept.
+- Existing tracemem corpus baseline: **4/8**, zero regressions; the four
+  failures contain raw addresses and duplication reports. Copy reporting
+  still needs allocation hooks; no oracle masking was changed.
+- Both new scripts match the oracle under the interpreter, VM, and JIT
+  (6/6 checks). All 226 conformance ratchet scripts pass; the standard
+  conformance harness, VM guards, and compiled/interpreted comparison pass.
+- Runtime tests: 35 unit + two integration pass. The complete invocation
+  reproduces the previously documented host-only c_library_oracle complex
+  sqrt mismatch (one ULP, at complex.rs:914). No complex code changed.
+  CI's Debian build passes, including its runtime tests.
+- Fixed-binary expanded data comparison: **8,404/8,426 -> 8,404/8,426**,
+  identical per-case pass/fail outcomes. Only the previously documented
+  order/add626 host collation case fails an existing passing entry on
+  both binaries. Tracemem corpus stays **4/8 -> 4/8**, zero regressions.
+- Commands: scripts/corpus.py run fastr --filter '<expanded filter below>'
+  --jobs 2 --keep-output, with --robigo pointing first to the saved main
+  binary and then to this worktree's candidate; separate TestBuiltin_tracemem
+  runs. R_HOME=$HOME/.local/opt/R-4.5.0 throughout. Formatting passes.
+- All CI jobs on implementation commit 1b68739 pass, including every
+  corpus shard and the performance gate. Final follow-up changes only this
+  verification ledger; no hot runtime paths or shared runtime files changed.
+- Ownership audit: lapply's sole remaining 245e62b case needs evaluator
+  traceback contexts. The srcref case b4bfbcb9 needs parse-generated
+  metadata: do_parse ignores keep.source, while subset.c:VectorSubset's
+  srcref transfer is already ported. Parser ledger owns source metadata
+  and truncation. Complex assignment order and match traceback remain
+  evaluator work. The GNU R status -11 recordings require oracle-owner
+  investigation, not an intentional runtime crash.
+
 ## 2026-10-29 (round 3), part 3: dim<- coercion warnings; tracemem marks
 ## and returns the address
 
