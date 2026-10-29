@@ -9,6 +9,140 @@ candidates. Both are needed: building another checkout into the same target
 directory linked stale `robigo_syntax` artifacts (cargo saw the same
 packages).
 
+## 2026-10-29: release profile: thin LTO with one workspace codegen unit
+
+Base: `7ff8a140`. Clean `cargo build --release --workspace`, Rust 1.99.0,
+`robigo-oracle:4.5.0` (Debian trixie, R 4.5.0-3),
+`--memory=4g --memory-swap=4g --cpus=2`, `CARGO_BUILD_JOBS=2`.
+Each profile uses its own fresh `~/.cache/robigo-perf-regression-profile-*-target`.
+Elapsed time excludes container startup; process RSS is `getrusage`'s
+maximum child RSS; container memory is cgroup v2 `memory.peak` and includes
+file cache. This host runs other agents, so elapsed times include contention.
+
+| Profile | Clean build seconds | Peak process MiB | Peak container MiB | OOM |
+|---|---:|---:|---:|---|
+| default (16 CGUs, no cross-crate LTO) | 312.00 | 2083.88 | 3135.40 | no |
+| one CGU | 355.52 (failed) | 2643.61 | 4096 | yes, Cranelift |
+| thin LTO, one CGU | 254.24 (failed) | 2609.46 | 4096 | yes, Cranelift |
+| one CGU, Cranelift at 16 | 278.04 | 2196.41 | 4062.90 | no |
+| thin LTO, one CGU, Cranelift at 16 | 469.17 | 2110.91 | 4096 | no (168 reclamation events) |
+
+CI has no `ROBIGO_RUNNER` repository variable. Recent build job
+123532847452 used the `ubuntu-24.04` GitHub-hosted runner. This is a public
+repository; [GitHub documents 4 CPUs and 16 GB RAM](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The workflow has no container memory limit or build job override, so the
+local 4 GB/two-job experiment is stricter than CI.
+
+Both global one-CGU profiles were killed while compiling `cranelift-codegen`.
+Fat LTO was not attempted. Select thin LTO with one workspace CGU and a
+16-CGU exception for Cranelift. Relative to the old profile, clean build
+time changes by +157.17 s (+50.4%), peak child RSS by +27.03 MiB (+1.3%),
+and peak container memory by +960.60 MiB (+30.6%). The thin-LTO build
+ran alongside instruction-count jobs; all runs share this host with other
+agents. Elapsed-time deltas are indicative, not controlled speed claims.
+The chosen profile reached the cap and reclaimed memory 168 times but
+recorded zero OOM events. File cache is included in container peak.
+
+Reproduce each build with a fresh private target and the same mounted
+source path, Rust toolchain, and cargo registry cache:
+
+```sh
+tc=$HOME/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu
+docker run --rm --memory=4g --memory-swap=4g --cpus=2 \
+  -u "$(id -u):$(id -g)" -v "$HOME:$HOME" -w "$PWD" \
+  -e HOME -e CARGO_HOME="$HOME/.cargo" -e RUSTUP_HOME="$HOME/.rustup" \
+  -e CARGO_TARGET_DIR="$HOME/.cache/robigo-perf-regression-profile-repro-target" \
+  -e PATH="$tc/bin:/usr/bin:/bin" -e R_HOME=/usr/lib/R \
+  -e CARGO_BUILD_JOBS=2 robigo-oracle:4.5.0 \
+  cargo build --release --workspace
+```
+
+For the old baseline, restore Cargo.toml from `7ff8a140`. For global
+one-CGU candidates, omit the Cranelift exception, and set `lto = "thin"`
+for the LTO candidate. Measure elapsed time around cargo, child RSS via
+Python `resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss`, and read
+`/sys/fs/cgroup/memory.peak` and `memory.events` before container exit.
+
+### Plain one-CGU candidate: rejected
+
+[CI run 40903000916](https://github.com/sims1253/robigo/actions/runs/40903000916)
+passed workspace tests, parser oracle, three-tier conformance, gctorture,
+parse corpus, and every corpus shard. The performance gate found 69 faster,
+4 slower, 0 broken, and 1 fixed. Regressions after recheck: flexclust +1.07%,
+flexclust_no_s4 +0.58%, spectralnorm_naive +1.72%, vecops +1.42%.
+Do not retain this candidate. Next experiment adds thin LTO with the same
+Cranelift exception. No gate threshold changes.
+
+The first perturbation appended one unused `#[inline(never)]` function
+each to syntax and runtime. Nine benchmarks covered fib, dataframe, matrix,
+Mandelbrot, nbody, transpose, and VM loops. The old profile moved at most
+0.0175%. This probe did **not** reproduce the historical 0.5% effect and
+cannot establish that the candidate removes it. Temporary edits restored.
+
+### Selected thin-LTO candidate
+
+Full local callgrind run, 78 benchmarks: **77 faster, 0 slower** by more
+than 0.5%, 0 broken. Geometric mean selected / old instruction count
+**0.958284** (-4.17%). Every benchmark uses fewer instructions; the closest
+is spectralnorm_naive at -0.241%. The four regressions in the plain-CGU
+candidate become flexclust -0.688%, flexclust_no_s4 -1.047%,
+spectralnorm_naive -0.241%, vecops -2.086%.
+
+A stronger perturbation appended 19 `#[inline(never)]` public functions
+and a `#[used]` static array of their function pointers to **each** of
+`robigo-syntax/src/lib.rs` and `robigo-runtime/src/lib.rs`. Each function
+rotated a u64 by `n + 1` and added `n + 12345`. These functions execute
+nowhere, but the array forces code generation. Rebuilt each profile using
+its own target; benchmarked copies of the binaries; restored both sources.
+
+| Benchmark | Old profile perturbation | Selected profile perturbation |
+|---|---:|---:|
+| mandelbrot_noout | -0.00271% | -0.00157% |
+| shootout/nbody | -0.00050% | -0.00411% |
+| spectralnorm_alt_2 | +0.00810% | +0.00725% |
+| superWhile | +0.00416% | +0.00566% |
+| vectorFor | +0.01690% | -0.00052% |
+| vectorWhile | -0.01169% | -0.00823% |
+| dataframe | -0.00404% | +0.00381% |
+| fib | +0.00024% | +0.00169% |
+| matrix | +0.00505% | +0.00383% |
+
+The selected profile stays within **0.0083%**, well below the 0.5% gate.
+Neither synthetic probe reproduces the historical old-profile failure,
+so these measurements establish stability for the probes, not immunity to
+arbitrary edits. One workspace CGU removes the partition boundary; LLVM
+heuristics and linker layout can still react to code changes.
+
+Run benchmarks in the same container with `R_HOME=/usr/lib/R` and
+`VALGRIND=/usr/bin/valgrind`, using `scripts/perf.py run --metric instr
+--runtime robigo --robigo PATH --jobs 2 --out FILE`. The perturbation
+filter was `vectorFor|vectorWhile|superWhile|spectralnorm_alt_2|
+shootout/nbody$|shootout/mandelbrot_noout$|robigo/(fib|matrix|dataframe)$`
+(join the lines without whitespace). Full baseline and selected runs used
+no filter. `scripts/perf.py compare OLD.json SELECTED.json` checks the
+unchanged 0.5% threshold.
+
+Selected-profile [CI run 40907204567](https://github.com/sims1253/robigo/actions/runs/40907204567)
+passed its build/validation job in 7m31s: formatting, release workspace
+build and tests, parser oracle, conformance in all three tiers, gctorture,
+and parse-corpus ratchets. Every corpus shard and the unchanged perf
+gate also passed. This validates code commit `8f6874c`; the final ledger
+commit triggers another CI run without changing the profile or runtime.
+
+Focused local FastR check with the selected binary in the same container:
+`TestSimpleValues|TestSimpleArithmetic|TestBuiltin_(complex|Re|Im|Mod|Arg|Conj|operators|cumsum|cumprod|sum|prod)`:
+10,092 / 10,104 pass; stdout 10,092, stderr and status 10,104 match;
+zero new passes and **zero ratchet regressions**. The baseline's remaining
+12 failures are retained. No expected output or ratchet changes.
+
+Only Cargo.toml and this ledger are delivered. No ratchet, oracle,
+recorded output, runtime source, or perf-gate threshold changes.
+
+After the coordinator merges #81: core should rerun #69's CI, and
+perf-vm should rebase #60 onto the merged profile and rerun CI. That is
+the next validation against the real layout-sensitive changes. Merge and
+these follow-ups remain pending; do not report them as completed.
+
 ## Problem
 
 Between `37a5f96` and `ad59f6f`, `main` got slower: `dataframe` 705M ->
