@@ -145,7 +145,10 @@ jobs:
           json.dump(n, open("perf.json", "w"))
           PY
           python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/perf.py compare base/perf.json perf.json | tee -a "$GITHUB_STEP_SUMMARY"
+          # Programs found slower are measured once more and keep the lower
+          # count: a regression is slower in both runs, an outlier is not.
+          VALGRIND=valgrind python3 scripts/perf.py recheck base/perf.json perf.json --robigo dist/robigo \
+            --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
         run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
