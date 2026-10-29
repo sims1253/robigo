@@ -11,6 +11,25 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: #70 timing regression reproduced and re-recorded
+
+- CI run 40860072686 reported one gnur-tests regression, r-strict-tst,
+  stdout only. Its downloaded binary and natives reproduce it in
+  robigo-build:4.5.0 (Debian r-base-core 4.5.0-3): repeat 36 prints
+  user.self 0.001 instead of 0, with status 0 and all assertions passing.
+- Re-recorded only that case with the exact oracle using corpus.py record
+  gnur-tests --filter '^r-strict-tst$' --all --repeat 100
+  --mask-against-previous. Only the timing value and mask_out [43]
+  changed; no random-number values, assertions or ratchet entries changed.
+  Same CI binary after recording: 80/80 repeats pass (before: 35/36).
+- This fixes the corpus failure independently of #78. Leave #70's rebase
+  until #78 lands; the stats-native startup performance prerequisite is
+  still external. Do not merge until the new CI run is green.
+- Graphics verification on main 7ff8a140 and the rebased #69 both hits
+  the identical one-ULP complex sqrt oracle mismatch on host glibc 2.44;
+  it predates the graphics rebase. Core, C API, CLI and all-tier
+  conformance pass locally; CI's glibc 2.41 remains the numeric judge.
+
 ## 2026-10-29: stats natives in CI: ported routines keep their Rust port
 
 - CI perf on #70 (stats natives everywhere): `robigo/lm` +99%. Profile:
