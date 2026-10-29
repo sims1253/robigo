@@ -129,6 +129,12 @@ and parse-corpus ratchets. Every corpus shard and the unchanged perf
 gate also passed. This validates code commit `8f6874c`; the final ledger
 commit triggers another CI run without changing the profile or runtime.
 
+Focused local FastR check with the selected binary in the same container:
+`TestSimpleValues|TestSimpleArithmetic|TestBuiltin_(complex|Re|Im|Mod|Arg|Conj|operators|cumsum|cumprod|sum|prod)`:
+10,092 / 10,104 pass; stdout 10,092, stderr and status 10,104 match;
+zero new passes and **zero ratchet regressions**. The baseline's remaining
+12 failures are retained. No expected output or ratchet changes.
+
 Only Cargo.toml and this ledger are delivered. No ratchet, oracle,
 recorded output, runtime source, or perf-gate threshold changes.
 
