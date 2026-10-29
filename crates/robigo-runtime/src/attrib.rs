@@ -229,16 +229,16 @@ fn dim_gets(mut v: Value, val: Value) -> RResult<Value> {
     Ok(v)
 }
 
-fn as_char_simpl(x: &Value) -> Value {
+fn as_char_simpl(x: &Value) -> RResult<Value> {
     if x.is_empty() {
-        return Value::Null;
+        return Ok(Value::Null);
     }
     if x.inherits("factor") {
         return crate::builtins::envir::as_character_factor(x);
     }
     match x {
-        Value::Str(_) => x.clone(),
-        _ => Value::strs(to_str(x)),
+        Value::Str(_) => Ok(x.clone()),
+        _ => Ok(Value::strs(to_str(x))),
     }
 }
 
@@ -284,7 +284,7 @@ fn dimnames_gets(mut v: Value, val: Value) -> RResult<Value> {
             if d[i] as usize != it.len() && !it.is_empty() {
                 return Err(Flow::error(format!("length of 'dimnames' [{}] not equal to array extent", i + 1)));
             }
-            *it = as_char_simpl(it);
+            *it = as_char_simpl(it)?;
         }
     }
     let mut dn = Value::list(items);

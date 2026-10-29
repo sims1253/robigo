@@ -360,36 +360,6 @@ fn flag(v: &Value) -> bool {
 // ----------------------------------------------------------------------
 // round / signif (do_Math2)
 
-/// R's `evalListKeepMissing`: evaluate arguments, expanding `...`, and
-/// keep empty arguments as the missing-argument marker.
-fn eval_list_keep_missing(i: &mut Interp, args: &[Arg], env: &Env) -> RResult<Vec<Arg>> {
-    let mut out = Vec::with_capacity(args.len());
-    for a in args {
-        match &a.value {
-            Value::Sym(sym) if *sym == s::DOTS => match env.lookup(s::DOTS) {
-                Some((Value::Dots(d), _)) => {
-                    for item in d.iter() {
-                        if item.value.is_missing_arg() {
-                            out.push(item.clone());
-                        } else {
-                            let v = i.eval(&item.value, env)?;
-                            out.push(Arg::new(item.tag, v));
-                        }
-                    }
-                }
-                Some((v, _)) if v.is_missing_arg() || v.is_null() => {}
-                _ => return Err(Flow::error("'...' used in an incorrect context")),
-            },
-            v if v.is_missing_arg() => out.push(a.clone()),
-            v => {
-                let v = i.eval(v, env)?;
-                out.push(Arg::new(a.tag, v));
-            }
-        }
-    }
-    Ok(out)
-}
-
 fn x_sym() -> Sym {
     Sym::new("x")
 }
@@ -428,7 +398,7 @@ fn match_math2_dflt_args(args: Vec<Arg>, call: &Value) -> RResult<(Value, Value)
 fn do_math2_group(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_signif: bool) -> RResult<Value> {
     let name = if is_signif { "signif" } else { "round" };
     let dflt_digits = if is_signif { 6.0 } else { 0.0 };
-    let args = eval_list_keep_missing(i, &args, env)?;
+    let args = super::subset::eval_keep_missing(i, &args, env)?;
     let args: Vec<Arg> = if is_signif {
         let (x, mut d) = match_math2_dflt_args(args, call)?;
         if d.is_missing_arg() {

@@ -232,6 +232,11 @@ fn do_dimgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
     if d.is_null() && x.get_attr(s::DIM).is_none() && x.get_attr(s::NAMES).is_none() {
         return Ok(x);
     }
+    // R: attrib.c:dimgets — coerceVector(val, INTSXP) issues its coercion
+    // warnings ("imaginary parts discarded in coercion", "NAs introduced
+    // by coercion to integer range") against the dim<- call; dim_gets
+    // below re-checks atomicness before this no-op for Int.
+    let d = if matches!(d, Value::Int(_) | Value::Lgl(_)) || !d.is_atomic() { d } else { i.coerce(&d, VType::Int)? };
     let x = set_attrib(x, s::DIM, d)?;
     Ok(remove_attrib(x, s::NAMES))
 }

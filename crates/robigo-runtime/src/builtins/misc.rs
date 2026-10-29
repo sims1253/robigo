@@ -524,10 +524,7 @@ fn do_return_value(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
 
 fn do_as_character_factor(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
-    if !x.inherits("factor") {
-        return Err(Flow::error("attempting to coerce non-factor"));
-    }
-    Ok(crate::builtins::envir::as_character_factor(&x))
+    crate::builtins::envir::as_character_factor(&x)
 }
 
 fn do_active_binding_function(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
