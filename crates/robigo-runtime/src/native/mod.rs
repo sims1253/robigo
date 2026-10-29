@@ -113,19 +113,16 @@ pub fn has_table(name: &str) -> bool {
 }
 
 /// Whether a shared object is one of GNU R's base packages built from
-/// source against robigo (`scripts/build-natives.sh`
-/// links in the symbol `robigo_base_native`).
-/// Whether a shared object is one of GNU R's base packages built from
-/// source against robigo (`scripts/build-natives.sh` links in the symbol
-/// `robigo_base_native`). The marker is a dynamic symbol name, so only
-/// the dynamic string table is searched: these files are megabytes and
-/// every base-package dyn.load checks one.
+/// source against robigo (`scripts/build-natives.sh` links in the
+/// symbol `robigo_base_native`). The marker is a dynamic symbol name,
+/// so only the dynamic string table is searched: these files are
+/// megabytes and every base-package dyn.load checks one.
 pub fn is_robigo_build(path: &str) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let marker = b"robigo_base_native\0";
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(f) = std::fs::File::open(path) else { return false };
     let mut f = std::io::BufReader::with_capacity(1 << 16, f);
-    let mut u64_at = |buf: &[u8], off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+    let u64_at = |buf: &[u8], off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
     // ELF64 header: program headers at e_phoff (u64 at 0x20), count
     // e_phnum (u16 at 0x38), entry size e_phentsize (u16 at 0x36).
     let mut eh = [0u8; 64];
