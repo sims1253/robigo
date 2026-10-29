@@ -445,6 +445,23 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
         return Err(Flow::error("bad offset/length argument"));
     }
     let (off, len) = (key[0] as usize, key[1] as usize);
+    // ROBIGO_RDBLOG records fetches for scripts/build-rdbflat.py
+    crate::rdbflat::log_fetch(&file, off, len, compressed);
+    // the flat cache (rdbflat.rs): entries pre-inflated at build time;
+    // a missing or stale cache falls through to the per-fetch path
+    if let Some(v) = crate::rdbflat::with_entry(&file, off, len, |data| {
+        crate::serialize::unserialize(i, data, hook.clone()).and_then(|v| match v {
+            // R: serialize.c do_lazyLoadDBfetch — eval(val, R_GlobalEnv)
+            Value::Promise(p) => {
+                let expr = p.expr.clone();
+                let g = i.global.clone();
+                i.eval(&expr, &g)
+            }
+            v => Ok(v),
+        })
+    }) {
+        return v;
+    }
     let mut f = std::fs::File::open(&*file)
         .map_err(|_| Flow::error(format!("cannot open file '{}': No such file or directory", file)))?;
     use std::io::Seek;
