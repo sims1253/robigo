@@ -337,6 +337,25 @@ def cmd_record(a):
                 mask = set(rec.get("mask_" + key, [])) | {i for i, (x, y) in enumerate(zip(now, then)) if x != y}
                 if mask:
                     rec["mask_" + key] = sorted(mask)
+        # Rdiff ignores these blocks by content. Do not retain line-index
+        # masks inside them: a different environment size can move an END
+        # marker onto a masked index and prevent the block from closing.
+        for key, idx in (("out", 0), ("err", 1)):
+            mask_key = "mask_" + key
+            if mask_key not in rec:
+                continue
+            begins = ends = 0
+            ignored = set()
+            for n, line in enumerate(normalize(runs[0][idx]).split(b"\n")):
+                begins += line == IGNORE_BEGIN
+                ends += line == IGNORE_END
+                if begins > ends or line in (IGNORE_BEGIN, IGNORE_END):
+                    ignored.add(n)
+            mask = [n for n in rec[mask_key] if n not in ignored]
+            if mask:
+                rec[mask_key] = mask
+            else:
+                del rec[mask_key]
         return rec
 
     recs = pmap(one, todo, a.jobs, f"record {a.name}")

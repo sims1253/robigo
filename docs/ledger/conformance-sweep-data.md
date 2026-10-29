@@ -1,5 +1,22 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): environment-independent Sys.getenv recording
+
+- Started from main `24a5b8e` on `track/conformance-sweep-data-5`.
+- Re-recorded `base/Sys.getenv` in robigo-oracle:4.5.0 with
+  `record --all --mask-against-previous`. Re-recording alone moved the
+  redundant R_SESSION_TMPDIR mask from index 94 to 65. The recorder now
+  omits masks inside IGNORE_RDIFF blocks and on their markers, leaving
+  those blocks to the existing content-based Rdiff comparison. Masks
+  outside the block remain intact. No comparison or oracle was weakened.
+- Removed the host_dependent skip. Oracle output and baseline robigo both
+  compare equal with 0, 1, 10, 40, 80, and 160 synthetic environment
+  variables, including pull_request-shaped additions. Metric: skipped
+  -> scored and passing. Two Python regression checks pass.
+- Shared tooling edits: scripts/corpus.py recording only, manifest and
+  oracle-generated expected.jsonl.gz. Runtime comparison is unchanged.
+
+
 ## 2026-10-29 (round 4): silent repeated tracing and distinct symbol identities
 
 - Started from origin/main `74e8c73` on `track/conformance-data-round4`.
