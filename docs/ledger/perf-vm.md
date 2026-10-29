@@ -6,6 +6,61 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: native CSV cost and complete benchmark stream checks
+
+- Controlled CSV probe with the saved #60 CI binary and its flat cache:
+  matching CI native libraries cost **1,933,306,497 instructions**;
+  selecting existing Rust ports with an empty native directory costs
+  **912,341,802**. Benchmark stdout matches byte for byte. This reproduces
+  CI's 1,933,679,323 count within 0.02%. Do not attribute the CI/local CSV
+  gap to VM code generation without matching native/cache configuration.
+- The native CSV profile attributes 18,029,457 self instructions (0.933%)
+  to VM source, 285,637,878 (14.775%) to scan/io, 99,477,531 (5.145%) to
+  C API source and 151,517,896 (7.837%) to core source. These are exclusive
+  costs, not an attribution of the entire native/port difference.
+  Native utils io.c:writetable/typeconvert and C API formatting are
+  concrete places to split the next profile. Coordinate with startup/core;
+  compare a verified Rust override or reduce bridge/formatting costs only
+  after complete formatting and CSV conformance, rather than disabling
+  native code globally.
+- Rejected profiling setup: mixing the local CLI-only binary with CI's
+  native utils fails to load utils.so (undefined symbol lzma_crc64).
+  The matching CI binary/native artifacts load correctly. Use matching
+  artifacts; this failed setup does not measure CSV performance.
+- #90 CI run 40966972376 is also green on code head 2884282. Against
+  its own main base dbf6754, the official stdout/status geomean is
+  0.456983 -> 0.454530 GNU R; the 76-case complete-stream subset is
+  **0.452108 -> 0.449655**, 73 -> 74 faster. All stream-match flags are
+  identical to main/#60. Gate after excluding the known false FIXED flag:
+  6 faster, 0 slower above 0.5%, 0 broken, 0 fixed.
+- Actual CI artifacts compared with GNU R across all benchmark streams:
+  main e25e6cc and #60 both match stdout/status on 77/78, but all three
+  streams on **76/78**. spectralnorm_math is the known mismatch;
+  flexclust_no_s4 returns status 1 in both GNU R and robigo but its error
+  call differs. The discrepancy is unchanged by #60 and is present in
+  robigo's AST and VM. perf.py discards stderr, so its official "correct"
+  count includes that case. Do not claim 77 fully byte-identical programs.
+- On the 76 common fully matching cases, CI instruction geomean is
+  **0.452063 -> 0.449943** GNU R, 73 -> 74 faster. The broader official
+  stdout/status metric is recorded in the recovery section below.
+- Reduced error-call probe:
+
+```r
+f <- function(m) { for (i in 1:2) m[2, ] <- m[1, ]; m }
+f(matrix(0, 1, 1))
+```
+
+  GNU R with R_ENABLE_JIT=3 reports value = m[1, ]; GNU R with JIT=0 and
+  robigo's AST/VM report value = 0. A top-level assignment reports 0 in
+  both implementations and is not a reproduction. Next: port compiled
+  setter-call source preservation from eval.c, with a focused fixture,
+  while preserving interpreted calls. Coordinate shared interpreter changes.
+  CLI's performance runner should also retain/compare stderr; keep this
+  existing difference explicit in performance reports.
+- Artifacts: .robigo/r6/ci-csv*, ci-ports-csv*, ci-{main-,}outputs*,
+  flex-warning*, flex-ast*, replacement-call-check*. No runtime change is
+  kept from these investigations; this is the next-track handoff.
+
 ## 2026-10-29: inline closure buffers skip reservation calls
 
 - Baseline: recovered #60, df9b0dc, current thin-LTO profile.
@@ -26,7 +81,11 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - cargo test --release -p robigo-runtime -p robigo-cli passes: 38 runtime
   (including all 9,440 arithmetic oracle cases), 7 CLI, two integration
   tests and conformance in all three tiers. Formatting/source diff checks
-  pass. CI checks are attached to PR #90, stacked on the green #60.
+  pass. CI run 40966972376 on 2884282 passes build, all ten corpus shards
+  and performance. PR #90 is open for review, stacked on the green #60.
+  Main advanced to dbf6754 during verification; CI waited for that main
+  run's perf baseline before comparing the test merge, rather than using
+  stale numbers.
   Artifacts: .robigo/r6/inline-reserve*, inline-calls-{base,after}.txt.
 
 ## 2026-10-29: round 6 follow-up, recursive argument allocations
@@ -97,7 +156,7 @@ conformance` (interpreter, VM and VM+JIT against each other).
   ASCII to +0.343%, noout to +0.351%; naive ASCII remains -29.099%.
   All 6,144 vector payload and 99 complex scalar comparisons pass.
 - Final local full-suite result: **0.489543 -> 0.487338** GNU R;
-  **76/77 -> 77/77** correct programs faster. Naive ASCII
+  **76/77 -> 77/77** stdout/status-matching programs faster. Naive ASCII
   **1,210,079,365 -> 857,964,515** instructions (-29.098%). Vector ASCII
   +0.348%, noout +0.351%. Gate: 2 faster, 0 slower above 0.5%, 0 broken.
 - Final `cargo test --release -p robigo-runtime -p robigo-cli` passes:
