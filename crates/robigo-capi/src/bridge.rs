@@ -58,6 +58,24 @@ thread_local! {
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
     static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    /// Identity across native calls for a vector C code stored in an
+    /// environment (`Rf_defineVar`, `Rf_setVar`): the runtime value it
+    /// became -> the core object, preserved. C code keeps such objects in
+    /// statics and writes to them later (Rcpp's `.rcpp_cache`, read once
+    /// with `Rf_findVarInFrame`). The entry holds the value too, so a
+    /// runtime-side change copies it (a new identity, so no stale object
+    /// is handed out); `gc()` drops entries whose value only it still holds.
+    static STORED: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    /// Proxies kept preserved while their runtime object is referenced
+    /// from anywhere but `PROXIED` (handle -> proxy): C code keeps
+    /// functions and environments it looked up in statics (Rcpp's
+    /// `Rcpp::Function`s and namespace), which GNU R keeps alive through
+    /// their bindings. `gc()` unpins the others; the collector then frees
+    /// them and `release_proxy` forgets them.
+    static PINNED: RefCell<HashMap<usize, Sexp>> = RefCell::new(HashMap::new());
+    /// `STORED` + `PINNED` entries above which a native call's exit sweeps
+    /// (twice what the last sweep kept, at least 256).
+    static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
     static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -125,6 +143,64 @@ unsafe extern "C" fn release_proxy(handle: usize) {
     DEAD.with(|d| d.borrow_mut().push(handle));
 }
 
+/// See `STORED`.
+unsafe fn remember_stored(x: Sexp, v: &Value) {
+    if let Some(k) = vector_identity(v) {
+        core().preserve(x);
+        if let Some((old, _)) = STORED.with(|m| m.borrow_mut().insert(k, (x, v.clone()))) {
+            core().release(old);
+        }
+    }
+}
+
+/// Is the bridge's own clone the only reference left to the value?
+fn only_stored(v: &Value) -> bool {
+    match v {
+        Value::Env(e) => Rc::strong_count(&e.0) == 1,
+        Value::Closure(x) => Rc::strong_count(x) == 1,
+        Value::Promise(x) => Rc::strong_count(x) == 1,
+        Value::ExtPtr(x) => Rc::strong_count(x) == 1,
+        // builtins are static: their proxies stay
+        Value::Builtin(_) => false,
+        Value::Lgl(x) | Value::Int(x) => Rc::strong_count(x) == 1,
+        Value::Real(x) => Rc::strong_count(x) == 1,
+        Value::Cplx(x) => Rc::strong_count(x) == 1,
+        Value::Str(x) => Rc::strong_count(x) == 1,
+        Value::Raw(x) => Rc::strong_count(x) == 1,
+        Value::List(x) | Value::Expr(x) => Rc::strong_count(x) == 1,
+        Value::Lang(x) => Rc::strong_count(x) == 1,
+        Value::Pairlist(x) => Rc::strong_count(x) == 1,
+        _ => true,
+    }
+}
+
+unsafe fn sweep_stored() {
+    let dead: Vec<Sexp> = STORED.with(|m| {
+        let mut m = m.borrow_mut();
+        let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
+        keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
+    });
+    for x in dead {
+        core().release(x);
+    }
+    let unpinned: Vec<Sexp> = PINNED.with(|p| {
+        let mut p = p.borrow_mut();
+        let handles: Vec<usize> = PROXIED.with(|m| {
+            let m = m.borrow();
+            p.keys().copied().filter(|h| m.get(h).is_none_or(|e| only_stored(&e.1))).collect()
+        });
+        handles.into_iter().filter_map(|h| p.remove(&h)).collect()
+    });
+    for x in unpinned {
+        core().release(x);
+    }
+    SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
+}
+
+fn kept_count() -> usize {
+    STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len())
+}
+
 fn drain_dead() {
     let dead = DEAD.with(|d| std::mem::take(&mut *d.borrow_mut()));
     for h in dead {
@@ -173,6 +249,8 @@ unsafe fn proxy(v: &Value) -> Sexp {
     }
     PROXIED.with(|m| m.borrow_mut().insert(h, (key, v.clone())));
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
+    core().preserve(x);
+    PINNED.with(|m| m.borrow_mut().insert(h, x));
     x
 }
 
@@ -294,6 +372,12 @@ fn vector_identity(v: &Value) -> Option<usize> {
 /// Convert a runtime value to a core object (a copy for vectors; the
 /// same copy while a native call runs).
 pub unsafe fn to_sexp(v: &Value) -> Sexp {
+    if let Some(x) = STORED.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
+    }) {
+        return x;
+    }
     let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
@@ -734,12 +818,14 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "defineVar" => {
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            remember_stored(a[1], &val);
             with_interp(|i| i.define(sym, val, &env))?;
             R_NilValue
         }
         "setVar" => {
             // R: envir.c:setVar — assign where bound, else in the global env
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            remember_stored(a[1], &val);
             let mut cur = Some(env);
             let mut target = None;
             while let Some(e) = cur {
@@ -1115,6 +1201,9 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         for (_, (x, _)) in seen {
             core().release(x);
         }
+        if kept_count() > SWEEP_AT.with(|c| c.get()) {
+            sweep_stored();
+        }
     }
     res
 }
@@ -1401,6 +1490,7 @@ impl NativeBridge for Bridge {
 
     fn gc(&self, interp: &mut Interp) {
         if READY.with(|r| r.get()) {
+            unsafe { sweep_stored() };
             let outer = INTERP.with(|c| c.get().is_null());
             enter(interp, |_| unsafe {
                 // gc() from R with no C code active: nothing on the
