@@ -6,6 +6,65 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: inline closure buffers skip reservation calls
+
+- Baseline: recovered #60, df9b0dc, current thin-LTO profile.
+- run_inline_with unconditionally calls SmallVec::reserve_exact twice,
+  even when its fresh stack buffers already fit the registers and slots.
+  Gate these calls on inline capacity, as run_pre already does.
+- A VM loop with native JIT disabled, f(x) = x + 1, measured by 20,000
+  minus 10,000 iterations, costs **1,223 -> 1,160 instructions/iteration**
+  (-5.1%). Each reserve helper used 28 instructions per iteration; both
+  disappear. No allocator request is removed: these buffers already fit.
+- Focused suite: spectralnorm_naive **1,002,483,620 -> 989,534,349**
+  instructions (-1.292%). fib, binarytrees and profiler-microbenchmark
+  change by at most +0.009%, within startup variation.
+- Kept: full local suite geomean **0.487338 -> 0.487026** GNU R,
+  77/77 faster before and after. Gate: 3 faster, 0 slower beyond 0.5%,
+  0 broken, 0 fixed. lapply -1.95%, apply -1.66%, spectralnorm_naive -1.30%.
+  Independent outputs remain 77/78, with spectralnorm_math unchanged.
+- cargo test --release -p robigo-runtime -p robigo-cli passes: 38 runtime
+  (including all 9,440 arithmetic oracle cases), 7 CLI, two integration
+  tests and conformance in all three tiers. Formatting/source diff checks
+  pass. CI checks are attached to PR #90, stacked on the green #60.
+  Artifacts: .robigo/r6/inline-reserve*, inline-calls-{base,after}.txt.
+
+## 2026-10-29: round 6 follow-up, recursive argument allocations
+
+- After #60, the paired suite has no correct benchmark slower than GNU R
+  in instruction count (77/77). The next measured target is allocation in
+  recursive calls, rather than the stale slower-benchmark table.
+- `fib(21)` minus `fib(20)`, divided by 13,530 additional calls, costs
+  3,083 instructions/call: VM body 640, closure_call 576.5, run_pre 159,
+  end_context 152, plain_lookup 145.5, direct_call 108, argument binding 82.
+- The old alloc-count.py's __rust_alloc counters undercount under thin LTO
+  (403 requests reported for fib). A private copy counting mimalloc's
+  malloc/zeroed/aligned entry points measures 1,273,305 allocation requests
+  for fib(25), and 485,850 for profiler-microbenchmark. It excludes realloc
+  requests and does not change the shared script.
+- Fib's main allocation callers: Value::real 487,656, Env::with_frame
+  252,408, closure_call 244,874. Startup is included in these totals.
+- A startup-canceling allocation delta, fib(21) minus fib(20), gives
+  54,121 requests / 13,530 additional calls = 4.000074 requests/call:
+  exactly two in Value::real, one in Env::with_frame, and approximately
+  one in closure_call, with one residual request across the whole delta.
+- Boundary: Promise::forced stores a boxed Value; bind_positional installs
+  that promise into an Env and Context.promargs retains it. Removing the
+  scalar box or promise requires coordinating value.rs/interp.rs with the
+  core owner, preserving expression identity, missing/substitute,
+  parent-frame mutation, escaped promises, and the S4 context hooks.
+  Environment reuse also requires env.rs ownership and escaping-frame
+  semantics. Do not change those shared files during core round 4.
+- GNU R contracts for that work: eval.c:forcePromise stores PRVALUE,
+  applies ENSURE_NAMEDMAX, and clears PRENV after successful evaluation;
+  make_applyClosure_env/R_execClosure define the binding and context
+  lifetimes. Delaying a scalar box must still commit the forced value
+  before any observable parent-frame mutation or introspection.
+- Next: agree on unboxed forced-promise storage with core, then measure the
+  same per-call instruction/allocator deltas and rerun introspection,
+  promise, closure-context and full conformance tests before a separate PR.
+  The boxed-scalar/promise allocation change needs core coordination.
+
 ## 2026-10-29: round 6, recover #60 on the current profile
 
 - Rebased draft #60 onto main `e25e6cc`, retaining both sides' conformance
@@ -37,7 +96,22 @@ conformance` (interpreter, VM and VM+JIT against each other).
   conversions or double-kernel eligibility. The family recheck improves
   ASCII to +0.343%, noout to +0.351%; naive ASCII remains -29.099%.
   All 6,144 vector payload and 99 complex scalar comparisons pass.
-  Final full-suite verification is running.
+- Final local full-suite result: **0.489543 -> 0.487338** GNU R;
+  **76/77 -> 77/77** correct programs faster. Naive ASCII
+  **1,210,079,365 -> 857,964,515** instructions (-29.098%). Vector ASCII
+  +0.348%, noout +0.351%. Gate: 2 faster, 0 slower above 0.5%, 0 broken.
+- Final `cargo test --release -p robigo-runtime -p robigo-cli` passes:
+  38 runtime tests including all 9,440 arithmetic oracle cases, 7 CLI,
+  two integration tests, all three conformance/guard checks. Formatting
+  and source diff checks pass (verbatim oracle .Rout whitespace excluded).
+  Independent benchmark outputs remain 77/78 before and after, with the
+  known spectralnorm_math mismatch excluded. CI run 40962356010 on df9b0dc passes build, all ten corpus shards,
+  and performance. #60 is Ready for review. CI paired geomean is
+  0.456939 -> 0.454816 GNU R, 73/77 -> 74/77 faster; naive ASCII -29.821%,
+  vector ASCII +0.363%, noout +0.389%, no gate regressions. CI still has
+  flexclust, flexclust_no_s4 and csv slower than GNU R (unlike this host).
+  Local focused FastR arithmetic/operators: 1,057/1,058 before and after,
+  zero regressions.
   Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
   private build target `~/.cache/robigo-trixie-target`.
 
