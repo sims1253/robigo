@@ -55,27 +55,43 @@ const COMPILED: u64 = 4;
 /// Defined in a namespace: compiled when its package was installed, and
 /// lookups from there find base's functions anyway.
 const IGNORE: u64 = 5;
+// R: print.c:PrintClosure / serialize.c:ReadItem. A loaded BCODESXP body
+// is printed as bytecode without changing the execution/inheritance state.
+const LOADED_BYTECODE: u64 = 0x80;
+const STATE_MASK: u64 = 0x7f;
 
-/// A closure's JIT state: the state in the low byte, the set of
-/// [`FROZEN_FUNS`] (by index) bound to base in the high bits.
+/// A closure's JIT state: execution state and loaded-bytecode flag in the
+/// low byte, and the [`FROZEN_FUNS`] bound to base in the high bits.
 #[derive(Clone, Default)]
 pub struct JitState(Cell<u64>);
 
 impl JitState {
+    /// R: serialize.c:ReadItem preserves a BCODESXP closure body.
+    pub fn from_bytecode() -> Self {
+        Self(Cell::new(LOADED_BYTECODE))
+    }
+
+    /// R: print.c:PrintClosure tests isByteCode(BODY(s)), independently
+    /// of robigo's eager execution bytecode.
+    pub fn is_bytecode(&self) -> bool {
+        let v = self.0.get();
+        v & LOADED_BYTECODE != 0 || matches!(v & STATE_MASK, INHERITED | COMPILED)
+    }
+
     /// Calls still have to go through [`jit_check`].
     #[inline(always)]
     pub fn unsettled(&self) -> bool {
-        self.0.get() & 0xff < NOJIT
+        self.0.get() & STATE_MASK < NOJIT
     }
 
     fn set(&self, state: u64, mask: u64) {
-        self.0.set(state | (mask << 8));
+        self.0.set(state | (self.0.get() & LOADED_BYTECODE) | (mask << 8));
     }
 
     /// The frozen set of a compiled closure.
     fn mask(&self) -> u64 {
         let v = self.0.get();
-        if v & 0xff == COMPILED { v >> 8 } else { 0 }
+        if v & STATE_MASK == COMPILED { v >> 8 } else { 0 }
     }
 }
 
@@ -226,7 +242,7 @@ fn index(sym: Sym) -> Option<usize> {
 #[inline(never)]
 pub fn jit_check(interp: &mut Interp, clo: &Closure) {
     let v = clo.jit.0.get();
-    match v & 0xff {
+    match v & STATE_MASK {
         UNSEEN => {
             if in_namespace(interp, &clo.env) {
                 clo.jit.set(IGNORE, 0);
@@ -718,7 +734,7 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
         if ctx.cloenv.ptr_eq(env) {
             if let Value::Closure(c) = &ctx.function {
                 let v = c.jit.0.get();
-                match v & 0xff {
+                match v & STATE_MASK {
                     COMPILED => clo.jit.set(INHERITED, v >> 8),
                     // (Namespace code creates namespace code.)
                     IGNORE => clo.jit.set(IGNORE, 0),

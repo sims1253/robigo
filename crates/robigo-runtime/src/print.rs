@@ -1,6 +1,8 @@
 //! Printing of R values. Port of GNU R's print.c, printvector.c and
 //! printarray.c.
 
+use std::rc::Rc;
+
 use crate::env::Env;
 use crate::error::RResult;
 use crate::format::*;
@@ -155,6 +157,10 @@ impl Printer {
                 for l in lines {
                     self.p(&l);
                     self.p("\n");
+                }
+                // R: print.c:PrintClosure
+                if c.jit.is_bytecode() {
+                    self.p(&format!("<bytecode: {:p}>\n", Rc::as_ptr(c)));
                 }
                 if !c.env.ptr_eq(&interp.global) {
                     let e = encode_environment(&c.env);
