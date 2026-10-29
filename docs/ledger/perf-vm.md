@@ -17,6 +17,12 @@ conformance` (interpreter, VM and VM+JIT against each other).
   #70's base-package natives. Fresh paired measurements and release tests
   are in progress. Both binaries use the same newly built stats, splines,
   tools, and parallel natives and Debian GNU R 4.5.0-3.
+- Re-recording `tests/r/jit/matrix-elements.R` with the exact oracle
+  reproduces every recorded byte. The independent full-suite output check
+  matches GNU R on 77/78 programs. `spectralnorm_math` is still the known
+  local mismatch; exclude it from performance claims.
+- Busy-host single-run wall-time geomean: 0.565x GNU R over the 77 correct
+  programs. This is provisional, not an idle-host comparison.
 - Setup: `robigo-oracle:4.5.0` lacks zlib headers and gfortran required by
   current main. Use `robigo-build:4.5.0` and the track's private target
   `~/.cache/robigo-trixie-target`. No source workaround was needed.
