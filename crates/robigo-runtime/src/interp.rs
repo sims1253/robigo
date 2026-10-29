@@ -464,7 +464,18 @@ impl Interp {
                         self.fun_cache.insert(key, v.clone());
                         return Some(v);
                     }
-                    Value::Promise(_) => return None,
+                    // a forced promise (lazily loaded base) is its value,
+                    // as findFun takes PRVALUE
+                    Value::Promise(p) => {
+                        let f = p.value.borrow().clone();
+                        return match f {
+                            Some(f @ (Value::Closure(_) | Value::Builtin(_))) => {
+                                self.fun_cache.insert(key, f.clone());
+                                Some(f)
+                            }
+                            _ => None,
+                        };
+                    }
                     _ => {}
                 }
             }
@@ -478,7 +489,11 @@ impl Interp {
     pub fn resolves_to_base(&mut self, sym: Sym, env: &Env) -> bool {
         match self.find_fun_cached(sym, env) {
             Some(v) => match self.base.0.frame().borrow().get(sym) {
-                Some(b) => b.value.ptr_eq(&v),
+                // a lazily loaded base binding is a (forced) promise
+                Some(b) => match &b.value {
+                    Value::Promise(p) => p.value.borrow().as_ref().is_some_and(|f| f.ptr_eq(&v)),
+                    f => f.ptr_eq(&v),
+                },
                 None => false,
             },
             None => false,
