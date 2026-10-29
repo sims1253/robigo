@@ -9,6 +9,28 @@ candidates. Both are needed: building another checkout into the same target
 directory linked stale `robigo_syntax` artifacts (cargo saw the same
 packages).
 
+## 2026-10-29: release-profile measurements (in progress)
+
+Base: `7ff8a140`. Clean `cargo build --release --workspace`, Rust 1.99.0,
+`robigo-oracle:4.5.0` (Debian trixie, R 4.5.0-3),
+`--memory=4g --memory-swap=4g --cpus=2`, `CARGO_BUILD_JOBS=2`.
+Each profile uses its own fresh `~/.cache/robigo-perf-regression-profile-*-target`.
+Elapsed time excludes container startup; process RSS is `getrusage`'s
+maximum child RSS; container memory is cgroup v2 `memory.peak` and includes
+file cache. This host runs other agents, so elapsed times include contention.
+
+| Profile | Clean build seconds | Peak process MiB | Peak container MiB | OOM |
+|---|---:|---:|---:|---|
+| default (16 CGUs, no cross-crate LTO) | 312.00 | 2083.88 | 3135.40 | no |
+
+CI has no `ROBIGO_RUNNER` repository variable. Recent build job
+123532847452 used the `ubuntu-24.04` GitHub-hosted runner. This is a public
+repository; [GitHub documents 4 CPUs and 16 GB RAM](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The workflow has no container memory limit or build job override, so the
+local 4 GB/two-job experiment is stricter than CI.
+
+Candidates and perturbation measurements follow before selecting a profile.
+
 ## Problem
 
 Between `37a5f96` and `ad59f6f`, `main` got slower: `dataframe` 705M ->
