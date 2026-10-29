@@ -14,7 +14,24 @@
 - Existing tracemem corpus baseline: **4/8**, zero regressions; the four
   failures contain raw addresses and duplication reports. Copy reporting
   still needs allocation hooks; no oracle masking was changed.
-- Expanded data filter and complete runtime/conformance validation pending.
+- Both new scripts match the oracle under the interpreter, VM, and JIT
+  (6/6 checks). All 226 conformance ratchet scripts pass; the standard
+  conformance harness, VM guards, and compiled/interpreted comparison pass.
+- Runtime tests: 35 unit + two integration pass. The complete invocation
+  reproduces the previously documented host-only c_library_oracle complex
+  sqrt mismatch (one ULP, at complex.rs:914). No complex code changed.
+  CI's Debian build passes, including its runtime tests.
+- Fixed-binary expanded data comparison: **8,404/8,426 -> 8,404/8,426**,
+  identical per-case pass/fail outcomes. Only the previously documented
+  order/add626 host collation case fails an existing passing entry on
+  both binaries. Tracemem corpus stays **4/8 -> 4/8**, zero regressions.
+- Commands: scripts/corpus.py run fastr --filter '<expanded filter below>'
+  --jobs 2 --keep-output, with --robigo pointing first to the saved main
+  binary and then to this worktree's candidate; separate TestBuiltin_tracemem
+  runs. R_HOME=$HOME/.local/opt/R-4.5.0 throughout. Formatting passes.
+- All CI jobs on implementation commit 1b68739 pass, including every
+  corpus shard and the performance gate. Final follow-up changes only this
+  verification ledger; no hot runtime paths or shared runtime files changed.
 - Ownership audit: lapply's sole remaining 245e62b case needs evaluator
   traceback contexts. The srcref case b4bfbcb9 needs parse-generated
   metadata: do_parse ignores keep.source, while subset.c:VectorSubset's
