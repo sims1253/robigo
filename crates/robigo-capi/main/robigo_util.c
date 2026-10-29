@@ -602,3 +602,205 @@ void sortVector(SEXP s, bool decreasing)
 	    UNIMPLEMENTED_TYPE("sortVector", s);
 	}
 }
+
+/* R: util.c:Rf_strrchr */
+char *Rf_strrchr(const char *s, int c)
+{
+    char *p = (char *)s, *plast = NULL;
+    mbstate_t mb_st;
+    size_t used;
+
+    if(!mbcslocale || utf8locale) return strrchr(s, c);
+    mbs_init(&mb_st);
+    while( (used = Mbrtowc(NULL, p, R_MB_CUR_MAX, &mb_st)) ) {
+	if(*p == c) plast = p;
+	p += used;
+    }
+    return plast;
+}
+
+/* R: coerce.c:asRbool */
+Rboolean asRbool(SEXP x, SEXP call)
+{
+    int ans = asLogical2(x, 1, call);
+    if (ans == NA_LOGICAL)
+	errorcall(call, _("NA in coercion to boolean"));
+    return (Rboolean) ans;
+}
+
+/* R: sysutils.c (lines 1659-1665 and 2048-2207: wtransChar and its
+   translation to wchar_t) */
+#include <R_ext/Riconv.h>
+#define CHECK_CHARSXP(x) do { \
+    SEXP __x__ = (x);            \
+    if(TYPEOF(__x__) != CHARSXP) \
+	error(_("'%s' must be called on a CHARSXP, but got '%s'"), \
+	      __func__, R_typeToChar(__x__));			   \
+} while(0);
+typedef enum {
+    NT_NONE        = 0, /* no translation is needed */
+    NT_FROM_UTF8   = 1, /* need to translate from UTF8 */
+    NT_FROM_LATIN1 = 2, /* need to translate from latin1 */
+    NT_FROM_NATIVE = 3, /* need to translate from native encoding */
+    NT_FROM_ASCII  = 4, /* need to translate from ASCII */
+} nttype_t;
+static R_INLINE nttype_t wneedsTranslation(SEXP x)
+{
+    if (IS_BYTES(x))
+	error(_("translating strings with \"bytes\" encoding is not allowed"));
+    if (IS_ASCII(x)) return NT_FROM_ASCII;
+    if (IS_UTF8(x)) return NT_FROM_UTF8;
+    if (IS_LATIN1(x) || latin1locale) return NT_FROM_LATIN1;
+    if (utf8locale) return NT_FROM_UTF8;
+    return NT_FROM_NATIVE;
+}
+
+static const wchar_t *wcopyAndFreeStringBuffer(R_StringBuffer *cbuff)
+{
+    size_t res = wcslen((wchar_t *) cbuff->data) + 1;
+    wchar_t *p = (wchar_t *) R_alloc(res, sizeof(wchar_t));
+    memcpy(p, cbuff->data, res * sizeof(wchar_t));
+    R_FreeStringBuffer(cbuff);
+    return p;
+}
+
+static const wchar_t *wfromASCII(const char *src, size_t len)
+{
+    size_t i;
+    wchar_t *p = (wchar_t *) R_alloc(len + 1, sizeof(wchar_t));
+    for (i = 0; i < len; i++)
+	p[i] = (wchar_t) src[i];
+    p[i] = L'\0';
+    return p;
+}
+
+#ifdef Win32
+static const char TO_WCHAR[] = "UTF-16LE";
+#else
+# ifdef WORDS_BIGENDIAN
+static const char TO_WCHAR[] = "UCS-4BE";
+# else
+static const char TO_WCHAR[] = "UCS-4LE";
+# endif
+#endif
+
+static void *latin1_wobj = NULL, *utf8_wobj=NULL;
+
+/* Translate from current encoding to wchar_t = UTF-16LE/UCS-4
+   NB: that wchar_t is UCS-4 is an assumption, but not easy to avoid.
+*/
+
+/* This may return a R_alloc-ed result, so the caller has to manage the
+   R_alloc stack */
+static int translateToWchar(const char *ans, R_StringBuffer *cbuff,
+                            nttype_t ttype, int mustWork)
+{
+    void * obj;
+    const char *inbuf, *from;
+    char *outbuf;
+    size_t inb, outb, res;
+    bool failed = false;
+
+    if(ttype == NT_FROM_LATIN1) {
+	if(!latin1_wobj) {
+#ifdef HAVE_ICONV_CP1252
+	    from = "CP1252";
+#else
+	    from = "latin1";
+#endif
+	    obj = Riconv_open(TO_WCHAR, from);
+	    if(obj == (void *)(-1))
+		error(_("unsupported conversion from '%s' to '%s'"),
+		      from, TO_WCHAR);
+	    latin1_wobj = obj;
+	} else
+	    obj = latin1_wobj;
+    } else if(ttype == NT_FROM_UTF8) {
+	if(!utf8_wobj) {
+	    obj = Riconv_open(TO_WCHAR, "UTF-8");
+	    if(obj == (void *)(-1))
+		error(_("unsupported conversion from '%s' to '%s'"),
+		      "UTF-8", TO_WCHAR);
+	    utf8_wobj = obj;
+	} else
+	    obj = utf8_wobj;
+    } else { /* t == NT_FROM_NATIVE */
+	obj = Riconv_open(TO_WCHAR, "");
+	if(obj == (void *)(-1))
+#ifdef Win32
+	    error(_("unsupported conversion to '%s' from codepage %d"),
+		  TO_WCHAR, localeCP);
+#else
+	    error(_("unsupported conversion from '%s' to '%s'"), "", TO_WCHAR);
+#endif
+    }
+
+    /* R_AllocStringBuffer returns correctly aligned for wchar_t */
+    R_AllocStringBuffer(0, cbuff);
+top_of_loop:
+    inbuf = ans; inb = strlen(inbuf);
+    outbuf = cbuff->data; outb = cbuff->bufsize - 1;
+    /* First initialize output */
+    Riconv (obj, NULL, NULL, &outbuf, &outb);
+next_char:
+    /* Then convert input  */
+    res = Riconv(obj, &inbuf , &inb, &outbuf, &outb);
+    if(res == -1 && errno == E2BIG) {
+	R_AllocStringBuffer(2*cbuff->bufsize, cbuff);
+	goto top_of_loop;
+    } else if(res == -1 && (errno == EILSEQ || errno == EINVAL)) {
+	res = Riconv(obj, NULL, NULL, &outbuf, &outb);
+	if((res == -1 && errno == E2BIG) || outb < 5 * sizeof(wchar_t)) {
+	    R_AllocStringBuffer(2*cbuff->bufsize, cbuff);
+	    goto top_of_loop;
+	}
+	failed = true;
+	swprintf((wchar_t*)outbuf, 5, L"<%02x>", (unsigned char)*inbuf);
+	outbuf += 4 * sizeof(wchar_t); outb -= 4 * sizeof(wchar_t);
+	inbuf++; inb--;
+	goto next_char;
+    }
+    *((wchar_t *) outbuf) = L'\0'; /* terminate wide string */
+    if(ttype == NT_FROM_NATIVE) Riconv_close(obj);
+    if (mustWork && failed) {
+	const void *vmax = vmaxget();
+	const char *native_buf = reEnc3(cbuff->data, TO_WCHAR, "", 2);
+
+	/* copy to truncate (and mark as truncated) */
+	char err_buff[256];
+	if (strlen(native_buf) > 255) {
+	    strncpy(err_buff, native_buf, 252);
+	    err_buff[252] = '\0';
+	    mbcsTruncateToValid(err_buff);
+	    strcat(err_buff, "...");
+	} else
+	    strcpy(err_buff, native_buf);
+
+	if (mustWork == 2) {
+	    warning(_("unable to translate '%s' to a wide string"),
+	              err_buff);
+	    vmaxset(vmax);
+	    return 1;
+	} else {
+	    R_FreeStringBuffer(cbuff);
+	    error(_("unable to translate '%s' to a wide string"),
+	          err_buff);
+	}
+	vmaxset(vmax);
+    }
+    return 0;
+}
+
+/* This may return a R_alloc-ed result, so the caller has to manage the
+   R_alloc stack */
+const wchar_t *wtransChar(SEXP x)
+{
+    CHECK_CHARSXP(x);
+    nttype_t t = wneedsTranslation(x);
+    if (t == NT_FROM_ASCII)
+	return wfromASCII(CHAR(x), LENGTH(x));
+
+    R_StringBuffer cbuff = {NULL, 0, MAXELTSIZE};
+    translateToWchar(CHAR(x), &cbuff, t, 0);
+    return wcopyAndFreeStringBuffer(&cbuff);
+}

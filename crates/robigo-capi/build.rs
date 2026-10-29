@@ -48,6 +48,10 @@ fn main() {
         "robigo_sys",
         "robigo_hashtab",
         "robigo_util",
+        "robigo_internet",
+        "Rsock",
+        "sock",
+        "dounzip",
     ] {
         g.file(format!("main/{f}.c"));
     }
@@ -64,6 +68,8 @@ fn main() {
     // zlib, for gzio.h (and the graphics packages' objects, as GNU R's
     // libR links it)
     println!("cargo:rustc-link-lib=z");
+    // libbz2, for dounzip.c (bzip2 zip entries), as GNU R's libR links it
+    println!("cargo:rustc-link-lib=bz2");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let src = out.join("libR-stub.c");
     std::fs::write(&src, "/* robigo's stub libR.so: a soname, no code */\nint robigo_libR_stub;\n").unwrap();

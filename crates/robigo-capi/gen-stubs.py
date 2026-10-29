@@ -86,7 +86,7 @@ def appl_exports():
                 for m in data.finditer(text):
                     names.add(rename.get(m.group(1), m.group(1)))
                 # function-pointer data: `void (*ptr_R_addhistory)(...) = ...;`
-                for m in re.finditer(r'^(?!static|extern|typedef)[A-Za-z_][\w ]*\(\*(\w+)\)\([^;]*\)\s*(?:=[^;]*)?;', text, re.M):
+                for m in re.finditer(r'^(?!static|extern|typedef)[A-Za-z_][\w ]*\(\s*\*\s*(\w+)\)\([^;]*\)\s*(?:=[^;]*)?;', text, re.M):
                     names.add(m.group(1))
     return names
 

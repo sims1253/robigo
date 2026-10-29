@@ -43,19 +43,10 @@ pub static STUBS: &[&str] = &[
     "R_tryCatchError",
     "R_tryEvalSilent",
     "R_withCallingErrorHandler",
-    "Rdownload",
     "Rf_memtrace_report",
     "Rf_revsort",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
-    "Rf_wtransChar",
-    "Rsockclose",
-    "Rsockconnect",
-    "Rsocklisten",
-    "Rsockopen",
-    "Rsockread",
-    "Rsockwrite",
-    "Runzip",
     "XTRUELENGTH",
     "do_Rprof",
     "do_Rprofmem",
@@ -76,9 +67,6 @@ pub unsafe extern "C" fn R_mkClosure() {
 pub unsafe extern "C" fn R_PromiseExpr() {
     not_implemented("R_PromiseExpr")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_wait_usec: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn IS_SCALAR() {
@@ -122,9 +110,6 @@ pub unsafe extern "C" fn R_InitInPStream() {
 }
 
 #[unsafe(no_mangle)]
-pub static mut R_InputHandlers: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_IsPackageEnv() {
     not_implemented("R_IsPackageEnv")
 }
@@ -139,9 +124,6 @@ pub static mut R_Outputfile: [usize; 4] = [0; 4];
 pub unsafe extern "C" fn R_PackageEnvName() {
     not_implemented("R_PackageEnvName")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_PolledEvents: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
@@ -267,11 +249,6 @@ pub unsafe extern "C" fn R_withCallingErrorHandler() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdownload() {
-    not_implemented("Rdownload")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_memtrace_report() {
     not_implemented("Rf_memtrace_report")
 }
@@ -289,46 +266,6 @@ pub unsafe extern "C" fn Rf_substitute() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_utf8Toutf8NoPUA() {
     not_implemented("Rf_utf8Toutf8NoPUA")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_wtransChar() {
-    not_implemented("Rf_wtransChar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockclose() {
-    not_implemented("Rsockclose")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockconnect() {
-    not_implemented("Rsockconnect")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsocklisten() {
-    not_implemented("Rsocklisten")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockopen() {
-    not_implemented("Rsockopen")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockread() {
-    not_implemented("Rsockread")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockwrite() {
-    not_implemented("Rsockwrite")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Runzip() {
-    not_implemented("Runzip")
 }
 
 #[unsafe(no_mangle)]

@@ -35,6 +35,37 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   user.self timing (0 versus 0.001 seconds), status 0. Oracle recording
   with 100 repeats masks exactly that timing line; the recording fix
   belongs to #70. No random-number assertion is masked.
+## 2026-10-29: utils from GNU R's sources (the C API it needs)
+
+- What: utils.so built from source needed 34 functions and 7 data
+  symbols robigo lacked. Ported from GNU R's C, in `main/`:
+  unique.c's hash tables (R_mkhashtab ... R_isHashtable) and
+  csduplicated with their hashing; util.c's R_strtod5/4, R_strtod,
+  R_atof, acopy_string, Rf_strrchr; memory.c's string buffers;
+  sort.c's sortVector/isUnsorted; printutils.c's EncodeRaw/
+  EncodeElement0; sysutils.c's wtransChar; connections.c's
+  Rconn_printf; sys-std.c's history hooks, input handlers and
+  R_PolledEvents; the internet module's sockets (Rsock.c, sock.c and
+  main/internet.c's Rsock* entry points) and its file:// download
+  (in_do_download, Rdownload); dounzip.c (unzip, with libbz2 linked).
+  In Rust: EncodeString/EncodeChar, Scollate, matchE, con_pushback,
+  R_SignalCStackOverflow, ALTRAW_ELT/ALTCOMPLEX_ELT, R_MB_CUR_MAX after
+  the C locale is set at libR start.
+- utils' size.c defines USE_RINTERNALS (GNU R's struct layout, read
+  inline: object.size failed with "bad REALSXP scalar"). The natives
+  build compiles it with the accessor functions and
+  `scripts/natives-layout.h`, GNU R's layout sizes, which object.size
+  reports (64 / 7208 / 1712 bytes for 1:3, mtcars, letters, as GNU R).
+- C writes to stdout/text connections (Rconn_printf -> con->vfprintf ->
+  con_write_bytes) failed with "cannot write to this connection":
+  terminals and text connections now take the text path.
+- Result (local, utils natives vs the Rust ports): fastr utils slice
+  405 vs 400 / 410, gnur-examples utils 89 vs 88 / 119, no case lost;
+  unzip, make.socket and download.file(method = "internal") match GNU R.
+  capi 17/20, conformance green.
+- Still stubs (utils): do_edit, R_EditFiles, do_Rprof, do_Rprofmem
+  (Rprof samples GNU R's context stack; robigo's needs its own sampler),
+  and the X11 data entry hooks (NULL, as GNU R without X11).
 
 ## 2026-10-29: the graphics engine in libR; grDevices, graphics, grid from source
 

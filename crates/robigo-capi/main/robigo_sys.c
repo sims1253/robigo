@@ -228,3 +228,158 @@ int Rconn_printf(Rconnection con, const char *format, ...)
     }
     return res;
 }
+
+/* robigo: dounzip.c's unz() connection (R_newunz) builds a C connection
+   with connections.c's init_con; robigo's connections live in the
+   runtime, which serves unz() itself */
+void Rf_init_con(Rconnection new, const char *description, int enc,
+		 const char * const mode)
+{
+    error("robigo: C-level connections (init_con) are not implemented yet");
+}
+
+int dummy_fgetc(Rconnection con)
+{
+    error("robigo: C-level connections (dummy_fgetc) are not implemented yet");
+    return -1;
+}
+
+/* R: unix/sys-std.c, the input handlers (the event loop sockets wait in)
+   and the polled-events hook */
+#include <R_ext/eventloop.h>
+#include <R_ext/RS.h>
+static InputHandler BasicInputHandler = {StdinActivity, -1, NULL};
+
+/*
+   This can be reset by the initialization routines which
+   can ignore stdin, etc..
+*/
+InputHandler *R_InputHandlers = &BasicInputHandler;
+InputHandler *
+addInputHandler(InputHandler *handlers, int fd, InputHandlerProc handler,
+		int activity)
+{
+    InputHandler *input, *tmp;
+//    input = (InputHandler*) calloc(1, sizeof(InputHandler));
+    input = R_Calloc(1, InputHandler);
+
+    input->activity = activity;
+    if (fd >= FD_SETSIZE)
+	error("file descriptor is too large for select()");
+    input->fileDescriptor = fd;
+    input->handler = handler;
+
+    tmp = handlers;
+
+    if(handlers == NULL) {
+	R_InputHandlers = input;
+	return(input);
+    }
+
+    /* Go to the end of the list to append the new one.  */
+    while(tmp->next != NULL) {
+	tmp = tmp->next;
+    }
+    tmp->next = input;
+
+    return(input);
+}
+
+/*
+  Removes the specified handler from the linked list.
+
+  See getInputHandler() for first locating the target handler instance.
+ */
+int
+removeInputHandler(InputHandler **handlers, InputHandler *it)
+{
+    InputHandler *tmp;
+
+    /* If the handler is the first one in the list, move the list to point
+       to the second element. That's why we use the address of the first
+       element as the first argument.
+    */
+
+    if (it == NULL) return(0);
+
+    if(*handlers == it) {
+	*handlers = (*handlers)->next;
+	R_Free(it); // use R_Free to match allocation with R_Calloc
+	return(1);
+    }
+
+    tmp = *handlers;
+
+    while(tmp) {
+	if(tmp->next == it) {
+	    tmp->next = it->next;
+	    R_Free(it); // use R_Free to match allocation with R_Calloc
+	    return(1);
+	}
+	tmp = tmp->next;
+    }
+
+    return(0);
+}
+
+
+InputHandler *
+getInputHandler(InputHandler *handlers, int fd)
+{
+    InputHandler *tmp;
+    tmp = handlers;
+
+    while(tmp != NULL) {
+	if(tmp->fileDescriptor == fd)
+	    return(tmp);
+	tmp = tmp->next;
+    }
+
+    return(tmp);
+}
+
+/*
+ Arrange to wait until there is some activity or input pending
+ on one of the file descriptors to which we are listening.
+
+ We could make the file descriptor mask persistent across
+ calls and change it only when a listener is added or deleted.
+ Later.
+
+ This replaces the previous version which looked only on stdin and the
+ X11 device connection.  This allows more than one X11 device to be
+ open on a different connection. Also, it allows connections a la S4
+ to be developed on top of this mechanism.
+*/
+
+/* A package can enable polled event handling by making R_PolledEvents
+   point to a non-dummy routine and setting R_wait_usec to a suitable
+   timeout value (e.g. 100000) */
+
+static void nop(void){}
+
+void (* R_PolledEvents)(void) = nop;
+int R_wait_usec = 0; /* 0 means no timeout */
+InputHandler *
+getSelectedHandler(InputHandler *handlers, fd_set *readMask)
+{
+    InputHandler *tmp = handlers;
+
+    /*
+      Temporarily skip the first one if a) there is another one, and
+      b) this is the BasicInputHandler.
+    */
+    if(handlers == &BasicInputHandler && handlers->next)
+	tmp = handlers->next;
+
+    while(tmp) {
+	if(FD_ISSET(tmp->fileDescriptor, readMask))
+	    return(tmp);
+	tmp = tmp->next;
+    }
+    /* Now deal with the first one. */
+    if(FD_ISSET(handlers->fileDescriptor, readMask))
+	return(handlers);
+
+    return((InputHandler*) NULL);
+}
