@@ -19,7 +19,14 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Focused suite: spectralnorm_naive **1,002,483,620 -> 989,534,349**
   instructions (-1.292%). fib, binarytrees and profiler-microbenchmark
   change by at most +0.009%, within startup variation.
-- Full suite, crate tests and independent benchmark outputs are running.
+- Kept: full local suite geomean **0.487338 -> 0.487026** GNU R,
+  77/77 faster before and after. Gate: 3 faster, 0 slower beyond 0.5%,
+  0 broken, 0 fixed. lapply -1.95%, apply -1.66%, spectralnorm_naive -1.30%.
+  Independent outputs remain 77/78, with spectralnorm_math unchanged.
+- cargo test --release -p robigo-runtime -p robigo-cli passes: 38 runtime
+  (including all 9,440 arithmetic oracle cases), 7 CLI, two integration
+  tests and conformance in all three tiers. Formatting/source diff checks
+  pass. CI checks are attached to PR #90, stacked on the green #60.
   Artifacts: .robigo/r6/inline-reserve*, inline-calls-{base,after}.txt.
 
 ## 2026-10-29: round 6 follow-up, recursive argument allocations
