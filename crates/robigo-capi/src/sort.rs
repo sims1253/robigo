@@ -283,12 +283,6 @@ pub unsafe extern "C" fn R_compute_identical(x: Sexp, y: Sexp, flags: c_int) -> 
     (*LOGICAL(r) == 1) as c_int
 }
 
-// R: colors.c:col2name — grDevices' native code is not loaded in robigo
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_col2name(_col: u32) -> *const std::ffi::c_char {
-    crate::errors::error_str("package grDevices must be loaded")
-}
-
 #[allow(dead_code)]
 fn _unused() -> Sexp {
     unsafe { R_NilValue }

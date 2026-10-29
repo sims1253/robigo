@@ -392,6 +392,23 @@ pub unsafe extern "C" fn INTEGER_NO_NA(x: Sexp) -> c_int {
     0
 }
 
+// R: altrep.c:ALTINTEGER_MIN/MAX (the default method gives NULL)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ALTINTEGER_MIN(x: Sexp, narm: c_int) -> Sexp {
+    if mt(x).min != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(mt(x).min)(x, narm);
+    }
+    crate::state::R_NilValue
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ALTINTEGER_MAX(x: Sexp, narm: c_int) -> Sexp {
+    if mt(x).max != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(mt(x).max)(x, narm);
+    }
+    crate::state::R_NilValue
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn REAL_IS_SORTED(x: Sexp) -> c_int {
     INTEGER_IS_SORTED(x)

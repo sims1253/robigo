@@ -540,6 +540,11 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 values.push(i.set_option(&namei, Value::Null));
             } else {
                 let v = validate(i, &namei, argi)?;
+                if matches!(&*namei, "OutDec" | "max.contour.segments") {
+                    if let Some(b) = crate::native::bridge() {
+                        b.option_set(&namei, &v);
+                    }
+                }
                 values.push(i.set_option(&namei, v));
             }
         } else {
