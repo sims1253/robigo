@@ -239,7 +239,7 @@ impl std::fmt::Display for RString {
 impl PartialEq for RString {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        // Match Rc<str>'s identity shortcut. Identical tagged addresses
+        // Match Rc<str>'s identity shortcut. Identical handles
         // share the same text; different encodings still compare by text.
         self.data == other.data || **self == **other
     }

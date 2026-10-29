@@ -11,6 +11,39 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: canonical symbol print names share immutable strings
+
+- One-word handles fix the original targets: exact CI artifacts in the
+  oracle container, with native libraries and flat caches enabled:
+  strings 735,221,395 -> 728,497,892 (-0.91%); lm 641,638,559 ->
+  633,306,778 (-1.30%). Host full robigo suite: six faster, zero slower
+  above 0.5%. Conformance 230/230, runtime 40 unit + two integration tests
+  pass (two documented host-glibc numeric oracles excluded); graphics
+  178/184 and Hershey 1/1 hold. Strings peak RSS, one host sample with
+  identical output: 66,464 -> 60,924 KiB (-8.3%).
+- CI on 000cd13 found five other regressions: Storage +0.72%, binarytrees
+  +0.53%, binarytrees_2 +0.95%, mandelbrot_naive_ascii +1.05%, and
+  spectralnorm_alt_3 +3.19%. String conversion from Sym::name() still
+  copied its Rc<str> into the new header on each lookup.
+- The symbol interner now owns RString keys and print names. Sym::name()
+  returns a shared handle, preserving the pre-existing canonical-name
+  identity and avoiding those conversions. Debug's symbol address and
+  stats/model.rs head_name return type are mechanical API adaptations.
+  No symbol ids, lookup order or hash algorithm changed.
+- Verified host instructions (e25e6cc -> shared names):
+  Storage 568,767,410 -> 566,005,339; binarytrees 421,394,607 -> 418,512,163;
+  binarytrees_2 421,079,714 -> 418,932,449; mandelbrot_naive_ascii
+  1,220,917,860 -> 1,209,690,730; spectralnorm_alt_3
+  1,253,401,302 -> 1,250,597,342. All five also match Debian GNU R 4.5.0
+  stdout, stderr and exit status exactly in direct comparisons.
+- Strings remains faster: 771,218,043 -> 764,347,838 (-0.89%); lm
+  682,843,800 -> 675,979,413 (-1.01%). Seven targeted benchmarks: none
+  slower. Conformance including all tiers and VM guards: 230/230.
+  Focused strings slice remains 478/495, with only the baseline huge
+  sequence timing out on this host. Five ownership/identity tests and
+  Valgrind pass; cargo check --release --all-features passes. The final
+  runtime test build, full suite recheck and CI are pending at this push.
+
 ## 2026-10-29: one-word immutable string handles (candidate)
 
 - Tagged handles pass Debian's full build/tests, conformance 230/230 in
