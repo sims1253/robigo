@@ -15,6 +15,40 @@ glibc 2.44's `sinh`/`cosh`, and would use a different libm). The local
 baseline reproduces CI's `perf-main` artifact of `main` 7bb554c within 0.1%
 (geomean 0.730 locally, 0.729 on CI).
 
+## 2026-10-29: wrong output: `x[[i]]` of an unmaterialized `a:b` (PR #65)
+
+- `fannkuchredux` and `fannkuchredux_naive` failed in compiled code only:
+  `if (k <- perm1[[1L]])`: "the condition has length > 1". `perm1 <- 1:n`
+  leaves an `RVal::Range` in the slot, and `vm::element` (the `x[[i]]` /
+  `x[i]` fast path) treated every unboxed register value as a scalar, so
+  `x[[1]]` returned the whole range: silently wrong values elsewhere
+  (`x <- 1:5; c(x[[1]], x[[5]])` gave ten values). A range now yields its
+  i-th integer; out of range takes the slow path.
+- tests: `tests/r/subset/range-elements.R` (recorded, ratcheted; main
+  fails it).
+- `scripts/perf.py compare`: a program that failed or printed a different
+  result in the base run is not counted, so its base count measured a
+  different run (here one that stopped at the error): it is now listed as
+  FIXED instead of compared (the fix was reported +128% SLOWER).
+- result: every other benchmark within +-0.05% of main 7345297 and 0.00%
+  of db8cced; both fannkuch benchmarks now count, both faster than GNU R
+  (0.895x and 0.639x).
+- the other wrong one, `spectralnorm_math`, needed `.Internal(La_rs)`
+  (symmetric eigen, outside the VM); main has it now (CI lists it FIXED).
+
+## 2026-10-29: next: `simple/matrixFor` (1.02x) natively
+
+- `x[[i, j]] <- 5` in a double loop costs ~830 instructions per element in
+  the VM (`run_with` 400, `get_attr` for `dim` 65, `set_element` 51,
+  `matrix_offset` 36, `own_var` 31); native code rejects the loop
+  (`ROBIGO_JIT_TRACE`: "unsupported at ...: SetIndex2"): jit.rs has no
+  matrix type (`jit_type` takes attribute-free vectors only).
+- plan: a matrix type (double/integer, a `dim` attribute and nothing else;
+  nrow taken at loop entry, as nothing native can change it), `Index2` and
+  `SetIndex2` with in-range scalar indices (offset `(i-1) + (j-1)*nrow`),
+  everything else deoptimizing as `SetIndex` does. Expected ~50
+  instructions per element.
+
 ## 2026-10-28: `for (j in seq(length = n))` as a native range
 
 - why: `real/convolution_slow` (1.18x GNU R) runs its inner loop over
@@ -127,6 +161,35 @@ Tooling of this agent (private target dir, container builds):
     +0.32%, `Storage` +0.29%, `nbody` +0.23%, startup +0.12% (the
     per-call state check, the interpreter hook, compiling user closures);
     geomean 0.5734 -> 0.5740, faster on 71.
+
+## 2026-10-29: guards in namespace code (lead from the methods ledger)
+
+- why: the methods agent found `vm::guard_ok_slow` at 13.6% of an S4
+  `new()`. Frames of namespace closures (frame -> namespace -> imports ->
+  base namespace -> global) are neither on nor directly below the search
+  path, so (1) each guard walked the chain and, finding `+` etc. bound in
+  the base namespace, called `resolves_to_base` with no memo; (2)
+  `fresh_nested_ok` never pre-checked their guards; (3) their frames were
+  not `stable`, so every flush invalidated every guard mark.
+- what: where the environments past the frame's parent up to the search
+  path are all locked (namespaces, imports, the base namespace: they cannot
+  gain bindings), the outcome depends only on the parent's function
+  bindings and the frame's own: memoized by the parent
+  (`GuardMemo::outer`), the closure's guards pre-checked once per
+  (epoch, environment, version, formals) as for closures below the search
+  path, and the frame `stable` (also the pure-closure inliner's per-epoch
+  check). Not noticed: a function rebound in an imports environment
+  without a search-path change (GNU R's namespace code is compiled with
+  base inlined anyway).
+- tests: `tests/r/jit/locked-env-guards.R` (a locked chain, a binding
+  replaced after `unlockBinding`, a frame binding `length`, namespace
+  closures), recorded, ratcheted; three-tier conformance incl. the S4
+  scripts.
+- result: an S4 loop (2000 `new("P", x = i)`, 20000 calls of a one-method
+  generic; `R_DEFAULT_PACKAGES=utils,stats,methods`) 2,788M -> 2,553M
+  instructions (-8.4%). Suite against main 7345297: none faster or slower
+  than 0.5% (no benchmark uses methods; an S4 benchmark in `benchmarks/`
+  would track it).
 
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 
