@@ -115,14 +115,8 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     fn int(&mut self) -> RResult<i32> {
         match self.format {
-            Format::Xdr => {
-                let b = self.bytes(4)?;
-                Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-            }
-            Format::Binary => {
-                let b = self.bytes(4)?;
-                Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            }
+            Format::Xdr => Ok(i32::from_be_bytes(self.bytes(4)?.try_into().unwrap())),
+            Format::Binary => Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap())),
             Format::Ascii => {
                 let w = self.word()?;
                 if w == "NA" {
@@ -223,13 +217,27 @@ impl<'a, 'i> Reader<'a, 'i> {
         if len < -1 {
             return Err(Flow::error("invalid length"));
         }
-        let b = self.string_bytes(len as usize)?;
-        let s = if levs & LATIN1_MASK != 0 && levs & (UTF8_MASK | ASCII_MASK) == 0 {
-            b.iter().map(|&c| c as char).collect::<String>()
-        } else {
-            String::from_utf8_lossy(&b).into_owned()
+        // The binary formats read the bytes straight from the stream (the
+        // escaped Ascii form still goes through `string_bytes`); a valid
+        // UTF-8 string then interns in one allocation, skipping the lossy
+        // decoder's chunk walk and the intermediate `String` copy.
+        let escaped;
+        let b: &[u8] = match self.format {
+            Format::Ascii => {
+                escaped = self.string_bytes(len as usize)?;
+                &escaped
+            }
+            _ => self.bytes(len as usize)?,
         };
-        Ok(Some(Rc::from(s)))
+        let s: Rc<str> = if levs & LATIN1_MASK != 0 && levs & (UTF8_MASK | ASCII_MASK) == 0 {
+            b.iter().map(|&c| c as char).collect::<String>().into()
+        } else {
+            match std::str::from_utf8(b) {
+                Ok(s) => s.into(),
+                Err(_) => String::from_utf8_lossy(b).into_owned().into(),
+            }
+        };
+        Ok(Some(s))
     }
 
     fn ref_index(&mut self, flags: u32) -> RResult<usize> {
@@ -387,7 +395,10 @@ impl<'a, 'i> Reader<'a, 'i> {
             SPECIALSXP | BUILTINSXP => {
                 let len = self.int()?;
                 let b = self.string_bytes(len.max(0) as usize)?;
-                let name = String::from_utf8_lossy(&b).into_owned();
+                let name = match std::str::from_utf8(&b) {
+                    Ok(s) => s.to_owned(),
+                    Err(_) => String::from_utf8_lossy(&b).into_owned(),
+                };
                 match crate::builtins::lookup_primitive(&name).or_else(|| crate::builtins::lookup_internal(&name)) {
                     Some(b) => Value::Builtin(b),
                     None => {
@@ -488,7 +499,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             return Err(Flow::error("names in persistent strings are not supported yet"));
         }
         let len = self.int()?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(len.max(0) as usize);
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
             out.push(self.read_charsxp(f >> 12)?);
