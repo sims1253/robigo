@@ -251,11 +251,18 @@ impl Core {
             // GNU R's constructors count the children they store; an
             // external pointer's car is an address and a primitive's an
             // offset, not objects
-            if !matches!(t, EXTPTRSXP | BUILTINSXP | SPECIALSXP) {
+            // (R_NilValue, the commonest child, is immortal: a pointer
+            // comparison spares reading its flags)
+            let nil = self.nil;
+            if car != nil && !matches!(t, EXTPTRSXP | BUILTINSXP | SPECIALSXP) {
                 car.incref();
             }
-            cdr.incref();
-            tag.incref();
+            if cdr != nil {
+                cdr.incref();
+            }
+            if tag != nil {
+                tag.incref();
+            }
         }
         x
     }

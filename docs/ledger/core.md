@@ -39,6 +39,47 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   package run: splines tools parallel (#57), grDevices graphics grid
   (#69). `docs/ci/pending-workflow.patch` is gone; those PRs edit ci.yml.
 
+## 2026-10-28: splines, tools, parallel natives from source; R_UnwindProtect
+
+- `scripts/build-natives.sh` handles grDevices' `@BUILD_AQUA_TRUE@`
+  (configure turns it into `#` on Linux). With it, all seven remaining
+  base packages build from source. Their imports that are still robigo
+  stubs:
+
+  | package | stubs | what |
+  |---|---|---|
+  | splines | 0 | ready |
+  | parallel | 2 -> 0 | `Rf_currentTime`, `R_SelectEx` (now implemented) |
+  | tools | 3 -> 2 | `parseError` (now a port of source.c with getParseContext/tabExpand); the httpd pair remains |
+  | utils | 37 | hashtab C API, string buffers, sockets, Rprof, edit, ... (its Rust ports stay) |
+  | grDevices | 71 | the graphics engine (`GE*`, `R_GE_*` patterns, devices) |
+  | graphics | 44 | the graphics engine |
+  | grid | 57 | the graphics engine |
+
+  Only complete packages go in `.robigo/natives`: dyn.load uses
+  whatever is there, and a grDevices build with missing engine symbols
+  fails to load. The CI patch (docs/ci/pending-workflow.patch) builds
+  stats, splines, tools and parallel.
+- Measured (natives vs Rust ports, same binary):
+  - gnur-examples `^(splines|parallel|tools)/`: 50/67 vs 39/67;
+  - fastr `splines|parallel|Rd|tools`: 20/20 vs 0/20;
+  - one gnur-examples regression is present in both modes;
+  - a malformed Rd file, mclapply, bs/interpSpline/splineDesign print
+    exactly GNU R's output.
+- Next for graphics: grDevices, graphics and grid need GNU R's graphics
+  engine (src/main/engine.c, devices.c, plotmath.c, the pattern
+  accessors). The plan is the same route as src/appl: compile GNU R's
+  own engine sources into libR against its internal headers with
+  `-DTESTING_WRITE_BARRIER`. That needs the internal headers vendored;
+  it is the next batch.
+- (d) R_UnwindProtect, measured again (bench.py, the GNU R container
+  now capped at 4 GB): 0.85 of GNU R's instructions (it was 1.52); the
+  changes since #37 made the context save cheaper, so nothing remains to
+  do there. lang3 (`bench_cons`) stays 1.31: the heap's per-object start
+  bitmap and live counts (conservative scanning) and more frequent
+  collections on this small heap. Skipping the immortal-flag read for
+  R_NilValue children saves 0.3%.
+
 ## 2026-10-28: base loaded lazily from GNU R's base.rdb (as GNU R)
 
 - GNU R's startup evaluates `R_HOME/library/base/R/base`, the baseloader:

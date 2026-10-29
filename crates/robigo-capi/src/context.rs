@@ -91,3 +91,148 @@ pub static mut R_ParseContext: [c_char; 256] = [0; 256];
 pub static mut R_ParseContextLast: c_int = 0;
 #[unsafe(no_mangle)]
 pub static mut R_ParseContextLine: c_int = 0;
+
+/// The recent parse context as lines (R: source.c getParseContext).
+unsafe fn parse_context() -> Vec<Vec<u8>> {
+    const SIZE: usize = 256;
+    let ctx = &*std::ptr::addr_of!(R_ParseContext);
+    let mut context = [0u8; SIZE + 1];
+    let mut last = SIZE;
+    let mut i = R_ParseContextLast as usize;
+    while last > 0 {
+        i %= SIZE;
+        last -= 1;
+        context[last] = ctx[i] as u8;
+        if context[last] == 0 {
+            last += 1;
+            break;
+        }
+        i += SIZE - 1;
+    }
+    let text = &context[last..SIZE];
+    let text = &text[..text.iter().position(|&c| c == 0).unwrap_or(text.len())];
+    let mut lines: Vec<Vec<u8>> = text.split(|&c| c == b'\n').map(|l| l.to_vec()).collect();
+    if text.is_empty() {
+        lines.clear();
+    }
+    // get rid of the empty line after the last newline
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+        R_ParseContextLine -= 1;
+    }
+    lines
+}
+
+/// R: source.c tabExpand (tabs to 8 columns, at most 192 bytes)
+fn tab_expand(s: &[u8]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for &c in s {
+        if b.len() >= 192 {
+            break;
+        }
+        if c == b'\t' {
+            loop {
+                b.push(b' ');
+                if b.len() & 7 == 0 {
+                    break;
+                }
+            }
+        } else {
+            b.push(c);
+        }
+    }
+    b
+}
+
+/// R: source.c getParseFilename (at most 125 bytes)
+unsafe fn parse_filename() -> String {
+    let f = R_ParseErrorFile;
+    if f.is_null() || f == crate::state::R_NilValue {
+        return String::new();
+    }
+    let name = if f.typ() == robigo_core::types::ENVSXP {
+        let sym = crate::strings::Rf_install(c"filename".as_ptr());
+        crate::envir::Rf_findVar(sym, f)
+    } else {
+        f
+    };
+    if name.typ() == robigo_core::types::STRSXP && crate::memory::xlength(name) > 0 {
+        let b = crate::memory::STRING_ELT(name, 0).char_bytes();
+        String::from_utf8_lossy(&b[..b.len().min(125)]).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+// R: source.c:parseError
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
+    let context: Vec<String> =
+        parse_context().iter().map(|l| String::from_utf8_lossy(&tab_expand(l)).into_owned()).collect();
+    let msg =
+        std::ffi::CStr::from_ptr(std::ptr::addr_of!(R_ParseErrorMsg) as *const c_char).to_string_lossy().into_owned();
+    let len = context.len();
+    let col = R_ParseErrorCol;
+    let line = R_ParseContextLine;
+    let text = if linenum != 0 {
+        let mut filename = parse_filename();
+        if !filename.is_empty() {
+            filename.push(':');
+        }
+        match len {
+            0 => format!("{filename}{linenum}:{col}: {msg}"),
+            1 => {
+                let width = format!("{line}: ").len() as c_int;
+                format!(
+                    "{filename}{linenum}:{col}: {msg}\n{line}: {}\n{:>w$}",
+                    context[0],
+                    "^",
+                    w = (width + col + 1) as usize
+                )
+            }
+            _ => {
+                let width = format!("{line}:").len() as c_int;
+                format!(
+                    "{filename}{linenum}:{col}: {msg}\n{}: {}\n{line}: {}\n{:>w$}",
+                    line - 1,
+                    context[len - 2],
+                    context[len - 1],
+                    "^",
+                    w = (width + col + 1) as usize
+                )
+            }
+        }
+    } else {
+        match len {
+            0 => msg,
+            1 => format!("{msg} in \"{}\"", context[0]),
+            _ => format!("{msg} in:\n\"{}\n{}\"", context[len - 2], context[len - 1]),
+        }
+    };
+    crate::errors::error_str_owned(text)
+}
+
+// R: times.c:currentTime
+#[unsafe(no_mangle)]
+pub extern "C" fn Rf_currentTime() -> f64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(_) => robigo_core::NA_REAL,
+    }
+}
+
+// R: sys-std.c:R_SelectEx (robigo handles interrupts outside select)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_SelectEx(
+    n: c_int,
+    readfds: *mut libc::fd_set,
+    writefds: *mut libc::fd_set,
+    exceptfds: *mut libc::fd_set,
+    timeout: *mut libc::timeval,
+    _intr: Option<unsafe extern "C" fn()>,
+) -> c_int {
+    if n > libc::FD_SETSIZE as c_int {
+        crate::errors::error_str("file descriptor is too large for select()")
+    }
+    libc::select(n, readfds, writefds, exceptfds, timeout)
+}
