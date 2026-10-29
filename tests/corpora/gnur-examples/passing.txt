@@ -180,6 +180,7 @@ base/pipeOp
 base/Platform
 base/pmatch
 base/pos.to.env
+base/pretty
 base/Primitive
 base/print
 base/print.dataframe
