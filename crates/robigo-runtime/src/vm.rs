@@ -3063,6 +3063,10 @@ fn run_with(
                     }
                 };
             }
+            Op::SetComplex { val, slot, k } => {
+                flush!();
+                tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
+            }
             Op::SetIndex2 { val, x, slot, i, j, two, k } => {
                 let done = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
                     (Some(a), Some(b)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {

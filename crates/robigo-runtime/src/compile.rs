@@ -243,6 +243,13 @@ pub enum Op {
         two: bool,
         k: u32,
     },
+    /// A setter with arbitrary or missing indices. Evaluate the RHS in
+    /// compiled code, then let the assignment helper evaluate the indices.
+    SetComplex {
+        val: Reg,
+        slot: Slot,
+        k: u32,
+    },
     /// `x[i, j]` / `x[[i, j]]` for a variable `x`: an element of a plain
     /// atomic matrix by in-range scalar indices is read directly; anything
     /// else evaluates the call `consts[k]`.
@@ -1210,6 +1217,27 @@ impl Compiler {
                 let name = self.konst(Value::strs(vec![name]));
                 let k = self.konst(whole.clone());
                 self.emit(Op::SetDollar { val: dst, x, slot, name, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
+            "<-" | "="
+                if l.args.len() == 2
+                    && l.args[0].tag.is_none()
+                    && matches!(&l.args[0].value, Value::Lang(lhs)
+                        if matches!(head(lhs).map(|s| s.name()).as_deref(), Some("[" | "[[" | "$"))
+                        && lhs.args.first().and_then(|a| a.value.as_sym()).is_some_and(is_var)) =>
+            {
+                let Value::Lang(lhs) = &l.args[0].value else { unreachable!() };
+                let target = lhs.args[0].value.as_sym().unwrap();
+                let setter = Sym::new(&format!("{}<-", head(lhs).unwrap().name()));
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(setter, whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let slot = self.slot(target);
+                let k = self.konst(whole.clone());
+                self.emit(Op::SetComplex { val: dst, slot, k });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
