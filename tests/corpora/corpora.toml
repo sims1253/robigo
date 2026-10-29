@@ -61,6 +61,12 @@ packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datas
             "stats4", "grid", "parallel", "compiler"]
 # Examples that print the host (kernel and user, tools on the PATH,
 # installed packages, CPU count): not comparable across machines.
+# Sys.getenv's single recorded mask index (R_SESSION_TMPDIR's line) lands on
+# the IGNORE_RDIFF_END marker whenever the runner's environment is a few
+# variables larger (a pull_request run vs a push run), which unmasks the
+# environment dump and breaks the comparison; skip until it is re-recorded
+# with `record --mask-against-previous` on the oracle platform.
+host_dependent = ["base/Sys.getenv"]
 
 # Whole R programs: everyday scripts, not snippets (see
 # tests/corpora/{gnur-demos,r-intro}/README.md). Both import from GNU R

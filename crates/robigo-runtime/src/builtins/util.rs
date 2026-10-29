@@ -116,6 +116,7 @@ fn do_compare_numeric_version(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env
 /// `R_pretty`: the "pretty" interval algorithm.
 // R: appl/pretty.c:R_pretty
 fn r_pretty(
+    interp: &mut Interp,
     lo: &mut f64,
     up: &mut f64,
     ndiv: &mut i32,
@@ -124,7 +125,7 @@ fn r_pretty(
     high_u_fact: [f64; 3],
     eps_correction: i32,
     return_bounds: bool,
-) -> f64 {
+) -> RResult<f64> {
     const ROUNDING_EPS: f64 = 1e-10;
     let h = high_u_fact[0];
     let h5 = high_u_fact[1];
@@ -134,34 +135,41 @@ fn r_pretty(
     let dx = up_ - lo_;
     let cell;
     let i_small;
+    // R: pretty.c computes `cell`/`i_small` first, then adjusts `cell` in a
+    // separate branch — the `lo == up == 0` case also shrinks.
     if dx == 0.0 && up_ == 0.0 {
         cell = 1.0;
         i_small = true;
     } else {
-        let mut cell0 = lo_.abs().max(up_.abs());
+        cell = lo_.abs().max(up_.abs());
         let mut u = 1.0 + if h5 >= 1.5 * h + 0.5 { 1.0 / (1.0 + h) } else { 1.5 / (1.0 + h5) };
         u *= 1.max(*ndiv) as f64 * f64::EPSILON;
-        i_small = dx < cell0 * u * 3.0;
-        if i_small {
-            if cell0 > 10.0 {
-                cell0 = 9.0 + cell0 / 10.0;
-            }
-            cell0 *= shrink_sml;
-            if min_n > 1 {
-                cell0 /= min_n as f64;
-            }
-        } else {
-            cell0 = dx;
-            if dx.is_finite() {
-                if *ndiv > 1 {
-                    cell0 /= *ndiv as f64;
-                }
-            } else if *ndiv >= 2 {
-                cell0 = up_ / (*ndiv as f64) - lo_ / (*ndiv as f64);
-            }
-        }
-        cell = cell0;
+        i_small = dx < cell * u * 3.0;
     }
+    let cell = if i_small {
+        let mut c = cell;
+        if c > 10.0 {
+            c = 9.0 + c / 10.0;
+        }
+        c *= shrink_sml;
+        if min_n > 1 {
+            c /= min_n as f64;
+        }
+        c
+    } else {
+        let mut c = dx;
+        if c.is_finite() {
+            if *ndiv > 1 {
+                c /= *ndiv as f64;
+            }
+        } else if *ndiv < 2 {
+            // up - lo overflowed to +Inf; cell stays infinite (warning only).
+            interp.warning(format!("R_pretty(): infinite range; *ndiv={}, should have ndiv >= 2", *ndiv))?;
+        } else {
+            c = up_ / (*ndiv as f64) - lo_ / (*ndiv as f64);
+        }
+        c
+    };
 
     let max_f = 1.25;
     let mut cell = cell;
@@ -247,11 +255,11 @@ fn r_pretty(
         *lo = ns;
         *up = nu;
     }
-    unit
+    Ok(unit)
 }
 
 // R: util.c:do_pretty
-fn do_pretty(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_pretty(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     super::character::check_arity_internal(&args, 8, "pretty")?;
     let mut lo = crate::coerce::as_real(&args[0].value);
     if !lo.is_finite() {
@@ -295,7 +303,7 @@ fn do_pretty(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     }
     let return_bounds = bounds != 0;
     let hf = [z(0), z(1), z(2)];
-    let unit = r_pretty(&mut lo, &mut up, &mut n, min_n, shrink, hf, eps, return_bounds);
+    let unit = r_pretty(interp, &mut lo, &mut up, &mut n, min_n, shrink, hf, eps, return_bounds)?;
     let (names, values) = if return_bounds {
         (vec!["l", "u", "n"], vec![Value::real(lo), Value::real(up), Value::int(n)])
     } else {
