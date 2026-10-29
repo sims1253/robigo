@@ -1262,14 +1262,27 @@ macro_rules! math_fn {
     };
 }
 
-/// The complex kernels R's `complex_math1` implements (complex.c).
-/// `None` for the functions that error there ("unimplemented complex
-/// function": floor, sign, gamma, cospi, ...).
+/// The complex kernels R's `complex_math1` implements (complex.c):
+/// glibc's functions where R calls the C library, R's `z_*` wrappers
+/// where it does not. `None` for the functions that error there
+/// ("unimplemented complex function": floor, sign, gamma, cospi, ...).
 fn math1_c_fn(name: &str) -> Option<fn(Complex) -> Complex> {
     match name {
         "log" => Some(super::complex::clog),
         "sqrt" => Some(super::complex::csqrt),
         "exp" => Some(super::complex::cexp),
+        "cos" => Some(super::complex::ccos),
+        "sin" => Some(super::complex::csin),
+        "tan" => Some(super::complex::z_tan),
+        "acos" => Some(super::complex::z_acos),
+        "asin" => Some(super::complex::z_asin),
+        "atan" => Some(super::complex::z_atan),
+        "cosh" => Some(super::complex::ccosh),
+        "sinh" => Some(super::complex::csinh),
+        "tanh" => Some(super::complex::ctanh),
+        "acosh" => Some(super::complex::z_acosh),
+        "asinh" => Some(super::complex::z_asinh),
+        "atanh" => Some(super::complex::z_atanh),
         _ => None,
     }
 }

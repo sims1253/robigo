@@ -767,6 +767,706 @@ pub fn csqrt(x: Complex) -> Complex {
     res
 }
 
+// `(int)((DBL_MAX_EXP - 1) * M_LN2)` and its half, as the templates
+// compute them (709 and 354).
+const T_709: i32 = ((f64::MAX_EXP - 1) as f64 * std::f64::consts::LN_2) as i32;
+const T_354: i32 = ((f64::MAX_EXP - 1) as f64 * std::f64::consts::LN_2 / 2.0) as i32;
+
+// R: math/s_ccosh_template.c:__ccosh
+pub fn ccosh(x: Complex) -> Complex {
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    let mut retval = Complex::new(0.0, 0.0);
+    if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+        // Real part is finite.
+        if icls != FpClass::Nan && icls != FpClass::Infinite {
+            // Imaginary part is finite.
+            let t = T_709;
+            let (sinix, cosix);
+            if x.im.abs() > f64::MIN_POSITIVE {
+                sinix = x.im.sin();
+                cosix = x.im.cos();
+            } else {
+                sinix = x.im;
+                cosix = 1.0;
+            }
+            let (mut sinix, mut cosix) = (sinix, cosix);
+            if x.re.abs() > t as f64 {
+                let exp_t = (t as f64).exp();
+                let mut rx = x.re.abs();
+                if x.re.is_sign_negative() {
+                    sinix = -sinix;
+                }
+                rx -= t as f64;
+                sinix *= exp_t / 2.0;
+                cosix *= exp_t / 2.0;
+                if rx > t as f64 {
+                    rx -= t as f64;
+                    sinix *= exp_t;
+                    cosix *= exp_t;
+                }
+                if rx > t as f64 {
+                    // Overflow (original real part of x > 3t).
+                    retval.re = f64::MAX * cosix;
+                    retval.im = f64::MAX * sinix;
+                } else {
+                    let exp_val = rx.exp();
+                    retval.re = exp_val * cosix;
+                    retval.im = exp_val * sinix;
+                }
+            } else {
+                retval.re = x.re.cosh() * cosix;
+                retval.im = x.re.sinh() * sinix;
+            }
+        } else {
+            retval.im = if x.re == 0.0 { 0.0 } else { f64::NAN };
+            retval.re = x.im - x.im;
+        }
+    } else if rcls == FpClass::Infinite {
+        // Real part is infinite.
+        if icls != FpClass::Nan && icls != FpClass::Infinite && icls != FpClass::Zero {
+            // Imaginary part is finite.
+            let (sinix, cosix) = if x.im.abs() > f64::MIN_POSITIVE { (x.im.sin(), x.im.cos()) } else { (x.im, 1.0) };
+            retval.re = f64::copysign(f64::INFINITY, cosix);
+            retval.im = f64::copysign(f64::INFINITY, sinix) * f64::copysign(1.0, x.re);
+        } else if icls == FpClass::Zero {
+            // Imaginary part is 0.0.
+            retval.re = f64::INFINITY;
+            retval.im = x.im * f64::copysign(1.0, x.re);
+        } else {
+            retval.re = f64::INFINITY;
+            retval.im = x.im - x.im;
+        }
+    } else {
+        retval.re = f64::NAN;
+        retval.im = if x.im == 0.0 { x.im } else { f64::NAN };
+    }
+    retval
+}
+
+// R: math/s_ccos_template.c:__ccos (ccosh of the parts swapped and the
+// imaginary part negated).
+pub fn ccos(x: Complex) -> Complex {
+    ccosh(Complex::new(-x.im, x.re))
+}
+
+// R: math/s_csin_template.c:__csin
+pub fn csin(x: Complex) -> Complex {
+    let negate = x.re.is_sign_negative();
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    // The template negates the real part in place first.
+    let xre = x.re.abs();
+    let mut retval = Complex::new(0.0, 0.0);
+    if icls != FpClass::Nan && icls != FpClass::Infinite {
+        // Imaginary part is finite.
+        if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+            // Real part is finite.
+            let t = T_709;
+            let (sinix, cosix);
+            if xre > f64::MIN_POSITIVE {
+                sinix = xre.sin();
+                cosix = xre.cos();
+            } else {
+                sinix = xre;
+                cosix = 1.0;
+            }
+            let (mut sinix, mut cosix) = (sinix, cosix);
+            if negate {
+                sinix = -sinix;
+            }
+            if x.im.abs() > t as f64 {
+                let exp_t = (t as f64).exp();
+                let mut ix = x.im.abs();
+                if x.im.is_sign_negative() {
+                    cosix = -cosix;
+                }
+                ix -= t as f64;
+                sinix *= exp_t / 2.0;
+                cosix *= exp_t / 2.0;
+                if ix > t as f64 {
+                    ix -= t as f64;
+                    sinix *= exp_t;
+                    cosix *= exp_t;
+                }
+                if ix > t as f64 {
+                    // Overflow (original imaginary part of x > 3t).
+                    retval.re = f64::MAX * sinix;
+                    retval.im = f64::MAX * cosix;
+                } else {
+                    let exp_val = ix.exp();
+                    retval.re = exp_val * sinix;
+                    retval.im = exp_val * cosix;
+                }
+            } else {
+                retval.re = x.im.cosh() * sinix;
+                retval.im = x.im.sinh() * cosix;
+            }
+        } else if icls == FpClass::Zero {
+            // Imaginary part is 0.0.
+            retval.re = xre - xre;
+            retval.im = x.im;
+        } else {
+            retval.re = f64::NAN;
+            retval.im = f64::NAN;
+        }
+    } else if icls == FpClass::Infinite {
+        // Imaginary part is infinite.
+        if rcls == FpClass::Zero {
+            // Real part is 0.0.
+            retval.re = f64::copysign(0.0, if negate { -1.0 } else { 1.0 });
+            retval.im = x.im;
+        } else if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+            // Real part is finite.
+            let (sinix, cosix) = if xre > f64::MIN_POSITIVE { (xre.sin(), xre.cos()) } else { (xre, 1.0) };
+            retval.re = f64::copysign(f64::INFINITY, sinix);
+            retval.im = f64::copysign(f64::INFINITY, cosix);
+            if negate {
+                retval.re = -retval.re;
+            }
+            if x.im.is_sign_negative() {
+                retval.im = -retval.im;
+            }
+        } else {
+            retval.re = xre - xre;
+            retval.im = f64::INFINITY;
+        }
+    } else {
+        if rcls == FpClass::Zero {
+            retval.re = f64::copysign(0.0, if negate { -1.0 } else { 1.0 });
+        } else {
+            retval.re = f64::NAN;
+        }
+        retval.im = f64::NAN;
+    }
+    retval
+}
+
+// R: math/s_csinh_template.c:__csinh
+pub fn csinh(x: Complex) -> Complex {
+    let negate = x.re.is_sign_negative();
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    let xre = x.re.abs();
+    let mut retval = Complex::new(0.0, 0.0);
+    if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+        // Real part is finite.
+        if icls != FpClass::Nan && icls != FpClass::Infinite {
+            // Imaginary part is finite.
+            let t = T_709;
+            let (mut sinix, mut cosix) =
+                if x.im.abs() > f64::MIN_POSITIVE { (x.im.sin(), x.im.cos()) } else { (x.im, 1.0) };
+            if negate {
+                cosix = -cosix;
+            }
+            if xre > t as f64 {
+                let exp_t = (t as f64).exp();
+                let mut rx = xre;
+                // The template tests the sign of the (already absolute)
+                // real part: never taken.
+                if xre.is_sign_negative() {
+                    cosix = -cosix;
+                }
+                rx -= t as f64;
+                sinix *= exp_t / 2.0;
+                cosix *= exp_t / 2.0;
+                if rx > t as f64 {
+                    rx -= t as f64;
+                    sinix *= exp_t;
+                    cosix *= exp_t;
+                }
+                if rx > t as f64 {
+                    // Overflow (original real part of x > 3t).
+                    retval.re = f64::MAX * cosix;
+                    retval.im = f64::MAX * sinix;
+                } else {
+                    let exp_val = rx.exp();
+                    retval.re = exp_val * cosix;
+                    retval.im = exp_val * sinix;
+                }
+            } else {
+                retval.re = xre.sinh() * cosix;
+                retval.im = xre.cosh() * sinix;
+            }
+        } else if rcls == FpClass::Zero {
+            // Real part is 0.0.
+            retval.re = f64::copysign(0.0, if negate { -1.0 } else { 1.0 });
+            retval.im = x.im - x.im;
+        } else {
+            retval.re = f64::NAN;
+            retval.im = f64::NAN;
+        }
+    } else if rcls == FpClass::Infinite {
+        // Real part is infinite.
+        if icls != FpClass::Nan && icls != FpClass::Infinite && icls != FpClass::Zero {
+            // Imaginary part is finite.
+            let (sinix, cosix) = if x.im.abs() > f64::MIN_POSITIVE { (x.im.sin(), x.im.cos()) } else { (x.im, 1.0) };
+            retval.re = f64::copysign(f64::INFINITY, cosix);
+            retval.im = f64::copysign(f64::INFINITY, sinix);
+            if negate {
+                retval.re = -retval.re;
+            }
+        } else if icls == FpClass::Zero {
+            // Imaginary part is 0.0.
+            retval.re = if negate { -f64::INFINITY } else { f64::INFINITY };
+            retval.im = x.im;
+        } else {
+            retval.re = f64::INFINITY;
+            retval.im = x.im - x.im;
+        }
+    } else {
+        retval.re = f64::NAN;
+        retval.im = if x.im == 0.0 { x.im } else { f64::NAN };
+    }
+    retval
+}
+
+// R: math/s_ctan_template.c:__ctan
+pub fn ctan(x: Complex) -> Complex {
+    let mut res = Complex::new(0.0, 0.0);
+    if !x.re.is_finite() || !x.im.is_finite() {
+        if x.im.is_infinite() {
+            if x.re.is_finite() && x.re.abs() > 1.0 {
+                let (sinrx, cosrx) = (x.re.sin(), x.re.cos());
+                res.re = f64::copysign(0.0, sinrx * cosrx);
+            } else {
+                res.re = f64::copysign(0.0, x.re);
+            }
+            res.im = f64::copysign(1.0, x.im);
+        } else if x.re == 0.0 {
+            res = x;
+        } else {
+            res.re = f64::NAN;
+            res.im = if x.im == 0.0 { x.im } else { f64::NAN };
+        }
+    } else {
+        let t = T_354;
+        // tan(x+iy) = (sin(2x) + i*sinh(2y))/(cos(2x) + cosh(2y))
+        //   = (sin(x)*cos(x) + i*sinh(y)*cosh(y)/(cos(x)^2 + sinh(y)^2).
+        let (sinrx, cosrx) = if x.re.abs() > f64::MIN_POSITIVE { (x.re.sin(), x.re.cos()) } else { (x.re, 1.0) };
+        if x.im.abs() > t as f64 {
+            // Avoid intermediate overflow when the real part of the
+            // result may be subnormal.  Ignoring negligible terms, the
+            // imaginary part is +/- 1, the real part is
+            // sin(x)*cos(x)/sinh(y)^2 = 4*sin(x)*cos(x)/exp(2y).
+            let exp_2t = (2.0 * t as f64).exp();
+            res.im = f64::copysign(1.0, x.im);
+            res.re = 4.0 * sinrx * cosrx;
+            let mut im = x.im.abs();
+            im -= t as f64;
+            res.re /= exp_2t;
+            if im > t as f64 {
+                // Underflow (original imaginary part of x has absolute
+                // value > 2t).
+                res.re /= exp_2t;
+            } else {
+                res.re /= (2.0 * im).exp();
+            }
+        } else {
+            let (sinhix, coshix) =
+                if x.im.abs() > f64::MIN_POSITIVE { (x.im.sinh(), x.im.cosh()) } else { (x.im, 1.0) };
+            let den =
+                if sinhix.abs() > cosrx.abs() * f64::EPSILON { cosrx * cosrx + sinhix * sinhix } else { cosrx * cosrx };
+            res.re = sinrx * cosrx / den;
+            res.im = sinhix * coshix / den;
+        }
+    }
+    res
+}
+
+// R: math/s_ctanh_template.c:__ctanh
+pub fn ctanh(x: Complex) -> Complex {
+    let mut res = Complex::new(0.0, 0.0);
+    if !x.re.is_finite() || !x.im.is_finite() {
+        if x.re.is_infinite() {
+            res.re = f64::copysign(1.0, x.re);
+            if x.im.is_finite() && x.im.abs() > 1.0 {
+                let (sinix, cosix) = (x.im.sin(), x.im.cos());
+                res.im = f64::copysign(0.0, sinix * cosix);
+            } else {
+                res.im = f64::copysign(0.0, x.im);
+            }
+        } else if x.im == 0.0 {
+            res = x;
+        } else {
+            res.re = if x.re == 0.0 { x.re } else { f64::NAN };
+            res.im = f64::NAN;
+        }
+    } else {
+        let t = T_354;
+        // tanh(x+iy) = (sinh(2x) + i*sin(2y))/(cosh(2x) + cos(2y))
+        //   = (sinh(x)*cosh(x) + i*sin(y)*cos(y))/(sinh(x)^2 + cos(y)^2).
+        let (sinix, cosix) = if x.im.abs() > f64::MIN_POSITIVE { (x.im.sin(), x.im.cos()) } else { (x.im, 1.0) };
+        if x.re.abs() > t as f64 {
+            // Avoid intermediate overflow when the imaginary part of
+            // the result may be subnormal.  Ignoring negligible terms,
+            // the real part is +/- 1, the imaginary part is
+            // sin(y)*cos(y)/sinh(x)^2 = 4*sin(y)*cos(y)/exp(2x).
+            let exp_2t = (2.0 * t as f64).exp();
+            res.re = f64::copysign(1.0, x.re);
+            res.im = 4.0 * sinix * cosix;
+            let mut re = x.re.abs();
+            re -= t as f64;
+            res.im /= exp_2t;
+            if re > t as f64 {
+                // Underflow (original real part of x has absolute
+                // value > 2t).
+                res.im /= exp_2t;
+            } else {
+                res.im /= (2.0 * re).exp();
+            }
+        } else {
+            let (sinhrx, coshrx) =
+                if x.re.abs() > f64::MIN_POSITIVE { (x.re.sinh(), x.re.cosh()) } else { (x.re, 1.0) };
+            let den =
+                if sinhrx.abs() > cosix.abs() * f64::EPSILON { sinhrx * sinhrx + cosix * cosix } else { cosix * cosix };
+            res.re = sinhrx * coshrx / den;
+            res.im = sinix * cosix / den;
+        }
+    }
+    res
+}
+
+// R: math/k_casinh_template.c:__kernel_casinh.  `adj` adjusts the
+// imaginary part of the result for use in computing other functions.
+fn kernel_casinh(x: Complex, adj: bool) -> Complex {
+    let mut res = Complex::new(0.0, 0.0);
+    // Avoid cancellation by reducing to the first quadrant.
+    let rx = x.re.abs();
+    let ix = x.im.abs();
+    let y: Complex;
+    if rx >= 1.0 / f64::EPSILON || ix >= 1.0 / f64::EPSILON {
+        // For large x in the first quadrant, x + csqrt (1 + x * x)
+        // is sufficiently close to 2 * x to make no significant
+        // difference to the result; avoid possible overflow from
+        // the squaring and addition.
+        let mut yv = Complex::new(rx, ix);
+        if adj {
+            let t = yv.re;
+            yv.re = f64::copysign(yv.im, x.im);
+            yv.im = t;
+        }
+        y = yv;
+        res = clog(y);
+        res.re += std::f64::consts::LN_2;
+    } else if rx >= 0.5 && ix < f64::EPSILON / 8.0 {
+        let s = 1.0f64.hypot(rx);
+        res.re = (rx + s).ln();
+        res.im = if adj { f64::atan2(s, x.im) } else { f64::atan2(ix, s) };
+    } else if rx < f64::EPSILON / 8.0 && ix >= 1.5 {
+        let s = ((ix + 1.0) * (ix - 1.0)).sqrt();
+        res.re = (ix + s).ln();
+        res.im = if adj { f64::atan2(rx, f64::copysign(s, x.im)) } else { f64::atan2(s, rx) };
+    } else if ix > 1.0 && ix < 1.5 && rx < 0.5 {
+        if rx < f64::EPSILON * f64::EPSILON {
+            let ix2m1 = (ix + 1.0) * (ix - 1.0);
+            let s = ix2m1.sqrt();
+            res.re = (2.0 * (ix2m1 + ix * s)).ln_1p() / 2.0;
+            res.im = if adj { f64::atan2(rx, f64::copysign(s, x.im)) } else { f64::atan2(s, rx) };
+        } else {
+            let ix2m1 = (ix + 1.0) * (ix - 1.0);
+            let rx2 = rx * rx;
+            let f = rx2 * (2.0 + rx2 + 2.0 * ix * ix);
+            let d = (ix2m1 * ix2m1 + f).sqrt();
+            let dp = d + ix2m1;
+            let dm = f / dp;
+            let r1 = ((dm + rx2) / 2.0).sqrt();
+            let r2 = rx * ix / r1;
+            res.re = (rx2 + dp + 2.0 * (rx * r1 + ix * r2)).ln_1p() / 2.0;
+            res.im = if adj { f64::atan2(rx + r1, f64::copysign(ix + r2, x.im)) } else { f64::atan2(ix + r2, rx + r1) };
+        }
+    } else if ix == 1.0 && rx < 0.5 {
+        if rx < f64::EPSILON / 8.0 {
+            res.re = (2.0 * (rx + rx.sqrt())).ln_1p() / 2.0;
+            res.im = if adj { f64::atan2(rx.sqrt(), f64::copysign(1.0, x.im)) } else { f64::atan2(1.0, rx.sqrt()) };
+        } else {
+            let d = rx * (4.0 + rx * rx).sqrt();
+            let s1 = ((d + rx * rx) / 2.0).sqrt();
+            let s2 = ((d - rx * rx) / 2.0).sqrt();
+            res.re = (rx * rx + d + 2.0 * (rx * s1 + s2)).ln_1p() / 2.0;
+            res.im =
+                if adj { f64::atan2(rx + s1, f64::copysign(1.0 + s2, x.im)) } else { f64::atan2(1.0 + s2, rx + s1) };
+        }
+    } else if ix < 1.0 && rx < 0.5 {
+        if ix >= f64::EPSILON {
+            if rx < f64::EPSILON * f64::EPSILON {
+                let onemix2 = (1.0 + ix) * (1.0 - ix);
+                let s = onemix2.sqrt();
+                res.re = (2.0 * rx / s).ln_1p() / 2.0;
+                res.im = if adj { f64::atan2(s, x.im) } else { f64::atan2(ix, s) };
+            } else {
+                let onemix2 = (1.0 + ix) * (1.0 - ix);
+                let rx2 = rx * rx;
+                let f = rx2 * (2.0 + rx2 + 2.0 * ix * ix);
+                let d = (onemix2 * onemix2 + f).sqrt();
+                let dp = d + onemix2;
+                let dm = f / dp;
+                let r1 = ((dp + rx2) / 2.0).sqrt();
+                let r2 = rx * ix / r1;
+                res.re = (rx2 + dm + 2.0 * (rx * r1 + ix * r2)).ln_1p() / 2.0;
+                res.im =
+                    if adj { f64::atan2(rx + r1, f64::copysign(ix + r2, x.im)) } else { f64::atan2(ix + r2, rx + r1) };
+            }
+        } else {
+            let s = 1.0f64.hypot(rx);
+            res.re = (2.0 * rx * (rx + s)).ln_1p() / 2.0;
+            res.im = if adj { f64::atan2(s, x.im) } else { f64::atan2(ix, s) };
+        }
+    } else {
+        let mut yv = Complex::new((rx - ix) * (rx + ix) + 1.0, 2.0 * rx * ix);
+        yv = csqrt(yv);
+        yv.re += rx;
+        yv.im += ix;
+        if adj {
+            let t = yv.re;
+            yv.re = f64::copysign(yv.im, x.im);
+            yv.im = t;
+        }
+        y = yv;
+        res = clog(y);
+    }
+    // Give results the correct sign for the original argument.
+    res.re = f64::copysign(res.re, x.re);
+    res.im = f64::copysign(res.im, if adj { 1.0 } else { x.im });
+    res
+}
+
+// R: math/s_casinh_template.c:__casinh
+pub fn casinh(x: Complex) -> Complex {
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    let mut res = Complex::new(0.0, 0.0);
+    if rcls == FpClass::Nan || rcls == FpClass::Infinite || icls == FpClass::Nan || icls == FpClass::Infinite {
+        if icls == FpClass::Infinite {
+            res.re = f64::copysign(f64::INFINITY, x.re);
+            if rcls == FpClass::Nan {
+                res.im = f64::NAN;
+            } else {
+                res.im = f64::copysign(
+                    if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+                        std::f64::consts::FRAC_PI_2
+                    } else {
+                        std::f64::consts::FRAC_PI_4
+                    },
+                    x.im,
+                );
+            }
+        } else if rcls == FpClass::Nan || rcls == FpClass::Infinite {
+            res.re = x.re;
+            if (rcls == FpClass::Infinite && icls != FpClass::Nan && icls != FpClass::Infinite)
+                || (rcls == FpClass::Nan && icls == FpClass::Zero)
+            {
+                res.im = f64::copysign(0.0, x.im);
+            } else {
+                res.im = f64::NAN;
+            }
+        } else {
+            res.re = f64::NAN;
+            res.im = f64::NAN;
+        }
+    } else if rcls == FpClass::Zero && icls == FpClass::Zero {
+        res = x;
+    } else {
+        res = kernel_casinh(x, false);
+    }
+    res
+}
+
+// R: math/s_casin_template.c:__casin
+pub fn casin(x: Complex) -> Complex {
+    let mut res = Complex::new(0.0, 0.0);
+    if x.re.is_nan() || x.im.is_nan() {
+        if x.re == 0.0 {
+            res = x;
+        } else if x.re.is_infinite() || x.im.is_infinite() {
+            res.re = f64::NAN;
+            res.im = f64::copysign(f64::INFINITY, x.im);
+        } else {
+            res.re = f64::NAN;
+            res.im = f64::NAN;
+        }
+    } else {
+        let y = casinh(Complex::new(-x.im, x.re));
+        res.re = y.im;
+        res.im = -y.re;
+    }
+    res
+}
+
+// R: math/s_cacos_template.c:__cacos
+pub fn cacos(x: Complex) -> Complex {
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    let mut res = Complex::new(0.0, 0.0);
+    if rcls == FpClass::Nan
+        || rcls == FpClass::Infinite
+        || icls == FpClass::Nan
+        || icls == FpClass::Infinite
+        || (rcls == FpClass::Zero && icls == FpClass::Zero)
+    {
+        let y = casin(x);
+        res.re = std::f64::consts::FRAC_PI_2 - y.re;
+        if res.re == 0.0 {
+            res.re = 0.0;
+        }
+        res.im = -y.im;
+    } else {
+        let y = kernel_casinh(Complex::new(-x.im, x.re), true);
+        res.re = y.im;
+        res.im = y.re;
+    }
+    res
+}
+
+// R: math/s_catan_template.c:__catan
+pub fn catan(x: Complex) -> Complex {
+    let rcls = f64_classify(x.re);
+    let icls = f64_classify(x.im);
+    let mut res = Complex::new(0.0, 0.0);
+    if rcls == FpClass::Nan || rcls == FpClass::Infinite || icls == FpClass::Nan || icls == FpClass::Infinite {
+        if rcls == FpClass::Infinite {
+            res.re = f64::copysign(std::f64::consts::FRAC_PI_2, x.re);
+            res.im = f64::copysign(0.0, x.im);
+        } else if icls == FpClass::Infinite {
+            if rcls != FpClass::Nan && rcls != FpClass::Infinite {
+                res.re = f64::copysign(std::f64::consts::FRAC_PI_2, x.re);
+            } else {
+                res.re = f64::NAN;
+            }
+            res.im = f64::copysign(0.0, x.im);
+        } else if icls == FpClass::Zero {
+            res.re = f64::NAN;
+            res.im = f64::copysign(0.0, x.im);
+        } else {
+            res.re = f64::NAN;
+            res.im = f64::NAN;
+        }
+    } else if rcls == FpClass::Zero && icls == FpClass::Zero {
+        res = x;
+    } else if x.re.abs() >= 16.0 / f64::EPSILON || x.im.abs() >= 16.0 / f64::EPSILON {
+        res.re = f64::copysign(std::f64::consts::FRAC_PI_2, x.re);
+        if x.re.abs() <= 1.0 {
+            res.im = 1.0 / x.im;
+        } else if x.im.abs() <= 1.0 {
+            res.im = x.im / x.re / x.re;
+        } else {
+            let h = (x.re / 2.0).hypot(x.im / 2.0);
+            res.im = x.im / h / h / 4.0;
+        }
+    } else {
+        let mut den;
+        let mut absx = x.re.abs();
+        let mut absy = x.im.abs();
+        if absx < absy {
+            std::mem::swap(&mut absx, &mut absy);
+        }
+        if absy < f64::EPSILON / 2.0 {
+            den = (1.0 - absx) * (1.0 + absx);
+            if den == 0.0 {
+                den = 0.0;
+            }
+        } else if absx >= 1.0 {
+            den = (1.0 - absx) * (1.0 + absx) - absy * absy;
+        } else if absx >= 0.75 || absy >= 0.5 {
+            den = -x2y2m1(absx, absy);
+        } else {
+            den = (1.0 - absx) * (1.0 + absx) - absy * absy;
+        }
+        res.re = 0.5 * f64::atan2(2.0 * x.re, den);
+        if x.im.abs() == 1.0 && x.re.abs() < f64::EPSILON * f64::EPSILON {
+            res.im = f64::copysign(0.5, x.im) * (std::f64::consts::LN_2 - x.re.abs().ln());
+        } else {
+            let mut r2 = 0.0f64;
+            if x.re.abs() >= f64::EPSILON * f64::EPSILON {
+                r2 = x.re * x.re;
+            }
+            let mut num = x.im + 1.0;
+            num = r2 + num * num;
+            den = x.im - 1.0;
+            den = r2 + den * den;
+            let f = num / den;
+            if f < 0.5 {
+                res.im = 0.25 * f.ln();
+            } else {
+                num = 4.0 * x.im;
+                res.im = 0.25 * (num / den).ln_1p();
+            }
+        }
+    }
+    res
+}
+
+// R: complex.c:z_tan — glibc's ctan with the imaginary part forced to
+// +/-1 where some systems leave NaN.
+pub fn z_tan(x: Complex) -> Complex {
+    let y = x.im;
+    let mut r = ctan(x);
+    if y.is_finite() && y.abs() > 25.0 {
+        r.im = if y < 0.0 { -1.0 } else { 1.0 };
+    }
+    r
+}
+
+// R: complex.c:z_asin — R's branch-cut formula, glibc's casin elsewhere.
+// The result is the compiled expression `asin(t1 - t2) + ri*I`: a C99
+// complex multiply and add, not a constructor (ri*0 puts ri's NaN into
+// the real part too).
+pub fn z_asin(x: Complex) -> Complex {
+    if x.im == 0.0 && x.re.abs() > 1.0 {
+        let x = x.re;
+        let t1 = 0.5 * (x + 1.0).abs();
+        let t2 = 0.5 * (x - 1.0).abs();
+        let alpha = t1 + t2;
+        let mut ri = (alpha + (alpha * alpha - 1.0).sqrt()).ln();
+        // This comes from
+        // 'z_asin() is continuous from below if x >= 1
+        //   and continuous from above if x <= -1.'
+        if x > 1.0 {
+            ri *= -1.0;
+        }
+        cadd(Complex::new((t1 - t2).asin(), 0.0), cmul(Complex::new(ri, 0.0), Complex::new(0.0, 1.0)))
+    } else {
+        casin(x)
+    }
+}
+
+// R: complex.c:z_acos — R's branch-cut formula, glibc's cacos elsewhere.
+pub fn z_acos(x: Complex) -> Complex {
+    if x.im == 0.0 && x.re.abs() > 1.0 {
+        csub(Complex::new(std::f64::consts::FRAC_PI_2, 0.0), z_asin(x))
+    } else {
+        cacos(x)
+    }
+}
+
+// R: complex.c:z_atan — R's branch-cut formula, glibc's catan elsewhere.
+// `rr + ri*I` is a C99 complex multiply and add (see z_asin).
+pub fn z_atan(x: Complex) -> Complex {
+    if x.re == 0.0 && x.im.abs() > 1.0 {
+        let y = x.im;
+        let rr = if y > 0.0 { std::f64::consts::FRAC_PI_2 } else { -std::f64::consts::FRAC_PI_2 };
+        let ri = 0.25 * (((y + 1.0) * (y + 1.0)) / ((y - 1.0) * (y - 1.0))).ln();
+        cadd(Complex::new(rr, 0.0), cmul(Complex::new(ri, 0.0), Complex::new(0.0, 1.0)))
+    } else {
+        catan(x)
+    }
+}
+
+// R: complex.c:z_acosh/z_asinh/z_atanh — the products are the compiled
+// `z_acos(z) * I` etc. (`-I * z_asin(z * I)`), i.e. C99 complex
+// multiplication (libgcc's __muldc3, robigo's cmul).
+pub fn z_acosh(x: Complex) -> Complex {
+    cmul(z_acos(x), Complex::new(0.0, 1.0))
+}
+
+pub fn z_asinh(x: Complex) -> Complex {
+    cmul(Complex::new(-0.0, -1.0), z_asin(cmul(x, Complex::new(0.0, 1.0))))
+}
+
+pub fn z_atanh(x: Complex) -> Complex {
+    cmul(Complex::new(-0.0, -1.0), z_atan(cmul(x, Complex::new(0.0, 1.0))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,5 +1624,76 @@ mod tests {
             checked += 1;
         }
         assert!(checked == n && n > 50000, "{checked} of {n}");
+    }
+
+    /// The trigonometric and hyperbolic complex kernels — glibc's
+    /// ccos/csin/ctan/ccosh/csinh/ctanh/casin/cacos/catan and R's z_*
+    /// wrappers (complex.c) — are bit-identical with the C library of
+    /// the CI image (Debian 13, glibc 2.41): special values, the
+    /// templates' branch-cut and reduction thresholds, and random bit
+    /// patterns, recorded by `scripts/oracle-complex-trig.c` in the
+    /// robigo-oracle:4.5.0 container (384,640 results).  Like
+    /// `c_library_oracle` above, last bits can differ on other glibcs.
+    #[test]
+    fn c_library_trig_oracle() {
+        use std::io::Read;
+        let mut tally = std::collections::BTreeMap::<(String, i64), usize>::new();
+        let mut bad3 = 0usize;
+        let raw = include_bytes!("complex_trig_oracle.txt.gz");
+        let mut s = String::new();
+        flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s).unwrap();
+        let n = s.lines().count();
+        let mut checked = 0usize;
+        for line in s.lines() {
+            let t: Vec<&str> = line.split_whitespace().collect();
+            if t.len() != 7 {
+                panic!("bad line: {line}");
+            }
+            let hex = |h: &str| f64::from_bits(u64::from_str_radix(h, 16).unwrap());
+            let a = z(hex(t[1]), hex(t[2]));
+            let want = (hex(t[5]), hex(t[6]));
+            let got = match t[0] {
+                "ccos" => ccos(a),
+                "csin" => csin(a),
+                "ctan" => ctan(a),
+                "ccosh" => ccosh(a),
+                "csinh" => csinh(a),
+                "ctanh" => ctanh(a),
+                "casin" => casin(a),
+                "cacos" => cacos(a),
+                "catan" => catan(a),
+                "ztan" => z_tan(a),
+                "zasin" => z_asin(a),
+                "zacos" => z_acos(a),
+                "zatan" => z_atan(a),
+                "zacosh" => z_acosh(a),
+                "zasinh" => z_asinh(a),
+                "zatanh" => z_atanh(a),
+                other => panic!("bad op {other}"),
+            };
+            let (g, w) = ((got.re.to_bits(), got.im.to_bits()), (want.0.to_bits(), want.1.to_bits()));
+            if std::env::var("ROBIGO_TALLY").is_ok() {
+                if g != w {
+                    let ulps = |a: u64, b: u64| (a as i64).wrapping_sub(b as i64).abs();
+                    let d = ulps(g.0, w.0).max(ulps(g.1, w.1));
+                    *tally.entry((t[0].to_string(), d)).or_insert(0usize) += 1;
+                    if bad3 == 0 && d > 2 {
+                        bad3 = 1;
+                        println!("large diff: {line}");
+                    }
+                }
+                checked += 1;
+                continue;
+            }
+            assert_eq!(g, w, "{line}");
+            checked += 1;
+        }
+        if std::env::var("ROBIGO_TALLY").is_ok() {
+            let mut v: Vec<_> = tally.into_iter().collect();
+            v.sort();
+            println!("{checked} checked; mismatches (op, max ulp diff) x count: {v:?}");
+            return;
+        }
+        assert!(checked == n && n > 300000, "{checked} of {n}");
     }
 }
