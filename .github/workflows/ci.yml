@@ -46,6 +46,17 @@ jobs:
         run: cargo fmt --check
       - name: Build
         run: cargo build --release --workspace
+      # GNU R's base-package natives built from the R 4.5.0 sources
+      # (docs/core.md §8): robigo's dyn.load serves the base packages with
+      # them instead of the Rust ports (ROBIGO_NATIVES)
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/robigo-research/rsrc
+          key: r-4.5.0-sources
+      - name: Base-package natives
+        run: |
+          scripts/build-natives.sh stats splines tools parallel
+          echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
       - name: Unit tests, parser oracle, conformance (all tiers)
         run: cargo test --release --workspace
       - name: Core and C API under gctorture (collect on every allocation)
@@ -55,12 +66,15 @@ jobs:
           python3 scripts/parse-corpus.py check fastr gnur-tests gnur-examples | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the binary for later jobs
         run: |
-          mkdir -p dist
+          mkdir -p dist/natives
           cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" dist/
+          for d in .robigo/natives/*/; do
+            p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d$p.so" "dist/natives/$p/"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: robigo
-          path: dist/robigo
+          path: dist
           retention-days: 7
 
   corpora:
@@ -94,6 +108,7 @@ jobs:
       - run: chmod +x dist/robigo
       - name: Run ${{ matrix.corpus }} (${{ matrix.shard }})
         run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
           python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
             --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Name the results
@@ -124,6 +139,7 @@ jobs:
       - run: python3 scripts/perf.py fetch
       - name: Measure robigo (and GNU R on main)
         run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
           export VALGRIND=valgrind
           runtime=robigo
           [ "${{ github.ref }}" = refs/heads/main ] && runtime=both
