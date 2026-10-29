@@ -1,5 +1,22 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): full CLI parse-error context
+
+- R: gram.y / Defn.h:PARSE_CONTEXT_SIZE is 256 bytes, not 50.
+  R: source.c:getParseContext / tabExpand splits the context into lines,
+  resets tab stops per line, and displays at most 192 bytes per line.
+  Ported both limits; changing only the ring size failed the long-line
+  oracle, so that incomplete form was rejected before committing.
+- Focused split cases d93fcb5b and ef3c791b: **0/2 -> 2/2**, no
+  regressions. Both gains absorbed into the FastR ratchet.
+- Two small CLI fixtures recorded in robigo-oracle:4.5.0 match all three
+  tiers (6/6). The closure print fixture also holds in all tiers (3/3).
+- Rebased onto main e25e6cc. Resolved only the append conflict in
+  tests/r/passing.txt, preserving every incoming and existing entry.
+  No edits to vm.rs. Earlier CLI tests: all seven unit tests and all
+  three conformance checks passed; final rebased verification follows.
+- Shared edit: crates/robigo-cli/src/echo.rs, confined to error context.
+
 ## 2026-10-29 (round 5): closure bytecode identity
 
 - R: print.c:PrintClosure. Print the bytecode line from GNU R's visible
@@ -16,6 +33,14 @@
   at **279/279**, including one pre-existing unrecorded pass.
 - New closure-bytecode.R was recorded in robigo-oracle:4.5.0. It matches
   stdout, stderr and status under the interpreter, VM and JIT (3/3).
+- Fixed-binary full data sweep: **8,404/8,426 -> 8,404/8,426**,
+  identical per-case results. The sole recorded-pass failure on both is
+  order/add626 (host collation). Candidate uses --jobs 6, baseline --jobs 2.
+- Runtime tests: 35 pass, two host C-library oracle tests fail (sqrt one
+  ULP, and csin(0.5+2i) imaginary component one ULP). The latter test was
+  added on main with the Debian glibc trig ports; complex.rs is unchanged
+  here, and baseline/candidate CLI sin output agrees at digits=22. Both
+  lazy-load integration tests pass. Debian CI remains the numeric judge.
 - Shared files: print.rs closure branch, serialize.rs body tag, vm/rjit.rs
   two small state accessors. The evaluator/VM execution files are untouched.
 

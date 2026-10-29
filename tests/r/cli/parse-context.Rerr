@@ -1,0 +1,2 @@
+Error: unexpected ';' in "{ split(list(q=1, w=2L, e='x', r=T), as.factor(c('a', 'b', 'a'));"
+Execution halted
