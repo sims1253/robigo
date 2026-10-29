@@ -13,6 +13,9 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
 ## 2026-10-30: cache text length to retain string-vector allocation sizes
 
+- Rebased onto 29cac51 (#60 and #91); kept both sides of the passing
+  ratchet conflict and checked that every main entry remains present.
+
 - The 16-byte-header candidate passes every CI corpus ratchet and the
   build, but mandelbrot_naive_ascii remains +0.89%; strings is -1.07%.
   Its exact Debian profile adds 14.6M instructions, primarily mimalloc's
