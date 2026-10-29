@@ -139,7 +139,7 @@ jobs:
           # has): compare with that commit's numbers, not with whichever main
           # run finished last (main may have moved since, or that commit's
           # run may still be going: perf-baseline.py waits for it).
-          base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}')
+          base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
           python3 scripts/perf-baseline.py "$base" base | tee -a "$GITHUB_STEP_SUMMARY"
           if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
