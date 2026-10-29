@@ -41,11 +41,13 @@ pub fn is_nan_or_na(x: f64) -> bool {
 /// A CHARSXP; `None` is `NA_character_`.
 pub type RStr = Option<RString>;
 
-/// A CHARSXP with an optional encoding window. Ordinary UTF-8 strings keep
-/// their Rc<str> allocation; a NUL sentinel and encoding byte precede text
-/// that needs an explicit mark or reversible byte representation.
-#[derive(Clone, Debug)]
-pub struct RString(Rc<str>);
+/// A CHARSXP handle. Alignment bits carry the encoding while text stays in
+/// an ordinary Rc<str>. On 32-bit hosts the high length bit supplies the
+/// third tag bit; valid Rust strings cannot exceed isize::MAX bytes.
+pub struct RString {
+    data: std::ptr::NonNull<u8>,
+    len_tag: usize,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -59,13 +61,45 @@ pub enum Encoding {
 }
 
 impl RString {
+    const ADDR_BITS: usize = if usize::BITS >= 64 { 3 } else { 2 };
+    const ADDR_MASK: usize = (1 << Self::ADDR_BITS) - 1;
+    const LEN_MASK: usize = if usize::BITS >= 64 { usize::MAX } else { isize::MAX as usize };
+    const TAG_SHIFT: u32 = usize::BITS - 1;
+    const AUTO: usize = 7;
+
+    #[inline]
+    fn from_rc(text: Rc<str>, tag: usize) -> Self {
+        let len = text.len();
+        let ptr = Rc::as_ptr(&text).cast::<u8>();
+        // The Rc counter header aligns this payload to usize alignment.
+        // Check before relying on it, including for empty text.
+        assert_eq!(ptr.addr() & Self::ADDR_MASK, 0);
+        let ptr = Rc::into_raw(text).cast::<u8>().cast_mut();
+        Self {
+            data: unsafe { std::ptr::NonNull::new_unchecked(ptr.map_addr(|a| a | (tag & Self::ADDR_MASK))) },
+            len_tag: len | ((tag >> Self::ADDR_BITS) << Self::TAG_SHIFT),
+        }
+    }
+    #[inline]
+    fn text_ptr(&self) -> *const u8 {
+        self.data.as_ptr().map_addr(|a| a & !Self::ADDR_MASK)
+    }
+    #[inline]
+    fn rc_ptr(&self) -> *const str {
+        std::ptr::slice_from_raw_parts(self.text_ptr(), self.len_tag & Self::LEN_MASK) as *const str
+    }
+    #[inline]
+    fn tag(&self) -> usize {
+        let low = self.data.addr().get() & Self::ADDR_MASK;
+        if Self::ADDR_BITS == 3 { low } else { low | ((self.len_tag >> Self::TAG_SHIFT) << Self::ADDR_BITS) }
+    }
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        Rc::ptr_eq(&a.0, &b.0)
+        a.text_ptr() == b.text_ptr()
     }
     #[inline]
     pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
         if bytes.is_ascii() {
-            Self::from(unsafe { std::str::from_utf8_unchecked(bytes) })
+            Self::from_text(unsafe { std::str::from_utf8_unchecked(bytes) }, Encoding::Native)
         } else {
             Self::from_non_ascii_bytes(bytes, encoding)
         }
@@ -82,46 +116,33 @@ impl RString {
                 ),
             }
         };
-        if mark == Encoding::Utf8 { Self::from(text.as_ref()) } else { Self::from_text(&text, mark) }
+        Self::from_text(&text, mark)
     }
     #[inline]
     fn from_text(text: &str, mark: Encoding) -> Self {
-        let mut stored = Rc::<[u8]>::new_uninit_slice(text.len() + 2);
-        let payload = Rc::get_mut(&mut stored).unwrap();
-        payload[0].write(0);
-        payload[1].write(mark as u8);
-        // The fresh allocation cannot overlap text. Initialize the entire
-        // payload in one copy, so short strings use memcpy rather than a
-        // byte-at-a-time loop over MaybeUninit.
-        unsafe {
-            std::ptr::copy_nonoverlapping(text.as_ptr(), payload.as_mut_ptr().add(2).cast::<u8>(), text.len());
-        }
-        // The sentinel, mark and text are valid UTF-8; Rc<[u8]> and Rc<str>
-        // have identical allocation layouts and slice metadata.
-        let stored = unsafe { stored.assume_init() };
-        Self(unsafe { Rc::from_raw(Rc::into_raw(stored) as *const str) })
+        Self::from_rc(Rc::from(text), mark as usize)
     }
     pub fn encoding(&self) -> Encoding {
-        if !self.0.starts_with('\0') {
-            return if self.0.is_ascii() { Encoding::Native } else { Encoding::Utf8 };
-        }
-        // A leading NUL introduces a window; ordinary strings are unprefixed.
-        match self.0.as_bytes()[1] {
+        match self.tag() {
             0 => Encoding::Native,
             1 => Encoding::Utf8,
             2 => Encoding::Latin1,
             3 => Encoding::Bytes,
             4 => Encoding::NativeInvalid,
-            _ => Encoding::Utf8Invalid,
+            5 => Encoding::Utf8Invalid,
+            _ => {
+                if self.is_ascii() {
+                    Encoding::Native
+                } else {
+                    Encoding::Utf8
+                }
+            }
         }
     }
     pub fn raw_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
-        // Only explicit byte windows need reconstruction. Ordinary text
-        // already has its raw bytes, regardless of whether it is ASCII.
-        if self.0.starts_with('\0') && self.0.as_bytes()[1] >= Encoding::Latin1 as u8 {
-            std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect())
-        } else {
-            std::borrow::Cow::Borrowed(self.as_bytes())
+        match self.tag() {
+            2..=5 => std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect()),
+            _ => std::borrow::Cow::Borrowed(self.as_bytes()),
         }
     }
     pub fn encoding_name(&self) -> &'static str {
@@ -133,14 +154,34 @@ impl RString {
         }
     }
 }
+impl Clone for RString {
+    #[inline]
+    fn clone(&self) -> Self {
+        // This handle owns one strong count of the original, untagged Rc.
+        unsafe {
+            Rc::increment_strong_count(self.rc_ptr());
+        }
+        Self { data: self.data, len_tag: self.len_tag }
+    }
+}
+impl Drop for RString {
+    #[inline]
+    fn drop(&mut self) {
+        // Restore both the original address and allocation length before Drop.
+        unsafe {
+            drop(Rc::from_raw(self.rc_ptr()));
+        }
+    }
+}
+impl std::fmt::Debug for RString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
 impl From<&str> for RString {
     #[inline]
     fn from(s: &str) -> Self {
-        if s.starts_with('\0') {
-            Self::from_text(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
-        } else {
-            Self(Rc::from(s))
-        }
+        Self::from_rc(Rc::from(s), Self::AUTO)
     }
 }
 impl From<String> for RString {
@@ -150,18 +191,16 @@ impl From<String> for RString {
 }
 impl From<Rc<str>> for RString {
     fn from(s: Rc<str>) -> Self {
-        if s.starts_with('\0') { Self::from(&*s) } else { Self(s) }
+        Self::from_rc(s, Self::AUTO)
     }
 }
 impl std::ops::Deref for RString {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        if self.0.starts_with('\0') {
-            // Constructors put two ASCII structural bytes before window text.
-            unsafe { self.0.get_unchecked(2..) }
-        } else {
-            &self.0
+        // Constructors retain valid UTF-8; address tagging preserves provenance.
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.len_tag & Self::LEN_MASK))
         }
     }
 }
@@ -1185,7 +1224,29 @@ mod string_window_tests {
                 assert_eq!(&*string.raw_bytes(), text.as_bytes());
             }
             if !text.is_empty() && !text.starts_with('\0') {
-                assert!(Rc::ptr_eq(&RString::from(shared.clone()).0, &shared));
+                assert_eq!(RString::from(shared.clone()).text_ptr(), shared.as_ptr());
+            }
+        }
+    }
+
+    #[test]
+    fn tagged_handles_balance_reference_counts() {
+        for tag in [0, 1, 2, 3, 4, 5, RString::AUTO] {
+            for text in ["", "abc", "é", "\0é"] {
+                let shared: Rc<str> = Rc::from(text);
+                let weak = Rc::downgrade(&shared);
+                let handle = RString::from_rc(shared.clone(), tag);
+                assert_eq!(Rc::strong_count(&shared), 2);
+                let clone = handle.clone();
+                assert!(RString::ptr_eq(&handle, &clone));
+                assert_eq!(Rc::strong_count(&shared), 3);
+                assert_eq!(&*clone, text);
+                drop(handle);
+                assert_eq!(Rc::strong_count(&shared), 2);
+                drop(clone);
+                assert_eq!(Rc::strong_count(&shared), 1);
+                drop(shared);
+                assert!(weak.upgrade().is_none());
             }
         }
     }

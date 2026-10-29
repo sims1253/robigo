@@ -11,6 +11,28 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: encoding tags in the string handle (candidate)
+
+- Rebased onto e25e6cc after #88/#85/#86 landed. Preserve #88's direct
+  binary-string slice and read_charsxp_item symbol path in serialize.rs;
+  convert the result with the encoding mark. Set comparison confirms every
+  main conformance/corpus ratchet entry is retained.
+- Prefix candidate e0a22f3 passes Debian CI's build and full workspace tests.
+  Exact CI artifact comparison in robigo-oracle:4.5.0: e25e6cc strings
+  768,560,203 -> 774,394,375 (+0.76%), still rejected as a gate fix.
+  Host: base 771,218,043 -> 776,131,292. Removing duplicate ASCII scans
+  is insufficient while every text access checks for a prefix.
+- Current candidate stores the tag in the Rc payload address alignment bits
+  instead. On 64-bit hosts all three tag bits fit there; on 32-bit hosts
+  two address bits and the unused high length bit hold them. The allocation
+  remains an ordinary Rc<str>; the handle restores the exact original
+  pointer and length before cloning or dropping the Rc. Alignment is
+  checked before tagging, with pointer provenance retained by map_addr.
+- Four representation tests pass, covering all byte/encoding combinations,
+  allocation boundaries, leading NULs, shared text and strong/weak reference
+  counts for every tag. Debian Valgrind: zero errors, no lost allocations.
+  Full benchmark and conformance validation for this candidate is pending.
+
 ## 2026-10-29: round 4 resume, strings gate regression
 
 - Reproduced #84's real `robigo/strings` regression with CI artifacts and
