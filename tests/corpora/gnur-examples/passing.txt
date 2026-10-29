@@ -71,6 +71,7 @@ base/c
 base/call
 base/callCC
 base/cat
+base/cbind
 base/char.expand
 base/character
 base/charmatch
@@ -112,6 +113,7 @@ base/droplevels
 base/dump
 base/duplicated
 base/dynload
+base/eapply
 base/encodeString
 base/eval
 base/exists
@@ -165,6 +167,7 @@ base/lengths
 base/levels
 base/library.dynam
 base/list2DF
+base/list2env
 base/load
 base/locales
 base/logical
@@ -359,6 +362,7 @@ grDevices/windowsFonts
 grDevices/x11
 grDevices/x11Fonts
 grDevices/xy.coords
+grDevices/xyTable
 grDevices/xyz.coords
 graphics/abline
 graphics/arrows

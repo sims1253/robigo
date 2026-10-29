@@ -484,7 +484,7 @@ fn do_any_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -
 fn match_transform(i: &mut Interp, v: &Value, env: &Env) -> RResult<Value> {
     if v.is_object() {
         if v.inherits("factor") {
-            return Ok(crate::builtins::envir::as_character_factor(v));
+            return crate::builtins::envir::as_character_factor(v);
         }
         let f = i.find_fun(Sym::new("mtfrm"), env)?;
         let call = Value::lang(Value::sym("mtfrm"), vec![Arg::pos(v.clone())]);

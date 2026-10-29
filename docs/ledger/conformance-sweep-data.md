@@ -1,5 +1,169 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 3), part 3: dim<- coercion warnings; tracemem marks
+## and returns the address
+
+- **dim<- coercion warnings** (attrib.c:dimgets runs coerceVector(val,
+  INTSXP) before validating): do_dimgets now coerces non-integer atomic
+  values through interp.coerce, so `dim(x) <- c(12+10i)` warns
+  `imaginary parts discarded in coercion` and `dim(x) <- c(2147483648)`
+  warns `NAs introduced by coercion to integer range` next to
+  `the dims contain missing values`, all against the `dim(x) <- ...`
+  call. The four TestBuiltin_dim cases pass (fastr filter
+  8,393 -> 8,397). Note: the bulk `attributes(x) <- list(dim = ...)`
+  path (attrib.rs set_attrib, no interp) still coerces quietly — same
+  gap class as before, no corpus case exercises it.
+- **tracemem family** (debug.c: R_MEMORY_PROFILING build): tracemem
+  marks the object in a thread-local pointer set, warns
+  `object already traced` on a re-trace, and returns the
+  `<0x...>` address string; untracemem clears the mark (NULL,
+  invisible); retracemem returns the address visibly for a traced
+  object, NULL invisibly otherwise, and re-marks with `previous`.
+  The copy-duplication report (`tracemem[0x... -> 0x...]:`) stays
+  unimplemented: it prints raw addresses no recorded output can match.
+  The seven TestSimpleLists cases that `invisible(tracemem(...))` now
+  pass (tracemem no longer errors); the four TestBuiltin_tracemem
+  address-printing cases still fail on stdout only (8,397 -> 8,404).
+- Final expanded data filter on this branch: **8,404/8,426** (round
+  start: 8,388), 0 regressions beyond the host collation case.
+  gnur-tests 23/59 (reg-BLAS, print-tests recorded earlier), runtime
+  tests and the conformance ratchet unchanged (host complex cases only).
+- Remaining 22 failures of the filter, each with a verified owner:
+  - 6 factor + 1 lapply (245e62b) + 1 vectors (502b171d): GNU R's
+    `Calls:` line omits builtin contexts and prints `<Anonymous>` for
+    the auto-print call; contexts live in interp.rs/conditions.rs
+    (evaluator/conformance-lang).
+  - 5 TestSimpleVectors: 0b6df291/daaeabd5 `[[<-` error shows the rhs
+    VALUE where GNU R shows the expression (lang.rs fast_replace,
+    conformance-lang's ledger); 8745c2a5/94cf5bf3 `*tmp*` capture order
+    (complex assignment in interp.rs: index expr, then rhs, then
+    capture — robigo captures before the rhs and drops its mutation).
+  - 2 cbind (44215c10) + 2 rbind (51a1b61d + e2d15825): unused-argument
+    error prints the argument VALUE `(1)` where robigo prints the
+    expression `(v)` (match_args in interp.rs); e2d15825 additionally
+    expects status -11 (GNU R segfaults, not reproducible).
+  - 2 matcharg (139373f1, 85380d0c): conformance-values' ledger
+    (as.character-list deparse + error call).
+  - 2 split (d93fcb5b, ef3c791b): parse-error context truncation shows
+    a different remainder of the line (robigo-syntax, parser track).
+  - 1 subset (b4bfbcb9): srcref in subset (conformance-vectors).
+  - 4 tracemem (stdout addresses): unpassable as recorded.
+  - 1 order (add626): host collation locale; passes on CI.
+
+## 2026-10-29 (round 3), part 2: apply-family checkArity, env2list names,
+## tracemem verdict
+
+- **apply family arity** (apply.c/mapply.c/envir.c all start with
+  checkArity): do_lapply/vapply/eapply/rapply/mapply/islistfactor now
+  error `N argument(s) passed to .Internal(<name>) which requires N`
+  (util.c:Rf_checkArityCall — internals use error(), the context call).
+  fastr `.Internal(lapply)` arity cases 74c6e083/951ce209 pass.
+- **env2list of an empty environment** (envir.c:do_env2list): the C
+  returns the list BEFORE setAttrib(names) when k == 0, so
+  `as.list(new.env())` and `lapply(X = environment(), FUN = ...)` print
+  `list()`, not `named list()`. fastr TestBuiltin_lapply/2c077844
+  passes (envir.rs, conformance-lang's file: 4-line change, the fix for
+  the lapply case this track owns).
+- fastr expanded data filter **8,390 -> 8,393/8,426** (+3 recorded);
+  lapply/apply/env 380/381; gnur-tests 23/59 and gnur-examples base+stats
+  show no new regressions. PR #83 carries both batches.
+- **tracemem verdict (4 failing cases, not attempted)**: the remaining
+  TestBuiltin_tracemem cases print the recorded run's raw addresses
+  (`[1] "<0x...>"`, `tracemem[0x... -> 0x...]:`), which no masking covers
+  (corpus.py's ADDRESS regex only masks `<environment|bytecode|pointer|
+  promise|weak reference|externalptr: 0x...>` forms, mirroring GNU R's
+  tools::Rdiff, which also does not mask tracemem lines). The addresses
+  differ on every GNU R run too, so no implementation can pass the cases
+  as recorded; they would need re-recording with unstable-output masking
+  first (corpus.py record --repeat). The other 4 tracemem cases pass
+  without tracing (they only exercise errors/untracemem warnings).
+- Remaining open items, re-attributed after this round:
+  - `*tmp*` evaluation order (fastr TestSimpleVectors 8745c2a5,
+    94cf5bf3): `x[x[4]<-2] <- (x[4]<-100)` — GNU R evaluates the index
+    expression, then the rhs, then captures `*tmp*` (x[4]=100 persists);
+    robigo captures `*tmp*` before the rhs, so the rhs mutation is lost.
+    Needs the complex-assignment order in interp.rs (evaluator, shared).
+  - factor traceback ×6 + lapply 245e62b + match traceback ×1: GNU R's
+    `Calls:` line omits builtin contexts (`Calls: <Anonymous> ...`
+    auto-print vs robigo's `Calls: print ...`; `lapply -> is.vector`);
+    contexts for builtins live in interp.rs/conditions.rs
+    (conformance-lang's area).
+  - unused-argument printing ×2 (matcharg 139373f1, 85380d0c) —
+    conformance-values' ledger already claims them (as.character-list
+    pairlist deparse + error call).
+  - rbind/cbind ×2 expect status -11 (GNU R segfaults on those inputs);
+    robigo cannot reproduce a segfault. parse-error truncation ×2 —
+    parser track. srcref ×1 — subset.rs (conformance-vectors).
+  - utf8ToInt invalid bytes / `"\304"` / iconv: blocked on core's
+    per-CHARSXP encoding window. base/identical page: blocked on
+    bytecode-print/compile-moment alignment. base/options page: echo
+    default (cli track), bitmapType, pager path (host).
+
+## 2026-10-29 (round 3), part 1: identical row.names, malformed factor,
+## options simd/max.print, round/signif missing digits
+
+- Started from origin/main 7ff8a140 in a fresh worktree. Baseline on this
+  host: expanded data filter **8,388/8,426** (the one "regression" is
+  `TestBuiltin_order/add626`, the known en_US.utf8 collation case this
+  host lacks; CI has the locale), gnur-tests 21/59, gnur-examples
+  `^base/` 288/380 (12 host-only: Platform, Rhome, as.environment,
+  getCallingDLL, getLoadedDLLs, library.dynam, regmatches, search,
+  srcfile, strsplit, strwrap, system.file).
+- **identical row.names through getAttrib** (identical.c's R_RowNamesSymbol
+  special case, both ATTR_AS_SET paths): `attr(x,"row.names")` stored
+  `c(NA, +3)` vs `c(NA, -3)` now both expand to `1:3` and compare equal.
+  gnur-examples `base/cbind` passes (recorded). `base/identical` is still
+  blocked on `<bytecode: ...>` printing of compiler::cmpfun closures
+  (needs the compile-moment alignment, see round 2's rejected experiment).
+- **asCharacterFactor errors** (coerce.c:asCharacterFactor ported to
+  RResult): "attempting to coerce non-factor", "malformed factor" for
+  non-character levels AND out-of-range codes; drops the names copy the C
+  never made. Callers updated: misc.rs (the .Internal), lang.rs + vm.rs
+  for-loops, unique.rs match_transform, attrib.rs as_char_simpl (now
+  RResult), robigo-capi bridge.rs. fastr factor 57 -> 59/65: the two
+  direct `as.character(x)` cases pass and are recorded; the other six now
+  differ ONLY in the traceback's first entry — GNU R prints
+  `Calls: <Anonymous> ... print.factor` for the auto-print at top level,
+  robigo prints `Calls: print ...`. That is the evaluator's call-stack
+  handling of auto-print (interp/print), not asCharacterFactor; left for
+  the owner of the traceback machinery.
+- **options**: `matprod = "default.simd"` accepted silently (the Debian
+  r-base-core 4.5.0-3 build robigo tracks has OpenMP SIMDRED; the warning
+  is `#if !defined(HAVE_OPENMP_SIMDRED)`); max.print/nwarnings now use
+  R's asInteger with its CoercionWarning, so `options(max.print = Inf)`
+  warns `NAs introduced by coercion to integer range` then errors
+  `invalid value for 'max.print'`. gnur-tests reg-BLAS and print-tests
+  both pass and are recorded (gnur-tests 21 -> 23/59, 0 regressions).
+  `base/options` still fails on host/other-track lines only (bitmapType
+  cairo vs Xlib, pager path, echo default).
+- **round/signif with a missing digits formal** (core's handoff): the
+  bug was in math.rs's private `eval_list_keep_missing`, which lacked
+  eval.c's `R_isMissing` check, so evaluating the `digits` symbol (bound
+  to the caller's unmatched formal) errored. Deleted the duplicate;
+  do_Math2 now uses subset.rs's `eval_keep_missing` (the existing
+  evalListKeepMissing port, visibility pub(crate)). First attempt kept
+  the symbol expression as the arg value and broke x (`non-numeric
+  argument`); the shared port pushes Value::missing_arg, and the default
+  then applies in do_math2_group as in C. `f <- function(x, digits)
+  signif(x, digits); f(1.23456789)` prints 1.23457; `round` likewise;
+  missing `x` now reports `Error in round(x) : argument "x" is missing,
+  with no default` (R_MissingArgError_c uses do_Math2's call).
+  grDevices/xyTable passes and is recorded.
+- Complex %*% NaN: re-verified on new main (`as.complex(NA) %*% NaN`
+  prints NaN+NaNi; the two ratcheted complex scripts fail on the BASELINE
+  binary on this host exactly as the ledger documented — host NaN-payload
+  issue, main's CI green, not from this branch).
+- Metric: expanded data filter **8,388 -> 8,390/8,426** (+2 recorded),
+  0 real regressions; gnur-examples `^base/` 288 -> 289/380 + xyTable
+  (+3 recorded with cbind; eapply/list2env were pre-existing unrecorded
+  passes from the morning wave, recorded too); gnur-tests 21 -> 23/59.
+  cargo test -p robigo-runtime: only the documented host complex oracle;
+  conformance ratchet: only the two documented host complex scripts
+  (verified against the baseline binary). Build note: the shared
+  ~/.cache/cargo-target again served another worktree's robigo-capi
+  build-script state (`main/g_her_glyph.c` not found); this round used
+  CARGO_TARGET_DIR=~/.cache/robigo-data3-target throughout.
+
 ## 2026-10-29 (later): pretty cell shrink, identical row.names finding
 
 - **Kept fix**: `pretty(0, min.n = 4)` returned `-2 -1 0 1 2`; GNU R gives
