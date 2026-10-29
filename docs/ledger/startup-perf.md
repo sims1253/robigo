@@ -149,21 +149,27 @@ parse 93M, eval 48M, system Rprofile 17.7M, process+interp init 2.4M
 
 ## Open items (ranked)
 
-1. **Startup snapshot without R_HOME (G6)**: robigo now needs GNU R's
+1. **S3 dispatch memsets during package loading** (dispatch.rs/subset.rs,
+   conformance-lang/conformance-vectors): `library(stats)` spends 14.4M
+   instructions (5.7%) in memset under `usemethod` -> `dispatch_with_temp_context`
+   -> `dispatch_or_eval_sp` (~48 KB zeroed per dispatch, 2452 dispatches;
+   `/tmp/ls.cg` in the container has the profile). Visible in every
+   default-packages scenario.
+2. **Regex construction at startup** (grep.rs, conformance-strings):
+   `for (i in seq(length = n))`-adjacent startup work builds ~12 distinct
+   patterns as ~31 `MetaRegex` objects (TreProg makes up to 4 per pattern
+   for leftmost-longest): ~5M instructions of `-e 1`, 10% of it. GNU R's
+   TRE build is ~10x cheaper per pattern.
+3. **Startup snapshot without R_HOME (G6)**: robigo now needs GNU R's
    `library/base` to exist (it already needed R_HOME for utils/stats).
-   A robigo-proprietary snapshot of the bootstrapped base would remove
-   that dependency; with base now loading from the lazy-load DB, the
-   snapshot is "replay the rdx index + mmap the rdb", much smaller than
-   snapshotting the evaluated environment. Carry-over for robigo-core
-   (G3): the lazy-binding design (promises in the frame, forced on
-   lookup, value cached in the promise) is exactly GNU R's and works
-   with copy-on-modify refcounts unchanged.
-2. **Per-fetch decompression**: each base fetch inflates its own chunk
-   (1177 chunks, 45 B-31 KB); GNU R pays the same, but a
-   decompress-once-into-an-indexed-arena (or robigo building its own
-   uncompressed rdb at install time) would cut another ~40M from
-   default-packages startup. Needs a cache-invalidation story if the
-   rdb changes.
-3. **wall/RSS**: with lazy base, `-e 1` NULL RSS should drop toward
-   R's 20 MB (was 37.8 MB measured on the source path); re-measure and
-   record; wall numbers need an idle machine to mean anything.
+   With base loading from the lazy-load DB, a snapshot is "replay the rdx
+   index + mmap the rdb". Carry-over for robigo-core (G3): the
+   lazy-binding design (promises in the frame, forced on lookup, value
+   cached in the promise) is exactly GNU R's.
+4. **Per-fetch decompression**: each fetch inflates its own chunk; GNU R
+   pays the same. An uncompressed rdb image built once (with
+   invalidation on rdb change) would cut ~40M from default-packages
+   startup.
+5. **RSS with default packages**: 46 MB vs GNU R's 39 (`-e 1` NULL is
+   21.8 vs 20.3 after this PR); the gap is the cached databases plus
+   materialized base.
