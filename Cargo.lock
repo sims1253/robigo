@@ -899,6 +899,7 @@ dependencies = [
  "cranelift-native",
  "fancy-regex",
  "flate2",
+ "libc",
  "liblzma",
  "regex-automata",
  "robigo-numerics",
