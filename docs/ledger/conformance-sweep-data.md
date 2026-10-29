@@ -1,5 +1,32 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): final rebased sweep and next steps
+
+- Final default VM/JIT data slice on e25e6cc: **8,404/8,426 ->
+  8,406/8,426**. Only the two split diagnostics change outcome. The
+  sole ratchet failure, order/add626, is unchanged from the saved main
+  binary and comes from this host's unavailable en_US.utf8 collation.
+- All 139 former blocker cases across interpreter, VM and JIT improve
+  **131/139 -> 135/139** in each tier, with no regressions. Four
+  TestConditionHandling parse-context cases also gained; absorbed all
+  four. The five known bytecode blockers hold, including Sys.getenv
+  with 0, 1, 10, 40, 80 and 160 synthetic variables in each tier (18/18).
+- Remaining mget cases in the blocker slice are unrelated to printing:
+  3aa1ccfb (ifnotfound environment coercion), c98ec841 (vector modes),
+  cb3e95e3 (ifnotfound length), e945049d (numeric environment validation).
+  Next owner should port envir.c:do_mget argument validation/coercion.
+- Remaining data work: parser source metadata (subset/b4bfbcb9 needs
+  keep.source attributes and parse-data records); evaluator traceback
+  contexts (factor/lapply), replacement order and rhs display, and unused
+  argument value printing; values' as.character-list errors. Tracemem's
+  four raw-address recordings need oracle-owner treatment; do not crash
+  deliberately to match GNU R's status -11 recordings.
+- base/identical still needs compiler .Internal(bcVersion()) and the
+  remaining compiler internals before its cmpfun example can execute.
+- This is a coherent batch: loaded/JIT closure printing, stable Sys.getenv
+  recording, six FastR context-diagnostic gains and two help-example gains.
+  Final crate and full interpreter/VM slice checks run after this commit.
+
 ## 2026-10-29 (round 5): avoid rescanning loaded bytecode bodies
 
 - Measured startup with R_DEFAULT_PACKAGES=NULL and callgrind on
