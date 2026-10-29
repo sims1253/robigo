@@ -6,6 +6,29 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 5, scalar payloads and rejected muladd recovery
+
+- Baseline: current main `74e8c73`, Debian trixie GNU R 4.5.0-3.
+  Replaying the scalar portion of the recorded arithmetic oracle through
+  closures reproduces **16/1,888** bit mismatches. All involve scalar
+  integer/double `+` or `*` with competing NA/NaN payloads.
+- Change: follow `arithmetic.c:do_arith` and the existing builtin port:
+  mixed integer scalars use the right operand as the SSE destination for
+  addition/multiplication. Logical operands retain double semantics.
+  Extend the unchanged 9,440-case GNU R oracle through compiled VM
+  expressions and eligible simple bodies. Verification is in progress.
+- Rejected: recovered #60's VM patch on current main, with the requested
+  `Scan::raw` and `io::conn_getc` inline attributes. A new exact-oracle
+  probe over 768 vector multiply/add/subtract cases with competing NaN
+  payloads finds **0 mismatches on main, 102 with #60**. Revert the recovery
+  and leave #60 draft. Its plain Rust kernel predates #74's payload rules.
+  Next: use the shape-dependent destination rules from `arith_exact.rs`
+  for both multiplication and addition, prevent LLVM commutation, and
+  add byte-level competing-payload coverage before measuring performance.
+  The old test's single NaN per element cannot establish this property.
+- Local artifacts: `.robigo/round5/`; builds and measurements use the
+  track's private `~/.cache/robigo-trixie-target` in `robigo-build:4.5.0`.
+
 ## 2026-10-29: round 4, matrix CI diagnosis and current-profile verification
 
 - #80 run `40906985766` failed before comparing performance: downloading

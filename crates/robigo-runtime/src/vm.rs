@@ -108,7 +108,21 @@ fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
         if op == ArithOp::Mod && crate::builtins::arith::fmod_warns(as_f64(a), as_f64(b)) {
             return None;
         }
-        return Some(RVal::D(real_op(op, as_f64(a), as_f64(b))));
+        // R: arithmetic.c:do_arith. With a scalar integer operand GNU R's
+        // compiled +/* use the right operand as SSE destination; with two
+        // doubles (or a logical coerced to double), the left payload wins.
+        // Keep LLVM from commuting the mixed operations when both are NaN.
+        let (x, y) = (as_f64(a), as_f64(b));
+        let value = if matches!(a, Num::I(_)) || matches!(b, Num::I(_)) {
+            match op {
+                ArithOp::Plus => crate::builtins::complex::sse::add(y, x),
+                ArithOp::Times => crate::builtins::complex::sse::mul(y, x),
+                _ => real_op(op, x, y),
+            }
+        } else {
+            real_op(op, x, y)
+        };
+        return Some(RVal::D(value));
     }
     let (x, y) = (as_i32(a), as_i32(b));
     Some(match op {
@@ -3461,5 +3475,87 @@ mod op_stats {
             });
             e.1 += 1;
         });
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::*;
+    use std::io::Read;
+
+    /// Replay the recorded GNU R 4.5.0 arithmetic bits through compiled
+    /// expressions, including the VM's scalar and simple-body paths.
+    #[test]
+    fn gnu_r_arithmetic_oracle() {
+        let raw = include_bytes!("builtins/arith_r_oracle.txt.gz");
+        let mut oracle = String::new();
+        flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut oracle).unwrap();
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let env = Env::new(Some(interp.global.clone()));
+        let x = Sym::new("x");
+        let y = Sym::new("y");
+        let mut codes = HashMap::new();
+        for name in ["+", "-", "*", "/", "^", "%%", "%/%"] {
+            let expr = Value::lang(Value::Sym(Sym::new(name)), vec![Arg::pos(Value::Sym(x)), Arg::pos(Value::Sym(y))]);
+            codes.insert(name, compile_body(&expr));
+        }
+        let real = |s: &str| f64::from_bits(u64::from_str_radix(s, 16).unwrap());
+        let shape = |v: Value, n: usize| match v {
+            Value::Real(v) => Value::reals(vec![v.data[0]; n]),
+            Value::Int(v) => Value::ints(vec![v.data[0]; n]),
+            _ => unreachable!(),
+        };
+        let mut failures = Vec::new();
+        let mut checked = 0;
+        for line in oracle.lines() {
+            let t: Vec<_> = line.split_whitespace().collect();
+            let (op, sh, a, b) = if matches!(t[0], "+" | "-" | "*" | "/") {
+                let (sh, order) = t[3].split_once('_').unwrap();
+                let a = Value::int(if t[1] == "NAi" { NA_INTEGER } else { 3 });
+                let b = Value::real(real(t[2]));
+                let (a, b) = if order == "id" { (a, b) } else { (b, a) };
+                (t[0], sh, a, b)
+            } else {
+                let op = match t[0] {
+                    "add" => "+",
+                    "sub" => "-",
+                    "mul" => "*",
+                    "div" => "/",
+                    "pow" => "^",
+                    "mod" => "%%",
+                    "idiv" => "%/%",
+                    _ => unreachable!(),
+                };
+                (op, t[1], Value::real(real(t[2])), Value::real(real(t[3])))
+            };
+            let (nx, ny, k) = match sh {
+                "ss" => (1, 1, 0),
+                "vv" => (2, 2, 1),
+                "sv" => (1, 3, 1),
+                "vs" => (3, 1, 1),
+                "rc" => (4, 2, 2),
+                _ => unreachable!(),
+            };
+            env.set_local(x, shape(a, nx));
+            env.set_local(y, shape(b, ny));
+            let code = &codes[op];
+            let want = real(t[4]).to_bits();
+            let result = run(&mut interp, code, &env).unwrap();
+            let Value::Real(v) = result else { panic!("{line}: expected double") };
+            if v.data[k].to_bits() != want {
+                failures.push(format!("VM {line}: got {:016x}", v.data[k].to_bits()));
+            }
+            if sh == "ss"
+                && let Some(result) = run_simple(&mut interp, code, &env)
+            {
+                let Value::Real(v) = result else { panic!("{line}: expected double") };
+                if v.data[0].to_bits() != want {
+                    failures.push(format!("simple {line}: got {:016x}", v.data[0].to_bits()));
+                }
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 9440);
+        assert!(failures.is_empty(), "{} mismatches:\n{}", failures.len(), failures.join("\n"));
     }
 }
