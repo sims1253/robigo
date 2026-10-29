@@ -113,11 +113,84 @@ pub fn has_table(name: &str) -> bool {
 }
 
 /// Whether a shared object is one of GNU R's base packages built from
-/// source against robigo (`scripts/build-natives.sh`
-/// links in the symbol `robigo_base_native`).
+/// source against robigo (`scripts/build-natives.sh` links in the
+/// symbol `robigo_base_native`). The marker is a dynamic symbol name,
+/// so only the dynamic string table is searched: these files are
+/// megabytes and every base-package dyn.load checks one.
 pub fn is_robigo_build(path: &str) -> bool {
-    let marker = b"robigo_base_native";
-    std::fs::read(path).is_ok_and(|b| b.windows(marker.len()).any(|w| w == marker))
+    use std::io::{Read, Seek, SeekFrom};
+    let marker = b"robigo_base_native\0";
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let mut f = std::io::BufReader::with_capacity(1 << 16, f);
+    let u64_at = |buf: &[u8], off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+    // ELF64 header: program headers at e_phoff (u64 at 0x20), count
+    // e_phnum (u16 at 0x38), entry size e_phentsize (u16 at 0x36).
+    let mut eh = [0u8; 64];
+    if f.read_exact(&mut eh).is_err() || &eh[..4] != b"\x7fELF" || eh[4] != 2 {
+        return false;
+    }
+    let phoff = u64_at(&eh, 0x20) as usize;
+    let phentsize = u16::from_le_bytes([eh[0x36], eh[0x37]]) as usize;
+    let phnum = u16::from_le_bytes([eh[0x38], eh[0x39]]) as usize;
+    if phoff == 0 || phentsize < 56 || phnum > 64 {
+        return false;
+    }
+    if f.seek(SeekFrom::Start(phoff as u64)).is_err() {
+        return false;
+    }
+    let mut ph = vec![0u8; phentsize * phnum];
+    if f.read_exact(&mut ph).is_err() {
+        return false;
+    }
+    let entry = |i: usize| &ph[i * phentsize..(i + 1) * phentsize];
+    // PT_DYNAMIC (type 2): the vaddr -> file offset map from the PT_LOAD
+    // segments (type 1), then DT_STRTAB (5) / DT_STRSZ (10).
+    let loads: Vec<(u64, u64, u64)> = (0..phnum)
+        .filter(|&i| u32::from_le_bytes(entry(i)[0..4].try_into().unwrap()) == 1)
+        .map(|i| {
+            let e = entry(i);
+            (u64_at(e, 0x08), u64_at(e, 0x10), u64_at(e, 0x28)) // vaddr, off, filesz
+        })
+        .collect();
+    let to_off = |vaddr: u64| -> Option<u64> {
+        loads.iter().find(|(va, _, sz)| vaddr >= *va && vaddr < va + sz).map(|(va, off, _)| off + (vaddr - va))
+    };
+    let dynseg = (0..phnum).find(|&i| u32::from_le_bytes(entry(i)[0..4].try_into().unwrap()) == 2).and_then(|i| {
+        let e = entry(i);
+        let off = to_off(u64_at(e, 0x10))?;
+        let sz = u64_at(e, 0x28) as usize;
+        Some((off, sz))
+    });
+    let Some((dyn_off, dyn_sz)) = dynseg else { return false };
+    if f.seek(SeekFrom::Start(dyn_off)).is_err() {
+        return false;
+    }
+    let mut dynbuf = vec![0u8; dyn_sz];
+    if f.read_exact(&mut dynbuf).is_err() {
+        return false;
+    }
+    let (mut strtab, mut strsz) = (None, 0usize);
+    for ent in dynbuf.chunks_exact(16) {
+        let tag = u64::from_le_bytes(ent[0..8].try_into().unwrap());
+        let val = u64::from_le_bytes(ent[8..16].try_into().unwrap());
+        match tag {
+            5 => strtab = Some(val),
+            10 => strsz = val as usize,
+            0 => break,
+            _ => {}
+        }
+    }
+    let (Some(strtab), strsz) = (strtab, strsz) else { return false };
+    let strsz = strsz.min(1 << 20);
+    let Some(off) = to_off(strtab) else { return false };
+    if f.seek(SeekFrom::Start(off)).is_err() {
+        return false;
+    }
+    let mut strs = vec![0u8; strsz];
+    match f.read_exact(&mut strs) {
+        Ok(()) => strs.windows(marker.len()).any(|w| w == marker),
+        Err(_) => false,
+    }
 }
 
 /// robigo's build of a base package's native code from GNU R's sources
