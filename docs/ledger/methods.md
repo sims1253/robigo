@@ -388,6 +388,52 @@ Proposal (vm.rs, perf-vm's file; not done here):
   `new`, an S4 method for a primitive) would keep it tracked; the script
   above is in this entry.
 
+## 2026-10-29: the zero-loss switch (lead: fix first, then switch)
+
+Ratchet cases the switch would lose, and where each stands:
+
+| case | cause | status |
+|---|---|---|
+| fastr `S4/TestR5/ef10c392` | reference class methods listed in `names(env)` order: GNU R's hash-chain order | fixed, #67 |
+| fastr `TestBuiltin_serialize/4a71e01f`, `bfd38dfb` | class generators' bodies have a LANGSXP cell (`substitute()`'s unbound `...`) | fixed, #71 |
+| fastr `S4/TestR5/474b742f` | `finalize()` on `gc()`, and the case prints `gc()`'s table with GNU R's own cell counts | **needs the lead**: no implementation reproduces `Ncells 340001`; robigo reports NA by design. Options: mask `gc()` tables in `corpus.py` like `proc.time()`, or exclude the case. Finalizers themselves need environment collection (core) |
+| gnur-tests `reg-S4-examples` | with methods GNU R reaches `plot()` on an S4 object; robigo has no graphics device (`devholdflush`) | blocked on the graphics track |
+| gnur-tests `reg-packages` | on this host only (system R 4.6.1 in `R CMD` subprocesses, Debian `R_SHARE_DIR`) | CI decides (#71's run) |
+| fastr `add62673`, `0bb20eaa` | recording/host artifacts | fixed on main (#58/#62) |
+
+Recording: every case of the five corpora recorded twice in
+`robigo-oracle:4.5.0`, with and without methods. A case takes the new
+record only if the two differ after `corpus.py`'s normalization and every
+recorded mask; otherwise it keeps main's record (which CI passes).
+`record --mask-against-previous` across the switch would mask exactly the
+lines methods changes. reg-large is not re-recorded here (memory).
+
+Environment order (#67), what GNU R does and robigo now does:
+- hashed environments (`new.env()`, global, namespaces, `attach()`,
+  `list2env()` above 100 elements) list chain by chain. `R_HashSet`
+  counts every new binding in `HASHPRI` (its empty-chain test runs after
+  the search loop), so tables grow earlier than the load factor says;
+- frame pairlists (closure frames, `eval()` with a list, `as.environment()`
+  of a short list) list newest first after the initial frame;
+- `serialize()` writes hashed environments as their `HASHTAB`.
+Perf: the tables are built lazily, only when a hashed environment is
+listed, serialized or loses a binding. The remaining cost is
+startup: the ~37 `names(env)` calls of loading utils and stats build their
+tables (~150 instructions per binding, +0.4% on the 280M-instruction
+startup in a trixie container). Each layout of the frame code moved
+LLVM's inlining of `Rc<EnvData>::drop_slow` and `local_may_bind_fun` by
+±0.5% on fib: partitioning noise (the same code measured +0.06% on this
+host's build). CI's perf job is the judge; `codegen-units = 1` would
+remove the lottery (a project decision).
+
+test_sugar crash (#75): Rcpp keeps `.rcpp_cache` (a VECSXP it stored with
+`Rf_defineVar`) and `Rcpp::Function`s in statics. The bridge handed out a
+new copy on each `findVarInFrame` and let proxies die when no C root held
+them. Now stored vectors keep their core object and proxies stay pinned
+while their runtime object lives. test_sugar runs to its end: 176/493,
+then stops at complex `cos()` (robigo's complex `Math` has only
+log/sqrt/exp: math track).
+
 ## 2026-10-28: fastr with methods attached, whole corpus (host)
 
 - All 31,374 fastr cases re-recorded with methods in `default_packages`
