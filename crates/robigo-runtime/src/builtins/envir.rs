@@ -128,8 +128,13 @@ pub fn as_env(interp: &mut Interp, v: &Value, call: &Value) -> RResult<Env> {
         }
         Value::List(_) => {
             // R: envir.c:do_as_environment calls list2env(x, NULL, emptyenv()),
-            // whose new.env() has a table of max(29L, length(x))
-            let e = Env::new_hashed(Some(interp.empty.clone()), (v.len() as i32).max(29));
+            // whose new.env() is hashed only for more than 100 elements
+            // (`hash = (length(x) > 100), size = max(29L, length(x))`)
+            let e = if v.len() > 100 {
+                Env::new_hashed(Some(interp.empty.clone()), v.len() as i32)
+            } else {
+                Env::new(Some(interp.empty.clone()))
+            };
             list_into_env(v, &e);
             Ok(e)
         }

@@ -16,3 +16,7 @@ x5 <- serialize(e5, NULL); print(sum(as.integer(x5)))
 print(eval(quote(ls(sorted=FALSE)), list(k=1, j=2)))
 attach(list(m1 = 1, m0 = 2, m2 = 3), name = "att"); print(ls("att", sorted = FALSE)); detach("att")
 print(names(environment(f)))
+# as.environment(list) is list2env(x, NULL, emptyenv()): hashed only above 100
+print(names(as.environment(list(set_a = 1, import = 2, show = 3, getClass = 4, zz = 5))))
+print(names(as.environment(structure(as.list(1:120), names = paste0("w", 1:120))))[1:12])
+print(names(list2env(list(set_a = 1, import = 2, show = 3, getClass = 4))))
