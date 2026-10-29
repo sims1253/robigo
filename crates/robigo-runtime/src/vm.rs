@@ -3540,7 +3540,7 @@ mod arithmetic_tests {
             env.set_local(y, shape(b, ny));
             let code = &codes[op];
             let want = real(t[4]).to_bits();
-            let result = run(&mut interp, code, &env).unwrap();
+            let result = run(&mut interp, code, &env).unwrap_or_else(|_| panic!("VM error: {line}"));
             let Value::Real(v) = result else { panic!("{line}: expected double") };
             if v.data[k].to_bits() != want {
                 failures.push(format!("VM {line}: got {:016x}", v.data[k].to_bits()));
