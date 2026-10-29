@@ -73,14 +73,18 @@ pub struct Frame {
     /// Without a table the frame is a GNU R frame pairlist
     /// (`NewEnvironment`): its first `nbase` bindings in the order they were
     /// given (a closure's matched arguments), each later one prepended by
-    /// `defineVar`.
+    /// `defineVar`. `NBASE_OPEN` until the first binding that is not part
+    /// of the initial frame (so `bind_arg` costs nothing more). For a
+    /// hashed frame: the size its table starts with.
     nbase: u32,
     /// Listed in the order of insertion: the base environment, which GNU R
     /// lists in its global symbol table's order.
     insertion: bool,
-    /// A hashed environment (`R_NewHashedEnv`): its table is in
-    /// `HASH_TABLES` under the frame's address.
+    /// A hashed environment (`R_NewHashedEnv`).
     hashed: bool,
+    /// Its table is in `HASH_TABLES` under the frame's address (made when
+    /// first needed: environments that are never listed have none).
+    has_table: Cell<bool>,
 }
 
 thread_local! {
@@ -91,8 +95,27 @@ thread_local! {
 
 const NIL: u32 = u32::MAX;
 
+thread_local! {
+    /// `R_Newhashpjw` of each symbol's name, by symbol index (`NO_HASH`
+    /// until computed; the hash is below 2^28): a package's symbols are in
+    /// its namespace, exports and package environments alike.
+    static SYM_HASH: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+const NO_HASH: u32 = u32::MAX;
+
 fn sym_hash(sym: Sym) -> u32 {
-    sym.with_name(hashpjw)
+    SYM_HASH.with(|h| {
+        let mut h = h.borrow_mut();
+        let i = sym.0 as usize;
+        if i >= h.len() {
+            h.resize(i + 1, NO_HASH);
+        }
+        if h[i] == NO_HASH {
+            h[i] = sym.with_name(hashpjw);
+        }
+        h[i]
+    })
 }
 
 /// Forget a dropped hashed frame's table (out of line: frames are dropped
@@ -339,13 +362,35 @@ fn function_like(v: &Value) -> bool {
     matches!(v, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
 }
 
+const NBASE_OPEN: u32 = u32::MAX;
+
 impl Drop for Frame {
+    #[inline]
     fn drop(&mut self) {
+        // one test on the common path: closure frames are neither
+        if self.search | self.has_table.get() {
+            self.drop_slow();
+        }
+    }
+}
+
+impl Frame {
+    #[cold]
+    #[inline(never)]
+    fn drop_slow(&mut self) {
         if self.search && self.entries.iter().any(|b| function_like(&b.value)) {
             bump_search_epoch();
         }
-        if self.hashed {
+        if self.has_table.get() {
             drop_table(self.key());
+        }
+    }
+
+    /// A binding that is not part of the initial frame is being added.
+    #[inline]
+    fn close_base(&mut self) {
+        if self.nbase == NBASE_OPEN && !self.hashed {
+            self.nbase = self.entries.len() as u32;
         }
     }
 }
@@ -430,7 +475,10 @@ impl Frame {
     fn with_table<R>(&self, f: impl FnOnce(&mut HashShape) -> R) -> R {
         HASH_TABLES.with(|t| {
             let mut t = t.borrow_mut();
-            let st = t.get_mut(&self.key()).expect("a hashed frame has a table");
+            let st = t.entry(self.key()).or_insert_with(|| {
+                self.has_table.set(true);
+                HashState { shape: HashShape::new(self.nbase as i32), at: 0 }
+            });
             for b in &self.entries[st.at.min(self.entries.len())..] {
                 st.shape.insert(b.sym);
             }
@@ -441,6 +489,7 @@ impl Frame {
 
     fn set_table(&mut self, shape: HashShape) {
         self.hashed = true;
+        self.has_table.set(true);
         let (key, at) = (self.key(), self.entries.len());
         HASH_TABLES.with(|t| t.borrow_mut().insert(key, HashState { shape, at }));
     }
@@ -457,7 +506,7 @@ impl Frame {
         if self.hashed {
             let (key, at) = (self.key(), self.entries.len());
             HASH_TABLES.with(|t| t.borrow_mut().get_mut(&key).map(|st| st.at = at));
-        } else if (i as u32) < self.nbase {
+        } else if (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
             self.nbase -= 1;
         }
         if let Some(ix) = &mut self.index {
@@ -523,9 +572,10 @@ impl Env {
             index: None,
             mask: 0,
             search: false,
-            nbase: 0,
+            nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
+            has_table: Cell::new(false),
         };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
@@ -570,9 +620,10 @@ impl Env {
             index: None,
             mask: 0,
             search: true,
-            nbase: 0,
+            nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
+            has_table: Cell::new(false),
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
@@ -717,6 +768,7 @@ impl Env {
         if function_like(&value) || flags & BIND_ACTIVE != 0 {
             self.bump_fn_version();
         }
+        f.close_base();
         f.push_new(sym, value, flags);
         true
     }
@@ -728,9 +780,7 @@ impl Env {
         if function_like(&value) {
             self.bump_fn_version();
         }
-        let mut f = self.0.frame().borrow_mut();
-        f.push_new(sym, value, flags);
-        f.nbase += 1;
+        self.0.frame().borrow_mut().push_new(sym, value, flags);
     }
 
     /// Bind a new symbol without looking for an existing binding, as
@@ -740,7 +790,9 @@ impl Env {
         if function_like(&value) {
             self.bump_fn_version();
         }
-        self.0.frame().borrow_mut().push_new(sym, value, flags);
+        let mut f = self.0.frame().borrow_mut();
+        f.close_base();
+        f.push_new(sym, value, flags);
     }
 
     /// Move a value out of a binding, leaving `NULL` behind, so that the
@@ -838,7 +890,10 @@ impl Env {
     // R: envir.c:R_NewHashedEnv
     pub fn new_hashed(parent: Option<Env>, size: i32) -> Env {
         let e = Env::new(parent);
-        e.0.frame().borrow_mut().set_table(HashShape::new(size));
+        let mut f = e.0.frame().borrow_mut();
+        f.hashed = true;
+        f.nbase = size.max(0) as u32;
+        drop(f);
         e
     }
 
