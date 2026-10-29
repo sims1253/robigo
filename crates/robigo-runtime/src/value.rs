@@ -41,8 +41,9 @@ pub fn is_nan_or_na(x: f64) -> bool {
 /// A CHARSXP; `None` is `NA_character_`.
 pub type RStr = Option<RString>;
 
-/// A CHARSXP encoding window. The structural byte is hidden from text users;
-/// byte-oriented operations reconstruct the original payload without loss.
+/// A CHARSXP with an optional encoding window. Ordinary UTF-8 strings keep
+/// their Rc<str> allocation; a NUL sentinel and encoding byte precede text
+/// that needs an explicit mark or reversible byte representation.
 #[derive(Clone, Debug)]
 pub struct RString(Rc<str>);
 
@@ -61,10 +62,16 @@ impl RString {
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Rc::ptr_eq(&a.0, &b.0)
     }
+    #[inline]
     pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
-        let (mark, text) = if bytes.is_ascii() {
-            (Encoding::Native, std::borrow::Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) }))
-        } else if matches!(encoding, Encoding::Latin1 | Encoding::Bytes) {
+        if bytes.is_ascii() {
+            Self::from(unsafe { std::str::from_utf8_unchecked(bytes) })
+        } else {
+            Self::from_non_ascii_bytes(bytes, encoding)
+        }
+    }
+    fn from_non_ascii_bytes(bytes: &[u8], encoding: Encoding) -> Self {
+        let (mark, text) = if matches!(encoding, Encoding::Latin1 | Encoding::Bytes) {
             (encoding, std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()))
         } else {
             match std::str::from_utf8(bytes) {
@@ -75,24 +82,31 @@ impl RString {
                 ),
             }
         };
-        Self::from_text(&text, mark)
+        if mark == Encoding::Utf8 { Self::from(text.as_ref()) } else { Self::from_text(&text, mark) }
     }
     #[inline]
     fn from_text(text: &str, mark: Encoding) -> Self {
-        let mut stored = Rc::<[u8]>::new_uninit_slice(text.len() + 1);
+        let mut stored = Rc::<[u8]>::new_uninit_slice(text.len() + 2);
         let payload = Rc::get_mut(&mut stored).unwrap();
-        payload[0].write(mark as u8);
-        for (dst, &byte) in payload[1..].iter_mut().zip(text.as_bytes()) {
-            dst.write(byte);
+        payload[0].write(0);
+        payload[1].write(mark as u8);
+        // The fresh allocation cannot overlap text. Initialize the entire
+        // payload in one copy, so short strings use memcpy rather than a
+        // byte-at-a-time loop over MaybeUninit.
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), payload.as_mut_ptr().add(2).cast::<u8>(), text.len());
         }
-        // The one-byte mark and text are valid UTF-8; Rc<[u8]> and Rc<str>
+        // The sentinel, mark and text are valid UTF-8; Rc<[u8]> and Rc<str>
         // have identical allocation layouts and slice metadata.
         let stored = unsafe { stored.assume_init() };
         Self(unsafe { Rc::from_raw(Rc::into_raw(stored) as *const str) })
     }
     pub fn encoding(&self) -> Encoding {
-        // Every constructor stores a structural byte before the payload.
-        match unsafe { *self.0.as_bytes().get_unchecked(0) } {
+        if !self.0.starts_with('\0') {
+            return if self.0.is_ascii() { Encoding::Native } else { Encoding::Utf8 };
+        }
+        // A leading NUL introduces a window; ordinary strings are unprefixed.
+        match self.0.as_bytes()[1] {
             0 => Encoding::Native,
             1 => Encoding::Utf8,
             2 => Encoding::Latin1,
@@ -102,9 +116,12 @@ impl RString {
         }
     }
     pub fn raw_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
-        match self.encoding() {
-            Encoding::Native | Encoding::Utf8 => std::borrow::Cow::Borrowed(self.as_bytes()),
-            _ => std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect()),
+        // Only explicit byte windows need reconstruction. Ordinary text
+        // already has its raw bytes, regardless of whether it is ASCII.
+        if self.0.starts_with('\0') && self.0.as_bytes()[1] >= Encoding::Latin1 as u8 {
+            std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect())
+        } else {
+            std::borrow::Cow::Borrowed(self.as_bytes())
         }
     }
     pub fn encoding_name(&self) -> &'static str {
@@ -119,7 +136,11 @@ impl RString {
 impl From<&str> for RString {
     #[inline]
     fn from(s: &str) -> Self {
-        Self::from_text(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
+        if s.starts_with('\0') {
+            Self::from_text(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
+        } else {
+            Self(Rc::from(s))
+        }
     }
 }
 impl From<String> for RString {
@@ -129,15 +150,19 @@ impl From<String> for RString {
 }
 impl From<Rc<str>> for RString {
     fn from(s: Rc<str>) -> Self {
-        Self::from(&*s)
+        if s.starts_with('\0') { Self::from(&*s) } else { Self(s) }
     }
 }
 impl std::ops::Deref for RString {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        // Constructors always store one ASCII structural byte.
-        unsafe { self.0.get_unchecked(1..) }
+        if self.0.starts_with('\0') {
+            // Constructors put two ASCII structural bytes before window text.
+            unsafe { self.0.get_unchecked(2..) }
+        } else {
+            &self.0
+        }
     }
 }
 impl AsRef<str> for RString {
@@ -1137,6 +1162,33 @@ impl Default for RString {
 #[cfg(test)]
 mod string_window_tests {
     use super::*;
+
+    #[test]
+    fn string_window_copy_preserves_text_at_allocation_boundaries() {
+        for len in [0, 1, 7, 15, 16, 31, 32, 63, 64, 255, 4096] {
+            for unit in ["a", "é", "𝄞"] {
+                let text = unit.repeat(len);
+                let string = RString::from(text.as_str());
+                assert_eq!(&*string, text);
+                assert_eq!(&*string.raw_bytes(), text.as_bytes());
+                assert_eq!(string.encoding(), if text.is_ascii() { Encoding::Native } else { Encoding::Utf8 });
+            }
+        }
+    }
+
+    #[test]
+    fn optional_window_preserves_leading_nuls_and_shared_text() {
+        for text in ["", "\0", "\0\0", "\0é", "\x01é", "é"] {
+            let shared: Rc<str> = Rc::from(text);
+            for string in [RString::from(text), RString::from(text.to_owned()), RString::from(shared.clone())] {
+                assert_eq!(&*string, text);
+                assert_eq!(&*string.raw_bytes(), text.as_bytes());
+            }
+            if !text.is_empty() && !text.starts_with('\0') {
+                assert!(Rc::ptr_eq(&RString::from(shared.clone()).0, &shared));
+            }
+        }
+    }
 
     #[test]
     fn original_bytes_survive_every_encoding_window() {

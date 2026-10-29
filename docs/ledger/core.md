@@ -11,6 +11,52 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 4 resume, strings gate regression
+
+- Reproduced #84's real `robigo/strings` regression with CI artifacts and
+  natives in robigo-oracle:4.5.0: base 74e8c73 779,550,355 instructions,
+  c989884 806,243,566 (+3.42%). perf.py independently measures the PR at
+  806,390,741. Host comparison with identical R_HOME and natives:
+  781,982,844 -> 808,301,250 (+3.37%). The earlier 75M-instruction paste
+  microbenchmark was insufficient to check the strings gate.
+- Profile: RString::from_text accounts for 20,942,215 extra self
+  instructions. A bulk-copy-only candidate measures 807,452,168 on the
+  host, saving 849,082 but still +3.26% over main. Rejected as a fix.
+  Focused raw/encoding/iconv/serialization/nchar/paste fastr slice on that
+  candidate: 478/495, zero regressions.
+- Next candidate keeps ordinary UTF-8 as unprefixed Rc<str> and uses a
+  NUL sentinel plus encoding byte for windows. Leading NUL text is
+  escaped into a window, so Rust constructors remain lossless too.
+  Rc<str> inputs reuse their existing allocation. Encoding queries derive
+  the ASCII mark only when needed; raw_bytes borrows ordinary UTF-8.
+- Optional-window candidate: host strings 786,260,592 instructions,
+  +0.547% over base, saving 22,040,658 versus #84. Still outside the gate;
+  constructor inlining was the next candidate. Its focused fastr slice
+  stays 478/495 with zero regressions. All three representation tests pass.
+- Constructor inlining rejected: 786,620,716 instructions, worse than
+  the optional-window candidate. Current bda4730 CI artifact baseline on
+  this host is 781,926,487. Next candidate stores empty strings in windows
+  too, guaranteeing nonempty storage and removing the length check from
+  each window test. Rejected: 788,478,354 instructions despite passing
+  227/227 conformance and the focused 478/495 fastr slice. Three standalone
+  representation tests pass. Current candidate restores optional empty
+  storage and removes the second ASCII scan in from_bytes, keeping its
+  ASCII path small and moving non-ASCII conversion into a helper.
+  Full-workload performance verification remains pending for this candidate.
+- Graphics examples 178/184, Hershey 1/1, zero regressions. Optional-window
+  conformance is 227/227 with all tiers and VM guards passing.
+- Runtime tests: 38 pass with the two glibc-dependent complex oracles
+  excluded. c_library_trig_oracle fails by one ULP on this host's glibc
+  2.44; a standalone C csin(0.5 + 2i) reproduces the same low bit
+  (4009768441e05d6c versus Debian's 4009768441e05d6d). The fixture itself
+  documents the glibc dependency. Debian CI must judge both numeric oracles.
+- Environment finalizers still require runtime environment reachability,
+  including closure cycles, before registration can run on gc(). The
+  concrete methods blocker remains TestR5/474b742f. Do not approximate
+  reachability with Rc counts. Follow-up: trace runtime roots and weak
+  environment keys, then port memory.c's finalizer scheduling and add
+  the methods regression before implementing on-exit handling.
+
 ## 2026-10-29: round 5 encoding window: raw-byte increment
 
 - Baseline 74e8c73: charToRaw("\304") returns c3 84 instead of c4;
