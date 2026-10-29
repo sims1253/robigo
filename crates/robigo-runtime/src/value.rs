@@ -42,9 +42,11 @@ pub fn is_nan_or_na(x: f64) -> bool {
 pub type RStr = Option<RString>;
 
 /// An immutable CHARSXP handle. The allocation owns the reference count,
-/// length, encoding and UTF-8 view; a string-vector element is one pointer.
+/// length, encoding and UTF-8 view. The handle caches the text length so
+/// text access and vector buffer sizes match the original Rc<str> layout.
 pub struct RString {
     data: std::ptr::NonNull<StringHeader>,
+    len: usize,
 }
 
 #[repr(C)]
@@ -115,7 +117,7 @@ impl RString {
             data.as_ptr().write(header);
             std::ptr::copy_nonoverlapping(text.as_ptr(), ptr.as_ptr().add(Self::HEADER_SIZE), text.len());
         }
-        Self { data }
+        Self { data, len: text.len() }
     }
     fn from_rc(text: Rc<str>, tag: usize) -> Self {
         Self::from_text_tag(&text, tag)
@@ -208,7 +210,7 @@ impl Clone for RString {
             std::process::abort();
         }
         refs.set(count);
-        Self { data: self.data }
+        Self { data: self.data, len: self.len }
     }
 }
 impl Drop for RString {
@@ -250,7 +252,7 @@ impl std::ops::Deref for RString {
     #[inline]
     fn deref(&self) -> &str {
         // Constructors initialize a valid UTF-8 view after the header.
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.data.as_ref().len())) }
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.len)) }
     }
 }
 impl AsRef<str> for RString {
@@ -1310,8 +1312,8 @@ mod string_window_tests {
             std::mem::size_of::<StringHeader>(),
             if cfg!(target_pointer_width = "64") { 2 } else { 3 } * std::mem::size_of::<usize>()
         );
-        assert_eq!(std::mem::size_of::<RString>(), std::mem::size_of::<usize>());
-        assert_eq!(std::mem::size_of::<RStr>(), std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<RString>(), 2 * std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<RStr>(), 2 * std::mem::size_of::<usize>());
         for mark in [Encoding::Native, Encoding::Utf8, Encoding::Latin1, Encoding::Bytes] {
             for byte in 1..=255 {
                 let string = RString::from_bytes(&[byte], mark);

@@ -11,6 +11,38 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: cache text length to retain string-vector allocation sizes
+
+- The 16-byte-header candidate passes every CI corpus ratchet and the
+  build, but mandelbrot_naive_ascii remains +0.89%; strings is -1.07%.
+  Its exact Debian profile adds 14.6M instructions, primarily mimalloc's
+  malloc_generic and find_page. The smaller string-vector element also
+  changes allocator traffic even though text allocations have been fixed.
+- Restore a two-word handle by caching the immutable text length. String
+  vectors again request the original Rc<str> buffer sizes; dereference
+  reads the cached length directly. The allocation header remains 16
+  bytes and clone/drop still update its own reference count directly.
+- Host, same dbf6754 CI binary/natives/flat cache environment, before ->
+  candidate instructions: strings 771,869,922 -> 767,406,728 (-0.58%);
+  lm 683,492,324 -> 684,658,080 (+0.17%); Storage 569,236,671 ->
+  567,276,371; binarytrees 421,916,382 -> 419,912,235; binarytrees_2
+  421,554,231 -> 419,561,508; mandelbrot_naive_ascii 1,221,816,547 ->
+  1,217,247,237; spectralnorm_alt_3 1,253,977,981 -> 1,252,020,400.
+  All statuses are zero; compare: one faster, zero slower above 0.5%.
+  These host counts do not replace the pending exact Debian CI gate.
+- Conformance 234/234 in all three tiers and VM guards; runtime 41 unit
+  plus two integration tests pass (only the two documented host-glibc
+  oracles excluded). Graphics now 180/184, two new passes and no
+  regressions; Hershey 1/1. Focused strings 478/495; its only reported
+  regression is the previously reproduced base-binary huge serialized
+  sequence timeout, not removed from the ratchet. Prior CI passes it.
+- Five exact-source boundary/encoding/ownership/symbol tests pass. The
+  independent random-byte ownership stress program passes Debian
+  Valgrind with zero errors and zero lost allocations. The libtest
+  harness itself retains a 48-byte thread allocation; the ordinary-main
+  stress check avoids that harness artifact. cargo fmt and diff checks
+  pass. CI will decide whether the allocator regression is resolved.
+
 ## 2026-10-29: keep immutable string allocations in the original size classes
 
 - All-feature type checks and the final local runtime tests pass: 41 unit
