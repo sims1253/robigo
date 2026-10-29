@@ -223,3 +223,13 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   platform — left to CI to arbitrate, none recorded from here.
 - gnur-examples `methods/GenericFunctions` passes locally but not on CI's
   earlier run; NOT recorded to keep the ratchet platform-stable.
+- `base/Sys.getenv` failed on every CI run of this PR while main's CI is
+  green: its recording masks exactly one line (index 94, the recording's
+  R_SESSION_TMPDIR line), and a pull_request run's slightly larger
+  environment shifts the dump so that index 94 can land on the
+  IGNORE_RDIFF_END marker, which the mask then eats, breaking the
+  ignore-block drop. Reproduced the sensitivity with corpus.py's run_case
+  under synthetic environments; not a semantic regression (stdout compares
+  equal under every env tried locally). Skipped the case via
+  `host_dependent` (it dumps the machine's environment); the proper fix is
+  a re-record with `record --mask-against-previous` on the oracle platform.
