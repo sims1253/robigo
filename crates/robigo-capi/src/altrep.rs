@@ -374,6 +374,16 @@ pub unsafe extern "C" fn ALTLOGICAL_ELT(x: Sexp, i: isize) -> c_int {
     logical_elt(x, i)
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ALTRAW_ELT(x: Sexp, i: isize) -> u8 {
+    raw_elt(x, i)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ALTCOMPLEX_ELT(x: Sexp, i: isize) -> Rcomplex {
+    complex_elt(x, i)
+}
+
 /// R: altrep.c's sortedness/NA queries for any vector (UNKNOWN_SORTEDNESS
 /// is NA_INTEGER).
 #[unsafe(no_mangle)]

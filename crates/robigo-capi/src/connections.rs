@@ -76,7 +76,7 @@ struct Entry {
 static mut CONNS: Option<HashMap<usize, Entry>> = None;
 static mut BY_NUMBER: Option<HashMap<c_int, usize>> = None;
 
-unsafe fn number_of(con: *mut c_void) -> c_int {
+pub unsafe fn number_of(con: *mut c_void) -> c_int {
     match CONNS.as_ref().and_then(|m| m.get(&(con as usize))) {
         Some(e) => e.n,
         None => crate::errors::error_str("invalid connection"),

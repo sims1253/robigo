@@ -198,7 +198,13 @@ pub unsafe fn init_graphics() {
     Rf_InitGraphics()
 }
 
+/// R_MB_CUR_MAX after the locale is set.
+pub unsafe fn locale_init() {
+    robigo_locale_init()
+}
+
 unsafe extern "C" {
+    fn robigo_locale_init();
     fn Rf_InitGraphics();
     pub fn do_recordGraphics(call: Sexp, op: Sexp, args: Sexp, env: Sexp) -> Sexp;
     pub fn robigo_gr_begin() -> Sexp;

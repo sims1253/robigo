@@ -12,75 +12,41 @@ pub static STUBS: &[&str] = &[
     "R_PromiseExpr",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
-    "R_AllocStringBuffer",
     "R_Busy",
-    "R_ClearerrConsole",
     "R_EditFiles",
     "R_EnvironmentIsLocked",
-    "R_FreeStringBuffer",
     "R_GetVarLocMISSING",
-    "R_HashtabSEXP",
     "R_InitInPStream",
     "R_IsPackageEnv",
     "R_PackageEnvName",
     "R_ShowMessage",
-    "R_SignalCStackOverflow",
     "R_Unserialize",
-    "R_asHashtable",
-    "R_atof",
     "R_cairoCdynload",
     "R_checkActivity",
     "R_check_class_etc",
-    "R_clrhash",
     "R_data_class",
     "R_deferred_default_method",
     "R_execMethod",
     "R_findVarLocInFrame",
-    "R_gethash",
-    "R_isHashtable",
-    "R_maphash",
-    "R_mkhashtab",
     "R_moduleCdynload",
     "R_new_custom_connection",
-    "R_numhash",
     "R_primitive_generic",
     "R_primitive_methods",
     "R_qsort_I",
     "R_qsort_int",
     "R_qsort_int_I",
-    "R_remhash",
     "R_runHandlers",
     "R_set_prim_method",
     "R_set_quick_method_check",
     "R_set_standardGeneric_ptr",
-    "R_sethash",
-    "R_strtod5",
     "R_subassign3_dflt",
     "R_tryCatchError",
     "R_tryEvalSilent",
-    "R_typhash",
     "R_withCallingErrorHandler",
-    "Rconn_printf",
-    "Rdownload",
-    "Rf_EncodeChar",
-    "Rf_EncodeElement0",
-    "Rf_acopy_string",
-    "Rf_con_pushback",
-    "Rf_csduplicated",
-    "Rf_matchE",
     "Rf_memtrace_report",
     "Rf_revsort",
-    "Rf_sortVector",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
-    "Rf_wtransChar",
-    "Rsockclose",
-    "Rsockconnect",
-    "Rsocklisten",
-    "Rsockopen",
-    "Rsockread",
-    "Rsockwrite",
-    "Runzip",
     "XTRUELENGTH",
     "do_Rprof",
     "do_Rprofmem",
@@ -103,12 +69,6 @@ pub unsafe extern "C" fn R_PromiseExpr() {
 }
 
 #[unsafe(no_mangle)]
-pub static mut R_MB_CUR_MAX: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_wait_usec: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn IS_SCALAR() {
     not_implemented("IS_SCALAR")
 }
@@ -119,18 +79,8 @@ pub unsafe extern "C" fn LOGICAL_NO_NA() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_AllocStringBuffer() {
-    not_implemented("R_AllocStringBuffer")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_Busy() {
     not_implemented("R_Busy")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClearerrConsole() {
-    not_implemented("R_ClearerrConsole")
 }
 
 #[unsafe(no_mangle)]
@@ -147,11 +97,6 @@ pub unsafe extern "C" fn R_EnvironmentIsLocked() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_FreeStringBuffer() {
-    not_implemented("R_FreeStringBuffer")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_GUIType: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -160,17 +105,9 @@ pub unsafe extern "C" fn R_GetVarLocMISSING() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_HashtabSEXP() {
-    not_implemented("R_HashtabSEXP")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_InitInPStream() {
     not_implemented("R_InitInPStream")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_InputHandlers: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_IsPackageEnv() {
@@ -189,31 +126,13 @@ pub unsafe extern "C" fn R_PackageEnvName() {
 }
 
 #[unsafe(no_mangle)]
-pub static mut R_PolledEvents: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
     not_implemented("R_ShowMessage")
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_SignalCStackOverflow() {
-    not_implemented("R_SignalCStackOverflow")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_Unserialize() {
     not_implemented("R_Unserialize")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_asHashtable() {
-    not_implemented("R_asHashtable")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_atof() {
-    not_implemented("R_atof")
 }
 
 #[unsafe(no_mangle)]
@@ -229,11 +148,6 @@ pub unsafe extern "C" fn R_checkActivity() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_check_class_etc() {
     not_implemented("R_check_class_etc")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_clrhash() {
-    not_implemented("R_clrhash")
 }
 
 #[unsafe(no_mangle)]
@@ -257,27 +171,7 @@ pub unsafe extern "C" fn R_findVarLocInFrame() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_gethash() {
-    not_implemented("R_gethash")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_ignore_SIGPIPE: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_isHashtable() {
-    not_implemented("R_isHashtable")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_maphash() {
-    not_implemented("R_maphash")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_mkhashtab() {
-    not_implemented("R_mkhashtab")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_moduleCdynload() {
@@ -287,11 +181,6 @@ pub unsafe extern "C" fn R_moduleCdynload() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_new_custom_connection() {
     not_implemented("R_new_custom_connection")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_numhash() {
-    not_implemented("R_numhash")
 }
 
 #[unsafe(no_mangle)]
@@ -320,11 +209,6 @@ pub unsafe extern "C" fn R_qsort_int_I() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_remhash() {
-    not_implemented("R_remhash")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_runHandlers() {
     not_implemented("R_runHandlers")
 }
@@ -345,16 +229,6 @@ pub unsafe extern "C" fn R_set_standardGeneric_ptr() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_sethash() {
-    not_implemented("R_sethash")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_strtod5() {
-    not_implemented("R_strtod5")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_subassign3_dflt() {
     not_implemented("R_subassign3_dflt")
 }
@@ -370,53 +244,8 @@ pub unsafe extern "C" fn R_tryEvalSilent() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_typhash() {
-    not_implemented("R_typhash")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_withCallingErrorHandler() {
     not_implemented("R_withCallingErrorHandler")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rconn_printf() {
-    not_implemented("Rconn_printf")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rdownload() {
-    not_implemented("Rdownload")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_EncodeChar() {
-    not_implemented("Rf_EncodeChar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_EncodeElement0() {
-    not_implemented("Rf_EncodeElement0")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_acopy_string() {
-    not_implemented("Rf_acopy_string")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_con_pushback() {
-    not_implemented("Rf_con_pushback")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_csduplicated() {
-    not_implemented("Rf_csduplicated")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_matchE() {
-    not_implemented("Rf_matchE")
 }
 
 #[unsafe(no_mangle)]
@@ -430,11 +259,6 @@ pub unsafe extern "C" fn Rf_revsort() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_sortVector() {
-    not_implemented("Rf_sortVector")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_substitute() {
     not_implemented("Rf_substitute")
 }
@@ -442,46 +266,6 @@ pub unsafe extern "C" fn Rf_substitute() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_utf8Toutf8NoPUA() {
     not_implemented("Rf_utf8Toutf8NoPUA")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_wtransChar() {
-    not_implemented("Rf_wtransChar")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockclose() {
-    not_implemented("Rsockclose")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockconnect() {
-    not_implemented("Rsockconnect")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsocklisten() {
-    not_implemented("Rsocklisten")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockopen() {
-    not_implemented("Rsockopen")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockread() {
-    not_implemented("Rsockread")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rsockwrite() {
-    not_implemented("Rsockwrite")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Runzip() {
-    not_implemented("Runzip")
 }
 
 #[unsafe(no_mangle)]
@@ -538,15 +322,6 @@ pub static mut ptr_R_ResetConsole: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut ptr_R_WriteConsole: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut ptr_R_addhistory: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut ptr_R_loadhistory: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut ptr_R_savehistory: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut ptr_do_dataentry: [usize; 4] = [0; 4];

@@ -11,6 +11,61 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 4 native-enabled verification
+
+- Same binary, utils.so disabled/enabled: focused fastr filter
+  `library/utils|TestBuiltin_(crc64|objectsize|unzip|read|write)|TestConnections`
+  improves 345/357 -> 350/357, with no lost passes. Utils examples
+  improve 88/119 -> 89/119. The aspell dictionary-path mismatch is
+  identical with natives disabled and enabled on this host.
+- Graphics/grDevices/grid examples with the old/fixed marker reader:
+  101/184 -> 176/184, no lost passes. All 60 grid cases pass.
+- Native smoke output matches Debian GNU R 4.5.0 byte for byte for
+  object.size, hash tables, read.csv, file:// downloads and text-connection
+  write.table. All eight native packages build in robigo-build:4.5.0.
+- Core 17 tests, C API unit/integration tests and CLI 7 tests pass.
+  Native-enabled conformance: 223/223 in every tier, VM guards pass.
+  Host runtime 33/34 passes; the complex sqrt oracle failure has exactly
+  the same input and one-ULP difference recorded in round 3 on main.
+  CI's Debian build, full workspace tests and gctorture pass for e31fdd4.
+- Local C API corpus: 19/21, zero regressions. Cargo loader test 1/1.
+- CI run 40914328638 confirms graphics 176/184 and the full examples
+  corpus 996/1152 with zero regressions. Absorbed 145 graphics example
+  passes and six graphics/grDevices demo passes from its artifacts using
+  corpus.py absorb. Set comparison confirms zero existing entries removed.
+- G3 remains next: introduce per-string encoding/byte storage across
+  syntax, runtime and bridge in a coordinated change (docs/core.md 4.1).
+  Reproduce grDevices/plotmath and graphics/Hershey first, then cover
+  Encoding/charToRaw/iconv and native CHARSXP round trips. This batch
+  leaves that cross-track migration for the next round.
+
+## 2026-10-29: native marker reader used reversed ELF fields
+
+- Fresh utils smoke test still selected Rust ports with utils.so present.
+  readelf showed PT_LOAD's file offset and virtual address differ by
+  0x1000 in Debian's writable segment. is_robigo_build had reversed those
+  fields, so it could not find PT_DYNAMIC and silently ignored natives.
+- Corrected the address-to-offset map and used p_filesz, not p_memsz,
+  for file-backed ranges. A synthetic ELF fixture with different file and
+  virtual addresses fails with main's reader and passes with the fix.
+  Standalone rustc test of the exact function and fixture: 0/1 -> 1/1.
+- Before this fix, the focused utils/I/O/connection slice is 345/357,
+  zero regressions. This is a fresh baseline; it does not verify natives.
+  Runtime native/mod.rs is a shared-path change required to load them.
+
+## 2026-10-29: round 4 utils rebase
+
+- Replayed the two utils implementation commits onto main 098bd95.
+  Range-diff preserves their code; unioned the ledger conflict. The
+  bridge retains main's STORED/PINNED lifetime handling and graphics roots.
+- The native build retains filtered per-package PKG_LIBS, xerbla and
+  static LINKFLAGS. The only script change is utils size.c accessor/layout
+  handling. CI now builds utils, grDevices, graphics and grid too. Main's
+  CI list still omitted the graphics packages after the workflow merge.
+- Historical baseline: utils fastr 400/410 with Rust ports, 405/410 with
+  natives; graphics examples 166/184 on the round-3 same-host comparison.
+  Fresh verification and CI artifact absorption follow below.
+
 ## 2026-10-29: round 3 landing preparation
 
 - Rebased graphics onto main 7ff8a140. Preserved main's STORED sweep and
@@ -35,6 +90,37 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   user.self timing (0 versus 0.001 seconds), status 0. Oracle recording
   with 100 repeats masks exactly that timing line; the recording fix
   belongs to #70. No random-number assertion is masked.
+## 2026-10-29: utils from GNU R's sources (the C API it needs)
+
+- What: utils.so built from source needed 34 functions and 7 data
+  symbols robigo lacked. Ported from GNU R's C, in `main/`:
+  unique.c's hash tables (R_mkhashtab ... R_isHashtable) and
+  csduplicated with their hashing; util.c's R_strtod5/4, R_strtod,
+  R_atof, acopy_string, Rf_strrchr; memory.c's string buffers;
+  sort.c's sortVector/isUnsorted; printutils.c's EncodeRaw/
+  EncodeElement0; sysutils.c's wtransChar; connections.c's
+  Rconn_printf; sys-std.c's history hooks, input handlers and
+  R_PolledEvents; the internet module's sockets (Rsock.c, sock.c and
+  main/internet.c's Rsock* entry points) and its file:// download
+  (in_do_download, Rdownload); dounzip.c (unzip, with libbz2 linked).
+  In Rust: EncodeString/EncodeChar, Scollate, matchE, con_pushback,
+  R_SignalCStackOverflow, ALTRAW_ELT/ALTCOMPLEX_ELT, R_MB_CUR_MAX after
+  the C locale is set at libR start.
+- utils' size.c defines USE_RINTERNALS (GNU R's struct layout, read
+  inline: object.size failed with "bad REALSXP scalar"). The natives
+  build compiles it with the accessor functions and
+  `scripts/natives-layout.h`, GNU R's layout sizes, which object.size
+  reports (64 / 7208 / 1712 bytes for 1:3, mtcars, letters, as GNU R).
+- C writes to stdout/text connections (Rconn_printf -> con->vfprintf ->
+  con_write_bytes) failed with "cannot write to this connection":
+  terminals and text connections now take the text path.
+- Result (local, utils natives vs the Rust ports): fastr utils slice
+  405 vs 400 / 410, gnur-examples utils 89 vs 88 / 119, no case lost;
+  unzip, make.socket and download.file(method = "internal") match GNU R.
+  capi 17/20, conformance green.
+- Still stubs (utils): do_edit, R_EditFiles, do_Rprof, do_Rprofmem
+  (Rprof samples GNU R's context stack; robigo's needs its own sampler),
+  and the X11 data entry hooks (NULL, as GNU R without X11).
 
 ## 2026-10-29: the graphics engine in libR; grDevices, graphics, grid from source
 

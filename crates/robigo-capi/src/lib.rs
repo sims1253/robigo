@@ -31,6 +31,7 @@ pub mod nmath;
 pub mod objects;
 pub mod owned;
 pub mod platform;
+pub mod printutils;
 pub mod rdynload;
 pub mod rng;
 pub mod serialize;

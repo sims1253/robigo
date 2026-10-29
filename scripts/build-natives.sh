@@ -74,8 +74,19 @@ for pkg in $pkgs; do
     obj=$out/$pkg/obj
     rm -rf "$obj" && mkdir -p "$obj"
     for f in $(sources "$src/Makefile.in" SOURCES_C); do
+        in=$src/$f
+        # utils' size.c asks for direct field access (USE_RINTERNALS), GNU
+        # R's object layout; compiled without it, it uses the accessor
+        # functions like every other file, and natives-layout.h gives it
+        # the layout's sizes it reports
+        if grep -q '^#define USE_RINTERNALS' "$in"; then
+            sed -e 's|^#define USE_RINTERNALS|/* robigo: accessor functions */|' \
+                -e "s|^#include <Defn.h>|&\\n#include \"$root/scripts/natives-layout.h\"|" \
+                "$in" > "$obj/$f"
+            in=$obj/$f
+        fi
         $CC $CFLAGS -DTESTING_WRITE_BARRIER -DHAVE_CONFIG_H -I"$build/src/include" \
-            -I"$RSRC/src/include" -I"$RSRC/src/main" -I"$src" -c "$src/$f" -o "$obj/${f%.c}.o" 2>> "$obj/cc.log"
+            -I"$RSRC/src/include" -I"$RSRC/src/main" -I"$src" -c "$in" -o "$obj/${f%.c}.o" 2>> "$obj/cc.log"
     done
     for f in $(sources "$src/Makefile.in" SOURCES_F); do
         # R compiles PORT (portsrc.f) with SAFE_FFLAGS (-ffloat-store)

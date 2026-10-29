@@ -188,7 +188,7 @@ pub fn is_robigo_build(path: &str) -> bool {
         .filter(|&i| u32::from_le_bytes(entry(i)[0..4].try_into().unwrap()) == 1)
         .map(|i| {
             let e = entry(i);
-            (u64_at(e, 0x08), u64_at(e, 0x10), u64_at(e, 0x28)) // vaddr, off, filesz
+            (u64_at(e, 0x10), u64_at(e, 0x08), u64_at(e, 0x20)) // vaddr, off, filesz
         })
         .collect();
     let to_off = |vaddr: u64| -> Option<u64> {
@@ -197,7 +197,7 @@ pub fn is_robigo_build(path: &str) -> bool {
     let dynseg = (0..phnum).find(|&i| u32::from_le_bytes(entry(i)[0..4].try_into().unwrap()) == 2).and_then(|i| {
         let e = entry(i);
         let off = to_off(u64_at(e, 0x10))?;
-        let sz = u64_at(e, 0x28) as usize;
+        let sz = u64_at(e, 0x20) as usize;
         Some((off, sz))
     });
     let Some((dyn_off, dyn_sz)) = dynseg else { return false };
@@ -601,5 +601,40 @@ fn do_c_owned(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &crate::env::En
         let holder = b.owned_holder(i, value)?;
         cell.set_local(x, holder);
         Ok(Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_marker_with_distinct_file_and_virtual_addresses() {
+        // ELF64: one load segment with a nonzero address bias, containing
+        // PT_DYNAMIC and its string table. Debian shared libraries can
+        // have this layout in their writable segment.
+        let mut elf = vec![0u8; 0x200];
+        elf[..5].copy_from_slice(b"\x7fELF\x02");
+        let put = |buf: &mut [u8], at: usize, n: u64| buf[at..at + 8].copy_from_slice(&n.to_le_bytes());
+        put(&mut elf, 0x20, 64);
+        elf[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+        elf[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes());
+        for (header, kind, offset, address, size) in [(64, 1u32, 0x100, 0x1100, 0x100), (120, 2, 0x100, 0x1100, 48)] {
+            elf[header..header + 4].copy_from_slice(&kind.to_le_bytes());
+            put(&mut elf, header + 8, offset);
+            put(&mut elf, header + 16, address);
+            put(&mut elf, header + 32, size);
+            put(&mut elf, header + 40, size + 0x100);
+        }
+        put(&mut elf, 0x100, 5); // DT_STRTAB
+        put(&mut elf, 0x108, 0x1180);
+        put(&mut elf, 0x110, 10); // DT_STRSZ
+        put(&mut elf, 0x118, 20);
+        elf[0x180..0x180 + 19].copy_from_slice(b"robigo_base_native\0");
+        let path = std::env::temp_dir().join(format!("robigo-native-marker-{}.so", std::process::id()));
+        std::fs::write(&path, &elf).unwrap();
+        assert!(super::is_robigo_build(path.to_str().unwrap()));
+        elf[0x180] = b'x';
+        std::fs::write(&path, &elf).unwrap();
+        assert!(!super::is_robigo_build(path.to_str().unwrap()));
+        std::fs::remove_file(path).unwrap();
     }
 }

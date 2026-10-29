@@ -38,3 +38,15 @@ large to vendor whole (each function marked with its origin):
 The Rust side (`src/graphics.rs`): `R_FunTab`/`PRIMOFFSET` (display-list
 replay calls primitives through the function table), `.Devices` kept by
 C, `InitGraphics`, `recordGraphics`.
+
+The utils support also compiles GNU R's unmodified `src/main/dounzip.c`
+and `src/modules/internet/{Rsock.c,sock.c,sock.h}`, with `unzip.h` and
+`RBufferUtils.h`. The additional ports are:
+
+- `robigo_hashtab.c`: unique.c's hash tables and csduplicated.
+- `robigo_util.c`: string buffers, numeric parsing, sorting and wide strings.
+- `robigo_internet.c`: internet.c's socket entry points and file downloads.
+- `robigo_sys.c`: console history and input handlers.
+
+The natives build uses accessor functions for utils' size.c, with GNU R's
+layout sizes from `scripts/natives-layout.h` for object.size reporting.
