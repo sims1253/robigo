@@ -46,6 +46,8 @@ fn main() {
         "localecharset",
         "robigo_glue",
         "robigo_sys",
+        "robigo_hashtab",
+        "robigo_util",
     ] {
         g.file(format!("main/{f}.c"));
     }

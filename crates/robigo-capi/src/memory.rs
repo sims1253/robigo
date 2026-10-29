@@ -485,7 +485,7 @@ fn stack_usage() -> isize {
 }
 
 // R: errors.c:R_SignalCStackOverflow (the condition is reported without a call)
-unsafe fn signal_cstack_overflow(usage: isize) -> ! {
+pub unsafe fn signal_cstack_overflow(usage: isize) -> ! {
     crate::errors::errorcall_owned(R_NilValue, format!("C stack usage  {usage} is too close to the limit"))
 }
 

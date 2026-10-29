@@ -594,7 +594,7 @@ const LC_PAPER: c_int = 7;
 const LC_MEASUREMENT: c_int = 11;
 
 /// R sets these categories from the environment at startup.
-fn init_locale() {
+pub fn init_locale() {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }

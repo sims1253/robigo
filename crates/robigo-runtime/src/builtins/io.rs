@@ -642,6 +642,15 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
 
 /// Write bytes to a connection (R's `con->write`).
 pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
+    // the terminals and text connections take text (Rconn_printf from C
+    // through con->vfprintf, as R's write.table does to stdout())
+    let byte_kind = matches!(
+        i.conns.get(n)?.kind,
+        ConnKind::Gz { writing: true, .. } | ConnKind::Raw { .. } | ConnKind::File { fp: Some(_), .. }
+    );
+    if n <= 2 || !byte_kind {
+        return conn_write(i, n, &String::from_utf8_lossy(bytes));
+    }
     let con = i.conns.get(n)?;
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {

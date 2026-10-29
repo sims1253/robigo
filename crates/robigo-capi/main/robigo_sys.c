@@ -142,3 +142,89 @@ SEXP do_bmVersion(void)
     UNPROTECT(2);
     return ans;
 }
+
+/* R: unix/sys-std.c, the history functions without readline, and
+   unix/system.c's hooks pointing at them */
+#include <Rinterface.h>
+
+attribute_hidden void Rstd_loadhistory(SEXP call, SEXP op, SEXP args, SEXP env)
+{
+    SEXP sfile;
+    char file[R_PATH_MAX];
+    const char *p;
+
+    sfile = CAR(args);
+    if (!isString(sfile) || LENGTH(sfile) < 1)
+	errorcall(call, _("invalid '%s' argument"), "file");
+    p = R_ExpandFileName(translateCharFP(STRING_ELT(sfile, 0)));
+    if(strlen(p) > R_PATH_MAX - 1)
+	errorcall(call, _("'file' argument is too long"));
+    strcpy(file, p);
+    errorcall(call, _("no history mechanism available"));
+}
+
+attribute_hidden void Rstd_savehistory(SEXP call, SEXP op, SEXP args, SEXP env)
+{
+    SEXP sfile;
+    char file[R_PATH_MAX];
+    const char *p;
+
+    sfile = CAR(args);
+    if (!isString(sfile) || LENGTH(sfile) < 1)
+	errorcall(call, _("invalid '%s' argument"), "file");
+    p = R_ExpandFileName(translateCharFP(STRING_ELT(sfile, 0)));
+    if(strlen(p) > R_PATH_MAX - 1)
+	errorcall(call, _("'file' argument is too long"));
+    strcpy(file, p);
+    errorcall(call, _("no history available to save"));
+}
+
+attribute_hidden void Rstd_addhistory(SEXP call, SEXP op, SEXP args, SEXP env)
+{
+    SEXP stamp;
+
+    checkArity(op, args);
+    stamp = CAR(args);
+    if (!isString(stamp))
+	errorcall(call, _("invalid timestamp"));
+}
+
+void (*ptr_R_loadhistory)(SEXP, SEXP, SEXP, SEXP) = Rstd_loadhistory;
+void (*ptr_R_savehistory)(SEXP, SEXP, SEXP, SEXP) = Rstd_savehistory;
+void (*ptr_R_addhistory)(SEXP, SEXP, SEXP, SEXP) = Rstd_addhistory;
+
+/* R: unix/sys-std.c:Rstd_ClearerrConsole, system.c:R_ClearerrConsole */
+void R_ClearerrConsole(void)
+{
+    clearerr(stdin);
+}
+
+/* R: main.c/platform.c: the locale's MB_CUR_MAX, set when the locale is
+   (robigo_locale_init, after setlocale) */
+int R_MB_CUR_MAX = 1;
+
+void robigo_locale_init(void)
+{
+    R_MB_CUR_MAX = (int) MB_CUR_MAX;
+}
+
+/* R: connections.c:Rconn_printf */
+#include <R_ext/Connections.h>
+int Rconn_printf(Rconnection con, const char *format, ...)
+{
+    int res;
+    errno = 0;
+    va_list(ap);
+    va_start(ap, format);
+    /* Parentheses added for FC4 with gcc4 and -D_FORTIFY_SOURCE=2 */
+    res = (con->vfprintf)(con, format, ap);
+    va_end(ap);
+    /* PR#17243:  write.table and friends silently failed if the disk was full (or there was another error) */
+    if (res < 0) {
+	if (errno)
+	    error(_("Error writing to connection:  %s"), strerror(errno));
+	else
+	    error(_("Error writing to connection"));
+    }
+    return res;
+}

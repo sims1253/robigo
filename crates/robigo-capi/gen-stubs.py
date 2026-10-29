@@ -79,9 +79,15 @@ def appl_exports():
                 for m in pat.finditer(text):
                     if not m.group(0).startswith("static"):
                         names.add(rename.get(m.group(1), m.group(1)))
+                # one-line definitions: `int R_numhash(R_hashtab_type h) { ... }`
+                for m in re.finditer(r'^(?!static)[A-Za-z_][\w *]*[ *]\*?(\w+)\s*\([^;{]*\)\s*\{', text, re.M):
+                    names.add(rename.get(m.group(1), m.group(1)))
                 # global data: `int baseRegisterIndex = -1;`
                 for m in data.finditer(text):
                     names.add(rename.get(m.group(1), m.group(1)))
+                # function-pointer data: `void (*ptr_R_addhistory)(...) = ...;`
+                for m in re.finditer(r'^(?!static|extern|typedef)[A-Za-z_][\w ]*\(\*(\w+)\)\([^;]*\)\s*(?:=[^;]*)?;', text, re.M):
+                    names.add(m.group(1))
     return names
 
 

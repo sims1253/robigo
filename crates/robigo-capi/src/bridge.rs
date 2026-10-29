@@ -1174,6 +1174,9 @@ unsafe fn ensure_ready(interp: &mut Interp) {
     if let Ok(h) = std::env::var("R_HOME") {
         R_Home = CString::new(h).unwrap_or_default().into_raw();
     }
+    // R: main.c/platform.c — the C library's locale (mbstowcs, MB_CUR_MAX)
+    robigo_runtime::builtins::sysutils::init_locale();
+    crate::graphics::locale_init();
     // R: main.c:setup_Rmainloop — the graphics engine's device table
     crate::graphics::init_graphics();
     // R: sysutils.c:InitTempDir — the session's temporary directory
