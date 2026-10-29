@@ -95,6 +95,24 @@
   sequences; robigo stores byte strings as Latin-1 chars (lang.rs
   const_to_value), so byte-level validation needs per-CHARSXP encodings
   (value.rs) — same blocker as iconv/`Encoding<-`.
+## 2026-10-29: handoff from core (graphics examples, #69)
+
+Found while bringing up the graphics engine; reproduce with
+`scripts/corpus.py show gnur-examples <case>` (needs #69's natives).
+
+- `"\304"` in R source is the single byte 0xC4 (an invalid UTF-8 string
+  in GNU R, an Adobe Symbol code in `symbol()`); robigo's lexer makes it
+  U+00C4 ("Ä", two bytes). `grDevices/plotmath` then warns "font metrics
+  unknown for character 0x84" where GNU R draws circlemultiply;
+  `gnur-demos graphics/Hershey` stops at `rawToChar(..., multiple =
+  TRUE)` ("strings that are not valid UTF-8 are not supported"). Needs
+  byte strings (the encoding window, core.md §4.1).
+- `signif(x, digits)` / `round(x, digits)` with `digits` a missing
+  argument must use the default: in GNU R both are specials (names.c
+  eval 0, arith.c do_Math2 checks `CADR(args) == R_MissingArg`); robigo
+  evaluates the argument and fails with 'argument "digits" is missing,
+  with no default' (`grDevices/xyTable`:
+  `f <- function(x, digits) signif(x, digits); f(1.23456789)`).
 
 ## 2026-10-28: resume after PR #29 merged
 
