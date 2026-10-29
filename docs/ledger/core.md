@@ -11,6 +11,24 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: stats natives in CI: ported routines keep their Rust port
+
+- CI perf on #70 (stats natives everywhere): `robigo/lm` +99%. Profile:
+  the bridge copying string vectors (a model frame's 20,000 row names)
+  into CHARSXPs and back for C_modelframe/C_modelmatrix/C_Cdqrls and
+  the glm family routines (mk_char, rstr_of, UTF-8 checks).
+- Kept: stats routines with a Rust port (and the distribution internals
+  the runtime serves) keep the port while stats.so is loaded
+  (`native::PORTS_FIRST`); stats.so serves the rest. Until G3 shares
+  arguments. lm 758.8M -> 764.5M with natives (+5.7M, the accepted
+  startup step of loading stats.so's LAPACK/BLAS/gfortran), knucleotide
+  and dataframe +5.3M the same. gnur-examples stats and the fastr
+  model/distribution slice: 0 regressions.
+- `robigo/fannkuch` +17% in that CI run did not reproduce: the same
+  artifact measures 1,309M (main 1,305.9M) directly, under perf.py, and
+  in the oracle container, output correct; three repeats agree within
+  0.1M. Watching the re-run.
+
 ## 2026-10-29: CI builds the base-package natives (pending-workflow.patch applied)
 
 - With the gates enforced (#58), the build job builds GNU R's stats

@@ -387,8 +387,18 @@ fn is_internal_alias(r: &Routine) -> bool {
 }
 
 /// Call a routine with already evaluated arguments.
+/// Packages whose ported routines keep their Rust port while the
+/// package's own native code (built from GNU R's sources) is loaded: the
+/// bridge copies every argument and result between the runtime and C (a
+/// model frame's 20,000 row names into CHARSXPs and back made `lm` twice
+/// as slow), so the ports stay until arguments are shared (G3). grDevices,
+/// graphics and grid are not listed: their state (devices, display lists)
+/// must live in one implementation.
+const PORTS_FIRST: &[&str] = &["stats"];
+
 pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
-    if r.addr != 0 {
+    let ported = PORTS_FIRST.contains(&&*r.package) && (is_internal_alias(r) || port_of(r).is_some());
+    if r.addr != 0 && !ported {
         if let Some(b) = bridge() {
             return b.invoke(interp, call, r, args, env);
         }
@@ -402,15 +412,23 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
             return interp.invoke_builtin(b, call, args, &env);
         }
     }
-    let port =
-        PORTS.iter().filter(|(p, _)| *p == &*r.package).flat_map(|(_, t)| t.iter()).find(|(n, _)| *n == &*r.name);
-    match port {
-        Some((_, f)) => f(interp, call, args, env),
+    match port_of(r) {
+        Some(f) => f(interp, call, args, env),
         None => Err(Flow::error_call(
             call.clone(),
             format!("robigo: native routine '{}' of package '{}' is not implemented yet", r.name, r.package),
         )),
     }
+}
+
+/// The Rust port of a routine.
+fn port_of(r: &Routine) -> Option<NativeFn> {
+    PORTS
+        .iter()
+        .filter(|(p, _)| *p == &*r.package)
+        .flat_map(|(_, t)| t.iter())
+        .find(|(n, _)| *n == &*r.name)
+        .map(|(_, f)| *f)
 }
 
 /// The base DLL, registered at startup as in GNU R's `InitDynload`.
