@@ -8,6 +8,8 @@ use std::rc::Rc;
 use crate::sym::{Sym, s};
 use crate::value::{AttrBox, Value};
 
+mod table;
+
 pub const BIND_LOCKED: u8 = 1;
 pub const BIND_ACTIVE: u8 = 2;
 /// The binding holds a default-argument promise: `missing(x)` is TRUE.
@@ -65,6 +67,25 @@ pub struct Frame {
     mask: u64,
     /// The frame belongs to an environment on the search path.
     pub search: bool,
+    // The order in which GNU R lists the bindings (`ls(sorted = FALSE)`,
+    // `names()`, `as.list()`, `serialize()`); lookups do not depend on it.
+    // These fields live in what was the struct's padding and a hashed
+    // environment's table in `HASH_TABLES`, so that frames, their
+    // construction and their drop glue are what they were (closure calls
+    // are measured to the instruction).
+    /// Without a table the frame is a GNU R frame pairlist
+    /// (`NewEnvironment`): its first `nbase` bindings in the order they were
+    /// given (a closure's matched arguments), each later one prepended by
+    /// `defineVar`. `NBASE_OPEN` until the first binding that is not part
+    /// of the initial frame (so `bind_arg` costs nothing more). For a
+    /// hashed frame: the size its table starts with.
+    pub(crate) nbase: u32,
+    /// Listed in the order of insertion: the base environment, which GNU R
+    /// lists in its global symbol table's order.
+    insertion: bool,
+    /// A hashed environment (`R_NewHashedEnv`): its table is made when
+    /// first needed (environments that are never listed have none).
+    pub(crate) hashed: bool,
 }
 
 #[inline(always)]
@@ -112,10 +133,33 @@ fn function_like(v: &Value) -> bool {
     matches!(v, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
 }
 
+const NBASE_OPEN: u32 = u32::MAX;
+
 impl Drop for Frame {
     fn drop(&mut self) {
-        if self.search && self.entries.iter().any(|b| function_like(&b.value)) {
-            bump_search_epoch();
+        // Only search-path frames (global, attached packages) need work, so
+        // the drop glue of closure frames, on every call, stays small
+        // enough to be inlined however the crate is partitioned.
+        if self.search {
+            search_frame_dropped(&self.entries);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn search_frame_dropped(entries: &[Binding]) {
+    if entries.iter().any(|b| function_like(&b.value)) {
+        bump_search_epoch();
+    }
+}
+
+impl Frame {
+    /// A binding that is not part of the initial frame is being added.
+    #[inline]
+    fn close_base(&mut self) {
+        if self.nbase == NBASE_OPEN && !self.hashed {
+            self.nbase = self.entries.len() as u32;
         }
     }
 }
@@ -178,11 +222,25 @@ impl Frame {
         }
     }
 
+    /// The symbols in GNU R's order: `HashTableNames` for a hashed frame,
+    /// `FrameNames` (head first) for a frame pairlist.
+    // R: envir.c:R_lsInternal3
+    pub(crate) fn frame_names(&self) -> Vec<Sym> {
+        if self.insertion {
+            return self.entries.iter().map(|b| b.sym).collect();
+        }
+        let (base, added) = self.entries.split_at((self.nbase as usize).min(self.entries.len()));
+        added.iter().rev().chain(base).map(|b| b.sym).collect()
+    }
+
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
         let b = self.entries.remove(i);
         if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
+        }
+        if !self.hashed && (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
+            self.nbase -= 1;
         }
         if let Some(ix) = &mut self.index {
             ix.remove(&sym);
@@ -242,7 +300,15 @@ impl Env {
 
     /// A new environment with room for `n` bindings.
     pub fn with_capacity(parent: Option<Env>, n: usize) -> Env {
-        let frame = Frame { entries: smallvec::SmallVec::with_capacity(n), index: None, mask: 0, search: false };
+        let frame = Frame {
+            entries: smallvec::SmallVec::with_capacity(n),
+            index: None,
+            mask: 0,
+            search: false,
+            nbase: NBASE_OPEN,
+            insertion: false,
+            hashed: false,
+        };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
 
@@ -281,7 +347,15 @@ impl Env {
 
     /// An environment on the search path (global, base, attached).
     pub fn new_search(parent: Option<Env>, name: &str) -> Env {
-        let frame = Frame { entries: Default::default(), index: None, mask: 0, search: true };
+        let frame = Frame {
+            entries: Default::default(),
+            index: None,
+            mask: 0,
+            search: true,
+            nbase: NBASE_OPEN,
+            insertion: false,
+            hashed: false,
+        };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
         e
@@ -425,6 +499,7 @@ impl Env {
         if function_like(&value) || flags & BIND_ACTIVE != 0 {
             self.bump_fn_version();
         }
+        f.close_base();
         f.push_new(sym, value, flags);
         true
     }
@@ -437,6 +512,18 @@ impl Env {
             self.bump_fn_version();
         }
         self.0.frame().borrow_mut().push_new(sym, value, flags);
+    }
+
+    /// Bind a new symbol without looking for an existing binding, as
+    /// `defineVar` into a fresh frame does (`R_execMethod`): it is listed
+    /// before the bindings made so far.
+    pub fn bind_new(&self, sym: Sym, value: Value, flags: u8) {
+        if function_like(&value) {
+            self.bump_fn_version();
+        }
+        let mut f = self.0.frame().borrow_mut();
+        f.close_base();
+        f.push_new(sym, value, flags);
     }
 
     /// Move a value out of a binding, leaving `NULL` behind, so that the
@@ -458,7 +545,15 @@ impl Env {
     }
 
     pub fn remove(&self, sym: Sym) -> bool {
+        let hashed = self.0.frame().borrow().hashed;
+        if hashed && self.has_local(sym) {
+            self.table_delete(sym);
+        }
         let r = self.0.frame().borrow_mut().remove(sym);
+        if hashed && r.is_some() {
+            // the table holds every binding left
+            self.table_removed();
+        }
         if r.as_ref().is_some_and(|b| function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             self.bump_fn_version();
         }
@@ -507,8 +602,22 @@ impl Env {
         self.len() == 0
     }
 
+    /// The bound symbols, in the order GNU R lists them.
     pub fn symbols(&self) -> Vec<Sym> {
+        if self.0.frame().borrow().hashed {
+            return self.table_names();
+        }
+        self.0.frame().borrow().frame_names()
+    }
+
+    /// The bound symbols in no particular order (for callers that sort).
+    pub fn symbols_unordered(&self) -> Vec<Sym> {
         self.0.frame().borrow().entries.iter().map(|b| b.sym).collect()
+    }
+
+    /// List the bindings in the order they were made (the base environment).
+    pub fn set_insertion_order(&self) {
+        self.0.frame().borrow_mut().insertion = true;
     }
 
     pub fn lock(&self, bindings: bool) {

@@ -303,8 +303,9 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 let v = expr_to_value_src(&exprs[0], Some(("<text>", &iob)));
                 let value = interp.eval_toplevel(&v, &global, true);
                 if let Some(v) = &value {
-                    // SET_SYMVALUE(R_LastvalueSymbol, value)
-                    global.force_set(Sym::new(".Last.value"), v.clone());
+                    // SET_SYMVALUE(R_LastvalueSymbol, value): a binding in
+                    // the base environment, not the global one
+                    interp.base.clone().force_set(Sym::new(".Last.value"), v.clone());
                 }
                 iob.clear();
                 prompt_type = 1;

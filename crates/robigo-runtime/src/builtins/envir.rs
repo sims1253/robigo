@@ -127,7 +127,14 @@ pub fn as_env(interp: &mut Interp, v: &Value, call: &Value) -> RResult<Env> {
             }
         }
         Value::List(_) => {
-            let e = Env::new(Some(interp.empty.clone()));
+            // R: envir.c:do_as_environment calls list2env(x, NULL, emptyenv()),
+            // whose new.env() is hashed only for more than 100 elements
+            // (`hash = (length(x) > 100), size = max(29L, length(x))`)
+            let e = if v.len() > 100 {
+                Env::new_hashed(Some(interp.empty.clone()), v.len() as i32)
+            } else {
+                Env::new(Some(interp.empty.clone()))
+            };
             list_into_env(v, &e);
             Ok(e)
         }
@@ -244,8 +251,16 @@ fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         Value::Null => return Err(Flow::error_call(call.clone(), "use of NULL environment is defunct")),
         _ => return Err(Flow::error_call(call.clone(), "'enclos' must be an environment")),
     };
-    let _ = i;
-    Ok(Value::Env(Env::new(Some(parent))))
+    // R: builtin.c:do_newenv
+    let hash = crate::coerce::as_integer(&arg(&args, 0));
+    if hash == 0 {
+        return Ok(Value::Env(Env::new(Some(parent))));
+    }
+    let size = match crate::coerce::as_integer(&arg(&args, 2)) {
+        NA_INTEGER => 0,
+        n => n,
+    };
+    Ok(Value::Env(Env::new_hashed(Some(parent), size)))
 }
 
 fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -577,8 +592,9 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
+    let syms = if sorted { e.symbols_unordered() } else { e.symbols() };
     let mut names: Vec<String> =
-        e.symbols().into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
+        syms.into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
         names.sort();
     }
@@ -841,16 +857,24 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
     let env = match &envir {
         Value::Env(e) => e.clone(),
         Value::Null => enclos_env.clone().unwrap_or_else(|| i.base.clone()),
+        // R: eval.c:do_eval: NewEnvironment() over the list's elements, in
+        // order (with repeated names, lookups find the first)
         Value::List(_) => {
             let e = Env::new(Some(enclos_env.clone().unwrap_or_else(|| i.base.clone())));
-            list_into_env(&envir, &e);
+            if let Some(Value::Str(n)) = envir.names() {
+                for (nm, val) in n.data.iter().zip(crate::coerce::to_list(&envir)) {
+                    if let Some(nm) = nm.as_deref().filter(|nm| !nm.is_empty()) {
+                        e.bind_arg(Sym::new(nm), val, 0);
+                    }
+                }
+            }
             e
         }
         Value::Pairlist(p) => {
             let e = Env::new(Some(enclos_env.clone().unwrap_or_else(|| i.base.clone())));
             for a in &p.items {
                 if let Some(t) = a.tag {
-                    e.set_local(t, a.value.clone());
+                    e.bind_arg(t, a.value.clone(), 0);
                 }
             }
             e

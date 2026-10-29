@@ -131,6 +131,10 @@ impl Interp {
         let empty = Env::named(None, "R_EmptyEnv");
         let base = Env::new_search(Some(empty.clone()), "base");
         let global = Env::new_search(Some(base.clone()), "R_GlobalEnv");
+        // R: envir.c:InitGlobalEnv (the global environment is hashed; base
+        // keeps its bindings in the symbol table, listed here as made)
+        base.set_insertion_order();
+        global.hash_frame(0, None);
         // The base namespace shares its bindings with the base package
         // environment but is a distinct environment whose parent is the
         // global environment, as in GNU R.
@@ -154,7 +158,7 @@ impl Interp {
             out,
             err,
             errmsg: String::new(),
-            ns_registry: Env::new(None),
+            ns_registry: Env::new_hashed(None, 0),
             dlls: vec![crate::native::base_dll()],
             rng: Default::default(),
             depth: 0,
