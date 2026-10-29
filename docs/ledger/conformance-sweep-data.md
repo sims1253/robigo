@@ -2,6 +2,18 @@
 
 ## 2026-10-29 (later): pretty cell shrink, identical row.names finding
 
+- **Kept experiment**: print.c prints a `<bytecode: ...>` line for closures
+  whose body carries compiled code. print.rs now emits it exactly when the
+  closure's `code` cell is filled (the address is masked by the corpus
+  runner). Verified: fresh closures and never-called closures print no
+  line; called closures and bootstrap-called base functions do — 437/437
+  fastr print/format/deparse cases, the language-example slice, the
+  gnur-tests print slice and tests/r/print conformance all pass with zero
+  regressions. Known divergence window: robigo attaches bytecode on the
+  first call while GNU R's default JIT compiles after a few more (f(1)
+  once: GNU R no line, robigo line) — aligning the compile moment is
+  PR #51's scope. base/match still fails because base lazy-load functions
+  carry bytecode from load in GNU R (core-lazybase, PR #56).
 - **Kept fix**: `pretty(0, min.n = 4)` returned `-2 -1 0 1 2`; GNU R gives
   `-0.4 -0.2 0 0.2 0.4`. The R_pretty port applied the shrink_sml/min_n
   cell adjustment only inside the max(|lo|,|up|) branch, but pretty.c

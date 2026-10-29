@@ -156,6 +156,12 @@ impl Printer {
                     self.p(&l);
                     self.p("\n");
                 }
+                // R: print.c PrintClosure prints <bytecode: ...> once the
+                // body carries compiled code (base functions from load, or
+                // after the JIT compiled it). The address is arbitrary.
+                if c.code.get().is_some_and(|o| o.is_some()) {
+                    self.p("<bytecode: 0x000000000000>\n");
+                }
                 if !c.env.ptr_eq(&interp.global) {
                     let e = encode_environment(&c.env);
                     self.p(&e);
