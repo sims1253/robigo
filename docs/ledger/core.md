@@ -61,6 +61,16 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   image and smooth demos); the `<bytecode>` line of printed functions;
   `eigen` needs `.Internal(La_rs)` (plot.window example); png()/cairo
   (`R_cairoCdynload` and the cairo module) not yet.
+- CI perf on #69: profiler-microbenchmark, profiler-shared and
+  mandelbrot_noout_naive +0.55-0.63%. Measured locally on #57's and
+  #69's binaries (callgrind, the perf driver): the same +4.4M of 800M,
+  startup only +0.12M; the hot interpreter functions #69 does not touch
+  changed size (`apply_closure_ex` 3357 -> 3418 bytes, `find_fun` 2058
+  -> 2109) with the same call targets: register allocation and layout
+  from the 16 codegen units moving (perf-regression-2026-10-28.md
+  describes the same fragility). Not a cost of the graphics code; for
+  perf: `codegen-units = 1` (or LTO) in the release profile would end
+  these +-0.6% swings.
 - Next (utils from source, built on this branch): utils.so's undefined
   stubs are hashtab.c (`R_mkhashtab`, `R_gethash`, `R_sethash`,
   `R_remhash`, `R_numhash`, `R_typhash`, `R_maphash`, `R_clrhash`,
