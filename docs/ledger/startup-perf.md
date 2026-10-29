@@ -171,7 +171,7 @@ lands; the natives work is PR #78 below.
   concurrent PR runs. Documented on PR #78; #72 (compare with the PR's
   own base commit) is the systemic fix.
 
-## 2026-10-29 (round 4, PR #81): flat lazy-load cache (rdbflat)
+## 2026-10-29 (round 4, PR #82): flat lazy-load cache (rdbflat)
 
 - Where startup went after the natives work: every `lazyLoadDBfetch`
   inflates its own zlib stream (Huffman tables per stream, adler32 over
@@ -207,4 +207,3 @@ lands; the natives work is PR #78 below.
   are the follow-ups. Not wired into CI here: the feature is opt-in
   and byte-identical, so ratchets and the gate are untouched either
   way.
-
