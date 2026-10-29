@@ -1,5 +1,22 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): avoid rescanning loaded bytecode bodies
+
+- Measured startup with R_DEFAULT_PACKAGES=NULL and callgrind on
+  `robigo --vanilla -e 1`. Initial bytecode candidate: 45,259,491
+  instructions versus original main's 44,819,159 (+0.98%). Callgrind
+  attributes 435,899 instructions to 74 unnecessary function_locals
+  scans: deserialized bytecode was marked INHERITED with an empty mask.
+- Initialized deserialized closures directly as COMPILED. There is no
+  creator's frozen set to filter, and the source body was already compiled
+  by GNU R. Isolated rebased comparison on e25e6cc: **45,238,280 ->
+  44,882,771 instructions (-0.79%)**. Final startup is +0.14% against
+  the original main baseline, within the 0.5% gate. Kept.
+- Four Docker-oracle fixtures pass across interpreter, VM and JIT
+  (12/12), including a new per-line tab-stop fixture. Full final data,
+  blocker slice across tiers, and crate checks follow this measurement.
+- Shared edit: vm/rjit.rs constructor state only. No changes to vm.rs.
+
 ## 2026-10-29 (round 5): full CLI parse-error context
 
 - R: gram.y / Defn.h:PARSE_CONTEXT_SIZE is 256 bytes, not 50.

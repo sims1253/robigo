@@ -64,7 +64,7 @@ pub struct JitState(Cell<u64>);
 impl JitState {
     /// R: serialize.c:ReadItem preserves a BCODESXP closure body.
     pub fn from_bytecode() -> Self {
-        Self(Cell::new(INHERITED))
+        Self(Cell::new(COMPILED))
     }
 
     /// R: print.c:PrintClosure tests isByteCode(BODY(s)), independently
