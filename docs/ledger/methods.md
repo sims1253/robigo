@@ -352,6 +352,42 @@ Calls that never push a frame (pure inline closures) stay correct as long
 as their bodies cannot reach `standardGeneric`, `sys.*`, `parent.frame`,
 `missing` or `callNextMethod`, as today.
 
+## For perf-vm: namespace closures miss the guard memo (S4's biggest cost)
+
+Measured 2026-10-29 on main 00328a0 (after #51), callgrind, 2e4 calls of
+a one-method generic plus 2e3 `new("Sq", s = i)`: 2.51G instructions,
+**`vm::guard_ok_slow` ~13% of them** (9.5% inclusive, plus its inlined
+`Cell`/`mem` parts). The dispatch machinery itself (methods.rs:
+`dispatch_generic` minus the R code it runs, `load_method`, `do_slot`) is
+~1%; the rest is methods' own R code (`new` -> `initialize` ->
+`validObject`, `getClass`) running in the VM.
+
+Why: every closure of a package namespace runs in a frame three levels
+below the search path: frame -> `namespace:methods` -> its imports env ->
+`namespace:base` (`is_search`). `guard_ok_slow` memoizes only frames at
+depth 1 (`env` itself) and depth 2 (`outer`), so for depth 3 it sets
+`env: 0, outer: 0`, and each new frame (every call) walks the chain again
+with `local_may_bind_fun` on each environment. In a namespace that is a
+hash lookup in the frame's index: with ~1,000 bindings the 64-bit `mask`
+is all ones and never short-circuits.
+
+Proposal (vm.rs, perf-vm's file; not done here):
+- Generalize `outer` to "the frame's parent `p` and the chain from `p` up
+  to the search path": memoize `p.id()` and a checksum of the
+  `(id, fn_version)` pairs of every environment from `p` to the search
+  environment `cur`. A hit for a new frame `env` is: same epoch,
+  `env.parent == p`, checksum still equal (walking 2-3 parent pointers and
+  reading `fn_version`, no hash lookups), `!env.local_may_bind_fun(sym)`.
+- Sound by the same argument as `outer`: `fn_version` changes whenever a
+  function-like binding of that environment is created, changed or
+  removed, and the search epoch covers everything from `cur` up.
+- Namespaces and their imports are locked after loading, so in practice
+  the checksum never changes and every guarded call in methods' code hits.
+- Expected: most of the 13%, on any package code (stats, utils, Rcpp
+  modules), not only S4. An S4 benchmark in `benchmarks/` (generic call,
+  `new`, an S4 method for a primitive) would keep it tracked; the script
+  above is in this entry.
+
 ## 2026-10-28: fastr with methods attached, whole corpus (host)
 
 - All 31,374 fastr cases re-recorded with methods in `default_packages`
