@@ -1,5 +1,28 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 4): silent repeated tracing and distinct symbol identities
+
+- Started from origin/main `74e8c73` on `track/conformance-data-round4`.
+- R: debug.c:do_tracemem sets RTRACE unconditionally. Removed the
+  invented `object already traced` warning. Symbols now use their interned
+  name allocation as identity; environments use their own allocation.
+  Untracing a different symbol, NULL, or an environment no longer clears
+  a traced symbol's mark.
+- Focused oracle metric: **0/2 -> 2/2** scripts match stdout, stderr, and
+  status byte for byte. Both scripts were recorded by
+  scripts/regen-expected.sh in robigo-oracle:4.5.0. Kept.
+- Existing tracemem corpus baseline: **4/8**, zero regressions; the four
+  failures contain raw addresses and duplication reports. Copy reporting
+  still needs allocation hooks; no oracle masking was changed.
+- Expanded data filter and complete runtime/conformance validation pending.
+- Ownership audit: lapply's sole remaining 245e62b case needs evaluator
+  traceback contexts. The srcref case b4bfbcb9 needs parse-generated
+  metadata: do_parse ignores keep.source, while subset.c:VectorSubset's
+  srcref transfer is already ported. Parser ledger owns source metadata
+  and truncation. Complex assignment order and match traceback remain
+  evaluator work. The GNU R status -11 recordings require oracle-owner
+  investigation, not an intentional runtime crash.
+
 ## 2026-10-29 (round 3), part 3: dim<- coercion warnings; tracemem marks
 ## and returns the address
 

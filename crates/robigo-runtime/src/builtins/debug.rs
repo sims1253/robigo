@@ -41,6 +41,10 @@ fn object_ptr(v: &Value) -> usize {
         };
     }
     match v {
+        // Symbols are interned: their name allocation has the same lifetime
+        // and identity as the symbol. Keep NULL's zero identity separate.
+        Value::Sym(s) => Rc::as_ptr(&s.name()) as *const () as usize,
+        Value::Env(e) => ptr!(&e.0),
         Value::Lgl(x) => ptr!(x),
         Value::Int(x) => ptr!(x),
         Value::Real(x) => ptr!(x),
@@ -65,7 +69,7 @@ fn address_string(p: usize) -> Value {
 }
 
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).
-fn do_tracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "tracemem", call)?;
     check_x(&args, call)?;
     match &args[0].value {
@@ -85,9 +89,8 @@ fn do_tracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         _ => {}
     }
     let p = object_ptr(&args[0].value);
-    if !TRACED.with(|t| t.borrow_mut().insert(p)) {
-        i.warningcall(call, "object already traced")?;
-    }
+    // R: debug.c:do_tracemem sets RTRACE unconditionally, even if set.
+    TRACED.with(|t| t.borrow_mut().insert(p));
     Ok(address_string(p))
 }
 
