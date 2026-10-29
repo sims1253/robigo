@@ -64,6 +64,15 @@ lands; the natives work is PR #78 below.
   file (2.1-2.5 MB): -0.4M with natives, and **-17.6M without** them —
   main's `windows().any()` scan of GNU R's stats.so costs that on every
   run, with or without natives.
+- rejected: doing the string-table scan with the `memchr` crate
+  (`memmem`). The dependency itself shifted the runtime crate's code
+  layout and cost rbench/simple/profiler-shared +1.5% (6.081B vs main's
+  5.992B; callgrind showed the extra instructions in env frame lookups
+  and drops — no changed code path). Scanning the 10-60 KB table with
+  `windows().any()` instead keeps the win (0.1M) with no new dependency;
+  profiler-shared is back to 5.979B. Lesson for all tracks: a new crate
+  in robigo-runtime can move hot-code layout by more than the change
+  itself; measure the suite, not just the target.
 - result (`-e 1`, R_DEFAULT_PACKAGES=utils,stats, container):
   | binary | instructions |
   |---|---|
@@ -71,7 +80,9 @@ lands; the natives work is PR #78 below.
   | main, natives (dynamic libs) | 285,075,617 (+3.8M) |
   | this branch, no natives | 263,755,247 |
   | **this branch, natives** | **264,079,767 (+0.32M, 6.1% below the goal)** |
-  The natives overhead is 92% gone; both modes now beat main by ~6%.
+  The natives overhead is 92% gone; both modes now beat main by ~6%
+  (263.4M / 263.9M without the memchr crate; see the rejected
+  experiment below).
   For scale: GNU R itself pays 262.9M - 156.7M = 106.2M to go from
   `--default-packages=utils` to `utils,stats` (namespace code plus its
   own stats.so + liblapack/blas/gfortran load); robigo's own load cost
