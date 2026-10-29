@@ -1,5 +1,33 @@
 # conformance-sweep-data
 
+## 2026-10-29 (later): pretty cell shrink, identical row.names finding
+
+- **Kept fix**: `pretty(0, min.n = 4)` returned `-2 -1 0 1 2`; GNU R gives
+  `-0.4 -0.2 0 0.2 0.4`. The R_pretty port applied the shrink_sml/min_n
+  cell adjustment only inside the max(|lo|,|up|) branch, but pretty.c
+  adjusts every i_small input — including `cell = 1` from `lo == up == 0`.
+  Restructured to the C's two-step shape and ported the
+  `R_pretty(): infinite range` warning (r_pretty now takes the interpreter
+  and returns RResult). gnur-examples `base/pretty` passes and is
+  recorded; the full data filter stays 8,387/8,425, 0 regressions.
+- Found while bisecting gnur-examples `base/cbind` (still failing):
+  **identical.rs must compare row.names through getAttrib** (identical.c
+  treats R_RowNamesSymbol specially in both ATTR_AS_SET paths). GNU R:
+  `x` with stored `c(NA, +3)` and `y` with `c(NA, -3)` are `identical`
+  (both expand to `1:3`); robigo compares the raw stored attributes and
+  says FALSE, so `row.names(d2) <- attr(d3, "row.names");
+  stopifnot(identical(d2, d3))` fails after rbind.data.frame. robigo's
+  attr GET/SET compaction itself already matches GNU R (verified against
+  the oracle: assignment stores the sign as given; sequences 1:n compact
+  to `c(NA, +n)`). The ~6-line special case belongs in identical.rs,
+  which no track lists as owned.
+- Corpus flake seen once: three vapply/whichmax "REGRESSION" lines from a
+  run that raced another worktree's corpus jobs (per-case tmp dirs are
+  keyed by corpus+case id only); the identical rerun and a focused
+  47-case slice both pass with zero regressions.
+- One fastr slice of note: `utf8ToInt` must return NA for invalid byte
+  sequences (utf8 gnur-test); blocked on per-CHARSXP encodings, see below.
+
 ## 2026-10-29: second sweep (branch track/conformance-sweep-data-2)
 
 - Started from origin/main e3909b9 (PR #29 and the complex-matprod branch
