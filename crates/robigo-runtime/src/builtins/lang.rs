@@ -89,7 +89,7 @@ fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     };
     let mut val = interp.eval(&args[1].value, env)?;
     if val.inherits("factor") {
-        val = crate::builtins::envir::as_character_factor(&val);
+        val = crate::builtins::envir::as_character_factor(&val)?;
     }
     let body = args[2].value.clone();
     let n = val.len();

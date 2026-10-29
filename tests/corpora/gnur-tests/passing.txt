@@ -12,7 +12,9 @@ eval-fns
 iec60559
 ok-errors
 p-r-random-tests
+print-tests
 r-strict-tst
+reg-BLAS
 reg-S4-examples
 reg-packages
 reg-win

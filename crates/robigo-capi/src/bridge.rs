@@ -742,7 +742,10 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 }
             }
         }
-        "asCharacterFactor" => to_sexp(&robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))),
+        "asCharacterFactor" => {
+            let v = robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))?;
+            to_sexp(&v)
+        }
         "field" => field(a[0], int_arg(a[1]))?,
         "connectionNumber" => {
             crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)

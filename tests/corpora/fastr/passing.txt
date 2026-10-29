@@ -4585,6 +4585,7 @@ builtins/TestBuiltin_factor/0c7f973a7766cc08
 builtins/TestBuiltin_factor/0ccc3d14ffd76940
 builtins/TestBuiltin_factor/0dcfb71b88a48e4f
 builtins/TestBuiltin_factor/0eb86c9f9e26d913
+builtins/TestBuiltin_factor/0f20b2bb09456785
 builtins/TestBuiltin_factor/1be8569e94a23110
 builtins/TestBuiltin_factor/1cc00d3d7857b123
 builtins/TestBuiltin_factor/211c1abd61b2ccce
@@ -4597,6 +4598,7 @@ builtins/TestBuiltin_factor/4161cb39cfd8fdd6
 builtins/TestBuiltin_factor/4364e0ee09387881
 builtins/TestBuiltin_factor/444dfb2f5d1861f6
 builtins/TestBuiltin_factor/474768fa5dcb4d33
+builtins/TestBuiltin_factor/49eb4d260a880284
 builtins/TestBuiltin_factor/4ff7aff5958da32b
 builtins/TestBuiltin_factor/5340e12863e9d0f0
 builtins/TestBuiltin_factor/541af72594b8b4f1

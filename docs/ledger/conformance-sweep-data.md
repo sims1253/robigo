@@ -1,5 +1,70 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 3): identical row.names, malformed factor, options,
+## round/signif missing digits (branch track/conformance-sweep-data-3)
+
+- Started from origin/main 7ff8a140 in a fresh worktree. Baseline on this
+  host: expanded data filter **8,388/8,426** (the one "regression" is
+  `TestBuiltin_order/add626`, the known en_US.utf8 collation case this
+  host lacks; CI has the locale), gnur-tests 21/59, gnur-examples
+  `^base/` 288/380 (12 host-only: Platform, Rhome, as.environment,
+  getCallingDLL, getLoadedDLLs, library.dynam, regmatches, search,
+  srcfile, strsplit, strwrap, system.file).
+- **identical row.names through getAttrib** (identical.c's R_RowNamesSymbol
+  special case, both ATTR_AS_SET paths): `attr(x,"row.names")` stored
+  `c(NA, +3)` vs `c(NA, -3)` now both expand to `1:3` and compare equal.
+  gnur-examples `base/cbind` passes (recorded). `base/identical` is still
+  blocked on `<bytecode: ...>` printing of compiler::cmpfun closures
+  (needs the compile-moment alignment, see round 2's rejected experiment).
+- **asCharacterFactor errors** (coerce.c:asCharacterFactor ported to
+  RResult): "attempting to coerce non-factor", "malformed factor" for
+  non-character levels AND out-of-range codes; drops the names copy the C
+  never made. Callers updated: misc.rs (the .Internal), lang.rs + vm.rs
+  for-loops, unique.rs match_transform, attrib.rs as_char_simpl (now
+  RResult), robigo-capi bridge.rs. fastr factor 57 -> 59/65: the two
+  direct `as.character(x)` cases pass and are recorded; the other six now
+  differ ONLY in the traceback's first entry — GNU R prints
+  `Calls: <Anonymous> ... print.factor` for the auto-print at top level,
+  robigo prints `Calls: print ...`. That is the evaluator's call-stack
+  handling of auto-print (interp/print), not asCharacterFactor; left for
+  the owner of the traceback machinery.
+- **options**: `matprod = "default.simd"` accepted silently (the Debian
+  r-base-core 4.5.0-3 build robigo tracks has OpenMP SIMDRED; the warning
+  is `#if !defined(HAVE_OPENMP_SIMDRED)`); max.print/nwarnings now use
+  R's asInteger with its CoercionWarning, so `options(max.print = Inf)`
+  warns `NAs introduced by coercion to integer range` then errors
+  `invalid value for 'max.print'`. gnur-tests reg-BLAS and print-tests
+  both pass and are recorded (gnur-tests 21 -> 23/59, 0 regressions).
+  `base/options` still fails on host/other-track lines only (bitmapType
+  cairo vs Xlib, pager path, echo default).
+- **round/signif with a missing digits formal** (core's handoff): the
+  bug was in math.rs's private `eval_list_keep_missing`, which lacked
+  eval.c's `R_isMissing` check, so evaluating the `digits` symbol (bound
+  to the caller's unmatched formal) errored. Deleted the duplicate;
+  do_Math2 now uses subset.rs's `eval_keep_missing` (the existing
+  evalListKeepMissing port, visibility pub(crate)). First attempt kept
+  the symbol expression as the arg value and broke x (`non-numeric
+  argument`); the shared port pushes Value::missing_arg, and the default
+  then applies in do_math2_group as in C. `f <- function(x, digits)
+  signif(x, digits); f(1.23456789)` prints 1.23457; `round` likewise;
+  missing `x` now reports `Error in round(x) : argument "x" is missing,
+  with no default` (R_MissingArgError_c uses do_Math2's call).
+  grDevices/xyTable passes and is recorded.
+- Complex %*% NaN: re-verified on new main (`as.complex(NA) %*% NaN`
+  prints NaN+NaNi; the two ratcheted complex scripts fail on the BASELINE
+  binary on this host exactly as the ledger documented — host NaN-payload
+  issue, main's CI green, not from this branch).
+- Metric: expanded data filter **8,388 -> 8,390/8,426** (+2 recorded),
+  0 real regressions; gnur-examples `^base/` 288 -> 289/380 + xyTable
+  (+3 recorded with cbind; eapply/list2env were pre-existing unrecorded
+  passes from the morning wave, recorded too); gnur-tests 21 -> 23/59.
+  cargo test -p robigo-runtime: only the documented host complex oracle;
+  conformance ratchet: only the two documented host complex scripts
+  (verified against the baseline binary). Build note: the shared
+  ~/.cache/cargo-target again served another worktree's robigo-capi
+  build-script state (`main/g_her_glyph.c` not found); this round used
+  CARGO_TARGET_DIR=~/.cache/robigo-data3-target throughout.
+
 ## 2026-10-29 (later): pretty cell shrink, identical row.names finding
 
 - **Kept fix**: `pretty(0, min.n = 4)` returned `-2 -1 0 1 2`; GNU R gives

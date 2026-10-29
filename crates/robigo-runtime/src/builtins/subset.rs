@@ -33,7 +33,7 @@ pub static DEFS: &[Builtin] = &[
 /// through a chain of promises? Unlike for `missing()`, a formal that uses
 /// its default value is not missing here (R marks it `MISSING = 2`).
 // R: envir.c:R_isMissing
-fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
+pub(crate) fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -> bool {
     if sym.is_empty() {
         return true;
     }

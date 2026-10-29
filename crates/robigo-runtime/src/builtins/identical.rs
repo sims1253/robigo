@@ -53,10 +53,19 @@ fn attrs_identical(a: &Value, b: &Value, f: IdFlags) -> bool {
     if av.len() != bv.len() {
         return false;
     }
+    // R: identical.c:R_compute_identical — row.names are compared through
+    // getAttrib (both ATTR_AS_SET paths), which expands the compact
+    // c(NA, ±n) form to 1:n, so stored signs don't matter.
+    let val = |o: &Value, k: crate::sym::Sym, v: &Value| -> Value {
+        if k == s::ROW_NAMES { crate::attrib::get_attrib(o, s::ROW_NAMES) } else { v.clone() }
+    };
     if f.attrib_as_set {
-        av.iter().all(|(k, v)| bv.iter().any(|(k2, v2)| k == k2 && identical_flags(v, v2, f)))
+        av.iter()
+            .all(|(k, v)| bv.iter().any(|(k2, v2)| k == k2 && identical_flags(&val(a, *k, v), &val(b, *k2, v2), f)))
     } else {
-        av.iter().zip(bv.iter()).all(|((k, v), (k2, v2))| k == k2 && identical_flags(v, v2, f))
+        av.iter()
+            .zip(bv.iter())
+            .all(|((k, v), (k2, v2))| k == k2 && identical_flags(&val(a, *k, v), &val(b, *k2, v2), f))
     }
 }
 

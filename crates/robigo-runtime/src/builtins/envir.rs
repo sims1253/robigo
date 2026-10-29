@@ -67,31 +67,29 @@ fn do_baseenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
     Ok(Value::Env(i.base.clone()))
 }
 
-pub fn as_character_factor(v: &Value) -> Value {
-    let levels = match v.get_attr(s::LEVELS) {
-        Some(Value::Str(l)) => l.data.clone(),
-        _ => vec![],
+// R: coerce.c:asCharacterFactor
+pub fn as_character_factor(v: &Value) -> RResult<Value> {
+    if !v.inherits("factor") {
+        return Err(Flow::error("attempting to coerce non-factor"));
+    }
+    let Some(Value::Str(labels)) = v.get_attr(s::LEVELS) else {
+        return Err(Flow::error("malformed factor"));
     };
     let codes = match v {
-        Value::Int(x) => x.data.clone(),
-        _ => vec![],
+        Value::Int(x) | Value::Lgl(x) => &x.data,
+        _ => return Err(Flow::error("malformed factor")),
     };
-    let out: Vec<RStr> =
-        codes
-            .iter()
-            .map(|&c| {
-                if c == NA_INTEGER || c < 1 || c as usize > levels.len() {
-                    None
-                } else {
-                    levels[c as usize - 1].clone()
-                }
-            })
-            .collect();
-    let mut r = Value::strs(out);
-    if let Some(n) = v.get_attr(s::NAMES) {
-        r.set_attr_raw(s::NAMES, n);
+    let mut out: Vec<RStr> = Vec::with_capacity(codes.len());
+    for &c in codes {
+        if c == NA_INTEGER {
+            out.push(None);
+        } else if c >= 1 && c as usize <= labels.data.len() {
+            out.push(labels.data[c as usize - 1].clone());
+        } else {
+            return Err(Flow::error("malformed factor"));
+        }
     }
-    r
+    Ok(Value::strs(out))
 }
 
 /// Convert something to an environment (R's `simple_as_environment` plus

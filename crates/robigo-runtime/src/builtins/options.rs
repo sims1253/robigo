@@ -7,12 +7,27 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 use super::internal;
-use crate::coerce::{as_integer, as_logical};
+use crate::coerce::{CoerceWarnings, as_integer, as_logical, to_int};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
+
+/// R: coerce.c:asInteger — like `as_integer`, but issues the coercion
+/// warnings `CoercionWarning()` does (out-of-integer-range reals,
+/// non-numeric strings).
+fn as_integer_warn(i: &mut Interp, v: &Value) -> RResult<i32> {
+    let mut w = CoerceWarnings::default();
+    let k = match v {
+        Value::Raw(x) => x.data.first().map(|&b| b as i32).unwrap_or(NA_INTEGER),
+        Value::Lgl(x) | Value::Int(x) => x.data.first().copied().unwrap_or(NA_INTEGER),
+        v if v.is_atomic() && !v.is_empty() => to_int(v, &mut w)[0],
+        _ => NA_INTEGER,
+    };
+    w.emit(i)?;
+    Ok(k)
+}
 
 pub static DEFS: &[Builtin] = &[internal("options", do_options, -1).custom_vis()];
 
@@ -337,7 +352,9 @@ fn validate(i: &mut Interp, name: &str, argi: Value) -> RResult<Value> {
             argi
         }
         "max.print" | "nwarnings" => {
-            let k = as_integer(&argi);
+            // R: options.c:do_options — asInteger() warns before the range
+            // check (e.g. max.print = Inf).
+            let k = as_integer_warn(i, &argi)?;
             if k == NA_INTEGER || k < 1 {
                 return Err(invalid_value(name));
             }
@@ -402,8 +419,10 @@ fn validate(i: &mut Interp, name: &str, argi: Value) -> RResult<Value> {
         "matprod" => {
             let s = crate::coerce::as_string(&argi);
             match s.as_deref() {
-                Some("default") | Some("internal") | Some("blas") => {}
-                Some("default.simd") => i.warning("OpenMP SIMD is not supported in this build of R")?,
+                // The Debian r-base-core build has OpenMP SIMD reduction, so
+                // "default.simd" is accepted without the not-supported warning
+                // (options.c guards it with HAVE_OPENMP_SIMDRED).
+                Some("default") | Some("internal") | Some("blas") | Some("default.simd") => {}
                 _ => return Err(invalid_value(name)),
             }
             argi

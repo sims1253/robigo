@@ -3345,7 +3345,13 @@ fn run_with(
                 }
                 let mut v = regs[*seq as usize].to_value();
                 if v.inherits("factor") {
-                    v = crate::builtins::envir::as_character_factor(&v);
+                    v = match crate::builtins::envir::as_character_factor(&v) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            flush!();
+                            return signal(interp, Err(e));
+                        }
+                    };
                 }
                 if !(v.is_vector() || v.is_null() || matches!(v, Value::Pairlist(_))) {
                     flush!();
