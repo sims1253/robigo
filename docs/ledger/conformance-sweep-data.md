@@ -33,6 +33,13 @@
   **45,037,852** instructions against **45,025,118** (+0.028%). Kept.
   The correction changes only quoted source offsets; the fixed-binary
   broad comparison above covers the original ASCII subset gain.
+- Final local crate rerun passes: 36 runtime unit tests, two runtime
+  integration tests, nine syntax unit tests, and the curated parser
+  oracle. The optional corpus oracle remains ignored by default. Only
+  the two known host libc tests below were excluded. cargo fmt --check
+  and git diff --check pass. Initial PR revision passed Debian CI's
+  build/unit/conformance job, performance gate and all non-FastR corpus
+  jobs; the final quoted-offset correction is undergoing CI.
 - Initial runtime unit checks: 36 pass, two pre-existing host libc
   mismatches in complex c_library_oracle (sqrt, one ULP) and
   c_library_trig_oracle (csin, one ULP). Run the remaining crate checks
