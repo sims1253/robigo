@@ -64,6 +64,10 @@ ADDRESS = re.compile(rb"<(environment|bytecode|pointer|promise|weak reference|ex
 TIME_LINE = re.compile(rb"^Time .*$", re.M)
 PROC_TIME = re.compile(rb"^(> proc\.time\(\)\n)[^\n]*\n[^\n]*(\n|$)", re.M)
 
+GC_HEADER = re.compile(
+    rb"^[ \t]+used \(Mb\) gc trigger \(Mb\)(?: limit \(Mb\))? max used \(Mb\)(?=\nNcells[ \t])",
+    re.M,
+)
 GC_CELLS = re.compile(
     rb"^(Ncells|Vcells)[ \t]+(?:NA|[0-9]+(?:\.[0-9]+)?)(?:[ \t]+(?:NA|[0-9]+(?:\.[0-9]+)?)){5}(?:(?:[ \t]+(?:NA|[0-9]+(?:\.[0-9]+)?)){2})?[ \t]*$",
     re.M,
@@ -73,6 +77,7 @@ GC_CELLS = re.compile(
 def normalize(b):
     b = ADDRESS.sub(lambda m: b"<" + m.group(1) + b": 0x>", b)
     b = TIME_LINE.sub(b"Time <masked>", b)
+    b = GC_HEADER.sub(b"<gc header masked>", b)
     b = GC_CELLS.sub(lambda m: m.group(1) + b" <gc masked>", b)
     return PROC_TIME.sub(lambda m: m.group(1) + b"<proc.time masked>" + m.group(2), b)
 
