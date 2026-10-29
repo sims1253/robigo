@@ -1,5 +1,28 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): isolate loaded-bytecode metadata
+
+- Full CI artifact comparison against main caught two regressions outside
+  the data filter: options/4d3e4548 and stats/family gained a spurious
+  bytecode line on strOptions()$formatNum and Gamma()$linkinv. Both
+  callbacks are interpreted in GNU R. Rejected initializing loaded bodies
+  as COMPILED: that also changed jit_inherit's treatment of their children.
+- Store loaded BCODESXP identity in a spare low-byte flag of JitState,
+  independently of its execution state. State transitions preserve that
+  flag, and state comparisons mask it out. Loaded namespace functions
+  retain the previous IGNORE inheritance behavior. No layout or vm.rs edit.
+- Extended the Docker-oracle closure fixture with both callbacks and a
+  loaded match closure printed before/after its first call. The previous
+  candidate differs by exactly the two spurious callback lines; the new
+  candidate passes the extended fixture in all tiers. All four fixtures
+  hold (12/12), and the options regression returns to passing (1/1).
+- Final metadata-only startup: **44,817,056 instructions**, compared with
+  original main's 44,819,159 (-0.005%, effectively unchanged). This also
+  avoids the INHERITED variant's 74 unnecessary local scans. Kept.
+- Re-running the full data slice, blocker cases, and crate checks on this
+  final representation. Earlier gains/three-tier counts below describe the
+  preceding candidate; CI's full before/after comparison is the last gate.
+
 ## 2026-10-29 (round 5): final rebased sweep and next steps
 
 - Final default VM/JIT data slice on e25e6cc: **8,404/8,426 ->

@@ -17,9 +17,14 @@ f(1L)
 show(f)
 # Base closures arrive already byte-compiled from the lazy-load database.
 show(match)
+match(1L, 1L)
+show(match)
 # Small closures in a non-global environment do not reach the JIT score.
 e <- new.env()
 g <- eval(quote(function(x) x + 2L), e)
 g(1L)
 g(1L)
 show(g)
+# Loaded compiled functions can create interpreted callbacks/defaults.
+show(utils::strOptions()$formatNum)
+show(stats::Gamma()$linkinv)
