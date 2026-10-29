@@ -302,3 +302,25 @@ belongs to the startup track.
 | robigo/vecarith | 4,480,822,310 | 4,480,698,096 | -0.00% |
 
   kept.
+
+## Follow-up: t() without an index vector (spectralnorm_alt_2 after #55)
+
+- why: #55 (db8cced) made `spectralnorm_alt_2` +0.54% on main (CI's
+  perf-main: 877,695,289 at 78bfacd, 882,431,194 at db8cced), which then
+  failed #57 and #65 at the newly enforced gate. callgrind: all of it
+  (+4.49M) in `array::do_transpose`, which #55 did not change: it grew
+  `do_bind` in the same file, and LLVM compiled `do_transpose`'s index
+  loop plus `gather` differently.
+- what: `do_transpose` writes the transposed elements straight into the
+  result (`i + j * nrow`, rows outer; strided reads, sequential writes)
+  instead of building an index vector and gathering through it, in its
+  own `#[inline(never)]` function. Expression vectors now give R's
+  "argument is not a matrix" (do_transpose's type switch has no EXPRSXP;
+  robigo transposed them).
+- tests: `tests/r/vec/transpose-types.R` (every vector type, dims and
+  dimnames with names, empty matrices, the expression error); output
+  identical to main's for everything else; conformance in all tiers.
+- result (callgrind, container, memory-capped, targeted): against db8cced
+  `spectralnorm_alt_2` 881.9M -> 853.1M (-3.27%; -2.76% against
+  78bfacd, before #55), `spectralnorm_alt` -1.48%, `robigo/matrix` -0.42%,
+  convolution, flexclust, lm, fib, spectralnorm_alt_3 within 0.1%; kept.

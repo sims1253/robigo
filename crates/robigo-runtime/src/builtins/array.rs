@@ -57,6 +57,37 @@ fn gather(src: &Value, idx: &[usize]) -> Value {
     }
 }
 
+/// The elements of the `nrow` x `ncol` column-major `src` in row-major
+/// order (R: array.c:do_transpose's loop, "filling in columnwise, accessing
+/// row-wise"): element `i + j * nrow` for `i` in rows, `j` in columns.
+/// Written straight into the result (no index vector, no bounds checks), so
+/// its speed does not hinge on how LLVM inlines a gather loop.
+/// `None` for types do_transpose rejects (expression vectors included).
+#[inline(never)]
+fn transposed(src: &Value, nrow: usize, ncol: usize) -> Option<Value> {
+    fn tr<T: Clone>(d: &[T], nrow: usize, ncol: usize) -> Vec<T> {
+        if nrow == 0 || ncol == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(nrow * ncol);
+        for i in 0..nrow {
+            out.extend(d[i..].iter().step_by(nrow).take(ncol).cloned());
+        }
+        out
+    }
+    Some(match src {
+        Value::Lgl(x) => Value::lgls(tr(&x.data, nrow, ncol)),
+        Value::Int(x) => Value::ints(tr(&x.data, nrow, ncol)),
+        Value::Real(x) => Value::reals(tr(&x.data, nrow, ncol)),
+        Value::Cplx(x) => Value::cplxs(tr(&x.data, nrow, ncol)),
+        Value::Str(x) => Value::strs(tr(&x.data, nrow, ncol)),
+        Value::Raw(x) => Value::raws(tr(&x.data, nrow, ncol)),
+        Value::List(x) => Value::list(tr(&x.data, nrow, ncol)),
+        // R: the switch over TYPEOF(a) has no EXPRSXP case: not_matrix.
+        _ => return None,
+    })
+}
+
 /// A vector of type `t` and length `n` filled with NA (R's allocVector
 /// followed by NA filling as in do_matrix / do_array).
 fn na_vector(t: VType, n: usize, cplx_im_zero: bool) -> Value {
@@ -1011,17 +1042,9 @@ fn do_transpose(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         _ => return Err(Flow::error("argument is not a matrix")),
     }
     // filling in columnwise, "accessing row-wise"
-    let mut idx = Vec::with_capacity(len);
-    let l_1 = len.saturating_sub(1);
-    let mut j = 0usize;
-    for _ in 0..len {
-        if j > l_1 {
-            j -= l_1;
-        }
-        idx.push(j);
-        j += nrow;
-    }
-    let mut r = gather(&a, &idx);
+    let Some(mut r) = transposed(&a, nrow, ncol) else {
+        return Err(Flow::error("argument is not a matrix"));
+    };
     r.set_attr_raw(s::DIM, Value::ints(vec![ncol as i32, nrow as i32]));
     if !dimnames.is_null() {
         let mut dn = Value::list(vec![cnames, rnames]);
