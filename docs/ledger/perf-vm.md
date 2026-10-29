@@ -27,6 +27,23 @@ conformance` (interpreter, VM and VM+JIT against each other).
   current main. Use `robigo-build:4.5.0` and the track's private target
   `~/.cache/robigo-trixie-target`. No source workaround was needed.
 
+### Follow-up: VM arithmetic oracle
+
+The complete 9,440-case recorded arithmetic oracle was replayed through
+VM closures using the saved main and matrix binaries. Both produce exactly
+the same output: 16 divergences from GNU R, all scalar mixed integer/double
+`+` or `*` with `NA_integer_` and another NaN payload in either operand
+order. All vector/recycling shapes match. `vm::arith_fast` uses `real_op`
+with the double/double left-destination convention; R's mixed scalar fast
+path uses the right destination (`arith_exact::x_is_dest(true, 1, 1)`).
+Next: preserve that operand order for mixed integer scalars, add a VM-level
+oracle test, and measure it independently. No arithmetic code changed here.
+
+Release verification passed: `cargo test --release -p robigo-runtime
+-p robigo-cli` (34 runtime tests, 7 CLI tests, all 3 conformance/guard/tier
+checks, 2 documentation tests). `cargo fmt --check` and `git diff --check`
+pass. Local artifacts are under `.robigo/perf-round4/`.
+
 ## 2026-10-29: native matrix elements (round 3, PR #80)
 
 - baseline: main `7ff8a140`, Debian GNU R 4.5.0-3, existing release
