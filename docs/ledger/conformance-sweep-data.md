@@ -209,3 +209,20 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   above 0.5%. Final overflow cases and exhaustive component tests match
   GNU R byte for byte. The earlier PR head's full CI was green, including
   all corpora and performance.
+
+## 2026-10-29 (evening): rebase onto main (PRs #50/#55/#65 merged)
+
+- CI on the first push failed only on `base/Sys.getenv` in gnur-examples;
+  it passed after rebasing (the failure came from the pre-#65 merge state,
+  not from this branch's changes — verified locally: 10/10 base/Sys*
+  examples pass on the rebased build).
+- perf-vm's PR #65 fixed the compact-range `x[1]` VM bug found and
+  reported by this sweep: fastr `TestSimpleVectors/9313fe3a33cc9033` now
+  passes and is recorded (+1; filter 8,388/8,426 on the rebased tree).
+- Main re-recorded the gnur-examples host cases with cross-machine masks
+  and dropped them from `host_dependent`; the remaining local-only
+  failures (base/Platform, Rhome, searchpaths, strsplit's NEWS.2/AUTHORS
+  reads, `TestBuiltin_order/add626`'s collation) all pass on the CI
+  platform — left to CI to arbitrate, none recorded from here.
+- gnur-examples `methods/GenericFunctions` passes locally but not on CI's
+  earlier run; NOT recorded to keep the ratchet platform-stable.
