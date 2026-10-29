@@ -6,6 +6,21 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: native matrix elements (round 3, verification in progress)
+
+- baseline: main `7ff8a140`, Debian GNU R 4.5.0-3 container, existing
+  release profile; `matrixFor` 762,198,152 instructions versus GNU R
+  765,103,272 (0.996x).
+- change: dimension-only integer/double matrices have native views with
+  validated storage bounds; `Index2`/`SetIndex2` check each dimension and
+  use column-major offsets. Existing vector ownership handles aliases;
+  unsupported indices and values exit to the VM before accessing storage.
+- first result: 322,816,954 instructions, -57.6%, 0.422x GNU R. Release
+  conformance passes; matrix tests recorded with the exact Debian oracle.
+  Full performance comparison and runtime unit tests pending.
+- scope: `jit.rs`, `vm.rs` (native view setup), regression fixture.
+- #60 remains draft at c2ed404; main still lacks the release-profile change.
+
 ## Setup notes (this machine)
 
 The host has GNU R 4.6.1 and glibc 2.44. Both runtimes are measured in a
