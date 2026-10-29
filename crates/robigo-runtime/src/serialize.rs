@@ -940,7 +940,9 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
         pos += 1;
     }
-    let mut r = Reader { data, pos, format, refs: Vec::new(), interp, hook };
+    // 16 covers the reference count of a typical lazy-load entry without
+    // the 4→8→16 reallocation chain; big entries still grow.
+    let mut r = Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;
