@@ -60,6 +60,22 @@ fn check_arg_is_symbol(x: &Value) -> RResult<Value> {
     }
 }
 
+/// `checkArity` for the `.Internal`s here: R: util.c:Rf_checkArityCall —
+/// `.Internal`s name the internal as `.Internal(<name>)` and use error()
+/// (the context call).
+fn check_arity_internal(args: &[Arg], n: usize, name: &str) -> RResult<()> {
+    if args.len() != n {
+        return Err(Flow::error(format!(
+            "{} argument{} passed to .Internal({}) which requires {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            name,
+            n
+        )));
+    }
+    Ok(())
+}
+
 /// The closure `FUN` when `FUN(X[[i]], ...)` (in `rho`, `X` being `xx`)
 /// can run without a call (see `vm::inlinable`): `FUN` a pure closure of
 /// one argument, `...` empty, and `xx` a plain vector or list whose
@@ -123,6 +139,7 @@ fn fun_x_i_call(fun: Value, x: Value) -> Value {
 
 /// R: apply.c:do_lapply (a special .Internal).
 fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 2, "lapply")?;
     let x = check_arg_is_symbol(&arg(&args, 0))?;
     let xx = i.eval(&x, rho)?;
     let n = xx.len();
@@ -153,6 +170,7 @@ fn vtype_ok(common: VType, val: VType) -> bool {
 
 /// R: apply.c:do_vapply (a special .Internal).
 fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 4, "vapply")?;
     let x = arg(&args, 0);
     let xx = i.eval(&x, rho)?;
     let fun = arg(&args, 1);
@@ -334,6 +352,7 @@ fn rapply_one(
 
 /// R: apply.c:do_rapply
 fn do_rapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 5, "rapply")?;
     let x = arg(&args, 0);
     if !x.is_vector_list() {
         return Err(Flow::error("'object' must be a list or expression"));
@@ -374,6 +393,7 @@ fn do_rapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
 
 /// R: envir.c:do_eapply (a special .Internal).
 fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 4, "eapply")?;
     let env = i.eval(&arg(&args, 0), rho)?;
     if env.is_null() {
         return Err(Flow::error("use of NULL environment is defunct"));
@@ -413,6 +433,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
 
 /// R: mapply.c:do_mapply
 fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 3, "mapply")?;
     let f = arg(&args, 0);
     let mut varying = arg(&args, 1);
     let constant = arg(&args, 2);
@@ -521,7 +542,9 @@ fn islistfactor(x: &Value) -> Lgl {
 }
 
 /// R: apply.c:do_islistfactor
+/// R: apply.c:do_islistfactor
 fn do_islistfactor(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 2, "islistfactor")?;
     let x = arg(&args, 0);
     let recursive = as_logical(&arg(&args, 1));
     if recursive == NA_LOGICAL {

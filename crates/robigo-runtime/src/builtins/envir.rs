@@ -617,7 +617,12 @@ fn do_env2list(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         vals.push(i.force(v)?);
     }
     let mut v = Value::list(vals);
-    v.set_attr_raw(s::NAMES, Value::strs_from(names));
+    // R: envir.c:do_env2list — an empty environment yields a list with no
+    // names attribute (k == 0 returns before setAttrib), so it prints as
+    // `list()`, not `named list()`.
+    if !names.is_empty() {
+        v.set_attr_raw(s::NAMES, Value::strs_from(names));
+    }
     Ok(v)
 }
 

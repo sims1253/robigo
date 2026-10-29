@@ -6758,6 +6758,7 @@ builtins/TestBuiltin_lapply/235cd6806df9a1fa
 builtins/TestBuiltin_lapply/23de78a354e6fb76
 builtins/TestBuiltin_lapply/25fbb9e2ce14f5bc
 builtins/TestBuiltin_lapply/2998be650b7170c1
+builtins/TestBuiltin_lapply/2c077844607b33c4
 builtins/TestBuiltin_lapply/2d05a00a73b524ed
 builtins/TestBuiltin_lapply/3d2c43836ed2ee0a
 builtins/TestBuiltin_lapply/3f26fe75fcbf46dc
@@ -6771,6 +6772,7 @@ builtins/TestBuiltin_lapply/5af3c8a496c7f045
 builtins/TestBuiltin_lapply/63eed1951c8d8495
 builtins/TestBuiltin_lapply/6c558fd5d1095d97
 builtins/TestBuiltin_lapply/733710a37e91b298
+builtins/TestBuiltin_lapply/74c6e083179a005d
 builtins/TestBuiltin_lapply/74fb5ac0e3de09ff
 builtins/TestBuiltin_lapply/82a723f98c371050
 builtins/TestBuiltin_lapply/8a3861f68a2f2a83
@@ -6778,6 +6780,7 @@ builtins/TestBuiltin_lapply/8ca3a4293e8299ca
 builtins/TestBuiltin_lapply/8dcd628c15a0dd2a
 builtins/TestBuiltin_lapply/915cd2c7658876a2
 builtins/TestBuiltin_lapply/93629704022b19d8
+builtins/TestBuiltin_lapply/951ce2090d511efd
 builtins/TestBuiltin_lapply/9ab181d50f023b23
 builtins/TestBuiltin_lapply/9b7de3b9d4322300
 builtins/TestBuiltin_lapply/9e1f9c770c4d3dea
