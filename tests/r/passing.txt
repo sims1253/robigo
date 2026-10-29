@@ -227,3 +227,4 @@ tests/r/s4/coerce-oldclass.R
 tests/r/s4/replace.R
 tests/r/s4/serialize-bindings.R
 tests/r/env/name-order.R
+tests/r/jit/muladd-payloads.R

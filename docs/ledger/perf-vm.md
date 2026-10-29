@@ -6,6 +6,50 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 5, scalar payloads and rejected muladd recovery
+
+- Baseline: current main `74e8c73`, Debian trixie GNU R 4.5.0-3.
+  Replaying the scalar portion of the recorded arithmetic oracle through
+  closures reproduces **16/1,888** bit mismatches. All involve scalar
+  integer/double `+` or `*` with competing NA/NaN payloads.
+- Change: follow `arithmetic.c:do_arith` and the existing builtin port:
+  mixed integer scalars use the right operand as the SSE destination for
+  addition/multiplication. Logical operands retain double semantics.
+  Extend the unchanged 9,440-case GNU R oracle through compiled VM
+  expressions and eligible simple bodies. **All 9,440 cases pass**;
+  independent closure replay improves **16/1,888 -> 0/1,888** mismatches.
+- Local paired full-suite instruction geomean: **0.503263 -> 0.503515**
+  GNU R, **76/77 -> 76/77** faster. Gate: **0 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed**. Keep for correctness, not a speed claim.
+  The largest increase is `nbody_naive` +0.402%. Saved immutable binaries,
+  independent output checks and main-only remeasurement of the two cases
+  overlapping the candidate binary copy prevent baseline contamination.
+- Verification: `cargo test --release -p robigo-runtime -p robigo-cli`
+  passes (37 runtime, 7 CLI, 2 integration tests, all three conformance /
+  guard checks). `cargo fmt --check` and `git diff --check` pass.
+  The ratcheted `jit/muladd-payloads.R` fixture, recorded with the exact
+  oracle, compares 768 competing-payload cases against unfused primitives.
+- CI run `40934630158`, code head `657fd24`: build, all ten corpus shards,
+  and performance pass. CI also reports no slowdowns beyond 0.5%; its
+  reported fixed `spectralnorm_math` reflects a missing correctness flag,
+  not a demonstrated fix. Independent local output checks remain 77/78.
+  Absorbing its FastR artifacts adds 311 passing entries already enabled
+  by main's native-package work; do not attribute those to this VM fix.
+- Busy-host single-run wall-time geomean is 0.538x GNU R, 73/77 faster.
+  Repeat on an idle host. `nbody_naive_2` now baselines at 0.988x GNU R
+  instructions; profile from this baseline rather than the old 1.07x.
+- Rejected: recovered #60's VM patch on current main, with the requested
+  `Scan::raw` and `io::conn_getc` inline attributes. A new exact-oracle
+  probe over 768 vector multiply/add/subtract cases with competing NaN
+  payloads finds **0 mismatches on main, 102 with #60**. Revert the recovery
+  and leave #60 draft. Its plain Rust kernel predates #74's payload rules.
+  Next: use the shape-dependent destination rules from `arith_exact.rs`
+  for both multiplication and addition, prevent LLVM commutation, and
+  add byte-level competing-payload coverage before measuring performance.
+  The old test's single NaN per element cannot establish this property.
+- Local artifacts: `.robigo/round5/`; builds and measurements use the
+  track's private `~/.cache/robigo-trixie-target` in `robigo-build:4.5.0`.
+
 ## 2026-10-29: round 4, matrix CI diagnosis and current-profile verification
 
 - #80 run `40906985766` failed before comparing performance: downloading
