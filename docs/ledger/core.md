@@ -113,6 +113,52 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   built here fail to load on a binary without the engine, which made
   every corpus case of other branches fail ("package 'grDevices' ... not
   found"); they live in `.robigo/natives-graphics` when testing those.
+## 2026-10-29: #70 timing regression reproduced and re-recorded
+
+- CI run 40860072686 reported one gnur-tests regression, r-strict-tst,
+  stdout only. Its downloaded binary and natives reproduce it in
+  robigo-build:4.5.0 (Debian r-base-core 4.5.0-3): repeat 36 prints
+  user.self 0.001 instead of 0, with status 0 and all assertions passing.
+- Re-recorded only that case with the exact oracle using corpus.py record
+  gnur-tests --filter '^r-strict-tst$' --all --repeat 100
+  --mask-against-previous. Only the timing value and mask_out [43]
+  changed; no random-number values, assertions or ratchet entries changed.
+  Same CI binary after recording: 80/80 repeats pass (before: 35/36).
+- This fixes the corpus failure independently of #78. Leave #70's rebase
+  until #78 lands; the stats-native startup performance prerequisite is
+  still external. Do not merge until the new CI run is green.
+- Graphics verification on main 7ff8a140 and the rebased #69 both hits
+  the identical one-ULP complex sqrt oracle mismatch on host glibc 2.44;
+  it predates the graphics rebase. Core, C API, CLI and all-tier
+  conformance pass locally; CI's glibc 2.41 remains the numeric judge.
+
+## 2026-10-29: stats natives in CI: ported routines keep their Rust port
+
+- CI perf on #70 (stats natives everywhere): `robigo/lm` +99%. Profile:
+  the bridge copying string vectors (a model frame's 20,000 row names)
+  into CHARSXPs and back for C_modelframe/C_modelmatrix/C_Cdqrls and
+  the glm family routines (mk_char, rstr_of, UTF-8 checks).
+- Kept: stats routines with a Rust port (and the distribution internals
+  the runtime serves) keep the port while stats.so is loaded
+  (`native::PORTS_FIRST`); stats.so serves the rest. Until G3 shares
+  arguments. lm 758.8M -> 764.5M with natives (+5.7M, the accepted
+  startup step of loading stats.so's LAPACK/BLAS/gfortran), knucleotide
+  and dataframe +5.3M the same. gnur-examples stats and the fastr
+  model/distribution slice: 0 regressions.
+- `robigo/fannkuch` +17% in that CI run did not reproduce: the same
+  artifact measures 1,309M (main 1,305.9M) directly, under perf.py, and
+  in the oracle container, output correct; three repeats agree within
+  0.1M. Watching the re-run.
+
+## 2026-10-29: CI builds the base-package natives (pending-workflow.patch applied)
+
+- With the gates enforced (#58), the build job builds GNU R's stats
+  natives from source (cached R sources), ships them in the `robigo`
+  artifact (`dist/natives`), and the corpora and perf jobs run with
+  `ROBIGO_NATIVES`; setup installs libcurl4-openssl-dev (R's configure)
+  and zlib1g-dev. The package list grows with the PRs that make each
+  package run: splines tools parallel (#57), grDevices graphics grid
+  (#69). `docs/ci/pending-workflow.patch` is gone; those PRs edit ci.yml.
 
 ## 2026-10-28: splines, tools, parallel natives from source; R_UnwindProtect
 
