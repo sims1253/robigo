@@ -8,6 +8,8 @@ use std::rc::Rc;
 use crate::sym::{Sym, s};
 use crate::value::{AttrBox, Value};
 
+mod table;
+
 pub const BIND_LOCKED: u8 = 1;
 pub const BIND_ACTIVE: u8 = 2;
 /// The binding holds a default-argument promise: `missing(x)` is TRUE.
@@ -67,254 +69,23 @@ pub struct Frame {
     pub search: bool,
     // The order in which GNU R lists the bindings (`ls(sorted = FALSE)`,
     // `names()`, `as.list()`, `serialize()`); lookups do not depend on it.
-    // These fields live in what was the struct's padding, and a hashed
-    // frame's table in `HASH_TABLES`, so that closure frames stay as small
-    // as they were.
+    // These fields live in what was the struct's padding and a hashed
+    // environment's table in `HASH_TABLES`, so that frames, their
+    // construction and their drop glue are what they were (closure calls
+    // are measured to the instruction).
     /// Without a table the frame is a GNU R frame pairlist
     /// (`NewEnvironment`): its first `nbase` bindings in the order they were
     /// given (a closure's matched arguments), each later one prepended by
     /// `defineVar`. `NBASE_OPEN` until the first binding that is not part
     /// of the initial frame (so `bind_arg` costs nothing more). For a
     /// hashed frame: the size its table starts with.
-    nbase: u32,
+    pub(crate) nbase: u32,
     /// Listed in the order of insertion: the base environment, which GNU R
     /// lists in its global symbol table's order.
     insertion: bool,
-    /// A hashed environment (`R_NewHashedEnv`).
-    hashed: bool,
-    /// Its table is in `HASH_TABLES` under the frame's address (made when
-    /// first needed: environments that are never listed have none).
-    has_table: Cell<bool>,
-}
-
-thread_local! {
-    /// The tables of hashed frames, by frame address (frames do not move:
-    /// they live in their environment's allocation).
-    static HASH_TABLES: RefCell<HashMap<usize, HashState, FastHash>> = RefCell::new(HashMap::default());
-}
-
-const NIL: u32 = u32::MAX;
-
-thread_local! {
-    /// `R_Newhashpjw` of each symbol's name, by symbol index (`NO_HASH`
-    /// until computed; the hash is below 2^28): a package's symbols are in
-    /// its namespace, exports and package environments alike.
-    static SYM_HASH: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
-}
-
-const NO_HASH: u32 = u32::MAX;
-
-fn sym_hash(sym: Sym) -> u32 {
-    SYM_HASH.with(|h| {
-        let mut h = h.borrow_mut();
-        let i = sym.0 as usize;
-        if i >= h.len() {
-            h.resize(i + 1, NO_HASH);
-        }
-        if h[i] == NO_HASH {
-            h[i] = sym.with_name(hashpjw);
-        }
-        h[i]
-    })
-}
-
-/// Forget a dropped hashed frame's table (out of line: frames are dropped
-/// on every closure return).
-#[cold]
-#[inline(never)]
-fn drop_table(key: usize) {
-    HASH_TABLES.with(|t| t.borrow_mut().remove(&key));
-}
-
-/// A hashed environment's table, kept lazily: `shape` is the table after
-/// the bindings `entries[..at]`; the later ones were all added since, in
-/// order (bindings are appended; removals bring the table up to date
-/// first), so the current table is `shape` with them inserted. Making a
-/// binding costs nothing more.
-struct HashState {
-    shape: HashShape,
-    at: usize,
-}
-
-/// GNU R's hash table of an environment: its size, `HASHPRI` and the
-/// chains, as linked lists over the nodes `syms` (`heads[b]` the first
-/// node of chain `b`, `next[n]` the node after `n`, `NIL` at the end;
-/// `hashes[n]` the hash code of `syms[n]`, so that growing the table only
-/// takes remainders).
-struct HashShape {
-    size: u32,
-    pri: u32,
-    heads: Vec<u32>,
-    next: Vec<u32>,
-    syms: Vec<Sym>,
-    hashes: Vec<u32>,
-}
-
-const HASHMINSIZE: u32 = 29;
-
-/// The hash code of a symbol's name.
-// R: envir.c:R_Newhashpjw (`*p` is a signed char)
-fn hashpjw(name: &str) -> u32 {
-    let mut h: u32 = 0;
-    for &b in name.as_bytes() {
-        h = (h << 4).wrapping_add(b as i8 as i32 as u32);
-        let g = h & 0xf000_0000;
-        if g != 0 {
-            h ^= g >> 24;
-            h ^= g;
-        }
-    }
-    h
-}
-
-impl HashShape {
-    // R: envir.c:R_NewHashTable
-    fn new(size: i32) -> HashShape {
-        let size = if size <= 0 { HASHMINSIZE } else { size as u32 };
-        HashShape {
-            size,
-            pri: 0,
-            heads: vec![NIL; size as usize],
-            next: Vec::new(),
-            syms: Vec::new(),
-            hashes: Vec::new(),
-        }
-    }
-
-    /// Put a new node at the head of `sym`'s chain; returns whether the
-    /// chain was empty.
-    fn link(&mut self, sym: Sym) -> bool {
-        let h = sym_hash(sym);
-        let b = (h % self.size) as usize;
-        let node = self.syms.len() as u32;
-        self.syms.push(sym);
-        self.hashes.push(h);
-        self.next.push(self.heads[b]);
-        let was_empty = self.heads[b] == NIL;
-        self.heads[b] = node;
-        was_empty
-    }
-
-    /// A new binding, then the table grown as `defineVar` does.
-    /// `R_HashSet` tests for an empty chain after its search loop has run
-    /// the chain pointer to its end, so `HASHPRI` counts every new binding.
-    // R: envir.c:R_HashSet, defineVar
-    fn insert(&mut self, sym: Sym) {
-        self.link(sym);
-        self.pri += 1;
-        if self.needs_resize() {
-            self.resize();
-        }
-    }
-
-    /// Prepend to a chain, counting it if it was empty (`R_HashFrame`).
-    fn prepend(&mut self, sym: Sym) {
-        if self.link(sym) {
-            self.pri += 1;
-        }
-    }
-
-    // R: envir.c:R_HashDelete
-    fn delete(&mut self, sym: Sym) {
-        let b = (sym_hash(sym) % self.size) as usize;
-        let (mut prev, mut n) = (NIL, self.heads[b]);
-        while n != NIL && self.syms[n as usize] != sym {
-            prev = n;
-            n = self.next[n as usize];
-        }
-        if n == NIL {
-            return;
-        }
-        let after = self.next[n as usize];
-        if prev == NIL {
-            self.heads[b] = after;
-        } else {
-            self.next[prev as usize] = after;
-        }
-        if self.heads[b] == NIL {
-            self.pri -= 1;
-        }
-    }
-
-    // R: envir.c:R_HashSizeCheck
-    fn needs_resize(&self) -> bool {
-        self.pri as f64 > self.size as f64 * 0.85
-    }
-
-    /// Each old chain, head first, is moved node by node to the head of
-    /// its new chain.
-    // R: envir.c:R_HashResize
-    fn resize(&mut self) {
-        let size = 1 + (self.size as f64 * 1.2) as u32;
-        let old = std::mem::replace(&mut self.heads, vec![NIL; size as usize]);
-        self.size = size;
-        self.pri = 0;
-        for mut n in old {
-            while n != NIL {
-                let after = self.next[n as usize];
-                let b = (self.hashes[n as usize] % size) as usize;
-                if self.heads[b] == NIL {
-                    self.pri += 1;
-                }
-                self.next[n as usize] = self.heads[b];
-                self.heads[b] = n;
-                n = after;
-            }
-        }
-    }
-
-    /// The chains, each head first.
-    fn chains(&self) -> Vec<Vec<Sym>> {
-        self.heads
-            .iter()
-            .map(|&h| {
-                let mut c = Vec::new();
-                let mut n = h;
-                while n != NIL {
-                    c.push(self.syms[n as usize]);
-                    n = self.next[n as usize];
-                }
-                c
-            })
-            .collect()
-    }
-
-    /// The names in `HashTableNames` order: chain by chain, head first.
-    fn names(&self) -> Vec<Sym> {
-        let mut out = Vec::with_capacity(self.syms.len());
-        for &h in &self.heads {
-            let mut n = h;
-            while n != NIL {
-                out.push(self.syms[n as usize]);
-                n = self.next[n as usize];
-            }
-        }
-        out
-    }
-
-    /// A table holding `chains` (head first) as they are.
-    fn from_chains(chains: Vec<Vec<Sym>>) -> HashShape {
-        let mut h = HashShape::new(chains.len().max(1) as i32);
-        h.size = chains.len() as u32;
-        h.heads = vec![NIL; chains.len()];
-        for (b, c) in chains.into_iter().enumerate() {
-            let mut prev = NIL;
-            for sym in c {
-                let node = h.syms.len() as u32;
-                h.syms.push(sym);
-                h.hashes.push(sym_hash(sym));
-                h.next.push(NIL);
-                if prev == NIL {
-                    h.heads[b] = node;
-                    h.pri += 1;
-                } else {
-                    h.next[prev as usize] = node;
-                }
-                prev = node;
-            }
-        }
-        h
-    }
+    /// A hashed environment (`R_NewHashedEnv`): its table is made when
+    /// first needed (environments that are never listed have none).
+    pub(crate) hashed: bool,
 }
 
 #[inline(always)]
@@ -365,27 +136,25 @@ fn function_like(v: &Value) -> bool {
 const NBASE_OPEN: u32 = u32::MAX;
 
 impl Drop for Frame {
-    #[inline]
     fn drop(&mut self) {
-        // one test on the common path: closure frames are neither
-        if self.search | self.has_table.get() {
-            self.drop_slow();
+        // Only search-path frames (global, attached packages) need work, so
+        // the drop glue of closure frames, on every call, stays small
+        // enough to be inlined however the crate is partitioned.
+        if self.search {
+            search_frame_dropped(&self.entries);
         }
     }
 }
 
-impl Frame {
-    #[cold]
-    #[inline(never)]
-    fn drop_slow(&mut self) {
-        if self.search && self.entries.iter().any(|b| function_like(&b.value)) {
-            bump_search_epoch();
-        }
-        if self.has_table.get() {
-            drop_table(self.key());
-        }
+#[cold]
+#[inline(never)]
+fn search_frame_dropped(entries: &[Binding]) {
+    if entries.iter().any(|b| function_like(&b.value)) {
+        bump_search_epoch();
     }
+}
 
+impl Frame {
     /// A binding that is not part of the initial frame is being added.
     #[inline]
     fn close_base(&mut self) {
@@ -456,10 +225,7 @@ impl Frame {
     /// The symbols in GNU R's order: `HashTableNames` for a hashed frame,
     /// `FrameNames` (head first) for a frame pairlist.
     // R: envir.c:R_lsInternal3
-    fn names_in_order(&self) -> Vec<Sym> {
-        if self.hashed {
-            return self.with_table(|h| h.names());
-        }
+    pub(crate) fn frame_names(&self) -> Vec<Sym> {
         if self.insertion {
             return self.entries.iter().map(|b| b.sym).collect();
         }
@@ -467,46 +233,13 @@ impl Frame {
         added.iter().rev().chain(base).map(|b| b.sym).collect()
     }
 
-    fn key(&self) -> usize {
-        self as *const Frame as usize
-    }
-
-    /// Call `f` with this hashed frame's table, brought up to date.
-    fn with_table<R>(&self, f: impl FnOnce(&mut HashShape) -> R) -> R {
-        HASH_TABLES.with(|t| {
-            let mut t = t.borrow_mut();
-            let st = t.entry(self.key()).or_insert_with(|| {
-                self.has_table.set(true);
-                HashState { shape: HashShape::new(self.nbase as i32), at: 0 }
-            });
-            for b in &self.entries[st.at.min(self.entries.len())..] {
-                st.shape.insert(b.sym);
-            }
-            st.at = self.entries.len();
-            f(&mut st.shape)
-        })
-    }
-
-    fn set_table(&mut self, shape: HashShape) {
-        self.hashed = true;
-        self.has_table.set(true);
-        let (key, at) = (self.key(), self.entries.len());
-        HASH_TABLES.with(|t| t.borrow_mut().insert(key, HashState { shape, at }));
-    }
-
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
-        if self.hashed {
-            self.with_table(|h| h.delete(sym));
-        }
         let b = self.entries.remove(i);
         if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
         }
-        if self.hashed {
-            let (key, at) = (self.key(), self.entries.len());
-            HASH_TABLES.with(|t| t.borrow_mut().get_mut(&key).map(|st| st.at = at));
-        } else if (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
+        if !self.hashed && (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
             self.nbase -= 1;
         }
         if let Some(ix) = &mut self.index {
@@ -575,7 +308,6 @@ impl Env {
             nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
-            has_table: Cell::new(false),
         };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
@@ -623,7 +355,6 @@ impl Env {
             nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
-            has_table: Cell::new(false),
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         *e.0.name.borrow_mut() = Some(Rc::from(name));
@@ -814,7 +545,15 @@ impl Env {
     }
 
     pub fn remove(&self, sym: Sym) -> bool {
+        let hashed = self.0.frame().borrow().hashed;
+        if hashed && self.has_local(sym) {
+            self.table_delete(sym);
+        }
         let r = self.0.frame().borrow_mut().remove(sym);
+        if hashed && r.is_some() {
+            // the table holds every binding left
+            self.table_removed();
+        }
         if r.as_ref().is_some_and(|b| function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             self.bump_fn_version();
         }
@@ -865,60 +604,15 @@ impl Env {
 
     /// The bound symbols, in the order GNU R lists them.
     pub fn symbols(&self) -> Vec<Sym> {
-        self.0.frame().borrow().names_in_order()
+        if self.0.frame().borrow().hashed {
+            return self.table_names();
+        }
+        self.0.frame().borrow().frame_names()
     }
 
     /// The bound symbols in no particular order (for callers that sort).
     pub fn symbols_unordered(&self) -> Vec<Sym> {
         self.0.frame().borrow().entries.iter().map(|b| b.sym).collect()
-    }
-
-    /// Is this a hashed environment (`R_NewHashedEnv`)? Then its size.
-    pub fn hash_size(&self) -> Option<usize> {
-        let f = self.0.frame().borrow();
-        f.hashed.then(|| f.with_table(|h| h.size as usize))
-    }
-
-    /// The chains of a hashed environment's table, head first (what
-    /// `serialize()` writes as its `HASHTAB`).
-    pub fn hash_chains(&self) -> Option<Vec<Vec<Sym>>> {
-        let f = self.0.frame().borrow();
-        f.hashed.then(|| f.with_table(|h| h.chains()))
-    }
-
-    /// A new hashed environment with a table of `size` (29 if `size <= 0`).
-    // R: envir.c:R_NewHashedEnv
-    pub fn new_hashed(parent: Option<Env>, size: i32) -> Env {
-        let e = Env::new(parent);
-        let mut f = e.0.frame().borrow_mut();
-        f.hashed = true;
-        f.nbase = size.max(0) as u32;
-        drop(f);
-        e
-    }
-
-    /// Give this environment a hash table of `size`, its current bindings
-    /// entered in `order`, head first, each at the head of its chain, then
-    /// grown while the load factor is above the threshold (`attach()`).
-    /// An unhashed environment's own order is used for `None`.
-    // R: envir.c:R_HashFrame, do_attach
-    pub fn hash_frame(&self, size: i32, order: Option<Vec<Sym>>) {
-        let mut f = self.0.frame().borrow_mut();
-        let order = order.unwrap_or_else(|| f.names_in_order());
-        let mut h = HashShape::new(size);
-        for sym in order {
-            h.prepend(sym);
-        }
-        while h.needs_resize() {
-            h.resize();
-        }
-        f.set_table(h);
-    }
-
-    /// Set a hashed environment's table as read by `unserialize()`:
-    /// `chains` head first.
-    pub fn set_hash_chains(&self, chains: Vec<Vec<Sym>>) {
-        self.0.frame().borrow_mut().set_table(HashShape::from_chains(chains));
     }
 
     /// List the bindings in the order they were made (the base environment).
