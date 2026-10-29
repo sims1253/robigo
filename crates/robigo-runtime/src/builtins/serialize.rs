@@ -389,10 +389,23 @@ fn decompress1(data: &[u8]) -> Result<Vec<u8>, DecompressFail> {
     zlib_stream(&data[4..], outlen)
 }
 
+// R: connections.c R_decompress1 — uncompress() into a buffer of the
+// recorded length; anything but the whole stream is an error
 fn zlib_stream(data: &[u8], outlen: usize) -> Result<Vec<u8>, DecompressFail> {
+    // one inflater, reset per stream: building one zeroes ~40 KB, and
+    // loading base fetches hundreds of entries
+    thread_local! {
+        static INFLATE: std::cell::RefCell<flate2::Decompress> = std::cell::RefCell::new(flate2::Decompress::new(true));
+    }
     let mut out = Vec::with_capacity(outlen);
-    flate2::read::ZlibDecoder::new(data).read_to_end(&mut out).map_err(|_| DecompressFail::Corrupt)?;
-    Ok(out)
+    INFLATE.with(|d| {
+        let mut d = d.borrow_mut();
+        d.reset(true);
+        match d.decompress_vec(data, &mut out, flate2::FlushDecompress::Finish) {
+            Ok(flate2::Status::StreamEnd) => Ok(out),
+            _ => Err(DecompressFail::Corrupt),
+        }
+    })
 }
 
 /// R: connections.c R_decompress3 — 4-byte big-endian output length, a type

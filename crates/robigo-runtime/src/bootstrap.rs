@@ -1,5 +1,8 @@
-//! Loading the base library: GNU R's base-package R sources evaluated in
-//! the base environment on top of robigo's builtins.
+//! Loading the base library. As GNU R: R_HOME/library/base/R/base (the
+//! baseloader) binds every base object as a promise fetching it from
+//! base.rdb. Without an installed base.rdb (or with ROBIGO_BASE=src):
+//! GNU R's base-package R sources (rlib/) evaluated in the base
+//! environment on top of robigo's builtins.
 
 use std::io::Write;
 
@@ -19,6 +22,17 @@ pub struct BootFailure {
 /// expressions are collected rather than aborting, so that the rest of
 /// base still loads while the runtime is incomplete.
 pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String> {
+    // GNU R's base is lazily loaded from its installed base.rdb; robigo does
+    // the same when R_HOME has it, and evaluates the vendored sources
+    // otherwise (or with ROBIGO_BASE=src)
+    if std::env::var("ROBIGO_BASE").as_deref() != Ok("src") {
+        if let Some(home) = crate::startup::init_r_home() {
+            let loader = std::path::Path::new(&home).join("library/base/R/base");
+            if let Ok(src) = std::fs::read_to_string(&loader) {
+                return load_base_lazily(interp, &src);
+            }
+        }
+    }
     let mut failures = Vec::new();
     let base = interp.base_ns.clone();
     // Errors during bootstrap must not be printed.
@@ -72,6 +86,35 @@ pub fn load_base_report(interp: &mut Interp) -> Result<Vec<BootFailure>, String>
         interp.frames.clear();
         if let Err(crate::error::Flow::Error(e)) = interp.eval(&expr_to_value(&e), &base) {
             failures.push(BootFailure { file: "baseloader", line: 0, message: e.message });
+        }
+    }
+    interp.warnings.clear();
+    interp.err = saved_err;
+    crate::builtins::post_base_init(interp);
+    Ok(failures)
+}
+
+/// GNU R's way (R: main.c setup_Rmainloop, R_ReplFile of
+/// `R_HOME/library/base/R/base`): the baseloader binds every base object
+/// as a promise that fetches it from base.rdb.
+fn load_base_lazily(interp: &mut Interp, src: &str) -> Result<Vec<BootFailure>, String> {
+    let mut failures = Vec::new();
+    let base = interp.base_ns.clone();
+    let saved_err = std::mem::replace(&mut interp.err, Box::new(std::io::sink()));
+    let arena = robigo_syntax::Arena::new();
+    let exprs = robigo_syntax::parse_program(&arena, src).map_err(|e| e.message)?;
+    for e in &exprs {
+        let v = expr_to_value(e);
+        interp.frames.clear();
+        interp.handlers = None;
+        interp.restarts = None;
+        if let Err(f) = interp.eval(&v, &base) {
+            let message = match f {
+                crate::error::Flow::Error(e) => e.message,
+                _ => "unexpected control flow".to_string(),
+            };
+            let (line, _) = robigo_syntax::line_col(src, e.span().start as usize);
+            failures.push(BootFailure { file: "base", line, message });
         }
     }
     interp.warnings.clear();
