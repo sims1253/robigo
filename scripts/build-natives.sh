@@ -51,7 +51,15 @@ CFLAGS="$(conf CFLAGS) $(conf CPICFLAGS)"
 FC=$(conf FC)
 FFLAGS="$(conf FFLAGS) $(conf FPICFLAGS)"
 SAFE_FFLAGS="$(conf SAFE_FFLAGS) $(conf FPICFLAGS)"
-LIBS="$(conf LAPACK_LIBS) $(conf BLAS_LIBS) $(conf FLIBS)"
+# Static LAPACK/BLAS so loading the .so does not map liblapack.so.3 and
+# libblas.so.3 at startup (their relocations cost ~2M instructions per
+# run); only the objects the package references are pulled in.
+# --as-needed drops libgfortran, which these objects never reference,
+# and anything else the package does not use.
+# -Bsymbolic-functions binds the package's calls to its own global
+# functions at link time (they are internal; nothing may interpose
+# them), so the loader does not resolve ~700 self-references per run.
+LINKFLAGS="-Wl,--as-needed -Wl,-Bsymbolic-functions -Wl,-Bstatic $(conf LAPACK_LIBS) $(conf BLAS_LIBS) -Wl,-Bdynamic $(conf FLIBS)"
 
 # the file list of a package Makefile.in variable (continuation lines joined)
 sources() {
@@ -79,6 +87,23 @@ for pkg in $pkgs; do
     # package's shared object instead of serving it with Rust ports
     echo 'int robigo_base_native = 1;' > "$obj/robigo-marker.c"
     $CC $CFLAGS -c "$obj/robigo-marker.c" -o "$obj/robigo-marker.o"
-    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $LIBS
+    # R's libR provides xerbla (src/main/print.c: BLAS/LAPACK errors
+    # become R errors); the static LAPACK objects would otherwise pull
+    # in LAPACK's own xerbla and with it libgfortran's I/O. A local copy
+    # of R's keeps the .so self-contained and behaviour as in GNU R.
+    cat > "$obj/xerbla.c" <<'EOF'
+#include <string.h>
+void Rf_error(const char *, ...);
+void xerbla_(const char *srname, int *info, size_t srname_len)
+{
+    char buf[21];
+    int len = (srname_len > 20) ? (int)srname_len : 20;
+    strncpy(buf, srname, len);
+    buf[len] = '\0';
+    Rf_error("BLAS/LAPACK routine '%6s' gave error code %d", buf, -(*info));
+}
+EOF
+    $CC $CFLAGS -c "$obj/xerbla.c" -o "$obj/xerbla.o" 2>> "$obj/cc.log"
+    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $LINKFLAGS
     echo "build-natives: $out/$pkg/$pkg.so"
 done

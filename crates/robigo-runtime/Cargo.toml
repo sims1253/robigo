@@ -10,6 +10,8 @@ authors.workspace = true
 robigo-syntax.workspace = true
 robigo-numerics.workspace = true
 smallvec = "1"
+# vectorized substring search for native/mod.rs's marker scan
+memchr = "2"
 # Native code for hot loops (src/jit.rs).
 cranelift-codegen = "0.137"
 cranelift-frontend = "0.137"
