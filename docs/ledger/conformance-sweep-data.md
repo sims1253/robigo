@@ -1,5 +1,133 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 5): isolate loaded-bytecode metadata
+
+- Full CI artifact comparison against main caught two regressions outside
+  the data filter: options/4d3e4548 and stats/family gained a spurious
+  bytecode line on strOptions()$formatNum and Gamma()$linkinv. Both
+  callbacks are interpreted in GNU R. Rejected initializing loaded bodies
+  as COMPILED: that also changed jit_inherit's treatment of their children.
+- Store loaded BCODESXP identity in a spare low-byte flag of JitState,
+  independently of its execution state. State transitions preserve that
+  flag, and state comparisons mask it out. Loaded namespace functions
+  retain the previous IGNORE inheritance behavior. No layout or vm.rs edit.
+- Extended the Docker-oracle closure fixture with both callbacks and a
+  loaded match closure printed before/after its first call. The previous
+  candidate differs by exactly the two spurious callback lines; the new
+  candidate passes the extended fixture in all tiers. All four fixtures
+  hold (12/12), and the options regression returns to passing (1/1).
+- Final metadata-only startup: **44,817,056 instructions**, compared with
+  original main's 44,819,159 (-0.005%, effectively unchanged). This also
+  avoids the INHERITED variant's 74 unnecessary local scans. Kept.
+- Re-running the full data slice, blocker cases, and crate checks on this
+  final representation. Earlier gains/three-tier counts below describe the
+  preceding candidate; CI's full before/after comparison is the last gate.
+
+## 2026-10-29 (round 5): final rebased sweep and next steps
+
+- Final default VM/JIT data slice on e25e6cc: **8,404/8,426 ->
+  8,406/8,426**. Only the two split diagnostics change outcome. The
+  sole ratchet failure, order/add626, is unchanged from the saved main
+  binary and comes from this host's unavailable en_US.utf8 collation.
+- All 139 former blocker cases across interpreter, VM and JIT improve
+  **131/139 -> 135/139** in each tier, with no regressions. Four
+  TestConditionHandling parse-context cases also gained; absorbed all
+  four. The five known bytecode blockers hold, including Sys.getenv
+  with 0, 1, 10, 40, 80 and 160 synthetic variables in each tier (18/18).
+- Remaining mget cases in the blocker slice are unrelated to printing:
+  3aa1ccfb (ifnotfound environment coercion), c98ec841 (vector modes),
+  cb3e95e3 (ifnotfound length), e945049d (numeric environment validation).
+  Next owner should port envir.c:do_mget argument validation/coercion.
+- Remaining data work: parser source metadata (subset/b4bfbcb9 needs
+  keep.source attributes and parse-data records); evaluator traceback
+  contexts (factor/lapply), replacement order and rhs display, and unused
+  argument value printing; values' as.character-list errors. Tracemem's
+  four raw-address recordings need oracle-owner treatment; do not crash
+  deliberately to match GNU R's status -11 recordings.
+- base/identical still needs compiler .Internal(bcVersion()) and the
+  remaining compiler internals before its cmpfun example can execute.
+- This is a coherent batch: loaded/JIT closure printing, stable Sys.getenv
+  recording, six FastR context-diagnostic gains and two help-example gains.
+  Final crate and full interpreter/VM slice checks run after this commit.
+
+## 2026-10-29 (round 5): avoid rescanning loaded bytecode bodies
+
+- Measured startup with R_DEFAULT_PACKAGES=NULL and callgrind on
+  `robigo --vanilla -e 1`. Initial bytecode candidate: 45,259,491
+  instructions versus original main's 44,819,159 (+0.98%). Callgrind
+  attributes 435,899 instructions to 74 unnecessary function_locals
+  scans: deserialized bytecode was marked INHERITED with an empty mask.
+- Initialized deserialized closures directly as COMPILED. There is no
+  creator's frozen set to filter, and the source body was already compiled
+  by GNU R. Isolated rebased comparison on e25e6cc: **45,238,280 ->
+  44,882,771 instructions (-0.79%)**. Final startup is +0.14% against
+  the original main baseline, within the 0.5% gate. Kept.
+- Four Docker-oracle fixtures pass across interpreter, VM and JIT
+  (12/12), including a new per-line tab-stop fixture. Full final data,
+  blocker slice across tiers, and crate checks follow this measurement.
+- Shared edit: vm/rjit.rs constructor state only. No changes to vm.rs.
+
+## 2026-10-29 (round 5): full CLI parse-error context
+
+- R: gram.y / Defn.h:PARSE_CONTEXT_SIZE is 256 bytes, not 50.
+  R: source.c:getParseContext / tabExpand splits the context into lines,
+  resets tab stops per line, and displays at most 192 bytes per line.
+  Ported both limits; changing only the ring size failed the long-line
+  oracle, so that incomplete form was rejected before committing.
+- Focused split cases d93fcb5b and ef3c791b: **0/2 -> 2/2**, no
+  regressions. Both gains absorbed into the FastR ratchet.
+- Two small CLI fixtures recorded in robigo-oracle:4.5.0 match all three
+  tiers (6/6). The closure print fixture also holds in all tiers (3/3).
+- Rebased onto main e25e6cc. Resolved only the append conflict in
+  tests/r/passing.txt, preserving every incoming and existing entry.
+  No edits to vm.rs. Earlier CLI tests: all seven unit tests and all
+  three conformance checks passed; final rebased verification follows.
+- Shared edit: crates/robigo-cli/src/echo.rs, confined to error context.
+
+## 2026-10-29 (round 5): closure bytecode identity
+
+- R: print.c:PrintClosure. Print the bytecode line from GNU R's visible
+  JIT state, independently of robigo's eager execution bytecode.
+- Preserve BCODESXP identity when serialize.c:ReadItem's closure body is
+  reduced to its source expression. The JitState helper initializes it
+  as already compiled. No changes to vm.rs or the object layout.
+- Former blocker slice (all mget/get/syscall/ConditionHandling cases):
+  **131/139 -> 131/139**, identical per-case outcomes. Sys.getenv passes
+  under all six synthetic environments with bytecode printing enabled.
+- Focused help examples **1/4 -> 3/4**: base/get and base/match gained,
+  Sys.getenv held; base/identical still errors on missing bcVersion.
+  Both gains were absorbed into the ratchet. TestBuiltin_exists holds
+  at **279/279**, including one pre-existing unrecorded pass.
+- New closure-bytecode.R was recorded in robigo-oracle:4.5.0. It matches
+  stdout, stderr and status under the interpreter, VM and JIT (3/3).
+- Fixed-binary full data sweep: **8,404/8,426 -> 8,404/8,426**,
+  identical per-case results. The sole recorded-pass failure on both is
+  order/add626 (host collation). Candidate uses --jobs 6, baseline --jobs 2.
+- Runtime tests: 35 pass, two host C-library oracle tests fail (sqrt one
+  ULP, and csin(0.5+2i) imaginary component one ULP). The latter test was
+  added on main with the Debian glibc trig ports; complex.rs is unchanged
+  here, and baseline/candidate CLI sin output agrees at digits=22. Both
+  lazy-load integration tests pass. Debian CI remains the numeric judge.
+- Shared files: print.rs closure branch, serialize.rs body tag, vm/rjit.rs
+  two small state accessors. The evaluator/VM execution files are untouched.
+
+## 2026-10-29 (round 5): environment-independent Sys.getenv recording
+
+- Started from main `24a5b8e` on `track/conformance-sweep-data-5`.
+- Re-recorded `base/Sys.getenv` in robigo-oracle:4.5.0 with
+  `record --all --mask-against-previous`. Re-recording alone moved the
+  redundant R_SESSION_TMPDIR mask from index 94 to 65. The recorder now
+  omits masks inside IGNORE_RDIFF blocks and on their markers, leaving
+  those blocks to the existing content-based Rdiff comparison. Masks
+  outside the block remain intact. No comparison or oracle was weakened.
+- Removed the host_dependent skip. Oracle output and baseline robigo both
+  compare equal with 0, 1, 10, 40, 80, and 160 synthetic environment
+  variables, including pull_request-shaped additions. Metric: skipped
+  -> scored and passing. Two Python regression checks pass.
+- Shared tooling edits: scripts/corpus.py recording only, manifest and
+  oracle-generated expected.jsonl.gz. Runtime comparison is unchanged.
+
+
 ## 2026-10-29 (round 4): silent repeated tracing and distinct symbol identities
 
 - Started from origin/main `74e8c73` on `track/conformance-data-round4`.

@@ -29,9 +29,8 @@ use robigo_runtime::{Interp, Sym};
 /// this many bytes, so longer lines are read (and echoed) in pieces.
 pub const CONSOLE_BUFFER_SIZE: usize = 4096;
 
-/// `PARSE_CONTEXT_SIZE` (R: gram.c): the parse error context holds the
-/// last this many characters.
-const PARSE_CONTEXT_SIZE: usize = 50;
+// R: gram.y / Defn.h: PARSE_CONTEXT_SIZE (circular buffer, in bytes).
+const PARSE_CONTEXT_SIZE: usize = 256;
 
 /// The parse statuses of `R_Parse1Buffer` the REPL distinguishes (R:
 /// main.c:Rf_ReplIteration's switch over `state->status`).
@@ -177,21 +176,30 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
 fn parse_context(buf: &str, end: usize) -> Vec<String> {
     let end = end.min(buf.len());
     let start = floor_char_boundary(buf, end.saturating_sub(PARSE_CONTEXT_SIZE));
-    let mut context = String::new();
-    for c in String::from_utf8_lossy(&buf.as_bytes()[start..end]).chars() {
-        if c == '\t' {
-            // Fill with spaces to the next multiple of 8.
-            loop {
-                context.push(' ');
-                if context.len() % 8 == 0 {
+    // R: source.c:getParseContext / tabExpand. Expand each line in its
+    // own 200-byte buffer, stopping input once 192 bytes are written.
+    let mut lines: Vec<String> = buf.as_bytes()[start..end]
+        .split(|b| *b == b'\n')
+        .map(|line| {
+            let mut expanded = Vec::new();
+            for &b in line {
+                if expanded.len() >= 192 {
                     break;
                 }
+                if b == b'\t' {
+                    loop {
+                        expanded.push(b' ');
+                        if expanded.len() % 8 == 0 {
+                            break;
+                        }
+                    }
+                } else {
+                    expanded.push(b);
+                }
             }
-        } else {
-            context.push(c);
-        }
-    }
-    let mut lines: Vec<String> = context.split('\n').map(str::to_string).collect();
+            String::from_utf8_lossy(&expanded).into_owned()
+        })
+        .collect();
     if let Some(last) = lines.last() {
         if last.is_empty() {
             lines.pop();

@@ -561,8 +561,11 @@ impl<'a, 'i> Reader<'a, 'i> {
             flags = self.int()? as u32;
             ty = flags & 255;
         }
+        let mut bytecode_body = false;
         let cdr = if matches!(head_type, CLOSXP | PROMSXP) {
-            self.read_item()?
+            let body_flags = self.int()? as u32;
+            bytecode_body = body_flags & 255 == BCODESXP;
+            self.read_item_flags(body_flags)?
         } else {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
@@ -587,7 +590,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     code: Default::default(),
                     inline: Default::default(),
                     defaults: Default::default(),
-                    jit: Default::default(),
+                    jit: if bytecode_body { crate::vm::JitState::from_bytecode() } else { Default::default() },
                 }));
                 set_attr_pairlist(&mut v, head_attr);
                 Ok(v)

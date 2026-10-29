@@ -1,0 +1,4 @@
+Error: unexpected ';' in:
+"        1 +
+        ;"
+Execution halted

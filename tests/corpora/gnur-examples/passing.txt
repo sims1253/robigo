@@ -136,6 +136,7 @@ base/function
 base/funprog
 base/gc
 base/gc.time
+base/get
 base/getCallingDLL
 base/getDLLRegisteredRoutines
 base/getLoadedDLLs
@@ -177,6 +178,7 @@ base/make.names
 base/mapply
 base/marginSums
 base/mat.or.vec
+base/match
 base/match.arg
 base/match.call
 base/matmult

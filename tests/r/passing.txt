@@ -230,3 +230,7 @@ tests/r/s4/replace.R
 tests/r/s4/serialize-bindings.R
 tests/r/env/name-order.R
 tests/r/jit/muladd-payloads.R
+tests/r/basics/closure-bytecode.R
+tests/r/cli/parse-context.R
+tests/r/cli/parse-context-long.R
+tests/r/cli/parse-context-tabs.R
