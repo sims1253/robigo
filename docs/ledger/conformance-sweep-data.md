@@ -1,5 +1,55 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 3), part 3: dim<- coercion warnings; tracemem marks
+## and returns the address
+
+- **dim<- coercion warnings** (attrib.c:dimgets runs coerceVector(val,
+  INTSXP) before validating): do_dimgets now coerces non-integer atomic
+  values through interp.coerce, so `dim(x) <- c(12+10i)` warns
+  `imaginary parts discarded in coercion` and `dim(x) <- c(2147483648)`
+  warns `NAs introduced by coercion to integer range` next to
+  `the dims contain missing values`, all against the `dim(x) <- ...`
+  call. The four TestBuiltin_dim cases pass (fastr filter
+  8,393 -> 8,397). Note: the bulk `attributes(x) <- list(dim = ...)`
+  path (attrib.rs set_attrib, no interp) still coerces quietly — same
+  gap class as before, no corpus case exercises it.
+- **tracemem family** (debug.c: R_MEMORY_PROFILING build): tracemem
+  marks the object in a thread-local pointer set, warns
+  `object already traced` on a re-trace, and returns the
+  `<0x...>` address string; untracemem clears the mark (NULL,
+  invisible); retracemem returns the address visibly for a traced
+  object, NULL invisibly otherwise, and re-marks with `previous`.
+  The copy-duplication report (`tracemem[0x... -> 0x...]:`) stays
+  unimplemented: it prints raw addresses no recorded output can match.
+  The seven TestSimpleLists cases that `invisible(tracemem(...))` now
+  pass (tracemem no longer errors); the four TestBuiltin_tracemem
+  address-printing cases still fail on stdout only (8,397 -> 8,404).
+- Final expanded data filter on this branch: **8,404/8,426** (round
+  start: 8,388), 0 regressions beyond the host collation case.
+  gnur-tests 23/59 (reg-BLAS, print-tests recorded earlier), runtime
+  tests and the conformance ratchet unchanged (host complex cases only).
+- Remaining 22 failures of the filter, each with a verified owner:
+  - 6 factor + 1 lapply (245e62b) + 1 vectors (502b171d): GNU R's
+    `Calls:` line omits builtin contexts and prints `<Anonymous>` for
+    the auto-print call; contexts live in interp.rs/conditions.rs
+    (evaluator/conformance-lang).
+  - 5 TestSimpleVectors: 0b6df291/daaeabd5 `[[<-` error shows the rhs
+    VALUE where GNU R shows the expression (lang.rs fast_replace,
+    conformance-lang's ledger); 8745c2a5/94cf5bf3 `*tmp*` capture order
+    (complex assignment in interp.rs: index expr, then rhs, then
+    capture — robigo captures before the rhs and drops its mutation).
+  - 2 cbind (44215c10) + 2 rbind (51a1b61d + e2d15825): unused-argument
+    error prints the argument VALUE `(1)` where robigo prints the
+    expression `(v)` (match_args in interp.rs); e2d15825 additionally
+    expects status -11 (GNU R segfaults, not reproducible).
+  - 2 matcharg (139373f1, 85380d0c): conformance-values' ledger
+    (as.character-list deparse + error call).
+  - 2 split (d93fcb5b, ef3c791b): parse-error context truncation shows
+    a different remainder of the line (robigo-syntax, parser track).
+  - 1 subset (b4bfbcb9): srcref in subset (conformance-vectors).
+  - 4 tracemem (stdout addresses): unpassable as recorded.
+  - 1 order (add626): host collation locale; passes on CI.
+
 ## 2026-10-29 (round 3), part 2: apply-family checkArity, env2list names,
 ## tracemem verdict
 
