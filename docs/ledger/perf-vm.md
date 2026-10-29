@@ -6,6 +6,41 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 6, recover #60 on the current profile
+
+- Rebased draft #60 onto main `e25e6cc`, retaining both sides' conformance
+  entries and the scalar payload fixes from #86.
+- The recovered kernel's plain Rust arithmetic allowed LLVM to commute
+  competing NaNs. Select SSE destinations independently for multiply and
+  add, following `arithmetic.c:real_binary` and the builtin port's shapes.
+  Use packed operations with eight-element chunks and scalar tails.
+- Extend the exact-oracle payload fixture from 768 to 6,144 comparisons:
+  all eight scalar/vector combinations at lengths 2, 8 and 9. Main and
+  the packed candidate pass. Expected output recorded with Debian R 4.5.0-3.
+- Rejected intermediate scalar SSE kernel: `vecarith` 4,353,108,825 ->
+  4,443,092,973 instructions (+2.07%), despite passing the payload fixture.
+- Reuse `cadd`/`csub` for complex scalars. A new 99-case byte comparison
+  also catches the recovered multiplication's stale operand order:
+  `complex_binary` calls `cmul(y, x)`. Correct the scalar path accordingly.
+- The packed candidate passes all crate tests (38 runtime, 7 CLI, two
+  integration tests) and conformance in all three tiers, but initially
+  regresses vector mandelbrot +0.526%/+0.539%. Inlining `math1_slow`
+  improves the scalar benchmark but leaves vectors +0.565%/+0.570%.
+- Reject non-double operands before calling `mul_add_next`, avoiding its
+  cold failed call for every complex-vector multiplication. Paired family
+  check now passes: ASCII +0.420%, noout +0.446%, naive ASCII -29.593%.
+  Local full-suite remeasurement passes: geomean 0.489543 -> 0.487323,
+  76/77 -> 77/77 faster, 2 faster, 0 slower above 0.5%, 0 broken.
+- CI run 40959483877 passes build and all corpus shards, but rejects noout
+  at just over +0.50%. Keep the PR draft and improve the vector path.
+- Route complex vectors directly to the builtin before checking scalar
+  conversions or double-kernel eligibility. The family recheck improves
+  ASCII to +0.343%, noout to +0.351%; naive ASCII remains -29.099%.
+  All 6,144 vector payload and 99 complex scalar comparisons pass.
+  Final full-suite verification is running.
+  Artifacts: `.robigo/r6/`; immutable binaries, exact Debian trixie libraries,
+  private build target `~/.cache/robigo-trixie-target`.
+
 ## 2026-10-29: round 5, scalar payloads and rejected muladd recovery
 
 - Baseline: current main `74e8c73`, Debian trixie GNU R 4.5.0-3.
@@ -341,6 +376,55 @@ Tooling of this agent (private target dir, container builds):
   instructions (-8.4%). Suite against main 7345297: none faster or slower
   than 0.5% (no benchmark uses methods; an S4 benchmark in `benchmarks/`
   would track it).
+## 2026-10-28: `a * b + c` in one pass; complex scalars without the builtins (draft PR, blocked on the build profile)
+
+- why: `x * y + z` on double vectors made two passes (4.5 instructions per
+  element over both); `shootout/mandelbrot_naive_ascii` (1.18x GNU R) runs
+  `z <- z * z + c` and `abs(z)` on complex scalars, each a builtin call with
+  a flush, an argument vector and attribute checks.
+- what:
+  - no new opcode (scalar `a * b + c` loops must stay native): the vector
+    slow path of `*` peeks at the next op; if it is `+`/`-` of the product
+    with an operand already at hand (register, constant, variable read
+    without running code), and all three are attribute-free doubles of one
+    length (or scalars), one loop computes `x[i] * y[i]` and then adds,
+    in R's operand order, never fused (`vm/slow.rs`, 32 monomorphized
+    kernels, 2.9 instructions per element), into an unshared temporary's
+    buffer when there is one. Double arithmetic signals nothing.
+  - complex scalars (with double/integer/logical): `complex_binary`'s
+    functions (`cmul`/`cdiv`/`cpow`) directly; `abs` of a complex scalar is
+    `hypot`.
+  - all slow paths of `Arith`/`ArithL`/`RelL`/`Math1` are one out-of-line
+    call after the flush (`vm/slow.rs`), so the dispatch loop does not grow.
+- rejected, measured at codegen-units=1: complex scalars before the flush
+  (mandelbrot_naive_ascii -38% instead of -28%, but `fannkuch` +0.6%,
+  `binarytrees` +0.7%: code in `run_with`); the first layout with the
+  checks inside `run_with` (`fannkuch` +1.5%).
+- tests: `tests/r/vec/mul-add.R` (the four forms, recycling, NA/NaN one per
+  element, signed zeros, the no-FMA case `(1+2^-27)^2 - (1+2^-26)`,
+  attributes, integers, mismatched lengths, zero length, unchanged
+  operands, loops, S3 `Ops`, a local `+`),
+  `tests/r/math/complex-scalars-compiled.R` (all operators, mixed types,
+  Inf/NaN/NA, overflow, signed zeros, abs, a mandelbrot loop, `%%` errors);
+  both ratcheted; all tiers print GNU R's output. fastr slices: two
+  complex-arithmetic cases newly pass, none fail.
+- **blocked by codegen units.** Against main 32c6002 as CI builds it (16
+  codegen units): `mandelbrot_naive_ascii` -28.3%, `vecarith` -0.8%, but
+  `flexclust` +10.6% and `csv` +4.2% (`Scan::raw`/`conn_getc` no longer
+  inlined into `scanchar`: unit boundaries moved) and `fib` +0.75%,
+  `listWhile` +1% (inlining inside vm.rs's unit), none of it work this code
+  does. With `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1` for both: geomean
+  0.5696 -> 0.5678, faster on 72; `mandelbrot_naive_ascii` -28.5%, `nbody`
+  -0.9%, `vecarith` -0.8%; worst `mandelbrot_ascii`/`mandelbrot_noout`
+  +0.55% (the out-of-line slow path for complex vectors), then
+  `nbody_naive` +0.41%.
+- codegen-units=1 for main itself (full suite, 32c6002): geomean 0.5734 ->
+  0.5696; `spectralnorm_alt_2` -13.3%, `profiler-shared` -2.4%, most -1..-2%;
+  but `flexclust` +11.8%, `flexclust_no_s4` +10.5%, `csv` +4.7% (the same
+  scan functions out of line: `#[inline]` on `Scan::raw` and
+  `io::conn_getc` is the fix), `spectralnorm_naive` +2.0%, `vecops` +1.6%.
+  Recommendation for the build-profile track: codegen-units=1 plus those
+  attributes; then rebase this PR.
 
 ## 2026-10-28: profile: `real/convolution_slow` (1.18x), not changed yet
 

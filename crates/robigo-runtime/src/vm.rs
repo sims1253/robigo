@@ -31,6 +31,8 @@ use crate::value::*;
 
 mod rjit;
 pub use rjit::{JitState, frozen_fun, jit_check, jit_inherit};
+mod slow;
+use slow::{Kind, Slow, arith_slow, leaf_op_slow, math1_slow};
 
 #[derive(Clone)]
 pub enum RVal {
@@ -2624,7 +2626,7 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -2659,16 +2661,14 @@ fn run_with(
                 }
                 None => {
                     flush!();
-                    let x = tryop!(leaf_value(interp, &mut vars, env, regs, $a));
-                    let y = tryop!(leaf_value(interp, &mut vars, env, regs, $b));
-                    // Operands that needed evaluating (forced promises) are
-                    // usually scalars.
-                    match (scalar(&x), scalar(&y)) {
-                        (Some(p), Some(q)) => match $fast(p, q) {
-                            Some(v) => v,
-                            None => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
-                        },
-                        _ => RVal::V(tryop!(call_builtin(interp, &code.consts[call], vec![x, y], env))),
+                    let r = leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs);
+                    match tryop!(r) {
+                        Slow::Val(v) => v,
+                        Slow::Next(r, v) => {
+                            pc += 1;
+                            regs[r as usize] = v;
+                            continue;
+                        }
                     }
                 }
             };
@@ -2785,17 +2785,23 @@ fn run_with(
                     }
                     None => {
                         flush!();
-                        let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
-                        let y = std::mem::replace(&mut regs[*b as usize], RVal::V(Value::Null));
-                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x, y], env)))
+                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, &mut vars, env, regs);
+                        match tryop!(r) {
+                            Slow::Val(v) => v,
+                            Slow::Next(r, v) => {
+                                pc += 1;
+                                regs[r as usize] = v;
+                                continue;
+                            }
+                        }
                     }
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call));
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), Kind::Rel(*op, *call));
             }
             Op::Rel { op, dst, a, b, call } => {
                 let fast = match (scalar(&regs[*a as usize]), scalar(&regs[*b as usize])) {
@@ -3166,7 +3172,7 @@ fn run_with(
                     None => {
                         flush!();
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
-                        RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
+                        tryop!(math1_slow(interp, *f, x, &code.consts[*call as usize], env))
                     }
                 };
             }

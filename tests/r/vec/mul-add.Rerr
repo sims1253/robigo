@@ -1,0 +1,7 @@
+Warning message:
+In .Machine$integer.max * 2L : NAs produced by integer overflow
+Warning message:
+In a * b : longer object length is not a multiple of shorter object length
+Warning message:
+In a * b + c :
+  longer object length is not a multiple of shorter object length

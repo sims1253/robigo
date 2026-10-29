@@ -83,6 +83,7 @@ tests/r/math/atan2.R
 tests/r/math/bessel-nbinom-hyper.R
 tests/r/math/complex-nan-payloads.R
 tests/r/math/complex-trig.R
+tests/r/math/complex-scalars-compiled.R
 tests/r/math/complex-vector-arith.R
 tests/r/math/distributions.R
 tests/r/math/gamma.R
@@ -193,6 +194,7 @@ tests/r/vec/matprod-bits.R
 tests/r/vec/mean-cum.R
 tests/r/vec/merge-internal.R
 tests/r/vec/minmax.R
+tests/r/vec/mul-add.R
 tests/r/vec/not-zero-length.R
 tests/r/vec/order-radix.R
 tests/r/vec/order-range.R
