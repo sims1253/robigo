@@ -248,6 +248,71 @@ are resident once read; GNU R 53.4MB) — mmap for the flats is open
 item 4. The wall-time numbers above were taken on an idle moment; under
 load both runtimes slow equally.
 
+## 2026-10-30 (round 6): library(stats) hill-climb + rdbflat mmap
+
+Branch `track/startup-perf-r6-stats` (PR #92), from main 24a5b8e (#88's
+round 5 + #85's tracemem were in). Baseline re-measured first, all
+scenarios reproduce round 5's table to <0.1%. GNU R targets unchanged
+(`library(stats)` NULL 259.54M, def `-e 1` 660.64M, NULL `-e 1`
+87.76M). Where `library(stats)`'s instructions go (callgrind, flat):
+serialize reader ~15M self, mimalloc ~11M, VM ~12M (perf-vm), regex
+compile ~13M inclusive (see below), Value drops/clones ~7M, memcpy 5M.
+GNU R's own profile for the same scenario: inflate 18.6M (skipped by
+the cache), xdr_int 14M, mkCharLenCE 7.6M, cons-cell writers 19.7M —
+robigo is ahead in every column; the remaining mass is spread thin.
+
+Five changes, all gates green after each (runtime tests, conformance 3
+tiers on the touched areas, fastr serialize/connections/library slices,
+0 regressions):
+
+1. **CHARSXP interning — REJECTED** (details above): +5.3M.
+2. **read_bc_lang inline spines** (SmallVec<[Level; 8]>): the
+   iterative ReadBCLang grew its spine Vec by push (1-3 reallocs per
+   bytecode chain). Chains are argument lists, ≤ 8 cells nearly always:
+   lib-null-flat −1.4M, **def-flat −4.4M**.
+3. **rdbflat mmap**: flat files are mapped read-only; entries are
+   zero-copy slices of the mapping. Instructions unchanged (±0.1M),
+   **def-flat peak RSS 89.6 → 71.1 MB** (GNU R 53.9). An intermediate
+   pread-per-fetch design measured +1.9M instructions for 64 MB —
+   rejected, instructions are the gate. `libc` dep added (already
+   linked by mimalloc-sys/liblzma; rbench/simple + profiler-shared
+   measured 0 slower, the memchr-layout lesson respected).
+4. **rdbflat path maps FxHashed** (claims/loaded were SipHash per
+   fetch): −0.17M lib, −0.39M def.
+5. **fresh-tail moves in the reader**: ReadBCLang's spine cars and
+   freshly-read pairlist/lang tails move into the items Vec instead of
+   cloning (a tail reached through BCREPREF still clones — it is
+   shared); CLOSXP formals and dotted-pairlist tails likewise: −0.22M
+   lib, −0.83M def.
+
+Where the scenarios ended:
+
+| scenario | main 24a5b8e | this branch | GNU R | ratio |
+|---|---|---|---|---|
+| `library(stats)` NULL, plain | 209.89M | 208.23M | 259.54M | 0.802× |
+| `library(stats)` NULL, flat | 176.56M | **174.70M** | 259.54M | **0.673×** |
+| `-e 1` default, flat | 396.51M | **390.98M** | 660.64M | 0.592× |
+| `-e 1` default, plain | 478.94M | 473.53M | 660.64M | 0.717× |
+| `-e 1` NULL, flat | 38.36M | 38.18M | 87.76M | 0.435× |
+
+Peak RSS: def+cache 89.6 → **71.1 MB**; NULL+cache 25.9 → 26.5 MB.
+Wall (idle moment): def+cache ~89 ms vs GNU R ~128 ms.
+
+**Findings for other tracks:**
+
+- **regex compile is 13M of library(stats)** (11.6M under `gsub_impl`
+  → `Re::compile`): regex-automata's meta builder eagerly builds all
+  engines, ~300k instructions per hairy POSIX pattern (strftime-style
+  `(^|[^%])(%%)*%v` specs; only ~38 gsub calls in the whole run).
+  Logged in conformance-strings' ledger; ~10M available if engines can
+  be built lazily or pruned for the leftmost-longest path.
+- `compile::Op` Vec growth (~1.0M def: Compiler::call/guard push
+  without reserve) and `set_in_box`'s Arg growth (~0.6M) are perf-vm's
+  files; noted in their ledger section of the open items below.
+- The `read_item_flags0 → RawVec<compile::Op>` callgrind edge is
+  misattributed (closure compilation is lazy — `Closure::code` is a
+  OnceCell filled on first call); don't chase it.
+
 ## Open items (ranked)
 
 1. **CHARSXP interning — measured, rejected (round 6).** A thread-local
