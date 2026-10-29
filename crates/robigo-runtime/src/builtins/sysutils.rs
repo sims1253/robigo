@@ -123,7 +123,10 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     let mut command = std::process::Command::new("/bin/sh");
     command.arg("-c").arg(&cmd);
     if intern != 0 {
-        let out = match command.stdout(std::process::Stdio::piped()).output() {
+        // R: unix/sys-unix.c:do_system pipes stdout only (R_popen(cmd, "r"));
+        // the child's stderr is inherited, not captured: `system(intern=TRUE)`
+        // must pass it through (R CMD build ends with message("") on stderr).
+        let out = match command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).output() {
             Ok(o) => o,
             Err(e) => {
                 return Err(Flow::error(format!(

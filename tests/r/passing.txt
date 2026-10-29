@@ -22,6 +22,7 @@ tests/r/cli/error-catch-continues.R
 tests/r/cli/last-value.R
 tests/r/cli/parse-warnings.R
 tests/r/cli/semi-error.R
+tests/r/cli/system-intern.R
 tests/r/conditions/missing-function.R
 tests/r/conditions/stop-uncaught.R
 tests/r/conditions/trycatch.R
