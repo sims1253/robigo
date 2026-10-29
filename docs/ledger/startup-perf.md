@@ -170,3 +170,41 @@ lands; the natives work is PR #78 below.
   benchmarks and the self-hosted runner shares its workspace across
   concurrent PR runs. Documented on PR #78; #72 (compare with the PR's
   own base commit) is the systemic fix.
+
+## 2026-10-29 (round 4, PR #81): flat lazy-load cache (rdbflat)
+
+- Where startup went after the natives work: every `lazyLoadDBfetch`
+  inflates its own zlib stream (Huffman tables per stream, adler32 over
+  the output) — ~71M instructions of `-e 1` with the default packages
+  (zlib-rs functions under callgrind), ~25M of the utils,stats run.
+  GNU R pays the same per fetch; this removes it for robigo.
+- `rdbflat.rs`: a build-time cache of pre-inflated entries.
+  `scripts/build-rdbflat.sh` records a battery of runs
+  (`ROBIGO_RDBLOG`; the fetch builtin logs them) and
+  `scripts/build-rdbflat.py` writes per-rdb flat files (format in the
+  module docs); `ROBIGO_RDBFLAT=<dir>` enables it at runtime.
+  `do_lazy_load_db_fetch` serves entries as zero-copy slices; missing
+  or stale entries (rdb size/mtime guard, bounds-checked index) take
+  the old path, so behaviour is byte-identical with and without the
+  cache — verified with a battery exercising methods/stats reference
+  environments (nested fetches through the envhook work: entries are
+  borrowed from an `Rc`, not a held lock). Flat files load lazily per
+  rdb: a NULL-packages run reads only base.rdb's.
+- numbers (container, this branch's binary, cache built by the battery):
+
+  | scenario | plain | +rdbflat | GNU R |
+  |---|---|---|---|
+  | `-e 1` NULL packages | 48,368,428 | **43,513,795** (−10.0%) | |
+  | `-e 1` utils,stats | 254,744,724 | **225,315,906** (−11.6%) | 262,809,555 |
+  | `-e 1` default packages | 564,855,495 | **487,920,614** (−13.6%) | 661,159,388 (0.738×) |
+
+  RSS: default 54.7 → 60.7 MB (the flats stay resident; they are the
+  same bytes the old path inflated transiently); NULL 21.8 → 24.0 MB.
+- open: coverage is the recorded battery (fallback correct, unsaved);
+  a complete builder enumerating the rdx keys (the runtime can
+  readRDS), mmap instead of read, and wiring `ROBIGO_RDBFLAT` into
+  robigo-home/CI (perf-gate runs equally for baseline and candidate)
+  are the follow-ups. Not wired into CI here: the feature is opt-in
+  and byte-identical, so ratchets and the gate are untouched either
+  way.
+
