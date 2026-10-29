@@ -11,6 +11,38 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: one-word immutable string handles (candidate)
+
+- Tagged handles pass Debian's full build/tests, conformance 230/230 in
+  all tiers, graphics 178/184 and Hershey 1/1. Host strings without the
+  flat cache: 771,218,043 -> 774,326,194 (+0.40%). This does not establish
+  CI compliance: CI explicitly exports ROBIGO_RDBFLAT too. With both CI
+  artifacts and their flat caches in the oracle image: strings
+  735,283,335 -> 739,288,434 (+0.545%). CI reports +0.53%, and lm +1.81%.
+- The equality identity shortcut alone is neutral: host strings 774,359,512
+  and lm 695,357,890 (tagged baseline 774,326,194 and 695,377,629).
+- lm profile with CI natives and flat caches: 643,707,539 -> 655,341,400.
+  After normalizing the generic type names, string-vector drop_slow adds
+  8,341,212 self instructions. Its loop reconstructs a temporary fat Rc
+  on the stack before every reference decrement, even for shared strings.
+- New candidate: a one-word pointer to an immutable string allocation
+  whose header holds the reference count, length and encoding. Clone/drop
+  update the header directly; final-owner deallocation recovers the exact
+  checked layout. RStr and RString are one pointer (8 bytes on this host).
+  No tagged pointers or private Rc layout assumptions remain. Rc<str>
+  inputs are copied into the owned allocation; cloned handles share it.
+- Four exact-source tests pass; Debian Valgrind reports zero errors and no
+  lost allocations. Full workload validation is pending for this candidate.
+- Focused serialization case 6260e145 materializes 1:2147483649 (about 17GB)
+  and times out locally; the e25e6cc CI binary does too (65s under a 4GB
+  Docker cap). The sequence implementation is unchanged by this PR. This
+  case entered the ratchet in #86; keep its entry and let CI judge it.
+- spectralnorm_math is not actually fixed: original c989884, e25e6cc and
+  the tagged candidate exit 1 with the same missing .Internal(La_rs).
+  perf.py compare ignores exit status and a runtime-only run lacks `wrong`,
+  producing the misleading FIXED line. The perf track should compare
+  status and stdout with GNU R before claiming a fix; La_rs remains open.
+
 ## 2026-10-29: encoding tags in the string handle (candidate)
 
 - Rebased onto e25e6cc after #88/#85/#86 landed. Preserve #88's direct

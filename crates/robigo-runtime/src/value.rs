@@ -41,12 +41,17 @@ pub fn is_nan_or_na(x: f64) -> bool {
 /// A CHARSXP; `None` is `NA_character_`.
 pub type RStr = Option<RString>;
 
-/// A CHARSXP handle. Alignment bits carry the encoding while text stays in
-/// an ordinary Rc<str>. On 32-bit hosts the high length bit supplies the
-/// third tag bit; valid Rust strings cannot exceed isize::MAX bytes.
+/// An immutable CHARSXP handle. The allocation owns the reference count,
+/// length, encoding and UTF-8 view; a string-vector element is one pointer.
 pub struct RString {
-    data: std::ptr::NonNull<u8>,
-    len_tag: usize,
+    data: std::ptr::NonNull<StringHeader>,
+}
+
+#[repr(C)]
+struct StringHeader {
+    refs: Cell<usize>,
+    len: usize,
+    encoding: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,40 +66,48 @@ pub enum Encoding {
 }
 
 impl RString {
-    const ADDR_BITS: usize = if usize::BITS >= 64 { 3 } else { 2 };
-    const ADDR_MASK: usize = (1 << Self::ADDR_BITS) - 1;
-    const LEN_MASK: usize = if usize::BITS >= 64 { usize::MAX } else { isize::MAX as usize };
-    const TAG_SHIFT: u32 = usize::BITS - 1;
     const AUTO: usize = 7;
+    const HEADER_SIZE: usize = std::mem::size_of::<StringHeader>();
 
     #[inline]
-    fn from_rc(text: Rc<str>, tag: usize) -> Self {
-        let len = text.len();
-        let ptr = Rc::as_ptr(&text).cast::<u8>();
-        // The Rc counter header aligns this payload to usize alignment.
-        // Check before relying on it, including for empty text.
-        assert_eq!(ptr.addr() & Self::ADDR_MASK, 0);
-        let ptr = Rc::into_raw(text).cast::<u8>().cast_mut();
-        Self {
-            data: unsafe { std::ptr::NonNull::new_unchecked(ptr.map_addr(|a| a | (tag & Self::ADDR_MASK))) },
-            len_tag: len | ((tag >> Self::ADDR_BITS) << Self::TAG_SHIFT),
+    fn from_text_tag(text: &str, tag: usize) -> Self {
+        let size = Self::HEADER_SIZE.checked_add(text.len()).expect("string allocation overflow");
+        let layout = std::alloc::Layout::from_size_align(size, std::mem::align_of::<StringHeader>())
+            .expect("string allocation overflow");
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        let Some(ptr) = std::ptr::NonNull::new(ptr) else { std::alloc::handle_alloc_error(layout) };
+        let data = ptr.cast::<StringHeader>();
+        // The checked layout fits the header followed by all bytes. The
+        // payload is initialized once and never mutated after publication.
+        unsafe {
+            data.as_ptr().write(StringHeader { refs: Cell::new(1), len: text.len(), encoding: tag as u8 });
+            std::ptr::copy_nonoverlapping(text.as_ptr(), ptr.as_ptr().add(Self::HEADER_SIZE), text.len());
         }
+        Self { data }
+    }
+    fn from_rc(text: Rc<str>, tag: usize) -> Self {
+        Self::from_text_tag(&text, tag)
     }
     #[inline]
     fn text_ptr(&self) -> *const u8 {
-        self.data.as_ptr().map_addr(|a| a & !Self::ADDR_MASK)
-    }
-    #[inline]
-    fn rc_ptr(&self) -> *const str {
-        std::ptr::slice_from_raw_parts(self.text_ptr(), self.len_tag & Self::LEN_MASK) as *const str
+        unsafe { self.data.as_ptr().cast::<u8>().add(Self::HEADER_SIZE) }
     }
     #[inline]
     fn tag(&self) -> usize {
-        let low = self.data.addr().get() & Self::ADDR_MASK;
-        if Self::ADDR_BITS == 3 { low } else { low | ((self.len_tag >> Self::TAG_SHIFT) << Self::ADDR_BITS) }
+        unsafe { self.data.as_ref().encoding as usize }
     }
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.text_ptr() == b.text_ptr()
+        a.data == b.data
+    }
+    #[inline(never)]
+    unsafe fn deallocate(data: std::ptr::NonNull<StringHeader>) {
+        // Only the final owner calls this. The original checked allocation
+        // layout is recovered from its immutable length and fixed alignment.
+        unsafe {
+            let size = Self::HEADER_SIZE + data.as_ref().len;
+            let layout = std::alloc::Layout::from_size_align_unchecked(size, std::mem::align_of::<StringHeader>());
+            std::alloc::dealloc(data.as_ptr().cast::<u8>(), layout);
+        }
     }
     #[inline]
     pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
@@ -120,7 +133,7 @@ impl RString {
     }
     #[inline]
     fn from_text(text: &str, mark: Encoding) -> Self {
-        Self::from_rc(Rc::from(text), mark as usize)
+        Self::from_text_tag(text, mark as usize)
     }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
@@ -157,19 +170,25 @@ impl RString {
 impl Clone for RString {
     #[inline]
     fn clone(&self) -> Self {
-        // This handle owns one strong count of the original, untagged Rc.
-        unsafe {
-            Rc::increment_strong_count(self.rc_ptr());
+        let refs = unsafe { &self.data.as_ref().refs };
+        let count = refs.get().wrapping_add(1);
+        if count == 0 {
+            std::process::abort();
         }
-        Self { data: self.data, len_tag: self.len_tag }
+        refs.set(count);
+        Self { data: self.data }
     }
 }
 impl Drop for RString {
     #[inline]
     fn drop(&mut self) {
-        // Restore both the original address and allocation length before Drop.
-        unsafe {
-            drop(Rc::from_raw(self.rc_ptr()));
+        let refs = unsafe { &self.data.as_ref().refs };
+        let count = refs.get() - 1;
+        refs.set(count);
+        if count == 0 {
+            unsafe {
+                Self::deallocate(self.data);
+            }
         }
     }
 }
@@ -181,7 +200,7 @@ impl std::fmt::Debug for RString {
 impl From<&str> for RString {
     #[inline]
     fn from(s: &str) -> Self {
-        Self::from_rc(Rc::from(s), Self::AUTO)
+        Self::from_text_tag(s, Self::AUTO)
     }
 }
 impl From<String> for RString {
@@ -198,10 +217,8 @@ impl std::ops::Deref for RString {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        // Constructors retain valid UTF-8; address tagging preserves provenance.
-        unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.len_tag & Self::LEN_MASK))
-        }
+        // Constructors initialize a valid UTF-8 view after the header.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.data.as_ref().len)) }
     }
 }
 impl AsRef<str> for RString {
@@ -220,8 +237,11 @@ impl std::fmt::Display for RString {
     }
 }
 impl PartialEq for RString {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
-        **self == **other
+        // Match Rc<str>'s identity shortcut. Identical tagged addresses
+        // share the same text; different encodings still compare by text.
+        self.data == other.data || **self == **other
     }
 }
 impl Eq for RString {}
@@ -1224,37 +1244,38 @@ mod string_window_tests {
                 assert_eq!(&*string.raw_bytes(), text.as_bytes());
             }
             if !text.is_empty() && !text.starts_with('\0') {
-                assert_eq!(RString::from(shared.clone()).text_ptr(), shared.as_ptr());
+                assert_eq!(Rc::strong_count(&shared), 1);
             }
         }
     }
 
     #[test]
-    fn tagged_handles_balance_reference_counts() {
+    fn string_handles_balance_reference_counts() {
         for tag in [0, 1, 2, 3, 4, 5, RString::AUTO] {
             for text in ["", "abc", "é", "\0é"] {
                 let shared: Rc<str> = Rc::from(text);
                 let weak = Rc::downgrade(&shared);
                 let handle = RString::from_rc(shared.clone(), tag);
-                assert_eq!(Rc::strong_count(&shared), 2);
-                let clone = handle.clone();
-                assert!(RString::ptr_eq(&handle, &clone));
-                assert_eq!(Rc::strong_count(&shared), 3);
-                assert_eq!(&*clone, text);
-                drop(handle);
-                assert_eq!(Rc::strong_count(&shared), 2);
-                drop(clone);
                 assert_eq!(Rc::strong_count(&shared), 1);
                 drop(shared);
                 assert!(weak.upgrade().is_none());
+                assert_eq!(&*handle, text);
+                let clone = handle.clone();
+                assert!(RString::ptr_eq(&handle, &clone));
+                assert_eq!(handle, clone);
+                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 2);
+                drop(handle);
+                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 1);
+                assert_eq!(&*clone, text);
+                drop(clone);
             }
         }
     }
 
     #[test]
     fn original_bytes_survive_every_encoding_window() {
-        assert_eq!(std::mem::size_of::<RString>(), std::mem::size_of::<Rc<str>>());
-        assert_eq!(std::mem::size_of::<RStr>(), std::mem::size_of::<Rc<str>>());
+        assert_eq!(std::mem::size_of::<RString>(), std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<RStr>(), std::mem::size_of::<usize>());
         for mark in [Encoding::Native, Encoding::Utf8, Encoding::Latin1, Encoding::Bytes] {
             for byte in 1..=255 {
                 let string = RString::from_bytes(&[byte], mark);
