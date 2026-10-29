@@ -1,7 +1,56 @@
 # conformance-sweep-data
 
-## 2026-10-29 (round 3): identical row.names, malformed factor, options,
-## round/signif missing digits (branch track/conformance-sweep-data-3)
+## 2026-10-29 (round 3), part 2: apply-family checkArity, env2list names,
+## tracemem verdict
+
+- **apply family arity** (apply.c/mapply.c/envir.c all start with
+  checkArity): do_lapply/vapply/eapply/rapply/mapply/islistfactor now
+  error `N argument(s) passed to .Internal(<name>) which requires N`
+  (util.c:Rf_checkArityCall — internals use error(), the context call).
+  fastr `.Internal(lapply)` arity cases 74c6e083/951ce209 pass.
+- **env2list of an empty environment** (envir.c:do_env2list): the C
+  returns the list BEFORE setAttrib(names) when k == 0, so
+  `as.list(new.env())` and `lapply(X = environment(), FUN = ...)` print
+  `list()`, not `named list()`. fastr TestBuiltin_lapply/2c077844
+  passes (envir.rs, conformance-lang's file: 4-line change, the fix for
+  the lapply case this track owns).
+- fastr expanded data filter **8,390 -> 8,393/8,426** (+3 recorded);
+  lapply/apply/env 380/381; gnur-tests 23/59 and gnur-examples base+stats
+  show no new regressions. PR #83 carries both batches.
+- **tracemem verdict (4 failing cases, not attempted)**: the remaining
+  TestBuiltin_tracemem cases print the recorded run's raw addresses
+  (`[1] "<0x...>"`, `tracemem[0x... -> 0x...]:`), which no masking covers
+  (corpus.py's ADDRESS regex only masks `<environment|bytecode|pointer|
+  promise|weak reference|externalptr: 0x...>` forms, mirroring GNU R's
+  tools::Rdiff, which also does not mask tracemem lines). The addresses
+  differ on every GNU R run too, so no implementation can pass the cases
+  as recorded; they would need re-recording with unstable-output masking
+  first (corpus.py record --repeat). The other 4 tracemem cases pass
+  without tracing (they only exercise errors/untracemem warnings).
+- Remaining open items, re-attributed after this round:
+  - `*tmp*` evaluation order (fastr TestSimpleVectors 8745c2a5,
+    94cf5bf3): `x[x[4]<-2] <- (x[4]<-100)` — GNU R evaluates the index
+    expression, then the rhs, then captures `*tmp*` (x[4]=100 persists);
+    robigo captures `*tmp*` before the rhs, so the rhs mutation is lost.
+    Needs the complex-assignment order in interp.rs (evaluator, shared).
+  - factor traceback ×6 + lapply 245e62b + match traceback ×1: GNU R's
+    `Calls:` line omits builtin contexts (`Calls: <Anonymous> ...`
+    auto-print vs robigo's `Calls: print ...`; `lapply -> is.vector`);
+    contexts for builtins live in interp.rs/conditions.rs
+    (conformance-lang's area).
+  - unused-argument printing ×2 (matcharg 139373f1, 85380d0c) —
+    conformance-values' ledger already claims them (as.character-list
+    pairlist deparse + error call).
+  - rbind/cbind ×2 expect status -11 (GNU R segfaults on those inputs);
+    robigo cannot reproduce a segfault. parse-error truncation ×2 —
+    parser track. srcref ×1 — subset.rs (conformance-vectors).
+  - utf8ToInt invalid bytes / `"\304"` / iconv: blocked on core's
+    per-CHARSXP encoding window. base/identical page: blocked on
+    bytecode-print/compile-moment alignment. base/options page: echo
+    default (cli track), bitmapType, pager path (host).
+
+## 2026-10-29 (round 3), part 1: identical row.names, malformed factor,
+## options simd/max.print, round/signif missing digits
 
 - Started from origin/main 7ff8a140 in a fresh worktree. Baseline on this
   host: expanded data filter **8,388/8,426** (the one "regression" is
