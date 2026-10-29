@@ -115,14 +115,8 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     fn int(&mut self) -> RResult<i32> {
         match self.format {
-            Format::Xdr => {
-                let b = self.bytes(4)?;
-                Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-            }
-            Format::Binary => {
-                let b = self.bytes(4)?;
-                Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            }
+            Format::Xdr => Ok(i32::from_be_bytes(self.bytes(4)?.try_into().unwrap())),
+            Format::Binary => Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap())),
             Format::Ascii => {
                 let w = self.word()?;
                 if w == "NA" {
@@ -215,6 +209,21 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
+    /// A `CHARSXP` item (its own flags, then the string), read directly:
+    /// `SYMSXP`'s name would otherwise build a one-string vector per
+    /// symbol only to take the string back out and drop it.
+    fn read_charsxp_item(&mut self) -> RResult<RStr> {
+        let flags = self.int()? as u32;
+        if flags & 255 != CHARSXP {
+            return Err(corrupt());
+        }
+        let s = self.read_charsxp(flags >> 12)?;
+        if flags & HAS_ATTR_BIT != 0 {
+            self.read_item()?;
+        }
+        Ok(s)
+    }
+
     fn read_charsxp(&mut self, levs: u32) -> RResult<RStr> {
         let len = self.int()?;
         if len == -1 {
@@ -223,13 +232,27 @@ impl<'a, 'i> Reader<'a, 'i> {
         if len < -1 {
             return Err(Flow::error("invalid length"));
         }
-        let b = self.string_bytes(len as usize)?;
-        let s = if levs & LATIN1_MASK != 0 && levs & (UTF8_MASK | ASCII_MASK) == 0 {
-            b.iter().map(|&c| c as char).collect::<String>()
-        } else {
-            String::from_utf8_lossy(&b).into_owned()
+        // The binary formats read the bytes straight from the stream (the
+        // escaped Ascii form still goes through `string_bytes`); a valid
+        // UTF-8 string then interns in one allocation, skipping the lossy
+        // decoder's chunk walk and the intermediate `String` copy.
+        let escaped;
+        let b: &[u8] = match self.format {
+            Format::Ascii => {
+                escaped = self.string_bytes(len as usize)?;
+                &escaped
+            }
+            _ => self.bytes(len as usize)?,
         };
-        Ok(Some(Rc::from(s)))
+        let s: Rc<str> = if levs & LATIN1_MASK != 0 && levs & (UTF8_MASK | ASCII_MASK) == 0 {
+            b.iter().map(|&c| c as char).collect::<String>().into()
+        } else {
+            match std::str::from_utf8(b) {
+                Ok(s) => s.into(),
+                Err(_) => String::from_utf8_lossy(b).into_owned().into(),
+            }
+        };
+        Ok(Some(s))
     }
 
     fn ref_index(&mut self, flags: u32) -> RResult<usize> {
@@ -291,11 +314,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 return Ok(v);
             }
             SYMSXP => {
-                let name = self.read_item()?;
-                let n = match &name {
-                    Value::Str(s) => s.data.first().cloned().flatten().unwrap_or_else(|| Rc::from("NA")),
-                    _ => return Err(corrupt()),
-                };
+                let n = self.read_charsxp_item()?.unwrap_or_else(|| Rc::from("NA"));
                 let v = Value::Sym(Sym::new(&n));
                 self.refs.push(v.clone());
                 return Ok(v);
@@ -387,7 +406,10 @@ impl<'a, 'i> Reader<'a, 'i> {
             SPECIALSXP | BUILTINSXP => {
                 let len = self.int()?;
                 let b = self.string_bytes(len.max(0) as usize)?;
-                let name = String::from_utf8_lossy(&b).into_owned();
+                let name = match std::str::from_utf8(&b) {
+                    Ok(s) => s.to_owned(),
+                    Err(_) => String::from_utf8_lossy(&b).into_owned(),
+                };
                 match crate::builtins::lookup_primitive(&name).or_else(|| crate::builtins::lookup_internal(&name)) {
                     Some(b) => Value::Builtin(b),
                     None => {
@@ -488,7 +510,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             return Err(Flow::error("names in persistent strings are not supported yet"));
         }
         let len = self.int()?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(len.max(0) as usize);
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
             out.push(self.read_charsxp(f >> 12)?);
@@ -626,48 +648,94 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(reps.get(i).cloned().unwrap_or(Value::Null))
             }
             BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
+                // R: serialize.c:ReadBCLang. The chain is walked cell by
+                // cell; collecting the spine first avoids rebuilding the
+                // suffix Value at every level (each rebuild cloned the
+                // tail's items again, and dropped the intermediate).
+                // A cell stored for a BCREPDEF (`reps`) spans from its own
+                // level to the end — a contiguous slice of the flat items.
+                struct Level {
+                    pos: Option<usize>,
+                    lang: bool,
+                    attr: Value,
+                    tag: Value,
+                    car: Value,
+                }
+                let translate = |t: u32| match t {
+                    ATTRLANGSXP => (LANGSXP, true),
+                    ATTRLISTSXP => (LISTSXP, true),
+                    t => (t, false),
+                };
+                let mut spine: Vec<Level> = Vec::new();
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     pos = Some(self.int()? as usize);
                     ty = self.int()? as u32;
                 }
-                let mut hasattr = false;
-                match ty {
-                    ATTRLANGSXP => {
-                        ty = LANGSXP;
-                        hasattr = true;
+                let (mut ty, mut hasattr) = translate(ty);
+                let cdr;
+                loop {
+                    let attr = if hasattr { self.read_item()? } else { Value::Null };
+                    let tag = self.read_item()?;
+                    let t1 = self.int()? as u32;
+                    let car = self.read_bc_lang(t1, reps)?;
+                    spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
+                    let t2 = self.int()? as u32;
+                    let mut npos = None;
+                    let mut nty = t2;
+                    if nty == BCREPDEF {
+                        npos = Some(self.int()? as usize);
+                        nty = self.int()? as u32;
                     }
-                    ATTRLISTSXP => {
-                        ty = LISTSXP;
-                        hasattr = true;
+                    let (nty, nhasattr) = translate(nty);
+                    if matches!(nty, LANGSXP | LISTSXP) {
+                        pos = npos;
+                        ty = nty;
+                        hasattr = nhasattr;
+                        continue;
                     }
-                    _ => {}
+                    // The chain's tail, as `read_bc_lang(t2)` reads it.
+                    cdr = match nty {
+                        BCREPREF => {
+                            let i = self.int()? as usize;
+                            reps.get(i).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => self.read_item()?,
+                    };
+                    break;
                 }
-                let attr = if hasattr { self.read_item()? } else { Value::Null };
-                let tag = self.read_item()?;
-                let t1 = self.int()? as u32;
-                let car = self.read_bc_lang(t1, reps)?;
-                let t2 = self.int()? as u32;
-                let cdr = self.read_bc_lang(t2, reps)?;
-                let mut items = vec![Arg::new(tag.as_sym(), car)];
+                // Every level's cell, then the tail's.
+                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + 4);
+                for l in &spine {
+                    items.push(Arg::new(l.tag.as_sym(), l.car.clone()));
+                }
                 match &cdr {
                     Value::Pairlist(p) => items.extend(p.items.iter().cloned()),
                     Value::Lang(l) => items.extend(l.items()),
-                    Value::Null => {}
                     _ => {}
                 }
-                let mut v = if ty == LANGSXP {
+                // Cells referenced again (BCREPDEF) get their own Value for
+                // `reps`; the head carries the first level's attributes.
+                for (i, l) in spine.iter().enumerate() {
+                    if let Some(p) = l.pos {
+                        if p < reps.len() {
+                            let mut v = if l.lang {
+                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                            } else {
+                                Value::pairlist(items[i..].to_vec())
+                            };
+                            set_attr_pairlist(&mut v, l.attr.clone());
+                            reps[p] = v;
+                        }
+                    }
+                }
+                let mut v = if spine[0].lang {
                     Value::Lang(Rc::new(Lang::from_items(items, None)))
                 } else {
                     Value::pairlist(items)
                 };
-                set_attr_pairlist(&mut v, attr);
-                if let Some(p) = pos {
-                    if p < reps.len() {
-                        reps[p] = v.clone();
-                    }
-                }
+                set_attr_pairlist(&mut v, spine[0].attr.clone());
                 Ok(v)
             }
             _ => self.read_item(),
@@ -872,7 +940,9 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
         pos += 1;
     }
-    let mut r = Reader { data, pos, format, refs: Vec::new(), interp, hook };
+    // 16 covers the reference count of a typical lazy-load entry without
+    // the 4→8→16 reallocation chain; big entries still grow.
+    let mut r = Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;

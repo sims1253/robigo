@@ -142,13 +142,137 @@ lands; the natives work is PR #78 below.
   Reader ~45M (int 25.5M, read_item_flags0 20.0M, read_bc_lang 12.7M),
   vm 19.6M, mimalloc ~30M, memcpy 11.1M, drops 12M.
 
+## 2026-10-29 (round 5): re-baseline on main 74e8c73
+
+- Main moved a lot since round 4 (#79 zlib-rs, #81 release profile thin
+  LTO + one codegen unit, #69 graphics, #77 utils, #80 matrix VM ops all
+  landed after those measurements), so every scenario was re-measured
+  from scratch (robigo-oracle:4.5.0, R 4.5.0-3, binaries built in
+  robigo-build:4.5.0 with ~/.cache/robigo-startup-target; rdbflat cache
+  rebuilt by the #82 battery; natives = the 8 packages CI builds).
+  Harness: `.robigo/scen5.sh` (scratch; `def` = R_DEFAULT_PACKAGES unset,
+  i.e. datasets,utils,grDevices,graphics,stats,methods — `search()`
+  verified identical in both runtimes for every scenario).
+
+  `-e 1` instructions:
+
+  | scenario | plain | +rdbflat | +natives+flat | GNU R | best ratio |
+  |---|---|---|---|---|---|
+  | NULL packages | 46,113,680 | 41,253,451 | 41,234,945 | 87,757,913 | 0.470× |
+  | utils,stats | 59,086,889 | 50,853,282 | 50,842,389 | 99,889,141 | 0.509× |
+  | default (6 pkgs) | 516,289,615 | 439,100,029 | 441,158,450 | 660,550,300 | 0.665× |
+
+  Other scenarios: script default 516.6M/441.6M vs GNU R 661.1M (0.668×);
+  script NULL 46.6M/41.7M vs 88.2M; `library(stats)` from NULL 221.3M/
+  191.7M vs 259.5M (0.739× — the weakest ratio: the library call itself
+  costs robigo 175.2M vs GNU R's 171.7M). Natives overhead on def is
+  +2.0M for 8 packages (round 4: +0.55M for stats alone); NULL and
+  utils,stats are unaffected within noise.
+- The old ledger's round-4 "utils,stats = 254-264M" rows do not
+  reproduce on this main and GNU R itself measures 99.9M there today
+  (NULL and def6 rows do reproduce to ~0.5%, so the harness agrees);
+  those old rows were probably def5 (datasets,utils,grDevices,graphics,
+  stats) runs. This table supersedes them.
+- Where `default +rdbflat` goes now (441M, callgrind): serialize Reader
+  ~75M (int 31M, read_item_flags0 23M, read_bc_lang 15M), mimalloc
+  ~45M, VM ~27M, Value drops/clones ~21M, memcpy 11.1M, UTF-8 lossy
+  decode 5.5M, regex_automata NFA build 2.75M (R code compiling fresh
+  patterns; GNU R pays the same in TRE), SipHash (interning) ~1M.
+
+## 2026-10-29 (round 5): serialize reader fast paths
+
+- `read_charsxp`: binary formats now read the bytes straight from the
+  stream (no `to_vec`), and valid UTF-8 interns as `Rc<str>` in one
+  allocation (`str::from_utf8` fast path) instead of lossy-decoding
+  chunks into a `String` and copying again — 3 allocations + 2 passes
+  per string become 1 + 1. `int()`: `try_into` instead of four
+  bounds-checked byte loads. `string_vec` pre-sizes; builtin names take
+  the same UTF-8 fast path. Byte-identical by construction (the lossy
+  path is the fallback).
+- Measured (same harness): e1-def −19.5M (plain 516.3→496.8M, flat
+  439.1→419.6M, natives+flat 441.2→421.6M); e1-us −1.6M; e1-NULL −1.0M.
+- Gates: `cargo test --release -p robigo-runtime` green; conformance
+  3 tiers ok; fastr serialize slice 165/169 (0 regressions, 2 new),
+  connections/unserialize/gzfile slice 286/289 (0 regressions).
+
+## 2026-10-29 (round 5, continued): the hill-climb
+
+Five verified changes on top of the re-baseline (all gates green after
+each: runtime tests, conformance 3 tiers, fastr slices with 0
+regressions; commit messages carry the per-change numbers):
+
+1. **read_bc_lang iterative** (−15.2M on def): the recursive reader
+   rebuilt the suffix Value at every level of a bytecode chain and
+   cloned its items into the next level up — O(n²) Arg clones with an
+   intermediate Value per level. One flat items Vec now; repdef cells
+   are contiguous slices of it. The base packages' bytecode has long
+   spines, so this shows up directly in every scenario.
+2. **complete rdbflat battery** (coverage, ~neutral measured):
+   `scripts/build-rdbflat-force.R` forces every lazy binding of every
+   base package (package env and namespace), so the cache covers every
+   fetch any program can make — verified 793 fetches through 7 packages,
+   0 misses. 52MB of flats (lazily read per rdb); complete coverage
+   costs +0.65M on def-flat (index build) over the partial cache, won
+   partly back by an inline FxHash for the flat index (SipHash cost more
+   than the lookup). The battery takes ~1.5s.
+3. **rdbflat on by default** (`rdbflat/` beside the exe, the
+   build-natives.sh pattern; `ROBIGO_RDBFLAT` still overrides) and
+   **wired into CI**: the build job builds it, the robigo artifact
+   ships it, corpora and perf jobs point at it.
+4. **rdx gzip cache** (−5.8M def, −1.2M us/NULL): each `.rdx` index is
+   a gzip file inflated whole at every gzfile open; the builder writes
+   each as a single (0,0) flat entry and `gz_open` serves it first.
+5. **SYMSXP direct name read** (−2.6M def): no more throwaway
+   one-string vector per symbol.
+
+Where the scenarios ended (container; `flat` = cache, which is now the
+default experience; GNU R unchanged):
+
+| scenario | main 74e8c73 | this branch | Δ | GNU R | ratio |
+|---|---|---|---|---|---|
+| `-e 1` NULL, plain | 46,113,680 | 44,437,700 | −1.7M | 87,761,707 | 0.506× |
+| `-e 1` NULL, flat | 41,253,451 | **38,420,534** | −2.8M | 87,761,707 | **0.438×** |
+| `-e 1` utils,stats, flat | 50,853,282 | **45,956,897** | −4.9M | 99,891,741 | **0.460×** |
+| `-e 1` default, plain | 516,289,615 | 478,935,749 | −37.4M | 660,539,218 | 0.725× |
+| `-e 1` default, flat | 439,100,029 | **396,673,112** | −42.4M | 660,539,218 | **0.600×** |
+| `-e 1` default, natives+flat | 441,158,450 | 398,634,424 | −42.5M | 660,539,218 | 0.603× |
+| script default, natives+flat | 441,625,749 | 398,968,541 | −42.7M | 660,934,173 | 0.604× |
+| `library(stats)` NULL, flat | 191,738,336 | **176,661,289** | −15.1M | 259,476,934 | **0.680×** |
+
+Natives overhead on default packages is +2.0M (8 packages, static).
+
+Secondary metrics (same container, shared machine — wall indicative):
+robigo def `-e 1` ~91-94ms wall vs GNU R 122ms; NULL 11ms vs 22ms.
+Peak RSS on def: 55.8MB without the cache, 89.4MB with it (the flats
+are resident once read; GNU R 53.4MB) — mmap for the flats is open
+item 4. The wall-time numbers above were taken on an idle moment; under
+load both runtimes slow equally.
+
 ## Open items (ranked)
 
-1. Same as PR #36's list (S3 dispatch memsets during package loading,
-   regex construction at startup, G6 snapshot, per-fetch inflate).
-2. The remaining +0.32M of the natives load is stats.so's own mmap,
-   .bss zeroing (Fortran COMMON) and relocations — at parity with what
-   any dlopen pays; not worth chasing.
+1. **CHARSXP interning** (R: serialize.c ReadItem calls mkChar, which
+   interns in R's CHARSXP cache; robigo allocates a fresh `Rc<str>` per
+   read — repeated argument names like "x", "object" are re-allocated
+   hundreds of times per package). Needs a string cache with weak
+   entries or an arena; ~0.8M of memcpy is `Rc::from` copies in
+   read_charsxp alone, plus the allocations.
+2. **Symbol interner hashing** (`sym::Interner` uses SipHash; ~1.5M on
+   def in sip+memcmp+memcpy during unserialize). FxHash it — but sym.rs
+   is hot for every track; measure the perf suite, coordinate with
+   perf-vm.
+3. mimalloc is ~40M of the def-flat run (malloc+free paths) and drops
+   ~8M: fewer Values/Vecs during unserialize is the structural fix
+   (arena/region allocation for entry graphs, G6-snapshot style).
+4. mmap the flats instead of `fs::read` (RSS: 52MB cache but only
+   fetched pages would resident; instructions unchanged — reads are
+   kernel-side). Needs libc or a new crate — watch the layout lesson.
+5. From #36's list: S3 dispatch memsets during package loading (memset
+   is 2.3M on def-flat), regex construction at startup (2.75M — R code
+   compiling fresh patterns; GNU R pays the same in TRE, so parity),
+   G6 snapshot (the endgame: skip the unserialize entirely).
+6. Natives load is +2.0M for 8 packages — dlopen/mmap/relocation
+   parity, not worth chasing.
+
 
 ## 2026-10-29 (later): rebase onto d709287 (core's #56 merged); perf-gate artifacts
 

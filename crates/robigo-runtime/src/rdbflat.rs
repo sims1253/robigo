@@ -27,19 +27,54 @@
 //! `with_entry` serves an entry as a zero-copy slice; a missing or stale
 //! cache falls back to the per-fetch path, so behaviour is byte-identical
 //! either way (entries the battery did not record take that path too).
-//! Enabled by pointing `ROBIGO_RDBFLAT` at the cache directory; absent,
-//! the module costs one `getenv` per process. Flat files are read lazily,
-//! one at the first fetch from their rdb — a NULL-packages run reads
-//! base.rdb's cache and nothing else.
+//! The same format caches a lazy-load database's `.rdx` index — a gzip
+//! file `lazyload.R`'s `readRDS` inflates whole at every open — as a
+//! single `(0, 0)` entry claimed on the `.rdx` itself; `builtins/io.rs`
+//! serves it at the gzfile open, falling back to the decoder.
+//! Enabled by pointing `ROBIGO_RDBFLAT` at the cache directory, or, when
+//! that is unset, by a `rdbflat/` directory beside the executable's
+//! parent's parent (`.robigo/bin/robigo`, `.robigo/rdbflat` — the layout
+//! `scripts/build-rdbflat.sh` writes, as `scripts/build-natives.sh` does
+//! for natives); absent, the module costs a `getenv` and a `read_dir`.
+//! Flat files are read lazily, one at the first fetch from their rdb —
+//! a NULL-packages run reads base.rdb's cache and nothing else.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// A multiply-xor hasher (FxHash) for the flat index: it is rebuilt once
+/// per process and probed a few thousand times, and SipHash's
+/// finalization costs more than the lookup itself.
+#[derive(Default)]
+struct Fx(u64);
+
+const FX_SEED: u64 = 0x517cc1b727220a95;
+
+impl Hasher for Fx {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(FX_SEED);
+        }
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (self.0.rotate_left(5) ^ i as u64).wrapping_mul(FX_SEED);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(FX_SEED);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// (off, clen) -> (foff, ulen), FxHashed.
+type FlatIndex = HashMap<(u64, u32), (u64, u32), BuildHasherDefault<Fx>>;
+
 struct Flat {
     data: Vec<u8>,
-    /// (off, clen) -> (foff, ulen)
-    index: HashMap<(u64, u32), (u64, u32)>,
+    index: FlatIndex,
 }
 
 struct Cache {
@@ -59,10 +94,23 @@ fn u32_at(b: &[u8], off: usize) -> u32 {
 }
 
 impl Cache {
-    /// Read the flat directory: each file's header only.
+    /// Read the flat directory: each file's header only. `$ROBIGO_RDBFLAT`
+    /// names it; unset, `rdbflat/` beside the executable's parent's parent
+    /// (`.robigo/bin/robigo` → `.robigo/rdbflat`) is used when present.
     fn open() -> Cache {
+        let dir = match std::env::var_os("ROBIGO_RDBFLAT") {
+            Some(d) => PathBuf::from(d),
+            None => {
+                let Some(dir) = std::env::current_exe().ok().and_then(|e| {
+                    let root = e.parent().and_then(|p| p.parent())?;
+                    Some(root.join("rdbflat"))
+                }) else {
+                    return Cache { claims: HashMap::new(), loaded: HashMap::new() };
+                };
+                dir
+            }
+        };
         let mut claims = HashMap::new();
-        let Some(dir) = std::env::var_os("ROBIGO_RDBFLAT") else { return Cache { claims, loaded: HashMap::new() } };
         let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::new() } };
         for e in entries.flatten() {
             // the header: magic, guard, path (the path starts at byte 32)
@@ -118,7 +166,7 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
 
 /// The entry index at `p` (just past the path); every entry's slice must
 /// lie inside the file.
-fn parse_index(bytes: &[u8], mut p: usize) -> Option<HashMap<(u64, u32), (u64, u32)>> {
+fn parse_index(bytes: &[u8], mut p: usize) -> Option<FlatIndex> {
     if p + 8 > bytes.len() {
         return None;
     }
@@ -127,7 +175,7 @@ fn parse_index(bytes: &[u8], mut p: usize) -> Option<HashMap<(u64, u32), (u64, u
     if p.checked_add(n.checked_mul(24)?)? > bytes.len() {
         return None;
     }
-    let mut index = HashMap::with_capacity(n);
+    let mut index = FlatIndex::with_capacity_and_hasher(n, Default::default());
     for _ in 0..n {
         let off = u64_at(bytes, p);
         let clen = u32_at(bytes, p + 8);

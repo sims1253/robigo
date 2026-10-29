@@ -512,7 +512,15 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
             }
         };
         if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
-            if flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut data).is_err() {
+            // The flat cache (rdbflat.rs) may already hold this file's
+            // inflate — a lazy-load database's .rdx index is read with a
+            // gzfile at every startup; the builder pre-inflates it next
+            // to its .rdb's cache (single (0, 0) entry, same size/mtime
+            // guard). Falls through to the decoder when there is none.
+            let cached = crate::rdbflat::with_entry(&name, 0, 0, |d| d.to_vec());
+            if let Some(d) = cached {
+                data = d;
+            } else if flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut data).is_err() {
                 return Err(Flow::error(format!("robigo: '{}' is not a valid gzip file", name)));
             }
         } else {
