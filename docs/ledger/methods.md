@@ -325,9 +325,18 @@ Branch `track/methods-install-newline` (PR #87), from main 74e8c73.
   stays **643/662**; both serialized-class-generator cases improve 0/2
   to 2/2. The remaining lost S4 case is still the finalizer above.
 - Dispatch cost is **11,685 -> 11,690 instructions/call (+0.04%)**, below
-  the 0.5% limit. With locally built natives present, methods/stats4 help
-  examples pass **43/50**, with no ratchet losses. The full fastr and
+  the 0.5% limit. With the full locally built native set, methods/stats4
+  help examples pass **44/50 on both main and this branch**, with no lost
+  passes. Added `stats4/update-methods` to the ratchet using corpus absorb.
+  The earlier 43/50 run started before all native builds completed. Full fastr and
   gnur-examples measurements are left to CI, queued on the updated PR.
+- Verification: release build, `cargo fmt --check`, three Python harness
+  tests, and `R_HOME=~/.local/opt/R-4.5.0 ROBIGO_NATIVES=$PWD/.robigo/natives
+  cargo test --release -p robigo-runtime -p robigo-cli -- --skip
+  c_library_oracle` pass. Counts: 33 runtime unit tests, two lazy-load
+  tests, seven CLI unit tests and all three conformance checks (including
+  comparisons across execution tiers). The excluded complex-number C
+  oracle is the known main/host glibc mismatch recorded in core's ledger.
 - Rcpp sugar was not re-baselined successfully this round: the recovered
   mini-runner stops at `sourceCpp("cpp/sugar.cpp")` when run outside its
   tinytest directory. A fresh sourceCpp build needs this worktree's own
