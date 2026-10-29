@@ -318,7 +318,6 @@ grDevices/Type1Font
 grDevices/adjustcolor
 grDevices/as.raster
 grDevices/axisTicks
-grDevices/Type1Font
 grDevices/boxplot.stats
 grDevices/cairoSymbolFont
 grDevices/check.options
@@ -333,7 +332,6 @@ grDevices/dev
 grDevices/dev.capabilities
 grDevices/dev.interactive
 grDevices/dev.size
-grDevices/dev.interactive
 grDevices/dev2
 grDevices/extendrange
 grDevices/getGraphicsEvent
@@ -491,9 +489,6 @@ grid/viewportTransform
 grid/viewports
 grid/vpPath
 grid/xsplinePoints
-graphics/identify
-graphics/screen
-graphics/smoothScatter
 methods/LanguageClasses
 methods/Methods_for_Nongenerics
 methods/NextMethod
@@ -657,7 +652,6 @@ stats/weighted.mean
 stats/window
 stats/xtabs
 stats/zC
-stats4/update-methods
 tools/CRANtools
 tools/HTMLheader
 tools/R
@@ -777,3 +771,4 @@ utils/url.show
 utils/winDialog
 utils/winMenus
 utils/winextras
+stats4/update-methods
