@@ -55,7 +55,10 @@ LIBS="$(conf LAPACK_LIBS) $(conf BLAS_LIBS) $(conf FLIBS)"
 
 # the file list of a package Makefile.in variable (continuation lines joined)
 sources() {
-    sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$1" | sed -n "s/^$2 *= *//p"
+    # configure turns @BUILD_AQUA_TRUE@ (macOS only) into `#`, commenting
+    # out the rest of the line
+    sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$1" | sed -n "s/^$2 *= *//p" |
+        sed -e 's/@BUILD_AQUA_TRUE@/#/' -e 's/#.*//'
 }
 
 for pkg in $pkgs; do
