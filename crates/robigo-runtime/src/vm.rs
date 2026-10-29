@@ -702,6 +702,10 @@ fn index2_slow(
 fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
     let v = match x {
         RVal::V(v) => v,
+        // An unmaterialized `a:b` (say `x <- 1:n`) is an integer vector.
+        RVal::Range { start, step, n } => {
+            return ((i as u64) < *n).then(|| RVal::I((*start + i as i64 * *step) as i32));
+        }
         _ if i == 0 => return Some(x.clone()),
         _ => return None,
     };

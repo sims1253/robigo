@@ -44,6 +44,239 @@ What other evaluator paths must keep:
   copies it, `set_attrs(box)` keeps whatever the box has, `clear_attrs`
   drops it (GNU R's `CLEAR_ATTRIB`).
 
+### For perf-vm's in-VM frame push (#50): what the S4 code relies on
+
+Answering the prerequisite noted in perf-vm.md ("the S4 agent's
+exec_closure/end_context hooks"): there is no extra S4 call inside
+`exec_closure_ex` or `end_context`; S4 only reads the context stack and the
+argument bindings. A VM frame push is compatible if, while the callee runs:
+
+1. `interp.frames.last()` is a `Context` with `builtin: false`,
+   `function: Value::Closure(<the callee>)` (the same `Rc`, so its
+   attributes, e.g. `generic`, are visible), `call` = the call as written,
+   `cloenv` = the callee's frame, `sysparent` = the caller's environment
+   (or the `generic` frame's sysparent, see 4), `promargs` = the promised
+   arguments in call order (`R_execMethod` hands them to the method's frame);
+2. formals bound from defaults carry `BIND_MISSING_DEFAULT` and unsupplied
+   formals without default hold the missing argument (`binding_missing`);
+   a default may be bound as a plain constant (exec_method accepts that);
+3. `end_context` (on.exit, handler/restart restore) runs when the frame
+   pops, also on errors and `Flow::Return` to the frame;
+4. `Context.generic` keeps its meaning: the S3 dispatch code sets it on the
+   generic's frame around the method call, and `apply_closure_ex` then
+   takes the method's sysparent from that frame; a VM call path that
+   computes sysparent itself must do the same;
+5. methods are entered through `Interp::exec_closure(call, method,
+   promargs, prebuilt_env, sysparent)` from `exec_method`; the VM need not
+   handle that path (it is a native call), but `exec_closure` must keep
+   accepting a prebuilt environment.
+
+Calls that never push a frame (pure inline closures) stay correct as long
+as their bodies cannot reach `standardGeneric`, `sys.*`, `parent.frame`,
+`missing` or `callNextMethod`, as today.
+
+## 2026-10-28: fastr with methods attached, whole corpus (host)
+
+- All 31,374 fastr cases re-recorded with methods in `default_packages`
+  (oracle image, uid 1000, `--memory 6g`, `ulimit -v 3000000` per process,
+  2 jobs, 8 chunks by the id's last hex digit; scratch worktree, nothing
+  committed). robigo with methods attached: **30,668 / 31,374** on this
+  host.
+- Ratchet cases failing with methods (11 at first, after the fixes of
+  this round 6, all understood):
+  - fixed: `obj$x <- v` on an OBJSXP (error call), `rbind(<S4 OBJSXP>)`
+    and `as.vector()` (data part or "no method for coercing this S4 class
+    to a vector"), `cbind` cases (pass on re-run);
+  - `TestR5/ef10c392`: reference class method names in hash-bucket order
+    (`names(env)` of a hashed environment; env.rs);
+  - `TestR5/474b742f`: reference class `finalize()` runs on `gc()`
+    (robigo does not collect environments; memory/core);
+  - `TestBuiltin_order/add626733541c799`: recording artifact, the oracle
+    image here lacks the en_US.utf8 locale the original recording had;
+  - `TestBuiltin_serialize/4a71e01f, bfd38dfb`: serializing a class
+    generator (an S4 closure) writes one node type differently (LISTSXP
+    for GNU R's LANGSXP) (serialize.rs);
+  - `TestBuiltin_operators/0bb20eaa`: host complex NaN bits (CI judges).
+- **For the switch** (corpora.toml + robigo's startup): re-record every
+  corpus in exactly the original recording environment (CI's container,
+  root, its locales; reg-large needs its RAM), then the ratchet cases
+  above must pass or be decided by the maintainer: the scripts are the
+  same, their oracle changes. A bare `robigo script.R` already attaches
+  methods since #52's cli change.
+
+## 2026-10-28: Rcpp's own test suite (in progress)
+
+- `tinytest::test_package("Rcpp")` cannot run on robigo yet, for two
+  reasons outside S4: tinytest opens `grDevices::pdf(nullfile())` per test
+  file (grDevices' PDF native), and it reads each expression's srcref for
+  line numbers (`env$lst - env$fst` is NA without source references:
+  robigo's `parse(keep.source = TRUE)` keeps none).
+- Measured instead with a minimal stand-in for tinytest's `expect_*`
+  (`sys.source` per test file, `RunAllRcppTests=yes`), the same script on
+  GNU R 4.5.0 (Rcpp 1.1.2 built there) and on robigo (Rcpp 1.1.2 built by
+  `install.packages()` inside robigo), one process per file on robigo
+  because a test file crashed it.
+- Result (assertions): GNU R 1,624 passed / 4 failed; robigo 1,101 / 13
+  before, then with the C API added for it (R 4.5's
+  `R_ClosureEnv/Formals/Body/Expr` through the bridge; Rmath's
+  `Rf_tetragamma`, `Rf_pentagamma`, `Rf_ftrunc`): test_function 9 -> 22/22,
+  test_support 0 -> 5/5. test_sugar (493 assertions on GNU R) now loads
+  its object but segfaults in it (being located). Smaller differences in
+  test_date (3), test_listof (2), test_matrix (3), test_misc (1),
+  test_string (1), test_vector (3), test_xptr.
+- Still unexported Rmath functions (pointer arguments, need hand-written
+  wrappers in robigo-capi): bessel_{i,j,k,y}_ex, dpsifn, lgammafn_sign,
+  logspace_sum, pnorm_both, and dtukey/rtukey/rnbeta/rnf/rnt.
+
+## 2026-10-28: the S4 cases lost with methods attached, re-checked
+
+- The 12 fastr S4 cases (TestS4, TestR5) that failed only with methods
+  attached, run against GNU R with methods attached: 11 now match. The
+  remaining one prints a reference class generator; its "Class Methods"
+  list is `names(def@refMethods)`, i.e. `ls(sorted = FALSE)` of a hashed
+  environment, which GNU R returns in hash-bucket order (PJW hash of the
+  name, table size and growth from envir.c's R_HashSizeCheck/R_HashResize).
+  robigo's environments do not emulate that order (env.rs, not this
+  track).
+- Also open from that set: reference class `finalize` methods
+  (`reg.finalizer` on environments with `gc()`; robigo does not collect
+  environments), `asS4(NULL)` setting the S4 bit of the global NULL
+  (bug-compatible, not emulated), `substituteDirect` cases (pending
+  re-recording).
+
+## 2026-10-28: S4 dispatch overhead per call
+
+- callgrind (scripts/callgrind-diff.py, 2e4 - 1e4 calls of a one-method
+  generic): 14,398 -> 13,192 instructions per call (-8.4%):
+  - the calling handler around each signature argument's evaluation
+    (`R_evalHandleError`) is skipped when the argument's binding is a
+    value or a forced promise: evaluating it runs no code, so nothing can
+    signal (the handler cost an Rc closure, an entry and a message string
+    per argument per call);
+  - the dispatch's fixed symbols (`.AllMTable`, `.SigArgs`, `.SigLength`,
+    `target`, `defined`, `nextMethod`, `allMethods`) are interned once;
+  - the signature label is built in one String (no Vec<String>, join).
+- What remains of the dispatch: `find_var_in_frame` (~10 frame lookups per
+  call: the generic's tables, `.target`/`.defined`/`.Method`), defining
+  `.target`/`.defined`/`.nextMethod`/`.Method` in the generic's frame and
+  copying them into the method's (GNU R does the same). The rest is the VM
+  running the generic's and the method's frames.
+- Wall time is too noisy on this shared machine to compare with GNU R
+  (GNU R's own numbers moved 2-3x between runs); roughly 1.3-2.3x slower
+  on S4-heavy loops (generic calls, `+` methods, `new()`).
+
+## 2026-10-28: S4 deparse; recording fastr with methods (memory)
+
+- Deparse of S4 objects ported (deparse.c's IS_S4_OBJECT branch); the
+  parts that need R (getClassDef, R_do_slot of `.Data`, asS3) are computed
+  by `Interp::deparse_prepared` before the interpreter-free deparser runs
+  (thread-local table keyed by object identity, cleared afterwards).
+  Printing a generic, dput/deparse of S4 objects: byte-identical
+  (tests/r/s4/deparse.R). fastr S4 cases recorded with methods attached
+  (recorded chunks): 115 -> 118/124.
+- Recording fastr with methods: chunks 0, 1, 4-9 recorded; 2, 3, a-f not
+  yet. Chunk a/b was OOM-killed under the 6 GiB container cap (docker
+  events: exit 137), also with the stats distribution groups excluded.
+  The cap did its job; the case is being found with a probe recording
+  (`ulimit -v 3000000` per process, scratch copy, compared with the old
+  expectations).
+
+## 2026-10-28: reg-S4 (GNU R's S4 regression test) with methods attached
+
+Climbing gnur-tests' reg-S4 (recorded with methods attached); each stop
+fixed and checked against the oracle:
+
+- line 285: `cbind(m)` with an S4 argument: bind.c:do_bind dispatches S3
+  methods on `R_data_class2` and falls back to `methods:::cbind`/`rbind`
+  when any argument is S4 (builtins/array.rs, minimal). tests/r/s4/bind.R.
+- line 470: `setMethod("as.numeric", ...)` must also serve `as.double()`:
+  base binds `as.numeric` to the `as.double` primitive, whose method tables
+  hold both; robigo's builtin passes the name it was called by
+  (`s4::prim_op` maps it).
+- line 660: `2 == <S4 list>`: robigo's relop rejected every list. GNU R
+  4.5.0 compares lists by coercing them to the comparison's type
+  (`coerceVectorList`; non-character targets need `isVectorizable`, else
+  "'list' object cannot be coerced to type 'double'"); expressions go the
+  same way (the expression check is `#ifdef previous_R_versions`).
+  builtins/arith.rs, minimal. tests/r/s4/groups.R.
+- After these, reg-S4 runs to its end; what remains is `getSrcref()`
+  (robigo returns NULL for any function parsed with keep.source, not
+  only methods: parser/print tracks) and a timing line.
+- Measurement trap: a robigo binary copied to `/tmp/x/robigo` loads base
+  natives from `/tmp/natives` (`<exe>/../natives`), where another agent
+  had built GNU R's methods.so (which fails: `DDVAL`). Copies used for
+  measuring must live where `../natives` does not exist.
+
+## 2026-10-28: Matrix from source: blocked on grid (not S4)
+
+- `install.packages("Matrix")` inside robigo first builds its dependency
+  lattice, whose lazy-loading step loads grid: `.Call(C_initGrid)` is not
+  implemented (grid's natives: core's `scripts/build-natives.sh grid` or
+  a port; graphics engine, not this track). Retry Matrix once grid
+  loads; it is the S4 stress test after Rcpp (dgCMatrix & co).
+
+## 2026-10-28: methods as a default package, per corpus (host, same binary)
+
+Recorded with methods in `default_packages` (oracle image, uid 1000,
+`--memory 6g`), robigo with the matching default packages:
+
+| corpus | without methods | with methods | lost | gained |
+|---|---|---|---|---|
+| gnur-examples | 591 | 603 | file.access, system (recording artifacts: uid, seccomp) | 14 (some date-dependent) |
+| gnur-tests (without reg-large) | 21 | 19 | reg-S4-examples (grDevices `devholdflush` once `plot()` is reached), reg-packages (the host's `R CMD` subprocesses use system R 4.6.1) | 0 |
+| gnur-demos | 2 | 2 | | |
+| r-intro | 4 | 4 | | |
+| fastr | (recording) | | | |
+
+The losses are cases that "passed" only because GNU R and robigo stopped
+at the same early error without methods; with methods GNU R gets further.
+None is an S4 failure. For the switch: record as root (as CI's container
+runs), leave reg-large to CI, and decide with the maintainer how a case
+whose recorded behaviour changes is treated in the ratchet (it is the
+same script with a different oracle).
+
+## 2026-10-28: S4 speed vs GNU R (measured, not yet improved)
+
+- Wall time, robigo vs GNU R 4.5.0 (oracle image): 1e5 calls of a
+  one-method generic 0.85 s vs 0.64 s; 2e4 `+` with an S4 method 5.84 s
+  vs 4.44 s; 2e4 `new("P", x = i)` 16.25 s vs 9.32 s. robigo is
+  1.3-1.7x slower.
+- callgrind on `new()` (2000 - 1000 calls): 884k instructions per call.
+  The dispatch machinery (`dispatch_generic` without the method,
+  `load_method`, `do_slot`) is ~1%; the rest is the VM running methods'
+  own R code (`new` -> `initialize` -> the default method, `validObject`,
+  `getClass`). 13.6% is `vm::guard_ok_slow`: frames of namespace closures
+  (parent = the methods namespace, not on the search path) miss the guard
+  memo's fast paths, so every guarded call site rechecks. resolves_to_base
+  itself is negligible.
+- Next: make namespace-closure frames hit the guard memo (perf-vm,
+  vm.rs), then re-measure; and an S4 benchmark in benchmarks/ (generic
+  call, `new`, a primitive method) so perf CI tracks it.
+
+## 2026-10-28: #52 merged; CI results; trace(); recording with methods
+
+- #52 merged. CI, branch vs main's latest run: fastr 30320 -> 30369
+  (+49), gnur-examples 559 -> 605 (+46), gnur-tests 20 -> 21 (+1), no case
+  lost in any corpus; perf job green.
+- `traceOnOff`/`debugOnOff` (debug.c) replaced placeholders that returned
+  FALSE: `.doTrace` now runs, so `trace(f, quote(...))` and
+  `trace("g", ..., signature = "numeric")` (methods' `.TraceWithMethods`)
+  print GNU R's output (tests/r/s4/trace.R). Open: `trace("f")` without a
+  tracer goes through `.primTrace` and the RTRACE bit, which needs the
+  evaluator/VM call path to print `trace: f(1)` (VM owner).
+- Methods as a default package, measurement in a scratch worktree
+  (corpora.toml `default_packages` + methods, recorded in the oracle
+  image): gnur-examples 591 -> 603 passing on this host with the same
+  binary; the 2 "losses" are recording-environment artifacts (Docker uid
+  for file.access, seccomp's "Function not implemented" for system()).
+- **Memory incident:** recording gnur-tests with `--jobs 4` ran its
+  `reg-large` case (8+ GB) next to three other recordings; the box (14 GB,
+  shared) ran out and the core agent was OOM-killed. Now: `free -g` check
+  before each recording, `docker run --memory 6g --memory-swap 6g`,
+  `--jobs 1` for gnur-tests with `--filter '^(?!reg-large$)'`; reg-large
+  is left to CI. fastr is recorded in 8 chunks (last hex digit of the id)
+  because `record` writes only at the end.
+
 ## 2026-10-28: bare robigo starts with GNU R's default packages; startup cost
 
 - `robigo script.R` without `R_DEFAULT_PACKAGES` forced it to NULL ("cannot

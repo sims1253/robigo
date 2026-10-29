@@ -273,6 +273,13 @@ pub extern "C" fn Rf_fsign(a0: f64, a1: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Rf_ftrunc(a0: f64) -> f64 {
+    let r = robigo_numerics::fround::ftrunc(a0);
+    crate::errors::nmath_warnings();
+    r
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Rf_gammafn(a0: f64) -> f64 {
     let r = robigo_numerics::gamma::gammafn(a0);
     crate::errors::nmath_warnings();
@@ -380,6 +387,13 @@ pub extern "C" fn Rf_pcauchy(a0: f64, a1: f64, a2: f64, a3: c_int, a4: c_int) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_pchisq(a0: f64, a1: f64, a2: c_int, a3: c_int) -> f64 {
     let r = robigo_numerics::pgamma::pchisq(a0, a1, a2 != 0, a3 != 0);
+    crate::errors::nmath_warnings();
+    r
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Rf_pentagamma(a0: f64) -> f64 {
+    let r = robigo_numerics::polygamma::pentagamma(a0);
     crate::errors::nmath_warnings();
     r
 }
@@ -870,6 +884,13 @@ pub extern "C" fn Rf_rweibull(a1: f64, a2: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn Rf_rwilcox(a1: f64, a2: f64) -> f64 {
     let r = crate::rng::with_rng(|rng| robigo_numerics::rand::rwilcox(rng, a1, a2));
+    crate::errors::nmath_warnings();
+    r
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Rf_tetragamma(a0: f64) -> f64 {
+    let r = robigo_numerics::polygamma::tetragamma(a0);
     crate::errors::nmath_warnings();
     r
 }

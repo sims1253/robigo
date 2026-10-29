@@ -17,7 +17,37 @@ pub static DEFS: &[Builtin] = &[
     special("@<-", do_slot_gets, 3),
     prim(".cache_class", do_cache_class, 2),
     prim(".class2", do_class2, 1),
+    // methods' trace() machinery (`.doTrace` checks tracingState()).
+    internal("traceOnOff", |i, c, a, e| do_trace_on_off(i, c, a, e, true), 1),
+    internal("debugOnOff", |i, c, a, e| do_trace_on_off(i, c, a, e, false), 1),
 ];
+
+thread_local! {
+    /// debug.c's `tracing_state` and `debugging_state`.
+    static TRACE_DEBUG_STATE: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, true)) };
+}
+
+// R: debug.c:do_traceOnOff
+fn do_trace_on_off(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env, trace: bool) -> RResult<Value> {
+    let (t, d) = TRACE_DEBUG_STATE.with(|s| s.get());
+    let prev = if trace { t } else { d };
+    let on_off = arg(&args, 0);
+    if !on_off.is_empty() {
+        match crate::coerce::as_logical(&on_off) {
+            v @ (TRUE | FALSE) => {
+                let v = v == TRUE;
+                TRACE_DEBUG_STATE.with(|s| s.set(if trace { (v, d) } else { (t, v) }));
+            }
+            _ => {
+                return Err(Flow::error(format!(
+                    "Value for '{}' must be TRUE or FALSE",
+                    if trace { "tracingState" } else { "debuggingState" }
+                )));
+            }
+        }
+    }
+    Ok(Value::lgl(prev))
+}
 
 // R: objects.c:do_standardGeneric
 fn do_standard_generic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

@@ -8,9 +8,7 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "R_ClosureFormals",
     "R_mkClosure",
-    "R_ClosureEnv",
     "GEMode",
     "GEcurrentDevice",
     "GEinitDisplayList",
@@ -41,8 +39,6 @@ pub static STUBS: &[&str] = &[
     "GEregisterSystem",
     "GEstring_to_pch",
     "GEunregisterSystem",
-    "R_ClosureBody",
-    "R_ClosureExpr",
     "R_GE_str2col",
     "Rf_GAxisPars",
     "Rf_NewFrameConfirm",
@@ -238,18 +234,8 @@ pub static STUBS: &[&str] = &[
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureFormals() {
-    not_implemented("R_ClosureFormals")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_mkClosure() {
     not_implemented("R_mkClosure")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureEnv() {
-    not_implemented("R_ClosureEnv")
 }
 
 #[unsafe(no_mangle)]
@@ -400,16 +386,6 @@ pub unsafe extern "C" fn GEstring_to_pch() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GEunregisterSystem() {
     not_implemented("GEunregisterSystem")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureBody() {
-    not_implemented("R_ClosureBody")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_ClosureExpr() {
-    not_implemented("R_ClosureExpr")
 }
 
 #[unsafe(no_mangle)]
