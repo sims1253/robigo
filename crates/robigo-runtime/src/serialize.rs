@@ -637,48 +637,94 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(reps.get(i).cloned().unwrap_or(Value::Null))
             }
             BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
+                // R: serialize.c:ReadBCLang. The chain is walked cell by
+                // cell; collecting the spine first avoids rebuilding the
+                // suffix Value at every level (each rebuild cloned the
+                // tail's items again, and dropped the intermediate).
+                // A cell stored for a BCREPDEF (`reps`) spans from its own
+                // level to the end — a contiguous slice of the flat items.
+                struct Level {
+                    pos: Option<usize>,
+                    lang: bool,
+                    attr: Value,
+                    tag: Value,
+                    car: Value,
+                }
+                let translate = |t: u32| match t {
+                    ATTRLANGSXP => (LANGSXP, true),
+                    ATTRLISTSXP => (LISTSXP, true),
+                    t => (t, false),
+                };
+                let mut spine: Vec<Level> = Vec::new();
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     pos = Some(self.int()? as usize);
                     ty = self.int()? as u32;
                 }
-                let mut hasattr = false;
-                match ty {
-                    ATTRLANGSXP => {
-                        ty = LANGSXP;
-                        hasattr = true;
+                let (mut ty, mut hasattr) = translate(ty);
+                let cdr;
+                loop {
+                    let attr = if hasattr { self.read_item()? } else { Value::Null };
+                    let tag = self.read_item()?;
+                    let t1 = self.int()? as u32;
+                    let car = self.read_bc_lang(t1, reps)?;
+                    spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
+                    let t2 = self.int()? as u32;
+                    let mut npos = None;
+                    let mut nty = t2;
+                    if nty == BCREPDEF {
+                        npos = Some(self.int()? as usize);
+                        nty = self.int()? as u32;
                     }
-                    ATTRLISTSXP => {
-                        ty = LISTSXP;
-                        hasattr = true;
+                    let (nty, nhasattr) = translate(nty);
+                    if matches!(nty, LANGSXP | LISTSXP) {
+                        pos = npos;
+                        ty = nty;
+                        hasattr = nhasattr;
+                        continue;
                     }
-                    _ => {}
+                    // The chain's tail, as `read_bc_lang(t2)` reads it.
+                    cdr = match nty {
+                        BCREPREF => {
+                            let i = self.int()? as usize;
+                            reps.get(i).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => self.read_item()?,
+                    };
+                    break;
                 }
-                let attr = if hasattr { self.read_item()? } else { Value::Null };
-                let tag = self.read_item()?;
-                let t1 = self.int()? as u32;
-                let car = self.read_bc_lang(t1, reps)?;
-                let t2 = self.int()? as u32;
-                let cdr = self.read_bc_lang(t2, reps)?;
-                let mut items = vec![Arg::new(tag.as_sym(), car)];
+                // Every level's cell, then the tail's.
+                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + 4);
+                for l in &spine {
+                    items.push(Arg::new(l.tag.as_sym(), l.car.clone()));
+                }
                 match &cdr {
                     Value::Pairlist(p) => items.extend(p.items.iter().cloned()),
                     Value::Lang(l) => items.extend(l.items()),
-                    Value::Null => {}
                     _ => {}
                 }
-                let mut v = if ty == LANGSXP {
+                // Cells referenced again (BCREPDEF) get their own Value for
+                // `reps`; the head carries the first level's attributes.
+                for (i, l) in spine.iter().enumerate() {
+                    if let Some(p) = l.pos {
+                        if p < reps.len() {
+                            let mut v = if l.lang {
+                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                            } else {
+                                Value::pairlist(items[i..].to_vec())
+                            };
+                            set_attr_pairlist(&mut v, l.attr.clone());
+                            reps[p] = v;
+                        }
+                    }
+                }
+                let mut v = if spine[0].lang {
                     Value::Lang(Rc::new(Lang::from_items(items, None)))
                 } else {
                     Value::pairlist(items)
                 };
-                set_attr_pairlist(&mut v, attr);
-                if let Some(p) = pos {
-                    if p < reps.len() {
-                        reps[p] = v.clone();
-                    }
-                }
+                set_attr_pairlist(&mut v, spine[0].attr.clone());
                 Ok(v)
             }
             _ => self.read_item(),
