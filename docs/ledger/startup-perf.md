@@ -105,3 +105,24 @@ lands; the natives work is PR #78 below.
 2. The remaining +0.32M of the natives load is stats.so's own mmap,
    .bss zeroing (Fortran COMMON) and relocations — at parity with what
    any dlopen pays; not worth chasing.
+
+## 2026-10-29 (later): rebase onto d709287 (core's #56 merged); perf-gate artifacts
+
+- Rebased the natives work onto main d709287, which merged core's #56
+  (lazy base from base.rdb, their own version of the guard fix, a reused
+  inflater). Startup `-e 1` utils,stats on top of that main:
+  240.0M without natives, 240.6M with them (the natives overhead is
+  +0.5M there; the earlier afe56d9-based numbers are in the table above).
+- The CI perf gate flags flexclust +10.2%, flexclust_no_s4 +9.3%,
+  csv +2.3% as slower. They are baseline artifacts: with identical
+  environment, this branch's binary and main d709287's binary are
+  instruction-identical on flexclust's partial path (4,717.8M both, both
+  dying at `setClass`) and its full path with methods attached
+  (5,183.9M both). Main's recorded flexclust baseline is 4.718M-instruct
+  sized — the `setClass`-error prefix — i.e. the baseline run died at
+  `source()` and compares as "faster" than any complete run; the same
+  comparison reports spectralnorm_math as FIXED (main's recorded run for
+  it was wrong). flexclust/csv are also #70's two natives-sensitive
+  benchmarks and the self-hosted runner shares its workspace across
+  concurrent PR runs. Documented on PR #78; #72 (compare with the PR's
+  own base commit) is the systemic fix.
