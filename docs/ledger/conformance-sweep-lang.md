@@ -1,5 +1,14 @@
 # conformance-sweep-lang
 
+## 2026-10-29: handoff from core (graphics examples, #69)
+
+- `example()` (and demo()) echo deparsed code where GNU R echoes the
+  source lines with their comments: `-> require("grDevices") # for
+  colours` vs `+> require("grDevices")`, `m*m` vs `m * m`. Cases:
+  gnur-examples grDevices/colors, grDevices/hcl; gnur-demos
+  graphics/image, stats/smooth. GNU R keeps srcrefs (`keep.source =
+  TRUE` in example's `source()` call) and prints them.
+
 ## 2026-10-28: follow-up delivery verification
 
 - Final candidate 049e4ed reconfirms 2,093/2,187 in the requested FastR filter, zero regressions. Combined names/tracing slice is 258/272, nine gains overall. Base examples remain 257/381 and GNU R scripts remain 18/59; related handler cases preserve their previous pass/fail status while conditions advances to the filesystem dependency.
