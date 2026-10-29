@@ -6,37 +6,53 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
-## 2026-10-29: native matrix elements (round 3, verification in progress)
+## 2026-10-29: native matrix elements (round 3, PR #80)
 
-- baseline: main `7ff8a140`, Debian GNU R 4.5.0-3 container, existing
-  release profile; `matrixFor` 762,198,152 instructions versus GNU R
-  765,103,272 (0.996x).
+- baseline: main `7ff8a140`, Debian GNU R 4.5.0-3, existing release
+  profile. Local full baseline: instruction geomean 0.5536, 74/77 correct
+  programs faster than GNU R. CI paired baseline: 0.5541, also 74/77.
 - change: dimension-only integer/double matrices have native views with
-  validated storage bounds; `Index2`/`SetIndex2` check each dimension and
-  use column-major offsets. Existing vector ownership handles aliases;
-  unsupported indices and values exit to the VM before accessing storage.
-- first result: 322,816,954 instructions, -57.6%, 0.422x GNU R. Release
-  conformance passes; matrix tests recorded with the exact Debian oracle.
-  All 34 runtime unit tests and all release conformance checks pass.
-  Isolated idiom: 759 -> 39 instructions/element (GNU R 608);
-  `callgrind-diff.py` confirms 40 instructions/element, almost entirely
-  native code. Full performance comparison pending.
-- tests: matrix reads/writes, integer/double storage, aliases, fractional
-  and invalid indices, a row beyond nrow whose linear offset is still
-  inside storage, exits preserving previous mutations and accumulators,
-  single-element matrices, and compiled code reused with new dimensions.
-  The fixture is recorded with Debian R 4.5.0-3 and added to passing.txt.
-- scope: `jit.rs`, `vm.rs` (native view setup), regression fixture.
-- #60 remains draft at c2ed404; main still lacks the release-profile change.
-
-- first full CI result: matrixFor -57.62%, but spectralnorm_alt_3
-  +0.65%, rejected pending correction. A paired per-function profile found
-  VM execution cheaper by 7.35 million instructions; the new compilation
-  cost outweighed that saving on its short matrix initialization loop.
+  validated storage bounds. `Index2`/`SetIndex2` check each dimension and
+  use column-major offsets. Existing ownership handles aliases; unsupported
+  indices and values exit to the VM before accessing storage. Changes to
+  `vm.rs` only set up the native matrix views and types.
+- rejected first candidate: matrixFor -57.62%, but spectralnorm_alt_3
+  +0.65%. Paired profiling found VM execution cheaper by 7.35 million
+  instructions; Cranelift compilation cost outweighed that saving on its
+  short matrix initialization loop.
 - correction: disable Cranelift's development IR verifier in release
-  builds, retaining it in debug builds. Focused recheck: spectralnorm_alt_3
-  1,311,890,312 -> 1,314,851,318 (+0.23%, inside the gate); matrixFor
-  319,543,513 (-58.1%). Final full comparison and checks running.
+  builds, retaining it in debug builds. Its default is useful during
+  compiler development but charges production executions for internal IR
+  checks at multiple compilation stages.
+- final paired CI result (run 40905386550, base run 40899570595): geomean
+  **0.5541 -> 0.5461**, faster than GNU R **74 -> 74** on the same 77
+  correct programs. `scripts/perf.py compare`: **10 faster, 0 slower**
+  beyond 0.5%, 0 broken. matrixFor **762,737,326 -> 319,981,245**
+  instructions (**-58.05%**, 0.9966x -> 0.4181x GNU R).
+  spectralnorm_alt_3 +0.225%, inside the gate; robigo/nbody -7.95%,
+  robigo/spectralnorm -3.77%, robigo/mandelbrot -3.06%.
+- isolated matrix write: **759 -> 39 instructions/element**, GNU R 608;
+  `callgrind-diff.py` confirms 40 instructions/element, nearly all native.
+- verification: `cargo test --release -p robigo-runtime -p robigo-cli`
+  passes, including conformance in interpreter, VM and JIT; fmt/diff checks
+  pass. New ratcheted fixture recorded with Debian R 4.5.0-3 covers integer
+  and double storage, reads/writes, aliases, fractional/invalid indices,
+  row bounds with an otherwise valid linear offset, deoptimization after
+  mutations, accumulators, single-element matrices, and changed dimensions
+  on subsequent compiled entries.
+- final full output check: 77/78 programs match GNU R, no runtime errors.
+  `spectralnorm_math` still differs locally, as in the baseline; do not
+  count CI's missing output flag as evidence this PR fixed it.
+- wall time on the busy shared host: final geomean 0.491x GNU R. This is
+  provisional; repeat `scripts/perf.py run --metric time --runtime both`
+  when the host is idle. The duplicate final local instruction sweep was
+  stopped after downloading CI's completed paired full-suite results.
+  Local and CI artifacts are in `/tmp/robigo-vm3/` (base-all.json,
+  matrix2-time.json, ci-base/perf.json, ci-final/perf.json).
+- next: align VM scalar NA/NaN payloads with the arith_exact oracle;
+  profile nbody_naive_2. #60 remains draft at c2ed404: main still lacks
+  the release-profile change. Once it lands, rebase #60, add the requested
+  Scan::raw/conn_getc inlines, and rerun the fair performance gate.
 
 ## Setup notes (this machine)
 
