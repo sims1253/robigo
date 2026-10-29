@@ -1,0 +1,17 @@
+# serialize/unserialize keep active and locked bindings (reference class fields); frame order as GNU R
+library(methods)
+mEdit <- suppressMessages(setRefClass("mEdit", fields = list(data = "matrix", edits = "list")))
+xx <- mEdit$new(data = matrix(1:4, 2))
+tf <- tempfile()
+save(xx, file = tf)
+rm(xx)
+load(tf)
+print(typeof(xx)); print(isS4(xx)); print(class(xx)); print(xx$data)
+.self <- xx
+print(identical(xx$data, .self$data))
+y <- unserialize(serialize(xx, NULL))
+print(isS4(y)); print(y$data)
+e <- new.env(hash = FALSE); makeActiveBinding("a", function() 42, e); assign("b", 1, e); lockBinding("b", e)
+x <- serialize(e, NULL, version = 2)
+print(length(x)); print(x[-(1:14)])
+f <- unserialize(x); bindingIsActive("a", f); f$a; bindingIsLocked("b", f)

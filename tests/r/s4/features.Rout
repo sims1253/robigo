@@ -1,0 +1,22 @@
+[1] 1
+[1] "a"
+invalid class “H” object: invalid object for slot "v" in class "H": got class "logical", should be or extend class "NumOrChar" 
+invalid class “Pos” object: negative x 
+invalid class “Pos” object: negative x 
+assignment of an object of class “character” is not valid for @‘x’ in an object of class “Pos”; is(value, "numeric") is not TRUE 
+no slot of name "y" for this object of class "Pos" 
+[1] "sz"
+[1] "standardGeneric"
+attr(,"package")
+[1] "methods"
+[1] 3
+[1] 3
+[1] "combine"
+[1] 3
+[1] "a 3"
+unable to find an inherited method for function ‘combine’ for signature ‘x = "logical", y = "numeric"’ 
+trying to generate an object from a virtual class ("Base") 
+[1] "describe"
+[1] "d1 > base"
+[1] TRUE
+[1] "D2"   "D1"   "Base"

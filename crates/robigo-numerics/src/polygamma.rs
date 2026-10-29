@@ -377,9 +377,46 @@ pub fn trigamma(x: f64) -> f64 {
     ans[0]
 }
 
+// R: polygamma.c:tetragamma (Rmath's Rf_tetragamma; C code calls it)
+pub fn tetragamma(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    let mut ans = [0.0];
+    let mut nz = 0;
+    if dpsifn(x, 2, 1, 1, &mut ans, &mut nz) != 0 {
+        return ML_NAN;
+    }
+    -2.0 * ans[0]
+}
+
+// R: polygamma.c:pentagamma (Rmath's Rf_pentagamma)
+pub fn pentagamma(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    let mut ans = [0.0];
+    let mut nz = 0;
+    if dpsifn(x, 3, 1, 1, &mut ans, &mut nz) != 0 {
+        return ML_NAN;
+    }
+    6.0 * ans[0]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tetragamma_pentagamma_are_psigamma_2_3() {
+        // polygamma.c: -2 * dpsifn(x, 2) and 6 * dpsifn(x, 3), as
+        // psigamma(x, 2) and psigamma(x, 3) compute them.
+        for &x in &[0.5, 1.0, 2.5, 10.0, -1.5, 1e-3, 123.456] {
+            assert_eq!(tetragamma(x).to_bits(), psigamma(x, 2.0).to_bits(), "tetragamma({x})");
+            assert_eq!(pentagamma(x).to_bits(), psigamma(x, 3.0).to_bits(), "pentagamma({x})");
+        }
+        assert!(tetragamma(f64::NAN).is_nan() && pentagamma(f64::NAN).is_nan());
+    }
 
     #[test]
     fn psi_values() {
