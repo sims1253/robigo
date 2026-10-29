@@ -61,6 +61,23 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   image and smooth demos); the `<bytecode>` line of printed functions;
   `eigen` needs `.Internal(La_rs)` (plot.window example); png()/cairo
   (`R_cairoCdynload` and the cairo module) not yet.
+- Next (utils from source, built on this branch): utils.so's undefined
+  stubs are hashtab.c (`R_mkhashtab`, `R_gethash`, `R_sethash`,
+  `R_remhash`, `R_numhash`, `R_typhash`, `R_maphash`, `R_clrhash`,
+  `R_isHashtable`, `R_HashtabSEXP`, `R_asHashtable`), the internet
+  module (`Rsockopen/close/connect/listen/read/write`, `Rdownload`),
+  `Runzip`, `do_edit`, `do_Rprof`, `do_Rprofmem`, `R_EditFiles`,
+  `R_strtod5`, `R_AllocStringBuffer`, `R_FreeStringBuffer`,
+  `Rconn_printf`, `Rf_con_pushback`, `Rf_csduplicated`, `Rf_matchE`,
+  `Rf_sortVector`, `Rf_wtransChar`, `Rf_acopy_string`,
+  `Rf_EncodeElement0`, `R_SignalCStackOverflow`, `R_ClearerrConsole`,
+  and data `R_MB_CUR_MAX`, `ptr_R_{add,load,save}history`,
+  `ptr_do_{dataentry,dataviewer,selectlist}`.
+- Local hygiene: only complete packages may sit in `.robigo/natives`
+  (the binary picks them up next to itself): grDevices/graphics/grid
+  built here fail to load on a binary without the engine, which made
+  every corpus case of other branches fail ("package 'grDevices' ... not
+  found"); they live in `.robigo/natives-graphics` when testing those.
 
 ## 2026-10-28: splines, tools, parallel natives from source; R_UnwindProtect
 
