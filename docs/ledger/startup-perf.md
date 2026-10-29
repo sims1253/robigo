@@ -241,6 +241,13 @@ default experience; GNU R unchanged):
 
 Natives overhead on default packages is +2.0M (8 packages, static).
 
+Secondary metrics (same container, shared machine — wall indicative):
+robigo def `-e 1` ~91-94ms wall vs GNU R 122ms; NULL 11ms vs 22ms.
+Peak RSS on def: 55.8MB without the cache, 89.4MB with it (the flats
+are resident once read; GNU R 53.4MB) — mmap for the flats is open
+item 4. The wall-time numbers above were taken on an idle moment; under
+load both runtimes slow equally.
+
 ## Open items (ranked)
 
 1. **CHARSXP interning** (R: serialize.c ReadItem calls mkChar, which
