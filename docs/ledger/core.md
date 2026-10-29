@@ -11,6 +11,19 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 4 utils rebase
+
+- Replayed the two utils implementation commits onto main 098bd95.
+  Range-diff preserves their code; unioned the ledger conflict. The
+  bridge retains main's STORED/PINNED lifetime handling and graphics roots.
+- The native build retains filtered per-package PKG_LIBS, xerbla and
+  static LINKFLAGS. The only script change is utils size.c accessor/layout
+  handling. CI now builds utils, grDevices, graphics and grid too. Main's
+  CI list still omitted the graphics packages after the workflow merge.
+- Historical baseline: utils fastr 400/410 with Rust ports, 405/410 with
+  natives; graphics examples 166/184 on the round-3 same-host comparison.
+  Fresh verification and CI artifact absorption follow below.
+
 ## 2026-10-29: round 3 landing preparation
 
 - Rebased graphics onto main 7ff8a140. Preserved main's STORED sweep and
