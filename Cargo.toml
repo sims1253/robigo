@@ -24,8 +24,14 @@ robigo-numerics = { path = "crates/robigo-numerics" }
 robigo-runtime = { path = "crates/robigo-runtime" }
 
 [profile.release]
+# Keep workspace optimization independent of codegen-unit partition changes.
+codegen-units = 1
 debug = "line-tables-only"
 panic = "unwind"
+
+# Cranelift with one codegen unit exceeds the 4 GiB build budget.
+[profile.release.package.cranelift-codegen]
+codegen-units = 16
 
 [profile.bench]
 inherits = "release"

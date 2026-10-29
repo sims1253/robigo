@@ -22,6 +22,8 @@ file cache. This host runs other agents, so elapsed times include contention.
 | Profile | Clean build seconds | Peak process MiB | Peak container MiB | OOM |
 |---|---:|---:|---:|---|
 | default (16 CGUs, no cross-crate LTO) | 312.00 | 2083.88 | 3135.40 | no |
+| one CGU | 355.52 (failed) | 2643.61 | 4096 | yes, Cranelift |
+| thin LTO, one CGU | 254.24 (failed) | 2609.46 | 4096 | yes, Cranelift |
 
 CI has no `ROBIGO_RUNNER` repository variable. Recent build job
 123532847452 used the `ubuntu-24.04` GitHub-hosted runner. This is a public
@@ -29,7 +31,10 @@ repository; [GitHub documents 4 CPUs and 16 GB RAM](https://docs.github.com/en/a
 The workflow has no container memory limit or build job override, so the
 local 4 GB/two-job experiment is stricter than CI.
 
-Candidates and perturbation measurements follow before selecting a profile.
+Both global one-CGU profiles were killed while compiling `cranelift-codegen`.
+Fat LTO was not attempted. Next candidate keeps Cranelift at 16 CGUs and
+uses one CGU for the workspace. Perturbation measurements follow before
+selecting a profile.
 
 ## Problem
 
