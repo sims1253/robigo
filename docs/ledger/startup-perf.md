@@ -6,7 +6,7 @@ per scenario. Machine notes: this box runs ~7 agents; wall numbers are
 medians under load (load avg 27-31 during the 2026-10-28 baseline) and
 are indicative only; instructions are the gate.
 
-## 2026-10-29: rebase onto e3909b9; VM guards vs lazy base; memchr
+## 2026-10-29: VM guards vs lazy base; memchr (measured on main e3909b9, then kept through the rebase onto db8cced)
 
 - Rebased onto main e3909b9 (main still boots base from the vendored
   sources; core's PR #56 is the same lazy-base idea, unmerged).
