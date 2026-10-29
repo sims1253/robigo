@@ -234,3 +234,4 @@ tests/r/basics/closure-bytecode.R
 tests/r/cli/parse-context.R
 tests/r/cli/parse-context-long.R
 tests/r/cli/parse-context-tabs.R
+tests/r/lang/source_refs.R

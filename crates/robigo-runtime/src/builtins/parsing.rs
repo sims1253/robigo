@@ -181,8 +181,124 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let exprs = parser
         .program_n(if num < 0 { usize::MAX } else { num as usize })
         .map_err(|e| parse_error_flow(&src, &srcfile, condition_srcfile, e))?;
-    let exprs = exprs.iter().map(expr_to_value).collect();
-    Ok(Value::expr_vec(exprs))
+    if !matches!(source, Value::Env(_)) {
+        return Ok(Value::expr_vec(exprs.iter().map(expr_to_value).collect()));
+    }
+    // R: gram.y:R_Parse enables source references for environment srcfiles.
+    let refs = SourceRefs::new(&src, &source);
+    let values = exprs.iter().map(|e| refs.convert(e)).collect();
+    let mut result = Value::expr_vec(values);
+    refs.attach(&mut result, exprs.iter().map(|e| refs.make(e.span())).collect(), parser.consumed_end());
+    Ok(result)
+}
+
+/// R: gram.y:makeSrcref, attachSrcrefs, xxexprlist, xxdefun.
+struct SourceRefs<'a> {
+    source: &'a Value,
+    // Position after each byte: parsed line, byte within line, display column.
+    positions: Vec<(i32, i32, i32)>,
+}
+
+impl<'a> SourceRefs<'a> {
+    fn new(text: &str, source: &'a Value) -> Self {
+        // R: gram.y:StringValue/RawStringValue increment xxbyteno by
+        // clen-1 before reading the continuation bytes with xxgetc.
+        // Those bytes increment it again. Backtick names use StringValue.
+        let mut quoted = vec![false; text.len()];
+        if let Ok((tokens, _)) = robigo_syntax::lexer::Lexer::new(text).tokenize() {
+            for token in tokens {
+                if matches!(token.tok, robigo_syntax::lexer::Tok::Str(_))
+                    || text.as_bytes().get(token.span.start as usize) == Some(&b'`')
+                {
+                    quoted[token.span.start as usize..token.span.end as usize].fill(true);
+                }
+            }
+        }
+        let mut positions = vec![(1, 0, 0)];
+        let (mut line, mut byte, mut column) = (1, 0, 0);
+        for (offset, ch) in text.char_indices() {
+            if quoted[offset] {
+                byte += ch.len_utf8() as i32 - 1;
+            }
+            for _ in 0..ch.len_utf8() {
+                byte += 1;
+                positions.push((line, byte, column + 1));
+            }
+            match ch {
+                '\n' => {
+                    line += 1;
+                    byte = 0;
+                    column = 0;
+                }
+                '\t' => column = (column / 8 + 1) * 8,
+                _ => column += 1,
+            }
+            *positions.last_mut().unwrap() = (line, byte, column);
+        }
+        Self { source, positions }
+    }
+
+    fn value(&self, first: (i32, i32, i32), last: (i32, i32, i32)) -> Value {
+        let mut value = Value::ints(vec![first.0, first.1, last.0, last.1, first.2, last.2, first.0, last.0]);
+        value.set_attr_raw(Sym::new("srcfile"), self.source.clone());
+        value.set_attr_raw(s::CLASS, Value::str("srcref"));
+        value
+    }
+
+    fn make(&self, span: robigo_syntax::Span) -> Value {
+        let (line, byte, col) = self.positions[span.start as usize];
+        self.value((line, byte + 1, col + 1), self.positions[span.end as usize])
+    }
+
+    fn attach(&self, value: &mut Value, refs: Vec<Value>, end: usize) {
+        value.set_attr_raw(s::SRCREF, Value::list(refs));
+        value.set_attr_raw(Sym::new("srcfile"), self.source.clone());
+        value.set_attr_raw(Sym::new("wholeSrcref"), self.value((1, 0, 0), self.positions[end]));
+    }
+
+    fn convert(&self, expr: &robigo_syntax::Expr) -> Value {
+        use robigo_syntax::Expr;
+        match expr {
+            Expr::Call { fun, args, span } => {
+                let mut value = Value::lang(
+                    self.convert(fun),
+                    args.iter()
+                        .map(|a| {
+                            Arg::new(
+                                a.name.map(Sym::new),
+                                a.value.as_ref().map(|e| self.convert(e)).unwrap_or_else(Value::missing_arg),
+                            )
+                        })
+                        .collect(),
+                );
+                if expr.call_name() == Some("{") {
+                    let mut refs = vec![self.make(robigo_syntax::Span { start: span.start, end: span.start + 1 })];
+                    refs.extend(args.iter().filter_map(|a| a.value.as_ref()).map(|e| self.make(e.span())));
+                    self.attach(&mut value, refs, span.end as usize);
+                }
+                value
+            }
+            Expr::Function { formals, body, span } => Value::lang(
+                Value::Sym(s::FUNCTION),
+                vec![
+                    Arg::pos(Value::pairlist(
+                        formals
+                            .iter()
+                            .map(|f| {
+                                Arg::new(
+                                    Some(Sym::new(f.name)),
+                                    f.default.as_ref().map(|e| self.convert(e)).unwrap_or_else(Value::missing_arg),
+                                )
+                            })
+                            .collect(),
+                    )),
+                    Arg::pos(self.convert(body)),
+                    Arg::pos(self.make(*span)),
+                ],
+            ),
+            _ => expr_to_value(expr),
+        }
+    }
 }
 
 fn do_str2lang(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
