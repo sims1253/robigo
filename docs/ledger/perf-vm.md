@@ -29,6 +29,15 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - scope: `jit.rs`, `vm.rs` (native view setup), regression fixture.
 - #60 remains draft at c2ed404; main still lacks the release-profile change.
 
+- first full CI result: matrixFor -57.62%, but spectralnorm_alt_3
+  +0.65%, rejected pending correction. A paired per-function profile found
+  VM execution cheaper by 7.35 million instructions; the new compilation
+  cost outweighed that saving on its short matrix initialization loop.
+- correction: disable Cranelift's development IR verifier in release
+  builds, retaining it in debug builds. Focused recheck: spectralnorm_alt_3
+  1,311,890,312 -> 1,314,851,318 (+0.23%, inside the gate); matrixFor
+  319,543,513 (-58.1%). Final full comparison and checks running.
+
 ## Setup notes (this machine)
 
 The host has GNU R 4.6.1 and glibc 2.44. Both runtimes are measured in a

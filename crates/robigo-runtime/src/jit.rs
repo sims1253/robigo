@@ -366,6 +366,9 @@ const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
 fn new_module() -> JITModule {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").unwrap();
+    // Cranelift's development verifier runs after each compilation pass.
+    // Keep it in debug builds; release loops pay only for code generation.
+    flags.set("enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" }).unwrap();
     let isa = cranelift_native::builder().unwrap().finish(settings::Flags::new(flags)).unwrap();
     let mut jb = JITBuilder::with_isa(isa, default_libcall_names());
     for (name, f, _, _) in HELPERS {
