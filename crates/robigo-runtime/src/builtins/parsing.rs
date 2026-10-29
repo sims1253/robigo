@@ -2,8 +2,6 @@
 //! `deparse`, `dput`, plus `expression`, `all.names`, `withVisible`
 //! (GNU R's source.c, deparse.c, list.c, builtin.c, eval.c).
 
-use std::rc::Rc;
-
 use super::{arg, internal, special};
 use crate::deparse::{DEFAULTDEPARSE, deparse_lines};
 use crate::env::Env;
@@ -394,7 +392,7 @@ fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 
     // R_findVar for each name; objects that are unbound are skipped with a
     // warning.
-    let mut found: Vec<(Rc<str>, Value)> = Vec::with_capacity(names.data.len());
+    let mut found: Vec<(crate::value::RString, Value)> = Vec::with_capacity(names.data.len());
     for name in &names.data {
         let Some(name) = name else { continue };
         if source.is_null() {
@@ -438,7 +436,10 @@ fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 /// `expression(...)`: unevaluated arguments as an expression vector.
 fn do_expression(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let any_tag = args.iter().any(|a| a.tag.is_some());
-    let names: Vec<RStr> = args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect();
+    let names: Vec<RStr> = args
+        .iter()
+        .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+        .collect();
     let mut v = Value::expr_vec(args.into_iter().map(|a| a.value).collect());
     if any_tag {
         v.set_attr_raw(s::NAMES, Value::strs(names));
@@ -446,13 +447,13 @@ fn do_expression(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     Ok(v)
 }
 
-fn all_names_rec(e: &Value, functions: bool, unique: bool, max: i64, out: &mut Vec<Rc<str>>) {
+fn all_names_rec(e: &Value, functions: bool, unique: bool, max: i64, out: &mut Vec<crate::value::RString>) {
     if max >= 0 && out.len() as i64 >= max {
         return;
     }
     match e {
         Value::Sym(s) => {
-            let n = s.name();
+            let n: crate::value::RString = s.name().into();
             if n.is_empty() {
                 return;
             }

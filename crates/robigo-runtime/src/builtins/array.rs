@@ -1675,11 +1675,11 @@ fn col_names(dn: &Value) -> Value {
 
 fn bind_name(tag: Option<Sym>, expr: &Value, deparse_level: i32) -> Option<RStr> {
     if let Some(t) = tag {
-        return Some(Some(t.name()));
+        return Some(Some(t.name().into()));
     }
     if deparse_level == 1 {
         if let Value::Sym(sym) = expr {
-            return Some(Some(sym.name()));
+            return Some(Some(sym.name().into()));
         }
     } else if deparse_level == 2 {
         let d = crate::deparse::deparse_lines(expr, 500, true, crate::deparse::SIMPLEDEPARSE, None);

@@ -17,13 +17,11 @@ pub fn const_to_value(c: &Const) -> Value {
         Const::Cplx(re, im) => Value::cplx(Complex::new(*re, *im)),
         Const::CplxNa => Value::cplx(Complex::NA),
         Const::Str(None) => Value::str_na(),
-        // GNU R keeps escaped bytes as a "bytes"-encoded CHARSXP; until the
-        // value model carries encodings, such bytes become their Latin-1
-        // characters so no information is lost in the common case.
-        Const::Str(Some(s)) => match std::str::from_utf8(s) {
-            Ok(text) => Value::str(text),
-            Err(_) => Value::str(&s.iter().map(|&b| b as char).collect::<String>()),
-        },
+        // R: gram.y:StringValue (mkCharLenCE retains octal/hex bytes).
+        Const::Str(Some(s)) => Value::strs(vec![Some(RString::from_bytes(
+            s,
+            if std::str::from_utf8(s).is_ok() { Encoding::Utf8 } else { Encoding::Native },
+        ))]),
     }
 }
 

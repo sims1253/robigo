@@ -440,6 +440,28 @@ pub fn escape_string(s: &str, quote: Option<char>) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// R: printutils.c:EncodeString, invalid native and bytes payloads.
+pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
+    if !matches!(s.encoding(), Encoding::Bytes | Encoding::NativeInvalid | Encoding::Utf8Invalid) {
+        return escape_string(s, quote);
+    }
+    let mut out = String::new();
+    if let Some(q) = quote {
+        out.push(q);
+    }
+    for &b in s.raw_bytes().iter() {
+        if b >= 128 {
+            out.push_str(&format!("\\x{b:02x}"));
+        } else {
+            out.push_str(&escape_string(&(b as char).to_string(), quote).trim_matches(quote.unwrap_or('\0')));
+        }
+    }
+    if let Some(q) = quote {
+        out.push(q);
+    }
+    out
+}
+
 /// `Rstrlen`: display width of the escaped (and maybe quoted) string.
 pub fn rstrlen(s: &str, quote: Option<char>) -> usize {
     str_width(&escape_string(s, quote))
@@ -463,7 +485,7 @@ pub fn encode_string(s: &RStr, w: usize, quote: Option<char>, justify: Justify, 
                 pp.na_string_noquote.clone()
             }
         }
-        Some(s) => escape_string(s, quote),
+        Some(s) => escape_rstring(s, quote),
     };
     let bw = str_width(&body);
     if bw >= w || justify == Justify::None {
@@ -492,7 +514,7 @@ pub fn format_string(x: &[RStr], quote: Option<char>, pp: &PrintParams) -> usize
                     pp.na_width_noquote
                 }
             }
-            Some(s) => rstrlen(s, quote),
+            Some(s) => str_width(&escape_rstring(s, quote)),
         };
         w = w.max(l);
     }

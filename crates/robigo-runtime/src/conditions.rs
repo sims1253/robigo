@@ -14,7 +14,7 @@ const N_SHOW_CALLS: usize = 50;
 const MAX_WARNINGS: usize = 50;
 
 pub struct HandlerEntry {
-    pub class: Rc<str>,
+    pub class: crate::value::RString,
     pub parent_env: Value,
     pub handler: Value,
     /// Frame to return to for exiting handlers.
@@ -70,7 +70,7 @@ impl Interp {
     ) -> RResult<T> {
         let saved = self.handlers.clone();
         let entry = HandlerEntry {
-            class: Rc::from("error"),
+            class: crate::value::RString::from("error"),
             parent_env: Value::Env(self.global.clone()),
             handler: rust_handler_value(handler),
             target: None,
@@ -157,7 +157,7 @@ impl Interp {
         }
     }
 
-    fn find_handler(&self, classes: &[Rc<str>]) -> Option<(Rc<HandlerEntry>, HandlerStack)> {
+    fn find_handler(&self, classes: &[crate::value::RString]) -> Option<(Rc<HandlerEntry>, HandlerStack)> {
         let mut cur = self.handlers.clone();
         while let Some(node) = cur {
             if classes.iter().any(|c| **c == *node.entry.class) {
@@ -191,7 +191,7 @@ impl Interp {
             classes.push("simpleError");
         }
         classes.extend(["error", "condition"]);
-        let class_rcs: Vec<Rc<str>> = classes.iter().map(|c| Rc::from(*c)).collect();
+        let class_rcs: Vec<crate::value::RString> = classes.iter().map(|c| crate::value::RString::from(*c)).collect();
         while let Some((entry, rest)) = self.find_handler(&class_rcs) {
             self.handlers = rest;
             let cond = make_condition(&e.message, ecall.clone(), &classes);
@@ -224,7 +224,7 @@ impl Interp {
     /// Signal an R condition object (`.signalCondition`). Returns normally
     /// if no exiting handler took over.
     pub fn signal_condition(&mut self, cond: &Value, call: &Value) -> RResult<()> {
-        let classes: Vec<Rc<str>> = match cond.get_attr(s::CLASS) {
+        let classes: Vec<crate::value::RString> = match cond.get_attr(s::CLASS) {
             Some(Value::Str(v)) => v.data.iter().flatten().cloned().collect(),
             _ => return Ok(()),
         };
@@ -341,8 +341,8 @@ impl Interp {
         // With handlers established, go through the R-level protocol so that
         // withCallingHandlers/tryCatch/suppressWarnings see the warning.
         if self.handlers.is_some() {
-            let classes: Vec<Rc<str>> =
-                ["simpleWarning", "warning", "condition"].iter().map(|c| Rc::from(*c)).collect();
+            let classes: Vec<crate::value::RString> =
+                ["simpleWarning", "warning", "condition"].iter().map(|c| crate::value::RString::from(*c)).collect();
             if self.find_handler(&classes).is_some() {
                 let cond = make_condition(&msg, call.clone(), &["simpleWarning", "warning", "condition"]);
                 return self.signal_warning_condition(&cond, call, &msg);

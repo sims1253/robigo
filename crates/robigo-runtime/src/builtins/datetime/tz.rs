@@ -46,7 +46,7 @@ pub struct Tm {
     pub yday: i32,
     pub isdst: i32,
     pub gmtoff: i64,
-    pub zone: Option<Rc<str>>,
+    pub zone: Option<crate::value::RString>,
 }
 
 /// glibc's `__isleap`.
@@ -134,10 +134,10 @@ struct TzFile {
 }
 
 impl TzFile {
-    fn name(&self, idx: usize) -> Rc<str> {
+    fn name(&self, idx: usize) -> crate::value::RString {
         let bytes = self.zone_names.get(idx..).unwrap_or(&[]);
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        Rc::from(String::from_utf8_lossy(&bytes[..end]).as_ref())
+        crate::value::RString::from(String::from_utf8_lossy(&bytes[..end]).as_ref())
     }
 }
 
@@ -269,7 +269,7 @@ enum RuleType {
 
 #[derive(Clone, Debug)]
 struct TzRule {
-    name: Rc<str>,
+    name: crate::value::RString,
     typ: RuleType,
     m: u16,
     n: u16,
@@ -283,7 +283,7 @@ struct TzRule {
 impl Default for TzRule {
     fn default() -> Self {
         TzRule {
-            name: Rc::from(""),
+            name: crate::value::RString::from(""),
             typ: RuleType::J0,
             m: 0,
             n: 0,
@@ -304,7 +304,7 @@ struct State {
     /// (dev, ino, mtime) of the loaded file, as glibc's change check.
     file_id: (u64, u64, i64),
     rules: [TzRule; 2],
-    tzname: [Rc<str>; 2],
+    tzname: [crate::value::RString; 2],
     /// mktime's `localtime_offset`.
     localtime_offset: i64,
 }
@@ -318,7 +318,7 @@ impl Default for State {
             file: Rc::new(TzFile::default()),
             file_id: (0, 0, 0),
             rules: [TzRule::default(), TzRule::default()],
-            tzname: [Rc::from("GMT"), Rc::from("GMT")],
+            tzname: [crate::value::RString::from("GMT"), crate::value::RString::from("GMT")],
             localtime_offset: 0,
         }
     }
@@ -443,7 +443,7 @@ impl State {
         } else {
             (start, p, p)
         };
-        self.rules[which].name = Rc::from(String::from_utf8_lossy(&tz[s..e]).as_ref());
+        self.rules[which].name = crate::value::RString::from(String::from_utf8_lossy(&tz[s..e]).as_ref());
         *pos = next;
         true
     }
@@ -646,8 +646,8 @@ impl State {
         }
         if tz.is_empty() || tz == TZDEFAULT {
             self.rules = [TzRule::default(), TzRule::default()];
-            self.rules[0].name = Rc::from("UTC");
-            self.rules[1].name = Rc::from("UTC");
+            self.rules[0].name = crate::value::RString::from("UTC");
+            self.rules[1].name = crate::value::RString::from("UTC");
             self.rules[0].change = -1;
             self.rules[1].change = -1;
             self.update_vars();
@@ -693,7 +693,7 @@ impl State {
         }
         // Find the standard and daylight time abbreviations: those of the
         // latest transitions.
-        let mut names: [Option<Rc<str>>; 2] = [None, None];
+        let mut names: [Option<crate::value::RString>; 2] = [None, None];
         for i in (0..f.transitions.len()).rev() {
             let ty = f.types[f.type_idxs[i] as usize];
             let dst = ty.isdst as usize;
@@ -713,7 +713,7 @@ impl State {
 
     /// `__tzfile_default`: the user's names and offsets with the rules of
     /// the TZDEFRULES file.
-    fn tzfile_default(&mut self, std: &Rc<str>, dst: &Rc<str>, stdoff: i32, dstoff: i32) {
+    fn tzfile_default(&mut self, std: &crate::value::RString, dst: &crate::value::RString, stdoff: i32, dstoff: i32) {
         self.tzfile_read(TZDEFRULES);
         if !self.use_tzfile {
             return;
@@ -853,7 +853,7 @@ impl State {
     fn tzfile_compute(&mut self, timer: i64, use_localtime: bool, tp: &mut Tm) -> (i64, i32) {
         let f = self.file.clone();
         if use_localtime {
-            let mut tzname: [Option<Rc<str>>; 2] = [None, None];
+            let mut tzname: [Option<crate::value::RString>; 2] = [None, None];
             let nt = f.transitions.len();
             let ntypes = f.types.len();
             let info: usize;
@@ -1009,7 +1009,7 @@ impl State {
         };
         if !use_localtime {
             tp.isdst = 0;
-            tp.zone = Some(Rc::from("GMT"));
+            tp.zone = Some(crate::value::RString::from("GMT"));
             tp.gmtoff = 0;
         }
         if offtime(timer, tp.gmtoff - lc, &mut tp) {
@@ -1037,7 +1037,7 @@ pub fn tzset() {
 }
 
 /// The current `tzname[0]`, `tzname[1]`.
-pub fn tzname() -> [Rc<str>; 2] {
+pub fn tzname() -> [crate::value::RString; 2] {
     STATE.with(|s| s.borrow().tzname.clone())
 }
 

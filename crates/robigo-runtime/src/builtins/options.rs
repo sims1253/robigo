@@ -4,7 +4,6 @@
 //! `.Options` pairlist; `options()` returns them sorted by name.
 
 use std::cmp::Ordering;
-use std::rc::Rc;
 
 use super::internal;
 use crate::coerce::{CoerceWarnings, as_integer, as_logical, to_int};
@@ -387,7 +386,7 @@ fn validate(i: &mut Interp, name: &str, argi: Value) -> RResult<Value> {
             if !ok {
                 return Err(invalid_value(name));
             }
-            let s = argi.str1().flatten().unwrap_or_else(|| Rc::from("NA"));
+            let s = argi.str1().flatten().unwrap_or_else(|| crate::value::RString::from("NA"));
             if s.chars().count() != 1 {
                 i.warning("'OutDec' must be a string of one character")?;
             }
@@ -522,7 +521,10 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             Value::Null => {}
             Value::Pairlist(p) => {
                 for a in &p.items {
-                    items.push((Some(Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))), a.value.clone()));
+                    items.push((
+                        Some(Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from("")))),
+                        a.value.clone(),
+                    ));
                 }
             }
             v @ (Value::List(l) | Value::Expr(l)) => {
@@ -541,7 +543,10 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         }
     } else {
         for a in &args {
-            items.push((Some(Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))), a.value.clone()));
+            items.push((
+                Some(Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from("")))),
+                a.value.clone(),
+            ));
         }
     }
     let n = items.len();
@@ -549,7 +554,7 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let mut names: Vec<RStr> = Vec::with_capacity(n);
     let mut visible = false;
     for (namei, argi) in items {
-        let namei: Rc<str> = namei.flatten().unwrap_or_else(|| Rc::from("NA"));
+        let namei: crate::value::RString = namei.flatten().unwrap_or_else(|| crate::value::RString::from("NA"));
         if !namei.is_empty() {
             names.push(Some(namei.clone()));
             if argi.is_null() {
@@ -571,7 +576,7 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 Value::Str(v) if !v.data.is_empty() => v.data[0].clone(),
                 _ => return Err(Flow::error("invalid argument")),
             };
-            let tag: Rc<str> = tag.unwrap_or_else(|| Rc::from("NA"));
+            let tag: crate::value::RString = tag.unwrap_or_else(|| crate::value::RString::from("NA"));
             if &*tag == "par.ask.default" {
                 return Err(Flow::error("\"par.ask.default\" has been replaced by \"device.ask.default\""));
             }

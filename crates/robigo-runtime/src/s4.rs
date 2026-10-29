@@ -727,13 +727,13 @@ impl Interp {
 
     /// `R_data_class2(obj)`: the class vector S3 dispatch uses.
     // R: attrib.c:R_data_class2
-    pub fn data_class2(&mut self, obj: &Value) -> RResult<Vec<Rc<str>>> {
+    pub fn data_class2(&mut self, obj: &Value) -> RResult<Vec<crate::value::RString>> {
         if obj.is_s4() {
             if let Some(klass) = obj.get_attr(s::CLASS).filter(|k| !k.is_empty()) {
                 let v = self.s4_extends(&klass, true)?;
                 return Ok(crate::coerce::to_str(&v)
                     .into_iter()
-                    .map(|x| x.unwrap_or_else(|| Rc::from("NA")))
+                    .map(|x| x.unwrap_or_else(|| crate::value::RString::from("NA")))
                     .collect());
             }
         }

@@ -39,10 +39,132 @@ pub fn is_nan_or_na(x: f64) -> bool {
 }
 
 /// A CHARSXP; `None` is `NA_character_`.
-pub type RStr = Option<Rc<str>>;
+pub type RStr = Option<RString>;
+
+/// A CHARSXP encoding window. The structural byte is hidden from text users;
+/// byte-oriented operations reconstruct the original payload without loss.
+#[derive(Clone, Debug)]
+pub struct RString(Rc<str>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Encoding {
+    Native = 0,
+    Utf8 = 1,
+    Latin1 = 2,
+    Bytes = 3,
+    NativeInvalid = 4,
+    Utf8Invalid = 5,
+}
+
+impl RString {
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        Rc::ptr_eq(&a.0, &b.0)
+    }
+    pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
+        let (mark, text) = if bytes.is_ascii() {
+            (Encoding::Native, std::borrow::Cow::Borrowed(std::str::from_utf8(bytes).unwrap()))
+        } else if matches!(encoding, Encoding::Latin1 | Encoding::Bytes) {
+            (encoding, std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()))
+        } else {
+            match std::str::from_utf8(bytes) {
+                Ok(s) => (encoding, std::borrow::Cow::Borrowed(s)),
+                Err(_) => (
+                    if encoding == Encoding::Utf8 { Encoding::Utf8Invalid } else { Encoding::NativeInvalid },
+                    std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()),
+                ),
+            }
+        };
+        let mut stored = String::with_capacity(text.len() + 1);
+        stored.push(mark as u8 as char);
+        stored.push_str(&text);
+        Self(Rc::from(stored))
+    }
+    pub fn encoding(&self) -> Encoding {
+        match self.0.as_bytes()[0] {
+            0 => Encoding::Native,
+            1 => Encoding::Utf8,
+            2 => Encoding::Latin1,
+            3 => Encoding::Bytes,
+            4 => Encoding::NativeInvalid,
+            _ => Encoding::Utf8Invalid,
+        }
+    }
+    pub fn raw_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        match self.encoding() {
+            Encoding::Native | Encoding::Utf8 => std::borrow::Cow::Borrowed(self.as_bytes()),
+            _ => std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect()),
+        }
+    }
+    pub fn encoding_name(&self) -> &'static str {
+        match self.encoding() {
+            Encoding::Utf8 | Encoding::Utf8Invalid => "UTF-8",
+            Encoding::Latin1 => "latin1",
+            Encoding::Bytes => "bytes",
+            _ => "unknown",
+        }
+    }
+}
+impl From<&str> for RString {
+    fn from(s: &str) -> Self {
+        Self::from_bytes(s.as_bytes(), Encoding::Utf8)
+    }
+}
+impl From<String> for RString {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+impl From<Rc<str>> for RString {
+    fn from(s: Rc<str>) -> Self {
+        Self::from(&*s)
+    }
+}
+impl std::ops::Deref for RString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0[1..]
+    }
+}
+impl AsRef<str> for RString {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+impl std::borrow::Borrow<str> for RString {
+    fn borrow(&self) -> &str {
+        self
+    }
+}
+impl std::fmt::Display for RString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&**self, f)
+    }
+}
+impl PartialEq for RString {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+impl Eq for RString {}
+impl std::hash::Hash for RString {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        std::hash::Hash::hash(&**self, h)
+    }
+}
+impl PartialOrd for RString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
 
 pub fn rstr(s: &str) -> RStr {
-    Some(Rc::from(s))
+    Some(crate::value::RString::from(s))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -964,7 +1086,12 @@ fn tags_to_names(items: &[Arg]) -> Option<Value> {
     if items.iter().all(|a| a.tag.is_none()) {
         return None;
     }
-    Some(Value::strs(items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect()))
+    Some(Value::strs(
+        items
+            .iter()
+            .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+            .collect(),
+    ))
 }
 
 impl Lang {
@@ -984,5 +1111,11 @@ impl Lang {
     pub fn from_items(mut items: Vec<Arg>, attrs: AttrBox) -> Lang {
         let head = items.remove(0);
         Lang { fun: head.value, args: items, attrs, fun_tag: head.tag }
+    }
+}
+
+impl Default for RString {
+    fn default() -> Self {
+        Self::from("")
     }
 }

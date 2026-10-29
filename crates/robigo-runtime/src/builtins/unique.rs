@@ -211,7 +211,7 @@ impl Elems<'_> {
             (Elems::R(a), Elems::R(b)) => real_key(a[i]) == real_key(b[j]),
             (Elems::C(a), Elems::C(b)) => cplx_key(a[i]) == cplx_key(b[j]),
             (Elems::S(a), Elems::S(b)) => match (&a[i], &b[j]) {
-                (Some(x), Some(y)) => std::rc::Rc::ptr_eq(x, y) || **x == **y,
+                (Some(x), Some(y)) => crate::value::RString::ptr_eq(x, y) || **x == **y,
                 (None, None) => true,
                 _ => false,
             },

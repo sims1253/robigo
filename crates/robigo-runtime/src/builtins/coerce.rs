@@ -84,7 +84,7 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
                 t.name()
             )));
         }
-        Value::Sym(sy) if t == VType::Str => return Ok(Value::strs(vec![Some(sy.name())])),
+        Value::Sym(sy) if t == VType::Str => return Ok(Value::strs(vec![Some(sy.name().into())])),
         Value::Sym(_) => {
             return Err(Flow::error(format!("cannot coerce type 'symbol' to vector of type '{}'", t.name())));
         }
@@ -220,7 +220,7 @@ fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     }
     let mut x = arg(&args, 0);
     let mode = match arg(&args, 1) {
-        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
+        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| crate::value::RString::from("")),
         // R: error_return(R_MSG_mode) — plain error against the context.
         _ => return Err(Flow::error("invalid 'mode' argument")),
     };
@@ -504,7 +504,7 @@ fn do_typeof(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let mode = match arg(&args, 1) {
-        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("")),
+        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| crate::value::RString::from("")),
         // R: error_return(R_MSG_mode) — a plain error, so the reported
         // call is the user's is.vector(...) call, not the internal one.
         _ => return Err(Flow::error("invalid 'mode' argument")),

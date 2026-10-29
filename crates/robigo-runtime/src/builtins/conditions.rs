@@ -100,7 +100,7 @@ fn do_add_cond_hands(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     let mut stack = i.handlers.clone();
     for k in (0..cls.data.len()).rev() {
         let entry = HandlerEntry {
-            class: cls.data[k].clone().unwrap_or_else(|| Rc::from("NA")),
+            class: cls.data[k].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
             parent_env: parentenv.clone(),
             handler: hs.data[k].clone(),
             target: target_env.clone(),

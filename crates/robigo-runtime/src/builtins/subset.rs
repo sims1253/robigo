@@ -224,7 +224,7 @@ pub(crate) fn fix_subset3_arg(
     };
     let nlist = unwrap_quote(nlist);
     match &nlist {
-        Value::Sym(sym) => Ok((Some(sym.name()), Some(*sym))),
+        Value::Sym(sym) => Ok((Some(sym.name().into()), Some(*sym))),
         Value::Str(v) => {
             if v.data.len() != 1 {
                 return Err(Flow::error("invalid subscript length"));

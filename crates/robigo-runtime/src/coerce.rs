@@ -1,7 +1,5 @@
 //! Type coercion between vector types (GNU R's coerce.c).
 
-use std::rc::Rc;
-
 use crate::error::{Flow, RResult};
 use crate::format::string_from_real;
 use crate::interp::Interp;
@@ -335,7 +333,7 @@ pub fn cplx_to_str(z: Complex) -> RStr {
     let (r, i) = crate::format::format_complex(&[z], 15, 0, 0, 2);
     let s = crate::format::encode_complex(z, r, i, "NA");
     // as.character drops trailing zeros in each part.
-    Some(Rc::from(s.as_str()))
+    Some(crate::value::RString::from(s.as_str()))
 }
 
 #[derive(Default)]
@@ -567,11 +565,11 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
                 Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
                 Value::Null => rstr("NULL"),
                 e if e.is_atomic() && e.len() == 1 => to_str(e)[0].clone(),
-                Value::Sym(sym) => Some(sym.name()),
+                Value::Sym(sym) => Some(sym.name().into()),
                 e => rstr(&crate::deparse::deparse_one_line(e)),
             })
             .collect(),
-        Value::Sym(s) => vec![Some(s.name())],
+        Value::Sym(s) => vec![Some(s.name().into())],
         Value::Lang(_) | Value::Pairlist(_) => {
             // as.character on a call: each element deparsed.
             let items: Vec<Value> = match v {
@@ -582,7 +580,7 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
             items
                 .iter()
                 .map(|e| match e {
-                    Value::Sym(s) => Some(s.name()),
+                    Value::Sym(s) => Some(s.name().into()),
                     Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
                     e => rstr(&crate::deparse::deparse_one_line(e)),
                 })
@@ -807,7 +805,7 @@ pub fn as_real(v: &Value) -> f64 {
 /// `asChar`: first element as a string.
 pub fn as_string(v: &Value) -> RStr {
     match v {
-        Value::Sym(s) => Some(s.name()),
+        Value::Sym(s) => Some(s.name().into()),
         v if v.is_atomic() && !v.is_empty() => to_str(&first_elt(v))[0].clone(),
         _ => None,
     }

@@ -220,7 +220,7 @@ fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         for k in 0..g.gl_pathc {
             // SAFETY: glob() returned gl_pathc valid C strings.
             let p = unsafe { CStr::from_ptr(*g.gl_pathv.add(k)) };
-            out.push(Some(std::rc::Rc::from(p.to_string_lossy().as_ref())));
+            out.push(Some(crate::value::RString::from(p.to_string_lossy().as_ref())));
         }
         unsafe { globfree(&mut g) };
     }
@@ -1232,7 +1232,9 @@ fn do_normalizepath(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
 
 fn do_pathexpand(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let f = str_vec(&arg(&args, 0), "invalid 'path' argument")?;
-    Ok(Value::strs(f.iter().map(|p| p.as_ref().map(|p| std::rc::Rc::from(expand_file_name(p).as_str()))).collect()))
+    Ok(Value::strs(
+        f.iter().map(|p| p.as_ref().map(|p| crate::value::RString::from(expand_file_name(p).as_str()))).collect(),
+    ))
 }
 
 // ----------------------------------------------------------------------

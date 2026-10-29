@@ -1493,8 +1493,10 @@ impl Re {
     /// Capture names for perl = TRUE ("" for unnamed groups).
     fn capture_names(&self) -> Vec<RStr> {
         match &self.kind {
-            Kind::Pcre(re) => re.capture_names().skip(1).map(|n| Some(Rc::from(n.unwrap_or("")))).collect(),
-            _ => vec![Some(Rc::from("")); self.nsub],
+            Kind::Pcre(re) => {
+                re.capture_names().skip(1).map(|n| Some(crate::value::RString::from(n.unwrap_or("")))).collect()
+            }
+            _ => vec![Some(crate::value::RString::from("")); self.nsub],
         }
     }
 
@@ -1659,7 +1661,8 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
         return Err(Flow::error("non-character argument"));
     };
     let len = xv.data.len();
-    let toks: Vec<RStr> = if tv.data.is_empty() { vec![Some(Rc::from(""))] } else { tv.data.clone() };
+    let toks: Vec<RStr> =
+        if tv.data.is_empty() { vec![Some(crate::value::RString::from(""))] } else { tv.data.clone() };
     let tlen = toks.len();
     let mut ans: Vec<Value> = vec![Value::Null; len];
     for (itok, this) in toks.iter().enumerate() {
@@ -1674,7 +1677,9 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                 for i in idx {
                     ans[i] = match &xv.data[i] {
                         None => Value::str_na(),
-                        Some(s) => Value::strs(s.chars().map(|c| Some(Rc::from(c.to_string().as_str()))).collect()),
+                        Some(s) => Value::strs(
+                            s.chars().map(|c| Some(crate::value::RString::from(c.to_string().as_str()))).collect(),
+                        ),
                     };
                 }
             }
@@ -1686,11 +1691,11 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                             let mut v: Vec<RStr> = Vec::new();
                             let mut rest: &str = s;
                             while let Some(p) = rest.find(&**split) {
-                                v.push(Some(Rc::from(&rest[..p])));
+                                v.push(Some(crate::value::RString::from(&rest[..p])));
                                 rest = &rest[p + split.len()..];
                             }
                             if !rest.is_empty() {
-                                v.push(Some(Rc::from(rest)));
+                                v.push(Some(crate::value::RString::from(rest)));
                             }
                             Value::strs(v)
                         }
@@ -1709,11 +1714,11 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                                 while let Some(m) = re.exec(s, bufp, Ctx::Fresh { notbol: false }, false) {
                                     let (so, eo) = m[0].unwrap();
                                     if eo > bufp {
-                                        v.push(Some(Rc::from(&s[bufp..so])));
+                                        v.push(Some(crate::value::RString::from(&s[bufp..so])));
                                         bufp = eo;
                                     } else {
                                         let cl = char_len_at(s, bufp);
-                                        v.push(Some(Rc::from(&s[bufp..bufp + cl])));
+                                        v.push(Some(crate::value::RString::from(&s[bufp..bufp + cl])));
                                         bufp += cl;
                                     }
                                     if bufp >= s.len() {
@@ -1722,7 +1727,7 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                                 }
                             }
                             if bufp < s.len() {
-                                v.push(Some(Rc::from(&s[bufp..])));
+                                v.push(Some(crate::value::RString::from(&s[bufp..])));
                             }
                             Value::strs(v)
                         }
@@ -2404,7 +2409,7 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                     out.push(None);
                 } else {
                     buf.push_str(&s[offset..]);
-                    out.push(Some(Rc::from(buf.as_str())));
+                    out.push(Some(crate::value::RString::from(buf.as_str())));
                 }
             }
             out

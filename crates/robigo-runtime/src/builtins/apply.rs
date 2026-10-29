@@ -431,7 +431,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     }
     let mut ans = Value::list(out);
     if use_nms {
-        ans.set_attr_raw(s::NAMES, Value::strs(syms.iter().map(|s| Some(s.name())).collect()));
+        ans.set_attr_raw(s::NAMES, Value::strs(syms.iter().map(|s| Some(s.name().into())).collect()));
     }
     Ok(ans)
 }
