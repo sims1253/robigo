@@ -21,8 +21,19 @@
   original spacing and source printing inside a list. Added both passes
   to tests/r/passing.txt.
 - Startup **44,820,180 -> 44,817,780** instructions (-0.005%).
-  Broad baseline **8,407/8,426** and parser/subset **169/192** match
-  round 6; candidate sweeps and crate checks are running.
+  Fixed-binary broad sweep holds **8,407/8,426 -> 8,407/8,426**,
+  with identical per-case outcomes. The sole recorded-pass failure on
+  both binaries is order/add626's known host collation mismatch.
+  Parser/subset holds **169/192 -> 169/192**, identical per-case outcomes.
+- Full oracle comparison improves **708/717 -> 714/717** across the
+  interpreter, VM and JIT. All 236 original scripts pass in every tier,
+  the two new fixes gain six checks, and the separate UTF-8 probe fails
+  in all tiers on both binaries. No tier differences or regressions.
+- Runtime checks pass: 36 unit tests and two lazy-load integration tests,
+  with the two documented host libc oracle tests excluded. Debian CI
+  runs those tests unmodified. cargo fmt --check and source diff checks
+  pass. Oracle recordings retain GNU R's trailing whitespace verbatim.
+  Final shared ratchet diff only appends the two verified fixture paths.
 - Rejected folding the UTF-8 print probe into the passing fixture: base
   as.character.srcref sets Encoding(lines) to bytes, and core's current
   implementation rejects non-ASCII bytes marking. Retained the exact
@@ -31,6 +42,10 @@
   core #84's byte-window work; do not replace base source extraction with
   a guessed string slice. Tabs and UTF-8 source references themselves
   remain covered by round 6's passing source_refs.R.
+- Rejected an extra global as.character.srcref override probe: GNU R's
+  base-environment call does not invoke that global override. The probe
+  produced no distinct behavior, so its proposed buffering change and
+  redundant fixture extension were removed before the next build.
 - Parser audit: parser.md leaves eleven parse-data cases unclaimed.
   gram.y:token_, record_, recordParents, modif_token and finalizeData
   need token IDs, grammar reductions, token reclassification and comment
