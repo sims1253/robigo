@@ -23,7 +23,13 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 - Verification: release build, cargo fmt --check, core (17 tests), C API
   (2 tests), CLI (7 tests), conformance in every tier and VM guards pass.
   Runtime: 33/34 pass; complex::c_library_oracle differs by one ULP in
-  sqrt at this host's glibc 2.44 (main baseline check follows).
+  sqrt at this host's glibc 2.44; unchanged main reproduces the identical
+  input and one-ULP mismatch.
+- Same-host graphics/grDevices/grid examples, previous CI binary versus
+  rebased release: 166/184 -> 166/184, identical passing case sets,
+  no lost passes. This local configuration differs from the previous
+  handoff's 176/184; no new graphics ratchets recorded. CI build for the
+  first rebase push (run 40901572633) passes, including the full tests.
 - Diagnosed #70's gnur-tests regression using its CI binary and natives
   in the exact Debian oracle image: run 36 differed only in the printed
   user.self timing (0 versus 0.001 seconds), status 0. Oracle recording
