@@ -27,6 +27,10 @@
 //! `with_entry` serves an entry as a zero-copy slice; a missing or stale
 //! cache falls back to the per-fetch path, so behaviour is byte-identical
 //! either way (entries the battery did not record take that path too).
+//! The same format caches a lazy-load database's `.rdx` index — a gzip
+//! file `lazyload.R`'s `readRDS` inflates whole at every open — as a
+//! single `(0, 0)` entry claimed on the `.rdx` itself; `builtins/io.rs`
+//! serves it at the gzfile open, falling back to the decoder.
 //! Enabled by pointing `ROBIGO_RDBFLAT` at the cache directory, or, when
 //! that is unset, by a `rdbflat/` directory beside the executable's
 //! parent's parent (`.robigo/bin/robigo`, `.robigo/rdbflat` — the layout
