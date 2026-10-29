@@ -445,19 +445,24 @@ pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
     if !matches!(s.encoding(), Encoding::Bytes | Encoding::NativeInvalid | Encoding::Utf8Invalid) {
         return escape_string(s, quote);
     }
-    let mut out = String::new();
-    if let Some(q) = quote {
-        out.push(q);
-    }
-    for &b in s.raw_bytes().iter() {
-        if b >= 128 {
-            out.push_str(&format!("\\x{b:02x}"));
-        } else {
-            out.push_str(&escape_string(&(b as char).to_string(), quote).trim_matches(quote.unwrap_or('\0')));
+    let mut encoded = Vec::new();
+    let q = quote.unwrap_or('"') as u8;
+    encoded.push(q);
+    if s.encoding() == Encoding::Bytes {
+        for &b in s.raw_bytes().iter() {
+            let mut one = Vec::new();
+            robigo_syntax::dump::encode_string(&[b], q, &mut one);
+            encoded.extend_from_slice(&one[1..one.len() - 1]);
         }
+    } else {
+        encoded.clear();
+        robigo_syntax::dump::encode_string(&s.raw_bytes(), q, &mut encoded);
+        encoded.pop();
     }
-    if let Some(q) = quote {
-        out.push(q);
+    encoded.push(q);
+    let out = String::from_utf8(encoded).unwrap();
+    if quote.is_none() {
+        return out[1..out.len() - 1].replace("\\\"", "\"");
     }
     out
 }
@@ -576,7 +581,7 @@ pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
         }
         Value::Str(x) => match &x.data[i] {
             None => "NA".into(),
-            Some(s) => escape_string(s, Some('"')),
+            Some(s) => escape_rstring(s, Some('"')),
         },
         Value::Raw(x) => format!("{:02x}", x.data[i]),
         _ => String::new(),

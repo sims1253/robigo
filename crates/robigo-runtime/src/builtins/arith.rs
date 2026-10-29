@@ -685,7 +685,7 @@ pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
 
 fn do_arith(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: ArithOp) -> RResult<Value> {
     if args.iter().take(2).any(|a| a.value.is_object()) {
-        if let Some(r) = i.try_dispatch_group("Ops", op.name().into(), call, &args, env)? {
+        if let Some(r) = i.try_dispatch_group("Ops", op.name(), call, &args, env)? {
             return Ok(r);
         }
     }
@@ -936,7 +936,7 @@ pub fn scollate(a: &str, b: &str) -> std::cmp::Ordering {
 
 fn do_relop(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: RelOp) -> RResult<Value> {
     if args.iter().take(2).any(|a| a.value.is_object()) {
-        if let Some(r) = i.try_dispatch_group("Ops", op.name().into(), call, &args, env)? {
+        if let Some(r) = i.try_dispatch_group("Ops", op.name(), call, &args, env)? {
             return Ok(r);
         }
     }

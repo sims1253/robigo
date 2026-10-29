@@ -75,10 +75,16 @@ impl RString {
                 ),
             }
         };
-        let mut stored = String::with_capacity(text.len() + 1);
-        stored.push(mark as u8 as char);
-        stored.push_str(&text);
-        Self(Rc::from(stored))
+        let mut stored = Rc::<[u8]>::new_uninit_slice(text.len() + 1);
+        let payload = Rc::get_mut(&mut stored).unwrap();
+        payload[0].write(mark as u8);
+        for (dst, &byte) in payload[1..].iter_mut().zip(text.as_bytes()) {
+            dst.write(byte);
+        }
+        // The one-byte mark and text are valid UTF-8; Rc<[u8]> and Rc<str>
+        // have identical allocation layouts and slice metadata.
+        let stored = unsafe { stored.assume_init() };
+        Self(unsafe { Rc::from_raw(Rc::into_raw(stored) as *const str) })
     }
     pub fn encoding(&self) -> Encoding {
         match self.0.as_bytes()[0] {
@@ -1117,5 +1123,38 @@ impl Lang {
 impl Default for RString {
     fn default() -> Self {
         Self::from("")
+    }
+}
+
+#[cfg(test)]
+mod string_window_tests {
+    use super::*;
+
+    #[test]
+    fn original_bytes_survive_every_encoding_window() {
+        assert_eq!(std::mem::size_of::<RString>(), std::mem::size_of::<Rc<str>>());
+        assert_eq!(std::mem::size_of::<RStr>(), std::mem::size_of::<Rc<str>>());
+        for mark in [Encoding::Native, Encoding::Utf8, Encoding::Latin1, Encoding::Bytes] {
+            for byte in 1..=255 {
+                let string = RString::from_bytes(&[byte], mark);
+                assert_eq!(&*string.raw_bytes(), &[byte]);
+                assert_eq!(
+                    string.encoding_name(),
+                    if byte < 128 {
+                        "unknown"
+                    } else {
+                        match mark {
+                            Encoding::Native => "unknown",
+                            Encoding::Utf8 => "UTF-8",
+                            Encoding::Latin1 => "latin1",
+                            Encoding::Bytes => "bytes",
+                            _ => unreachable!(),
+                        }
+                    }
+                );
+            }
+            let bytes = b"\xc3\xa9\\\"\xff";
+            assert_eq!(&*RString::from_bytes(bytes, mark).raw_bytes(), bytes);
+        }
     }
 }

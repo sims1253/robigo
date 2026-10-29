@@ -404,7 +404,7 @@ fn do_substr(_: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 fn do_substrgets(_: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 4, "substr<-")?;
     let x = std::mem::replace(&mut args[0].value, Value::Null);
-    let Value::Str(_) = &x else {
+    let Value::Str(xv) = &x else {
         return Err(Flow::error("replacing substrings in a non-character object"));
     };
     let len = xv.data.len();

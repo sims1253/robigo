@@ -11,6 +11,31 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 5 encoding window (in progress)
+
+- Baseline 74e8c73: charToRaw("\304") returns c3 84 instead of c4;
+  rawToChar(as.raw(196), TRUE) errors. Focused fastr rawToChar/charToRaw/
+  Encoding/setEncoding/validUTF8/validEnc slice: 22/22.
+- The lexer already emits raw bytes; loss occurs in lang.rs. Added the
+  proposed RString encoding window (same 16-byte representation), byte
+  reconstruction, native bridge marks, raw conversion, Encoding assignment,
+  validity checks and serialization. Constructor changes in other tracks'
+  files are mechanical adaptations to RString. Shared env/compile edits
+  only adapt their string fields and constructors.
+- The handed ELF marker-reader correction already exists in main, with
+  native::tests::marker_in_dynamic_string_table. No duplicate fix needed.
+- Environment finalizers remain open: do_reg_finalizer currently discards
+  registrations and runtime closure/environment cycles are not collected.
+  Needs runtime reachability integrated with core weakref finalizers;
+  checking Rc counts alone would miss reference-class cycles.
+- Oracle regression recorded in robigo-oracle:4.5.0, the exact Debian
+  package, using regen-expected.sh. Covers every nonzero raw byte,
+  native/Latin1/bytes/UTF8 marking and serialization, and trailing NULs.
+- Remaining encoding work: carry source literal encoding marks through
+  syntax (valid octal UTF-8 must remain native), adapt iconv/useBytes and
+  nchar character/width validation, plus readLines/scan encoding marks.
+  This increment preserves previous valid-UTF8 literal behavior.
+
 ## 2026-10-29: round 4 native-enabled verification
 
 - Same binary, utils.so disabled/enabled: focused fastr filter
