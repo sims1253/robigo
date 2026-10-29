@@ -115,13 +115,16 @@ struct HashState {
 
 /// GNU R's hash table of an environment: its size, `HASHPRI` and the
 /// chains, as linked lists over the nodes `syms` (`heads[b]` the first
-/// node of chain `b`, `next[n]` the node after `n`, `NIL` at the end).
+/// node of chain `b`, `next[n]` the node after `n`, `NIL` at the end;
+/// `hashes[n]` the hash code of `syms[n]`, so that growing the table only
+/// takes remainders).
 struct HashShape {
     size: u32,
     pri: u32,
     heads: Vec<u32>,
     next: Vec<u32>,
     syms: Vec<Sym>,
+    hashes: Vec<u32>,
 }
 
 const HASHMINSIZE: u32 = 29;
@@ -145,15 +148,24 @@ impl HashShape {
     // R: envir.c:R_NewHashTable
     fn new(size: i32) -> HashShape {
         let size = if size <= 0 { HASHMINSIZE } else { size as u32 };
-        HashShape { size, pri: 0, heads: vec![NIL; size as usize], next: Vec::new(), syms: Vec::new() }
+        HashShape {
+            size,
+            pri: 0,
+            heads: vec![NIL; size as usize],
+            next: Vec::new(),
+            syms: Vec::new(),
+            hashes: Vec::new(),
+        }
     }
 
     /// Put a new node at the head of `sym`'s chain; returns whether the
     /// chain was empty.
     fn link(&mut self, sym: Sym) -> bool {
-        let b = (sym_hash(sym) % self.size) as usize;
+        let h = sym_hash(sym);
+        let b = (h % self.size) as usize;
         let node = self.syms.len() as u32;
         self.syms.push(sym);
+        self.hashes.push(h);
         self.next.push(self.heads[b]);
         let was_empty = self.heads[b] == NIL;
         self.heads[b] = node;
@@ -217,7 +229,7 @@ impl HashShape {
         for mut n in old {
             while n != NIL {
                 let after = self.next[n as usize];
-                let b = (sym_hash(self.syms[n as usize]) % size) as usize;
+                let b = (self.hashes[n as usize] % size) as usize;
                 if self.heads[b] == NIL {
                     self.pri += 1;
                 }
@@ -246,7 +258,15 @@ impl HashShape {
 
     /// The names in `HashTableNames` order: chain by chain, head first.
     fn names(&self) -> Vec<Sym> {
-        self.chains().into_iter().flatten().collect()
+        let mut out = Vec::with_capacity(self.syms.len());
+        for &h in &self.heads {
+            let mut n = h;
+            while n != NIL {
+                out.push(self.syms[n as usize]);
+                n = self.next[n as usize];
+            }
+        }
+        out
     }
 
     /// A table holding `chains` (head first) as they are.
@@ -259,6 +279,7 @@ impl HashShape {
             for sym in c {
                 let node = h.syms.len() as u32;
                 h.syms.push(sym);
+                h.hashes.push(sym_hash(sym));
                 h.next.push(NIL);
                 if prev == NIL {
                     h.heads[b] = node;
@@ -793,6 +814,11 @@ impl Env {
     /// The bound symbols, in the order GNU R lists them.
     pub fn symbols(&self) -> Vec<Sym> {
         self.0.frame().borrow().names_in_order()
+    }
+
+    /// The bound symbols in no particular order (for callers that sort).
+    pub fn symbols_unordered(&self) -> Vec<Sym> {
+        self.0.frame().borrow().entries.iter().map(|b| b.sym).collect()
     }
 
     /// Is this a hashed environment (`R_NewHashedEnv`)? Then its size.

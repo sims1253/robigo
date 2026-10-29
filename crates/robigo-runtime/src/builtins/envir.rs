@@ -587,8 +587,9 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
+    let syms = if sorted { e.symbols_unordered() } else { e.symbols() };
     let mut names: Vec<String> =
-        e.symbols().into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
+        syms.into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
         names.sort();
     }
