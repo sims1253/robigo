@@ -26,6 +26,7 @@ robigo-runtime = { path = "crates/robigo-runtime" }
 [profile.release]
 # Keep workspace optimization independent of codegen-unit partition changes.
 codegen-units = 1
+lto = "thin"
 debug = "line-tables-only"
 panic = "unwind"
 

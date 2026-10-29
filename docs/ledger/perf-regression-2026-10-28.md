@@ -24,6 +24,8 @@ file cache. This host runs other agents, so elapsed times include contention.
 | default (16 CGUs, no cross-crate LTO) | 312.00 | 2083.88 | 3135.40 | no |
 | one CGU | 355.52 (failed) | 2643.61 | 4096 | yes, Cranelift |
 | thin LTO, one CGU | 254.24 (failed) | 2609.46 | 4096 | yes, Cranelift |
+| one CGU, Cranelift at 16 | 278.04 | 2196.41 | 4062.90 | no |
+| thin LTO, one CGU, Cranelift at 16 | 469.17 | 2110.91 | 4096 | no (168 reclamation events) |
 
 CI has no `ROBIGO_RUNNER` repository variable. Recent build job
 123532847452 used the `ubuntu-24.04` GitHub-hosted runner. This is a public
@@ -32,9 +34,48 @@ The workflow has no container memory limit or build job override, so the
 local 4 GB/two-job experiment is stricter than CI.
 
 Both global one-CGU profiles were killed while compiling `cranelift-codegen`.
-Fat LTO was not attempted. Next candidate keeps Cranelift at 16 CGUs and
-uses one CGU for the workspace. Perturbation measurements follow before
-selecting a profile.
+Fat LTO was not attempted. The candidate keeps Cranelift at 16 CGUs and
+uses one CGU for the workspace. Clean build time changed by -33.96 s
+(-10.9%), peak child RSS by +112.53 MiB (+5.4%), and peak container
+memory by +927.50 MiB (+29.6%). File cache is included in container peak.
+No memory limit events occurred for this candidate. Build-time improvement
+is a single observation on a shared host, not a controlled speed claim.
+
+Reproduce each build with a fresh private target and the same mounted
+source path, Rust toolchain, and cargo registry cache:
+
+```sh
+tc=$HOME/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu
+docker run --rm --memory=4g --memory-swap=4g --cpus=2 \
+  -u "$(id -u):$(id -g)" -v "$HOME:$HOME" -w "$PWD" \
+  -e HOME -e CARGO_HOME="$HOME/.cargo" -e RUSTUP_HOME="$HOME/.rustup" \
+  -e CARGO_TARGET_DIR="$HOME/.cache/robigo-perf-regression-profile-repro-target" \
+  -e PATH="$tc/bin:/usr/bin:/bin" -e R_HOME=/usr/lib/R \
+  -e CARGO_BUILD_JOBS=2 robigo-oracle:4.5.0 \
+  cargo build --release --workspace
+```
+
+For the old baseline, restore Cargo.toml from `7ff8a140`. For global
+one-CGU candidates, omit the Cranelift exception, and set `lto = "thin"`
+for the LTO candidate. Measure elapsed time around cargo, child RSS via
+Python `resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss`, and read
+`/sys/fs/cgroup/memory.peak` and `memory.events` before container exit.
+
+### Plain one-CGU candidate: rejected
+
+[CI run 40903000916](https://github.com/sims1253/robigo/actions/runs/40903000916)
+passed workspace tests, parser oracle, three-tier conformance, gctorture,
+parse corpus, and every corpus shard. The performance gate found 69 faster,
+4 slower, 0 broken, and 1 fixed. Regressions after recheck: flexclust +1.07%,
+flexclust_no_s4 +0.58%, spectralnorm_naive +1.72%, vecops +1.42%.
+Do not retain this candidate. Next experiment adds thin LTO with the same
+Cranelift exception. No gate threshold changes.
+
+The first perturbation appended one unused `#[inline(never)]` function
+each to syntax and runtime. Nine benchmarks covered fib, dataframe, matrix,
+Mandelbrot, nbody, transpose, and VM loops. The old profile moved at most
+0.0175%. This probe did **not** reproduce the historical 0.5% effect and
+cannot establish that the candidate removes it. Temporary edits restored.
 
 ## Problem
 
