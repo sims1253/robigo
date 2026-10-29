@@ -44,7 +44,6 @@ pub static STUBS: &[&str] = &[
     "R_tryEvalSilent",
     "R_withCallingErrorHandler",
     "Rf_memtrace_report",
-    "Rf_revsort",
     "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
     "XTRUELENGTH",
@@ -251,11 +250,6 @@ pub unsafe extern "C" fn R_withCallingErrorHandler() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_memtrace_report() {
     not_implemented("Rf_memtrace_report")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_revsort() {
-    not_implemented("Rf_revsort")
 }
 
 #[unsafe(no_mangle)]
