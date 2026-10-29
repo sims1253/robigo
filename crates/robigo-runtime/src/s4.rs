@@ -169,6 +169,14 @@ pub mod syms {
     }
 }
 
+/// The primitive whose method tables hold the methods of `generic` (the
+/// dispatch name a builtin passes). `as.numeric` is the `as.double`
+/// primitive in GNU R (base binds `as.numeric` to it); robigo's builtins
+/// pass the name they were called by.
+pub fn prim_op(generic: &str) -> Option<&'static Builtin> {
+    crate::builtins::lookup_primitive(if generic == "as.numeric" { "as.double" } else { generic })
+}
+
 /// `R_deferred_default_method()`.
 pub fn deferred_default() -> Value {
     Value::Sym(syms::deferred_default())
@@ -504,7 +512,7 @@ impl Interp {
     /// The S4 part of `DispatchOrEval`: `x` is the first argument's value,
     /// `args` the evaluated arguments.
     pub fn try_dispatch_s4(&mut self, generic: &str, call: &Value, args: &[Arg], env: &Env) -> RResult<Option<Value>> {
-        let Some(op) = crate::builtins::lookup_primitive(generic) else { return Ok(None) };
+        let Some(op) = prim_op(generic) else { return Ok(None) };
         if !self.has_methods(Some(op)) {
             return Ok(None);
         }
@@ -521,7 +529,7 @@ impl Interp {
         args: &[Arg],
         env: &Env,
     ) -> RResult<Option<Value>> {
-        let Some(op) = crate::builtins::lookup_primitive(generic) else { return Ok(None) };
+        let Some(op) = prim_op(generic) else { return Ok(None) };
         if !self.has_methods(Some(op)) {
             return Ok(None);
         }
@@ -934,6 +942,78 @@ impl Interp {
         self.eval(&e, &ns)
     }
 
+    /// Run `f` (a deparse) with the S4 objects in `v` prepared for the
+    /// deparser ([`crate::deparse::S4Parts`]); without S4 objects (or
+    /// without methods) it just runs `f`.
+    pub fn deparse_prepared<T>(&mut self, v: &Value, f: impl FnOnce() -> T) -> RResult<T> {
+        if !self.methods_dispatch_on() || !contains_s4(v, 0) {
+            return Ok(f());
+        }
+        let r = self.prepare_deparse(v, 0);
+        let out = r.map(|_| f());
+        crate::deparse::S4_PARTS.with(|m| m.borrow_mut().clear());
+        out
+    }
+
+    /// Compute the deparse parts of the S4 objects in `v`.
+    // R: deparse.c:deparse2buff (IS_S4_OBJECT): getClassDef(class)@slots,
+    // the slot values and asS3(s), evaluated in the base environment.
+    fn prepare_deparse(&mut self, v: &Value, depth: usize) -> RResult<()> {
+        if depth > 64 {
+            return Ok(());
+        }
+        if v.is_s4() {
+            let Some(addr) = crate::deparse::value_addr(v) else { return Ok(()) };
+            if crate::deparse::S4_PARTS.with(|m| m.borrow().contains_key(&addr)) {
+                return Ok(());
+            }
+            if let Some(class) = v.get_attr(s::CLASS) {
+                if matches!(&class, Value::Str(c) if !c.data.is_empty()) {
+                    let ns = self.methods_namespace();
+                    let base = self.base.clone();
+                    let get_class_def = self.find_fun(Sym::new("getClassDef"), &ns)?;
+                    let cl_def = self.eval(&Value::lang(get_class_def, vec![Arg::pos(class)]), &base)?;
+                    let slot_defs = self.do_slot(&cl_def, Sym::new("slots"))?;
+                    let names = match slot_defs.get_attr(s::NAMES) {
+                        Some(Value::Str(n)) => n.data.clone(),
+                        _ => vec![],
+                    };
+                    let has_s4_t = matches!(v, Value::Obj(_));
+                    let mut has_data = false;
+                    let mut vals = Vec::with_capacity(names.len());
+                    for n in &names {
+                        let n = n.as_deref().unwrap_or("NA");
+                        vals.push(self.do_slot(v, Sym::new(n))?);
+                        if !has_s4_t && !has_data {
+                            has_data = n == ".Data";
+                        }
+                    }
+                    let mut slots = Value::list(vals);
+                    if !names.is_empty() {
+                        slots.set_attr_raw(s::NAMES, Value::strs(names));
+                    }
+                    let s3 = if !has_s4_t && !has_data {
+                        let as_s3 = self.find_fun(Sym::new("asS3"), &ns)?;
+                        Some(self.eval(&Value::lang(as_s3, vec![Arg::pos(quote_value(v.clone()))]), &base)?)
+                    } else {
+                        None
+                    };
+                    let parts = std::rc::Rc::new(crate::deparse::S4Parts { slots, s3 });
+                    crate::deparse::S4_PARTS.with(|m| m.borrow_mut().insert(addr, parts.clone()));
+                    self.prepare_deparse(&parts.slots, depth + 1)?;
+                    if let Some(s3) = &parts.s3 {
+                        self.prepare_deparse(s3, depth + 1)?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        for c in children(v) {
+            self.prepare_deparse(&c, depth + 1)?;
+        }
+        Ok(())
+    }
+
     /// `PrintObjectS4`: `methods::show(s)` evaluated in `env`.
     // R: print.c:PrintObjectS4
     pub fn show_s4(&mut self, v: &Value, env: &Env) -> RResult<()> {
@@ -949,6 +1029,45 @@ impl Interp {
         let call = Value::lang(fun, vec![Arg::pos(quote_value(v.clone()))]);
         self.eval(&call, env)?;
         Ok(())
+    }
+}
+
+/// The values a deparse of `v` visits (not through environments).
+fn children(v: &Value) -> Vec<Value> {
+    let mut out: Vec<Value> = v.attrs().map(|a| a.0.iter().map(|(_, x)| x.clone()).collect()).unwrap_or_default();
+    match v {
+        Value::List(l) | Value::Expr(l) => out.extend(l.data.iter().cloned()),
+        Value::Lang(l) => {
+            out.push(l.fun.clone());
+            out.extend(l.args.iter().map(|a| a.value.clone()));
+        }
+        Value::Pairlist(p) => out.extend(p.items.iter().map(|a| a.value.clone())),
+        Value::Closure(c) => {
+            out.extend(c.formals.iter().map(|a| a.value.clone()));
+            out.push(c.body.clone());
+        }
+        Value::Promise(p) => out.push(p.value().unwrap_or_else(|| p.expr.clone())),
+        _ => {}
+    }
+    out
+}
+
+/// Whether deparsing `v` meets an S4 object.
+fn contains_s4(v: &Value, depth: usize) -> bool {
+    if v.is_s4() {
+        return true;
+    }
+    if depth > 64 {
+        return false;
+    }
+    match v {
+        Value::List(_)
+        | Value::Expr(_)
+        | Value::Lang(_)
+        | Value::Pairlist(_)
+        | Value::Closure(_)
+        | Value::Promise(_) => children(v).iter().any(|c| contains_s4(c, depth + 1)),
+        _ => v.attrs().is_some_and(|a| a.0.iter().any(|(_, x)| contains_s4(x, depth + 1))),
     }
 }
 

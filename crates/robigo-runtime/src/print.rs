@@ -140,14 +140,18 @@ impl Printer {
             }
             Value::Builtin(b) => self.print_special(interp, b),
             Value::Expr(_) | Value::Lang(_) => {
-                let lines = crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None);
+                let lines = interp.deparse_prepared(v, || {
+                    crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
+                })?;
                 for l in lines {
                     self.p(&l);
                     self.p("\n");
                 }
             }
             Value::Closure(c) => {
-                let lines = crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None);
+                let lines = interp.deparse_prepared(v, || {
+                    crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
+                })?;
                 for l in lines {
                     self.p(&l);
                     self.p("\n");

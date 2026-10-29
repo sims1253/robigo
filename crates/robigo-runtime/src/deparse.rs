@@ -385,6 +385,10 @@ impl D {
         if !self.active {
             return;
         }
+        if v.is_s4() {
+            self.deparse_s4(v);
+            return;
+        }
         let opts_in = self.opts;
         match v {
             Value::Null => self.print("NULL"),
@@ -849,6 +853,45 @@ impl D {
         }
     }
 
+    /// An S4 object: `new("<class>", <slot> = <value>, ...)`.
+    // R: deparse.c:deparse2buff (IS_S4_OBJECT)
+    fn deparse_s4(&mut self, v: &Value) {
+        let class = v.get_attr(s::CLASS);
+        let cl = match &class {
+            Some(Value::Str(c)) if !c.data.is_empty() => Some(c.data[0].as_deref().unwrap_or("NA").to_string()),
+            _ => None,
+        };
+        let parts = value_addr(v).and_then(|a| S4_PARTS.with(|m| m.borrow().get(&a).cloned()));
+        match (cl, parts) {
+            (Some(cl), Some(parts)) => {
+                self.print("new(\"");
+                self.print(&cl);
+                self.print("\", ");
+                if let Value::List(l) = &parts.slots {
+                    if !l.data.is_empty() {
+                        let items = l.data.clone();
+                        self.vec2buff(&items, &parts.slots, true);
+                    }
+                }
+                if let Some(s3) = &parts.s3 {
+                    self.print(", ");
+                    self.deparse(s3);
+                }
+                self.print(")");
+            }
+            (None, _) if class.is_none() && v.attrs().map(|a| a.is_empty()).unwrap_or(true) => {
+                self.print("getClass(\"S4\")@prototype");
+            }
+            (_, _) => {
+                // An irregular S4 object, or one the interpreter could not
+                // prepare (deparse without an interpreter at hand).
+                self.print("<S4 object of class ");
+                self.deparse(&class.unwrap_or(Value::Null));
+                self.print(">");
+            }
+        }
+    }
+
     fn vec2buff(&mut self, items: &[Value], v: &Value, do_names: bool) {
         let mut lbreak = false;
         let nv = if do_names { v.get_attr(s::NAMES) } else { None };
@@ -1150,6 +1193,42 @@ fn parenthesize_caller(op: &Value) -> bool {
         Value::Closure(_) => true,
         _ => false,
     }
+}
+
+/// What deparsing an S4 object prints, computed by the interpreter before
+/// the (interpreter-free) deparser runs (`Interp::deparse_prepared`):
+/// the named list of its slots and, for a class with neither OBJSXP type
+/// nor a `.Data` slot, `asS3(object)`.
+pub struct S4Parts {
+    pub slots: Value,
+    pub s3: Option<Value>,
+}
+
+thread_local! {
+    /// [`S4Parts`] by object identity ([`value_addr`]).
+    pub static S4_PARTS: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<S4Parts>>> =
+        Default::default();
+}
+
+/// The identity of a heap value (its `Rc`'s address).
+pub fn value_addr(v: &Value) -> Option<usize> {
+    fn p<T: ?Sized>(r: &std::rc::Rc<T>) -> usize {
+        std::rc::Rc::as_ptr(r) as *const u8 as usize
+    }
+    Some(match v {
+        Value::Lgl(r) | Value::Int(r) => p(r),
+        Value::Real(r) => p(r),
+        Value::Cplx(r) => p(r),
+        Value::Str(r) => p(r),
+        Value::Raw(r) => p(r),
+        Value::List(r) | Value::Expr(r) | Value::Obj(r) => p(r),
+        Value::Pairlist(r) => p(r),
+        Value::Lang(r) => p(r),
+        Value::Closure(r) => p(r),
+        Value::Env(e) => p(&e.0),
+        Value::ExtPtr(r) => p(r),
+        _ => return None,
+    })
 }
 
 /// `deparse(x, width.cutoff, backtick, opts, nlines)`.

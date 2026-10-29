@@ -1,0 +1,13 @@
+# deparse/dput/print of S4 objects: new("<class>", <slots>), asS3 parts, refMethodDef
+library(methods)
+setGeneric("gen", function(object) standardGeneric("gen"))
+setClass("P", representation(x = "numeric", y = "character"))
+dput(new("P", x = 1, y = "a"))
+deparse(new("P", x = 1:2, y = c("a", "b")))
+setClass("N", contains = "numeric", representation(u = "character"))
+dput(new("N", 1:3, u = "m"))
+setClass("E", representation("VIRTUAL"))
+setClass("L2", contains = "list")
+dput(new("L2", list(1, "a")))
+clazz <- suppressMessages(setRefClass("Foo20R5", methods = list(foo = function() NULL)))
+print(suppressMessages(clazz$methods("foo")))

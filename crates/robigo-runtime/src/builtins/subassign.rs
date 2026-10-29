@@ -1102,6 +1102,13 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
             let nlist = sym.unwrap_or_else(|| Sym::new(char_of(&input)));
             let val = a.get_mut(2).map(|v| std::mem::replace(&mut v.value, Value::Null)).unwrap_or(Value::Null);
             let mut x = std::mem::replace(&mut a[0].value, Value::Null);
+            // R: subassign.c:R_subassign3_dflt — an OBJSXP needs a data part.
+            if let Value::Obj(_) = x {
+                if interp.get_s4_data_slot(&x, None)?.is_null() {
+                    stash(x);
+                    return Err(Flow::error_call(call.clone(), "no method for assigning subsets of this S4 class"));
+                }
+            }
             match subassign3_core(interp, &mut x, nlist, val) {
                 Ok(()) => Ok(x),
                 Err(f) => {

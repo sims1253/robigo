@@ -53,6 +53,9 @@ const RAWSXP: u32 = 24;
 const OBJSXP: u32 = 25;
 /// The S4 bit in an item's levels (R: Defn.h S4_OBJECT_MASK).
 const S4_OBJECT_MASK: u32 = 1 << 4;
+/// A frame cell's levels: an active / a locked binding (R: Defn.h).
+const ACTIVE_BINDING_MASK: u32 = 1 << 15;
+const BINDING_LOCK_MASK: u32 = 1 << 14;
 
 const IS_OBJECT_BIT: u32 = 1 << 8;
 const HAS_ATTR_BIT: u32 = 1 << 9;
@@ -317,17 +320,37 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let v = Value::Env(env.clone());
                 self.refs.push(v.clone());
                 let enclos = self.read_item()?;
-                let frame = self.read_item()?;
-                let hashtab = self.read_item()?;
+                // The frame and the hash table's buckets keep each cell's
+                // levels: active and locked bindings (R: ReadItem SETLEVELS
+                // on the frame's cons cells).
+                let mut cells = self.read_frame()?;
+                let hflags = self.int()? as u32;
+                if hflags & 255 == VECSXP {
+                    let n = self.length()?;
+                    for _ in 0..n {
+                        cells.extend(self.read_frame()?);
+                    }
+                    if hflags & HAS_ATTR_BIT != 0 {
+                        self.read_item()?;
+                    }
+                } else {
+                    self.read_item_flags(hflags)?;
+                }
                 let attr = self.read_item()?;
                 env.set_parent(Some(match enclos {
                     Value::Env(e) => e,
                     _ => self.interp.base.clone(),
                 }));
-                add_bindings(&env, &frame);
-                if let Value::List(buckets) = &hashtab {
-                    for b in &buckets.data {
-                        add_bindings(&env, b);
+                // A frame lists the newest binding first: define them oldest
+                // first so the environment's order is the writer's.
+                for (sym, val, levs) in cells.into_iter().rev() {
+                    let mut f = 0;
+                    if levs & ACTIVE_BINDING_MASK != 0 {
+                        f |= crate::env::BIND_ACTIVE;
+                    }
+                    env.set_local_flags(sym, val, f);
+                    if levs & BINDING_LOCK_MASK != 0 {
+                        env.set_binding_locked(sym, true);
                     }
                 }
                 let mut v = v;
@@ -461,6 +484,28 @@ impl<'a, 'i> Reader<'a, 'i> {
             out.push(self.read_charsxp(f >> 12)?);
         }
         Ok(Value::strs(out))
+    }
+
+    /// An environment's frame (or one hash bucket): tagged cells with their
+    /// levels, up to the terminating item.
+    fn read_frame(&mut self) -> RResult<Vec<(Sym, Value, u32)>> {
+        let mut out = Vec::new();
+        loop {
+            let flags = self.int()? as u32;
+            if flags & 255 != LISTSXP {
+                // NILVALUE_SXP, or anything else a writer put there
+                self.read_item_flags(flags)?;
+                return Ok(out);
+            }
+            if flags & HAS_ATTR_BIT != 0 {
+                self.read_item()?;
+            }
+            let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
+            let car = self.read_item()?;
+            if let Value::Sym(s) = tag {
+                out.push((s, car, flags >> 12));
+            }
+        }
     }
 
     fn read_pairlist(&mut self, first_flags: u32) -> RResult<Value> {
@@ -616,16 +661,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(v)
             }
             _ => self.read_item(),
-        }
-    }
-}
-
-fn add_bindings(env: &Env, frame: &Value) {
-    if let Value::Pairlist(p) = frame {
-        for a in &p.items {
-            if let Some(t) = a.tag {
-                env.set_local(t, a.value.clone());
-            }
         }
     }
 }
@@ -1095,16 +1130,23 @@ impl Writer<'_> {
                         Some(p) => self.item(&Value::Env(p)),
                         None => self.int(EMPTYENV_SXP as i32),
                     }
-                    let items: Vec<Arg> = e
-                        .symbols()
-                        .into_iter()
-                        .map(|s| Arg::new(Some(s), e.get_local(s).unwrap_or(Value::Null)))
-                        .collect();
-                    if items.is_empty() {
-                        self.int(NILVALUE_SXP as i32);
-                    } else {
-                        self.pairlist_items(LISTSXP, &items, None);
+                    // R: WriteItem — the frame's cells with their levels
+                    // (active and locked bindings), newest first as in
+                    // GNU R's FRAME list.
+                    for s in e.symbols().into_iter().rev() {
+                        let flags = e.binding_flags(s).unwrap_or(0);
+                        let mut levs = 0;
+                        if flags & crate::env::BIND_ACTIVE != 0 {
+                            levs |= ACTIVE_BINDING_MASK;
+                        }
+                        if flags & crate::env::BIND_LOCKED != 0 {
+                            levs |= BINDING_LOCK_MASK;
+                        }
+                        self.flags(LISTSXP, levs, false, false, true);
+                        self.symbol(s);
+                        self.item(&e.get_local(s).unwrap_or(Value::Null));
                     }
+                    self.int(NILVALUE_SXP as i32);
                     self.int(NILVALUE_SXP as i32);
                     if v.has_attrs() {
                         self.attrs(v);

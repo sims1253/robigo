@@ -156,6 +156,7 @@ tests/r/subset/matrix-elt2.R
 tests/r/subset/matrix-index.R
 tests/r/subset/misc.R
 tests/r/subset/missing-args.R
+tests/r/subset/range-elements.R
 tests/r/subset/regressions.R
 tests/r/subset/targets.R
 tests/r/subset/vector-index.R
@@ -206,3 +207,14 @@ tests/r/vectors/subassign.R
 tests/r/vectors/subset.R
 tests/r/vectors/types.R
 tests/r/vec/unique.R
+tests/r/s4/bind.R
+tests/r/s4/deparse.R
+tests/r/s4/features.R
+tests/r/s4/groups.R
+tests/r/s4/introspection.R
+tests/r/s4/refclass2.R
+tests/r/s4/s3-dispatch.R
+tests/r/s4/trace.R
+tests/r/s4/coerce-oldclass.R
+tests/r/s4/replace.R
+tests/r/s4/serialize-bindings.R
