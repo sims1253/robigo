@@ -14,8 +14,7 @@ conformance` (interpreter, VM and VM+JIT against each other).
   The build and all ten corpus shards passed. The baseline artifact is
   downloadable now. This failure is not evidence of a measured regression.
 - Reapplied #80 on main `098bd95`, including #81's thin LTO profile and
-  #70's base-package natives. Fresh paired measurements and release tests
-  are in progress. Both binaries use the same newly built stats, splines,
+  #70's base-package natives. Paired measurements use the same newly built stats, splines,
   tools, and parallel natives and Debian GNU R 4.5.0-3.
 - Re-recording `tests/r/jit/matrix-elements.R` with the exact oracle
   reproduces every recorded byte. The independent full-suite output check
@@ -26,6 +25,28 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Setup: `robigo-oracle:4.5.0` lacks zlib headers and gfortran required by
   current main. Use `robigo-build:4.5.0` and the track's private target
   `~/.cache/robigo-trixie-target`. No source workaround was needed.
+
+- Current-profile CI run `40914475266` passed build, all ten corpus shards,
+  and perf against main `098bd95` (baseline run `40912854891`). On the
+  common 77 correct programs, instruction geomean **0.512146 -> 0.504341**
+  GNU R, faster than GNU R **76 -> 76**. `matrixFor` **723,808,375 ->
+  288,698,956** instructions (**-60.11%**). Gate: **10 faster, 0 slower
+  above 0.5%, 0 broken**. The CI report's "FIXED spectralnorm_math" comes
+  from the candidate's absent output flag; the independent local output
+  check still differs, so it is not counted as fixed here.
+- Fresh local full-suite comparison confirms CI: geomean **0.511560 ->
+  0.503785**, **76/77 -> 76/77** faster than GNU R. `matrixFor`
+  **723,270,029 -> 288,292,670** instructions (**-60.14%**).
+  `scripts/perf.py compare`: **10 faster, 0 slower above 0.5%, 0 broken,
+  0 fixed**. Both runtimes were measured; candidate correctness flags
+  come from the independent byte-for-byte output check because a
+  robigo-only instruction run does not retain stdout in its JSON.
+- Keep the matrix patch on the current profile. The old CI failure was an
+  artifact-download failure; no additional matrix code change was needed.
+- Remaining batch: rebase #60 on current main, add the requested
+  `Scan::raw`/`io::conn_getc` inline attributes, and verify independently.
+  Then fix the scalar payload cases below, profile `nbody_naive_2`, and
+  repeat wall-time checks when the host is idle.
 
 ### Follow-up: VM arithmetic oracle
 
