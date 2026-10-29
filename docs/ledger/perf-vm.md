@@ -6,6 +6,21 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-29: round 4, matrix CI diagnosis and current-profile verification
+
+- #80 run `40906985766` failed before comparing performance: downloading
+  `perf-main` from run `40899570595` returned HTTP 503, "Egress is over
+  the account limit." No perf artifact was uploaded after that failure.
+  The build and all ten corpus shards passed. The baseline artifact is
+  downloadable now. This failure is not evidence of a measured regression.
+- Reapplied #80 on main `098bd95`, including #81's thin LTO profile and
+  #70's base-package natives. Fresh paired measurements and release tests
+  are in progress. Both binaries use the same newly built stats, splines,
+  tools, and parallel natives and Debian GNU R 4.5.0-3.
+- Setup: `robigo-oracle:4.5.0` lacks zlib headers and gfortran required by
+  current main. Use `robigo-build:4.5.0` and the track's private target
+  `~/.cache/robigo-trixie-target`. No source workaround was needed.
+
 ## 2026-10-29: native matrix elements (round 3, PR #80)
 
 - baseline: main `7ff8a140`, Debian GNU R 4.5.0-3, existing release
