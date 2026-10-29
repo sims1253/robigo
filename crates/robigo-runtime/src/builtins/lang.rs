@@ -381,13 +381,14 @@ pub(crate) fn complex_assign(
     env: &Env,
     superassign: bool,
 ) -> RResult<()> {
-    complex_assign_pre(interp, call, lhs, rhs_expr, rhs, env, superassign, None)
+    complex_assign_pre(interp, call, lhs, rhs_expr, rhs, env, superassign, None, None)
 }
 
 /// [`complex_assign`] for a single-level `f(x, i, ...) <- value` whose index
 /// arguments `i, ...` were already evaluated (by compiled code) to `pre`:
 /// they are not evaluated again, and calls in messages still show their
-/// expressions.
+/// expressions. `rhs_call` supplies the source RHS for compiled builtin
+/// diagnostics; interpreted assignments show the evaluated promise value.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn complex_assign_pre(
     interp: &mut Interp,
@@ -398,6 +399,7 @@ pub(crate) fn complex_assign_pre(
     env: &Env,
     superassign: bool,
     pre: Option<&[Value]>,
+    rhs_call: Option<&Value>,
 ) -> RResult<()> {
     // Unwind the chain of getter calls down to the target symbol.
     let mut levels: Vec<Rc<Lang>> = Vec::new();
@@ -421,11 +423,23 @@ pub(crate) fn complex_assign_pre(
         return Err(Flow::error_call(call.clone(), "cannot do complex assignments in base environment"));
     }
     interp.ccode_calls.push((interp.frames.len(), call.clone()));
-    let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign, pre);
+    let r = complex_assign_inner(interp, call, &levels, target, rhs_expr, rhs, env, superassign, pre, rhs_call);
     // Errors raised with `error()` by the replacement functions report the
     // assignment call: signal them while its context is still active.
     let r = match r {
-        Err(Flow::Error(e)) if !e.signaled && e.call.is_none() => Err(interp.signal_error(e)),
+        Err(Flow::Error(mut e)) if !e.signaled => {
+            // R: subassign.c:errorOutOfBoundsSEXP uses R_CurrentExpression.
+            // Resolve its marker while the assignment context is active,
+            // before condition handlers can observe the call.
+            if e.call.as_ref().and_then(Value::as_sym) == Some(Sym::new("<current-expression>")) {
+                e.call = Some(call.clone());
+                Err(interp.signal_error(e))
+            } else if e.call.is_none() {
+                Err(interp.signal_error(e))
+            } else {
+                Err(Flow::Error(e))
+            }
+        }
         r => r,
     };
     interp.ccode_calls.pop();
@@ -444,6 +458,7 @@ fn complex_assign_inner(
     env: &Env,
     superassign: bool,
     pre: Option<&[Value]>,
+    rhs_call: Option<&Value>,
 ) -> RResult<()> {
     // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
     // environment. Preserve the error signaled there, including its call.
@@ -470,7 +485,7 @@ fn complex_assign_inner(
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
                 if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
                     drop(base_val);
-                    return fast_replace(interp, b, *fsym, l, target, rhs, env, pre);
+                    return fast_replace(interp, b, *fsym, l, target, rhs, env, pre, rhs_call);
                 }
             }
         }
@@ -553,6 +568,7 @@ fn fast_replace(
     rhs: Value,
     env: &Env,
     pre: Option<&[Value]>,
+    rhs_call: Option<&Value>,
 ) -> RResult<()> {
     crate::builtins::subassign::clear_restore();
     // Evaluate the extra (index) arguments while `target` is still bound.
@@ -580,8 +596,9 @@ fn fast_replace(
         let ev = interp.eval_args(&extra, env, &Value::Null)?;
         argv.extend(ev);
     }
-    // R's call shows the value of the right-hand side promise.
-    let rhs_shown = rhs.clone();
+    // R: eval.c:SETTER_CALL uses the compiler's source call, whereas
+    // applydefine/replaceCall deparses the forced RHS promise's value.
+    let rhs_shown = rhs_call.unwrap_or(&rhs).clone();
     argv.push(Arg::new(Some(s::VALUE), if b.kind == BuiltinKind::Special { quote_if_needed(rhs) } else { rhs }));
     // Now take the value out of its binding so we hold the only reference.
     let obj = match env.take_local(target).unwrap_or(Value::Null) {

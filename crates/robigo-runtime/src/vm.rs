@@ -627,6 +627,7 @@ fn set_index_slow(
         env,
         sup,
         pre.as_deref(),
+        Some(&l.args[1].value),
     );
     // The assignment rebound `x` in the frame.
     vars.slots[slot as usize] = SlotVal::Empty;
@@ -3567,5 +3568,36 @@ mod arithmetic_tests {
         }
         assert_eq!(checked, 9440);
         assert!(failures.is_empty(), "{} mismatches:\n{}", failures.len(), failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod setter_tests {
+    use super::*;
+
+    // Recorded by vm_setter_oracle.R with Debian GNU R 4.5.0-3, JIT=0.
+    // The script explicitly compiles the VM cases. GNU R deliberately
+    // reports different calls for interpreted and compiled assignments.
+    #[test]
+    fn gnu_r_setter_calls() {
+        for line in include_str!("vm_setter_oracle.txt").lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+            let env = Env::new(Some(interp.global.clone()));
+            let mut m = Value::real(0.0);
+            m.set_attr_raw(s::DIM, Value::ints(vec![1, 1]));
+            env.set_local(Sym::new("m"), m);
+            env.set_local(Sym::new("n"), Value::int(0));
+            let expr = crate::lang::parse_to_values(fields[1]).unwrap().remove(0);
+            let result =
+                if fields[0] == "vm" { run(&mut interp, &compile_body(&expr), &env) } else { interp.eval(&expr, &env) };
+            let Err(Flow::Error(err)) = result else { panic!("expected error: {line}") };
+            assert_eq!(err.message, fields[3], "{line}");
+            let call = err.call.expect("setter error call");
+            assert_eq!(crate::deparse::deparse(&call).join(" "), fields[2], "{line}");
+            if fields[1].contains("n <-") {
+                assert_eq!(crate::coerce::as_integer(&env.get_local(Sym::new("n")).unwrap()), 1);
+            }
+        }
     }
 }
