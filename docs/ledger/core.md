@@ -11,6 +11,109 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 3 landing preparation
+
+- Rebased graphics onto main 7ff8a140. Preserved main's STORED sweep and
+  proxy PINNED roots alongside graphics' ownership cleanup and proxy
+  attributes. No graphics algorithms changed; code-layout performance
+  noise remains assigned to the release-profile work.
+- Built grDevices, graphics and grid using GNU R 4.5.0's sources in
+  robigo-build:4.5.0. The shared Cargo target contains root-owned files;
+  local Rust verification uses ~/.cache/robigo-core-round3-target.
+- Verification: release build, cargo fmt --check, core (17 tests), C API
+  (2 tests), CLI (7 tests), conformance in every tier and VM guards pass.
+  Runtime: 33/34 pass; complex::c_library_oracle differs by one ULP in
+  sqrt at this host's glibc 2.44; unchanged main reproduces the identical
+  input and one-ULP mismatch.
+- Same-host graphics/grDevices/grid examples, previous CI binary versus
+  rebased release: 166/184 -> 166/184, identical passing case sets,
+  no lost passes. This local configuration differs from the previous
+  handoff's 176/184; no new graphics ratchets recorded. CI build for the
+  first rebase push (run 40901572633) passes, including the full tests.
+- Diagnosed #70's gnur-tests regression using its CI binary and natives
+  in the exact Debian oracle image: run 36 differed only in the printed
+  user.self timing (0 versus 0.001 seconds), status 0. Oracle recording
+  with 100 repeats masks exactly that timing line; the recording fix
+  belongs to #70. No random-number assertion is masked.
+
+## 2026-10-29: the graphics engine in libR; grDevices, graphics, grid from source
+
+- What: GNU R's own graphics engine (`src/main` engine.c, devices.c,
+  plotmath.c, colors.c, graphics.c, plot.c, plot3d.c, patterns/clippath/
+  mask, gevents, Hershey fonts) plus format.c, rlocale.c,
+  localecharset.c and gzio.h, vendored unmodified into
+  `crates/robigo-capi/main/` and linked whole into libR; ports of the
+  print.c/printutils.c/options.c/sysutils.c/util.c pieces they need in
+  `main/robigo_*.c`; `R_FunTab`/`PRIMOFFSET` for display-list replay;
+  `.External.graphics`/`.Call.graphics` record on the display list
+  (do_Externalgr); `.Internal(recordGraphics)` is engine.c's C;
+  `InitGraphics` at libR start, `.Device`/`.Devices` bound in base at
+  startup. `scripts/build-natives.sh grDevices graphics grid` builds and
+  they load (grDevices links its `PKG_LIBS`, `-lz`).
+- Result: `pdf(NULL); plot(...)`, hist, barplot, legend, grid viewports
+  and grobs: the PDF files are byte-identical to the oracle's (timestamps
+  aside). (The local Debian R 4.5.0 differs from the oracle by an ulp in
+  `grconvertY`; the oracle and robigo agree: compare with the oracle.)
+- gnur-examples graphics|grDevices|grid: 30 -> 175 / 184 (0 regressions,
+  local, natives present); gnur-demos 2 -> 11 / 16. capi 15/20 (= its
+  ratchet), conformance green. The new passes need the CI patch
+  (`docs/ci/pending-workflow.patch` now builds grDevices graphics grid
+  and installs zlib1g-dev) before they go into passing.txt.
+- Bridge findings (general, not graphics-only):
+  - C code that keeps an unprotected SEXP of an R-reachable environment
+    (grid's `R_gridEvalEnv` static) lost it at the next GC: the proxy was
+    garbage once the call ended. Proxies of environments, closures and
+    external pointers whose runtime object has other owners are now roots.
+  - C code that changes a looked-up list in place (grid:
+    `SET_VECTOR_ELT(findVar(".GRID.STATE"), i, state)`, pushed viewports
+    in children environments) changed the bridge's copy. Now a list C got
+    from `findVar` and then mutates becomes the binding's value: the
+    binding turns into an active binding over C's object (crate
+    `owned.rs`; the object lives in the binding function's environment,
+    so no table and no leak). `.Devices` (a pairlist C extends with
+    `SETCDR`) is kept by C and copied back after each native call.
+  - proxies now carry their object's attributes when created
+    (`R_GE_maskType` reads a mask function's "type").
+  - `NewEnvironment` ignored its value list; `coerceVector` of a call,
+    symbol or pairlist to EXPRSXP split it instead of wrapping it
+    (legend's expression widths); `eapply` returned an active binding's
+    function instead of calling it; `R_dec_min_exponent` was -4 (-308).
+- Open (other tracks): `"\304"` must be the byte 0xC4, not U+00C4
+  (plotmath symbol() examples, Hershey demo: the encoding window);
+  `signif(x, digits)`/`round` with a missing `digits` must use the
+  default (GNU R's do_Math2 is a special: grDevices `xyTable`);
+  `example()` echoes deparsed code instead of the source (colors, hcl,
+  image and smooth demos); the `<bytecode>` line of printed functions;
+  `eigen` needs `.Internal(La_rs)` (plot.window example); png()/cairo
+  (`R_cairoCdynload` and the cairo module) not yet.
+- CI perf on #69: profiler-microbenchmark, profiler-shared and
+  mandelbrot_noout_naive +0.55-0.63%. Measured locally on #57's and
+  #69's binaries (callgrind, the perf driver): the same +4.4M of 800M,
+  startup only +0.12M; the hot interpreter functions #69 does not touch
+  changed size (`apply_closure_ex` 3357 -> 3418 bytes, `find_fun` 2058
+  -> 2109) with the same call targets: register allocation and layout
+  from the 16 codegen units moving (perf-regression-2026-10-28.md
+  describes the same fragility). Not a cost of the graphics code; for
+  perf: `codegen-units = 1` (or LTO) in the release profile would end
+  these +-0.6% swings.
+- Next (utils from source, built on this branch): utils.so's undefined
+  stubs are hashtab.c (`R_mkhashtab`, `R_gethash`, `R_sethash`,
+  `R_remhash`, `R_numhash`, `R_typhash`, `R_maphash`, `R_clrhash`,
+  `R_isHashtable`, `R_HashtabSEXP`, `R_asHashtable`), the internet
+  module (`Rsockopen/close/connect/listen/read/write`, `Rdownload`),
+  `Runzip`, `do_edit`, `do_Rprof`, `do_Rprofmem`, `R_EditFiles`,
+  `R_strtod5`, `R_AllocStringBuffer`, `R_FreeStringBuffer`,
+  `Rconn_printf`, `Rf_con_pushback`, `Rf_csduplicated`, `Rf_matchE`,
+  `Rf_sortVector`, `Rf_wtransChar`, `Rf_acopy_string`,
+  `Rf_EncodeElement0`, `R_SignalCStackOverflow`, `R_ClearerrConsole`,
+  and data `R_MB_CUR_MAX`, `ptr_R_{add,load,save}history`,
+  `ptr_do_{dataentry,dataviewer,selectlist}`.
+- Local hygiene: only complete packages may sit in `.robigo/natives`
+  (the binary picks them up next to itself): grDevices/graphics/grid
+  built here fail to load on a binary without the engine, which made
+  every corpus case of other branches fail ("package 'grDevices' ... not
+  found"); they live in `.robigo/natives-graphics` when testing those.
+
 ## 2026-10-28: splines, tools, parallel natives from source; R_UnwindProtect
 
 - `scripts/build-natives.sh` handles grDevices' `@BUILD_AQUA_TRUE@`

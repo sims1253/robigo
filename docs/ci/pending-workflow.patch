@@ -8,7 +8,7 @@ index 4e1b317..a1736e8 100644
          apt-get install -y -qq --no-install-recommends r-base-core=4.5.0-3 r-base-dev \
 -          build-essential python3 curl ca-certificates git gh valgrind xz-utils > /dev/null
 +          build-essential python3 curl ca-certificates git gh valgrind xz-utils \
-+          libcurl4-openssl-dev > /dev/null
++          libcurl4-openssl-dev zlib1g-dev > /dev/null
          R --version | head -1
          echo "R_HOME=$(R RHOME)" >> "$GITHUB_ENV"
      - if: inputs.rust == 'true'
@@ -29,7 +29,7 @@ index a809413..e1d165e 100644
 +          key: r-4.5.0-sources
 +      - name: Base-package natives
 +        run: |
-+          scripts/build-natives.sh stats splines tools parallel
++          scripts/build-natives.sh stats splines tools parallel grDevices graphics grid
 +          echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
        - name: Unit tests, parser oracle, conformance (all tiers)
          run: cargo test --release --workspace

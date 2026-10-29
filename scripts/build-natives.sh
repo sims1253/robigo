@@ -87,6 +87,11 @@ for pkg in $pkgs; do
     # package's shared object instead of serving it with Rust ports
     echo 'int robigo_base_native = 1;' > "$obj/robigo-marker.c"
     $CC $CFLAGS -c "$obj/robigo-marker.c" -o "$obj/robigo-marker.o"
+    # the package's own libraries (grDevices: -lz); AQUA_LIBS is macOS's.
+    # Words still holding unexpanded make/autoconf variables ($(BLAS_LIBS),
+    # @R_OPENMP_CFLAGS@) are dropped: stats' static LAPACK/BLAS objects
+    # come via $LINKFLAGS below instead.
+    pkglibs=$(sources "$src/Makefile.in" PKG_LIBS | sed 's/\$(AQUA_LIBS)//' | tr -s ' \n' '\n' | grep -vE '[$@]' | tr '\n' ' ')
     # R's libR provides xerbla (src/main/print.c: BLAS/LAPACK errors
     # become R errors); the static LAPACK objects would otherwise pull
     # in LAPACK's own xerbla and with it libgfortran's I/O. A local copy
@@ -104,6 +109,6 @@ void xerbla_(const char *srname, int *info, size_t srname_len)
 }
 EOF
     $CC $CFLAGS -c "$obj/xerbla.c" -o "$obj/xerbla.o" 2>> "$obj/cc.log"
-    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $LINKFLAGS
+    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $pkglibs $LINKFLAGS
     echo "build-natives: $out/$pkg/$pkg.so"
 done

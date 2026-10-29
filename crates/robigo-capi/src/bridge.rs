@@ -251,7 +251,40 @@ unsafe fn proxy(v: &Value) -> Sexp {
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
     core().preserve(x);
     PINNED.with(|m| m.borrow_mut().insert(h, x));
+    // the object's attributes (a closure's, an environment's class, ...),
+    // as C reads them with getAttrib (R_GE_maskType: a mask function's
+    // "type")
+    let attrs = match v {
+        Value::Closure(_) => v.attrs().cloned(),
+        Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
+        _ => None,
+    };
+    if attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
+        set_attrs(x, attrs.as_ref());
+    }
     x
+}
+
+/// Proxies of environments, closures and external pointers the runtime
+/// still holds elsewhere are roots: in GNU R they are the R objects, so C
+/// code may keep one unprotected (grid's `R_gridEvalEnv` static) while R
+/// keeps it reachable.
+pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
+    PROXIED.with(|m| {
+        for (key, v) in m.borrow().values() {
+            let held = match v {
+                Value::Env(e) => Rc::strong_count(&e.0) > 1,
+                Value::Closure(f) => Rc::strong_count(f) > 1,
+                Value::ExtPtr(p) => Rc::strong_count(p) > 1,
+                _ => false,
+            };
+            if held {
+                if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(key).copied()) {
+                    c.mark(x);
+                }
+            }
+        }
+    })
 }
 
 fn proxied(x: Sexp) -> Option<Value> {
@@ -276,14 +309,14 @@ impl Drop for CoreRef {
     }
 }
 
-fn core_ref_of(v: &Value) -> Option<Sexp> {
+pub fn core_ref_of(v: &Value) -> Option<Sexp> {
     match v {
         Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().map(|c| c.0),
         _ => None,
     }
 }
 
-unsafe fn wrap_core(x: Sexp) -> Value {
+pub unsafe fn wrap_core(x: Sexp) -> Value {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
         return Value::ExtPtr(p);
     }
@@ -690,6 +723,16 @@ fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     Ok(Some(v))
 }
 
+/// A variable's value for C; a list is noted, in case C changes it in
+/// place (crate::owned).
+unsafe fn found(v: &Value, env: &Env, sym: Sym) -> Sexp {
+    let x = to_sexp(v);
+    if matches!(v, Value::List(_)) && CALL_DEPTH.with(|d| d.get()) > 0 {
+        crate::owned::note_origin(x, env, sym);
+    }
+    x
+}
+
 fn vtype_of(t: i32) -> Option<VType> {
     Some(match t as u8 {
         NILSXP => VType::Null,
@@ -842,8 +885,11 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "findVar" => {
             let (sym, mut env) = (sym_arg(a[0])?, Some(env_of(a[1])?));
             while let Some(e) = env {
+                if let Some(x) = crate::owned::lookup(&e, sym) {
+                    return Ok(x);
+                }
                 if let Some(v) = binding(&e, sym)? {
-                    return Ok(to_sexp(&v));
+                    return Ok(found(&v, &e, sym));
                 }
                 env = e.parent();
             }
@@ -851,8 +897,11 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "findVarInFrame" => {
             let (env, sym) = (env_of(a[0])?, sym_arg(a[1])?);
+            if let Some(x) = crate::owned::lookup(&env, sym) {
+                return Ok(x);
+            }
             match binding(&env, sym)? {
-                Some(v) => to_sexp(&v),
+                Some(v) => found(&v, &env, sym),
                 None => R_UnboundValue,
             }
         }
@@ -913,6 +962,30 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let call = Value::Null;
             let v = with_interp(|i| {
                 let env = i.global.clone();
+                i.invoke_builtin(b, &call, args, &env)
+            })?;
+            to_sexp(&v)
+        }
+        // a primitive called through R_FunTab (PRIMFUN(op)(call, op,
+        // args, env)): the graphics engine's display-list replay
+        "applyBuiltin" => {
+            let Value::Builtin(b) = from_sexp(a[1]) else {
+                return Err(Flow::error("robigo: R_FunTab entry of a non-primitive"));
+            };
+            let call = from_sexp(a[0]);
+            let mut args = Vec::new();
+            let mut l = a[2];
+            while l != R_NilValue {
+                let t = TAG(l);
+                let tag = if t == R_NilValue { None } else { Some(sym_of(t)) };
+                args.push(Arg { tag, value: from_sexp(CAR(l)) });
+                l = CDR(l);
+            }
+            let v = with_interp(|i| {
+                let env = match from_sexp(a[3]) {
+                    Value::Env(e) => e,
+                    _ => i.global.clone(),
+                };
                 i.invoke_builtin(b, &call, args, &env)
             })?;
             to_sexp(&v)
@@ -1097,6 +1170,16 @@ unsafe fn ensure_ready(interp: &mut Interp) {
         core().preserve(x);
         robigo_set_global(k as c_int, x);
     }
+    // R: unix/system.c Rf_initialize_R: R_Home = R_HomeDir() (getenv)
+    if let Ok(h) = std::env::var("R_HOME") {
+        R_Home = CString::new(h).unwrap_or_default().into_raw();
+    }
+    // R: main.c:setup_Rmainloop — the graphics engine's device table
+    crate::graphics::init_graphics();
+    // R: sysutils.c:InitTempDir — the session's temporary directory
+    if let Ok(d) = robigo_runtime::builtins::sysutils::session_tempdir() {
+        R_TempDir = CString::new(d).unwrap_or_default().into_raw();
+    }
 }
 
 // ---- calling native code ---------------------------------------------------------
@@ -1173,6 +1256,14 @@ fn sharing(v: &Value) -> u16 {
     n.saturating_sub(1).min(u16::MAX as usize) as u16
 }
 
+/// A glue routine of the graphics engine, called as `.Call` would.
+unsafe fn gr_call(fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    let t = crate::dotcode::robigo_dotcall(fun, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
+    result(t, out)
+}
+
 unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
@@ -1193,6 +1284,7 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     CALL_DEPTH.with(|d| d.set(d.get() + 1));
     let res = call_routine_ctx(interp, call, r, args, env);
+    crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
         d.get() == 0
@@ -1204,6 +1296,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         if kept_count() > SWEEP_AT.with(|c| c.get()) {
             sweep_stored();
         }
+        crate::owned::clear_origins();
     }
     res
 }
@@ -1486,6 +1579,69 @@ impl NativeBridge for Bridge {
 
     fn invoke(&self, interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
         enter(interp, |interp| unsafe { call_routine(interp, call, r, args, env) })
+    }
+
+    fn c_internal(&self, interp: &mut Interp, name: &str, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
+        let fun = match name {
+            "recordGraphics" => crate::graphics::do_recordGraphics as *const c_void,
+            _ => return Err(Flow::error(format!("robigo: no C internal '{name}'"))),
+        };
+        enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            let base = R_PPStackTop;
+            let op = match robigo_runtime::builtins::lookup_internal(name) {
+                Some(b) => Value::Builtin(b),
+                None => Value::Null,
+            };
+            let a = [
+                Rf_protect(to_sexp(call)),
+                Rf_protect(to_sexp(&op)),
+                Rf_protect(args_list(args, LISTSXP)),
+                Rf_protect(to_sexp(&Value::Env(env.clone()))),
+            ];
+            let r = gr_call(fun, &a);
+            R_PPStackTop = base;
+            crate::graphics::sync_devices(interp);
+            r
+        })
+    }
+
+    fn owned_get(&self, interp: &mut Interp, holder: &Value) -> RResult<Value> {
+        Ok(enter(interp, |_| unsafe { crate::owned::get(holder) }))
+    }
+
+    fn owned_holder(&self, interp: &mut Interp, value: Value) -> RResult<Value> {
+        Ok(enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            wrap_core(to_sexp(&value))
+        }))
+    }
+
+    fn option_set(&self, name: &str, value: &Value) {
+        unsafe { crate::graphics::option_set(name, value) }
+    }
+
+    fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {
+        enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            let r = gr_call(crate::graphics::robigo_gr_begin as *const c_void, &[])?;
+            Ok(matches!(r, Value::Lgl(v) if v.data.first() == Some(&1)))
+        })
+    }
+
+    fn graphics_end(&self, interp: &mut Interp, call: &Value, op: &Value, args: &[Arg], record: bool) -> RResult<()> {
+        enter(interp, |_| unsafe {
+            let base = R_PPStackTop;
+            let xs = [
+                Rf_protect(to_sexp(call)),
+                Rf_protect(to_sexp(op)),
+                Rf_protect(args_list(args, LISTSXP)),
+                Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
+            ];
+            let r = gr_call(crate::graphics::robigo_gr_end as *const c_void, &xs);
+            R_PPStackTop = base;
+            r.map(|_| ())
+        })
     }
 
     fn gc(&self, interp: &mut Interp) {

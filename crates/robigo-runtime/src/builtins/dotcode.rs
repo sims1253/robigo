@@ -23,8 +23,9 @@ pub static DEFS: &[Builtin] = &[
     prim(".External", do_external, -1),
     prim(".External2", do_external, -1),
     prim(".Call", do_dotcall, -1),
-    prim(".External.graphics", do_external, -1),
-    prim(".Call.graphics", do_dotcall, -1),
+    prim(".External.graphics", do_external_gr, -1),
+    prim(".Call.graphics", do_dotcall_gr, -1),
+    internal("recordGraphics", do_record_graphics, 3).custom_vis(),
 ];
 
 fn path_arg(v: &Value) -> RResult<String> {
@@ -301,6 +302,37 @@ fn do_dotcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 
 fn do_external(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     dot_code(i, call, args, Interface::External, env)
+}
+
+// R: dotcode.c:do_Externalgr, do_dotcallgr — the device's display list
+// records the call (not while it runs); on an error recording stays off,
+// as there
+fn graphics_call(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, env: &Env) -> RResult<Value> {
+    let Some(b) = native::bridge() else {
+        return dot_code(i, call, args, interface, env);
+    };
+    let record = b.graphics_begin(i)?;
+    let name = if interface == Interface::Call { ".Call.graphics" } else { ".External.graphics" };
+    let op = super::lookup_primitive(name).map(Value::Builtin).unwrap_or(Value::Null);
+    let r = dot_code(i, call, args.clone(), interface, env)?;
+    b.graphics_end(i, call, &op, &args, record)?;
+    Ok(r)
+}
+
+// R: engine.c:do_recordGraphics (GNU R's C, in libR)
+fn do_record_graphics(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    match native::bridge() {
+        Some(b) => b.c_internal(i, "recordGraphics", call, &args, env),
+        None => Err(Flow::error("robigo: 'recordGraphics' needs the graphics engine (libR)")),
+    }
+}
+
+fn do_external_gr(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    graphics_call(i, call, args, Interface::External, env)
+}
+
+fn do_dotcall_gr(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    graphics_call(i, call, args, Interface::Call, env)
 }
 
 fn do_dot_c(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

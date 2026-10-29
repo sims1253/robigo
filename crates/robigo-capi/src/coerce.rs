@@ -240,6 +240,13 @@ pub unsafe extern "C" fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp {
     if v.typ() as c_uint == t {
         return v;
     }
+    // R: coerce.c:coerceSymbol, coercePairList — a symbol, call or
+    // pairlist becomes a one-element expression vector holding it
+    if t == EXPRSXP as c_uint && matches!(v.typ(), SYMSXP | LANGSXP | LISTSXP) {
+        let r = core().alloc_vector(EXPRSXP, 1);
+        SET_VECTOR_ELT(r, 0, v);
+        return r;
+    }
     let ts = Rf_protect(core().alloc_vector(INTSXP, 1));
     *(ts.std_data() as *mut i32) = t as i32;
     let r = crate::host::op("coerceVector\0", &[v, ts]);

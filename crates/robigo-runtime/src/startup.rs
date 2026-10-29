@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::env::Env;
 use crate::interp::Interp;
 use crate::sym::Sym;
-use crate::value::Value;
+use crate::value::{Arg, Value};
 
 /// The system profile (`library/base/R/Rprofile` in an R installation),
 /// vendored as `rlib/profile`.
@@ -292,6 +292,13 @@ pub fn run(interp: &mut Interp, opts: StartupOptions) -> bool {
     let system: String = PROFILE_SOURCES.iter().map(|(_, s)| *s).collect::<Vec<_>>().join("\n");
     if !load_profile(interp, &system, "Rprofile", &base_ns) {
         return false;
+    }
+    // R: devices.c:InitGraphics (run before the base package loads)
+    // binds .Device and .Devices, the base variables the graphics engine
+    // keeps current
+    if !base_ns.has_local(Sym::new(".Device")) {
+        base_ns.set_local(Sym::new(".Device"), Value::str("null device"));
+        base_ns.set_local(Sym::new(".Devices"), Value::pairlist(vec![Arg::pos(Value::str("null device"))]));
     }
     // These are the same bindings, so only lock them once.
     base_ns.lock(true);

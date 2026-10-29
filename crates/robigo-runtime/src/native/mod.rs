@@ -93,6 +93,45 @@ pub trait NativeBridge: Sync {
     ) -> RResult<Value>;
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// A `.Internal` GNU R implements in its graphics engine (C code in
+    /// libR: `recordGraphics`), called with the evaluated arguments.
+    fn c_internal(
+        &self,
+        _interp: &mut Interp,
+        name: &str,
+        _call: &Value,
+        _args: &[Arg],
+        _env: &crate::env::Env,
+    ) -> RResult<Value> {
+        Err(crate::error::Flow::error(format!("robigo: '{name}' needs the graphics engine (libR)")))
+    }
+    /// The value of a C-owned variable (see [`c_owned_binding`]).
+    fn owned_get(&self, _interp: &mut Interp, _holder: &Value) -> RResult<Value> {
+        Ok(Value::Null)
+    }
+    /// A holder of C's object for a value assigned to a C-owned variable.
+    fn owned_holder(&self, _interp: &mut Interp, value: Value) -> RResult<Value> {
+        Ok(value)
+    }
+    /// options() set an option the C code reads from a global
+    /// (`OutDec`, `max.contour.segments`).
+    fn option_set(&self, _name: &str, _value: &Value) {}
+    /// `.External.graphics`/`.Call.graphics` before the call: the current
+    /// device's display-list recording, which is turned off.
+    fn graphics_begin(&self, _interp: &mut Interp) -> RResult<bool> {
+        Ok(false)
+    }
+    /// ... and after it: recording restored, the operation recorded.
+    fn graphics_end(
+        &self,
+        _interp: &mut Interp,
+        _call: &Value,
+        _op: &Value,
+        _args: &[Arg],
+        _record: bool,
+    ) -> RResult<()> {
+        Ok(())
+    }
 }
 
 static BRIDGE: std::sync::OnceLock<&'static dyn NativeBridge> = std::sync::OnceLock::new();
@@ -489,4 +528,60 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
 /// The base DLL, registered at startup as in GNU R's `InitDynload`.
 pub fn base_dll() -> Dll {
     Dll::new("base", "base")
+}
+
+/// A variable whose value C code keeps and mutates in place (GNU R code
+/// such as grid's `SET_VECTOR_ELT(findVar(".GRID.STATE", ...), i, state)`
+/// shares the object between C and R; the bridge hands C its own copy).
+/// The binding becomes an active binding over C's object, which `holder`
+/// (from the bridge) keeps: reading the variable converts C's current
+/// object, assigning replaces it.
+pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, holder: Value) {
+    let v = crate::sym::Sym::new("v");
+    let cell = crate::env::Env::new(Some(env.clone()));
+    cell.set_local(crate::sym::Sym::new(".x"), holder);
+    let f = Value::Closure(std::rc::Rc::new(crate::value::Closure {
+        formals: std::rc::Rc::from(vec![Arg { tag: Some(v), value: Value::missing_arg() }]),
+        body: Value::lang(Value::Builtin(&C_OWNED), vec![Arg::pos(Value::Sym(v))]),
+        env: cell,
+        attrs: None,
+        code: Default::default(),
+        inline: Default::default(),
+        defaults: Default::default(),
+        jit: Default::default(),
+    }));
+    env.set_local_flags(sym, f, crate::env::BIND_ACTIVE);
+}
+
+/// The holder of a C-owned variable's object, given its binding function.
+pub fn c_owned_holder(f: &Value) -> Option<Value> {
+    match f {
+        Value::Closure(c) => match &c.body {
+            Value::Lang(l) if matches!(&l.fun, Value::Builtin(b) if std::ptr::eq(*b, &C_OWNED)) => {
+                c.env.get_local(crate::sym::Sym::new(".x"))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+static C_OWNED: Builtin = crate::builtins::special(".robigo.c_owned", do_c_owned, 1);
+
+fn do_c_owned(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
+    let Some(Value::Sym(v)) = args.first().map(|a| &a.value) else {
+        return Err(crate::error::Flow::error("robigo: invalid C-owned binding"));
+    };
+    let x = crate::sym::Sym::new(".x");
+    let Some(cell) = env.parent() else { return Ok(Value::Null) };
+    let holder = cell.get_local(x).unwrap_or(Value::Null);
+    let Some(b) = bridge() else { return Ok(Value::Null) };
+    if crate::builtins::lang::missing_sym(i, call, *v, env)? {
+        b.owned_get(i, &holder)
+    } else {
+        let value = i.eval(&Value::Sym(*v), env)?;
+        let holder = b.owned_holder(i, value)?;
+        cell.set_local(x, holder);
+        Ok(Value::Null)
+    }
 }

@@ -19,6 +19,49 @@ fn main() {
         .flag_if_supported("-Wno-maybe-uninitialized")
         .flag_if_supported("-Wno-unused-but-set-variable")
         .compile("robigo_appl");
+    // GNU R's graphics engine (main/README.md): its own sources and
+    // internal headers, linked whole so every engine function is in the
+    // executable for the graphics packages' shared objects
+    println!("cargo:rerun-if-changed=main");
+    let mut g = cc::Build::new();
+    for f in [
+        "engine",
+        "devices",
+        "plotmath",
+        "patterns",
+        "clippath",
+        "mask",
+        "colors",
+        "gevents",
+        "plot3d",
+        "graphics",
+        "format",
+        "rlocale",
+        "robigo_print",
+        "plot",
+        "g_alab_her",
+        "g_cntrlify",
+        "g_fontdb",
+        "g_her_glyph",
+        "localecharset",
+        "robigo_glue",
+        "robigo_sys",
+    ] {
+        g.file(format!("main/{f}.c"));
+    }
+    g.file("appl/pretty.c")
+        .include("main/include")
+        .include("main")
+        .include("include")
+        .define("HAVE_CONFIG_H", None)
+        .define("TESTING_WRITE_BARRIER", None)
+        .flag_if_supported("-std=gnu2x")
+        .flag_if_supported("-w")
+        .link_lib_modifier("+whole-archive")
+        .compile("robigo_graphics");
+    // zlib, for gzio.h (and the graphics packages' objects, as GNU R's
+    // libR links it)
+    println!("cargo:rustc-link-lib=z");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let src = out.join("libR-stub.c");
     std::fs::write(&src, "/* robigo's stub libR.so: a soname, no code */\nint robigo_libR_stub;\n").unwrap();
