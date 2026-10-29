@@ -1,0 +1,6 @@
+Warning message:
+In format(log10(z), digits = 15) : NaNs produced in function "log10"
+Warning message:
+In format(log2(z), digits = 15) : NaNs produced in function "log2"
+Warning message:
+In format(log(z, 3), digits = 15) : NaNs produced in function "log"
