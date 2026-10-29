@@ -61,7 +61,7 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
             // Primitives: look up their argument template in .ArgsEnv or
             // .GenericArgsEnv, as R does.
             for name in [".ArgsEnv", ".GenericArgsEnv"] {
-                if let Some(Value::Env(e)) = i.base.get_local(Sym::new(name)) {
+                if let Some(Value::Env(e)) = i.base_binding(Sym::new(name)) {
                     if let Some(Value::Closure(t)) = e.get_local(Sym::new(b.name)) {
                         return Ok(Value::Closure(Rc::new(Closure {
                             formals: t.formals.clone(),

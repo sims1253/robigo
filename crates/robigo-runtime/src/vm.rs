@@ -1325,9 +1325,15 @@ fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
         }
     }
     let dflt = Sym::new("seq.default");
-    let base = interp.base_ns.get_local(dflt)?;
+    let base = interp.base_binding(dflt)?;
+    // base's S3 methods table registers its own seq.default: loaded from
+    // base.rdb, a separately unserialized copy of the binding's closure
+    let registered = match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
+        Some(Value::Env(t)) => t.get_local(dflt).and_then(|v| interp.force(v).ok()),
+        _ => None,
+    };
     match interp.lookup_method(dflt, env, &defenv) {
-        Ok(Some(f)) if f.ptr_eq(&base) => Some(len as u64),
+        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r)) => Some(len as u64),
         _ => None,
     }
 }

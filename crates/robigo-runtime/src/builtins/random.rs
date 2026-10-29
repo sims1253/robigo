@@ -71,7 +71,9 @@ fn rng_init(i: &mut Interp, kind: RngKind, seed: u32) -> RResult<()> {
         Ok(()) => Ok(()),
         Err(NeedTaocp1997Init(s)) => {
             let base = i.base.clone();
-            let fun = match base.get_local(Sym::new(".TAOCP1997init")) {
+            // R: RNG.c:RNG_Init — findVar1(..., CLOSXP) forces a promise
+            let _ = &base;
+            let fun = match i.base_binding(Sym::new(".TAOCP1997init")) {
                 Some(f @ Value::Closure(_)) => f,
                 _ => return Err(Flow::error("function '.TAOCP1997init' is missing")),
             };

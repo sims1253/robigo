@@ -11,6 +11,32 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-28: base loaded lazily from GNU R's base.rdb (as GNU R)
+
+- GNU R's startup evaluates `R_HOME/library/base/R/base`, the baseloader:
+  `..lazyLoad` binds every base object as a promise that fetches it from
+  `base.rdb`, then binds `.C_*`/`.F_*` and forces a few promises. robigo
+  now does the same when R_HOME has base.rdb, and evaluates the vendored
+  sources otherwise (or with `ROBIGO_BASE=src`). The baseloader runs
+  with 0 failing top-level expressions; the vendored-sources path
+  reports 0 too.
+- The runtime read a few base bindings directly and expected values:
+  RNG's `.TAOCP1997init`, `.__S3MethodsTable__.`, `.ArgsEnv` and
+  `.GenericArgsEnv`, NextMethod's default and the VM's `seq.default`
+  test. They now go through `Interp::base_binding`, which forces a
+  promise as `findVar1` does.
+- Measured on this machine (lazy vs vendored sources):
+  - startup (`-e`, base only, best of 5): 22 ms vs 33 ms; peak RSS
+    22.6 MB vs 31.6 MB;
+  - with the default packages: 107 ms vs 95 ms (each base function used
+    is fetched from base.rdb on first use, as in GNU R);
+  - conformance 194/194 in both modes; capi 16/20 vs 15/20 (`envir`:
+    `findVar` of a base object is a promise, as in GNU R); r-intro
+    unchanged.
+  - The gnur-tests, gnur-examples and fastr comparison runs in CI: three
+    local attempts were OOM-killed on this shared 14 GB machine, and the
+    heavy corpora now run only there.
+
 ## 2026-10-28: compact sequences (GNU R's compact_intseq / compact_realseq)
 
 - `:`, `seq_len`, `seq_along` (also the VM's lazy ranges when they
