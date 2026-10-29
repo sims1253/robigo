@@ -21,3 +21,9 @@ NULL
 [1] "function(a = function() 1) {" "  function(x) x + a"         
 [3] "}"                           
 NULL
+NULL
+[1] TRUE
+NULL
+[1] TRUE
+[1] "closure metadata"
+[1] TRUE

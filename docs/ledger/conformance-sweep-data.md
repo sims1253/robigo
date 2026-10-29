@@ -15,6 +15,22 @@
   the base as.character generic, retaining original comments and spacing.
   Shared edits are confined to builtins/lang.rs and print.rs; no vm.rs,
   value.rs, serialization or finalizer edits.
+- Kept: both fixtures improve **0/6 -> 6/6** across interpreter,
+  VM and JIT. They cover nested/default closures, environment changes,
+  body/formal replacement, comments, serialization versions 2 and 3,
+  original spacing and source printing inside a list. Added both passes
+  to tests/r/passing.txt.
+- Startup **44,820,180 -> 44,817,780** instructions (-0.005%).
+  Broad baseline **8,407/8,426** and parser/subset **169/192** match
+  round 6; candidate sweeps and crate checks are running.
+- Rejected folding the UTF-8 print probe into the passing fixture: base
+  as.character.srcref sets Encoding(lines) to bytes, and core's current
+  implementation rejects non-ASCII bytes marking. Retained the exact
+  Debian oracle probe separately as closure_source_print_utf8.R, without
+  a passing entry. It fails before and after this batch. Follow up with
+  core #84's byte-window work; do not replace base source extraction with
+  a guessed string slice. Tabs and UTF-8 source references themselves
+  remain covered by round 6's passing source_refs.R.
 - Parser audit: parser.md leaves eleven parse-data cases unclaimed.
   gram.y:token_, record_, recordParents, modif_token and finalizeData
   need token IDs, grammar reductions, token reclassification and comment

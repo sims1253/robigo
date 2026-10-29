@@ -28,3 +28,15 @@ attr(call, 'comment') <- 'call comment'
 print(comment(eval(call)))
 print(as.character(attr(f, 'srcref')))
 print(attributes(args(f)))
+changed <- f
+formals(changed) <- alist(a = 4)
+print(attributes(changed))
+print(identical(attr(body(changed), 'srcref'), attr(body(f), 'srcref')))
+changed <- f
+body(changed) <- quote(1)
+print(attributes(changed))
+changed <- f
+environment(changed) <- new.env(parent = globalenv())
+print(identical(attr(changed, 'srcref'), ref))
+print(comment(changed))
+print(identical(environment(f), globalenv()))
