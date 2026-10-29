@@ -235,13 +235,19 @@ def cmd_compare(a):
         base = json.load(f)["results"]
     with open(a.new) as f:
         new = json.load(f)["results"]
-    worse, better, broke = [], [], []
+    worse, better, broke, fixed = [], [], [], []
     for name, r in sorted(new.items()):
         b = base.get(name, {}).get("robigo", {})
         n = r.get("robigo", {})
         if "error" in n or r.get("wrong"):
             if "error" not in b and not base.get(name, {}).get("wrong"):
                 broke.append(name)
+            continue
+        if "error" in b or base.get(name, {}).get("wrong"):
+            # Not counted before (a wrong answer is not fast): the base
+            # count measured a different run, often one that stopped early.
+            if name in base:
+                fixed.append(name)
             continue
         if "instr" in b and "instr" in n:
             d = 100 * (n["instr"] - b["instr"]) / b["instr"]
@@ -255,7 +261,9 @@ def cmd_compare(a):
         print(f"SLOWER  {name:40} {d:+.2f}%")
     for name in broke:
         print(f"BROKEN  {name} (was correct, now fails or prints a different result)")
-    print(f"{len(better)} faster, {len(worse)} slower (> {a.threshold}%), {len(broke)} broken")
+    for name in fixed:
+        print(f"FIXED   {name} (failed or printed a different result, now correct)")
+    print(f"{len(better)} faster, {len(worse)} slower (> {a.threshold}%), {len(broke)} broken, {len(fixed)} fixed")
     return 1 if worse or broke else 0
 
 
