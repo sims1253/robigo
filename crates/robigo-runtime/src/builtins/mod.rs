@@ -12,6 +12,7 @@ use crate::value::*;
 
 pub mod apply;
 pub mod arith;
+mod arith_exact;
 pub mod array;
 pub mod attrib;
 pub mod bind;
