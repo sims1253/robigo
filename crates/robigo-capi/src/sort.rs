@@ -131,6 +131,13 @@ pub unsafe extern "C" fn rsort_with_index(x: *mut f64, indx: *mut c_int, n: c_in
     }
 }
 
+// Utils.h renames sort.c's revsort to Rf_revsort (R's libR exports the
+// Rf_ name; Rcpp and other packages call it through R_ext/Utils.h).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_revsort(a: *mut f64, ib: *mut c_int, n: c_int) {
+    revsort(a, ib, n)
+}
+
 // R: sort.c:revsort — heapsort into descending order, ib alongside
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn revsort(a: *mut f64, ib: *mut c_int, n: c_int) {
