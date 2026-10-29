@@ -36,5 +36,31 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(corpus.masked(output, []), b"prefix\n" + corpus.IGNORE_END + b"\nsuffix\n")
 
 
+class GcNormalization(unittest.TestCase):
+    def test_allocator_counts_and_na_compare_equal(self):
+        oracle = (b'[1] "finalizer: 456"\n'
+                  b'         used (Mb) gc trigger (Mb) max used (Mb)\n'
+                  b'Ncells 340001 18.2 707788 37.8 615097 32.9\n'
+                  b'Vcells 610351 4.7 8388608 64.0 1973852 15.1\n')
+        runtime = (b'[1] "finalizer: 456"\n'
+                   b'         used (Mb) gc trigger (Mb) max used (Mb)\n'
+                   b'Ncells NA NA NA NA NA NA\nVcells NA NA NA NA NA NA\n')
+        self.assertEqual(corpus.normalize(oracle), corpus.normalize(runtime))
+        self.assertNotEqual(corpus.normalize(oracle), corpus.normalize(runtime.replace(b'456', b'123')))
+        self.assertNotEqual(corpus.normalize(oracle), corpus.normalize(runtime.replace(b'[1] "finalizer: 456"\n', b'')))
+        self.assertEqual(corpus.normalize(oracle).count(b'\n'), oracle.count(b'\n'))
+        self.assertEqual(corpus.normalize(corpus.normalize(oracle)), corpus.normalize(oracle))
+
+    def test_limit_columns(self):
+        self.assertEqual(corpus.normalize(b'Vcells 1 2.0 3 4.0 NA 6.0 7 8.0\n'),
+                         b'Vcells <gc masked>\n')
+
+    def test_other_output_is_preserved(self):
+        for output in (b'Ncells are missing\n', b'Vcells 1 2 3\n',
+                       b'Ncells 1 2 3 4 5 6 7\n', b'foo Ncells 1 2 3 4 5 6\n',
+                       b'[1] 340001 18.2 707788 37.8 615097 32.9\n'):
+            self.assertEqual(corpus.normalize(output), output)
+
+
 if __name__ == "__main__":
     unittest.main()
