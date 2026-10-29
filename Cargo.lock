@@ -900,7 +900,6 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "liblzma",
- "memchr",
  "regex-automata",
  "robigo-numerics",
  "robigo-syntax",

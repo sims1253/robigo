@@ -191,7 +191,7 @@ pub fn is_robigo_build(path: &str) -> bool {
     }
     let mut strs = vec![0u8; strsz];
     match f.read_exact(&mut strs) {
-        Ok(()) => memchr::memmem::find(&strs, marker).is_some(),
+        Ok(()) => strs.windows(marker.len()).any(|w| w == marker),
         Err(_) => false,
     }
 }
