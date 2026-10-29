@@ -23,5 +23,10 @@ r 40
 [1] "[[ ]] subscript out of bounds"
 [1] 820  40
 [1] "subscript out of bounds"
-[1] 2420
+[1] 820
 [1] "subscript out of bounds"
+     [,1] [,2]
+[1,]   80   40
+     [,1] [,2]
+[1,]   80   40
+[2,]    0    0

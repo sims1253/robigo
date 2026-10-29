@@ -64,11 +64,11 @@ tryCatch(fallback(matrix(numeric(), 0, 2)), error = function(e) print(conditionM
 # Native execution mutates rows 17..40 before the row-41 exit to the VM.
 bounds <- function(two) {
   x <- matrix(0, 40, 2)
-  on.exit(print(c(sum(x), x[40, 2])))
+  on.exit(print(c(sum(x), x[40, 1])))
   if (two) {
-    for (i in 1:41) x[[i, 2]] <- i
+    for (i in 1:41) x[[i, 1]] <- i
   } else {
-    for (i in 1:41) x[i, 2] <- i
+    for (i in 1:41) x[i, 1] <- i
   }
 }
 tryCatch(bounds(TRUE), error = function(e) print(conditionMessage(e)))
@@ -77,6 +77,14 @@ readbounds <- function() {
   x <- matrix(1:80, 40, 2)
   total <- 0L
   on.exit(print(total))
-  for (i in 1:41) total <- total + x[[i, 2]]
+  for (i in 1:41) total <- total + x[[i, 1]]
 }
 tryCatch(readbounds(), error = function(e) print(conditionMessage(e)))
+# Reuse compiled code with different dimensions, retaining linear indexing.
+shapes <- function(x) {
+  for (i in 1:40) x[[1, 2]] <- i
+  for (i in 1:40) x[[1]] <- x[[1, 2]] + i
+  print(x)
+}
+shapes(matrix(0, 1, 2))
+shapes(matrix(0, 2, 2))

@@ -17,7 +17,15 @@ conformance` (interpreter, VM and VM+JIT against each other).
   unsupported indices and values exit to the VM before accessing storage.
 - first result: 322,816,954 instructions, -57.6%, 0.422x GNU R. Release
   conformance passes; matrix tests recorded with the exact Debian oracle.
-  Full performance comparison and runtime unit tests pending.
+  All 34 runtime unit tests and all release conformance checks pass.
+  Isolated idiom: 759 -> 39 instructions/element (GNU R 608);
+  `callgrind-diff.py` confirms 40 instructions/element, almost entirely
+  native code. Full performance comparison pending.
+- tests: matrix reads/writes, integer/double storage, aliases, fractional
+  and invalid indices, a row beyond nrow whose linear offset is still
+  inside storage, exits preserving previous mutations and accumulators,
+  single-element matrices, and compiled code reused with new dimensions.
+  The fixture is recorded with Debian R 4.5.0-3 and added to passing.txt.
 - scope: `jit.rs`, `vm.rs` (native view setup), regression fixture.
 - #60 remains draft at c2ed404; main still lacks the release-profile change.
 

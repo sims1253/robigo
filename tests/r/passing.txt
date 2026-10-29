@@ -42,6 +42,7 @@ tests/r/io/sysutils.R
 tests/r/jit/base-rebinding-2.R
 tests/r/jit/base-rebinding.R
 tests/r/jit/locked-env-guards.R
+tests/r/jit/matrix-elements.R
 tests/r/lang/call-head-tag.R
 tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R
