@@ -2,18 +2,6 @@
 
 ## 2026-10-29 (later): pretty cell shrink, identical row.names finding
 
-- **Kept experiment**: print.c prints a `<bytecode: ...>` line for closures
-  whose body carries compiled code. print.rs now emits it exactly when the
-  closure's `code` cell is filled (the address is masked by the corpus
-  runner). Verified: fresh closures and never-called closures print no
-  line; called closures and bootstrap-called base functions do — 437/437
-  fastr print/format/deparse cases, the language-example slice, the
-  gnur-tests print slice and tests/r/print conformance all pass with zero
-  regressions. Known divergence window: robigo attaches bytecode on the
-  first call while GNU R's default JIT compiles after a few more (f(1)
-  once: GNU R no line, robigo line) — aligning the compile moment is
-  PR #51's scope. base/match still fails because base lazy-load functions
-  carry bytecode from load in GNU R (core-lazybase, PR #56).
 - **Kept fix**: `pretty(0, min.n = 4)` returned `-2 -1 0 1 2`; GNU R gives
   `-0.4 -0.2 0 0.2 0.4`. The R_pretty port applied the shrink_sml/min_n
   cell adjustment only inside the max(|lo|,|up|) branch, but pretty.c
@@ -212,6 +200,15 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
 
 ## 2026-10-29 (evening): rebase onto main (PRs #50/#55/#65 merged)
 
+- **Rejected experiment**: the `<bytecode: ...>` print line. Correct per
+  print.c when a closure carries compiled code, but robigo attaches
+  bytecode on the FIRST call while GNU R's default JIT compiles a few
+  calls later, so closures printed after one call gained a spurious line:
+  fastr `TestBuiltin_mget/42b0be374d04c8a9`, `TestBuiltin_get/…`,
+  `TestBuiltin_syscall/…`, `TestConditionHandling/aa85fee057f56512` and
+  `base/Sys.getenv` (gnur-examples) all regressed on CI. Reverted; needs
+  PR #51's compile-moment alignment first (and base lazy-load bytecode
+  from PR #56 for the base/match case).
 - CI on the first push failed only on `base/Sys.getenv` in gnur-examples;
   it passed after rebasing (the failure came from the pre-#65 merge state,
   not from this branch's changes — verified locally: 10/10 base/Sys*
