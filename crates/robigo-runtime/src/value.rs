@@ -50,8 +50,39 @@ pub struct RString {
 #[repr(C)]
 struct StringHeader {
     refs: Cell<usize>,
-    len: usize,
+    len_tag: usize,
+    #[cfg(not(target_pointer_width = "64"))]
     encoding: u8,
+}
+
+impl StringHeader {
+    #[inline]
+    fn new(len: usize, encoding: u8) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert!(len <= usize::MAX >> 3, "string allocation overflow");
+            Self { refs: Cell::new(1), len_tag: (len << 3) | encoding as usize }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            Self { refs: Cell::new(1), len_tag: len, encoding }
+        }
+    }
+    #[inline]
+    fn len(&self) -> usize {
+        if cfg!(target_pointer_width = "64") { self.len_tag >> 3 } else { self.len_tag }
+    }
+    #[inline]
+    fn encoding(&self) -> u8 {
+        #[cfg(target_pointer_width = "64")]
+        {
+            (self.len_tag & 7) as u8
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            self.encoding
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +102,7 @@ impl RString {
 
     #[inline]
     fn from_text_tag(text: &str, tag: usize) -> Self {
+        let header = StringHeader::new(text.len(), tag as u8);
         let size = Self::HEADER_SIZE.checked_add(text.len()).expect("string allocation overflow");
         let layout = std::alloc::Layout::from_size_align(size, std::mem::align_of::<StringHeader>())
             .expect("string allocation overflow");
@@ -80,7 +112,7 @@ impl RString {
         // The checked layout fits the header followed by all bytes. The
         // payload is initialized once and never mutated after publication.
         unsafe {
-            data.as_ptr().write(StringHeader { refs: Cell::new(1), len: text.len(), encoding: tag as u8 });
+            data.as_ptr().write(header);
             std::ptr::copy_nonoverlapping(text.as_ptr(), ptr.as_ptr().add(Self::HEADER_SIZE), text.len());
         }
         Self { data }
@@ -94,7 +126,7 @@ impl RString {
     }
     #[inline]
     fn tag(&self) -> usize {
-        unsafe { self.data.as_ref().encoding as usize }
+        unsafe { self.data.as_ref().encoding() as usize }
     }
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.data == b.data
@@ -104,7 +136,7 @@ impl RString {
         // Only the final owner calls this. The original checked allocation
         // layout is recovered from its immutable length and fixed alignment.
         unsafe {
-            let size = Self::HEADER_SIZE + data.as_ref().len;
+            let size = Self::HEADER_SIZE + data.as_ref().len();
             let layout = std::alloc::Layout::from_size_align_unchecked(size, std::mem::align_of::<StringHeader>());
             std::alloc::dealloc(data.as_ptr().cast::<u8>(), layout);
         }
@@ -218,7 +250,7 @@ impl std::ops::Deref for RString {
     #[inline]
     fn deref(&self) -> &str {
         // Constructors initialize a valid UTF-8 view after the header.
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.data.as_ref().len)) }
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.data.as_ref().len())) }
     }
 }
 impl AsRef<str> for RString {
@@ -1274,6 +1306,10 @@ mod string_window_tests {
 
     #[test]
     fn original_bytes_survive_every_encoding_window() {
+        assert_eq!(
+            std::mem::size_of::<StringHeader>(),
+            if cfg!(target_pointer_width = "64") { 2 } else { 3 } * std::mem::size_of::<usize>()
+        );
         assert_eq!(std::mem::size_of::<RString>(), std::mem::size_of::<usize>());
         assert_eq!(std::mem::size_of::<RStr>(), std::mem::size_of::<usize>());
         for mark in [Encoding::Native, Encoding::Utf8, Encoding::Latin1, Encoding::Bytes] {

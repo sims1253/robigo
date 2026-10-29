@@ -11,6 +11,36 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: keep immutable string allocations in the original size classes
+
+- All-feature type checks and the final local runtime tests pass: 41 unit
+  tests plus two integration tests, excluding only the two documented
+  host-glibc complex oracles. Local full robigo suite: seven faster, zero
+  slower. Graphics 178/184 and Hershey 1/1 hold. All five affected rbench
+  programs match Debian GNU R's output, stderr and status exactly.
+- CI still found four regressions after symbol sharing: Storage +0.65%,
+  binarytrees_2 +1.09%, mandelbrot_naive_ascii +0.84%, spectralnorm_alt_3
+  +3.15%. Host-only counts did not reproduce these; use the CI artifacts,
+  flat caches, natives and ROBIGO_BENCH_CACHE explicitly inside Docker.
+- Exact spectralnorm_alt_3 profile: base 1,215,021,089 -> 1,253,422,734.
+  The extra 38.4M instructions are allocator slow paths: page-queue search,
+  malloc_generic, find_page and bin selection, not evaluator/arithmetic
+  work. The 24-byte string header moved some strings into larger mimalloc
+  bins than the old 16-byte Rc allocation header.
+- New candidate packs encoding into the length word on 64-bit platforms,
+  restoring a 16-byte allocation header. Handles remain one pointer.
+  32-bit platforms retain a separate encoding byte and full length range.
+  Both exact-source layout paths pass all five tests; Valgrind reports
+  zero errors and no lost allocations. Full workload verification pending.
+- Rebased onto dbf6754 (#89); preserved bytecode metadata in serialization
+  and kept both sides' ratchets. No serialization algorithm was replaced.
+- Next source-mark boundary confirmed against gram.y:mkString2: octal/hex
+  escapes set `escaped`, suppressing CE_UTF8. For c("\303\251",
+  "\xc3\xa9", "\u00e9", "é"), GNU R's Encoding is unknown, unknown,
+  UTF-8, UTF-8; robigo currently reports UTF-8 for all four, with identical
+  raw bytes. Carry origin metadata through lexer StrTok, AST Const::Str
+  and ConstKey into lang.rs; do not infer marks from UTF-8 validity alone.
+
 ## 2026-10-29: canonical symbol print names share immutable strings
 
 - One-word handles fix the original targets: exact CI artifacts in the
