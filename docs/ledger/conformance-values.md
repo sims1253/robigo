@@ -124,6 +124,14 @@ Owns: `crates/robigo-runtime/src/builtins/{arith,coerce,math}.rs`,
   +6.6%, spectralnorm_alt_2 +4.1%; final: geomean 0.9986 over all 78
   programs (vecarith -0.85%, worst +0.13% nbody). The VM's `arith_fast`
   (vm.rs, `real_op`) is unchanged.
+- rebased on afe56d9 (#50, #55, #65), CI's gate found Bounce_nonames,
+  fasta_naive_2, nbody_naive, matrixFor, fannkuch +0.54..+0.91%: all in
+  `vm::run_with`'s own instructions (same calls), i.e. LLVM compiled the
+  VM loop differently once arith.rs grew, although nothing new is called
+  from it. With the kernels in their own module (`arith_exact.rs`) all of
+  them are at or below main (-0.03..-0.09% locally against afe56d9; CI: 2
+  faster, 0 slower). Another case for the build-profile decision
+  (codegen units/LTO, `build-profile.md`).
 - tests: `gnu_r_oracle` in arith.rs (9,440 GNU R results through
   `real_binary` in each shape); `tests/r/math/nan-payload-arith.R` (every
   shape, temporaries and variables, integers, logicals, long vectors, a
