@@ -1,5 +1,14 @@
 # conformance-sweep-data
 
+## 2026-10-29 (round 6): source-reference ownership
+
+- Claim the finished parser track's source-reference work in runtime
+  builtins/parsing.rs and a minimal syntax consumed-offset accessor.
+  Source ranges on parsed expressions, braces and function literals are
+  the first slice; parse-data records remain a separate follow-up.
+- Baseline is main dbf6754. No edits to vm.rs, serialization, S4,
+  finalizers or the core object model.
+
 ## 2026-10-29 (round 5): isolate loaded-bytecode metadata
 
 - Full CI artifact comparison against main caught two regressions outside

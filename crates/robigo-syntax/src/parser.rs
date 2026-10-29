@@ -291,6 +291,17 @@ impl<'a> Parser<'a> {
         self.program_n(usize::MAX)
     }
 
+    /// End of input consumed by `program_n`, including its terminator.
+    pub fn consumed_end(&self) -> usize {
+        if matches!(self.toks[self.pos].tok, Tok::Eof) {
+            self.src.len()
+        } else if self.pos == 0 {
+            0
+        } else {
+            self.toks[self.pos - 1].span.end as usize
+        }
+    }
+
     // R: gram.y:R_ParseVector, stop after the requested number of statements.
     pub fn program_n(&mut self, n: usize) -> Result<Vec<Expr<'a>>, ParseError> {
         let mut out = Vec::new();
