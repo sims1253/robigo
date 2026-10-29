@@ -679,9 +679,9 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
             } else if dots_head {
                 Value::pairlist(items)
             } else {
-                let mut l = Lang::from_items(items, l.attrs.clone());
-                l.lang_cells = lang_cells >> 1;
-                Value::Lang(Rc::new(l))
+                let l = Rc::new(Lang::from_items(items, l.attrs.clone()));
+                crate::serialize::set_lang_cells(&l, lang_cells >> 1);
+                Value::Lang(l)
             }
         }
         _ => e.clone(),

@@ -468,10 +468,6 @@ pub struct Lang {
     /// The tag of the function position (GNU R's first cons cell can
     /// carry one, e.g. after `e[-1]`; `names(e)[1]`).
     pub fun_tag: Option<Sym>,
-    /// Bit k: the cons cell of argument k is a LANGSXP, not a LISTSXP
-    /// (`substitute()` leaves an unbound `...` as `LCONS(R_DotsSymbol,
-    /// R_NilValue)`). Only `serialize()` shows it.
-    pub lang_cells: u64,
 }
 
 /// A non-empty pairlist (LISTSXP). The empty pairlist is `NULL`.
@@ -837,7 +833,7 @@ impl Value {
     }
 
     pub fn lang(fun: Value, args: Vec<Arg>) -> Value {
-        Value::Lang(Rc::new(Lang { fun, args, attrs: None, fun_tag: None, lang_cells: 0 }))
+        Value::Lang(Rc::new(Lang { fun, args, attrs: None, fun_tag: None }))
     }
 
     pub fn call_sym(name: &str, args: Vec<Value>) -> Value {
@@ -1250,7 +1246,7 @@ impl Lang {
 
     pub fn from_items(mut items: Vec<Arg>, attrs: AttrBox) -> Lang {
         let head = items.remove(0);
-        Lang { fun: head.value, args: items, attrs, fun_tag: head.tag, lang_cells: 0 }
+        Lang { fun: head.value, args: items, attrs, fun_tag: head.tag }
     }
 }
 

@@ -3,6 +3,7 @@
 //! and 3, including references, environments, ALTREP compact sequences
 //! and byte-code (which is read back as the original expression).
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::env::Env;
@@ -71,6 +72,45 @@ enum Format {
     Xdr,
     Binary,
     Ascii,
+}
+
+thread_local! {
+    /// Calls with LANGSXP cells among their arguments, by the address of
+    /// their `Lang`: bit k is argument k's cell. GNU R's `substitute()`
+    /// leaves an unbound `...` as `LCONS(R_DotsSymbol, R_NilValue)` (every
+    /// class generator's body has one), and only `serialize()` shows it, so
+    /// it is kept here rather than in every call. The weak reference keeps
+    /// the address from being reused while the entry exists; entries of
+    /// dropped calls are swept when the map has doubled.
+    static LANG_CELLS: std::cell::RefCell<HashMap<usize, (std::rc::Weak<Lang>, u64)>> =
+        std::cell::RefCell::new(HashMap::new());
+    static LANG_CELLS_SWEEP: std::cell::Cell<usize> = const { std::cell::Cell::new(64) };
+}
+
+/// Record that some argument cells of `l` are LANGSXP (no-op for none).
+pub fn set_lang_cells(l: &Rc<Lang>, bits: u64) {
+    if bits == 0 {
+        return;
+    }
+    LANG_CELLS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= LANG_CELLS_SWEEP.with(|c| c.get()) {
+            m.retain(|_, e| e.0.strong_count() > 0);
+            LANG_CELLS_SWEEP.with(|c| c.set((2 * m.len()).max(64)));
+        }
+        m.insert(Rc::as_ptr(l) as usize, (Rc::downgrade(l), bits));
+    });
+}
+
+/// The LANGSXP argument cells of `l` (see `set_lang_cells`).
+fn lang_cells(l: &Rc<Lang>) -> u64 {
+    LANG_CELLS.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() {
+            return 0;
+        }
+        m.get(&(Rc::as_ptr(l) as usize)).filter(|e| e.0.strong_count() > 0).map_or(0, |e| e.1)
+    })
 }
 
 /// A node of a pairlist-like chain while reading.
@@ -613,7 +653,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
-                // LANGSXP cells after a call's first (see `Lang::lang_cells`)
+                // LANGSXP cells after a call's first (see `set_lang_cells`)
                 let lang_cells = nodes
                     .iter()
                     .skip(1)
@@ -633,9 +673,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 let mut v = match head_type {
                     LANGSXP => {
-                        let mut l = Lang::from_items(items, None);
-                        l.lang_cells = lang_cells;
-                        Value::Lang(Rc::new(l))
+                        let l = Rc::new(Lang::from_items(items, None));
+                        set_lang_cells(&l, lang_cells);
+                        Value::Lang(l)
                     }
                     DOTSXP => Value::Dots(Rc::new(items)),
                     _ => Value::pairlist(items),
@@ -1317,7 +1357,7 @@ impl Writer<'_> {
                 }
             }
             Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), 0),
-            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), l.lang_cells),
+            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), lang_cells(l)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, 0),
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);
