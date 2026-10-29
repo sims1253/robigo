@@ -580,8 +580,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                     Value::Env(e) => e.clone(),
                     _ => self.interp.base.clone(),
                 };
+                // The formals pairlist is read fresh (not referenced
+                // again in the stream), so its items can move into the
+                // closure instead of being cloned one by one.
                 let formals: Rc<[Arg]> = match &n.car {
-                    Value::Pairlist(p) => p.items.iter().cloned().collect(),
+                    Value::Pairlist(p) => match Rc::try_unwrap(p.clone()) {
+                        Ok(p) => Rc::from(p.items),
+                        Err(p) => p.items.iter().cloned().collect(),
+                    },
                     _ => Rc::from(Vec::new()),
                 };
                 let mut v = Value::Closure(Rc::new(Closure {
@@ -607,10 +613,14 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             _ => {
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
-                // A non-NULL CDR at the end (dotted pair) is appended.
+                // A non-NULL CDR at the end (dotted pair) is appended;
+                // read fresh here, so its items can move.
                 if !cdr.is_null() {
                     if let Value::Pairlist(p) = &cdr {
-                        items.extend(p.items.iter().cloned());
+                        match Rc::try_unwrap(p.clone()) {
+                            Ok(mut p) => items.append(&mut p.items),
+                            Err(p) => items.extend(p.items.iter().cloned()),
+                        }
                     }
                 }
                 let mut v = match head_type {
@@ -713,14 +723,28 @@ impl<'a, 'i> Reader<'a, 'i> {
                     };
                     break;
                 }
-                // Every level's cell, then the tail's.
+                // Every level's cell, then the tail's; the spine's cars
+                // move into the items (each level's Value was only
+                // buffered here).
                 let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + 4);
-                for l in &spine {
-                    items.push(Arg::new(l.tag.as_sym(), l.car.clone()));
+                for l in spine.iter_mut() {
+                    let car = std::mem::replace(&mut l.car, Value::Null);
+                    items.push(Arg::new(l.tag.as_sym(), car));
                 }
-                match &cdr {
-                    Value::Pairlist(p) => items.extend(p.items.iter().cloned()),
-                    Value::Lang(l) => items.extend(l.items()),
+                match cdr {
+                    // A tail read fresh from the stream is uniquely
+                    // owned: its items can move instead of being cloned.
+                    Value::Pairlist(p) => match Rc::try_unwrap(p) {
+                        Ok(mut p) => items.append(&mut p.items),
+                        Err(p) => items.extend(p.items.iter().cloned()),
+                    },
+                    Value::Lang(l) => match Rc::try_unwrap(l) {
+                        Ok(mut l) => {
+                            items.push(Arg::new(l.fun_tag, l.fun));
+                            items.append(&mut l.args);
+                        }
+                        Err(l) => items.extend(l.items()),
+                    },
                     _ => {}
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for

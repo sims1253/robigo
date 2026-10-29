@@ -77,6 +77,10 @@ impl Hasher for Fx {
 /// (off, clen) -> (foff, ulen), FxHashed.
 type FlatIndex = HashMap<(u64, u32), (u64, u32), BuildHasherDefault<Fx>>;
 
+/// A cache table keyed by path: probed on every fetch (the rdb path is
+/// the key), so SipHash's finalization would cost more than the lookup.
+type PathMap<V> = HashMap<PathBuf, V, BuildHasherDefault<Fx>>;
+
 struct Flat {
     map: Mmap,
     index: FlatIndex,
@@ -113,12 +117,13 @@ impl Drop for Mmap {
     }
 }
 
+#[derive(Default)]
 struct Cache {
     /// rdb path -> the flat file claiming it, with its (size, mtime_ns)
     /// guard
-    claims: HashMap<PathBuf, (PathBuf, u64, u64)>,
+    claims: PathMap<(PathBuf, u64, u64)>,
     /// rdb path -> the loaded flat
-    loaded: HashMap<PathBuf, Rc<Flat>>,
+    loaded: PathMap<Rc<Flat>>,
 }
 
 fn u64_at(b: &[u8], off: usize) -> u64 {
@@ -141,13 +146,13 @@ impl Cache {
                     let root = e.parent().and_then(|p| p.parent())?;
                     Some(root.join("rdbflat"))
                 }) else {
-                    return Cache { claims: HashMap::new(), loaded: HashMap::new() };
+                    return Cache::default();
                 };
                 dir
             }
         };
-        let mut claims = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::new() } };
+        let mut claims: PathMap<(PathBuf, u64, u64)> = HashMap::default();
+        let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::default() } };
         for e in entries.flatten() {
             // the header: magic, guard, path (the path starts at byte 32)
             let Ok(mut f) = std::fs::File::open(e.path()) else { continue };
@@ -167,7 +172,7 @@ impl Cache {
             let Ok(path) = String::from_utf8(path) else { continue };
             claims.insert(PathBuf::from(path), (e.path(), u64_at(&head, 8), u64_at(&head, 16)));
         }
-        Cache { claims, loaded: HashMap::new() }
+        Cache { claims, loaded: HashMap::default() }
     }
 
     /// The flat for `file`, loading it on first use; `None` when there is
