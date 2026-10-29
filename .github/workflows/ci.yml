@@ -9,8 +9,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Every main commit gets its own group: its run publishes the perf baseline
+# that pull requests built on that commit compare with (a shared group would
+# cancel queued main runs). Pull requests cancel their superseded runs.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -131,10 +134,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
-                 --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -z "$id" ]; then echo "no baseline on main yet"; exit 0; fi
-          gh run download "$id" -R "$GITHUB_REPOSITORY" -n perf-main -D base
+          # The PR's merge commit is built on main's commit HEAD^1 (its first
+          # parent, read from the commit object, which the shallow checkout
+          # has): compare with that commit's numbers, not with whichever main
+          # run finished last (main may have moved since, or that commit's
+          # run may still be going: perf-baseline.py waits for it).
+          base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}')
+          python3 scripts/perf-baseline.py "$base" base | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
           # GNU R's counts come from main's run on the same runner image.
