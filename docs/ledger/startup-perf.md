@@ -195,12 +195,77 @@ lands; the natives work is PR #78 below.
   3 tiers ok; fastr serialize slice 165/169 (0 regressions, 2 new),
   connections/unserialize/gzfile slice 286/289 (0 regressions).
 
+## 2026-10-29 (round 5, continued): the hill-climb
+
+Five verified changes on top of the re-baseline (all gates green after
+each: runtime tests, conformance 3 tiers, fastr slices with 0
+regressions; commit messages carry the per-change numbers):
+
+1. **read_bc_lang iterative** (−15.2M on def): the recursive reader
+   rebuilt the suffix Value at every level of a bytecode chain and
+   cloned its items into the next level up — O(n²) Arg clones with an
+   intermediate Value per level. One flat items Vec now; repdef cells
+   are contiguous slices of it. The base packages' bytecode has long
+   spines, so this shows up directly in every scenario.
+2. **complete rdbflat battery** (coverage, ~neutral measured):
+   `scripts/build-rdbflat-force.R` forces every lazy binding of every
+   base package (package env and namespace), so the cache covers every
+   fetch any program can make — verified 793 fetches through 7 packages,
+   0 misses. 52MB of flats (lazily read per rdb); complete coverage
+   costs +0.65M on def-flat (index build) over the partial cache, won
+   partly back by an inline FxHash for the flat index (SipHash cost more
+   than the lookup). The battery takes ~1.5s.
+3. **rdbflat on by default** (`rdbflat/` beside the exe, the
+   build-natives.sh pattern; `ROBIGO_RDBFLAT` still overrides) and
+   **wired into CI**: the build job builds it, the robigo artifact
+   ships it, corpora and perf jobs point at it.
+4. **rdx gzip cache** (−5.8M def, −1.2M us/NULL): each `.rdx` index is
+   a gzip file inflated whole at every gzfile open; the builder writes
+   each as a single (0,0) flat entry and `gz_open` serves it first.
+5. **SYMSXP direct name read** (−2.6M def): no more throwaway
+   one-string vector per symbol.
+
+Where the scenarios ended (container; `flat` = cache, which is now the
+default experience; GNU R unchanged):
+
+| scenario | main 74e8c73 | this branch | Δ | GNU R | ratio |
+|---|---|---|---|---|---|
+| `-e 1` NULL, plain | 46,113,680 | 44,437,700 | −1.7M | 87,761,707 | 0.506× |
+| `-e 1` NULL, flat | 41,253,451 | **38,420,534** | −2.8M | 87,761,707 | **0.438×** |
+| `-e 1` utils,stats, flat | 50,853,282 | **45,956,897** | −4.9M | 99,891,741 | **0.460×** |
+| `-e 1` default, plain | 516,289,615 | 478,935,749 | −37.4M | 660,539,218 | 0.725× |
+| `-e 1` default, flat | 439,100,029 | **396,673,112** | −42.4M | 660,539,218 | **0.600×** |
+| `-e 1` default, natives+flat | 441,158,450 | 398,634,424 | −42.5M | 660,539,218 | 0.603× |
+| script default, natives+flat | 441,625,749 | 398,968,541 | −42.7M | 660,934,173 | 0.604× |
+| `library(stats)` NULL, flat | 191,738,336 | **176,661,289** | −15.1M | 259,476,934 | **0.680×** |
+
+Natives overhead on default packages is +2.0M (8 packages, static).
+
 ## Open items (ranked)
-1. Same as PR #36's list (S3 dispatch memsets during package loading,
-   regex construction at startup, G6 snapshot, per-fetch inflate).
-2. The remaining +0.32M of the natives load is stats.so's own mmap,
-   .bss zeroing (Fortran COMMON) and relocations — at parity with what
-   any dlopen pays; not worth chasing.
+
+1. **CHARSXP interning** (R: serialize.c ReadItem calls mkChar, which
+   interns in R's CHARSXP cache; robigo allocates a fresh `Rc<str>` per
+   read — repeated argument names like "x", "object" are re-allocated
+   hundreds of times per package). Needs a string cache with weak
+   entries or an arena; ~0.8M of memcpy is `Rc::from` copies in
+   read_charsxp alone, plus the allocations.
+2. **Symbol interner hashing** (`sym::Interner` uses SipHash; ~1.5M on
+   def in sip+memcmp+memcpy during unserialize). FxHash it — but sym.rs
+   is hot for every track; measure the perf suite, coordinate with
+   perf-vm.
+3. mimalloc is ~40M of the def-flat run (malloc+free paths) and drops
+   ~8M: fewer Values/Vecs during unserialize is the structural fix
+   (arena/region allocation for entry graphs, G6-snapshot style).
+4. mmap the flats instead of `fs::read` (RSS: 52MB cache but only
+   fetched pages would resident; instructions unchanged — reads are
+   kernel-side). Needs libc or a new crate — watch the layout lesson.
+5. From #36's list: S3 dispatch memsets during package loading (memset
+   is 2.3M on def-flat), regex construction at startup (2.75M — R code
+   compiling fresh patterns; GNU R pays the same in TRE, so parity),
+   G6 snapshot (the endgame: skip the unserialize entirely).
+6. Natives load is +2.0M for 8 packages — dlopen/mmap/relocation
+   parity, not worth chasing.
+
 
 ## 2026-10-29 (later): rebase onto d709287 (core's #56 merged); perf-gate artifacts
 
