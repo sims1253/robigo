@@ -11,6 +11,34 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-29: round 4 native-enabled verification
+
+- Same binary, utils.so disabled/enabled: focused fastr filter
+  `library/utils|TestBuiltin_(crc64|objectsize|unzip|read|write)|TestConnections`
+  improves 345/357 -> 350/357, with no lost passes. Utils examples
+  improve 88/119 -> 89/119. The aspell dictionary-path mismatch is
+  identical with natives disabled and enabled on this host.
+- Graphics/grDevices/grid examples with the old/fixed marker reader:
+  101/184 -> 176/184, no lost passes. All 60 grid cases pass.
+- Native smoke output matches Debian GNU R 4.5.0 byte for byte for
+  object.size, hash tables, read.csv, file:// downloads and text-connection
+  write.table. All eight native packages build in robigo-build:4.5.0.
+- Core 17 tests, C API unit/integration tests and CLI 7 tests pass.
+  Native-enabled conformance: 223/223 in every tier, VM guards pass.
+  Host runtime 33/34 passes; the complex sqrt oracle failure has exactly
+  the same input and one-ULP difference recorded in round 3 on main.
+  CI's Debian build, full workspace tests and gctorture pass for e31fdd4.
+- Local C API corpus: 19/21, zero regressions. Cargo loader test 1/1.
+- CI run 40914328638 confirms graphics 176/184 and the full examples
+  corpus 996/1152 with zero regressions. Absorbed 145 graphics example
+  passes and six graphics/grDevices demo passes from its artifacts using
+  corpus.py absorb. Set comparison confirms zero existing entries removed.
+- G3 remains next: introduce per-string encoding/byte storage across
+  syntax, runtime and bridge in a coordinated change (docs/core.md 4.1).
+  Reproduce grDevices/plotmath and graphics/Hershey first, then cover
+  Encoding/charToRaw/iconv and native CHARSXP round trips. This batch
+  leaves that cross-track migration for the next round.
+
 ## 2026-10-29: native marker reader used reversed ELF fields
 
 - Fresh utils smoke test still selected Rust ports with utils.so present.
