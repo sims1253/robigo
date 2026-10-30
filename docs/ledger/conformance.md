@@ -1,5 +1,44 @@
 # conformance: orphaned data cases
 
+## 2026-10-30: repair the complex replacement performance regression
+
+- CI run 41097174768, job 124210107182 reports mandelbrot_noout_naive
+  +29.14% at 4144a0e4 against its merge first parent a32c5623. The prior
+  scalar assignment/fib screen missed this complex-matrix ownership bug.
+- Reproduce with the downloaded exact CI executables in Debian trixie,
+  pinned GNU R 4.5.0-3, identical candidate native libraries, isolated
+  executable directories, caches disabled and the unchanged paired harness.
+  Two-sample minima: 667,535,419 -> 862,127,190 (+29.15%).
+- Exact CI profile attribution: total +194,644,018 instructions in sample 1.
+  memcpy rises 7,100,903 -> 200,918,637 (+193,817,734). Its caller is
+  Rc<Vector<Complex>>::make_mut: 229 copies, 193,818,043 instructions.
+  Numeric kernel instruction counts are unchanged. Filling C[, y] after
+  its first complex column triggers one full-matrix copy per next column.
+- Cause: the restoration guard added in this PR uses Value::ptr_eq, whose
+  match omits complex, logical, raw, expression and pairlist values. It
+  consequently retains an unchanged binding as an error-restoration owner.
+  That extra reference forces copy-on-modify on each replacement.
+- Candidate: compare the omitted Rc identities locally in fast_replace,
+  releasing an unchanged binding before replacement. Preserve a binding
+  only when index evaluation actually changes it. Leave shared value.rs,
+  evaluator/context capture and GNU R ordering unchanged. Add an evaluator
+  test checking buffer reuse across repeated complex/logical/raw/expression
+  replacements. Existing assignment side-effect oracle fixtures remain.
+- Fresh base and original-head source archives build sequentially in one
+  capped container, each with a separate private Cargo target directory.
+  Fresh-build reproduction and final corrected measurements are pending.
+- Corrected screening profile: 667,440,293 instructions; memcpy exclusive
+  7,101,350, back to the base's 7,100,903. The 229 full-matrix copies are
+  gone. All 12 fixed cases and 286 scripts in all three execution tiers
+  (858 comparisons) pass with the corrected Debian binary.
+- Reject the first fresh-base run as environment-invalid: liblzma-sys had
+  bundled its static library before pkg-config was installed. Unlike CI,
+  that executable lacked DT_NEEDED liblzma and loading utils failed on
+  lzma_crc64. Rebuild that private dependency with the system pkg-config;
+  do not count its failed run as a performance result. Both comparison
+  executables must load the same system libraries and candidate natives.
+
+
 ## 2026-10-30: revived data-filter ownership
 
 - Start from a32c5623. Claim the 12 actionable cases left by the finished
