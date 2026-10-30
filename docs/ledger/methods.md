@@ -31,14 +31,19 @@ Slice used throughout ("S4 slice"):
   missing-slot and .S3Class behavior); defer .Data to the slow path because
   data_part can evaluate R. Non-S4 objects must fall back to do_AT for S3
   dispatch and exact errors. Guard misses must not evaluate x twice; pass
-  the evaluated value in a forced promise to the fallback. Preserve
-  visibility and invalidation if object forcing runs R. Existing guards
-  account for rebinding @. No cached attribute offset without checking the
+  the evaluated value in a forced promise to the primitive fallback.
+  Restrict the first fast path to present ordinary slots; missing-slot
+  errors should retain do_AT's context. Object forcing can run R: invalidate
+  VM variable caches afterwards, but keep the primitive selected before
+  forcing for this call (do not look up a newly rebound @). Preserve
+  visibility. Existing entry guards account for rebinding @. No cached attribute offset without checking the
   actual attribute layout: same-class objects can have different layouts.
 - Method-table lookup caching remains a separate experiment: cache against
   both table identity and environment mutation version, including changes
   in inherited tables and method bindings. Cache metadata, never a method
-  result across setMethod/removeMethod without invalidation.
+  result across setMethod/removeMethod without invalidation. C API
+  attribute writes can mutate metadata without rebinding an environment
+  variable, so an environment version alone cannot guard such metadata.
 - Rcpp classification: listof 4/5 (list elements), matrix 30/31/34
   (dimnames), S4 2/3 (slot attributes), vector 116/120/135 (character
   element writes): ten bridge bugs. misc 51 is connection message sinking:
@@ -106,6 +111,28 @@ Slice used throughout ("S4 slice"):
   C writes during C->R callbacks, `.External` write-back, and aliasing of
   newly created nested C objects across returns. These need separate
   fixtures; do not claim the transitional bridge is a shared object heap.
+
+- Rebased verification on 1b4670a: **248/248 scripts in AST/VM/JIT**,
+  S4 **644/662**, C API **19/21**, methods/stats4 examples **45/50**,
+  zero regressions. `cargo test --release -p robigo-capi` passes all
+  unit/integration/doc tests under the build lock. The first unlocked
+  invocation passed both integration tests, then rustdoc lost its runtime
+  .rlib to shared-target turnover; rejected that failed invocation and
+  reran build + tests within one lock. Formatting and whitespace pass.
+- Rebased focused Rcpp (listof, matrix, misc, modref, S4, sugar, vector,
+  XPtr) with R_LIBS exported: **819 pass / 1 fail**, all eight files exit 0;
+  sugar **493/493**, S4 **20/20**, XPtr **8/8**. The only failure is
+  misc 51, the independently reproduced message sink. No stack imbalance.
+- Current rebased-head instruction ratios (the isolated bridge experiment
+  is the before/after table above; #97's dispatch gain is inherited here):
+
+| workload | rebased head | GNU R, same host | head/R |
+| --- | ---: | ---: | ---: |
+| generic | 10,893.902 | 12,193.281 | 0.893 |
+| slot | 1,378.657 | 656.124 | 2.101 |
+| replace | 39,126.714 | 38,692.237 | 1.011 |
+| new | 352,891.758 | 315,224.912 | 1.119 |
+| valid | 178,971.906 | 163,136.676 | 1.097 |
 
 ## 2026-10-30: round 7 Rcpp retest and S4 dispatch allocations
 
