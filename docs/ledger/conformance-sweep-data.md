@@ -1,5 +1,42 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 13): wire putconst end-to-end, cmpfun fixtures, and cmpfile/loadcmp
+
+- Track ledger update for round 13 on branch `track/conformance-sweep-data-13` (PR #125).
+- Job 1: Wire `putconst` end-to-end against `Value::set_vector_elt_through_alias`:
+  - Removed temporary "blocked on core" error in `crates/robigo-runtime/src/builtins/bytecode.rs`.
+  - Mutates aliased generic vector buffers in-place using `args[0].value.set_vector_elt_through_alias(count, x)`.
+  - Preserved exact GNU R `eval.c:do_putconst` semantics:
+    - Arity check (`check_arity(args, 3, "putconst", call)`).
+    - Buffer check (`"constant buffer must be a generic vector"`).
+    - ConstCount bounds check (`"bad constCount value"`).
+    - Constant deduplication with `identical_flags` using `IdFlags { ignore_env: false, .. }` (matching `R_compute_identical` flag 16: take closure environments into account).
+- Job 2: `compiler::cmpfun` constant-layout fixtures (`tests/r/serialize/bytecode_construct.R`):
+  - Extended `tests/r/serialize/bytecode_construct.R` with live `compiler::cmpfun` execution and disassembly comparison against oracle fixtures.
+  - Added arithmetic expression compilation with default arguments and nested closure compilation with loop probes.
+  - Added constant buffer growth and extraction loop (`growconst`, `putconst` deduplication, `getconst`).
+  - Added aliased buffer mutation probe verifying in-place mutation through aliases.
+  - Re-recorded `bytecode_construct.Rout` against GNU R oracle `robigo-oracle:4.5.0`.
+- Job 3: `cmpfile`/`loadcmp` end-to-end (`tests/r/serialize/bytecode_compiled_files.R`):
+  - Added end-to-end round-trip: `cmpfun` -> `cmpfile` -> `loadcmp`.
+  - Compared file bytes directly: robigo-generated `source.Rc` matches GNU R oracle byte-for-byte.
+  - Verified bidirectional loading and execution: GNU-R-written `.Rc` executed by robigo, and robigo-written `.Rc` loaded via `compiler::loadcmp` into isolated environments and executed.
+  - Covered binary format, `ascii = TRUE`, `version = 2`, and `version = 3`.
+  - Re-recorded `bytecode_compiled_files.Rout` against GNU R oracle `robigo-oracle:4.5.0`.
+- Job 4: Quoting fix and `getconst` default alignment:
+  - Aligned default build `do_getconst` in `crates/robigo-runtime/src/builtins/lang.rs` with `coerce.c:asInteger` / `eval.c:do_getconst` semantics.
+  - Fixed `quote_if_needed` in `crates/robigo-runtime/src/builtins/lang.rs` to quote `Value::Bytecode`, preventing special replacement functions (`[<-`, `[[<-`) from evaluating bytecode values during complex assignments under `ROBIGO_COMPILE=0`.
+  - FastR data filter audit remains clean: 0 unclaimed failures exist for this track.
+- Conformance & CI validation:
+  - All 4 bytecode conformance scripts pass across all three tiers:
+    - Tier 1 (Interpreted, `ROBIGO_COMPILE=0`): ok
+    - Tier 2 (VM, `ROBIGO_JIT=0`): ok
+    - Tier 3 (VM + JIT): ok
+  - Unit tests: 67/69 pass in `robigo-runtime` (the 2 complex tests are known host glibc 2.44 sqrt/csin bit differences documented in all ledgers), 2/2 pass in `robigo-capi`.
+  - Ratchet check: `python3 scripts/ratchet.py check` passes (32,564 cases).
+- Open items:
+  - None for this track. All jobs 1-4 are complete.
+
 ## 2026-10-30 (round 12): putconst follow-up & data filter audit
 
 - Track ledger update for round 12 on main `758efb7` / `a32c5623`.
