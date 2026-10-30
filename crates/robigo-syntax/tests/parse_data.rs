@@ -14,6 +14,11 @@ fn raw_records_match_gnu_r_4_5_0() {
             return;
         }
         let records = record_parse_data(source).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        assert_eq!(
+            records,
+            record_parse_data(source.trim_end_matches('\n')).unwrap(),
+            "virtual final newline for {source:?}"
+        );
         let mut got = String::new();
         for r in records {
             use std::fmt::Write;

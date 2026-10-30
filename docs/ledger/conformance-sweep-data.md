@@ -16,8 +16,35 @@
   formals, calls, missing arguments, comments, tabs, UTF-8 and pipe rewrites.
   Two line-directive probes were added after that check. Runtime integration
   attaches the matrix to the source environment for base getParseData.
-- Verification is in progress. Bytecode and VM handoffs follow below once
-  the parser slice and the existing passing entries are verified.
+- Fixed-binary broad baseline is 8,407/8,426. Its sole recorded-pass
+  failure is the existing order/add626 host collation mismatch.
+- BCODESXP handoff (core/startup): read serialize.c:ReadBC1/WriteBC1,
+  ReadBCConsts and ReadBCLang together. Preserve code, every constant,
+  nested BCODESXP constants and the shared BCREPDEF/BCREPREF language
+  graph; expose the source expression separately for body()/evaluation.
+  serialize.rs:read_bc currently discards code and all but constant zero.
+  Value has no BCODESXP case and the writer cannot emit one. Port
+  eval.c:do_mkcode/do_bcclose only after that representation exists;
+  bcVersion alone does not unblock compiler::cmpfun. Read core #84's
+  PR body: strings must preserve raw bytes and encoding marks through
+  serialization; never serialize the UTF-8 display view instead. #84
+  remained open during this batch, so no oracle expectations were changed
+  for its unmerged representation.
+- perf-vm handoff: lapply/245e62b needs GETINTLBUILTIN/CALLBUILTIN for
+  is.vector(X, "any") before forcing missing X. A builtin-side change
+  cannot remove the extra R is.vector closure frame. Compile and execute
+  that internal call in vm.rs, then check the error and traceback against
+  the existing oracle in all tiers. No vm.rs edit in this batch.
+- First runtime candidate: parser corpus 17/28 -> 28/28 (+11), zero
+  regressions. Added all eleven verified passes to the FastR ratchet.
+  Runtime oracle fixture improves 0/3 -> 3/3 across interpreter, VM and JIT.
+- Expanded raw oracle now matches all 59 programs, also with the final
+  newline omitted. This caught and corrected empty-production locations
+  for {;} and {;;}. Malformed #line comments have empty recorded text,
+  matching SkipComment. A final runtime rebuild follows these corrections.
+- Syntax crate passes all nine unit tests, the raw-data differential test
+  and the curated parse-tree oracle. The optional external corpus oracle
+  remains ignored by default. Runtime and broad final checks follow.
 
 
 ## 2026-10-30 (round 7): closure source metadata and ownership audit

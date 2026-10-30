@@ -17,7 +17,7 @@ sources <- c(
   '{ # inner\nx\n# between\ny\n}', 'x |> f()',
   'TRUE; FALSE; NA; NULL; NA_integer_; 1L; 2i; "a"',
   '`a b` + 1', 'x\t+\ty', '"é" + café',
-  '{ if(x) y\nelse z }', '{ if(x) y\nz }', '#line 20 \"x.R\"\nx', '#line 2\nx'
+  '{ if(x) y\nelse z }', '{ if(x) y\nz }', '#line 20 \"x.R\"\nx', '#line 2\nx', '#line not-a-number\nx', '#line20\nx', ' #line 20\nx', '{;}', '{;;}', '{\n;\n}', 'f()', 'f(,)', '{}', '# comment;'
 )
 for (src in sources) {
   src <- paste0(src, '\n')

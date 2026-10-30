@@ -64,6 +64,14 @@ struct Recorder<'a> {
 /// Record a validated complete program. Errors identify unsupported metadata
 /// input rather than returning a partial or invented reduction history.
 pub fn record_parse_data(src: &str) -> Result<Vec<Record>, String> {
+    // R: gram.c:con_getc supplies a final newline on unterminated input.
+    let terminated;
+    let src = if !src.is_empty() && !src.ends_with('\n') {
+        terminated = format!("{src}\n");
+        terminated.as_str()
+    } else {
+        src
+    };
     let (tokens, _) = Lexer::new(src).tokenize().map_err(|e| e.message)?;
     let mut input = Vec::new();
     let mut end = 0;
@@ -76,7 +84,13 @@ pub fn record_parse_data(src: &str) -> Result<Vec<Record>, String> {
                 let start = offset + hash;
                 let stop = offset + line.trim_end_matches('\n').len();
                 let token = if start == 0 || src.as_bytes()[start - 1] == b'\n' {
-                    if src[start..stop].starts_with("#line ") { 291 } else { 290 }
+                    if src[start..stop].strip_prefix("#line").is_some_and(|tail| {
+                        tail.trim_start_matches([' ', '\t', '\u{c}']).starts_with(|c: char| c.is_ascii_digit())
+                    }) {
+                        291
+                    } else {
+                        290
+                    }
                 } else {
                     290
                 };
@@ -148,8 +162,15 @@ impl Recorder<'_> {
             };
             let loc = Loc { span, id: self.next_id() };
             if token != 10 && token != 258 {
-                let text =
-                    if token == 291 { String::new() } else { self.src[span.start as usize..span.end as usize].into() };
+                let text = if token == 291
+                    || (token == 290
+                        && (span.start == 0 || self.src.as_bytes()[span.start as usize - 1] == b'\n')
+                        && self.src[span.start as usize..].starts_with("#line"))
+                {
+                    String::new()
+                } else {
+                    self.src[span.start as usize..span.end as usize].into()
+                };
                 self.record(token, loc, text);
             }
             if token != 290 && token != 291 {
@@ -288,7 +309,11 @@ impl Recorder<'_> {
             }
             let count = YYR2[rule] as usize;
             let start = locs.len() - count;
-            let mut loc = Loc::default();
+            // R: gram.y:YYLLOC_DEFAULT starts an empty production at the
+            // preceding symbol's last column and gives it no identifier.
+            let end = locs.last().unwrap().span.end as usize;
+            let empty_start = self.src[..end].char_indices().next_back().map_or(0, |(at, _)| at) as u32;
+            let mut loc = Loc { span: Span { start: empty_start, end: empty_start }, id: 0 };
             if count > 0 {
                 loc = Loc {
                     span: Span { start: locs[start].span.start, end: locs.last().unwrap().span.end },
