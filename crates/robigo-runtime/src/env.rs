@@ -275,6 +275,8 @@ pub struct EnvData {
     /// `Frame::search` of this environment's frame, readable without
     /// borrowing it (set at creation and by `set_search`).
     search: Cell<bool>,
+    /// Already present in the weak environment inventory. Fits in padding.
+    trace_recorded: Cell<bool>,
 }
 
 impl EnvData {
@@ -342,6 +344,7 @@ impl Env {
             id,
             fn_version: Cell::new(0),
             search: Cell::new(search),
+            trace_recorded: Cell::new(false),
         }))
     }
 

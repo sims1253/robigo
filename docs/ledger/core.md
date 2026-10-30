@@ -203,6 +203,18 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   registration timing, CLI exit invocation, and physical cycle reclamation
   remain open; retain conservative opaque roots until their ownership is
   represented explicitly.
+- Full cache-OFF CI gate for 691e359 failed: 14 targets exceed 0.5%,
+  including emptyWhile +0.53%, S4 new +0.80% and S4 valid +0.88%.
+  The four cache-enabled local targets did not expose the startup cost.
+  Local isolated, cache-OFF startup reproduces it: main 212,073,075
+  instructions, candidate 213,359,034 (+0.606%). Profiles attribute most
+  of the increase to inventory hash lookup/rehash in track_escape.
+- Next candidate replaces the inventory HashMap with Vec<Weak<EnvData>>
+  and a per-allocation recorded flag. The old environment size is 240
+  bytes; a unit assertion checks the flag fits existing padding. A second
+  test checks deduplication and that inventory ownership remains weak.
+  Verification pending; PR returned to draft. Further builds use this
+  worktree's private target to avoid shared metadata reuse and starvation.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
