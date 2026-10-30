@@ -121,13 +121,6 @@ struct PNode {
     car: Value,
 }
 
-// Tail attributes are not retained by the flattened call representation.
-// Only the rare LANGSXP tails carry this marker; ordinary reads never scan.
-#[cold]
-fn exceptional_cells(nodes: &[PNode]) -> Vec<usize> {
-    nodes.iter().skip(1).enumerate().filter_map(|(k, n)| n.attr.is_missing_arg().then_some(k)).collect()
-}
-
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
     pos: usize,
@@ -590,28 +583,23 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
-    // R: serialize.c:ReadItem_Iterative preserves each cons cell type.
     fn read_pairlist(&mut self, first_flags: u32) -> RResult<Value> {
         let head_type = first_flags & 255;
         let mut nodes: Vec<PNode> = Vec::new();
         let mut flags = first_flags;
         let mut ty = head_type;
         let mut head_attr = Value::Null;
-        let mut has_lang_cells = false;
         while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
-            let mut attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+            // R: serialize.c:ReadItem_Iterative preserves LANGSXP tail cells.
+            // Keep all exceptional bookkeeping out of the ordinary reader.
+            if ty == LANGSXP && !nodes.is_empty() && head_type == LANGSXP {
+                return self.read_call_tail(nodes, head_attr, flags);
+            }
+            let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
             let car = self.read_item()?;
             if nodes.is_empty() {
                 head_attr = attr.clone();
-            }
-            // R: serialize.c:ReadItem_Iterative allocates the streamed type.
-            // Only head attributes survive this flattened representation.
-            // Use the otherwise unused tail attribute slot as a type marker,
-            // keeping PNode and ordinary reads free of side-vector storage.
-            if ty == LANGSXP && !nodes.is_empty() {
-                attr = Value::missing_arg();
-                has_lang_cells = true;
             }
             nodes.push(PNode { attr, tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
@@ -630,7 +618,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
         };
-        let _ = nodes.iter().map(|n| &n.attr).count();
+        let _ = &nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
                 let n = nodes.into_iter().next().unwrap();
@@ -670,8 +658,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
-                let lang_cells =
-                    if head_type == LANGSXP && has_lang_cells { Some(exceptional_cells(&nodes)) } else { None };
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
@@ -684,13 +670,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     }
                 }
                 let mut v = match head_type {
-                    LANGSXP => {
-                        let l = Rc::new(Lang::from_items(items, None));
-                        if let Some(cells) = lang_cells {
-                            set_lang_cells(&l, cells);
-                        }
-                        Value::Lang(l)
-                    }
+                    LANGSXP => Value::Lang(Rc::new(Lang::from_items(items, None))),
                     DOTSXP => Value::Dots(Rc::new(items)),
                     _ => Value::pairlist(items),
                 };
@@ -698,6 +678,45 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(v)
             }
         }
+    }
+
+    // R: serialize.c:ReadItem_Iterative. Continue a call once a LANGSXP
+    // argument cell is encountered. Only this rare path needs cell indices;
+    // PNode and the ordinary conversion loop retain their original layout.
+    #[cold]
+    fn read_call_tail(&mut self, mut nodes: Vec<PNode>, head_attr: Value, mut flags: u32) -> RResult<Value> {
+        let mut cells = Vec::new();
+        let mut ty = flags & 255;
+        while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
+            let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+            let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
+            let car = self.read_item()?;
+            if ty == LANGSXP {
+                cells.push(nodes.len() - 1);
+            }
+            nodes.push(PNode { attr, tag, car });
+            if matches!(ty, CLOSXP | PROMSXP) {
+                break;
+            }
+            flags = self.int()? as u32;
+            ty = flags & 255;
+        }
+        let cdr = self.read_item_flags(flags)?;
+        let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
+        if let Value::Pairlist(p) = cdr {
+            match Rc::try_unwrap(p) {
+                Ok(mut p) => items.append(&mut p.items),
+                Err(p) => items.extend(p.items.iter().cloned()),
+            }
+        }
+        let mut v = Value::Lang(Rc::new(Lang::from_items(items, None)));
+        // Attach attributes before creating a weak registry reference:
+        // Rc::make_mut can otherwise dissociate that reference.
+        set_attr_pairlist(&mut v, head_attr);
+        if let Value::Lang(l) = &v {
+            set_lang_cells(l, cells);
+        }
+        Ok(v)
     }
 
     fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {

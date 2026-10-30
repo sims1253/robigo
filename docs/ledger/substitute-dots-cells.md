@@ -51,3 +51,19 @@
   LANGSXP marker. Only the head attribute is retained by the existing
   reader. Collect indices on the exceptional path; ordinary reads retain
   only a boolean and perform no side-vector initialization or drop.
+
+### Rejected marker state in the common reader
+
+- Marker candidate d27070d passes 753/753 ratchet executions. CI build,
+  unit tests and conformance pass. Exact 805e5fb/candidate binaries,
+  same natives, cache off: fib +0.0025%, bytecodes +0.0183%, S4 generic
+  +0.1376%, new +0.1117%, slot read +0.1484%, slot write +0.1394%,
+  valid +0.1085%. Rejected at the requested 0.1% limit.
+- Profile: only ONE exceptional deserialized call. The residual is
+  +612,734 instructions in read_item_flags0 (inlined common reader),
+  versus only 80 in exceptional_cells and 682 in set_lang_cells.
+- Next experiment restores the baseline reader and transfers to a cold
+  continuation at the first LANGSXP tail. All side-vector state, cell
+  tracking and special call construction live exclusively in that
+  continuation. No recursion per exceptional cell. Attach attributes
+  before registry insertion to preserve the weak reference.
