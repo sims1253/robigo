@@ -40,7 +40,11 @@ Slice used throughout ("S4 slice"):
   baseline and candidate. Three existing markers need the CI base natives
   (setMethod graphics, mle and update-methods optim); no candidate loss.
   With /tmp/core98-base-eb7/natives enabled: 48/50, zero regressions.
-- Full three-tier conformance and final runtime unit checks follow.
+- Full conformance: all seven harness tests pass, including AST/VM/JIT
+  equivalence and VM guards. All 17 S4 scripts match GNU R in each tier.
+  Added only the new S4 marker; discarded the uncommitted marker generated
+  for the unchanged, previously unratcheted lang/closure_source_print_utf8
+  probe, outside this track. Final runtime unit checks follow.
 - Open: slot reads still cost 2.10x GNU R. The existing profile attributes
   most of that gap to VM execution and variable flushing. Next step for
   perf-vm is a guarded slot-read instruction; value/GC changes belong to core.
