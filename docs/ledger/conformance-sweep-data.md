@@ -1030,3 +1030,30 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
 - Main moved to eb7a7ae (#103), introducing the expected ratchet append
   conflict. Rebase next, preserving all entries and the VM owner's context
   changes. Its lapply gain is inherited, not a compiler-construction gain.
+- Original-base data comparison completed: 8,409/8,426 before and after,
+  identical pass/fail and difference categories for every case. Only the
+  documented order/add626 host collation entry fails the ratchet.
+- Rebased onto eb7a7ae with one passing.txt append conflict; keep both
+  sides. Private matched baseline retains round 9 plus #103, with this
+  round's registrations disabled and the prior getconst/internal query
+  restored temporarily. Final sources are restored and the worktree clean.
+  This isolates construction from the inherited VM changes.
+- Rebased baseline: 765/771 strict checks; only bytecode_construct and
+  main's intentionally retained compiled-isvector-context probe fail,
+  each in three tiers. Startup baseline: 44,182,690 instructions.
+- Rebased final comparison: 765/771 -> 768/771 strict checks, exactly three
+  construction gains and no lost passes. The only remaining mismatch is
+  main's unlisted compiled-isvector-context probe. Data 8,410/8,426 before
+  and after, identical per-case pass/fail/difference categories. Only the
+  inherited lapply/245e62b differs from the original-base data results.
+- Matched private startup 44,182,690 -> 44,182,091 (-0.001%, neutral).
+  Rebased release checks: 44 runtime unit + two integration pass; same two
+  documented host-libm exclusions. All four exports again accepted by GNU R.
+- Final edge audit found another core dependency: dstruct.c:mkCLOSXP keeps
+  attributes on the formals pairlist, but Closure stores only Rc<[Arg]>.
+  Oracle probe with attr(pairlist(x=1L), 'note') preserves 'keep'; the
+  initial constructor returned NULL for that attribute. Reject silent loss:
+  guard attributed formals with an explicit unimplemented error after the
+  ordinary formals/body/environment validation. Core must retain that
+  pairlist's attributes before removing the guard. Normal GNU compiler
+  formals remain supported. This guard does not change corpus inputs.

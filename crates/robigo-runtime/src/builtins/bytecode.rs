@@ -196,7 +196,9 @@ fn constants_cells(
 // R: eval.c:do_bcclose / CheckFormals, preserving validation order.
 fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 3, "bcClose", call)?;
-    let formals = match arg(&args, 0) {
+    let forms = arg(&args, 0);
+    let formal_attrs = forms.has_attrs();
+    let formals = match forms {
         Value::Null => Vec::new(),
         Value::Pairlist(p) if p.items.iter().all(|a| a.tag.is_some()) => p.items.clone(),
         _ => return Err(Flow::error("invalid formal argument list for \"bcClose\"")),
@@ -209,6 +211,11 @@ fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         Value::Env(e) => e,
         _ => return Err(Flow::error("invalid environment")),
     };
+    // R: dstruct.c:mkCLOSXP retains the complete formals pairlist. The
+    // current Closure stores only its items; do not silently drop attributes.
+    if formal_attrs {
+        return Err(Flow::error("robigo: attributes on bytecode closure formals are not implemented yet"));
+    }
     Ok(Value::Closure(Rc::new(Closure {
         formals: formals.into(),
         body: body.expression.clone(),
