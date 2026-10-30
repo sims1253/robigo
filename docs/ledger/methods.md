@@ -7,6 +7,34 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 11 invalidation oracle and VM handoff
+
+- Base 5bff0ca, branch track/methods-s4-speed-2. #114 is still open,
+  so its method-closure cache is absent here. No runtime files changed.
+- Added five scripts recorded by GNU R 4.5.0-3 in the oracle image.
+  Four invalidation scripts match in AST, VM and JIT, 12/12 comparisons.
+  Coverage increases from zero dedicated metadata-binding scripts to four.
+  They cover inherited-method redefinition and removal, distinct classes,
+  adding a subclass after dispatch, local shadowing, global reassignment,
+  and two same-named generics with distinct lexical method tables.
+- Metadata tests replace .SigArgs, .SigLength and .AllMTable independently.
+  Active bindings prove the read order (.AllMTable, .SigArgs, .SigLength),
+  one read each, before forcing the signature argument. These tests pass
+  with the existing live reads and constrain a future metadata cache.
+- The fifth script, invalidation-slot-guard.R, exposes an existing mismatch
+  in all three tiers. A warmed GNU R closure continues using primitive @
+  after global @ reassignment; robigo instead calls the replacement and
+  returns 100 instead of 7. The script retains the exact oracle output and
+  is deliberately not marked passing. Its other checks cover local @,
+  S3 dispatch, NULL slots, missing slots, and copy-on-modify.
+- Binding-level cache implementation needs an environment API owned by
+  core. Env::fn_version only tracks function-like values; list-to-list
+  .SigArgs, integer-to-integer .SigLength, and environment-to-environment
+  .AllMTable writes do not advance it. Do not guard metadata with that
+  counter. #114's table-function cache is a different cache and must keep
+  its weak table/closure ownership and active-binding exclusion.
+- Verification and paired instruction measurements follow below.
+
 ## 2026-10-30: round 9 — FastR switch activated (#98 merged as b7ee268)
 
 - Rebased onto `b7ee268` (main) merging #98 (environment finalizers).
