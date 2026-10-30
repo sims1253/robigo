@@ -10,3 +10,8 @@ for (version in 2:3) {
   }
 }
 saveRDS(.Internal(bodyCode(f)), 'tests/r/serialize/bytecode-fixtures/body-code.rds', compress = FALSE)
+for (version in 2:3) {
+  path <- sprintf('tests/r/serialize/bytecode-fixtures/closure-v%d-ascii', version)
+  saveRDS(readRDS(paste0(path, '.rds')), paste0(path, '-read-xdr.rds'),
+          version = version, compress = FALSE)
+}

@@ -479,6 +479,8 @@ pub struct Pairlist {
 
 #[derive(Clone)]
 pub struct Closure {
+    /// GNU R bytecode retained independently of the executable source body.
+    pub gnu_bytecode: Option<Rc<Bytecode>>,
     /// Formals with their defaults; a missing default is the missing arg.
     pub formals: Rc<[Arg]>,
     pub body: Value,
@@ -575,6 +577,7 @@ pub enum Value {
     Pairlist(Rc<Pairlist>),
     Lang(Rc<Lang>),
     Closure(Rc<Closure>),
+    Bytecode(Rc<Bytecode>),
     Builtin(&'static Builtin),
     Env(Env),
     Promise(Rc<Promise>),
@@ -585,6 +588,26 @@ pub enum Value {
     /// An `OBJSXP` (S4 object without a data part, `typeof` "S4" or
     /// "object"): nothing but attributes.
     Obj(Rc<Obj>),
+}
+
+/// GNU R's portable BCODESXP data. Instructions stay in R_bcDecode's integer
+/// representation; threaded opcode addresses are specific to GNU R's process.
+/// Constants retain the ReadBC stream's cell definitions and references because
+/// flattened Lang/Pairlist values cannot express shared CDR cells.
+#[derive(Clone)]
+pub struct Bytecode {
+    pub code: Value,
+    pub expression: Value,
+    pub reps: usize,
+    pub consts: Vec<Value>,
+    pub cells: Vec<BytecodeRecord>,
+}
+
+#[derive(Clone)]
+pub enum BytecodeRecord {
+    Integer(i32),
+    Item(Value),
+    Nested(Rc<Bytecode>),
 }
 
 /// The body of an `OBJSXP`: only its attributes are used (`data` stays
@@ -931,6 +954,7 @@ impl Value {
             Value::Pairlist(_) => "pairlist",
             Value::Lang(_) => "language",
             Value::Closure(_) => "closure",
+            Value::Bytecode(_) => "bytecode",
             Value::Builtin(b) => match b.kind {
                 BuiltinKind::Builtin => "builtin",
                 BuiltinKind::Special => "special",
@@ -1192,6 +1216,7 @@ impl Value {
             (Value::Sym(a), Value::Sym(b)) => a == b,
             (Value::Env(a), Value::Env(b)) => a.ptr_eq(b),
             (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
+            (Value::Bytecode(a), Value::Bytecode(b)) => Rc::ptr_eq(a, b),
             (Value::Builtin(a), Value::Builtin(b)) => std::ptr::eq(*a, *b),
             (Value::Lang(a), Value::Lang(b)) => Rc::ptr_eq(a, b),
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),

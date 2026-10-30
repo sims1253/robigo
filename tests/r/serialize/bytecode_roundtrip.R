@@ -13,8 +13,8 @@ for (version in 2:3) {
 }
 for (version in 2:3) {
   f <- readRDS(sprintf('bytecode-fixtures/closure-v%d-ascii.rds', version))
-  path <- sprintf('bytecode-fixtures/closure-v%d-ascii.rds', version)
-  print(identical(serialize(f, NULL, ascii = TRUE, version = version), readBin(path, 'raw', n = 100000L)))
+  path <- sprintf('bytecode-fixtures/closure-v%d-ascii-read-xdr.rds', version)
+  print(identical(serialize(f, NULL, version = version), readBin(path, 'raw', n = 100000L)))
 }
 b <- readRDS('bytecode-fixtures/body-code.rds')
 print(typeof(b))

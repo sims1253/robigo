@@ -1,7 +1,7 @@
 //! R's serialization format (GNU R's serialize.c): reading and writing
 //! XDR ("X"), native binary ("B") and ASCII ("A") streams, versions 2
 //! and 3, including references, environments, ALTREP compact sequences
-//! and byte-code (which is read back as the original expression).
+//! and portable GNU R bytecode.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -130,6 +130,7 @@ pub struct Reader<'a, 'i> {
     refs: Vec<Value>,
     interp: &'i mut Interp,
     hook: Value,
+    bc_records: Vec<BytecodeRecord>,
 }
 
 fn corrupt() -> Flow {
@@ -243,6 +244,10 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     fn string_bytes(&mut self, len: usize) -> RResult<Vec<u8>> {
+        // R: serialize.c:InString does not consume a token for length zero.
+        if len == 0 {
+            return Ok(Vec::new());
+        }
         match self.format {
             Format::Ascii => {
                 // Escaped string in a word.
@@ -638,9 +643,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                     },
                     _ => Rc::from(Vec::new()),
                 };
+                let (body, gnu_bytecode) = match cdr {
+                    Value::Bytecode(b) => (b.expression.clone(), Some(b)),
+                    v => (v, None),
+                };
                 let mut v = Value::Closure(Rc::new(Closure {
+                    gnu_bytecode,
                     formals,
-                    body: cdr,
+                    body,
                     env,
                     attrs: None,
                     code: Default::default(),
@@ -721,22 +731,51 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(v)
     }
 
+    // R: serialize.c:ReadBC1. Keep the portable cells rather than GNU R's
+    // process-local threaded addresses (eval.c:R_bcEncode/R_bcDecode).
     fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
-        let _code = self.read_item()?;
+        let outer = std::mem::take(&mut self.bc_records);
+        let code = portable_bc_code(self.read_item()?)?;
         let consts = self.read_bc_consts(reps)?;
-        // The first constant is the expression the code was compiled from.
-        Ok(consts.into_iter().next().unwrap_or(Value::Null))
+        let cells = std::mem::replace(&mut self.bc_records, outer);
+        Ok(Value::Bytecode(Rc::new(Bytecode {
+            code,
+            expression: consts.first().cloned().unwrap_or(Value::Null),
+            consts,
+            reps: reps.len(),
+            cells,
+        })))
+    }
+
+    fn bc_int(&mut self) -> RResult<i32> {
+        let v = self.int()?;
+        self.bc_records.push(BytecodeRecord::Integer(v));
+        Ok(v)
+    }
+
+    fn bc_item(&mut self) -> RResult<Value> {
+        let outer = std::mem::take(&mut self.bc_records);
+        let v = self.read_item()?;
+        self.bc_records = outer;
+        self.bc_records.push(BytecodeRecord::Item(v.clone()));
+        Ok(v)
     }
 
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
-        let n = self.int()?;
+        let n = self.bc_int()?;
         let mut out = Vec::with_capacity(n.max(0) as usize);
         for _ in 0..n.max(0) {
-            let ty = self.int()? as u32;
+            let ty = self.bc_int()? as u32;
             let c = match ty {
-                BCODESXP => self.read_bc(reps)?,
+                BCODESXP => {
+                    let v = self.read_bc(reps)?;
+                    if let Value::Bytecode(b) = &v {
+                        self.bc_records.push(BytecodeRecord::Nested(b.clone()));
+                    }
+                    v
+                }
                 LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(ty, reps)?,
-                _ => self.read_item()?,
+                _ => self.bc_item()?,
             };
             out.push(c);
         }
@@ -746,7 +785,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>) -> RResult<Value> {
         match ty {
             BCREPREF => {
-                let i = self.int()? as usize;
+                let i = self.bc_int()? as usize;
                 Ok(reps.get(i).cloned().unwrap_or(Value::Null))
             }
             BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
@@ -775,23 +814,23 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = Some(self.int()? as usize);
-                    ty = self.int()? as u32;
+                    pos = Some(self.bc_int()? as usize);
+                    ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
                 let cdr;
                 loop {
-                    let attr = if hasattr { self.read_item()? } else { Value::Null };
-                    let tag = self.read_item()?;
-                    let t1 = self.int()? as u32;
+                    let attr = if hasattr { self.bc_item()? } else { Value::Null };
+                    let tag = self.bc_item()?;
+                    let t1 = self.bc_int()? as u32;
                     let car = self.read_bc_lang(t1, reps)?;
                     spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
-                    let t2 = self.int()? as u32;
+                    let t2 = self.bc_int()? as u32;
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = Some(self.int()? as usize);
-                        nty = self.int()? as u32;
+                        npos = Some(self.bc_int()? as usize);
+                        nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
                     if matches!(nty, LANGSXP | LISTSXP) {
@@ -803,10 +842,10 @@ impl<'a, 'i> Reader<'a, 'i> {
                     // The chain's tail, as `read_bc_lang(t2)` reads it.
                     cdr = match nty {
                         BCREPREF => {
-                            let i = self.int()? as usize;
+                            let i = self.bc_int()? as usize;
                             reps.get(i).cloned().unwrap_or(Value::Null)
                         }
-                        _ => self.read_item()?,
+                        _ => self.bc_item()?,
                     };
                     break;
                 }
@@ -857,9 +896,40 @@ impl<'a, 'i> Reader<'a, 'i> {
                 set_attr_pairlist(&mut v, spine[0].attr.clone());
                 Ok(v)
             }
-            _ => self.read_item(),
+            _ => self.bc_item(),
         }
     }
+}
+
+// R: eval.c:R_bcEncode / R_bcDecode. Opcode cells remain integer indices;
+// robigo never installs GNU R's threaded addresses. Normalize the version and
+// check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
+fn portable_bc_code(mut code: Value) -> RResult<Value> {
+    const ARGC: &[usize] = &[
+        0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0,
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2,
+        2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 0, 1, 1, 1, 2, 1, 0, 0, 4, 0, 2, 2, 1, 1, 1, 1, 2,
+        2, 2, 2, 2, 2, 1, 1, 2, 2, 1, 1, 1, 2, 0, 0, 1, 0, 0,
+    ];
+    let Value::Int(v) = &mut code else { return Err(corrupt()) };
+    let Some(&version) = v.data.first() else { return Ok(Value::Null) };
+    if !(9..=12).contains(&version) {
+        return Ok(Value::ints(vec![version, 0]));
+    }
+    let mut pc = 1;
+    while pc < v.data.len() {
+        let op = v.data[pc] as usize;
+        let Some(&argc) = ARGC.get(op) else { return Err(Flow::error("unknown instruction code")) };
+        pc += argc + 1;
+        if pc > v.data.len() {
+            return Err(corrupt());
+        }
+    }
+    let version = if v.data.len() == 2 && v.data[1] == 0 { 2 } else { 12 };
+    if v.data[0] != version {
+        Rc::make_mut(v).data[0] = version;
+    }
+    Ok(code)
 }
 
 fn set_attr_pairlist(v: &mut Value, attr: Value) {
@@ -1061,7 +1131,7 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     }
     // 16 covers the reference count of a typical lazy-load entry without
     // the 4→8→16 reallocation chain; big entries still grow.
-    let mut r = Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook };
+    let mut r = Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook, bc_records: Vec::new() };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;
@@ -1316,6 +1386,19 @@ impl Writer<'_> {
         }
         self.int(NILVALUE_SXP as i32);
     }
+    // R: serialize.c:WriteBC1 / WriteBCLang. Replay cell definitions with
+    // WriteItem so symbols and environments enter this stream's reference table.
+    fn bytecode(&mut self, b: &Bytecode) {
+        self.item(&b.code);
+        for record in &b.cells {
+            match record {
+                BytecodeRecord::Integer(v) => self.int(*v),
+                BytecodeRecord::Item(v) => self.item(v),
+                BytecodeRecord::Nested(b) => self.bytecode(b),
+            }
+        }
+    }
+
     pub fn item(&mut self, v: &Value) {
         let has_attr = v.has_attrs();
         let obj = v.is_object();
@@ -1394,6 +1477,11 @@ impl Writer<'_> {
             Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), &[]),
             Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
+            Value::Bytecode(b) => {
+                self.flags(BCODESXP, 0, false, false, false);
+                self.int(b.reps as i32);
+                self.bytecode(b);
+            }
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);
                 if has_attr {
@@ -1401,7 +1489,10 @@ impl Writer<'_> {
                 }
                 self.item(&Value::Env(c.env.clone()));
                 self.item(&Value::pairlist(c.formals.to_vec()));
-                self.item(&c.body);
+                match &c.gnu_bytecode {
+                    Some(b) => self.item(&Value::Bytecode(b.clone())),
+                    None => self.item(&c.body),
+                }
             }
             Value::Promise(p) => {
                 let val = p.value();
