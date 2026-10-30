@@ -746,6 +746,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         let consts = self.read_bc_consts(reps)?;
         let cells = std::mem::replace(&mut self.bc_records, outer);
         Ok(Value::Bytecode(Rc::new(Bytecode {
+            attrs: None,
             code,
             expression: consts.first().cloned().unwrap_or(Value::Null),
             consts,
@@ -1487,9 +1488,12 @@ impl Writer<'_> {
             Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
             Value::Bytecode(b) => {
-                self.flags(BCODESXP, 0, false, false, false);
+                self.flags(BCODESXP, levs, obj, has_attr, false);
                 self.int(b.reps as i32);
                 self.bytecode(b);
+                if has_attr {
+                    self.attrs(v);
+                }
             }
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);

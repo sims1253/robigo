@@ -28,3 +28,8 @@ for (version in c(9L, 13L)) {
 }
 b <- .Internal(mkCode(c(12L, 16L, 0L, 1L), list(42L)))
 saveRDS(b, 'tests/r/serialize/bytecode-fixtures/constant-code.rds', compress = FALSE)
+b <- readRDS('tests/r/serialize/bytecode-fixtures/constant-code.rds')
+attr(b, 'srcref') <- 1:6
+attr(b, 'srcfile') <- new.env(parent = emptyenv())
+attr(b, 'note') <- 'portable'
+saveRDS(b, 'tests/r/serialize/bytecode-fixtures/attributed-code.rds', compress = FALSE)

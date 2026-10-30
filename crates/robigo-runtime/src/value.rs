@@ -596,6 +596,7 @@ pub enum Value {
 /// flattened Lang/Pairlist values cannot express shared CDR cells.
 #[derive(Clone)]
 pub struct Bytecode {
+    pub attrs: AttrBox,
     pub code: Value,
     pub expression: Value,
     pub reps: usize,
@@ -1021,6 +1022,7 @@ impl Value {
             Value::Pairlist(p) => &p.attrs,
             Value::Lang(l) => &l.attrs,
             Value::Closure(c) => &c.attrs,
+            Value::Bytecode(b) => &b.attrs,
             Value::Obj(o) => &o.attrs,
             _ => return None,
         };
@@ -1067,6 +1069,7 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
+            Value::Bytecode(b) => &mut Rc::make_mut(b).attrs,
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
             _ => return None,
         })
