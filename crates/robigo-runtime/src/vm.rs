@@ -1790,37 +1790,40 @@ fn inline_site_call(
 /// the call's actuals substitute the formals in the inner call and are
 /// evaluated eagerly in formal order (R: MAKEPROM on a builtin frame).
 ///
+/// Snapshot the shipped wrapper bindings at the end of base loading
+/// (R: installed bytecode is fixed at install) WITHOUT forcing them:
+/// forcing lazy promises at startup perturbs the heap for the whole
+/// run. Namespace callers inline the forced snapshot definition (see
+/// [`resolve_simple_site`]); forcing happens on first use, where the
+/// generic call would force them anyway.
+///
 /// Kept out of line and cold: only candidate call sites call it.
 #[cold]
 #[inline(never)]
 pub fn snapshot_simple_internals(interp: &mut Interp) {
-    // Snapshot the shipped definitions at the end of base loading (R:
-    // the bytecode is fixed at install). Namespace callers inline these
-    // unconditionally; `None` entries (or no snapshot on paths that skip
-    // base loading) fall back to the generic call.
+    // The raw bindings, promises unforced; `None` entries (or no
+    // snapshot on paths that skip base loading) fall back to generic.
     for (i, name) in crate::compile::SIMPLE_INTERNALS.iter().enumerate() {
         let Some(sym) = Sym::lookup(name) else { continue };
-        if let Some(Value::Closure(c)) = interp.base_binding(sym) {
-            if simple_internal_shape(&c).is_some() {
-                interp.si_snaps[i] = Some(c);
-            }
-        }
+        interp.si_snaps[i] = interp.base.get_local(sym);
     }
+    interp.si_ready = true;
 }
 
 /// The caller of a call that may inline: top-level calls are never
-/// compiled in GNU R and stay generic. Otherwise the caller closure,
+/// compiled in GNU R and stay generic. Otherwise the caller closure
+/// (cloned; the memo holds it alive so its address cannot be reused),
 /// whether it is namespace-scoped (R: getInlineInfo finds a locked
 /// namespace above it, so the call inlines without a guard), and whether
 /// it runs as compiled code (R: R_CheckJIT timing; first calls of small
 /// closures stay interpreted and generic).
 #[cold]
 #[inline(never)]
-fn simple_caller(interp: &Interp) -> Option<(usize, bool, bool)> {
+fn simple_caller(interp: &Interp) -> Option<(Rc<Closure>, bool, bool)> {
     let frame = interp.current_frame()?;
     let Value::Closure(caller) = &interp.frames[frame].function else { return None };
-    let ns = !caller.env.is_search() && locked_to_search(&caller.env);
-    Some((Rc::as_ptr(caller) as usize, ns, caller.jit.is_bytecode()))
+    let ns = caller.env.ptr_eq(&interp.base_ns) || (!caller.env.is_search() && locked_to_search(&caller.env));
+    Some((caller.clone(), ns, caller.jit.is_bytecode()))
 }
 
 /// R: compiler/R/cmp.R:is.simpleInternal. The definition is a closure
@@ -1988,12 +1991,18 @@ fn resolve_simple_site(
     let head = l.fun_sym()?;
     let def = if ns {
         // Installed code: the shipped definition, used unconditionally
-        // (R: no guard in namespaces). The live lookup must still reach
-        // base, else the generic call reports the lookup failure.
+        // (R: no guard in namespaces). The snapshot holds the raw
+        // binding; forcing happens here, where the generic call would
+        // force it anyway. A failed force falls back to the generic
+        // call, which reproduces the failure.
+        let raw = interp.si_snaps[si].clone()?;
+        let Value::Closure(d) = interp.force(raw).ok()? else { return None };
+        // The live lookup must still reach base, else the generic call
+        // reports the lookup failure.
         if !interp.resolves_to_base(head, env) {
             return None;
         }
-        interp.si_snaps[si].clone()?
+        d
     } else {
         // User code: the current base definition (R: BASEGUARD compares
         // against the base namespace; the recorded definition is what
@@ -2023,6 +2032,11 @@ fn try_inline_site(
     if site.force != 0 {
         return None;
     }
+    // No resolution while base is still loading (the snapshot is
+    // partial); those calls stay generic and unmemoized.
+    if !interp.si_ready {
+        return None;
+    }
     let head = l.fun_sym()?;
     let (caller, ns, compiled) = simple_caller(interp)?;
     // User code inlines only once compiled (R_CheckJIT timing); first
@@ -2036,7 +2050,7 @@ fn try_inline_site(
     let hit = {
         let memo = site.si_memo.borrow();
         match memo.as_ref() {
-            Some((c, n, r)) if *c == caller && *n == ns => Some(r.clone()),
+            Some((c, n, r)) if Rc::ptr_eq(c, &caller) && *n == ns => Some(r.clone()),
             _ => None,
         }
     };
@@ -2079,15 +2093,25 @@ pub(crate) fn try_inline_expr(
     call: &Value,
     env: &Env,
 ) -> Option<RResult<Value>> {
-    let (caller, ns, compiled) = simple_caller(interp)?;
+    let Some((caller, ns, compiled)) = simple_caller(interp) else {
+        return None;
+    };
     if !ns && !compiled {
+        return None;
+    }
+    // No resolution while base is still loading (the snapshot is
+    // partial); those calls stay generic and unmemoized.
+    if !interp.si_ready {
         return None;
     }
     // Record-first per caller, as for compiled call sites (GNU R
     // compiles once): the definition and argument map, or never-inline.
-    let key = (caller, Rc::as_ptr(l) as usize);
+    // The value holds caller and expression alive, so a key hit is
+    // always the same objects (freed addresses could otherwise be
+    // reused by unrelated calls).
+    let key = (Rc::as_ptr(&caller) as usize, Rc::as_ptr(l) as usize);
     if let Some(hit) = interp.si_expr_memo.get(&key).cloned() {
-        let inline = hit?;
+        let (inline, _, _) = hit?;
         if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
             return None;
         }
@@ -2098,7 +2122,7 @@ pub(crate) fn try_inline_expr(
         fun: fsym,
         args: map,
     });
-    interp.si_expr_memo.insert(key, resolved.clone());
+    interp.si_expr_memo.insert(key, resolved.clone().map(|inline| (inline, caller, l.clone())));
     let inline = resolved?;
     Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
 }

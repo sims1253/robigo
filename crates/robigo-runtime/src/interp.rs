@@ -66,14 +66,21 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
-    /// The shipped simple-`.Internal` wrappers (R: installed bytecode is
-    /// fixed at install; see `vm::snapshot_simple_internals`), by
-    /// `compile::SIMPLE_INTERNALS` index.
-    pub si_snaps: [Option<Rc<Closure>>; 20],
+    /// The shipped simple-`.Internal` wrapper bindings (R: installed
+    /// bytecode is fixed at install; see `vm::snapshot_simple_internals`),
+    /// by `compile::SIMPLE_INTERNALS` index. Promises stay unforced until
+    /// first use.
+    pub si_snaps: [Option<Value>; 20],
+    /// Whether [`Interp::si_snaps`] is complete. Calls made while base is
+    /// still loading stay generic (and unmemoized): resolving against a
+    /// partial snapshot would poison the memo for user code.
+    pub si_ready: bool,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
-    /// expression: the inline, or never-inline.
-    pub si_expr_memo: HashMap<(usize, usize), Option<crate::compile::SiInline>>,
+    /// expression: the inline, or never-inline. The key's addresses stay
+    /// valid because the value holds both alive (freed addresses could
+    /// otherwise be reused by unrelated calls).
+    pub si_expr_memo: HashMap<(usize, usize), Option<(crate::compile::SiInline, Rc<Closure>, Rc<Lang>)>>,
     /// Cache of function lookups through the search path, keyed by symbol
     /// and starting environment, valid for `fun_cache_epoch`.
     pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,
@@ -176,6 +183,7 @@ impl Interp {
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
             si_snaps: std::array::from_fn(|_| None),
+            si_ready: false,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),

@@ -517,9 +517,10 @@ pub struct SiInline {
 }
 
 /// The write-once resolution of a [`CallSite::si`] call site: the caller
-/// closure it was resolved for, whether that caller is
-/// namespace-scoped, and the inline (`None`: never inline here).
-pub type SiMemo = Option<(usize, bool, Option<SiInline>)>;
+/// closure it was resolved for (held alive, so its address cannot be
+/// reused), whether that caller is namespace-scoped, and the inline
+/// (`None`: never inline here).
+pub type SiMemo = Option<(Rc<Closure>, bool, Option<SiInline>)>;
 
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
