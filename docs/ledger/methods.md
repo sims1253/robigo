@@ -53,6 +53,15 @@ Slice used throughout ("S4 slice"):
   CI and three-tier conformance; compare case identities before adding
   new passes. If #98 leaves the finalizer case failing, inspect cycle
   reachability and callback scheduling for the reference-class object.
+- Three-tier check with the exact base CI artifact: conformance ratchet
+  **252/252 in AST, VM and JIT** (756 byte comparisons, zero failures).
+  The 224 changed FastR cases also give **221/224 in each tier**, with
+  identical three-case loss sets. Run with ROBIGO_COMPILE=0/ROBIGO_JIT=0,
+  ROBIGO_COMPILE=1/ROBIGO_JIT=0, and ROBIGO_COMPILE=1/ROBIGO_JIT=1.
+  Six Python checks, cargo fmt --check and git diff --check pass.
+  Active expected.jsonl.gz, FastR passing.txt and conformance passing.txt
+  are byte-identical to eb7a7ae. Shared edits are confined to the corpus
+  harness, its tests, manifest and corpus documentation.
 
 ## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
 
