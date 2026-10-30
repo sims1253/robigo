@@ -7,6 +7,25 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: reject strong cache roots; preserve table finalization
+
+- Final review found a semantic regression not covered by redefinition tests:
+  the strong cache retained a retired .AllMTable and could delay its finalizer.
+- Added an oracle case that registers a finalizer on the old table, copies
+  its bindings to a replacement, rebinds .AllMTable, drops the old table,
+  and calls gc(). GNU R prints `retired method table`; the strong-cache
+  candidate omits it. Rejected the strong-root version despite its speedup.
+- Replaced both cache roots with Weak<EnvData> and Weak<Closure>. Weak
+  allocation identity guards against pointer reuse without extending the
+  lifetime of the table or method. Only closures are now cached; builtin
+  deferred-default entries continue through the live lookup.
+- The expanded oracle script matches the weak-cache binary byte for byte.
+  Saved main also matches; the strong cache fails exactly the finalizer line.
+  Measurements and remaining checks of this correction follow.
+- Running the host-built unit executable in Debian was rejected as a check:
+  it requires GLIBC_2.44. Do not use that route to judge the two known
+  host numeric oracle differences; Debian-built CI tests remain authoritative.
+
 ## 2026-10-30: round 10 single-class labels and borrowed slot access
 
 - Kept GNU R's R_dispatchGeneric label semantics while interning a single

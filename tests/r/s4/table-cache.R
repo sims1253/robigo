@@ -55,3 +55,9 @@ makeActiveBinding("CacheChild", function() {
 print(cachedValue(y))
 print(cachedValue(y))
 print(count)
+# Retiring a dispatch table must not leave a cache root that delays finalizers.
+reg.finalizer(tab, function(e) cat("retired method table\n"))
+replacement <- list2env(as.list(tab), parent = emptyenv())
+assign(".AllMTable", replacement, envir = genericEnv)
+rm(tab)
+invisible(gc())

@@ -868,21 +868,24 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
 }
 
 /// R: methods_list_dispatch.c:R_dispatchGeneric, findVarInFrame(mtable, label).
-/// Only ordinary function bindings are cached. Redefinition, removal and
+/// Only ordinary closure bindings are cached. Redefinition, removal and
 /// conversion to an active binding advance the table's function version.
 fn lookup_table_method(i: &mut Interp, table: &Env, label: Sym) -> RResult<Option<Value>> {
     let version = table.fn_version();
     if let Some((env, stamp, key, method)) = &i.s4.method_lookup {
-        if env.ptr_eq(table) && *stamp == version && *key == label {
-            return Ok(Some(method.clone()));
+        if env.as_ptr() == Rc::as_ptr(&table.0) && *stamp == version && *key == label {
+            if let Some(method) = method.upgrade() {
+                return Ok(Some(Value::Closure(method)));
+            }
         }
     }
     let method = find_var_in_frame(i, table, label)?;
-    if table.fn_version() == version
-        && method.as_ref().is_some_and(Value::is_function)
-        && table.binding_flags(label).is_some_and(|flags| flags & crate::env::BIND_ACTIVE == 0)
-    {
-        i.s4.method_lookup = Some((table.clone(), table.fn_version(), label, method.clone().unwrap()));
+    if let Some(Value::Closure(closure)) = &method {
+        if table.fn_version() == version
+            && table.binding_flags(label).is_some_and(|flags| flags & crate::env::BIND_ACTIVE == 0)
+        {
+            i.s4.method_lookup = Some((Rc::downgrade(&table.0), version, label, Rc::downgrade(closure)));
+        }
     }
     Ok(method)
 }

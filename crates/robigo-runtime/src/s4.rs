@@ -10,7 +10,7 @@
 //! object has a class attribute first) or the methods package's state.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
@@ -66,9 +66,9 @@ pub struct S4State {
     pub prim: HashMap<usize, PrimEntry>,
     /// `R_S4_extends_table`.
     pub extends_table: Option<Env>,
-    /// Last direct method-table lookup. The owning environment keeps its
-    /// identity stable; function binding changes invalidate the entry.
-    pub(crate) method_lookup: Option<(Env, u32, Sym, Value)>,
+    /// Last direct closure lookup, without keeping retired tables or methods
+    /// alive. Weak references preserve allocation identity against reuse.
+    pub(crate) method_lookup: Option<(Weak<crate::env::EnvData>, u32, Sym, Weak<Closure>)>,
 }
 
 impl Default for S4State {
