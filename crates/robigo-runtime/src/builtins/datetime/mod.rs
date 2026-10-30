@@ -451,8 +451,10 @@ fn is_num(v: &Value) -> bool {
     matches!(v, Value::Int(_) | Value::Real(_))
 }
 
-/// `valid_POSIXlt(x, nm)`: checks and coerces the components; returns the
-/// components (coerced).
+/// `valid_POSIXlt(x, nm)`: checks and coerces the components. GNU R writes
+/// the coerced components back into `x` with SET_VECTOR_ELT, so every alias
+/// of the list sees them; the coerced components are also returned for the
+/// callers that read them.
 // R: datetime.c:valid_POSIXlt
 fn valid_posixlt(interp: &mut Interp, x: &Value, nm: usize) -> RResult<Vec<Value>> {
     let n_comp = x.len();
@@ -487,12 +489,15 @@ fn valid_posixlt(interp: &mut Interp, x: &Value, nm: usize) -> RResult<Vec<Value
             return Err(Flow::error(format!("a valid \"POSIXlt\" object has a numeric element {}", LTNAMES[i])));
         }
     }
+    // R: SET_VECTOR_ELT(x, 0, coerceVector(VECTOR_ELT(x, 0), REALSXP))
     comps[0] = interp.coerce(&comps[0], VType::Real)?;
+    x.set_vector_elt_through_alias(0, comps[0].clone());
     for i in 1..n_check {
         if i == 9 {
             continue; // skip zone
         }
         comps[i] = interp.coerce(&comps[i], VType::Int)?;
+        x.set_vector_elt_through_alias(i, comps[i].clone());
     }
     if n_check >= 10 && !matches!(comps[9], Value::Str(_)) {
         return Err(Flow::error(format!("a valid \"POSIXlt\" object has a character element {}", LTNAMES[9])));
@@ -510,6 +515,18 @@ fn valid_posixlt(interp: &mut Interp, x: &Value, nm: usize) -> RResult<Vec<Value
         }
     }
     Ok(comps)
+}
+
+/// GNU R's `duplicate(x)` at the call sites that only need their own cell
+/// array before `valid_POSIXlt` writes the coerced components
+/// (as.POSIXct, format.POSIXlt, POSIXlt2Date): a shared list is copied, as
+/// `[[<-` would, while a private one is already the caller's own. The
+/// components stay shared; those callers only read them.
+fn private_cells(mut x: Value) -> Value {
+    if let Value::List(l) = &mut x {
+        let _ = Rc::make_mut(l);
+    }
+    x
 }
 
 fn reals_of(v: &Value) -> &[f64] {
@@ -610,7 +627,8 @@ fn do_as_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> 
 // R: datetime.c:do_asPOSIXct
 fn do_as_posixct(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "as.POSIXct", call, true)?;
-    let x = arg(&args, 0);
+    // R: duplicate(CAR(args)), possibly coerced in valid_POSIXlt.
+    let x = private_cells(arg(&args, 0));
     let comps = valid_posixlt(interp, &x, 9)?;
     let tz = tz_arg(&arg(&args, 1))?;
     let utc = is_utc(&tz);
@@ -655,7 +673,8 @@ fn do_as_posixct(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> 
 // R: datetime.c:do_formatPOSIXlt
 fn do_format_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 4, "format.POSIXlt", call, true)?;
-    let x = arg(&args, 0);
+    // R: duplicate(CAR(args)), possibly coerced in valid_POSIXlt.
+    let x = private_cells(arg(&args, 0));
     let comps = valid_posixlt(interp, &x, 11)?;
     let sformat = match arg(&args, 1) {
         Value::Str(v) if !v.data.is_empty() => v.data.clone(),
@@ -1082,7 +1101,8 @@ fn do_d2posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
 // R: datetime.c:do_POSIXlt2D
 fn do_posixlt2d(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "POSIXlt2Date", call, true)?;
-    let x = arg(&args, 0);
+    // R: duplicate(CAR(args)), possibly coerced in valid_POSIXlt.
+    let x = private_cells(arg(&args, 0));
     let comps = valid_posixlt(interp, &x, 6)?;
     let mut nlen = [0usize; 9];
     let mut n = 0;

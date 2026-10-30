@@ -372,6 +372,20 @@ impl<T> Vector<T> {
     }
 }
 
+/// The shared branch of a `SET_VECTOR_ELT`-style store: write the cell where
+/// the allocation keeps it, as C writes into `DATAPTR`, replacing and
+/// dropping the old element. The runtime is single-threaded and callers do
+/// not hold a Rust borrow into the vector across the store.
+#[cold]
+#[inline(never)]
+fn store_cell_shared<T>(v: &Rc<Vector<T>>, i: usize, value: T) {
+    unsafe {
+        let data = std::ptr::addr_of!((*Rc::as_ptr(v)).data);
+        let slot = (*data).as_ptr().add(i).cast_mut();
+        drop(std::ptr::replace(slot, value));
+    }
+}
+
 // GNU R's compact sequences (altclasses.c compact_intseq / compact_realseq):
 // the vectors `:`, `seq_len`, `seq_along` and compact row names make. They
 // serialize in ALTREP form and go to C as ALTREP objects. GNU R's are
@@ -994,6 +1008,46 @@ impl Value {
         Value::Expr(Rc::new(Vector::new(v)))
     }
 
+    /// R: memory.c:SET_VECTOR_ELT (the VECSXP/EXPRSXP cell store).
+    ///
+    /// GNU R's C-level element write mutates the vector *through every
+    /// alias*; it never duplicates. Only the R-level replacement
+    /// primitives (`[[<-`, `[<-`, `attr<-`, ...) check MAYBE_REFERENCED and
+    /// duplicate first, which is what `Rc::make_mut` expresses here. So an
+    /// in-place write must not go through `make_mut`: this is the one
+    /// operation that changes a shared object.
+    ///
+    /// The old cell is dropped and the new one retained, like `FIX_REFCNT`.
+    /// `CHECK_OLD_TO_NEW` is a generational-GC barrier and has no
+    /// counterpart on the reference-counted heap.
+    ///
+    /// Returns false when `self` is not a generic vector or `i` is out of
+    /// range; callers check those first (as eval.c:do_putconst does).
+    pub fn set_vector_elt_through_alias(&self, i: usize, value: Value) -> bool {
+        let v = match self {
+            Value::List(v) | Value::Expr(v) => v,
+            _ => return false,
+        };
+        if i >= v.data.len() {
+            return false;
+        }
+        // Replacing a cell changes which environments the vector can reach
+        // (the new value may reach one, the old value may have been the last
+        // path to one). The binding-store paths already advance the
+        // collector's epoch; an in-place write has no binding store.
+        crate::env::Env::mark_cycle_dirty();
+        if Rc::strong_count(v) == 1 {
+            // The only owner: the unique branch of Rc::get_mut.
+            unsafe {
+                let data = &mut (*Rc::as_ptr(v).cast_mut()).data;
+                data[i] = value;
+            }
+        } else {
+            store_cell_shared(v, i, value);
+        }
+        true
+    }
+
     /// A list with names.
     /// The element of a named list called `name`, if any.
     pub fn list_get(&self, name: &str) -> Option<Value> {
@@ -1540,5 +1594,102 @@ mod string_window_tests {
             let bytes = b"\xc3\xa9\\\"\xff";
             assert_eq!(&*RString::from_bytes(bytes, mark).raw_bytes(), bytes);
         }
+    }
+}
+
+/// GNU R mutates a shared VECSXP through an alias with SET_VECTOR_ELT
+/// (eval.c:do_putconst, serialize.c's constant lists): every binding that
+/// holds the object sees the new cell, while the R-level replacement
+/// primitives still copy a shared object first. These tests pin both halves
+/// of that rule.
+#[cfg(test)]
+mod shared_list_tests {
+    use super::*;
+
+    fn elt(v: &Value, i: usize) -> Value {
+        match v {
+            Value::List(l) | Value::Expr(l) => l.data[i].clone(),
+            _ => panic!("not a vector"),
+        }
+    }
+
+    fn int(v: &Value) -> i32 {
+        match v {
+            Value::Int(x) => x.data[0],
+            _ => panic!("not an integer vector"),
+        }
+    }
+
+    #[test]
+    fn set_vector_elt_writes_through_every_alias() {
+        let mut x = Value::list(vec![Value::int(1), Value::int(2)]);
+        x.set_attr_raw(s::NAMES, Value::strs_from(["first", "second"]));
+        let binding = x.clone();
+        let env = Env::new(None);
+        env.set_local(Sym::new("shared"), x.clone());
+        let mut holder = Value::list(vec![Value::Null]);
+        holder.set_attr_raw(Sym::new("tag"), x.clone());
+
+        let epoch = Env::cycle_epoch();
+        assert!(x.set_vector_elt_through_alias(0, Value::int(42)));
+
+        assert_eq!(int(&elt(&binding, 0)), 42);
+        assert_eq!(int(&elt(&env.get_local(Sym::new("shared")).unwrap(), 0)), 42);
+        assert_eq!(int(&elt(&holder.get_attr(Sym::new("tag")).unwrap(), 0)), 42);
+        // The untouched cells and the attributes stay as they were.
+        assert_eq!(int(&elt(&binding, 1)), 2);
+        let Some(Value::Str(names)) = binding.get_attr(s::NAMES) else { panic!("names lost") };
+        assert_eq!(names.data, vec![Some(RString::from("first")), Some(RString::from("second"))]);
+        assert_eq!(x.len(), 2);
+        // The write is not a binding store: it must still tell the cycle
+        // collector that reachability may have changed.
+        assert_ne!(Env::cycle_epoch(), epoch);
+    }
+
+    #[test]
+    fn set_vector_elt_works_on_unique_and_expression_vectors() {
+        let x = Value::expr_vec(vec![Value::int(1)]);
+        assert!(x.set_vector_elt_through_alias(0, Value::int(7)));
+        assert_eq!(int(&elt(&x, 0)), 7);
+
+        let y = Value::list(vec![Value::Null]);
+        let alias = y.clone();
+        assert!(y.set_vector_elt_through_alias(0, Value::int(3)));
+        assert_eq!(int(&elt(&alias, 0)), 3);
+    }
+
+    #[test]
+    fn set_vector_elt_rejects_a_non_vector_or_a_bad_index() {
+        let x = Value::int(1);
+        assert!(!x.set_vector_elt_through_alias(0, Value::int(2)));
+        let y = Value::list(vec![Value::int(1), Value::int(2)]);
+        let alias = y.clone();
+        assert!(!y.set_vector_elt_through_alias(2, Value::int(3)));
+        assert_eq!(int(&elt(&alias, 0)), 1);
+        assert_eq!(int(&elt(&alias, 1)), 2);
+    }
+
+    #[test]
+    fn set_vector_elt_drops_the_replaced_element_once() {
+        let inner = Value::list(vec![Value::int(1)]);
+        let Value::List(inner_rc) = &inner else { unreachable!() };
+        let x = Value::list(vec![inner.clone(), Value::Null]);
+        let alias = x.clone();
+        assert_eq!(Rc::strong_count(inner_rc), 2); // inner and the shared cell
+        assert!(x.set_vector_elt_through_alias(0, Value::Null));
+        assert_eq!(Rc::strong_count(inner_rc), 1);
+        assert!(matches!(elt(&alias, 0), Value::Null));
+    }
+
+    #[test]
+    fn r_level_copy_on_modify_still_copies_a_shared_list() {
+        let original = Value::list(vec![Value::int(1)]);
+        let alias = original.clone();
+        let mut replacement = original.clone();
+        let Value::List(l) = &mut replacement else { unreachable!() };
+        Rc::make_mut(l).data[0] = Value::int(2);
+        assert_eq!(int(&elt(&original, 0)), 1);
+        assert_eq!(int(&elt(&alias, 0)), 1);
+        assert_eq!(int(&elt(&replacement, 0)), 2);
     }
 }
