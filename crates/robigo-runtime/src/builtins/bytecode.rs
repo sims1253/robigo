@@ -305,9 +305,9 @@ fn growconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 // R: eval.c:do_putconst. Performs argument validation, duplicate constant lookup
 // via R_compute_identical (flags 16: take closure environments into account),
-// and index reporting. In-place mutation of an aliased buffer requires core's
-// shared-list mutation (SET_VECTOR_ELT through an alias).
-fn putconst(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+// and index reporting. Mutates the buffer in place via SET_VECTOR_ELT through
+// any aliases.
+fn putconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 3, "putconst", call)?;
     let count_val = arg(&args, 1);
     let n = if count_val.is_atomic() && !count_val.is_empty() {
@@ -334,14 +334,8 @@ fn putconst(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResul
             return Ok(Value::int(idx as i32));
         }
     }
-    let mut buf_val = args.remove(0).value;
-    if let Value::List(ref mut rc) = buf_val {
-        if let Some(vec) = Rc::get_mut(rc) {
-            vec.data[count] = x;
-            return Ok(Value::int(count as i32));
-        }
-    }
-    Err(Flow::error("robigo: shared-list mutation in putconst is blocked on core (SET_VECTOR_ELT through alias)"))
+    args[0].value.set_vector_elt_through_alias(count, x);
+    Ok(Value::int(count as i32))
 }
 fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "getconst", call)?;
