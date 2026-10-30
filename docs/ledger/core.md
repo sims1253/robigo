@@ -11,6 +11,89 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: physical cycle reclamation, enc2 marks, nested finalizers
+
+- Baselines. `enc2utf8()` matched 1/3 marks: a native-marked valid-UTF-8
+  string stayed "unknown" (`Encoding(enc2utf8("\303\251"))`), and a
+  latin1-marked string stayed latin1 instead of being translated to UTF-8
+  (CP1252: 0x80 euro). A self/mutual environment cycle was never freed:
+  `gc()` left RSS growing every round (10 rounds of 2,000 env cycles:
+  +22,528 kB; 8 rounds of 20,000: +231 MB). A finalizer registered during
+  another finalizer was deferred (GNU R can lose it).
+- Reclamation. `ObjectGraph` gained explicit roots and
+  `reclaim_unreachable`: after a collection and its finalizers, every
+  environment no outside reference reaches has its frame, parent and
+  attributes dropped; a shared frame is only cleared when no live alias
+  uses it. That is memory.c's sweep for the runtime's Rc graph. The bridge
+  runs it after `robigo_gc()`'s safe point (RunFinalizers) and
+  `drain_dead`, so a key is never destroyed before its finalizer sees it;
+  without a bridge the runtime runs the same graph directly.
+- Two bugs found while measuring. Rebuilding the graph for
+  `clear_callsite_memos` while the first graph was still alive made every
+  node look externally referenced (its owners counted as roots): drop the
+  first graph before snapping counts. Rooting every weak-reference key
+  before the collection kept its cycle alive and stopped the finalizer
+  from ever being queued: roots are applied only to the post-collection
+  graph, where all key/value/finalizer fields are roots for the round
+  (memory.c CheckFinalizers) and any reference still listed has a live
+  key. PINNED proxies are roots too: C may still use a preserved handle
+  (grid's static evaluation environment).
+- `gc()` now always clears the weak implementation caches (`fun_cache`,
+  VM call-site memos) instead of only when a finalizer exists, so those
+  caches cannot retain otherwise dead cycles.
+- The graph is rebuilt only when a cycle could have changed: a thread-local
+  epoch advances when an environment/closure/ExtPtr binding is stored or
+  overwritten, a binding is removed, a parent or attribute changes, a
+  finalizer clears its weak fields, or the bridge drops a stored/dead
+  proxy. Creating an environment alone does not advance it (an unreachable
+  cycle needs a stored edge). This keeps repeated `gc()` cheap: 200 calls
+  in an otherwise empty script take 0.20 s, against 9.3 s when every call
+  rebuilt the graph and 0.10 s on main; the first call pays the one-time
+  graph build (~90 ms on the default-package startup heap, whose graph is
+  ~100k nodes).
+- Result: 8 rounds of 20,000 env+closure cycles after two warm-up rounds
+  stay flat (measured deltas oscillate by allocator arenas, <=16 MB, and
+  return towards zero) while the pre-change binary grows every round
+  (+167,960 kB at round 8 in the same probe). GNU R is flat. The
+  oracle-recorded conformance case `tests/r/env/cycle_reclamation.R`
+  prints a finalizer observation plus `stable`.
+- enc2. Ported util.c:do_enc2 for robigo's UTF-8 locale: enc2utf8 and
+  enc2native both return UTF-8/ASCII/bytes strings unchanged (same object)
+  and re-mark native/latin1 non-ASCII strings UTF-8. Latin1 goes through
+  CP1252 as Debian's R is built with HAVE_ICONV_CP1252; undefined bytes
+  (0x81 etc.) become the literal `<xx>`, matching translateToUTF8's
+  non-strict escape. Attributes/names survive (in-place duplicate).
+  `tests/r/strings/enc2.R` covers marks, bytes, CP1252 edge bytes, invalid
+  native bytes, bytes marks, NA and names; all match the Debian recording.
+- Nested finalizers: GNU R's RunFinalizers can lose a reference
+  registered during a batch: when a ready entry is removed while `last`
+  is NIL, `R_weak_refs = next` overwrites the newly prepended head. That
+  is a linked-list mutation artifact that silently leaks a resource
+  finalizer; the documented API promises it runs when the key dies.
+  robigo deliberately keeps the registration and runs it on the next
+  round (it also now has the enclosing frame kept alive by the weak-field
+  roots). This is a deliberate, documented divergence, pinned by the core
+  test `a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round`;
+  no conformance script can ratchet the divergent shape because GNU R
+  prints nothing for it.
+- Verification: full conformance 276/277 (the one failure is the
+  unratcheted `tests/r/lang/closure_source_print_utf8.R`, identical on
+  main; every ratchet passes), compiled/interpreted/JIT tiers agree;
+  env 11/11 and strings 24/24 including the two new oracle recordings;
+  collector 23 tests (one new); runtime 61 pass with the two documented
+  host-glibc numeric oracles skipped; C API 2/2, also under
+  ROBIGO_GCTORTURE=1. Perf with the same binary environment, full
+  `robigo/` suite (20 benchmarks): every one is within the 0.5% gate; the
+  largest increases are fib 887,309,910 -> 888,870,076 (+0.176%),
+  binarytrees 1,180,741,660 -> 1,182,386,581 (+0.139%), apply
+  738,980,349 -> 739,853,068 (+0.118%); vecops is -0.001% and vecarith
+  +0.003%. The cost is the epoch check on binding paths, and no benchmark
+  calls gc() in its hot loop.
+- Open: reclamation breaks environment cycles only; closure/attribute-only
+  cycles (no environment) and cross-heap C cycles remain for G3. The
+  runtime still collects only on an explicit gc()/native collection, not
+  on its own allocation threshold.
+
 ## 2026-10-30: onexit finalizers on every exit path (#98)
 
 - GNU R's R_CleanUp (unix/sys-std.c) calls R_RunExitFinalizers on normal

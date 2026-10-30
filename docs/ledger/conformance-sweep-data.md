@@ -1334,3 +1334,14 @@ re-serialized. Prove byte-identical native/XDR round trips and <=0.5% on
 every affected benchmark with both exact binaries, caches disabled and the
 same native libraries, before restoring fidelity to default builds.
 Round 10 mkCode/bcClose work remains behind this same feature.
+
+
+- Initial default trixie release verification: runtime 57 unit + 3 integration,
+  C API 9 tests, CLI 9 conformance/selection tests all pass. This includes
+  the explicit default expression/serialization-divergence test. All 32,230
+  markers remain. These results precede merging main ef493176 (#116).
+- Merge ef493176 intact, including physical reclamation, encoding marks,
+  methods invalidation and all new markers. Resolve only the reachability
+  Cell/OnceCell import conflict and initialize the guarded metadata field in
+  core's new test closure. No legacy lists are restored. Measurements and
+  final verification must use this merged tree.
