@@ -243,6 +243,22 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   Remaining work is parser escape-origin metadata, physical cycle
   reclamation/conservative opaque owners, and GNU R's weak-list mutation
   quirk that can lose a finalizer registered during another finalizer.
+- Coordinator rebased onto eb7a7ae and added reg.finalizer/envir ratchets;
+  preserved them, rebuilt, and rechecked. Runtime 54 unit + two integration
+  tests pass. All conformance ratchets pass in all three tiers; total
+  264/265 scripts match. The unratcheted compiled-isvector-context case
+  produces byte-identical stdout/stderr/status on eb7a7ae and this branch,
+  confirming the existing main failure rather than a finalizer regression.
+- Fresh cache-OFF comparison against eb7a7ae again passes all 15 targets,
+  with all outputs matching GNU R. Max increase S4 valid +0.152%; strings
+  765,980,785 -> 765,636,387 (-0.045%); emptyWhile 254,597,059 ->
+  254,785,486 (+0.074%); S4 new 629,434,543 -> 630,141,412 (+0.112%);
+  S4 slot write 487,767,851 -> 488,189,543 (+0.086%). Graphics 182/184 and
+  Hershey 1/1, no regressions. Results: /tmp/core98-profile/failed15-eb7-*.
+- Preserved the coordinator's subsequent main rebase (substitute/dots and
+  serialization work). Finalizer, inventory and collector sources are
+  byte-identical to the verified snapshot. Latest combined head is left
+  to full CI; further integration changes belong to their owning tracks.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
