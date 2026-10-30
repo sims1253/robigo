@@ -1595,3 +1595,11 @@ pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
 pub fn serialize(v: &Value) -> Vec<u8> {
     serialize_version(v, 3)
 }
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    #[test]
+    fn call_cells_do_not_enlarge_deserialization_nodes() {
+        assert_eq!(std::mem::size_of::<super::PNode>(), 48);
+    }
+}
