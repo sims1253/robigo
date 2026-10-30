@@ -70,7 +70,7 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   unratcheted `tests/r/lang/closure_source_print_utf8.R`, identical on
   main; every ratchet passes), compiled/interpreted/JIT tiers agree;
   env 11/11 and strings 24/24 including the two new oracle recordings;
-  collector 23 tests (one new); runtime 59 pass with the two documented
+  collector 23 tests (one new); runtime 60 pass with the two documented
   host-glibc numeric oracles skipped; C API 2/2, also under
   ROBIGO_GCTORTURE=1. Perf with the same binary environment:
   apply 739,028,168 -> 739,038,249 (+0.001%), binarytrees 1,180,754,592
