@@ -556,6 +556,19 @@ impl Core {
         &self.weak_refs
     }
 
+    /// Every field of every weak reference the collector still holds (key,
+    /// value, finalizer), for both entries awaiting classification and ones
+    /// queued for RunFinalizers. GNU R keeps key, value and finalizer alive
+    /// for the finalization round (memory.c RunGenCollect), so the runtime
+    /// must not sweep what only they reach yet.
+    pub fn weak_ref_fields(&self) -> Vec<Sexp> {
+        self.weak_refs
+            .iter()
+            .chain(self.finalize_queue.iter())
+            .flat_map(|&w| (0..3).map(move |i| unsafe { Self::weak_field(w, i) }))
+            .collect()
+    }
+
     /// The store barrier: every store of an object into a field of `x`
     /// goes through here (the API's setters do). Immortal objects are
     /// never marked, so one that received a store becomes a root traced
