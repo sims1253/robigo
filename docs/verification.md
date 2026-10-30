@@ -98,7 +98,8 @@ scripts/perf.py compare before.json after.json          # the gate
 
 ## The ratchets
 
-- `tests/r/passing/` and `tests/corpora/*/passing/` hold the ratchets: one
+- `tests/r/passing/`, `tests/corpora/*/passing/` and
+  `tests/parse/passing/<corpus>/` hold the ratchets: one
   empty marker file per case that must keep passing, named `<case>.pass`
   (`tests/r/passing/<path relative to tests/r>.pass`,
   `tests/corpora/NAME/passing/<case id>.pass`). One file per case means
