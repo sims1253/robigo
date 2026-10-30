@@ -128,6 +128,132 @@ per extra iteration. These include loop overhead and are attribution, not
 predicted savings. The guarded instruction should remove the AST/builtin
 round trip before considering an attribute-layout optimization.
 
+## 2026-10-30: reject strong cache roots; preserve table finalization
+
+- Final review found a semantic regression not covered by redefinition tests:
+  the strong cache retained a retired .AllMTable and could delay its finalizer.
+- Added an oracle case that registers a finalizer on the old table, copies
+  its bindings to a replacement, rebinds .AllMTable, drops the old table,
+  and calls gc(). GNU R prints `retired method table`; the strong-cache
+  candidate omits it. Rejected the strong-root version despite its speedup.
+- Replaced both cache roots with Weak<EnvData> and Weak<Closure>. Weak
+  allocation identity guards against pointer reuse without extending the
+  lifetime of the table or method. Only closures are now cached; builtin
+  deferred-default entries continue through the live lookup.
+- The expanded oracle script matches the weak-cache binary byte for byte.
+  Saved main also matches; the strong cache fails exactly the finalizer line.
+  Final paired instruction counts follow; generic dispatch improves 2.10%,
+  and all other deltas are below 0.11%.
+
+  | workload | baseline | weak cache | GNU R | final/R |
+  | --- | ---: | ---: | ---: | ---: |
+  | generic | 10,920.312 | 10,691.096 | 12,193.287 | 0.877 |
+  | slot | 1,376.734 | 1,377.548 | 656.122 | 2.100 |
+  | replace | 39,429.751 | 39,426.173 | 38,692.235 | 1.019 |
+  | new | 354,252.890 | 353,887.682 | 315,063.616 | 1.123 |
+  | valid | 180,072.314 | 180,112.061 | 163,070.796 | 1.105 |
+  | portfolio | 676,582.090 | 676,781.820 | 615,098.430 | 1.100 |
+
+- Final S4 corpus: 644/662, zero regressions. With base natives, methods/stats4
+  examples: 48/50, zero regressions. Rcpp sugar: 493/493, identical assertion
+  sequence to saved main. All 17 S4 oracle scripts pass in AST, VM and JIT,
+  including the retired-table finalizer regression.
+- Final seven-program performance comparison passes: no slowdown above
+  0.5%, no wrong outputs. Kept the weak cache and slot/label changes.
+- Final crate checks: full conformance 7/7, including all-tier equivalence
+  and VM guards; runtime unit tests 55 pass, only the same two documented
+  host-glibc complex oracle failures. cargo fmt --check, git diff --check
+  and ratchet validation pass. No original marker was removed.
+- Running the host-built unit executable in Debian was rejected as a check:
+  it requires GLIBC_2.44. Do not use that route to judge the two known
+  host numeric oracle differences; Debian-built CI tests remain authoritative.
+
+## 2026-10-30: round 10 single-class labels and borrowed slot access
+
+- Kept GNU R's R_dispatchGeneric label semantics while interning a single
+  class directly, without allocating a temporary joined string. R_get_slot
+  borrows its two arguments as the C port does. R_do_slot_assign validates
+  attribute support before triggering copy-on-modify; NULL encoding,
+  .Data handling and initialize's binding write-back stay on their existing paths.
+- Paired instructions/iteration, baseline -> final, with same-host GNU R:
+
+  | workload | baseline | final | GNU R | final/R |
+  | --- | ---: | ---: | ---: | ---: |
+  | generic | 10,920.312 | 10,702.198 | 12,193.287 | 0.878 |
+  | slot read | 1,376.734 | 1,377.449 | 656.122 | 2.099 |
+  | replacement | 39,429.751 | 39,455.266 | 38,692.235 | 1.020 |
+  | new | 354,252.890 | 353,990.606 | 315,063.616 | 1.124 |
+  | validObject | 180,072.314 | 180,071.719 | 163,070.796 | 1.104 |
+  | portfolio update | 676,582.090 | 677,009.550 | 615,098.430 | 1.101 |
+
+- Generic dispatch improves 2.00%; every other delta is below 0.1%.
+  `perf.py compare` on the six S4 scripts plus fib reports zero slowdowns
+  above 0.5% and zero wrong outputs. Rcpp sugar stays 493/493 with an
+  identical assertion sequence. S4 slice stays 644/662, zero regressions.
+- Corrected the portfolio measurement to run execute(N) and execute(2N),
+  reusing one holding as the benchmark does. Re-measured the saved baseline
+  and GNU R. The earlier portfolio figures below measured execute(1) in a
+  loop and included construction in each unit; those figures are historical.
+- Expanded the oracle test to cover table identity changes and method
+  redefinition during argument evaluation, besides active bindings,
+  self-redefinition, removal, NULL slots and initialize's in-place updates.
+- Full methods/stats4 examples without base natives are 45/50 on both saved
+  baseline and candidate. Three existing markers need the CI base natives
+  (setMethod graphics, mle and update-methods optim); no candidate loss.
+  With /tmp/core98-base-eb7/natives enabled: 48/50, zero regressions.
+- Full conformance: all seven harness tests pass, including AST/VM/JIT
+  equivalence and VM guards. All 17 S4 scripts match GNU R in each tier.
+  Added only the new S4 marker; discarded the uncommitted marker generated
+  for the unchanged, previously unratcheted lang/closure_source_print_utf8
+  probe, outside this track. Final runtime unit checks follow.
+- Open: slot reads still cost 2.10x GNU R. The existing profile attributes
+  most of that gap to VM execution and variable flushing. Next step for
+  perf-vm is a guarded slot-read instruction; value/GC changes belong to core.
+  Construction and validation remain 12% and 10% above GNU R. A cache of
+  mutable generic metadata needs binding-level invalidation beyond the
+  function version; this change deliberately reads that metadata on every call.
+
+## 2026-10-30: round 10 method-table lookup cache
+
+- Kept a single direct function lookup per interpreter, guarded by table
+  identity, signature symbol and Env::fn_version. Replacing/removing a
+  method or changing its binding to active invalidates it. Active bindings,
+  package-selection environments and missing entries are never cached.
+  Generic metadata stays live, including after argument evaluation.
+- Instructions/iteration before -> cache: generic 10,920.312 -> 10,864.640
+  (0.51% fewer); slot 1,376.734 -> 1,380.392 (+0.27%);
+  replacement 39,429.751 -> 39,489.078 (+0.15%);
+  new 354,252.890 -> 354,259.058; valid 180,072.314 -> 180,076.499;
+  portfolio 1,516,823.910 -> 1,516,787.600. All other deltas below 0.01%.
+- Seven-program perf comparison (S4 plus fib): zero slowdowns above 0.5%,
+  zero wrong outputs. S4 slice 644/662, zero regressions; Rcpp sugar
+  493/493 with identical assertion records. New cache regression matches R.
+- Runtime unit tests: 55 pass, two known host-glibc failures in unchanged
+  complex.rs (c_library_oracle, c_library_trig_oracle). Debian CI judges
+  these last-bit differences. Full three-tier conformance follows.
+
+## 2026-10-30: round 10 baseline after methods became the default
+
+- Base b5c3373, branch `track/methods-s4-speed`. Same-host Debian
+  R 4.5.0-3 executable, R_HOME and private ICU 76 libraries. Paired
+  callgrind subtracts N from 2N, with methods attached in both runtimes.
+- Added a portfolio workload with inherited dispatch, construction,
+  slot replacement and a validity constraint. Its checksum matches R.
+  `scripts/s4-instructions.py` includes it alongside the five microbenchmarks.
+- Baseline instructions per iteration (robigo / GNU R): generic
+  10,920.312 / 12,193.287; slot read 1,376.734 / 656.122;
+  replacement 39,429.751 / 38,692.235; new 354,252.890 / 315,063.616;
+  validObject 180,072.314 / 163,070.796; portfolio
+  1,516,823.910 / 1,391,995.680. The portfolio unit constructs a holding,
+  marks its prices once, validates and values it through an inherited method.
+- Baseline S4 slice 644/662, zero regressions. Added an oracle-recorded
+  regression covering method replacement/removal, redefinition inside a
+  method, active method-table bindings, NULL slots and initialize's
+  in-place slot updates. Baseline matches its output byte for byte.
+- Reproduce with `R_HOME=/home/m0hawk/.local/opt/R-4.5.0
+  LD_LIBRARY_PATH=$R_HOME/lib:/tmp/methods7/oracle-libs
+  scripts/s4-instructions.py --output before.json` (export R_HOME first).
+  Candidate cache measurements follow.
 
 ## 2026-10-30: round 9 — FastR switch activated (#98 merged as b7ee268)
 
