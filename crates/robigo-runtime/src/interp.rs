@@ -253,11 +253,19 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
-            Value::Bytecode(b) => self.eval(&b.expression, env),
+            Value::Bytecode(b) => self.eval_bytecode(b, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
             _ => Ok(e.clone()),
         }
+    }
+
+    // R: eval.c:eval, BCODESXP evaluates its source expression. Keeping the
+    // recursion out of line leaves eval's variant dispatch a jump table; an
+    // inlined recursive arm costs a comparison on every other evaluation.
+    #[inline(never)]
+    fn eval_bytecode(&mut self, b: &Rc<crate::value::Bytecode>, env: &Env) -> RResult<Value> {
+        self.eval(&b.expression, env)
     }
 
     // R: context.c:getLexicalCall

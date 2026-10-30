@@ -1084,10 +1084,18 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
-            Value::Bytecode(b) => &mut Rc::make_mut(b).attrs,
+            Value::Bytecode(b) => Self::bytecode_attrs_mut(b),
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
             _ => return None,
         })
+    }
+
+    // R: serialize.c:ReadItem keeps a bytecode object's attributes. The copy
+    // of the large payload stays out of line so attribute writes on ordinary
+    // vectors keep attrs_slot_mut's small prologue.
+    #[inline(never)]
+    fn bytecode_attrs_mut(b: &mut Rc<Bytecode>) -> &mut AttrBox {
+        &mut Rc::make_mut(b).attrs
     }
 
     /// GNU R's `IS_S4_OBJECT`.
