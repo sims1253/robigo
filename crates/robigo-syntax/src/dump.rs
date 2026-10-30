@@ -350,7 +350,7 @@ fn dump_const(c: &Const, s: &mut Vec<u8>) {
             s.extend_from_slice(dump_double(*im).as_bytes());
         }
         Const::Str(None) => s.extend_from_slice(b"str:NA"),
-        Const::Str(Some(x)) => {
+        Const::Str(Some(x)) | Const::StrNative(x) => {
             s.extend_from_slice(b"str:");
             encode_string(x, b'"', s);
         }

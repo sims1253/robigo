@@ -1,4 +1,5 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
+tests/r/strings/escape_origin.R
 tests/r/capi/finalizer-key.R
 tests/r/env/finalizer_cycles.R
 tests/r/env/finalizer_errors.R
