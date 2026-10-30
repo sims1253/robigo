@@ -7,6 +7,40 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 9): four-way exact-artifact measurement
+
+One foreground robigo-oracle:4.5.0 container, R 4.5.0-3, valgrind 3.24.0,
+same nbody_2 program/parameter 921, shared candidate natives/cache.
+Executables copied into separate bin directories with no sibling cache.
+Exact original artifacts: main df3d535 from run 40980827065 and candidate
+d002511 from run 40982799591. Every output/status matches GNU R.
+
+| executable | ROBIGO_RDBFLAT | instructions, run 1 | run 2 |
+|---|---|---:|---:|
+| base | unset | 872,645,331 | 872,605,219 |
+| base | set | 836,290,008 | 836,307,843 |
+| candidate | unset | 870,543,236 | 870,510,491 |
+| candidate | set | 834,030,673 | 834,000,430 |
+
+- Gate comparison, cache off: 872,605,219 -> 870,510,491 (-0.2401%).
+- rdbflat diagnostic ONLY, excluded from gate: base saves 36,315,211;
+  candidate saves 36,510,061 instructions. The base demonstrably takes
+  the cache path. Candidate cache-off self costs include inflate_fast_help
+  6,114,606, inflate_table 5,669,934, copy_match_runtime_dispatch 4,690,329,
+  and adler32 4,667,797 instructions. The main VM run_with self count is
+  identical with/without cache (30,751,320).
+- The historical +22,540,288 remains unresolved. Neither cache-off nor
+  cache-on like-for-like comparison reproduces it, and the complete
+  cache effect is about 36.5M, not 22.54M. The old perf run discarded
+  its profiles, so these data cannot prove which historical fetches
+  missed their cache. Do not label the historical increase noise or a
+  proven cache artefact. The new job retains every measurement/profile,
+  including its four-way diagnostic, to identify a recurrence.
+- Local raw profiles/results are in .robigo/r9, with the foreground
+  reproduction harness four.py. Mount ~/.cache/robigo-bench at
+  /root/.cache/robigo-bench in the oracle container so perf.py's external
+  nbody source exists; no recordings or benchmark definitions changed.
+
 ## 2026-10-30 (round 9): feature-neutral performance gate
 
 - Rebased #92 onto main 1b4670a. Stored counts can hide a regression
