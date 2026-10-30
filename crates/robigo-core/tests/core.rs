@@ -540,6 +540,32 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
     assert!(c.pop_finalizable().is_none());
 }
 
+/// GNU R's singly-linked weak list can lose a reference registered during a
+/// finalizer batch when a later ready entry is removed at the head
+/// (memory.c:RunFinalizers' `last == R_NilValue` branch overwrites
+/// R_weak_refs). robigo keeps it and runs it on the next round: losing a
+/// resource finalizer is not a behaviour worth reproducing.
+#[test]
+fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
+    let mut c = host_core();
+    let key = c.alloc_host(ENVSXP, 1, None);
+    let fin = c.alloc_vector(RAWSXP, 8);
+    let first = test_weak(&mut c, key, fin);
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert_eq!(c.pop_finalizable(), Some(first));
+    // A finalizer registers another key while the batch is running.
+    let later_key = c.alloc_host(ENVSXP, 2, None);
+    root(later_key);
+    let later = test_weak(&mut c, later_key, fin);
+    assert_eq!(c.weak_refs(), &[later], "the new reference is not lost");
+    // Its key dies: the next collection queues it.
+    ROOTS.with(|r| r.borrow_mut().clear());
+    c.collect();
+    assert_eq!(c.pop_finalizable(), Some(later));
+    assert!(c.pop_finalizable().is_none());
+}
+
 #[test]
 fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
     let mut c = host_core();

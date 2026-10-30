@@ -10,6 +10,18 @@ use std::rc::{Rc, Weak};
 thread_local! {
     static ESCAPED: RefCell<Vec<Weak<EnvData>>> = const { RefCell::new(Vec::new()) };
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
+    /// Changes whenever an environment, or a binding that can reach one, is
+    /// created, stored or removed. The collector skips rebuilding the
+    /// allocation graph when nothing could have made a cycle unreachable.
+    static CYCLE_EPOCH: Cell<u64> = const { Cell::new(1) };
+}
+
+pub(super) fn cycle_changed() {
+    CYCLE_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
+pub(super) fn cycle_epoch() -> u64 {
+    CYCLE_EPOCH.with(|e| e.get())
 }
 
 pub(super) fn track(env: &Env) {

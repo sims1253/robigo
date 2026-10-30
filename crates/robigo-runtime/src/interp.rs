@@ -253,6 +253,7 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
+            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => self.eval_bytecode(b, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
@@ -260,11 +261,12 @@ impl Interp {
         }
     }
 
-    // R: eval.c:eval, BCODESXP evaluates its source expression. Keeping the
-    // recursion out of line leaves eval's variant dispatch a jump table; an
-    // inlined recursive arm costs a comparison on every other evaluation.
+    // R: eval.c:eval, BCODESXP. Avoid making the common evaluator directly
+    // recursive just for imported code; it changes LLVM's hot-path lowering.
+    #[cold]
     #[inline(never)]
-    fn eval_bytecode(&mut self, b: &Rc<crate::value::Bytecode>, env: &Env) -> RResult<Value> {
+    #[cfg(feature = "bytecode-fidelity")]
+    fn eval_bytecode(&mut self, b: &Bytecode, env: &Env) -> RResult<Value> {
         self.eval(&b.expression, env)
     }
 

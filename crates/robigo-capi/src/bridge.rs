@@ -167,6 +167,7 @@ fn only_stored(v: &Value) -> bool {
     match v {
         Value::Env(e) => Rc::strong_count(&e.0) == 1,
         Value::Closure(x) => Rc::strong_count(x) == 1,
+        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(x) => Rc::strong_count(x) == 1,
         Value::Promise(x) => Rc::strong_count(x) == 1,
         Value::ExtPtr(x) => Rc::strong_count(x) == 1,
@@ -190,6 +191,7 @@ unsafe fn sweep_stored() {
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
         keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
     });
+    let removed_stored = !dead.is_empty();
     for x in dead {
         core().release(x);
     }
@@ -203,6 +205,11 @@ unsafe fn sweep_stored() {
     });
     for x in unpinned {
         core().release(x);
+    }
+    if removed_stored {
+        // Dropping the bridge's own value can make its runtime cycle
+        // unreachable.
+        robigo_runtime::env::Env::mark_cycle_dirty();
     }
     SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
 }
@@ -219,6 +226,8 @@ unsafe fn unpin_cycles() {
         graph.include_escaped();
         graph.expand();
         let graph = if graph.clear_callsite_memos() {
+            // The first graph's own owners would look like outside
+            // references to the rebuilt one.
             drop(graph);
             let mut fresh = robigo_runtime::reachability::ObjectGraph::default();
             for (_, value) in proxies.values() {
@@ -243,12 +252,76 @@ unsafe fn unpin_cycles() {
     }
 }
 
+/// The runtime allocation graph over the proxy table. One bridge reference
+/// per proxy is excluded (the bridge does not keep R objects alive); every
+/// field of every weak reference is a root: GNU R keeps a weak reference's
+/// key, value and finalizer alive for its finalization round.
+unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
+    let pending = core().weak_ref_fields();
+    let build = || {
+        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
+        PROXIED.with(|m| {
+            let proxies = m.borrow();
+            for (_, value) in proxies.values() {
+                graph.ignore_owner(value);
+            }
+            // Preserved proxies are C code's handles: C can still use them
+            // (grid's static evaluation environment), so they are roots.
+            // unpin_cycles has already released the ones whose keys only
+            // cycles kept alive.
+            PINNED.with(|pins| {
+                for h in pins.borrow().keys() {
+                    if let Some((_, value)) = proxies.get(h) {
+                        graph.root(value);
+                    }
+                }
+            });
+            for x in &pending {
+                if unsafe { x.has_flag(flags::HOST) } {
+                    let h = unsafe { robigo_core::Core::host_handle(*x) };
+                    if let Some((_, value)) = proxies.get(&h) {
+                        graph.root(value);
+                    }
+                }
+            }
+        });
+        graph.include_escaped();
+        graph.expand();
+        graph
+    };
+    let graph = build();
+    if graph.clear_callsite_memos() {
+        // The old graph's owners must not look like outside references.
+        drop(graph);
+        build()
+    } else {
+        graph
+    }
+}
+
+/// Physically free runtime reference cycles after a collection has run its
+/// finalizers: break the edges of every environment no external reference
+/// reaches anymore (memory.c's sweep). Weak-reference fields are roots
+/// because GNU R keeps them through the finalization round; once a
+/// reference has run and left the list, its key's cycle is ordinary garbage.
+// R: memory.c:R_gc_internal / RunGenCollect
+unsafe fn reclaim_host_cycles() {
+    if !robigo_runtime::reachability::reclaim_pending() {
+        return;
+    }
+    let graph = cycle_graph();
+    let live = graph.externally_live();
+    graph.reclaim_unreachable(&live);
+    robigo_runtime::reachability::mark_reclaimed();
+}
+
 fn kept_count() -> usize {
     STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len())
 }
 
 fn drain_dead() {
     let dead = DEAD.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    let had = !dead.is_empty();
     for h in dead {
         if let Some((key, _v)) = PROXIED.with(|m| m.borrow_mut().remove(&h)) {
             PROXY_OF.with(|m| {
@@ -259,12 +332,17 @@ fn drain_dead() {
             });
         }
     }
+    if had {
+        // Dropping a proxy's runtime value can make its cycle unreachable.
+        robigo_runtime::env::Env::mark_cycle_dirty();
+    }
 }
 
 fn identity(v: &Value) -> Option<(usize, u8)> {
     Some(match v {
         Value::Env(e) => (Rc::as_ptr(&e.0) as *const u8 as usize, ENVSXP),
         Value::Closure(c) => (Rc::as_ptr(c) as *const u8 as usize, CLOSXP),
+        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(b) => (Rc::as_ptr(b) as *const u8 as usize, BCODESXP),
         Value::Promise(p) => (Rc::as_ptr(p) as *const u8 as usize, PROMSXP),
         Value::Builtin(b) => (
@@ -302,7 +380,9 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // as C reads them with getAttrib (R_GE_maskType: a mask function's
     // "type")
     let attrs = match v {
-        Value::Closure(_) | Value::Bytecode(_) => v.attrs().cloned(),
+        Value::Closure(_) => v.attrs().cloned(),
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(_) => v.attrs().cloned(),
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
     };
@@ -332,6 +412,7 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 let held = match value {
                     Value::Env(e) => Rc::strong_count(&e.0) > 1,
                     Value::Closure(f) => Rc::strong_count(f) > 1,
+                    #[cfg(feature = "bytecode-fidelity")]
                     Value::Bytecode(b) => Rc::strong_count(b) > 1,
                     Value::ExtPtr(p) => Rc::strong_count(p) > 1,
                     _ => false,
@@ -604,12 +685,9 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return args_list(d, DOTSXP);
         }
         Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
-        Value::Env(_)
-        | Value::Closure(_)
-        | Value::Bytecode(_)
-        | Value::Promise(_)
-        | Value::Builtin(_)
-        | Value::ExtPtr(_) => {
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(_) => return proxy(v),
+        Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
         }
     };
@@ -1195,8 +1273,10 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
-        (Value::Bytecode(b), 0) => to_sexp(&b.code),
-        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.consts.clone())),
+        #[cfg(feature = "bytecode-fidelity")]
+        (Value::Bytecode(b), 0) => to_sexp(b.code()),
+        #[cfg(feature = "bytecode-fidelity")]
+        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value.borrow().clone() {
             Some(v) => to_sexp(&v),
@@ -1889,24 +1969,32 @@ impl NativeBridge for Bridge {
     }
 
     fn gc(&self, interp: &mut Interp) {
-        if READY.with(|r| r.get()) {
-            unsafe {
-                sweep_stored();
-                if HOST_WEAK_REFS.with(|active| active.get()) {
-                    unpin_cycles();
-                }
-            };
-            let outer = INTERP.with(|c| c.get().is_null());
-            enter(interp, |_| unsafe {
-                // gc() from R with no C code active: nothing on the
-                // machine stack can hold a core object
-                let old = if outer { core().set_scan_top(0) } else { 0 };
-                crate::host::robigo_gc();
-                if outer {
-                    core().set_scan_top(old);
-                }
-            });
-            drain_dead();
+        if !READY.with(|r| r.get()) {
+            // No C objects or proxies exist yet: the runtime's own graph is
+            // the whole heap, so its cycles can be reclaimed directly.
+            robigo_runtime::reachability::reclaim_cycles();
+            return;
         }
+        unsafe {
+            sweep_stored();
+            if HOST_WEAK_REFS.with(|active| active.get()) {
+                unpin_cycles();
+            }
+        };
+        let outer = INTERP.with(|c| c.get().is_null());
+        enter(interp, |_| unsafe {
+            // gc() from R with no C code active: nothing on the
+            // machine stack can hold a core object
+            let old = if outer { core().set_scan_top(0) } else { 0 };
+            crate::host::robigo_gc();
+            if outer {
+                core().set_scan_top(old);
+            }
+        });
+        drain_dead();
+        // After the collection and its finalizers (safe_point inside
+        // robigo_gc): the weak-reference round is over, so what only dead
+        // cycles reach can be reclaimed.
+        unsafe { reclaim_host_cycles() };
     }
 }

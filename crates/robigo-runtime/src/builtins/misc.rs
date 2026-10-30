@@ -71,6 +71,8 @@ pub static DEFS: &[Builtin] = &[
     internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    internal("is.builtin.internal", do_is_builtin_internal, 1),
     internal("setNumMathThreads", do_one, 1),
     internal("setMaxNumMathThreads", do_one, 1),
     internal("makeLazy", do_make_lazy, 5).invisible(),
@@ -423,12 +425,13 @@ fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     // Implementation caches are weak in R: they must not retain otherwise
     // unreachable environments through closure bodies or call-site memos.
-    // the C API's heap collects and runs pending finalizers (docs/core.md §3)
+    // the C API's heap collects, sweeps unreachable runtime cycles and runs
+    // pending finalizers (docs/core.md §3)
+    if !i.fun_cache.is_empty() {
+        i.fun_cache.clear();
+    }
+    crate::vm::clear_gc_caches();
     if let Some(b) = crate::native::bridge() {
-        if b.finalizers_active() {
-            i.fun_cache.clear();
-            crate::vm::clear_gc_caches();
-        }
         b.gc(i);
     }
     Ok(Value::reals(vec![NA_REAL; 14]))
@@ -617,4 +620,13 @@ fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_identity(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(arg(&args, 0))
+}
+
+#[cfg(not(feature = "bytecode-fidelity"))]
+fn do_is_builtin_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let name = match arg(&args, 0) {
+        Value::Sym(s) => s.name().to_string(),
+        _ => return Err(Flow::error("invalid symbol")),
+    };
+    Ok(Value::lgl(super::lookup_internal(&name).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
 }

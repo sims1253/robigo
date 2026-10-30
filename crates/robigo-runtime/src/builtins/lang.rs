@@ -43,6 +43,8 @@ pub static DEFS: &[Builtin] = &[
     prim("...elt", do_dots_elt, 1).custom_vis(),
     special("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    internal("getconst", do_getconst, 2),
     internal("Recall", do_recall, -1).custom_vis(),
 ];
 
@@ -242,6 +244,7 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
     let clo = Closure {
+        #[cfg(feature = "bytecode-fidelity")]
         gnu_bytecode: None,
         formals,
         body,
@@ -1536,4 +1539,19 @@ fn do_tilde(_: &mut Interp, call: &Value, _: Vec<Arg>, env: &Env) -> RResult<Val
         f.set_attr_raw(Sym::new(".Environment"), Value::Env(env.clone()));
     }
     Ok(f)
+}
+
+// R: eval.c:do_getconst. The construction module owns the feature build's
+// constant pool; the default build keeps GNU R's reader behavior.
+#[cfg(not(feature = "bytecode-fidelity"))]
+fn do_getconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    super::check_arity(&args, 2, "getconst", call)?;
+    let n = as_integer(&args[1].value);
+    let Value::List(buf) = &args[0].value else {
+        return Err(Flow::error("constant buffer must be a generic vector"));
+    };
+    if n < 0 || n as usize > buf.data.len() {
+        return Err(Flow::error("bad constant count"));
+    }
+    Ok(Value::list(buf.data[..n as usize].to_vec()))
 }

@@ -33,3 +33,5 @@ fancy-regex = "0.16"
 # Count executed VM ops by kind; printed to stderr when the interpreter
 # thread exits (a profiling aid; costs a hash lookup per op).
 op-stats = []
+
+bytecode-fidelity = []

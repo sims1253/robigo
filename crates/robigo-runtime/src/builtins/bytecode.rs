@@ -6,7 +6,11 @@ use crate::{
     interp::Interp,
     value::*,
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
 
 pub static DEFS: &[Builtin] = &[
     internal("mkCode", mkcode, 2),
@@ -21,6 +25,16 @@ pub static DEFS: &[Builtin] = &[
 fn version(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 0, "bcVersion", call)?;
     Ok(Value::int(12))
+}
+
+/// Finish a freshly built cell stream: GNU R's reader stores its replay log in
+/// one arena, so `BytecodeCells` refers to the first (and only) chunk.
+fn finish_cells(mut cells: BytecodeCells, operations: Vec<i64>) -> Rc<BytecodeCells> {
+    let operation_len = operations.len();
+    cells.operations = BytecodeSpan { chunk: 0, offset: 0 };
+    cells.operation_len = operation_len;
+    cells.words = Some(Rc::new(RefCell::new(BytecodeWords { chunks: vec![operations] })));
+    Rc::new(cells)
 }
 
 // R: eval.c:do_mkcode. Constants are retained without coercion or deduplication.
@@ -40,16 +54,19 @@ fn mkcode(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         scan(c, &mut counts);
     }
     let reps = 1 + counts.values().filter(|&&n| n > 1).count();
+    let mut operations = Vec::new();
     let mut cells = BytecodeCells::default();
     let mut seen = HashMap::new();
-    constants_cells(&constants.data, &counts, &mut seen, &mut cells);
+    constants_cells(&constants.data, &counts, &mut seen, &mut cells, &mut operations);
     Ok(Value::Bytecode(Rc::new(Bytecode {
         attrs: None,
-        code,
+        code: OnceCell::from(code.clone()),
+        instructions: BytecodeInstructions::Decoded(code),
         expression: constants.data.first().cloned().unwrap_or(Value::Null),
-        consts: constants.data.clone(),
+        consts: OnceCell::from(Rc::new(constants.data.clone())),
         reps,
-        cells,
+        cells: finish_cells(cells, operations),
+        rep_values: Rc::new(OnceCell::new()),
     })))
 }
 
@@ -84,7 +101,7 @@ fn scan(v: &Value, counts: &mut HashMap<usize, usize>) {
             }
         }
         Value::Bytecode(x) => {
-            for c in &x.consts {
+            for c in x.constants() {
                 scan(c, counts);
             }
         }
@@ -96,98 +113,115 @@ fn attrs(v: &Value) -> Value {
         .map(|a| Value::pairlist(a.0.iter().map(|(k, v)| Arg::new(Some(*k), v.clone())).collect()))
         .unwrap_or(Value::Null)
 }
-fn lang_cells(v: &Value, counts: &HashMap<usize, usize>, seen: &mut HashMap<usize, i32>, out: &mut BytecodeCells) {
+fn lang_cells(
+    v: &Value,
+    counts: &HashMap<usize, usize>,
+    seen: &mut HashMap<usize, i32>,
+    out: &mut BytecodeCells,
+    ops: &mut Vec<i64>,
+) {
     if let Some(k) = key(v) {
         if counts.get(&k).is_some_and(|&n| n > 1) {
             if let Some(&i) = seen.get(&k) {
-                out.integer(243);
-                out.integer(i);
+                BytecodeCells::integer(ops, 243);
+                BytecodeCells::integer(ops, i);
                 return;
             }
             let i = seen.len() as i32;
             seen.insert(k, i);
-            out.integer(244);
-            out.integer(i);
+            BytecodeCells::integer(ops, 244);
+            BytecodeCells::integer(ops, i);
         }
     }
     match v {
         Value::Lang(x) => {
-            out.integer(if v.has_attrs() { 240 } else { 6 });
+            BytecodeCells::integer(ops, if v.has_attrs() { 240 } else { 6 });
             if v.has_attrs() {
-                out.item(&attrs(v), false);
+                out.item(ops, &attrs(v), false);
             }
-            out.item(&x.fun_tag.map(Value::Sym).unwrap_or(Value::Null), false);
-            lang_cells(&x.fun, counts, seen, out);
-            spine(&x.args, counts, seen, out);
+            out.item(ops, &x.fun_tag.map(Value::Sym).unwrap_or(Value::Null), false);
+            lang_cells(&x.fun, counts, seen, out, ops);
+            spine(&x.args, counts, seen, out, ops);
         }
         Value::Pairlist(x) if !x.items.is_empty() => {
-            out.integer(if v.has_attrs() { 239 } else { 2 });
+            BytecodeCells::integer(ops, if v.has_attrs() { 239 } else { 2 });
             if v.has_attrs() {
-                out.item(&attrs(v), false);
+                out.item(ops, &attrs(v), false);
             }
-            out.item(&x.items[0].tag.map(Value::Sym).unwrap_or(Value::Null), false);
-            lang_cells(&x.items[0].value, counts, seen, out);
-            spine(&x.items[1..], counts, seen, out);
+            out.item(ops, &x.items[0].tag.map(Value::Sym).unwrap_or(Value::Null), false);
+            lang_cells(&x.items[0].value, counts, seen, out, ops);
+            spine(&x.items[1..], counts, seen, out, ops);
         }
         _ => {
-            out.integer(0);
-            out.item(v, false);
+            BytecodeCells::integer(ops, 0);
+            out.item(ops, v, false);
         }
     }
 }
-fn spine(args: &[Arg], counts: &HashMap<usize, usize>, seen: &mut HashMap<usize, i32>, out: &mut BytecodeCells) {
+fn spine(
+    args: &[Arg],
+    counts: &HashMap<usize, usize>,
+    seen: &mut HashMap<usize, i32>,
+    out: &mut BytecodeCells,
+    ops: &mut Vec<i64>,
+) {
     for a in args {
-        out.integer(2);
-        out.item(&a.tag.map(Value::Sym).unwrap_or(Value::Null), false);
-        lang_cells(&a.value, counts, seen, out);
+        BytecodeCells::integer(ops, 2);
+        out.item(ops, &a.tag.map(Value::Sym).unwrap_or(Value::Null), false);
+        lang_cells(&a.value, counts, seen, out, ops);
     }
-    out.integer(0);
-    out.item(&Value::Null, false);
+    BytecodeCells::integer(ops, 0);
+    out.item(ops, &Value::Null, false);
 }
 fn constants_cells(
     consts: &[Value],
     counts: &HashMap<usize, usize>,
     seen: &mut HashMap<usize, i32>,
     out: &mut BytecodeCells,
+    ops: &mut Vec<i64>,
 ) {
-    out.integer(consts.len() as i32);
+    BytecodeCells::integer(ops, consts.len() as i32);
     for c in consts {
         match c {
-            Value::Lang(_) | Value::Pairlist(_) => lang_cells(c, counts, seen, out),
+            Value::Lang(_) | Value::Pairlist(_) => lang_cells(c, counts, seen, out, ops),
             Value::Bytecode(b) => {
-                out.integer(21);
+                BytecodeCells::integer(ops, 21);
                 // Nested bytecode shares the outer reference numbering.
-                out.item(&b.code, false);
-                constants_cells(&b.consts, counts, seen, out);
+                out.item(ops, b.code(), false);
+                constants_cells(b.constants(), counts, seen, out, ops);
             }
             _ => {
-                out.integer(match c {
-                    Value::Null => 0,
-                    Value::Sym(_) => 1,
-                    Value::Closure(_) => 3,
-                    Value::Env(_) => 4,
-                    Value::Promise(_) => 5,
-                    Value::Builtin(b) => {
-                        if b.kind == BuiltinKind::Special {
-                            7
-                        } else {
-                            8
+                BytecodeCells::integer(
+                    ops,
+                    match c {
+                        Value::Null => 0,
+                        Value::Sym(_) => 1,
+                        Value::Closure(_) => 3,
+                        Value::Env(_) => 4,
+                        Value::Promise(_) => 5,
+                        Value::Builtin(b) => {
+                            if b.kind == BuiltinKind::Special {
+                                7
+                            } else {
+                                8
+                            }
                         }
-                    }
-                    Value::Lgl(_) => 10,
-                    Value::Int(_) => 13,
-                    Value::Real(_) => 14,
-                    Value::Cplx(_) => 15,
-                    Value::Str(_) => 16,
-                    Value::Dots(_) => 17,
-                    Value::List(_) => 19,
-                    Value::Expr(_) => 20,
-                    Value::ExtPtr(_) => 22,
-                    Value::Raw(_) => 24,
-                    Value::Obj(_) => 25,
-                    _ => unreachable!(),
-                });
-                out.item(c, false);
+                        Value::Lgl(_) => 10,
+                        Value::Int(_) => 13,
+                        Value::Real(_) => 14,
+                        Value::Cplx(_) => 15,
+                        Value::Str(_) => 16,
+                        Value::Dots(_) => 17,
+                        Value::List(_) => 19,
+                        Value::Expr(_) => 20,
+                        Value::Bytecode(_) => 21,
+                        Value::ExtPtr(_) => 22,
+                        Value::Raw(_) => 24,
+                        Value::Obj(_) => 25,
+                        _ => unreachable!(),
+                    },
+                );
+                out.item(ops, c, false);
             }
         }
     }
@@ -232,9 +266,9 @@ fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 fn disasm(b: &Bytecode) -> Value {
     Value::list(vec![
         Value::sym(".Code"),
-        b.code.clone(),
+        b.code().clone(),
         Value::list(
-            b.consts
+            b.constants()
                 .iter()
                 .map(|c| match c {
                     Value::Bytecode(b) => disasm(b),

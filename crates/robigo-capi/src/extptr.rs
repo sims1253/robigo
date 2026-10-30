@@ -192,6 +192,9 @@ pub unsafe fn run_finalizer(w: Sexp) {
     // R: memory.c:R_RunWeakRefFinalizer -- a manually run weak reference
     // is removed at the next collection, even if its cleared key is NIL.
     w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
+    // The key's last rooted round is over: its runtime cycle may now be
+    // unreachable.
+    robigo_runtime::env::Env::mark_cycle_dirty();
     if fin == R_NilValue {
         return;
     }
