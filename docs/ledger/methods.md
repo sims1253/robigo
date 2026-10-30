@@ -7,6 +7,29 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 10 baseline after methods became the default
+
+- Base b5c3373, branch `track/methods-s4-speed`. Same-host Debian
+  R 4.5.0-3 executable, R_HOME and private ICU 76 libraries. Paired
+  callgrind subtracts N from 2N, with methods attached in both runtimes.
+- Added a portfolio workload with inherited dispatch, construction,
+  slot replacement and a validity constraint. Its checksum matches R.
+  `scripts/s4-instructions.py` includes it alongside the five microbenchmarks.
+- Baseline instructions per iteration (robigo / GNU R): generic
+  10,920.312 / 12,193.287; slot read 1,376.734 / 656.122;
+  replacement 39,429.751 / 38,692.235; new 354,252.890 / 315,063.616;
+  validObject 180,072.314 / 163,070.796; portfolio
+  1,516,823.910 / 1,391,995.680. The portfolio unit constructs a holding,
+  marks its prices once, validates and values it through an inherited method.
+- Baseline S4 slice 644/662, zero regressions. Added an oracle-recorded
+  regression covering method replacement/removal, redefinition inside a
+  method, active method-table bindings, NULL slots and initialize's
+  in-place slot updates. Baseline matches its output byte for byte.
+- Reproduce with `R_HOME=/home/m0hawk/.local/opt/R-4.5.0
+  LD_LIBRARY_PATH=$R_HOME/lib:/tmp/methods7/oracle-libs
+  scripts/s4-instructions.py --output before.json` (export R_HOME first).
+  Candidate cache measurements follow.
+
 ## 2026-10-30: round 9 — FastR switch activated (#98 merged as b7ee268)
 
 - Rebased onto `b7ee268` (main) merging #98 (environment finalizers).

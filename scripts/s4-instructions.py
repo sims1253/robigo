@@ -19,6 +19,8 @@ CASES = {
     "replace": ("", "x@x <- 1", 1000),
     "new": ("", 'new("P", x=1)', 500),
     "valid": ("", "validObject(x)", 1000),
+    "portfolio": (f'source({str(Path(__file__).resolve().parent.parent / "benchmarks/suite/s4-portfolio.R")!r})\n',
+                  "execute(1L)", 100),
 }
 SETUP = 'setClass("P", slots=c(x="numeric")); x <- new("P", x=1)\n'
 
