@@ -257,6 +257,17 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
             for (_, value) in proxies.values() {
                 graph.ignore_owner(value);
             }
+            // Preserved proxies are C code's handles: C can still use them
+            // (grid's static evaluation environment), so they are roots.
+            // unpin_cycles has already released the ones whose keys only
+            // cycles kept alive.
+            PINNED.with(|pins| {
+                for h in pins.borrow().keys() {
+                    if let Some((_, value)) = proxies.get(h) {
+                        graph.root(value);
+                    }
+                }
+            });
             for x in &pending {
                 if unsafe { x.has_flag(flags::HOST) } {
                     let h = unsafe { robigo_core::Core::host_handle(*x) };

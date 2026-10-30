@@ -20,6 +20,8 @@ invisible(gc())
 cat(if (seen) "finalized\n" else "pending\n")
 make(20000)
 invisible(gc())
+make(20000)
+invisible(gc())
 base <- rss()
 for (k in 1:8) {
     make(20000)
