@@ -130,4 +130,28 @@ Callgrind profiling of `rbench/real/convolution_v` (`convolveV(1:583, 1:583)`) r
 - Delta: **-343,318,332 instructions (-53.58%)**
 - Conformance: Output verified byte-identical against GNU R. Gate comparison: 0 regressions > 0.5% (candidate is 53.57% faster).
 
+---
+
+## Target 3: `rbench/simple/lapplyDots`
+
+### Profiling & Gap Attribution
+Callgrind profiling of `rbench/simple/lapplyDots` (`execute(72236)` where `f <- function(x, y) x + 1.5 * y; lapply(x, f, y = a)`) revealed:
+1. `inline_fun` in `crates/robigo-runtime/src/builtins/apply.rs` previously returned `None` whenever `dots` was non-empty (`rho.get_local(s::DOTS)` was not empty) or `c.formals.len() != 1`. This completely disabled fast inlining for any `lapply` call with `...` arguments.
+2. Because inlining was aborted, every iteration (72,236 times) called `call_fun`:
+   - Resolved `f` via `find_fun` dynamically walking the environment hierarchy on each iteration.
+   - Allocated heap promises for `X[[i]]` and cloned `dots` on every iteration (`promise_args`).
+   - Evaluated `X[[i]]` AST in `rho` via dynamic `[[` dispatch instead of direct indexing.
+
+### Optimizations
+1. Multi-argument and dots closure inlining in `inline_fun`: Extended `inline_fun` to support multi-argument pure inlinable closures with `...` arguments. Arguments from `dots` are matched to formals and evaluated/forced once prior to the loop.
+2. `FastApply` specialization: Provided `FastApply::One(c)` for pure single-argument closures (zero allocation, stack slice) and `FastApply::Multi(fc)` for multi-argument closures with pre-evaluated invariant arguments.
+3. Hoisted iteration loops in `do_lapply`: Hoisted branch selection outside the 72,236-iteration loop, eliminating per-element enum pattern matching and call overhead.
+
+### Results
+- Before: `690,351,965` instructions (GNU R: `797,708,874`, ratio 0.865x)
+- After: `294,589,631` instructions (GNU R: `797,708,875`, ratio 0.369x)
+- Delta: **-395,762,334 instructions (-57.33%)**
+- Conformance: Output verified byte-identical against GNU R. Gate comparison: 0 regressions > 0.5% (both `lapply` and `lapplyDots` faster).
+
+
 
