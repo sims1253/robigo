@@ -1,0 +1,18 @@
+plain: unknown | 616263 | 3
+utf8: UTF-8 | c3a9 | 2
+octal-ascii: unknown | 414243 | 3
+hex-ascii: unknown | 4142 | 2
+octal-utf8: unknown | c3a9 | 2
+hex-utf8: unknown | c3a9 | 2
+octal-invalid: unknown | ff | 1
+unicode: UTF-8 | c3a9 | 2
+newline: unknown | 610a62 | 3
+mixed: unknown | 614162 | 3
+raw-utf8: UTF-8 | c3a9 | 2
+identical utf8: TRUE 
+identical ascii: TRUE 
+compiled: unknown | UTF-8 
+parsed: unknown 
+quoted: unknown 
+serialized: unknown 
+utf8 equal: TRUE 

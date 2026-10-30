@@ -14,15 +14,13 @@
 #                     `record --mask-against-previous`, which keeps the case
 #                     scored with the machine-dependent lines masked
 
-# Default packages: GNU R's, without `methods` until robigo can load it
-# (goalpost G6). Then add it back here and re-record: today every case would
-# fail on robigo's startup warning, hiding all other progress. Cases that
-# need S4 attach methods themselves (help pages of methods and stats4 call
-# library()).
+# GNU R suites attach methods. FastR defaults and records match GNU R.
+# cran-purer awaits separate re-recording.
 [fastr]
 description = "FastR's unit-test snippets (31k one-liners over builtins, S4, parser, ...), GPL-3"
 mode = "script"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
+expected_file = "expected-methods.jsonl.gz"
 timeout = 30
 commit = "f9d9199e51b371f076b19456933ee395d28360bf"
 path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutput.test"
@@ -33,7 +31,7 @@ exclude_prefix = ["library.fastr.", "rffi."]
 [gnur-tests]
 description = "GNU R 4.5.0's own regression tests (tests/*.R), as `make check` runs them"
 mode = "echo"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
 timeout = 600
 support = "support"
 # Need the network, a build tree, or are driven by Makefile rules.
@@ -55,7 +53,7 @@ build = "build.sh"
 [gnur-examples]
 description = "The examples of every help page in GNU R 4.5.0's base and recommended-free packages"
 mode = "echo"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
 timeout = 120
 packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datasets", "tools", "splines",
             "stats4", "grid", "parallel", "compiler"]
@@ -65,14 +63,14 @@ packages = ["base", "stats", "utils", "methods", "graphics", "grDevices", "datas
 [gnur-demos]
 description = "Every demo() of GNU R 4.5.0's base packages, run as demo(topic, ask=FALSE, echo=TRUE)"
 mode = "echo"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
 timeout = 300
 importer = "corpus-scripts"
 
 [r-intro]
 description = "The runnable code of GNU R's \"An Introduction to R\" manual, one script per chapter"
 mode = "echo"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
 timeout = 300
 importer = "corpus-scripts"
 

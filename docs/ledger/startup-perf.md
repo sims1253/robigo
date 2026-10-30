@@ -7,6 +7,178 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 12 continuation): finish PR #106
+
+- Took over #106 in a separate local continuation branch, preserving the
+  three original commits and their authorship. Rebased onto 532be45;
+  the sole conflict was passing.txt, resolved by retaining every entry.
+  #99 is merged and its build, corpus and perf checks succeeded.
+- Review found that the SVD guards rejected lowercase job codes, although
+  DGESDD/ZGESDD accept them through LSAME. Eight real/complex calls failed
+  before the fix. Normalize the code before validation and workspace
+  sizing. The new svd-direct fixture covers uppercase and lowercase jobs
+  with padded output matrices; it is recorded with Debian R 4.5.0-3.
+  The release binary matches its complete output after the fix.
+- The output buffer guard counted packed elements despite accepting
+  larger leading dimensions. Count the last accessed element using the
+  actual stride so a short direct-.Internal buffer cannot be overwritten.
+- Regenerated all seven inherited linalg recordings in the pinned oracle
+  container: no recorded bytes changed. No oracle or existing test was
+  weakened. Added fixtures and final container verification follow below.
+- Reprofiled the inherited container executable with an enumerated cache,
+  NULL packages and natives off: library(stats) takes 172,935,824
+  instructions. Reader::int costs 5,081,622 self instructions,
+  read_item_flags0 4,442,153 and read_bc_lang 3,140,109. This is a
+  refreshed measurement, not a startup speedup. Next measure inlining
+  Reader::int against this scenario before changing reader allocations.
+
+### Final continuation verification
+
+- `cargo test --release -p robigo-runtime` in the private Debian build
+  passes all 47 unit tests and both lazy-load integration tests, including
+  the complex libc oracles that differ on the host. Formatting and diff
+  checks pass.
+- Built this checkout in robigo-build:4.5.0 using the private
+  `.robigo/r12/target` directory. All eight linalg recordings pass in
+  the interpreter, VM and JIT (24/24 byte comparisons) against the
+  Debian 4.5.0-3 oracle. Added the remaining four linalg scripts to
+  passing.txt; the full ratchet passes 261/261 in the pinned container.
+- spectralnorm_math's original rbench source, execute(267), prints
+  `1.274223917 ` plus newline in both runtimes; stdout, stderr and
+  status match exactly. The benchmark is now a working computation.
+- Focused FastR TestBuiltin_La: 13/14, five new passes, zero regressions.
+- Current library(stats) scenario, NULL packages, complete enumerated
+  cache and natives off: 173,049,715 instructions versus the previous
+  ledger baseline of 173,087,503. Different base revisions, no speedup
+  claim. Job 2 remains open: test Reader::int inlining first, then
+  allocation changes, with paired counts and serialize corpus checks.
+- Reproduction harnesses for this run are `.robigo/r12/{profile.sh,
+  container-build.sh,container-run.sh,check.py,ratchet.py}`. All commands
+  ran in the foreground. No build directory was shared with another
+  track. #109 remains a separate reference implementation; this work
+  updates #106 only and leaves merge/close decisions to the coordinator.
+
+## 2026-10-30 (round 12): the LAPACK bridge, wired and proven
+
+Branch `track/startup-perf-r12-lapack`. Three r12 attempts shared this
+worktree (two pi failovers and an opencode glm-5.3 thread); this entry
+records the merged result: the inherited real-matrix binding plus the
+complex ports added on top.
+
+- **What**: `builtins/lapack.rs` now dlopens the system LAPACK
+  (`liblapack.so.3`, then `liblapack.so`, then `libRlapack.so`;
+  RTLD_LAZY|RTLD_LOCAL, OnceLock, never closed) on the first call,
+  exactly as GNU R links it. Bound routines: dsyevr_, dgeev_, dgesdd_,
+  dpstrf_, ilaver_, zheev_, zgeev_, zgesdd_, zgesv_, zgecon_, zlange_.
+  Ports of Lapack.c's La_rs/La_rg/La_svd (query + real call, verbatim
+  error texts), La_rs_cmplx/La_rg_cmplx/La_svd_cmplx/La_solve_cmplx
+  (the four complex internals, previously "not implemented" stubs;
+  zgesdd with the netlib bug-111 rwork sizing), and chol(pivot=TRUE)
+  via dpstrf (rank/pivot attributes, pivoted dimnames, R's
+  rank-deficient warning). La_version()/La_library() report the bound
+  library (ilaver; dladdr+realpath) instead of constants;
+  La_solve_cmplx arity fixed to 3 per names.c.
+- **Interposition note**: liblapack's internal L1-BLAS calls (ddot_,
+  daxpy_, dcopy_, dscal_, dnrm2_) bind to robigo's exported ports (the
+  global scope wins over libblas for those names); the byte-exact
+  results below prove them bit-identical to Debian libblas 3.12.0 on
+  these paths.
+- **Proof (byte for byte)**: `tests/r/linalg/{eigen,svd,chol,battery}.R`
+  recorded from Rscript 4.5.0-3 in robigo-oracle:4.5.0 — symmetric/
+  non-symmetric/complex eigen (values, vectors, only.values), full/
+  thin/nu=0/rank-deficient/near-singular/complex svd, chol/chol2inv/
+  pivoted chol, real+complex solve (incl. exactly-singular error
+  texts), det, rcond both norms, kappa exact, and a seeded LCG battery
+  over n=1..12 (rnorm lives in stats, unavailable under
+  R_DEFAULT_PACKAGES=NULL). robigo matches all four recordings exactly
+  on the host (host liblapack 3.12.0), and the recordings are identical
+  between host liblapack 3.12.0 and container 3.12.1 **except** zgeev
+  on larger matrices (n>=8 complex-general eigen differs in the last
+  bits between the two Debian builds) — that line was dropped from the
+  battery; the n=3 complex-general case in eigen.R is build-stable.
+  CI's trixie container is the judge either way.
+- rbench `spectralnorm_math` (267x267 eigen): both runtimes print
+  `1.274223917`, stdout/stderr/status identical (previously robigo
+  died at the missing La_rs).
+- fastr `TestBuiltin_La`: 13/14 (was 8/14; 5 new passes — La_rs x2,
+  La_rg x2, La_svd). The remaining failure is `.Internal(La_qr(...))`
+  (qr.c's dqrdc2, a different module; robigo has no La_qr at all —
+  open item below).
+- gnur-examples `base/La_library` should now pass in CI (reports the
+  realpath of the bound library); `base/La_version` unchanged (ilaver
+  says 3.12.0 for Debian lapack 3.12.x).
+- Startup cost: zero until the first eigen/svd/chol(pivot)/
+  complex-solve call (lazy dlopen). The spectralnorm_math instruction
+  count and the library(stats) scenario are measured post-merge; Job 2
+  (stats path at 0.667x) continues in the next round.
+
+## 2026-10-30 (round 11): update #99 after #92 lands
+
+- Merged main fd618f5 into #99 after #92 ce5e73c landed. Resolved the
+  gate conflict by retaining #92's removed-benchmark reporting and
+  failed-status guard, alongside #99's added-benchmark guard. Kept both
+  ledger entries. No cherry-pick and no runtime/cache changes.
+- The old #99 perf log (run 40990371754, head 83f7b42) prints synthetic
+  nbody counts 100/100 and paired [100,100] -> [110,110], then +10.00%.
+  This matches the test's injected inputs, not a measured workload.
+  The merged test captures stdout in setUp, including diagnostic output.
+- Local merged gate tests: 14 pass, stdout empty. The new CI run must
+  independently confirm that the synthetic line is absent and report
+  the actual rbench/shootout/nbody_2 comparison before LAPACK resumes.
+
+## 2026-10-30 (round 9): rebased startup verification
+
+- Release build passes on main 1b4670a plus #92/#99. A first attempt
+  reused a shared parser artifact without parse_data; touching the
+  syntax module's timestamp and rebuilding corrected the stale artifact.
+  No parser source contents changed.
+- Pinned Debian oracle integration: all 10,057 keys match, all 27
+  stdout/stderr/status comparisons pass. The host Rscript launcher
+  still invokes R 4.6.1 even with R_HOME; run oracle checks inside
+  robigo-oracle:4.5.0. The host-built binary uses the mounted host
+  loader and libraries at /host-lib (mount /usr/lib, not the Debian
+  x86_64-linux-gnu subdirectory).
+- Focused serialize/unserialize/connections: 451/458. The sole ratchet
+  failure is the previously documented oversized-sequence case
+  6260e145e42c04ad; the exact original df3d535 baseline artifact also
+  fails it in the same 4 GB oracle container. No ratchet entries changed.
+- Fresh library(stats), NULL packages, enumerated cache, natives off:
+  173,087,503 instructions. Round 8 was 173,121,524; this is a fresh
+  baseline after the rebase, not a claimed reader optimization.
+  Profile self costs: VM run_with 7,929,388; Reader::int 5,081,622;
+  read_item_flags0 4,442,153; read_bc_lang 3,140,109. Next optimize
+  one reader allocation path and compare these exact settings.
+- Seven gate tests, Python compilation, shell syntax and cargo fmt
+  --check pass. Runtime crate unit tests: 44 pass, 2 fail at the same
+  documented host-glibc complex sqrt/sin one-ULP oracles. All reader,
+  cache and native-marker tests pass. Both lazy-load integration tests
+  pass separately. No complex arithmetic changed.
+
+## 2026-10-30 (round 9): remaining native bridge boundary
+
+- Rechecked GNU R 4.5.0 src/main/names.c: La_rs has eval=11, arity=2,
+  opcode 1 (and opcode 5 in the alternate HAVE_LAPACK configuration).
+  src/main/lapack.c loads the module; src/modules/lapack/Lapack.c:La_rs
+  is the object wrapper to port, not an eigenvalue algorithm to replace.
+- Exact native symbol: dsyevr_. Binding: R_ext/Lapack.h:1328,
+  F77_NAME(dsyevr), with arguments jobz/range/uplo, n/a/lda, vl/vu/il/iu,
+  abstol/m/w/z/ldz/isuppz, work/lwork/iwork/liwork/info, followed by
+  three Fortran character lengths. On this GNU Fortran ABI those are
+  size_t values 1,1,1 (Rust usize). La_INT is the native integer ABI.
+  Query both workspace sizes with lwork=liwork=-1 before the real call.
+  The wrapper copies input because LAPACK overwrites it; JOBZ=N/V,
+  RANGE=A, UPLO=L, ABSTOL=0. Preserve its errors and result list names.
+- The stats archive pulls only its referenced LAPACK objects and does
+  not provide dsyevr_ or the La_rs object wrapper. Next work crosses
+  into native bindings/build ownership: build GNU R's LAPACK module
+  against robigo's API, or expose this symbol and port that wrapper.
+  Check eigenvalues/vectors, nonsquare input, zero dimensions and
+  only.values=NA against the oracle. spectralnorm_math is still wrong,
+  so exclude its instruction counts from speed claims.
+- library(stats) remains at the round 8 measurement 173.122M, 0.667x
+  GNU R. No additional startup speedup is claimed for the gate changes.
+  Next profile the rebased reader, then measure a single reduction in
+  Reader::int/read_item_flags0/read_bc_lang allocations before keeping it.
 ## 2026-10-30: repair #92's GNU R failure handling
 
 - Evidence: [run 40988268342, perf job 123847416068](https://github.com/sims1253/robigo/actions/runs/40988268342/job/123847416068),
@@ -98,6 +270,130 @@ d002511 from run 40982799591. Every output/status matches GNU R.
   it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
   Failed oracle measurements also fail. cargo fmt --check and diff
   whitespace checks pass. No runtime source or ratchet changes.
+## 2026-10-30 (round 8): confirm regressions with a paired gate
+
+- GitHub-hosted diagnostic run 40985993806 succeeds (AMD EPYC 7763,
+  Debian glibc 2.41-12+deb13u4, valgrind 3.24.0). Exact artifact pair:
+  own resources base 836,703,649 / 836,707,540; candidate 834,454,992 /
+  834,470,376. Shared cache/native directory: base 836,708,252 /
+  836,713,676; candidate 834,422,960 / 834,465,977. Outputs and statuses
+  match, and all 32 guards pass on each cache. Profiles and environment
+  are in that run's perf-diagnostic artifact. This does not explain the
+  original stable 859.6M candidate count; no claim of noise is made.
+- Confirmed the local result through perf.py:run_one itself, including
+  its temporary bench.R and working directory. Base 836,388,886 /
+  836,394,996; candidate 833,959,576 / 833,911,532. The diagnostic
+  script now uses the same temporary working-directory convention.
+- The gate now downloads the baseline executable from the exact run
+  whose stored metrics selected it. For cases flagged slower it runs
+  baseline and candidate twice in the current job, sharing the cache,
+  native directory and environment, and compares the minimums with
+  the same 0.5% threshold. It checks both outputs/statuses against
+  GNU R and retains the original metrics plus callgrind profiles.
+  Stored baseline files remain unchanged. A failed measurement or
+  mismatched output fails confirmation, rather than accepting a prefix.
+- Four Python checks cover historical environment differences, actual
+  slowdowns, wrong output and failed baseline runs. A real-artifact
+  end-to-end confirmation of the logged nbody_2 failure gives paired
+  base 836,441,083 / 836,373,747 and candidate 833,929,154 / 833,919,422,
+  with identical GNU R output. The gate reports 0 slower, 0 broken.
+- Applied this gate-only commit to #92 as 8966a92. Its runtime changes
+  remain untouched; new CI is required before the coordinator merges.
+  Original gate counts stay in this ledger as evidence, not as an
+  alleged fixed runtime regression. Cache enumeration remains in #99.
+
+## 2026-10-30 (round 8): #92's repeated nbody_2 failure is unresolved
+
+- The stable CI increase must be investigated as a real regression, not
+  called noise. Downloaded the exact robigo artifacts from main run
+  40980827065 (df3d535) and PR run 40982799591 (d002511). The baseline
+  perf-main artifact records 837,063,202 instructions. The recheck log
+  prints the candidate's first and second counts, 859,603,490 and
+  859,648,780, not a baseline remeasurement (perf.py:cmd_recheck). Thus
+  the confirmed CI increase is 22,540,288 instructions, +2.69%.
+- Exact artifacts in local robigo-oracle:4.5.0, with each artifact's
+  own natives and flat cache, same utils,stats/locale/timezone and
+  benchmark parameter 921: base 836,330,549 / 836,320,174; candidate
+  833,981,641 / 833,967,367. Both produce identical energy output and
+  exit 0. The CI direction is NOT reproduced locally. All 32 source
+  size/mtime guards match in each downloaded cache, 6,793 entries each.
+- Local self-profile delta is -2.35M, chiefly reader allocations and
+  cloning, not a +22.54M hot-path cost. Disabling the candidate cache
+  gives 870,527,390 instructions. Cache state matters, but this is not
+  proof that CI lacked its cache. Per-lookup source stat validation is
+  only done while loading a database, not on each successful lookup.
+- Added a dispatch-only diagnostic to run these exact artifacts on the
+  CI runner, with own and shared cache/native directories, two runs per
+  pair. It saves callgrind profiles, cache guards, artifact hashes, and
+  CPU/libc/valgrind/environment details. The existing gate and its
+  threshold remain unchanged. Do not declare #92 cleared from the
+  local result; inspect the CI profiles before fixing the cause.
+- Rebased release binary passes the 10,057-key index comparison and
+  all 27 transcript comparisons. Runtime unit tests: 42 pass; the same
+  two host-glibc complex oracles fail. FastR serialize/connections:
+  451/458 on both #92 and the rebased binary, with the identical known
+  oversized-sequence serialization ratchet failure on both locally.
+
+## 2026-10-30 (round 8): enumerate the real lazy-load indices
+
+- Based on #92 head d002511, whose reader changes are still awaiting
+  merge. Replace the recorded forcing battery with readRDS enumeration
+  of every installed .rdx, including references and nested eagerKey /
+  lazyKeys entries (R: lazyload.R:lazyLoadDBexec). Enumeration errors
+  abort the builder instead of producing a partial recording.
+- Pinned Debian oracle library: 5,894 keys in 16 databases from the old
+  battery -> 10,057 keys in 30 databases from the indices. The added
+  databases include help databases; every enumerated key is checked
+  against the resulting flat index. No runtime fallback was removed.
+- Integration verification: GNU R and robigo emit byte-identical key
+  logs. All 27 stdout/stderr/status comparisons pass: NULL, utils+stats,
+  default packages, each with AST/VM/JIT and full/absent/malformed
+  caches. Out-of-bounds builder input fails without publishing a cache.
+  CI now runs this check after building its cache.
+- Builder rejects inconsistent compression flags, truncated/out-of-range
+  entries, decoded-length mismatches and source metadata changes during
+  its reads. Unknown compression remains an explicit build failure.
+  Missing/stale/malformed runtime caches retain the original fetch path.
+- Same #92 host-built binary, both cache versions, natives disabled,
+  pinned oracle library, C.UTF-8/UTC, VM default. Callgrind instructions:
+
+  | scenario | battery cache | enumerated cache | GNU R |
+  |---|---:|---:|---:|
+  | NULL, -e 1 | 38,090,360 | 38,220,237 | 87,667,059 |
+  | NULL, library(stats) | 174,694,415 | 174,859,390 | 259,410,755 |
+  | default, -e 1 | 391,057,625 | 391,198,488 | 660,611,163 |
+
+  Full coverage costs 0.34%, 0.09%, and 0.04% respectively. Current
+  library(stats) ratio is 0.674x; default-package startup is 0.592x.
+  Host-built binaries require GLIBC_2.44, so these run in the oracle
+  container via the mounted host loader/libraries. GNU R uses its
+  container libraries. Both robigo sides have exactly the same loader,
+  environment and package bytes. Do not compare to older container-built
+  binary counts as a paired speedup.
+
+- Re-profiled #92 with the complete cache. Self instructions remain
+  VM run_with 7.92M, memcpy 5.12M, Reader::int 5.08M,
+  read_item_flags0 4.44M, read_bc_lang 3.14M. No new reader optimization
+  is claimed in this round. An int-inlining candidate was deferred
+  before compilation while main advanced with #95; a useful next
+  experiment needs a fresh paired baseline on that revision.
+- Rebased cleanly onto d2ce510 (#95). Source changes in this round do
+  not alter reader semantics; the release rebuild is queued behind
+  other tracks' foreground builds. No build was killed.
+
+La_rs follow-up: GNU R src/main/names.c registers La_rs with opcode 1,
+internal/evaluated, arity 2. the LAPACK dispatcher calls src/modules/lapack/Lapack.c:La_rs calls dsyevr_ with
+JOBZ=N/V, RANGE=A, UPLO=L, ABSTOL=0 and queries LWORK/LIWORK first.
+Missing: the runtime DEFS registration and SEXP wrapper, plus a callable
+native dsyevr_ binding. R_ext/Lapack.h already declares the function
+with three trailing Fortran character-length arguments (size_t).
+The stats native library only pulls the LAPACK archive members its
+sources reference; it does not expose this libR LAPACK-module wrapper.
+Next: build GNU R's LAPACK module against robigo's C API or add a
+runtime wrapper over native reference-LAPACK dsyevr_ with both workspace
+queries. Keep errors from Lapack.c verbatim; test values/vectors,
+only.values=NA, zero-size, and nonsquare matrices against the oracle.
+
 
 ## 2026-10-30 (round 7): resume #92 and repair perf validation
 

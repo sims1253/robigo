@@ -4,7 +4,7 @@
 Usage: build-rdbflat.py FETCHLOG FLATDIR
 
 FETCHLOG is a file of lines "rdbpath<TAB>off<TAB>len<TAB>compressed"
-recorded by robigo with ROBIGO_RDBLOG=<file>; each (off, len) entry is
+enumerated by build-rdbflat-index.R (or ROBIGO_RDBLOG); each entry is
 read from the rdb, inflated once here, and written to FLATDIR/<n>.flat
 per source rdb (see crates/robigo-runtime/src/rdbflat.rs for the format).
 
@@ -37,7 +37,7 @@ def publish(dest: str, image: bytes) -> None:
                 os.unlink(tmp)
 
 
-def inflate(buf: bytes, compressed: int) -> bytes:
+def inflate_stream(buf: bytes, compressed: int) -> bytes:
     if compressed in (NA_INTEGER, 1):
         return zlib.decompress(buf[4:])
     if compressed == 3:
@@ -60,22 +60,46 @@ def inflate(buf: bytes, compressed: int) -> bytes:
     raise SystemExit(f"unknown compressed flag {compressed!r}")
 
 
+def inflate(buf: bytes, compressed: int) -> bytes:
+    raw = inflate_stream(buf, compressed)
+    if compressed != 0:
+        if len(buf) < 4 or len(raw) != struct.unpack(">I", buf[:4])[0]:
+            raise ValueError("uncompressed entry length mismatch")
+    return raw
+
+
 def main() -> None:
     log, flatdir = sys.argv[1], sys.argv[2]
     per_rdb: dict[str, dict[tuple[int, int], bytes]] = {}
+    flags = {}
+    stamps = {}
     for line in open(log):
         file, off, length, compressed = line.rstrip("\n").split("\t")
         d = per_rdb.setdefault(file, {})
         k = (int(off), int(length))
+        flag = int(compressed)
+        if file in flags and flags[file] != flag:
+            raise ValueError(f"inconsistent compression flag: {file}")
+        flags[file] = flag
         if k in d:
             continue
         with open(file, "rb") as f:
+            st = os.fstat(f.fileno())
+            stamp = (st.st_size, st.st_mtime_ns)
+            if stamps.setdefault(file, stamp) != stamp:
+                raise ValueError(f"database changed during enumeration: {file}")
+            if k[0] < 0 or k[1] <= 0 or k[0] + k[1] > st.st_size:
+                raise ValueError(f"entry outside database: {file} {k}")
             f.seek(k[0])
             buf = f.read(k[1])
-        d[k] = inflate(buf, int(compressed))
+        if len(buf) != k[1]:
+            raise ValueError(f"truncated entry: {file} {k}")
+        d[k] = inflate(buf, flag)
     os.makedirs(flatdir, exist_ok=True)
     for i, (file, entries) in enumerate(sorted(per_rdb.items())):
         st = os.stat(file)
+        if stamps[file] != (st.st_size, st.st_mtime_ns):
+            raise ValueError(f"database changed during build: {file}")
         path = file.encode()
         head = struct.pack("<8sQQQ", b"RFLAT01\n", st.st_size, st.st_mtime_ns, len(path)) + path
         data_start = len(head) + 8 + 24 * len(entries)

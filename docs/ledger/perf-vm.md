@@ -179,6 +179,114 @@ conformance` (interpreter, VM and VM+JIT against each other).
   out of scope), con_write_bytes 75M, copy/strlen ~25M. Reads
   (R_ReadConnection) untouched.
 
+## 2026-10-30: round 9 baseline and builtin wrapper diagnosis
+
+- Started at main 1b4670a. #102 is still open; do not attribute its
+  connection optimization to this base. Build queued behind core's tests.
+- Reprofiled #102's saved rebased binary with its matching natives and
+  R_HOME: CSV **1,785,398,182 instructions**, identical output. This is
+  a reproduction of the round 8 result, not a new main benchmark table.
+- The lapply missing-X case retains an extra is.vector traceback frame.
+  GNU R compiler/R/cmp.R:cmpSimpleInternal inlines the wrapper before
+  forcing X. GETINTLBUILTIN creates a VM call frame, not an RCNTXT;
+  adding a C context around all argument evaluation would be incorrect.
+- New Debian 4.5.0-3 fixture covers missing arguments, sys.calls,
+  named argument ordering, warning calls and a replacement closure.
+  Baseline fails its warning call: is.vector({...}) instead of w().
+- Source rebase before filing picked up fb99c0b (#101); saved a fresh
+  release baseline from that tree at .robigo/r9/main. All existing
+  conformance entries pass in AST/VM/JIT. The namespace and uncaught-missing fixtures fail.
+- Main fib(21) minus fib(20): 154,341,597 - 112,602,925 instructions
+  over 13,530 additional calls, **3,084.90 instructions/call**. This
+  reproduces round 6's ~3,083 cost; it does not measure a promise change.
+- Post-#102 inclusive CSV attribution (nested totals, do not add):
+  writetable 851,759,356; m_vfprintf 507,631,044; R_WriteConnection
+  467,558,422; host callback 252,241,775; con_write_bytes 71,200,000.
+  R_WriteConnection allocates/protects a RAWSXP and scalar connection
+  number per write, resolves the generic host operation, then copies the
+  bytes again in bridge.rs. A dedicated synchronous NativeBridge write
+  callback could bypass those objects and generic dispatch. Preserve the
+  caller's byte ownership across allocation/finalizer safe points and
+  validate binary/text/file connections before landing with core.
+- Rejected measurement setup: perf.py overwrites exported R_HOME with
+  R RHOME. Host R returned 4.6.1 and several programs failed. Discarded
+  .robigo/r9/before.json; reran through round 8's RHOME wrapper, which
+  returns the supplied Debian R 4.5.0 path.
+- Promise design for core review: keep one Rc<Promise> shared by the
+  environment and Context.promargs; let its forced state hold integer,
+  logical or double bits directly, with a boxed Value alternative. VM
+  reads can copy scalar bits; AST/native/introspection reads materialize
+  and cache the Value once. Commit the forced state and clear PRENV at
+  GNU R's forcePromise success boundary. Escaping promises retain their
+  expression and old scalar after a parent binding changes. Core tracing
+  must follow the boxed alternative, expression and any unforced env;
+  scalar states add no graph edge. This changes value.rs and every direct
+  promise-value reader, so it must follow core's finalizer reachability
+  change, with missing/substitute/parent.frame/native-root tests.
+- Scope: retain compiled-isvector-context.R as the original unfixed
+  user-closure reproduction. The kept change targets installed base
+  bytecode only; base-isvector-context.R and compiled-isvector-missing.R
+  cover those fixes. General user-closure inlining needs cmp.R's full
+  compile-time scope checks and argument matching before it is safe.
+- Fresh main streams match the saved Debian GNU R oracle on 82/83
+  programs, including 71 successful runs and 11 matching error exits.
+  spectralnorm_math remains different. Do not describe matching error
+  exits as successful benchmark programs.
+- First candidate: focused FastR lapply/sapply/is.vector slice
+  **118/119 -> 119/119**, zero regressions. Argument warning/error and
+  missing-X diagnostics match. The base-rebinding fixture exposed an
+  existing mismatch retained by that candidate: GNU R DO_BASEGUARD
+  compares findFun with the current SymbolValue, so changing the base
+  wrapper does not replace the installed internal opcode. Removed the
+  original-definition shape check to port that rule. Stopped the
+  superseded intermediate performance run; final verification follows.
+- Core's finalizer reachability work is active. Keep Value/Promise layout
+  unchanged; unboxed promise storage remains a coordinated follow-up.
+
+### Round 9 verification
+
+- Corrected candidate on fb99c0b: **249/252 -> 251/252** conformance
+  matches in AST/VM/JIT, no tier differences and no lost passes. Added
+  base-isvector-context and compiled-isvector-missing to the ratchet.
+  The unchanged user-closure reproduction is the sole unmatched script.
+- Final focused FastR slice **118/119 -> 119/119**, zero regressions;
+  recorded builtins/TestBuiltin_lapply/245e62b143e432a3 as a new pass.
+- All 83 benchmark stdout/stderr/status triples are identical to saved
+  main. Fresh main instructions: 82 fully matching cases, geometric mean
+  **0.492429** GNU R, all 82 faster. Of these, 71 exit successfully
+  (geomean **0.483327**); 11 are matching error exits. Candidate
+  instruction comparison is complete (below); do not reuse older rows.
+- Shared-target build failed with missing robigo_syntax::parse_data from
+  another worktree's artifact. Reflinked the stable round 8 private target,
+  cleaned workspace crates only, and rebuilt in .robigo/r9/target.
+- #102 merged during verification. Rebased onto d81d29c; ledger conflict
+  preserves both rounds. The isolated performance pair remains based on
+  fb99c0b. Rebased build and runtime tests run in the private target.
+- Final isolated instruction gate: **0 faster, 0 slower above 0.5%,
+  0 broken, 0 fixed** among successful programs. All 83 stream triples
+  are unchanged. Successful matching-program geomean **0.483327 ->
+  0.483532** GNU R; including 11 matching error exits, **0.492429 ->
+  0.492628**. Largest individual increase across all 83: **0.2754%**.
+  Kept for the verified context fidelity gain, within the performance gate.
+- Rebased conformance: **252/253** oracle matches in every tier, all
+  **252 required scripts pass**; the sole unmatched script remains the
+  explicitly retained user-closure reproduction. FastR **119/119**,
+  zero regressions. All 83 benchmark streams are unchanged after rebase.
+- Rebased native CSV recheck: **1,782,142,078 instructions**, matching
+  output. This also includes intervening main/startup/C API changes and
+  is not an isolated VM speedup. Three post-rebase instruction probes
+  (fib, CSV, lapply) pass the 0.5% gate. vm/compile/interp sources equal
+  the isolated candidate's; inherited serialization changes are main's.
+- Private host runtime tests: **44 unit + 2 integration pass**, with
+  the two documented host-libm oracles excluded. Debian CI's full build
+  and test step passes, including those oracles and C API tests. Format
+  and whitespace checks pass. Final full corpora/performance CI continues
+  on the PR; the manually dispatched run was canceled because its parent
+  is a PR commit, not the intended main performance baseline.
+- Remaining work: general cmpSimpleInternal scope/argument matching for
+  user closures (the retained oracle), a direct connection-write bridge
+  with core, and scalar promise states after core's finalizer work.
+
 ## 2026-10-30: round 8, CSV connection formatting
 
 - Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).

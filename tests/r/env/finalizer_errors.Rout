@@ -1,0 +1,5 @@
+NULL
+[1] "gc returned"
+[1] "only once"
+[1] "second argument must be a function"
+[1] "third argument must be 'TRUE' or 'FALSE'"

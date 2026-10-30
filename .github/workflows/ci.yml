@@ -8,6 +8,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      perf_diagnostic:
+        description: Profile the exact df3d535 and d002511 artifacts together
+        type: boolean
+        default: false
 
 # Every main commit gets its own group: its run publishes the perf baseline
 # that pull requests built on that commit compare with (a shared group would
@@ -34,7 +39,34 @@ env:
   TZ: UTC
 
 jobs:
+  perf-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.perf_diagnostic == true }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - name: Download exact failing pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 40980827065 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-base
+          gh run download 40982799591 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-candidate
+          chmod +x .robigo/diagnostic-{base,candidate}/robigo
+          python3 scripts/perf.py fetch
+      - name: Profile both binaries and audit cache guards
+        run: python3 scripts/perf-diagnostic.py .robigo/diagnostic-base .robigo/diagnostic-candidate .robigo/perf-diagnostic
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-diagnostic
+          path: .robigo/perf-diagnostic
+
   build:
+    if: ${{ inputs.perf_diagnostic != true }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
     steps:
@@ -58,15 +90,17 @@ jobs:
           scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
           echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
       # The flat lazy-load cache (rdbflat.rs): startup stops inflating a
-      # zlib stream per lazyLoadDBfetch. Built by a battery that forces
-      # every lazy binding of every base package (complete coverage).
+      # zlib stream per lazyLoadDBfetch. Enumerate the actual .rdx keys.
       - name: Flat lazy-load cache
         run: |
           mkdir -p .robigo/bin
           cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" .robigo/bin/robigo
           scripts/build-rdbflat.sh
+          python3 scripts/test-rdbflat.py
       - name: Unit tests, parser oracle, conformance (all tiers)
         run: cargo test --release --workspace
+      - name: Ratchet markers
+        run: python3 scripts/ratchet.py check | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Core and C API under gctorture (collect on every allocation)
         run: ROBIGO_GCTORTURE=1 cargo test --release -p robigo-core -p robigo-capi
       - name: Parse corpus ratchet

@@ -1,14 +1,13 @@
 #!/bin/sh
 # Build the flat lazy-load database cache (crates/robigo-runtime/src/
-# rdbflat.rs): record robigo's lazyLoadDBfetch calls over a battery of
-# startup scenarios, then pre-inflate every fetched entry into OUTDIR
+# rdbflat.rs): enumerate every object and reference key in the installed .rdx
+# indices, then pre-inflate every entry into OUTDIR
 # (scripts/build-rdbflat.py). Serve it at runtime with
 # ROBIGO_RDBFLAT=OUTDIR; a run then reads its base-package objects from
 # the cache instead of inflating each entry's zlib stream.
 #
-# Entries the battery did not record (a script loading packages the
-# battery skipped, say) fall back to the per-fetch path, so the cache is
-# always correct — it just stops saving instructions there.
+# Uncached or changed databases use the runtime's original fetch path.
+# ROBIGO_RDBFLAT_LIBRARY optionally selects a different library tree.
 #
 # Usage: scripts/build-rdbflat.sh [OUTDIR]   (default .robigo/rdbflat)
 #   .robigo/bin/robigo must be built; R_HOME (and ROBIGO_NATIVES, if
@@ -19,20 +18,8 @@ out=${1:-$root/.robigo/rdbflat}
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
-run() {
-    ROBIGO_RDBLOG="$log" "$root/.robigo/bin/robigo" --vanilla "$@" >/dev/null 2>&1 || true
-}
-
-# the battery: default startup (all base namespaces plus their lazy
-# reference environments), the per-package namespaces again for scripts
-# that skip some, the two non-default package sets, and a full sweep
-# that forces every lazy binding of every base package (a complete
-# cache: no run then takes the fallback path)
-run -e '1'
-run -e 'library(methods); library(stats); library(utils); library(grDevices); library(graphics); library(datasets); stopifnot(is.function(lm), is.function(read.table))'
-run -e 'e <- new.env(); attach(e); data(mtcars); detach(e); nrow(mtcars)'
-R_DEFAULT_PACKAGES=NULL run -e '1'
-R_DEFAULT_PACKAGES=utils,stats run -e 'library(stats); lm(dist ~ speed, cars); coef(lm(dist ~ speed, cars))'
-run "$root/scripts/build-rdbflat-force.R"
-
+# Never consume an existing flat cache while discovering its replacement.
+# An index read failure aborts the build; it must not publish a partial log.
+R_DEFAULT_PACKAGES=NULL ROBIGO_RDBFLAT= ROBIGO_RDBLOG= \
+    "$root/.robigo/bin/robigo" --vanilla "$root/scripts/build-rdbflat-index.R" >"$log"
 python3 "$root/scripts/build-rdbflat.py" "$log" "$out"

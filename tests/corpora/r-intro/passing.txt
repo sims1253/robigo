@@ -1,4 +1,0 @@
-01-introduction-and-preliminaries
-02-simple-manipulations-numbers-and-vectors
-03-objects-their-modes-and-attributes
-04-ordered-and-unordered-factors

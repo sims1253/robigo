@@ -36,7 +36,17 @@ pub fn install() {
     robigo_runtime::native::set_bridge(&BRIDGE);
 }
 
+struct FinalizerContext {
+    frames: Vec<robigo_runtime::interp::Context>,
+    handlers: robigo_runtime::conditions::HandlerStack,
+    global_handlers: robigo_runtime::conditions::HandlerStack,
+    restarts: robigo_runtime::conditions::RestartStack,
+    ccode_calls: Vec<(usize, Value)>,
+    visible: bool,
+}
+
 thread_local! {
+    static FINALIZER_CONTEXTS: RefCell<Vec<FinalizerContext>> = const { RefCell::new(Vec::new()) };
     static INTERP: Cell<*mut Interp> = const { Cell::new(std::ptr::null_mut()) };
     static FLOWS: RefCell<HashMap<usize, Flow>> = RefCell::new(HashMap::new());
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(1) };
@@ -196,6 +206,42 @@ unsafe fn sweep_stored() {
     SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
 }
 
+/// Drop preservation pins whose only remaining owners are runtime cycles.
+/// Called before entering a collection, with no collector borrow active.
+unsafe fn unpin_cycles() {
+    let dead = PROXIED.with(|m| {
+        let proxies = m.borrow();
+        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
+        for (_, value) in proxies.values() {
+            graph.ignore_owner(value);
+        }
+        graph.include_escaped();
+        graph.expand();
+        let graph = if graph.clear_callsite_memos() {
+            drop(graph);
+            let mut fresh = robigo_runtime::reachability::ObjectGraph::default();
+            for (_, value) in proxies.values() {
+                fresh.ignore_owner(value);
+            }
+            fresh.include_escaped();
+            fresh.expand();
+            fresh
+        } else {
+            graph
+        };
+        let live = graph.externally_live();
+        PINNED.with(|pins| {
+            let mut pins = pins.borrow_mut();
+            let handles: Vec<_> =
+                proxies.iter().filter(|(_, (_, value))| !graph.is_live(value, &live)).map(|(h, _)| *h).collect();
+            handles.into_iter().filter_map(|h| pins.remove(&h)).collect::<Vec<_>>()
+        })
+    });
+    for x in dead {
+        core().release(x);
+    }
+}
+
 fn kept_count() -> usize {
     STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len())
 }
@@ -264,26 +310,90 @@ unsafe fn proxy(v: &Value) -> Sexp {
     x
 }
 
-/// Proxies of environments, closures and external pointers the runtime
-/// still holds elsewhere are roots: in GNU R they are the R objects, so C
-/// code may keep one unprotected (grid's `R_gridEvalEnv` static) while R
-/// keeps it reachable.
+thread_local! {
+    static HOST_WEAK_REFS: Cell<bool> = const { Cell::new(false) };
+    static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn enable_host_weak_refs() {
+    HOST_WEAK_REFS.with(|active| active.set(true));
+}
+
+/// Runtime references outside the proxy graph are roots. Internal cycle
+/// edges and the bridge's own proxy handles do not keep weak keys alive.
 pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
+    // Without runtime weak references the existing root protocol suffices;
+    // avoid building the allocation graph for ordinary native workloads.
+    if !HOST_WEAK_REFS.with(|active| active.get()) {
+        PROXIED.with(|m| {
+            for (key, value) in m.borrow().values() {
+                let held = match value {
+                    Value::Env(e) => Rc::strong_count(&e.0) > 1,
+                    Value::Closure(f) => Rc::strong_count(f) > 1,
+                    Value::ExtPtr(p) => Rc::strong_count(p) > 1,
+                    _ => false,
+                };
+                if held {
+                    if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(key).copied()) {
+                        c.mark(x);
+                    }
+                }
+            }
+        });
+        return;
+    }
     PROXIED.with(|m| {
-        for (key, v) in m.borrow().values() {
-            let held = match v {
-                Value::Env(e) => Rc::strong_count(&e.0) > 1,
-                Value::Closure(f) => Rc::strong_count(f) > 1,
-                Value::ExtPtr(p) => Rc::strong_count(p) > 1,
-                _ => false,
-            };
-            if held {
+        let proxies = m.borrow();
+        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
+        for (_, value) in proxies.values() {
+            graph.ignore_owner(value);
+        }
+        graph.include_escaped();
+        graph.expand();
+        let live = graph.externally_live();
+        for (key, value) in proxies.values() {
+            if graph.is_live(value, &live) {
                 if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(key).copied()) {
                     c.mark(x);
                 }
             }
         }
+        let visited = graph.visited_set();
+        TRACE_GRAPH.with(|g| *g.borrow_mut() = Some((graph, visited)));
     })
+}
+
+/// Native roots and live weak references can mark HOST proxies after the
+/// root pass. Follow the same runtime graph during every core trace phase.
+// R: memory.c:RunGenCollect
+pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
+    if !HOST_WEAK_REFS.with(|active| active.get()) {
+        return;
+    }
+    PROXIED.with(|m| {
+        let proxies = m.borrow();
+        let Some((_, value)) = proxies.get(&handle) else { return };
+        TRACE_GRAPH.with(|g| {
+            let mut cache = g.borrow_mut();
+            let Some((graph, visited)) = &mut *cache else { return };
+            graph.visit(value, visited, |value| {
+                if let Some((key, _)) = identity(value) {
+                    if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(&key).copied()) {
+                        c.mark(x);
+                    }
+                }
+                if let Some(key) = vector_identity(value) {
+                    if let Some(x) = STORED.with(|s| s.borrow().get(&key).map(|(x, _)| *x)) {
+                        c.mark(x);
+                    }
+                }
+            });
+        });
+    });
+}
+
+pub unsafe fn trace_proxy_end() {
+    TRACE_GRAPH.with(|g| g.borrow_mut().take());
 }
 
 fn proxied(x: Sexp) -> Option<Value> {
@@ -1019,6 +1129,33 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         // R_ToplevelExec/R_tryEval start a new top-level context: the
         // caller's frames (sys.calls, the call stop() reports) and
         // handlers are hidden until it returns
+        "finalizerBegin" => {
+            with_interp(|i| {
+                let saved = FinalizerContext {
+                    frames: std::mem::take(&mut i.frames),
+                    handlers: i.handlers.take(),
+                    global_handlers: i.global_handlers.take(),
+                    restarts: i.restarts.take(),
+                    ccode_calls: std::mem::take(&mut i.ccode_calls),
+                    visible: i.visible,
+                };
+                FINALIZER_CONTEXTS.with(|s| s.borrow_mut().push(saved));
+            });
+            R_NilValue
+        }
+        "finalizerEnd" => {
+            if let Some(saved) = FINALIZER_CONTEXTS.with(|s| s.borrow_mut().pop()) {
+                with_interp(|i| {
+                    i.frames = saved.frames;
+                    i.handlers = saved.handlers;
+                    i.global_handlers = saved.global_handlers;
+                    i.restarts = saved.restarts;
+                    i.ccode_calls = saved.ccode_calls;
+                    i.visible = saved.visible;
+                });
+            }
+            R_NilValue
+        }
         "toplevelBegin" => {
             with_interp(|i| {
                 let saved = (std::mem::take(&mut i.frames), i.handlers.take());
@@ -1725,9 +1862,42 @@ impl NativeBridge for Bridge {
         })
     }
 
+    fn finalizers_active(&self) -> bool {
+        HOST_WEAK_REFS.with(|active| active.get())
+    }
+
+    // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.
+    fn is_finalizer_key(&self, key: &Value) -> bool {
+        matches!(key, Value::Env(_) | Value::ExtPtr(_))
+            && core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
+    }
+
+    fn register_finalizer(&self, interp: &mut Interp, key: &Value, fun: &Value, onexit: bool) -> RResult<()> {
+        enter(interp, |interp| unsafe {
+            ensure_ready(interp);
+            let top = R_PPStackTop;
+            let key = Rf_protect(to_sexp(key));
+            let fun = Rf_protect(to_sexp(fun));
+            crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+            R_PPStackTop = top;
+        });
+        Ok(())
+    }
+
+    fn run_exit_finalizers(&self, interp: &mut Interp) {
+        enter(interp, |_| unsafe {
+            crate::extptr::R_RunExitFinalizers();
+        });
+    }
+
     fn gc(&self, interp: &mut Interp) {
         if READY.with(|r| r.get()) {
-            unsafe { sweep_stored() };
+            unsafe {
+                sweep_stored();
+                if HOST_WEAK_REFS.with(|active| active.get()) {
+                    unpin_cycles();
+                }
+            };
             let outer = INTERP.with(|c| c.get().is_null());
             enter(interp, |_| unsafe {
                 // gc() from R with no C code active: nothing on the

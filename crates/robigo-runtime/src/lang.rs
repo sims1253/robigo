@@ -17,7 +17,10 @@ pub fn const_to_value(c: &Const) -> Value {
         Const::Cplx(re, im) => Value::cplx(Complex::new(*re, *im)),
         Const::CplxNa => Value::cplx(Complex::NA),
         Const::Str(None) => Value::str_na(),
-        // R: gram.y:StringValue (mkCharLenCE retains octal/hex bytes).
+        // R: gram.y:mkString2 -- an octal or hex escape suppresses the
+        // UTF-8 mark, so these bytes stay CE_NATIVE even when valid UTF-8.
+        Const::StrNative(s) => Value::strs(vec![Some(RString::from_bytes(s, Encoding::Native))]),
+        // R: gram.y:StringValue (mkStringLenCE retains octal/hex bytes).
         Const::Str(Some(s)) => Value::strs(vec![Some(RString::from_bytes(
             s,
             if std::str::from_utf8(s).is_ok() { Encoding::Utf8 } else { Encoding::Native },
