@@ -77,7 +77,9 @@ pub fn record_parse_data(src: &str) -> Result<Vec<Record>, String> {
                 let stop = offset + line.trim_end_matches('\n').len();
                 let token = if start == 0 || src.as_bytes()[start - 1] == b'\n' {
                     if src[start..stop].starts_with("#line ") { 291 } else { 290 }
-                } else { 290 };
+                } else {
+                    290
+                };
                 input.push(Input { token, span: Span { start: start as u32, end: stop as u32 } });
             }
             offset += line.len();
@@ -146,7 +148,8 @@ impl Recorder<'_> {
             };
             let loc = Loc { span, id: self.next_id() };
             if token != 10 && token != 258 {
-                let text = if token == 291 { String::new() } else { self.src[span.start as usize..span.end as usize].into() };
+                let text =
+                    if token == 291 { String::new() } else { self.src[span.start as usize..span.end as usize].into() };
                 self.record(token, loc, text);
             }
             if token != 290 && token != 291 {
