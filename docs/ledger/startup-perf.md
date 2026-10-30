@@ -296,7 +296,9 @@ Where the scenarios ended:
 | `-e 1` NULL, flat | 38.36M | 38.18M | 87.76M | 0.435× |
 
 Peak RSS: def+cache 89.6 → **71.1 MB**; NULL+cache 25.9 → 26.5 MB.
-Wall (idle moment): def+cache ~89 ms vs GNU R ~128 ms.
+Wall (idle moment): def+cache ~89 ms vs GNU R ~128 ms. Numbers
+re-measured after rebasing onto f668f60 (#90's inline-closure VM
+change did not move startup): lib-null-flat 174.70M, def-flat 390.94M.
 
 **Findings for other tracks:**
 
