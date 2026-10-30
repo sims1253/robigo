@@ -173,7 +173,12 @@ def cmd_run(a):
                 show = r.get("error") or " ".join(f"{k}={r[k]}" for k in ("instr", "secs") if k in r)
                 print(f"{name:40} {rt:7} {show}", file=sys.stderr, flush=True)
     for name, r in results.items():
-        if "robigo" in r and "gnur" in r and "error" not in r["robigo"] and "error" not in r["gnur"]:
+        gn = r.get("gnur", {})
+        oracle_failed = "gnur" in r and ("error" in gn or gn.get("status") != 0)
+        if oracle_failed:
+            r["oracle_warning"] = "GNU R measurement failed; ratio unavailable"
+            print(f"WARNING {name}: {r['oracle_warning']} ({gn})", file=sys.stderr)
+        if "robigo" in r and "gnur" in r and not oracle_failed and "error" not in r["robigo"]:
             r["wrong"] = (r["robigo"]["out"], r["robigo"]["status"]) != (r["gnur"]["out"], r["gnur"]["status"])
         for rt in r.values():
             if isinstance(rt, dict):
@@ -203,8 +208,11 @@ def report(doc, markdown):
         row = [name]
         for k in ("instr", "secs"):
             a, b = ro.get(k), gn.get(k)
-            row += [a, b, (a / b) if a and b else None]
-        err = ro.get("error") or ("wrong output" if r.get("wrong") else "")
+            oracle_ok = "error" not in gn and gn.get("status", 0) == 0
+            row += [a, b, (a / b) if a and b and oracle_ok else None]
+        err = ro.get("error") or ("robigo failed" if ro.get("status", 0) != 0 else "") or ("wrong output" if r.get("wrong") else "")
+        if r.get("oracle_warning") or "error" in gn or gn.get("status", 0) != 0:
+            err = (err + "; " if err else "") + "GNU R measurement failed; ratio unavailable"
         rows.append(row + [err])
     if markdown:
         print("| benchmark | robigo instr | GNU R instr | ratio | robigo s | GNU R s | ratio | |")
@@ -237,14 +245,21 @@ def cmd_compare(a):
     with open(a.new) as f:
         new = json.load(f)["results"]
     worse, better, broke, fixed = [], [], [], []
+    for name in sorted(base.keys() - new.keys()):
+        print(f"REMOVED {name} (absent from candidate; no regression comparison)")
     for name, r in sorted(new.items()):
         b = base.get(name, {}).get("robigo", {})
         n = r.get("robigo", {})
-        if "error" in n or r.get("wrong"):
-            if "error" not in b and not base.get(name, {}).get("wrong"):
+        base_failed = "error" in b or b.get("status", 0) != 0 or base.get(name, {}).get("wrong")
+        if "error" in n or n.get("status", 0) != 0 or r.get("wrong"):
+            if not base_failed:
                 broke.append(name)
+            else:
+                print(f"UNSUPPORTED {name} (failed on base and candidate)")
             continue
-        if "error" in b or base.get(name, {}).get("wrong"):
+        if name not in base:
+            print(f"ADDED {name} (absent from base; no regression comparison)")
+        if base_failed:
             # Not counted before (a wrong answer is not fast): the base
             # count measured a different run, often one that stopped early.
             if name in base:

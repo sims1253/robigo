@@ -7,6 +7,20 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 11): update #99 after #92 lands
+
+- Merged main fd618f5 into #99 after #92 ce5e73c landed. Resolved the
+  gate conflict by retaining #92's removed-benchmark reporting and
+  failed-status guard, alongside #99's added-benchmark guard. Kept both
+  ledger entries. No cherry-pick and no runtime/cache changes.
+- The old #99 perf log (run 40990371754, head 83f7b42) prints synthetic
+  nbody counts 100/100 and paired [100,100] -> [110,110], then +10.00%.
+  This matches the test's injected inputs, not a measured workload.
+  The merged test captures stdout in setUp, including diagnostic output.
+- Local merged gate tests: 14 pass, stdout empty. The new CI run must
+  independently confirm that the synthetic line is absent and report
+  the actual rbench/shootout/nbody_2 comparison before LAPACK resumes.
+
 ## 2026-10-30 (round 9): rebased startup verification
 
 - Release build passes on main 1b4670a plus #92/#99. A first attempt
@@ -60,6 +74,46 @@ lands; the natives work is PR #78 below.
   GNU R. No additional startup speedup is claimed for the gate changes.
   Next profile the rebased reader, then measure a single reduction in
   Reader::int/read_item_flags0/read_bc_lang allocations before keeping it.
+## 2026-10-30: repair #92's GNU R failure handling
+
+- Evidence: [run 40988268342, perf job 123847416068](https://github.com/sims1253/robigo/actions/runs/40988268342/job/123847416068),
+  head 30a556a, first-parent base 1b4670a (baseline run 40987005954).
+  Downloaded `perf-paired-profiles` into `.robigo/r92-profiles`.
+- The logged `suite/nbody_2 +10.00%` came from the adversarial unit test,
+  immediately after `python3 scripts/test-perf-paired.py`: stored 100/100,
+  paired base [100,100], candidate [110,110]. There is no such suite entry
+  in the manifest. Capture test stdout so synthetic failures cannot be
+  mistaken for measured CI regressions.
+- Real `rbench/shootout/nbody_2` diagnostic: cache off base 868,979,362,
+  candidate 866,898,984 instructions (-0.2394%); cache on 832,806,705 and
+  830,403,677. All four status codes are zero and stdout matches byte for
+  byte. The shared driver uses parameter 921, one `execute(921)` call,
+  921 `advance(0.01)` iterations, no warmup. Both binaries receive the
+  same driver and utils,stats package set. Raw callgrind headers confirm
+  separate isolated base/candidate executables. These are the existing
+  job's diagnostic measurements; the paired sweep aborted before reaching
+  this benchmark. No evidence of a measured 10% regression exists.
+- GNU R failure now warns, retains the benchmark and failed measurement,
+  and omits its ratio. Paired robigo counts still decide the 0.5% gate.
+  Without a working oracle, candidate stdout must match base stdout.
+  Wrong output and failed paired robigo runs still fail. Initial GNU R
+  failure no longer marks a successful robigo run as wrong output.
+- Both flexclust variants already exited 1 under robigo and GNU R in the
+  retained initial results. Per Max's clarification, known base failures
+  are visibly UNSUPPORTED; new failures are BROKEN. Failed prefixes never
+  enter the performance comparison. Added/removed benchmarks are visible
+  and have no fabricated baseline; failed new benchmarks still fail.
+- Retain each measurement's exact driver, package set, cache setting and
+  driver hash, plus both binary hashes. Log the parameter, repeat count,
+  package set and driver hash before each paired comparison. The existing
+  workflow's first-parent baseline selection and cache isolation remain.
+- Verification: 7 -> 14 gate tests pass, including failed GNU R with clean
+  robigo, slowdown and output mismatch despite failed GNU R, diagnostic
+  oracle failure, one-sided benchmarks, existing/new failures and failed
+  paired candidate. Python compilation, cargo fmt --check and git diff
+  --check pass. No runtime edits, benchmark sizes or ratchets changed.
+- Round 10 LAPACK work is paused until #92 is green. Its uncompiled draft
+  is `/tmp/r10-lapack.rs`, and oracle fixtures are `.robigo/r10/lapack-fixtures`.
 
 ## 2026-10-30 (round 9): four-way exact-artifact measurement
 
