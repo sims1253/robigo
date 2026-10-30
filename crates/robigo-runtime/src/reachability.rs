@@ -5,13 +5,13 @@
 //! counted once per owning allocation. Remaining references are conservative
 //! roots, including evaluator temporaries and opaque Rust payloads.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compile::Code;
 use crate::env::{Env, Frame};
-use crate::value::{Arg, Attrs, Value};
+use crate::value::{Arg, Attrs, Bytecode, BytecodeCells, BytecodeInstructions, Value};
 
 #[derive(Clone)]
 enum Owner {
@@ -20,6 +20,9 @@ enum Owner {
     Formals(Rc<[Arg]>),
     Code(Rc<Code>),
     Defaults(Rc<[Option<Rc<Code>>]>),
+    BytecodeCells(Rc<BytecodeCells>),
+    BytecodeConsts(Rc<Vec<Value>>),
+    BytecodeReps(Rc<OnceCell<Vec<Value>>>),
     Inline(Rc<crate::vm::Inline>),
 }
 
@@ -52,6 +55,7 @@ fn identity(v: &Value) -> Option<(usize, usize)> {
         Value::Pairlist(v) => rc!(v),
         Value::Lang(v) => rc!(v),
         Value::Closure(v) => rc!(v),
+        Value::Bytecode(v) => rc!(v),
         Value::Env(v) => rc!(&v.0),
         Value::Promise(v) => rc!(v),
         Value::Dots(v) => rc!(v),
@@ -105,6 +109,14 @@ impl ObjectGraph {
 
     fn code(&mut self, edges: &mut Vec<usize>, code: &Rc<Code>) {
         edges.push(self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || Owner::Code(code.clone())));
+    }
+
+    fn bytecode(&mut self, edges: &mut Vec<usize>, code: &Rc<Bytecode>) {
+        edges.push(
+            self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || {
+                Owner::Value(Value::Bytecode(code.clone()))
+            }),
+        );
     }
 
     fn attrs(&mut self, edges: &mut Vec<usize>, attrs: Option<&Attrs>) {
@@ -166,7 +178,32 @@ impl ObjectGraph {
                                 self.edge(&mut edges, &a.value);
                             }
                         }
+                        Value::Bytecode(v) => {
+                            self.edge(&mut edges, &v.expression);
+                            if let Some(code) = v.code.get() {
+                                self.edge(&mut edges, code);
+                            }
+                            if let BytecodeInstructions::Decoded(code) = &v.instructions {
+                                self.edge(&mut edges, code);
+                            }
+                            edges.push(self.insert(Rc::as_ptr(&v.cells) as usize, Rc::strong_count(&v.cells), || {
+                                Owner::BytecodeCells(v.cells.clone())
+                            }));
+                            if let Some(pool) = v.consts.get() {
+                                edges.push(self.insert(Rc::as_ptr(pool) as usize, Rc::strong_count(pool), || {
+                                    Owner::BytecodeConsts(pool.clone())
+                                }));
+                            }
+                            edges.push(self.insert(
+                                Rc::as_ptr(&v.rep_values) as usize,
+                                Rc::strong_count(&v.rep_values),
+                                || Owner::BytecodeReps(v.rep_values.clone()),
+                            ));
+                        }
                         Value::Closure(v) => {
+                            if let Some(code) = &v.gnu_bytecode {
+                                self.bytecode(&mut edges, code);
+                            }
                             self.edge(&mut edges, &v.body);
                             self.env(&mut edges, &v.env);
                             let formals = &v.formals;
@@ -221,6 +258,24 @@ impl ObjectGraph {
                         | Value::Cplx(_)
                         | Value::Str(_)
                         | Value::Raw(_) => {}
+                    }
+                }
+                Owner::BytecodeCells(cells) => {
+                    for value in &cells.items {
+                        self.edge(&mut edges, value);
+                    }
+                    for encoded in &cells.encoded {
+                        self.edge(&mut edges, &encoded.attrs);
+                    }
+                }
+                Owner::BytecodeConsts(pool) => {
+                    for value in pool.iter() {
+                        self.edge(&mut edges, value);
+                    }
+                }
+                Owner::BytecodeReps(reps) => {
+                    for value in reps.get().into_iter().flatten() {
+                        self.edge(&mut edges, value);
                     }
                 }
                 Owner::Frame(frame) => {
@@ -363,6 +418,43 @@ mod tests {
     }
 
     #[test]
+    fn shared_bytecode_metadata_cycles_are_traced_without_forcing() {
+        for forced in [false, true] {
+            let a = key();
+            let mut cells = BytecodeCells::default();
+            cells.items.push(a.clone());
+            cells.encoded.push(crate::value::BytecodeEncodedVector {
+                flags: 13,
+                span: crate::value::BytecodeSpan::default(),
+                len: 0,
+                attrs: Value::pairlist(vec![Arg::new(Some(Sym::new("owner")), a.clone())]),
+            });
+            let code = Rc::new(Bytecode {
+                attrs: None,
+                code: OnceCell::new(),
+                instructions: BytecodeInstructions::Decoded(Value::Null),
+                expression: Value::Null,
+                reps: 1,
+                consts: if forced { OnceCell::from(Rc::new(vec![a.clone()])) } else { OnceCell::new() },
+                cells: Rc::new(cells),
+                rep_values: Rc::new(OnceCell::from(vec![a.clone()])),
+            });
+            let weak = Rc::downgrade(&code);
+            let value = Value::Bytecode(code);
+            let mut alias = value.clone();
+            alias.set_attr_raw(Sym::new("note"), Value::int(1));
+            env(&a).set_local(Sym::new("first"), value);
+            env(&a).set_local(Sym::new("second"), alias);
+            let g = graph(&[&a]);
+            assert!(!g.is_live(&a, &g.externally_live()));
+            let code = weak.upgrade().unwrap();
+            assert!(code.code.get().is_none());
+            assert_eq!(code.consts.get().is_some(), forced);
+            cleanup(&g);
+        }
+    }
+
+    #[test]
     fn self_and_mutual_environment_cycles_are_not_external_roots() {
         let a = key();
         let b = key();
@@ -423,6 +515,7 @@ mod tests {
         let b = key();
         let promise = Value::Promise(Rc::new(Promise::new(b.clone(), env(&a).clone())));
         let closure = Value::Closure(Rc::new(Closure {
+            gnu_bytecode: None,
             formals: vec![Arg::pos(promise)].into(),
             body: Value::Null,
             env: env(&a).clone(),
@@ -448,6 +541,7 @@ mod tests {
         let body = Value::lang(Value::sym("f"), vec![]);
         let code = crate::compile::compile_thunk(&body).unwrap();
         let instance_method = Value::Closure(Rc::new(Closure {
+            gnu_bytecode: None,
             formals: vec![].into(),
             body: Value::Null,
             env: env(&key).clone(),
@@ -459,6 +553,7 @@ mod tests {
         }));
         *code.call_sites[0].memo.borrow_mut() = Some((0, 0, instance_method));
         let constructor = Closure {
+            gnu_bytecode: None,
             formals: vec![].into(),
             body,
             env: env(&root).clone(),

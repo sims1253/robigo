@@ -1119,3 +1119,60 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   unit command still exposes those documented host failures. Script ratchets
   hold across all three tiers, and the bytecode fixture pair remains 6/6.
   Keep this candidate for the final seven-benchmark paired run.
+
+- Full native-word run on 1a591ff clears the five reported regressions and
+  bytecodes, but fib is +0.223% (958,976,714 -> 961,117,373). Do not push
+  this as a completed repair. Main then advances to b7ee268 (#98).
+- Rebase onto b7ee268. Keep main's weak-reference graph in the bridge conflict
+  and add Bytecode to the existing fast proxy-root branch. Preserve every
+  ratchet entry. The new exhaustive collector requires a Bytecode identity,
+  closure metadata edges and separate owners for shared cell, constant-pool
+  and repetition-table allocations. Trace only initialized caches; do not
+  force constants/instructions. A new cycle test exercises shared metadata
+  both before and after forcing. Three new main Closure test constructors
+  initialize gnu_bytecode=None. This necessary integration is the only edit
+  outside the existing bytecode import files.
+- All 56 runtime unit tests, five metadata tests, two lazyload and two C API
+  tests pass locally with the documented two host glibc oracles excluded
+  from the follow-up run. All recorded-script ratchets pass in each tier
+  (276/277 scripts; only the unlisted compiled-context probe differs).
+- Also append the Bytecode enum variant to retain the existing value tag
+  order. Full paired run against the exact new main binary still misses
+  naive_2 narrowly and fib, so not a final repair. Results:
+  rbench/awf/Bounce: 619,721,642 -> 620,412,086 (+0.111%).
+  rbench/shootout/nbody_2: 868,231,998 -> 869,485,282 (+0.144%).
+  rbench/shootout/nbody_3: 967,741,551 -> 968,018,415 (+0.029%).
+  rbench/shootout/nbody_naive_2: 1,258,902,619 -> 1,261,428,078 (+0.201%).
+  rbench/simple/bytecodes: 231,968,845 -> 232,023,825 (+0.024%).
+  rbench/simple/profiler-shared: 5,769,770,660 -> 5,762,600,600 (-0.124%).
+  robigo/fib: 957,442,967 -> 960,035,901 (+0.271%).
+- fib's profile attributes the residual to import and allocator/copy work,
+  not the hot arithmetic loop: memcpy +1,695,419, _mi_malloc_generic
+  +1,118,528, mi_find_page +804,357 exclusive instructions. The new cell
+  spine also contributes 565,488 drop-glue instructions. Next screen only
+  removal of duplicate leaf flag reads, without the failed integer fast path.
+
+- Duplicate-leaf-flag screen: naive_2 now +0.179%, fib +0.246%.
+  The remaining fib copy is directly attributed by caller edges:
+  BytecodeWords::append +890,483 memcpy instructions across 2,507 calls;
+  allocator reallocations +745,399 across 891 added calls. The language
+  spine's explicit reserve-copy difference is only 8,710 instructions,
+  so do not guess that its layout is the main copy source.
+- Next transfer finished native-word buffers into shared backing storage
+  by ownership, eliminating that append allocation/copy. Keep the capped
+  initial reservation and all lazy typed metadata; no unsafe code is needed.
+
+- Reject moving every replay buffer into storage without packing. All
+  fidelity, metadata and script checks pass, and fib/bytecodes improve, but
+  retained buffer capacities increase allocator work on nbody and profiler.
+  rbench/awf/Bounce: -0.125%.
+  rbench/shootout/nbody_2: +0.433%.
+  rbench/shootout/nbody_3: -0.039%.
+  rbench/shootout/nbody_naive_2: +0.504%.
+  rbench/simple/bytecodes: -0.583%.
+  rbench/simple/profiler-shared: +1.071%.
+  robigo/fib: -0.032%.
+  Restore packed backing storage. Next increase the transient builder
+  reservation to instructions.len()*4, then release it after packing. This
+  targets the observed 891 added reallocations and their 745,399 copy
+  instructions without retaining the oversized capacity.
