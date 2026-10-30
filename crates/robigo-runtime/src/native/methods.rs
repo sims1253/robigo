@@ -688,8 +688,9 @@ pub fn standard_generic_old(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Valu
 fn load_method(i: &mut Interp, def: Value, fname: &Value, ev: &Env) -> RResult<Value> {
     let (target, defined, next_method, srcref, generic) = (msym(3), msym(4), msym(5), s::SRCREF, syms::generic());
     let mut found = 1;
-    let attrib: Vec<(Sym, Value)> = def.attrs().map(|a| a.0.clone()).unwrap_or_default();
-    for (t, v) in &attrib {
+    // R: methods_list_dispatch.c:R_loadMethod walks ATTRIB(def) directly.
+    let attrib = def.attrs().map(|a| a.0.as_slice()).unwrap_or_default();
+    for (t, v) in attrib {
         if *t == target {
             i.define(syms::dot_target(), v.clone(), ev)?;
             found += 1;
@@ -777,9 +778,15 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
     };
     let nargs = crate::coerce::as_integer(&siglength);
     let nargs = if nargs == NA_INTEGER { 0 } else { nargs.max(0) as usize };
-    let sigargs: Vec<Value> = match &sigargs {
-        Value::List(l) => l.data.clone(),
-        v => list_args(v).into_iter().map(|a| a.value).collect(),
+    // R: methods_list_dispatch.c:R_dispatchGeneric reads VECTOR_ELT(sigargs, i).
+    // Keep the list alive across argument evaluation without copying its data.
+    let fallback;
+    let sigargs = match &sigargs {
+        Value::List(l) => l.data.as_slice(),
+        v => {
+            fallback = list_args(v).into_iter().map(|a| a.value).collect::<Vec<_>>();
+            fallback.as_slice()
+        }
     };
     if nargs > sigargs.len() {
         return Err(Flow::error("'.SigArgs' is shorter than '.SigLength' says it should be"));

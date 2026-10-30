@@ -7,6 +7,97 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 7 Rcpp retest and S4 dispatch allocations
+
+- Branch `track/methods-s4-fastpaths`; #71 is untouched. Measurements and
+  local checks below use df3d535 plus this change. Rebased cleanly onto
+  d2ce510 (#95 iconv) for delivery; Debian CI verifies the rebased head.
+- Rcpp 1.1.2 downloaded from CRAN and installed from source with
+  `R CMD INSTALL --preclean --install-tests` in `robigo-oracle:4.5.0`.
+  Installation and both package load checks passed.
+- Added five `benchmarks/suite/s4-*.R` workloads so the perf suite covers
+  generic dispatch, slot reads, slot replacement, construction, and validation.
+- GNU R 4.5.0-3 callgrind baseline, subtracting N from 2N iterations
+  after identical class and method setup, instructions per iteration:
+  generic 12,202.615; slot read 656.128; replacement 38,676.816;
+  new 315,412.464; validObject 163,206.497.
+  N is respectively 10,000, 10,000, 1,000, 500, and 1,000.
+- Environment trap: the copied `bin/R` ignores R_HOME and launches the host
+  R 4.6.1. Its direct executable also resolves the host libR unless
+  LD_LIBRARY_PATH is set, after which Debian ICU dependencies are missing.
+  Initial GNU R measurements and source installation use the oracle
+  container; host robigo uses the specified R_HOME.
+- Current-main S4 slice: 644/662, zero regressions.
+- The same-host GNU R executable works with its copied libR plus private
+  Debian ICU 76 libraries extracted from the oracle container. Set
+  LD_LIBRARY_PATH to those two directories, keep R_HOME as specified,
+  and disable DEBUGINFOD_URLS so callgrind does not wait for remote symbols.
+  Paired counts on that executable are the comparison below.
+
+| workload | robigo before | robigo after | GNU R, same host | before/R | after/R |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| generic | 11,284.008 | 10,890.087 | 12,193.279 | 0.925 | 0.893 |
+| slot read (median of 3) | 1,374.391 | 1,378.448 | 656.128 | 2.095 | 2.101 |
+| replacement | 39,163.031 | 39,212.513 | 38,692.233 | 1.012 | 1.013 |
+| new | 353,574.020 | 353,097.786 | 314,889.252 | 1.123 | 1.121 |
+| validObject | 179,021.625 | 179,069.409 | 163,059.674 | 1.098 | 1.098 |
+
+- Generic dispatch improves **3.49%**. Other changes are below 0.5%.
+  Slot reads initially varied by 1%; three additional paired runs gave
+  base 1380.310/1362.857/1374.391 and candidate
+  1378.113/1379.145/1378.448, median +0.30%. Kept.
+- Reproduce with `scripts/s4-instructions.py --output before.json`, then
+  the same command against the candidate. `--binary` selects a saved
+  worktree binary; `--filter` selects a workload. Both runtimes use the
+  same generated script and R_HOME. All counts exclude startup by subtraction.
+
+- Rank by ratio: slot read, new, validObject, replacement, generic.
+  Slot reads spend 212 instructions in VM run_with and 95 in Vars::flush,
+  versus 71 in do_at and 34 in do_slot. Construction spends 46k in
+  run_with, 10.7k in flush, and 8.2k in Value::clone. The next substantial
+  slot improvement needs a guarded VM slot-read instruction, owned by
+  perf-vm; value representation remains with core.
+- Port follows R_loadMethod's ATTRIB walk and R_dispatchGeneric's
+  VECTOR_ELT access: borrow the attribute and signature slices rather than
+  cloning their vectors. Method table lookups and the loadMethod fallback
+  remain live on every call. No shared runtime files changed.
+- Verification: S4 slice **644/662 -> 644/662**, methods/stats4 examples
+  **45/50 -> 45/50**, zero regressions. All **45** S4 conformance checks
+  pass across interpreter, VM and JIT. Runtime unit tests: **41 pass / 2
+  known host failures**, c_library_oracle and c_library_trig_oracle, the
+  documented glibc 2.44 versus Debian 2.41 last-bit differences in unchanged
+  complex.rs. Debian CI is the judge for these; the initial benchmark-only
+  commit's CI build passed the full unit suite. cargo fmt --check and
+  git diff --check pass.
+- Rcpp 1.1.2, all test files with `scripts/rcpp-mini.R` expectations:
+  GNU R **1,622 pass / 4 fail**, current main **1,610 pass / 13 fail**,
+  no crashes. Sugar is **493/493** on both. The pass gap remains 12,
+  as in round 4; total assertion counts differ from that run by two on
+  both runtimes. Failures: listof 2, matrix 3, misc 1, S4 2, vector 3,
+  xptr 2. GNU R also fails two S4 and two xptr assertions, at different
+  S4 positions. The shim deliberately does not check warning/error
+  patterns; these counts describe the same shim on both runtimes.
+- Candidate Rcpp sugar/S4/modref: **517/517 assertion records identical**
+  to current main, including sugar **493/493**. These cover the dispatch
+  path changed here; the full run above used the saved main binary.
+  The committed runner also passes a fresh function-helper smoke check,
+  **22/22**, with Debian-compiled helpers.
+- Rcpp toolchain trap: sourceCpp uses R.home("bin")/R, which was still
+  the host wrapper. Helpers compiled with host R 4.6 headers imported
+  R_getRegisteredNamespace and also produced parser-looking failures.
+  Rejected those measurements. Compiling helpers with Debian R 4.5.0
+  fixes the imports and the parser-looking failures without runtime edits.
+  `scripts/rcpp-mini.R` accepts RCPP_TEST_R_BIN for a compatible compiler
+  wrapper. A container wrapper must preserve CLINK_CPPFLAGS, PKG_CPPFLAGS,
+  PKG_LIBS, PKG_CXXFLAGS, R_LIBS and USE_CXX* flags, mount /tmp at the same
+  path, and retain the current directory. Do not pass --args to robigo's
+  script invocation: it becomes a literal trailing argument.
+- Open: the largest gap needs perf-vm's guarded slot-read instruction.
+  Native helpers still have GNU R static caches to port per interpreter,
+  notably attrib.c:check_slot_assign's checkAtAssignment closure; measure
+  the S4State/Interp layout impact before retaining that change. Rcpp's
+  remaining failures need C API bridge alias/write-back and vector work.
+
 ## 2026-10-29: round 4 — the reg-packages blank line; complex Math group; Rcpp sugar 493/493
 
 Branch `track/methods-install-newline` (PR #87), from main 74e8c73.
