@@ -9,3 +9,4 @@ for (version in 2:3) {
             version = version, ascii = ascii, compress = FALSE)
   }
 }
+saveRDS(.Internal(bodyCode(f)), 'tests/r/serialize/bytecode-fixtures/body-code.rds', compress = FALSE)
