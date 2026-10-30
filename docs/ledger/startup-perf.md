@@ -7,6 +7,60 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 12): the LAPACK bridge, wired and proven
+
+Branch `track/startup-perf-r12-lapack`. Three r12 attempts shared this
+worktree (two pi failovers and an opencode glm-5.3 thread); this entry
+records the merged result: the inherited real-matrix binding plus the
+complex ports added on top.
+
+- **What**: `builtins/lapack.rs` now dlopens the system LAPACK
+  (`liblapack.so.3`, then `liblapack.so`, then `libRlapack.so`;
+  RTLD_LAZY|RTLD_LOCAL, OnceLock, never closed) on the first call,
+  exactly as GNU R links it. Bound routines: dsyevr_, dgeev_, dgesdd_,
+  dpstrf_, ilaver_, zheev_, zgeev_, zgesdd_, zgesv_, zgecon_, zlange_.
+  Ports of Lapack.c's La_rs/La_rg/La_svd (query + real call, verbatim
+  error texts), La_rs_cmplx/La_rg_cmplx/La_svd_cmplx/La_solve_cmplx
+  (the four complex internals, previously "not implemented" stubs;
+  zgesdd with the netlib bug-111 rwork sizing), and chol(pivot=TRUE)
+  via dpstrf (rank/pivot attributes, pivoted dimnames, R's
+  rank-deficient warning). La_version()/La_library() report the bound
+  library (ilaver; dladdr+realpath) instead of constants;
+  La_solve_cmplx arity fixed to 3 per names.c.
+- **Interposition note**: liblapack's internal L1-BLAS calls (ddot_,
+  daxpy_, dcopy_, dscal_, dnrm2_) bind to robigo's exported ports (the
+  global scope wins over libblas for those names); the byte-exact
+  results below prove them bit-identical to Debian libblas 3.12.0 on
+  these paths.
+- **Proof (byte for byte)**: `tests/r/linalg/{eigen,svd,chol,battery}.R`
+  recorded from Rscript 4.5.0-3 in robigo-oracle:4.5.0 — symmetric/
+  non-symmetric/complex eigen (values, vectors, only.values), full/
+  thin/nu=0/rank-deficient/near-singular/complex svd, chol/chol2inv/
+  pivoted chol, real+complex solve (incl. exactly-singular error
+  texts), det, rcond both norms, kappa exact, and a seeded LCG battery
+  over n=1..12 (rnorm lives in stats, unavailable under
+  R_DEFAULT_PACKAGES=NULL). robigo matches all four recordings exactly
+  on the host (host liblapack 3.12.0), and the recordings are identical
+  between host liblapack 3.12.0 and container 3.12.1 **except** zgeev
+  on larger matrices (n>=8 complex-general eigen differs in the last
+  bits between the two Debian builds) — that line was dropped from the
+  battery; the n=3 complex-general case in eigen.R is build-stable.
+  CI's trixie container is the judge either way.
+- rbench `spectralnorm_math` (267x267 eigen): both runtimes print
+  `1.274223917`, stdout/stderr/status identical (previously robigo
+  died at the missing La_rs).
+- fastr `TestBuiltin_La`: 13/14 (was 8/14; 5 new passes — La_rs x2,
+  La_rg x2, La_svd). The remaining failure is `.Internal(La_qr(...))`
+  (qr.c's dqrdc2, a different module; robigo has no La_qr at all —
+  open item below).
+- gnur-examples `base/La_library` should now pass in CI (reports the
+  realpath of the bound library); `base/La_version` unchanged (ilaver
+  says 3.12.0 for Debian lapack 3.12.x).
+- Startup cost: zero until the first eigen/svd/chol(pivot)/
+  complex-solve call (lazy dlopen). The spectralnorm_math instruction
+  count and the library(stats) scenario are measured post-merge; Job 2
+  (stats path at 0.667x) continues in the next round.
+
 ## 2026-10-30 (round 11): update #99 after #92 lands
 
 - Merged main fd618f5 into #99 after #92 ce5e73c landed. Resolved the
