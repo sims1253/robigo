@@ -97,13 +97,15 @@ struct Mmap {
 impl Mmap {
     fn new(f: &std::fs::File, len: u64) -> Option<Mmap> {
         use std::os::unix::io::AsRawFd;
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), len as usize, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0)
-        };
+        let len = usize::try_from(len).ok()?;
+        if len == 0 || len > isize::MAX as usize {
+            return None;
+        }
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
         if p == libc::MAP_FAILED {
             return None;
         }
-        Some(Mmap { ptr: p as *mut u8, len: len as usize })
+        Some(Mmap { ptr: p as *mut u8, len })
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -203,18 +205,21 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
         return None;
     }
     let f = std::fs::File::open(path).ok()?;
-    let len = std::fs::metadata(path).ok()?.len();
+    let len = f.metadata().ok()?.len();
     let map = Mmap::new(&f, len)?;
     let bytes = map.as_slice();
-    let plen = u64_at(bytes, 24) as usize;
-    let index = parse_index(bytes, 32 + plen)?;
+    if bytes.len() < 32 || &bytes[..8] != b"RFLAT01\n" {
+        return None;
+    }
+    let plen = usize::try_from(u64_at(bytes, 24)).ok()?;
+    let index = parse_index(bytes, 32usize.checked_add(plen)?)?;
     Some(Flat { map, index })
 }
 
 /// The entry index at `p` (just past the path); every entry's slice must
 /// lie inside the file.
 fn parse_index(bytes: &[u8], mut p: usize) -> Option<FlatIndex> {
-    if p + 8 > bytes.len() {
+    if p.checked_add(8)? > bytes.len() {
         return None;
     }
     let n = u64_at(bytes, p) as usize;
@@ -367,6 +372,19 @@ mod tests {
         assert_eq!(flat.read_entry(0, 3), Some(b"abc".as_slice()));
         assert_eq!(flat.read_entry(17, 2), Some(b"de".as_slice()));
         assert_eq!(flat.read_entry(99, 1), None);
+
+        // A cache replaced with an incomplete or invalid image must
+        // fall back to the original database rather than panic.
+        drop(flat);
+        for bad in [&image[..0], &image[..24], &image[..31]] {
+            std::fs::write(&flat_path, bad).unwrap();
+            assert!(load(&flat_path, &rdb, meta.len(), mtime).is_none());
+        }
+        let mut bad = image.clone();
+        bad[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+        std::fs::write(&flat_path, bad).unwrap();
+        assert!(load(&flat_path, &rdb, meta.len(), mtime).is_none());
+        std::fs::write(&flat_path, &image).unwrap();
 
         // a stale guard (the rdb changed since the cache was built)
         // rejects the whole cache: the old size/mtime no longer match

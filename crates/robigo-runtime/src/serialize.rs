@@ -575,7 +575,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         let _ = &nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
-                let n = &nodes[0];
+                let n = nodes.into_iter().next().unwrap();
                 let env = match &n.tag {
                     Value::Env(e) => e.clone(),
                     _ => self.interp.base.clone(),
@@ -583,8 +583,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // The formals pairlist is read fresh (not referenced
                 // again in the stream), so its items can move into the
                 // closure instead of being cloned one by one.
-                let formals: Rc<[Arg]> = match &n.car {
-                    Value::Pairlist(p) => match Rc::try_unwrap(p.clone()) {
+                let formals: Rc<[Arg]> = match n.car {
+                    Value::Pairlist(p) => match Rc::try_unwrap(p) {
                         Ok(p) => Rc::from(p.items),
                         Err(p) => p.items.iter().cloned().collect(),
                     },
@@ -616,8 +616,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
                 if !cdr.is_null() {
-                    if let Value::Pairlist(p) = &cdr {
-                        match Rc::try_unwrap(p.clone()) {
+                    if let Value::Pairlist(p) = cdr {
+                        match Rc::try_unwrap(p) {
                             Ok(mut p) => items.append(&mut p.items),
                             Err(p) => items.extend(p.items.iter().cloned()),
                         }
