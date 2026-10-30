@@ -16,3 +16,11 @@ for (version in 2:3) {
   path <- sprintf('bytecode-fixtures/closure-v%d-ascii.rds', version)
   print(identical(serialize(f, NULL, ascii = TRUE, version = version), readBin(path, 'raw', n = 100000L)))
 }
+b <- readRDS('bytecode-fixtures/body-code.rds')
+print(typeof(b))
+print(identical(serialize(b, NULL), readBin('bytecode-fixtures/body-code.rds', 'raw', n = 100000L)))
+f <- readRDS('bytecode-fixtures/closure-v3-xdr.rds')
+print(typeof(.Internal(bodyCode(f))))
+body(f) <- quote(42L)
+print(f())
+print(typeof(.Internal(bodyCode(f))))
