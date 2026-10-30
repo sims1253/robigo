@@ -98,11 +98,22 @@ scripts/perf.py compare before.json after.json          # the gate
 
 ## The ratchets
 
-- `tests/r/passing.txt` and `tests/corpora/*/passing.txt` list cases that
-  must keep passing. A failing listed case is a regression and fails CI.
-  Never remove entries to make a run pass; fix the regression.
+- `tests/r/passing/` and `tests/corpora/*/passing/` hold the ratchets: one
+  empty marker file per case that must keep passing, named `<case>.pass`
+  (`tests/r/passing/<path relative to tests/r>.pass`,
+  `tests/corpora/NAME/passing/<case id>.pass`). One file per case means
+  two branches that ratchet different cases add different files and never
+  conflict; the single `passing.txt` lists they replaced conflicted on
+  every addition. A marker that names no script or case fails the run
+  (the old lists let a dangling entry do nothing, silently).
+- A failing ratcheted case is a regression and fails CI. Never remove a
+  marker to make a run pass; fix the regression.
 - New passes are added with `--update` (locally) or `scripts/corpus.py
-  absorb` on CI's result files (artifacts `corpus-*`).
+  absorb` on CI's result files (artifacts `corpus-*`); both create
+  markers. `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
+- `scripts/ratchet.py check` lists the ratchets and fails if a marker
+  names no case; `scripts/ratchet.py migrate` converts a legacy
+  `passing.txt` (still read, for branches that predate the markers).
 - Performance: CI compares every push with `main`'s last instruction
   counts.
 

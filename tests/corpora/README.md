@@ -9,7 +9,9 @@ corpus, described in `corpora.toml`:
   (`{"id", "sha", "out", "err", "status"}`; `unstable` marks cases whose
   output differed between two GNU R runs). Written only by
   `scripts/corpus.py record`.
-- `passing.txt`: the ratchet, case ids that must keep passing.
+- `passing/`: the ratchet: one empty marker file per case id that must keep
+  passing, `<id>.pass` (an id with `/` nests directories). One file per case,
+  so two branches that ratchet different cases never conflict.
 - `support/`: files linked into each case's working directory.
 - `build` (optional): a script in the corpus directory, run once before
   the cases. The `capi` corpus compiles its C sources (`support/*.c`,
@@ -47,6 +49,6 @@ scripts/corpus.py show fastr --profile methods S4/TestR5/474b742f1785a587
 
 `record`, `run` and `show` accept `--profile`. The profile table in
 `corpora.toml` overrides `default_packages` and `expected_file`.
-Profile runs check the same `passing.txt`, write results as
+Profile runs check the same `passing/` ratchet, write results as
 `fastr.methods.json` (with a shard suffix when requested), and cannot
 update the active ratchet through `--update` or `absorb`.

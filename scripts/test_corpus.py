@@ -49,7 +49,8 @@ class ProfileTests(unittest.TestCase):
                 '[fixture]\ndefault_packages = "NULL"\n'
                 '[fixture.profiles.methods]\ndefault_packages = "methods"\n'
                 'expected_file = "expected-methods.jsonl.gz"\n')
-            (root / "fixture/passing.txt").write_text("case\n")
+            (root / "fixture/passing").mkdir()
+            (root / "fixture/passing/case.pass").write_text("")
             base = {"case": {"id": "case", "sha": corpus.sha(b"1"),
                               "out": corpus.enc(b"base"), "err": corpus.enc(b""), "status": 0}}
             candidate = {"case": dict(base["case"], out=corpus.enc(b"methods"))}
@@ -74,7 +75,95 @@ class ProfileTests(unittest.TestCase):
                 args.update = True
                 with self.assertRaises(SystemExit):
                     corpus.cmd_run(args)
-                self.assertEqual((root / "fixture/passing.txt").read_text(), "case\n")
+                self.assertTrue((root / "fixture/passing/case.pass").is_file())
+                self.assertFalse((root / "fixture/passing.txt").exists())
+
+
+def fixture_corpus(root):
+    """A corpus directory and manifest, as corpus.py reads them."""
+    (root / "fixture").mkdir()
+    (root / "corpora.toml").write_text('[fixture]\ndefault_packages = "NULL"\n')
+    (root / "fixture/passing").mkdir()
+    return {"case": {"id": "case", "sha": corpus.sha(b"1"),
+                     "out": corpus.enc(b"out"), "err": corpus.enc(b""), "status": 0}}
+
+
+class RatchetTests(unittest.TestCase):
+    """The ratchet is one marker file per case: additions never touch a
+    shared file, and a marker that names no case fails loudly."""
+
+    def test_one_marker_per_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing").mkdir(parents=True)
+            with patch.object(corpus, "CORPORA", tmp), \
+                 patch.object(corpus, "load_cases", return_value=[("a", b"1"), ("S4/x/y", b"2")]):
+                self.assertEqual(corpus.add_passing("fixture", {"a", "S4/x/y"}), ["S4/x/y", "a"])
+                self.assertTrue((root / "fixture/passing/a.pass").is_file())
+                self.assertTrue((root / "fixture/passing/S4/x/y.pass").is_file())
+                self.assertEqual(corpus.add_passing("fixture", {"a"}), [])
+                self.assertEqual(corpus.load_passing("fixture"), {"a", "S4/x/y"})
+
+    def test_dangling_marker_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing").mkdir(parents=True)
+            (root / "fixture/passing/ghost.pass").write_text("")
+            with patch.object(corpus, "CORPORA", tmp), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 self.assertRaises(SystemExit) as e:
+                corpus.load_passing("fixture")
+            self.assertIn("ghost", str(e.exception))
+
+    def test_stray_file_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing").mkdir(parents=True)
+            (root / "fixture/passing/notes.txt").write_text("x")
+            with patch.object(corpus, "CORPORA", tmp), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 self.assertRaises(SystemExit) as e:
+                corpus.load_passing("fixture")
+            self.assertIn("not a ratchet marker", str(e.exception))
+
+    def test_legacy_list_is_still_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture").mkdir()
+            (root / "fixture/passing.txt").write_text("# comment\ncase\n")
+            with patch.object(corpus, "CORPORA", tmp), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(corpus.load_passing("fixture"), {"case"})
+
+    def test_run_update_creates_a_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exp = fixture_corpus(root)
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 patch.object(corpus, "run_case", return_value=(b"out", b"", 0)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                corpus.write_expected("fixture", exp)
+                args = argparse.Namespace(name="fixture", profile=None, update=True,
+                    robigo=__file__, filter=None, shard=None, jobs=1, keep_output=False, quiet=True)
+                self.assertEqual(corpus.cmd_run(args), 0)
+            self.assertTrue((root / "fixture/passing/case.pass").is_file())
+
+    def test_absorb_creates_a_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exp = fixture_corpus(root)
+            result = root / "result.json"
+            result.write_text(json.dumps({"summary": {"corpus": "fixture", "profile": None},
+                                          "results": [{"id": "case", "pass": True}]}))
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                corpus.write_expected("fixture", exp)
+                corpus.cmd_absorb(argparse.Namespace(files=[str(result)]))
+            self.assertTrue((root / "fixture/passing/case.pass").is_file())
+            self.assertIn("1 new pass", out.getvalue())
 
 
 class GcNormalization(unittest.TestCase):
