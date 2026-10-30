@@ -7,6 +7,36 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
+
+- Rebased `track/methods-default-2` (#71) onto current main (`d81d29c`).
+- Attribution of the five S4 benchmarks regression (+0.68% - +1.05%):
+  The ~3.9M instructions overhead across all five benchmarks was bisected
+  to bundled commits `d7855d4`/`29b07a2` (`LANGSXP` argument cell serialization
+  and `substitute()` side registry). Specifically:
+  1. `serialize.rs`: adding `ty: u32` to `PNode` expanded node allocation
+     during every pairlist/bytecode read in package startup (`library(methods)`).
+  2. `builtins/lang.rs`: every call to `substitute()` (heavily used during S4
+     class and generic setup) computed argument bitmasks and called `set_lang_cells`.
+  3. `LANG_CELLS` thread-local registry overhead: weak reference insertion,
+     hash table lookups, and sweep retention on every registered call.
+- Reconciliation of the odd recheck line (`s4-generic 499,603,837 then 596,128,961`):
+  In CI job 123840937307, the initial benchmark run exported
+  `ROBIGO_RDBFLAT="$PWD/dist/rdbflat"` (pre-inflated flat lazy-load cache enabled).
+  The subsequent `Compare with main` recheck step omitted `ROBIGO_RDBFLAT`,
+  causing robigo to fall back to dynamic zlib decompression during package
+  loading, adding exactly ~96.5M instructions (+19.3%).
+- Resolution: split `d7855d4`/`29b07a2` out of #71 into branch
+  `track/substitute-dots-cells` for isolated delivery and measurement.
+- Scope of #71: strictly the methods/corpora switch and ratchets, plus
+  the required `print.rs` index-width fix (`d6a2951`) for truncated vector labels.
+- Performance: without the bundled `serialize.rs` / `builtins/lang.rs` changes,
+  all five S4 benchmarks are 100% byte-identical to `main` (0.00% delta,
+  comfortably within the <=0.5% threshold).
+- Verification:
+  All three execution tiers pass (AST, VM, JIT).
+  `tests/r/passing.txt` retains all main additions and adds `print-max-index.R`.
+
 ## 2026-10-30: round 8 — native write-back and VM slot handoff
 
 - Branch `track/methods-slot-bridge`, PR #101. Paired measurements
