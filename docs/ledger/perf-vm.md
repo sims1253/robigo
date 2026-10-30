@@ -24,7 +24,8 @@ conformance` (interpreter, VM and VM+JIT against each other).
   GNU R, geomean 0.493. spectralnorm_math remains the output mismatch;
   flexclust_no_s4 has an existing stderr difference. Every benchmark's
   stdout, stderr and status is identical between the saved binaries.
-  Full paired instruction gate verification follows.
+  Paired 83-program instruction gate: zero slowdowns above 0.5%,
+  zero broken outputs; geomean and 82 correct faster programs unchanged.
 - Standard and native conformance each pass **244/244** in all three
   tiers, before and after. Focused FastR write/read-table, scan and
   connections: **180/181 -> 180/181**, identical per-case outcomes,
@@ -34,7 +35,14 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Shared Cargo artifacts twice mixed worktrees (missing parse_data and
   missing C helper at link time). Rebuilt workspace crates in a private
   reflinked target under .robigo/r8/target, retaining third-party caches.
-  Artifacts and scripts: .robigo/r8/. C API crate checks are pending.
+  Artifacts and scripts: .robigo/r8/. C API crate tests pass (two
+  integration tests), as do cargo fmt --check and source diff checks.
+- Rebased onto merged #94 at 1b4670a, retaining both ledger entries and
+  all passing entries. Native conformance now passes 249/249 in all three
+  tiers. Native CSV recheck is 1,785,203,686 instructions. The isolated
+  before/after figures above both use f5dae40; this recheck also includes
+  #94. Its flexclust_no_s4 stderr now matches GNU R; this improvement
+  comes from the merged setter diagnostics, not the CSV formatter.
 - Native CSV still costs 1.159x GNU R. Next profile R_WriteConnection
   and its host writeConnection bridge, especially per-cell raw allocation.
 - Promise storage stays deferred while core's finalizer reachability work
