@@ -89,3 +89,23 @@ Metric: `scripts/perf.py run --metric instr`, measuring instruction counts again
 | 71 | `robigo/vecops` | 2,433,601,613 | 4,021,379,217 | -1,587,777,604 | 0.605 |
 | 72 | `robigo/nbody` | 373,818,416 | 2,636,362,194 | -2,262,543,778 | 0.142 |
 | 73 | `robigo/spectralnorm` | 268,539,716 | 2,646,918,073 | -2,378,378,357 | 0.101 |
+
+---
+
+## Target 1: `rbench/shootout/nbody_naive_2`
+
+### Profiling & Gap Attribution
+Callgrind profiling of `rbench/shootout/nbody_naive_2` revealed heavy overhead in `advance()` inner loops:
+1. `r_is_missing` in `crates/robigo-runtime/src/builtins/subset.rs`: was cloning `b.value` on every environment frame lookup in `eval_keep_missing`. Fixed to borrow `&b.value` directly and fast-path empty symbols `x[, i]`.
+2. `dim_of` and `matrix_assign`: extracting matrix dimensions repeatedly cloned `Value` and attributes `s::DIM`. Added zero-copy `DimView` and `dim_view`.
+3. Matrix column extraction `body_r[, i]`: was allocating intermediate row/column index vectors, collecting element-by-element, creating DIM attributes, and calling `drop_dims`. Added column slice fast-path copying contiguous slice directly.
+4. Matrix column assignment `body_v[, i] <<- ...`: was allocating odometer structures. Added contiguous slice mutation fast-path.
+5. Array slice assignment `drr[i, j, ] <- ...`: was allocating nested index vectors. Added strided in-place assignment fast path.
+6. Binary arithmetic attribute checks: `arith_binary` was querying attributes when neither operand had attributes. Added fast-path bypass when `!x.has_attrs() && !y.has_attrs()`.
+
+### Results
+- Before: `1,256,828,301` instructions (GNU R: `1,293,582,104`, ratio 0.972x)
+- After: `986,028,288` instructions (GNU R: `1,293,582,104`, ratio 0.762x)
+- Delta: **-270,800,013 instructions (-21.55%)**
+- Conformance: Output verified byte-identical against GNU R. Gate comparison: 0 regressions > 0.5%.
+

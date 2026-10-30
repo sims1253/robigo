@@ -594,11 +594,48 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
     if !is_matrix(x) {
         return Err(Flow::error("incorrect number of subscripts on matrix"));
     }
-    let dim = dim_of(x).unwrap_or_default();
-    let nr = dim[0] as i64;
+    let (nr, nc) = match dim_view(x) {
+        Some(d) if d.len() == 2 => (d[0] as i64, d[1] as i64),
+        _ => return Err(Flow::error("incorrect number of subscripts on matrix")),
+    };
     let ny = y.len();
-    let sr = array_subscript(interp, 0, s0, &dim, x, Some(call))?;
-    let sc = array_subscript(interp, 1, s1, &dim, x, Some(call))?;
+    if is_missing_or_empty(s0) {
+        if let Some(jj) = as_scalar_index(s1) {
+            if jj < 1 || jj > nc {
+                return Err(out_of_bounds(Some(call), None));
+            }
+            if ny == 0 {
+                if y.is_null() {
+                    return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+                }
+                return Err(Flow::error("replacement has length zero"));
+            }
+            let nru = nr as usize;
+            if nru > 0 && nru % ny != 0 {
+                return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+            }
+            let start = (jj - 1) as usize * nru;
+            let end = start + nru;
+            match (&mut *x, &y) {
+                (Value::Real(a), Value::Real(b)) if ny == nru => {
+                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                (Value::Int(a), Value::Int(b)) if ny == nru => {
+                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                (Value::Lgl(a), Value::Lgl(b)) if ny == nru => {
+                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
+    let dim_arr = [nr as i32, nc as i32];
+    let sr = array_subscript(interp, 0, s0, &dim_arr, x, Some(call))?;
+    let sc = array_subscript(interp, 1, s1, &dim_arr, x, Some(call))?;
     let any_na = sr.contains(&NA_IDX) || sc.contains(&NA_IDX);
     if ny > 1 && any_na {
         return Err(Flow::error("NAs are not allowed in subscripted assignments"));
@@ -644,12 +681,62 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
 /// R's `ArrayAssign`: `x[i, j, k, ...] <- y`.
 // R: subassign.c:ArrayAssign
 fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
-    let dims = match dim_of(x) {
-        Some(d) if d.len() == subs.len() => d,
+    let dims: Vec<i32> = match dim_view(x) {
+        Some(d) if d.len() == subs.len() => d.to_vec(),
         _ => return Err(Flow::error("incorrect number of subscripts")),
     };
     let k = dims.len();
     let ny = y.len();
+    if k >= 2 && is_missing_or_empty(&subs[k - 1]) {
+        let mut all_scalars = true;
+        let mut scalar_indices = Vec::with_capacity(k - 1);
+        for i in 0..k - 1 {
+            match as_scalar_index(&subs[i]) {
+                Some(idx) if idx >= 1 && idx <= dims[i] as i64 => {
+                    scalar_indices.push(idx);
+                }
+                _ => {
+                    all_scalars = false;
+                    break;
+                }
+            }
+        }
+        if all_scalars {
+            let n_last = dims[k - 1] as usize;
+            if ny == 0 {
+                if y.is_null() {
+                    return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+                }
+                return Err(Flow::error("replacement has length zero"));
+            }
+            if n_last > 0 && n_last % ny != 0 {
+                return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+            }
+            let mut base = 0usize;
+            let mut stride = 1usize;
+            for i in 0..k - 1 {
+                base += (scalar_indices[i] - 1) as usize * stride;
+                stride *= dims[i] as usize;
+            }
+            match (&mut *x, &y) {
+                (Value::Real(a), Value::Real(b)) if ny == n_last => {
+                    let dst = &mut Rc::make_mut(a).data;
+                    for m in 0..n_last {
+                        dst[base + m * stride] = b.data[m];
+                    }
+                    return Ok(());
+                }
+                (Value::Int(a), Value::Int(b)) if ny == n_last => {
+                    let dst = &mut Rc::make_mut(a).data;
+                    for m in 0..n_last {
+                        dst[base + m * stride] = b.data[m];
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
     let mut sub_idx = Vec::with_capacity(k);
     for i in 0..k {
         sub_idx.push(array_subscript(interp, i, &subs[i], &dims, x, Some(call))?);
@@ -860,7 +947,7 @@ fn assign2_level(
                 stretch = offset as usize + 1;
             }
         } else {
-            let dims = dim_of(x).unwrap_or_default();
+            let dims = dim_view(x).unwrap_or(DimView::Owned(Vec::new()));
             if dims.len() != nsubs {
                 return Err(Flow::error("[[ ]] improper number of subscripts"));
             }
@@ -958,7 +1045,7 @@ fn assign2_level(
     } else if matches!(x, Value::Null | Value::Pairlist(_) | Value::Lang(_)) {
         if nsubs == 1 {
             if y.is_null() { list_remove(x, &subs[0], ind) } else { simple_list_assign(x, &subs[0], y, ind) }
-        } else if dim_of(x).map(|d| d.len()).unwrap_or(0) != nsubs {
+        } else if ndim_of(x) != nsubs {
             Err(Flow::error("[[ ]] improper number of subscripts"))
         } else {
             Err(Flow::error("robigo: matrix indexing of pairlists in [[<- is not implemented yet"))

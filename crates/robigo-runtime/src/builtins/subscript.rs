@@ -89,23 +89,70 @@ pub fn is_subsettable(x: &Value) -> bool {
     x.is_vector() || matches!(x, Value::Null | Value::Pairlist(_) | Value::Lang(_))
 }
 
-/// `dim(x)` as integers, if `x` has a dim attribute.
-pub fn dim_of(x: &Value) -> Option<Vec<i32>> {
-    match x.get_attr(s::DIM) {
-        Some(Value::Int(d)) => Some(d.data.clone()),
-        Some(Value::Real(d)) => Some(d.data.iter().map(|&v| v as i32).collect()),
+pub enum DimView<'a> {
+    Slice(&'a [i32]),
+    Owned(Vec<i32>),
+}
+
+impl<'a> std::ops::Deref for DimView<'a> {
+    type Target = [i32];
+    fn deref(&self) -> &[i32] {
+        match self {
+            DimView::Slice(s) => s,
+            DimView::Owned(v) => v,
+        }
+    }
+}
+
+pub fn dim_view(x: &Value) -> Option<DimView<'_>> {
+    match x.attrs().and_then(|a| a.get(s::DIM)) {
+        Some(Value::Int(d)) => Some(DimView::Slice(&d.data)),
+        Some(Value::Real(d)) => Some(DimView::Owned(d.data.iter().map(|&v| v as i32).collect())),
         _ => None,
     }
 }
 
+pub fn ndim_of(x: &Value) -> usize {
+    match x.attrs().and_then(|a| a.get(s::DIM)) {
+        Some(Value::Int(d)) => d.data.len(),
+        Some(Value::Real(d)) => d.data.len(),
+        _ => 0,
+    }
+}
+
+pub fn is_missing_or_empty(s: &Value) -> bool {
+    s.is_missing_arg() || matches!(s, Value::Sym(sym) if sym.is_empty())
+}
+
+pub fn as_scalar_index(s: &Value) -> Option<i64> {
+    match s {
+        Value::Int(v) if v.data.len() == 1 => {
+            let i = v.data[0];
+            if i != NA_INTEGER { Some(i as i64) } else { None }
+        }
+        Value::Real(v) if v.data.len() == 1 => {
+            let d = v.data[0];
+            if d.is_finite() { Some(d as i64) } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// `dim(x)` as integers, if `x` has a dim attribute.
+pub fn dim_of(x: &Value) -> Option<Vec<i32>> {
+    dim_view(x).map(|d| d.to_vec())
+}
+
 /// R's `isMatrix`.
 pub fn is_matrix(x: &Value) -> bool {
-    matches!(x.get_attr(s::DIM), Some(d) if d.len() == 2)
+    matches!(x.attrs().and_then(|a| a.get(s::DIM)), Some(Value::Int(d)) if d.data.len() == 2)
+        || matches!(x.attrs().and_then(|a| a.get(s::DIM)), Some(Value::Real(d)) if d.data.len() == 2)
 }
 
 /// R's `isArray`.
 pub fn is_array(x: &Value) -> bool {
-    matches!(x.get_attr(s::DIM), Some(d) if !d.is_empty())
+    matches!(x.attrs().and_then(|a| a.get(s::DIM)), Some(Value::Int(d)) if !d.data.is_empty())
+        || matches!(x.attrs().and_then(|a| a.get(s::DIM)), Some(Value::Real(d)) if !d.data.is_empty())
 }
 
 fn names_of(v: &Value) -> Option<Vec<RStr>> {
