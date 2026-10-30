@@ -224,6 +224,27 @@ Slice used throughout ("S4 slice"):
   notably attrib.c:check_slot_assign's checkAtAssignment closure; measure
   the S4State/Interp layout impact before retaining that change. Rcpp's
   remaining failures need C API bridge alias/write-back and vector work.
+## 2026-10-30: round 6 rescue, rebase and baseline
+
+- Continued #71 in this worktree on local `track/methods-default-rescue`:
+  its remote branch remains checked out in the previous agent's worktree.
+  Rebased all eleven commits from 569f056 onto main 1074f6c; preserved
+  authorship. Ratchets retain every main entry (conformance +1,
+  fastr unchanged, examples +1). Binary record conflicts merged by case
+  using original JSON lines; the changed-case sets were disjoint.
+- Preserved both suites in the add/add Python harness conflict: all five
+  tests pass. `cargo fmt --check` and `git diff --check` pass.
+- Previous CI 40916249856 has exactly three losses: fastr
+  `S4/TestR5/474b742f1785a587`, gnur-tests `reg-S4-examples` and
+  `reg-packages`. Main now includes the latter two prerequisite fixes
+  (ELF native marker mapping, graphics natives in CI, intern stderr).
+- Environment finalization is still absent: `do_reg_finalizer` discards
+  callbacks. Oracle recheck in `robigo-oracle:4.5.0` prints `finalizer: 456`
+  at gc, after `fun`. No mask may hide it. Core owns this remaining gap.
+- Release build and focused corpus verification in progress. Host native
+  build failed because static LAPACK/BLAS are unavailable; copied existing
+  base native artifacts into this worktree's private `.robigo/natives`
+  for local checks. CI builds its own libraries in Debian.
 
 ## 2026-10-29: round 4 — the reg-packages blank line; complex Math group; Rcpp sugar 493/493
 
