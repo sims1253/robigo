@@ -34,6 +34,10 @@ lands; the natives work is PR #78 below.
 
 ### Final continuation verification
 
+- `cargo test --release -p robigo-runtime` in the private Debian build
+  passes all 47 unit tests and both lazy-load integration tests, including
+  the complex libc oracles that differ on the host. Formatting and diff
+  checks pass.
 - Built this checkout in robigo-build:4.5.0 using the private
   `.robigo/r12/target` directory. All eight linalg recordings pass in
   the interpreter, VM and JIT (24/24 byte comparisons) against the
