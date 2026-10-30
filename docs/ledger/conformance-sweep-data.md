@@ -1,5 +1,24 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): scratch reuse and materialization costs
+
+- Fully corrected compact candidate passes all 244 scripts in all tiers,
+  732/732 oracle checks. CI build/unit/parser/conformance also passes.
+  Exact CI startup: 45,445,824; private host build: 45,433,751.
+- Reuse ReadBCLang scratch spines across constants, inline recording helpers
+  and reserve operation/object streams from instruction length. Host startup
+  falls to 44,813,473 (-620,278 versus compact host), but remains about 1%
+  above the 44,371,718 rebased CI baseline. Continue optimizing.
+- Next remove cloned CARs during spine materialization, use exact tail
+  capacity, and register the constructed head itself for BCREPDEF instead
+  of making a second head. This also matches GNU R's head identity.
+- Common serialization slice excluding the existing long-vector host
+  timeout: 317/321, no regressions. Its regex excludes four differently
+  named cases as well; compare per-case outcomes against the saved baseline.
+- The interruption stopped the shared build before binary delivery.
+  Rebuilt project crates in a private reflink copy of the target directory
+  to avoid shared metadata contamination and repeated build-lock queues.
+
 ## 2026-10-30 (round 9): first persistence candidate, rejected storage cost
 
 - Rebased f5dae40 baseline startup: 44,371,718 instructions. First
