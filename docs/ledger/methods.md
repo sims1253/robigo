@@ -7,6 +7,27 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 7 baseline on df3d535
+
+- Branch `track/methods-s4-fastpaths`; #71 is untouched.
+- Rcpp 1.1.2 downloaded from CRAN and installed from source with
+  `R CMD INSTALL --preclean --install-tests` in `robigo-oracle:4.5.0`.
+  Installation and both package load checks passed.
+- Added five `benchmarks/suite/s4-*.R` workloads so the perf suite covers
+  generic dispatch, slot reads, slot replacement, construction, and validation.
+- GNU R 4.5.0-3 callgrind baseline, subtracting N from 2N iterations
+  after identical class and method setup, instructions per iteration:
+  generic 12,202.615; slot read 656.128; replacement 38,676.816;
+  new 315,412.464; validObject 163,206.497.
+  N is respectively 10,000, 10,000, 1,000, 500, and 1,000.
+- Environment trap: the copied `bin/R` ignores R_HOME and launches the host
+  R 4.6.1. Its direct executable also resolves the host libR unless
+  LD_LIBRARY_PATH is set, after which Debian ICU dependencies are missing.
+  GNU R measurements and source installation therefore use the oracle
+  container; host robigo uses the specified R_HOME.
+- Robigo baseline build is queued on the shared build lock. Runtime code
+  is unchanged. Further results follow in this entry.
+
 ## 2026-10-29: round 4 — the reg-packages blank line; complex Math group; Rcpp sugar 493/493
 
 Branch `track/methods-install-newline` (PR #87), from main 74e8c73.
