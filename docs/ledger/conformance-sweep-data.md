@@ -1,5 +1,19 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 14): investigate gnur-tests `sockets` CI regression
+
+- Investigated the single corpus failure on PR #125 (`track/conformance-sweep-data-13`): `gnur-tests: REGRESSION sockets`.
+- Determinism & Root-Cause Attribution:
+  - Downloaded CI artifacts for PR #125 (run 41109416102) and main (run 41107487085).
+  - On PR #125 CI run 41109416102, `sockets` took 133.776s (`secs: 133.776`) before failing all comparison kinds (`stdout`, `stderr`, `status`).
+  - 133.776s matches the Linux kernel TCP connect SYN retry backoff timeout (~127s timeout on unacknowledged SYN packets plus DNS lookup and process startup) when attempting `make.socket("developer.R-project.org", port = 80)`.
+  - In earlier CI run 41106723778 on PR #125, `gnur-tests` passed completely with 0 regressions (`sockets` passed in 1.014s).
+  - Code attribution audit: `quote_if_needed`, `getconst`, `putconst`, and `cmpfile`/`loadcmp` do not interact with socket routines or network operations; `quote_if_needed` for bytecode is feature-gated to `bytecode-fidelity`, which is not compiled into the corpus binary.
+  - Established environmental flake with 20 repeated runs locally:
+    - 10/10 repeated runs of `scripts/corpus.py run gnur-tests --filter 'sockets' --jobs 1` passed on the PR #125 binary with 0 regressions (~1.0s elapsed per run).
+    - 10/10 repeated runs passed on `origin/main`'s binary with 0 regressions (~1.0s elapsed per run).
+  - Did not mask the test or alter ratchets/oracles; preserved all fidelity scripts and 32,564 ratchet entries.
+
 ## 2026-10-30 (round 13): wire putconst end-to-end, cmpfun fixtures, and cmpfile/loadcmp
 
 - Track ledger update for round 13 on branch `track/conformance-sweep-data-13` (PR #125).
