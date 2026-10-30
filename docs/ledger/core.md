@@ -89,7 +89,8 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 - Rebased #98 onto d81d29c after later main merges made the PR
   unmergeable and prevented pull_request CI from starting. Source hunks
   combined automatically; ledger and passing.txt conflicts preserve both
-  topics and every one of main's 250 ratchet entries. Combined tree has
+  topics and all 249 of main's ratcheted scripts (250 lines including the
+  header). Combined tree has
   254 recorded scripts; fresh release verification is running.
 - Pre-rebase graphics: 181/184 initially, 182/184 after hcl passed alone
   (contention timeout). axis.POSIXct and plot.window both fail with the
@@ -111,6 +112,27 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   seven byte sequences already match. Closure constants reproduce the
   same distinction (two of four marks match). Preserve the lexer’s existing
   byte_escape flag through syntax literals and lang::const_to_value.
+- Source-current d81d29c-based verification completed: 255/255 scripts
+  match stdout, stderr and status across all three tiers; VM guards pass.
+  Collector 21, runtime 52 unit plus two integration tests, and both pairs
+  of C API integration tests pass. Only the two documented host-glibc
+  numeric oracles were excluded locally; Debian CI's build passes.
+- Native-key correction: the four invalid-key cases now produce GNU R's
+  catchable first-argument error instead of aborting or checking later
+  arguments first. Added a positive native-pointer finalizer to the same
+  oracle recording; it runs once and matches GNU R. Five new scripts are
+  ratcheted. Six environment cases remain 0/6 -> 6/6 against d81d29c;
+  reference-class finalize prints finalizer: 456.
+- Final d81d29c host instruction counts, identical natives and flat cache:
+  strings 766,195,341 -> 767,035,906 (+0.110%); fib 960,563,763 ->
+  960,205,027 (-0.037%); lm 682,999,956 -> 684,406,309 (+0.206%);
+  binarytrees 1,259,683,646 -> 1,255,414,633 (-0.339%). All statuses 0;
+  compare reports zero slowdowns above 0.5%.
+- Complete graphics slice: 122/124 graphics/grDevices plus 60/60 grid =
+  182/184, zero ratchet regressions; Hershey 1/1. axis.POSIXct matches
+  stdout/status but warns about coercion; the base case times out after
+  120.3 seconds. plot.window still lacks .Internal(La_rs), as before.
+  CI build and every corpus shard pass for e5b0f97; full perf is pending.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
