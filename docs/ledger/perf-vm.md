@@ -8,14 +8,18 @@ conformance` (interpreter, VM and VM+JIT against each other).
 
 ## 2026-10-30: round 8, CSV connection formatting
 
-- Fresh branch from main d2ce510. Recover the round 7 literal-%s
-  candidate from the stash after measuring this baseline. The authorized
+- Fresh branch from main d2ce510, rebased before filing onto f5dae40
+  (#96/#97). Saved baseline executable at 9b9bab5. Recover the round 7
+  literal-%s candidate from the stash after measuring this baseline. The authorized
   shared edits are capi connections.rs and main/robigo_sys.c.
+- Baseline: standard CSV 947,271,725 instructions, native utils CSV
+  1,950,190,065. Both use the same immutable executable and R_HOME.
+  Standard and native conformance each pass 244/244 scripts in all tiers;
+  both focused FastR slices pass 180/181 with zero regressions.
 - Add a Debian R 4.5.0-3 recording for CSV file bytes and parsing,
   missing values, UTF-8, percent directives in data, quoted fields,
   255/256/257-byte writes, row names and CRLF. The delivered round 7
-  binary matches the recording. Current-main measurement is queued behind
-  other tracks' builds; no formatter change is kept before that measurement.
+  binary matches the recording. Current-main measurement is complete; candidate verification follows.
 - Core's ledger leaves environment finalizers and cycle reachability in
   flight. Promise::forced still owns a boxed Value retained by both frame
   bindings and Context.promargs. Leave value.rs unchanged. A VM-only

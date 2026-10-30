@@ -208,6 +208,18 @@ void robigo_locale_init(void)
     R_MB_CUR_MAX = (int) MB_CUR_MAX;
 }
 
+/* R: library/utils/src/io.c:writetable emits cells and separators with literal %s.
+   Inspect a copy: other formats still reach the original formatter once. */
+const char *robigo_connection_string_arg(const char *format, va_list ap)
+{
+    if (strcmp(format, "%s") != 0) return NULL;
+    va_list args;
+    va_copy(args, ap);
+    const char *value = va_arg(args, const char *);
+    va_end(args);
+    return value;
+}
+
 /* R: connections.c:Rconn_printf */
 #include <R_ext/Connections.h>
 int Rconn_printf(Rconnection con, const char *format, ...)
