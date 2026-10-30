@@ -52,6 +52,10 @@ tests/r/jit/setter-default-direct.R
 tests/r/jit/setter-default-eval.R
 tests/r/jit/setter-default-subset.R
 tests/r/jit/setter-eval-handlers.R
+tests/r/linalg/chol-pivot.R
+tests/r/linalg/eigen.R
+tests/r/linalg/solve-cmplx.R
+tests/r/linalg/svd.R
 tests/r/lang/call-head-tag.R
 tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R
