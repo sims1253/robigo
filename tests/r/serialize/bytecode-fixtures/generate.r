@@ -33,3 +33,14 @@ attr(b, 'srcref') <- 1:6
 attr(b, 'srcfile') <- new.env(parent = emptyenv())
 attr(b, 'note') <- 'portable'
 saveRDS(b, 'tests/r/serialize/bytecode-fixtures/attributed-code.rds', compress = FALSE)
+path <- 'tests/r/serialize/bytecode-fixtures/'
+constants <- list(42L, TRUE, FALSE, NA, NA_integer_, -1L,
+                  structure(2L, names = 'x'), c(1L, 2L), quote(x), NULL)
+b <- .Internal(mkCode(c(12L, 16L, 0L, 1L), constants))
+saveRDS(b, paste0(path, 'scalar-constants.rds'), compress = FALSE)
+f <- function(x) environment()
+g <- compiler::cmpfun(function() { z <- 40L; f(z + 2L) })
+e <- g()
+saveRDS(e, paste0(path, 'unforced-promise.rds'), compress = FALSE)
+force(e$x)
+saveRDS(e, paste0(path, 'forced-promise.rds'), compress = FALSE)

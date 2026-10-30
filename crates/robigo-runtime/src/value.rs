@@ -614,12 +614,26 @@ pub struct BytecodeCells {
 
 impl BytecodeCells {
     pub fn integer(&mut self, value: i32) {
-        self.operations.push((value as i64) << 2);
+        self.operations.push((value as i64) << 3);
     }
     #[inline(always)]
-    pub fn item(&mut self, value: Value, nested: bool) {
-        self.operations.push(((self.items.len() as i64) << 2) | if nested { 2 } else { 1 });
-        self.items.push(value);
+    pub fn item(&mut self, value: &Value, nested: bool) {
+        match value {
+            // These carry no heap ownership. Symbol IDs are the same interned
+            // IDs held by Value::Sym; the writer still resolves stream refs.
+            Value::Null => self.operations.push(3),
+            Value::Sym(symbol) => self.operations.push(((symbol.0 as i64) << 3) | 4),
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                self.operations.push(((v.data[0] as i64) << 3) | 5);
+            }
+            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                self.operations.push(((v.data[0] as i64) << 3) | 6);
+            }
+            _ => {
+                self.operations.push(((self.items.len() as i64) << 3) | if nested { 2 } else { 1 });
+                self.items.push(value.clone());
+            }
+        }
     }
 }
 

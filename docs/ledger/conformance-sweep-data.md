@@ -1,5 +1,23 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): immediate cell records on d81d29c
+
+- Rebased checks pass: 251 scripts across all tiers (753/753), standard
+  conformance/VM guards, 44 runtime unit tests, two C API and two lazy-load
+  checks. The two known host libc numeric tests remain excluded locally.
+- Exact base and candidate data slices both score 8,409/8,426 with identical
+  case outcomes. The two gains over f5dae40 belong to incoming main work.
+- Base startup is 44,157,996, candidate 44,522,847 (+0.826%). Encode
+  NULL, symbols and unadorned integer/logical scalars directly in the cell
+  operation stream. All fixture bytes still match; startup 44,468,390,
+  still above the target. Next inline ReadItem's special/reference cases
+  into bc_item, retaining generic attribute handling for other objects.
+- Added an oracle fixture for bytecode promise expressions and serialization
+  before and after forcing. It already passes through Interp::eval; reject
+  a speculative compile.rs fallback change because the probe shows no gain.
+  compile.rs and vm.rs remain unchanged relative to the PR base.
+
+
 ## 2026-10-30 (round 9): integration rebase onto d81d29c
 
 - Rebased over #94, #101, #92 and #102. Preserve main's SmallVec inline
