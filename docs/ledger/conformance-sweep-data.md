@@ -11,12 +11,23 @@
   for XDR v2/v3, ASCII import, nested code and shared cells, version 9/13
   normalization/fallback, attributes, scalar constants, and promise PCODE
   before/after forcing. eval/bodyCode, body replacement and equality match.
-- Current base and pre-final candidate data both hold 8,409/8,426 with
-  identical per-case outcomes. Absorb 0b6df291 and daaeabd5, two verified
+- Exact base and final candidate data both hold 8,409/8,426 with identical
+  per-case outcomes. Absorb 0b6df291 and daaeabd5, two verified
   main-inherited setter-context gains. The existing host order/add626
-  collation mismatch remains unchanged. Final immediate-record rerun pending.
-- Final recursive benchmarks pass perf.py compare, with no slowdown over
-  0.5%. Complete crate/standard conformance rerun is still in progress.
+  collation mismatch remains unchanged.
+- Final recursive benchmarks: binarytrees 1,174,327,731 -> 1,174,212,332;
+  fib 880,117,572 -> 880,024,448. perf.py compare reports zero slowdowns
+  over 0.5%, broken results or newly incorrect programs.
+- Final local checks pass: 44 runtime unit, two C API, seven CLI unit,
+  three standard conformance/VM checks and two lazy-load tests. Only the
+  two documented host libc numeric oracle tests were excluded locally;
+  Debian CI runs them unmodified. cargo fmt --check and diff checks pass.
+- Code head ca8ca47 passed CI build/unit/parser/conformance and every
+  corpus job. Downloaded all ten corpus result artifacts and compared them
+  against exact d81d29c artifacts: identical pass/fail outcomes in every
+  corpus, zero regressions. No patch-specific corpus gains to absorb;
+  only the two independently verified incoming setter gains were added.
+  Full CI performance remains pending at ledger finalization.
 - Follow-up: port GNU compiler construction/introspection internals
   (bcVersion, mkCode, bcClose, disassemble) and generate shared-cell records
   for newly constructed bytecode. This batch retains immutable GNU R
