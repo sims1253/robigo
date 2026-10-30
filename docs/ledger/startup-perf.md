@@ -61,6 +61,18 @@ lands; the natives work is PR #78 below.
   serialization case failing locally on the base and candidate;
   pinned CI remains the judge. No ratchet entries changed.
 
+- Final rebase onto df3d535 (#84 string handles) applied cleanly.
+  Post-rebase runtime unit tests: 42 pass, including mapped-cache
+  rejection tests; only c_library_oracle and c_library_trig_oracle
+  fail by one ULP, matching the host glibc failures documented by
+  sweep-data and core. No complex arithmetic or oracle files changed.
+- Remaining stats profile before #84: VM run_with 7.92M self, memcpy
+  5.12M, Reader::int 5.08M, read_item_flags0 4.44M, read_bc_lang 3.14M.
+  Next measure these again on #84 before another reader optimization.
+  Direct rdx-key enumeration remains a builder follow-up; mmap and
+  CI cache wiring are complete. Regex construction and symbol handles
+  overlap other tracks; do not change them here.
+
 Reproduction: download the robigo artifacts from runs 40977240404 and
 40978398420; run scripts/perf.py run --metric instr --runtime both
 --filter 'rbench/shootout/(nbody_2|spectralnorm_math)$' --jobs 1 twice
