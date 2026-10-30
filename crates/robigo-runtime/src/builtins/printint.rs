@@ -82,6 +82,12 @@ fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRes
         }
         p.pp.width = w as usize;
     }
+    // R: print.c:do_printdefault
+    let use_source = as_logical(&get(7));
+    if use_source == NA_LOGICAL {
+        return Err(Flow::error("invalid 'useSource' argument"));
+    }
+    p.use_source = use_source != 0;
     // Forward user-supplied arguments to print() for objects inside x.
     let mut forward = Vec::new();
     for (k, a) in pargs.iter().enumerate() {

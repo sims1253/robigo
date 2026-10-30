@@ -246,7 +246,12 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         formals,
         body,
         env: env.clone(),
-        attrs: None,
+        // R: eval.c:do_function -- CADDR(args) belongs to the closure,
+        // independently of the source references attached to its body.
+        attrs: args
+            .get(2)
+            .filter(|a| !a.value.is_null())
+            .map(|a| Box::new(Attrs(vec![(s::SRCREF, a.value.clone())], false))),
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),

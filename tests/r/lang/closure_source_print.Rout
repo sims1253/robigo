@@ -1,0 +1,18 @@
+function( x = 1 ) { # body comment
+    x  +  2
+}
+function (x = 1) 
+{
+    x + 2
+}
+[[1]]
+function( x = 1 ) { # body comment
+    x  +  2
+}
+
+function( x = 1 ) { # body comment
+    x  +  2
+}
+function( x = 1 ) { # body comment
+    x  +  2
+}

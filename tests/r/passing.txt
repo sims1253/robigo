@@ -235,3 +235,5 @@ tests/r/cli/parse-context.R
 tests/r/cli/parse-context-long.R
 tests/r/cli/parse-context-tabs.R
 tests/r/lang/source_refs.R
+tests/r/lang/closure_source_refs.R
+tests/r/lang/closure_source_print.R
