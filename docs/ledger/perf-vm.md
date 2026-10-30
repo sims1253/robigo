@@ -6,6 +6,81 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 12, Rconn_printf skips the vfprintf round-trip
+
+- Base: main 758efb7, re-measured in `robigo-build:4.5.0` (Debian R
+  4.5.0-3, valgrind, CI's 8-package native set built fresh, rdbflat
+  cache off, binaries from one worktree + one private target dir
+  sequentially — same-tree sequential builds with strictly newer
+  sources are not subject to the round 11 cross-tree mtime trap; the
+  track's old trixie target dir is root-owned since round 10, so it
+  was not reused). Full 84-program table on main: geomean **0.488 over
+  73 correct programs, faster on 73** (the 11 others exit nonzero on
+  both sides; spectralnorm_math now passes on main, so 73 not 71).
+  The 11-program change-sensitive subset reproduces the round 11 rows
+  within 0.03% (csv 1,394,738,297, 0.906x).
+- Profile (csv callgrind on main, 1,394,745,516): per Rconn_printf the
+  write path paid Rconn_printf self 36 + string_arg 22 + m_vfprintf
+  self 36 + strlen 24.5 + scratch copy ~14 + R_WriteConnection self 25
+  + number_of 13 + bridge frame 8 + con_write_bytes ~67 +
+  file_switch 20 + write_all ~37 + syscall wrapper ~40
+  (~340/call x 400,000). GNU R's file vfprintf does one format pass
+  into its stdio buffer; we scanned twice (strlen + copy) plus two
+  dispatch frames.
+- Change (capi C only: `robigo_sys.c:Rconn_printf`, 21 lines, no Rust
+  touched): a literal `"%s"` writes its argument straight through
+  `R_WriteConnection` — one `va_copy`/`va_arg`, a NULL check, one
+  `strlen`, the `INT_MAX` check `m_vfprintf` already had — and returns
+  the length. Every other format, null strings and over-long strings
+  fall through to the connection's `vfprintf` exactly as before.
+  No behavior delta by construction: the fast path calls the same
+  downstream function with the same bytes and return value, and the
+  connection table's `vfprintf` is `m_vfprintf` for every connection.
+- The removed copy needs no replacement: between reading the
+  formatter's `static char buff[]` (EncodeLogical/EncodeInteger/
+  EncodeReal0/EncodeComplex/EncodeRaw in `robigo_print.c`) and the
+  write, the path performs no allocation that could run a finalizer
+  (finalizers run only at explicit gc/native-collection safe points,
+  of which `con_write_bytes` has none) and never re-enters native
+  formatting. Precedent: `m_write` (`con->write`) already passed
+  borrowed native buffers through `R_WriteConnection` with no copy,
+  verified by the serialize/saveRDS corpus slices.
+- Metric (paired min-of-2, cache off, outputs checked against GNU R):
+  csv **1,394,712,841 -> 1,375,424,169 (-1.38%)**, 0.906x -> 0.894x;
+  the other 10 subset programs neutral (max |d| 0.01%). Storage paired
+  separately: +0.006%. Full 84-program single-run compare:
+  **1 faster, 0 slower above 0.5%, 0 broken**; geomean
+  **0.488 -> 0.487 over the same 73 correct programs, faster on 73**.
+  Attribution (csv callgrind): `string_arg` 8.8M and `m_vfprintf`
+  14.4M gone, `memcpy` -5.7M (the scratch copies), `strlen` unchanged
+  at 9.8M (one scan, as in GNU R's vsnprintf); `Rconn_printf` self
+  14.4M -> 26.4M (it now hosts the va work and the `strlen` call).
+- Verified: paired outputs match GNU R on all 11 subset programs; csv
+  stdout/stderr byte-identical directly; FastR connections/write/read/
+  scan/cat slice 338/339 on both binaries (the 1 non-pass is
+  pre-existing, identical on base); TestBuiltin_serialize slice
+  162/164 on both (the excluded `6260e145` case materializes ~17GB and
+  is OOM-killed under this host's 4 GB container cap on base and
+  candidate alike — the documented environmental timeout); full
+  conformance 9/9 incl. all three tiers and VM guards; `cargo test
+  --release -p robigo-capi` 2/2 incl. the Rconn layout check;
+  `cargo fmt --check` and `git diff --check` clean.
+- Not taken: buffering file writes in stdio style (GNU R's
+  `file_vfprintf` uses `vfprintf(fp)`; we do one `write` syscall per
+  cell). That would cut most of the remaining ~55M write_all/syscall
+  cost but restructures `ConnKind::File` (read/write switching,
+  seek positions, flush/close) in startup-owned `builtins/io.rs` —
+  a follow-up with the startup track, not this chunk.
+- CI (run 41102465273) is fully green: build, bytecode-fidelity, all
+  ten corpus shards, and the perf gate. Official paired verdict:
+  csv **-1.38%** (`1,393,5M -> 1,374,2M`), **1 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed** — identical to the local paired number.
+- Scalar promise storage waits: any real fix changes `value.rs` layout
+  (Promise gains scalar states; every promise-value reader changes),
+  which is core's active round 7 area (`fix/core-shared-list-mutation`
+  exists but has not pushed yet). No vm.rs-only change can remove the
+  box. Next: agree on layout/tracing with core first, per round 10.
+
 ## 2026-10-30: round 11, rescue #108 (rebase + perf verdict)
 
 - Took over `track/perf-vm-r10-wrappers` at 628f43c (CONFLICTING with

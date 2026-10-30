@@ -228,6 +228,27 @@ int Rconn_printf(Rconnection con, const char *format, ...)
     errno = 0;
     va_list(ap);
     va_start(ap, format);
+    /* R: library/utils/src/io.c:writetable hands each cell, separator and
+       newline to Rconn_printf with a literal "%s". Write those bytes
+       straight to the connection: dispatching to the connection's vfprintf
+       would re-scan the NUL-terminated string the formatter already
+       produced (strlen) and copy it again before writing. Other formats,
+       null strings and lengths beyond printf's int range keep the
+       connection's formatter, exactly as m_vfprintf does for them. */
+    if (format[0] == '%' && format[1] == 's' && format[2] == '\0') {
+	va_list aq;
+	const char *value;
+	size_t n;
+	va_copy(aq, ap);
+	value = va_arg(aq, const char *);
+	if (value != NULL && (n = strlen(value)) <= INT_MAX) {
+	    va_end(aq);
+	    R_WriteConnection(con, (void *) value, n);
+	    va_end(ap);
+	    return (int) n;
+	}
+	va_end(aq);
+    }
     /* Parentheses added for FC4 with gcc4 and -D_FORTIFY_SOURCE=2 */
     res = (con->vfprintf)(con, format, ap);
     va_end(ap);
