@@ -6,6 +6,52 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 10, direct connection writes
+
+- Base: main d81d29c. In-container flow (robigo-build:4.5.0): host
+  rustup 1.99.0 toolchain mounted, private target
+  ~/.cache/robigo-trixie-target, natives built fresh from the R 4.5.0
+  sources (stats splines tools parallel utils grDevices graphics grid,
+  the CI set). perf.py runs with the bench cache mounted. Without
+  natives csv measures the Rust port (943M); with natives it is
+  1,781,299,235 (1.16x GNU R), matching round 9's 1,782,142,078.
+- Fresh instruction table on main (CI configuration, both runtimes):
+  geomean **0.488 over 71 correct programs, faster on 70**. csv is the
+  only program slower than GNU R (1.16x). spectralnorm_math is the only
+  wrong-output program; the other 11 excluded programs exit nonzero on
+  both sides (matching error exits). Saved as .robigo/perf-base.json
+  (gitignored) and /tmp/perf-vm-r10/base.json.
+- csv profile (callgrind, inclusive): writetable 852.8M (47.9%),
+  m_vfprintf 506.4M, R_WriteConnection 469.9M (of which h_op 251.6M,
+  bridge op 133.3M, con_write_bytes 75.2M, alloc_vector 109.5M,
+  hashbrown+siphhash lookups ~90M), EncodeElement2 307.8M,
+  Rf_EncodeElement0 283.7M. The write path is ~470M of formatting
+  round-trip (RAWSXP + scalar per write, generic op dispatch, copies).
+- Change (outside vm.rs, minimal, called out): capi
+  R_WriteConnection hands the borrowed bytes straight to
+  con_write_bytes via a new bridge write_connection_bytes helper
+  (same guarded/store_flow/jump shape as h_op: identical handler and
+  jump behavior, no Sexp wrapping, no copies), plus a one-entry
+  pointer->number cache in number_of (connections are never removed,
+  numbers never change; native writers use one connection per table).
+  m_vfprintf's scratch/Vec copy stays: it protects the native
+  formatter's static buffer from finalizers run by con_write_bytes'
+  own allocations.
+- csv: **1,781,299,235 -> 1,395,449,324 instructions (-21.7%)**,
+  ratio 1.16 -> 0.91. Paired full gate: **1 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed**; geomean **0.488 -> 0.486, faster on
+  70 -> 71** (every correct program now beats GNU R).
+- Verified: csv-connection-format fixture passes (all three tiers),
+  full conformance passes (250 ratcheted, 3 tiers), FastR
+  connections/write/read/scan/cat/save slice 241/242 with 0
+  regressions, serialize slice 320/326 with the only regression the
+  pre-existing environmental timeout (2G doubles need ~16GB; fails on
+  the saved baseline binary too). saveRDS-to-connection cases pass.
+- Remaining connection costs (in csv): EncodeElement2 307.8M +
+  Rf_EncodeElement0 283.7M + Rf_EncodeReal0 192M (native formatting,
+  out of scope), con_write_bytes 75M, copy/strlen ~25M. Reads
+  (R_ReadConnection) untouched.
+
 ## 2026-10-30: round 8, CSV connection formatting
 
 - Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).

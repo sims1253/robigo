@@ -8,7 +8,6 @@ use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
 use robigo_core::Sexp;
-use robigo_core::types::*;
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_void};
 
@@ -76,9 +75,23 @@ struct Entry {
 static mut CONNS: Option<HashMap<usize, Entry>> = None;
 static mut BY_NUMBER: Option<HashMap<c_int, usize>> = None;
 
+/// The last connection pointer and its number. Connections are never
+/// removed and their numbers never change, so this stays valid; native
+/// table writers hand every cell to the same connection.
+static mut LAST_NUMBER: Option<(usize, c_int)> = None;
+
 pub unsafe fn number_of(con: *mut c_void) -> c_int {
-    match CONNS.as_ref().and_then(|m| m.get(&(con as usize))) {
-        Some(e) => e.n,
+    let key = con as usize;
+    if let Some((k, n)) = LAST_NUMBER {
+        if k == key {
+            return n;
+        }
+    }
+    match CONNS.as_ref().and_then(|m| m.get(&key)) {
+        Some(e) => {
+            LAST_NUMBER = Some((key, e.n));
+            e.n
+        }
         None => crate::errors::error_str("invalid connection"),
     }
 }
@@ -233,16 +246,21 @@ pub unsafe extern "C" fn R_GetConnection(s_conn: Sexp) -> *mut c_void {
     getConnection(n) as *mut c_void
 }
 
-// R: connections.c:R_WriteConnection
+// R: connections.c:R_WriteConnection. The bytes go straight to the host
+// connection without wrapping them in a RAWSXP and an integer scalar
+// and dispatching the generic `writeConnection` op (R:
+// library/utils/src/io.c:writetable hands each cell, separator and
+// newline to Rconn_printf; m_vfprintf already copied them out of the
+// native formatter's static buffer, which con_write_bytes' own
+// allocations could otherwise overwrite via finalizers).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_WriteConnection(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
     let num = number_of(con);
-    let raw = Rf_protect(crate::state::core().alloc_vector(RAWSXP, n));
-    if n > 0 {
-        std::ptr::copy_nonoverlapping(buf as *const u8, raw.std_data(), n);
+    let bytes = if n == 0 { &[] } else { std::slice::from_raw_parts(buf as *const u8, n) };
+    let t = crate::bridge::write_connection_bytes(num, bytes);
+    if t != 0 {
+        crate::errors::jump_host(t);
     }
-    op("writeConnection\0", &[Rf_ScalarInteger(num), raw]);
-    Rf_unprotect(1);
     n
 }
 
