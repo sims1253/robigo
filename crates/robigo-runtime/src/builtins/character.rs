@@ -1232,7 +1232,7 @@ fn system_iconv_supports(from: &str, to: &str) -> bool {
     true
 }
 
-// R: sysutils.c:do_iconv (UTF-8 and ASCII only)
+// R: sysutils.c:do_iconv (UTF-8, ASCII and Latin-1 byte windows)
 fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 6, "iconv")?;
     let x = &args[0].value;
@@ -1263,14 +1263,32 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Err(Flow::error(format!("robigo: iconv() from '{}' to '{}' is not implemented yet", from, to)));
     };
     // Inputs: strings, or a list of raw vectors / NULL.
-    let inputs: Vec<Option<Vec<u8>>> = match x {
-        Value::Str(v) => v.data.iter().map(|e| e.as_ref().map(|s| s.as_bytes().to_vec())).collect(),
+    let inputs: Vec<Option<(Vec<u8>, Enc)>> = match x {
+        Value::Str(v) => v
+            .data
+            .iter()
+            .map(|e| {
+                e.as_ref().map(|s| {
+                    // R: sysutils.c:do_iconv -- marks override only an empty from.
+                    let source = if from.is_empty() {
+                        match s.encoding() {
+                            Encoding::Latin1 => Enc::Latin1,
+                            Encoding::Utf8 | Encoding::Utf8Invalid => Enc::Utf8,
+                            _ => fenc,
+                        }
+                    } else {
+                        fenc
+                    };
+                    (s.raw_bytes().into_owned(), source)
+                })
+            })
+            .collect(),
         Value::List(l) => {
             let mut v = Vec::new();
             for e in &l.data {
                 match e {
                     Value::Null => v.push(None),
-                    Value::Raw(r) => v.push(Some(r.data.clone())),
+                    Value::Raw(r) => v.push(Some((r.data.clone(), fenc))),
                     _ => {
                         return Err(Flow::error("'x' must be a character vector or a list of NULL or raw vectors"));
                     }
@@ -1282,7 +1300,7 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     };
     let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(inputs.len());
     for inp in inputs {
-        let Some(bytes) = inp else {
+        let Some((bytes, fenc)) = inp else {
             results.push(None);
             continue;
         };
@@ -1384,15 +1402,20 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     for r in results {
         match r {
             None => out.push(None),
-            Some(bytes) => match tenc {
-                Enc::Latin1 if bytes.iter().any(|&b| b >= 0x80) => {
-                    return Err(Flow::error("robigo: latin1-encoded strings are not implemented yet"));
-                }
-                _ => match String::from_utf8(bytes) {
-                    Ok(s) => out.push(Some(crate::value::RString::from(s.as_str()))),
-                    Err(_) => return Err(Flow::error("robigo: strings that are not valid UTF-8 are not supported")),
-                },
-            },
+            Some(bytes) => {
+                // R: sysutils.c:do_iconv -- output marks use these exact
+                // alias checks, independently of iconv's accepted aliases.
+                let encoding = if mark == 0 {
+                    Encoding::Native
+                } else if ieq(&to, "latin1") || ieq(&to, "ISO_8859-1") {
+                    Encoding::Latin1
+                } else if to.is_empty() || &*to == "UTF-8" || ieq(&to, "UTF8") {
+                    Encoding::Utf8
+                } else {
+                    Encoding::Native
+                };
+                out.push(Some(RString::from_bytes(&bytes, encoding)));
+            }
         }
     }
     let mut ans = Value::strs(out);
