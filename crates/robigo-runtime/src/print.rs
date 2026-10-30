@@ -313,7 +313,8 @@ impl Printer {
         }
         let n_pr = if n <= self.pp.max + 1 { n } else { self.pp.max };
         let pp = self.pp.clone();
-        let labwidth = if indx { index_width(n) + 2 } else { 0 };
+        // R: printvector.c:printVector / DO_first_lab use the truncated length.
+        let labwidth = if indx { index_width(n_pr) + 2 } else { 0 };
         // Encoded elements with their field width (including gap).
         let (items, w, is_char): (Vec<String>, usize, bool) = match v {
             Value::Lgl(x) => {
