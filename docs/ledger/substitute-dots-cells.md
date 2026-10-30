@@ -1,5 +1,50 @@
 # substitute dots cells
 
+## 2026-10-30: rebase onto eb7a7ae, fresh paired verification
+
+- Rebased through #71 and #103. Preserved every main ratchet entry; the
+  final shared ratchet diff is exactly one added substitute fixture.
+  No print changes, #71 records, or other tracks' ratchets are re-added.
+- PNode is **48 bytes**, enforced by the new unit test
+  serialize::tests::call_cells_do_not_enlarge_deserialization_nodes.
+  The test passes locally and in CI; Lang and value.rs are unchanged.
+- Fresh paired callgrind: exact CI executables for main eb7a7ae (run
+  41004969021) and rebased code 7c532d2 (run 41005306789), same host,
+  same main native libraries, ROBIGO_RDBFLAT=0 and Debian R_HOME 4.5.0-3.
+  All seven comparisons pass --threshold 0.1; maximum +0.04106%.
+
+| workload | main eb7a7ae | rebased branch | change |
+| --- | ---: | ---: | ---: |
+| rbench/simple/bytecodes | 232,942,717 | 233,001,697 | +0.02532% |
+| robigo/fib | 960,611,570 | 960,581,044 | -0.00318% |
+| robigo/s4-generic | 587,984,128 | 588,225,559 | +0.04106% |
+| robigo/s4-new | 629,520,180 | 629,747,101 | +0.03605% |
+| robigo/s4-slot-read | 461,851,558 | 461,967,235 | +0.02505% |
+| robigo/s4-slot-write | 487,858,685 | 487,964,648 | +0.02172% |
+| robigo/s4-valid | 627,982,352 | 628,069,002 | +0.01380% |
+
+- Fresh ratchet: main **756/759**, rebased branch **759/759**, AST/VM/JIT.
+  The three baseline failures are the substitute fixture. All main
+  fixtures requested by the coordinator remain present, including both
+  is.vector contexts, print-max-index, csv-connection-format, setter-* and
+  capi/write-back. No failing previously passing case remains.
+- All seven benchmark outputs match GNU R 4.5.0. Both motivating S4
+  generator serializations match the freshly recorded oracle byte for
+  byte, with empty stderr. Additional 2/70/1000 exceptional-cell round trips
+  also match GNU R.
+- CI build 41005306789 passes the release build, workspace tests, parser
+  oracle, conformance, gctorture and parse corpus ratchet on the rebased
+  tree. Full downstream corpus/performance jobs remain CI's responsibility.
+- Oracle launch check: the copied Rscript wrapper resolves to host 4.6.1;
+  local output checks now invoke the private 4.5.0 bin/exec/R directly.
+  Earlier instruction oracles already used that executable, and all
+  committed expected output was recorded in robigo-oracle:4.5.0.
+- The final push records these measurements only. Runtime code and tests
+  are unchanged from the verified rebased code. A redundant queued local
+  flock request was canceled after CI verification; no compiler was killed.
+- Open: final downstream CI and coordinator review/merge. PR watching tools
+  are unavailable in this session. Never merge this PR from the track.
+
 ## 2026-10-30: cold continuation meets the 0.1% target, kept
 
 - Why: preserve GNU R's LANGSXP argument cells without enlarging Lang or
