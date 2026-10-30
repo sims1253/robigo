@@ -14,13 +14,10 @@ kept alongside robigo, not part of the robigo program. The expected output
 in `expected.jsonl.gz` is recorded from GNU R 4.5.0, not taken from FastR.
 
 `expected-methods.jsonl.gz` records the same 31,374 cases with methods
-attached. It comes from the oracle recording at 2e2945b, with the 224
-changed cases re-recorded twice in `robigo-oracle:4.5.0` on 2026-10-30.
-Run it with `scripts/corpus.py run fastr --profile methods`.
-`methods-changes.tsv` lists every changed case and its paired results
-after rebasing onto main 532be45, using #104's successful CI artifact,
-run 41006679303. Its runtime and vendored R sources match main exactly.
-The methods profile passes 223/224 in AST, VM and JIT; only
-`S4/TestR5/474b742f1785a587` awaits #98. Normal FastR passes 224/224.
-The active defaults and ratchet stay unchanged. After #98 merges,
-activation remains one manifest-only commit.
+attached, and is the active expected recording for FastR. It comes from
+the oracle recording at 2e2945b, with the 224 changed cases re-recorded
+twice in `robigo-oracle:4.5.0` on 2026-10-30.
+`methods-changes.tsv` lists every changed case and its paired results.
+All 224 cases pass in AST, VM and JIT (224/224), with zero regressions.
+Following the merge of environment finalizers (#98), FastR defaults to
+attaching `methods` identical to GNU R suites.

@@ -7,6 +7,34 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 9 — FastR switch activated (#98 merged as b7ee268)
+
+- Rebased onto `b7ee268` (main) merging #98 (environment finalizers).
+  `tests/r/passing.txt` retains all 11 new finalizer entries byte-for-byte.
+- Single manifest commit (`tests/corpora/corpora.toml`) activates methods
+  defaults (`default_packages = "datasets,utils,grDevices,graphics,stats,methods"`)
+  and points `expected_file` to `expected-methods.jsonl.gz`.
+- Previously blocked case `S4/TestR5/474b742f1785a587` now passes (1/1, stdout,
+  stderr, and exit status match GNU R 4.5.0 oracle bit-for-bit).
+- Full methods census across all 224 changed cases:
+  - AST (`ROBIGO_COMPILE=0`, `ROBIGO_JIT=0`): **224/224 pass**, 0 regressions.
+  - VM (`ROBIGO_COMPILE=1`, `ROBIGO_JIT=0`): **224/224 pass**, 0 regressions.
+  - JIT (`ROBIGO_COMPILE=1`, `ROBIGO_JIT=1`): **224/224 pass**, 0 regressions.
+  - Zero losses across all tiers. `tests/corpora/fastr/methods-changes.tsv`
+    updated to 224/224 PASS matches.
+- Conformance & ratchets:
+  - Conformance suite (`cargo test --release -p robigo-cli --test conformance`):
+    all 3 integration tests pass (`vm_guards_hold`, `conformance`,
+    `compiled_matches_interpreted`).
+  - S4 corpus slice: **644/662 pass**, 0 regressions.
+  - `gnur-demos`: **14/16 pass**, 0 regressions.
+  - `r-intro`: **8/13 pass**, 0 regressions.
+  - Harness unit tests (`python3 -m unittest scripts/test_corpus.py`): 6/6 pass.
+- Post-flip verification (Job 2):
+  - Rcpp sugar suite re-run on current main: **493/493 pass**, 0 regressions,
+    identical to GNU R and baseline.
+- Next steps: method-table lookup caching and `@`/`@<-` slot access fast paths.
+
 ## 2026-10-30: #104 merged — FastR methods census 223/224
 
 - Rebased `track/methods-fastr-switch` (#107) onto main `532be45`, which
