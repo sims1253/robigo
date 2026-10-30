@@ -158,7 +158,7 @@ pub fn has_table(name: &str) -> bool {
 /// megabytes and every base-package dyn.load checks one.
 pub fn is_robigo_build(path: &str) -> bool {
     use std::io::{Read, Seek, SeekFrom};
-    let marker = b"robigo_base_native\0";
+    let marker = b"robigo_base_native";
     let Ok(f) = std::fs::File::open(path) else { return false };
     let mut f = std::io::BufReader::with_capacity(1 << 16, f);
     let u64_at = |buf: &[u8], off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
@@ -227,7 +227,10 @@ pub fn is_robigo_build(path: &str) -> bool {
     }
     let mut strs = vec![0u8; strsz];
     match f.read_exact(&mut strs) {
-        Ok(()) => strs.windows(marker.len()).any(|w| w == marker),
+        // The dynamic string table is NUL-separated names; comparing
+        // whole names (a vectorized NUL scan plus one memcmp per name)
+        // beats a sliding-window compare over every byte position.
+        Ok(()) => strs.split(|&b| b == 0).any(|name| name == marker),
         Err(_) => false,
     }
 }
