@@ -1205,3 +1205,31 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   mkCode/bcClose to the lazy metadata API. #105 is saved and paused. Future
   import work can also defer unused string-vector containers; the remaining
   scalar/encoding paths currently keep their existing ReadItem behavior.
+
+- Final infrastructure rebase: 5bff0caf (#111/#112 marker migration and #113
+  methods activation) changes no runtime, build, library, benchmark or perf
+  sources relative to b7ee268. Preserve main's markers and convert all four
+  PR additions to markers; no legacy list is resurrected or entry removed.
+  scripts/ratchet.py check passes: 32,230 cases, including 275 R scripts.
+- Rebuilt candidate after rebase is byte-identical to the measured binary:
+  SHA256 a923370fcadcd6216ac50ea241ab838627a57ca5879830f9791f62fa45694e09.
+  Repeat the full seven-case paired run on the rebased tree against the
+  identical b7ee268 runtime base. Final cache-OFF minima (two per side):
+  rbench/awf/Bounce: 619,709,501 -> 619,311,140 (-0.0643%).
+  rbench/shootout/nbody_2: 868,209,053 -> 868,363,620 (+0.0178%).
+  rbench/shootout/nbody_3: 967,690,636 -> 966,979,020 (-0.0735%).
+  rbench/shootout/nbody_naive_2: 1,258,885,224 -> 1,260,347,012 (+0.1161%).
+  rbench/simple/bytecodes: 231,951,512 -> 230,962,117 (-0.4266%).
+  rbench/simple/profiler-shared: 5,769,773,754 -> 5,761,492,229 (-0.1435%).
+  robigo/fib: 957,419,844 -> 959,025,225 (+0.1677%).
+  All seven meet <=0.2%; zero broken cases. Worst delta +0.1677%.
+  Every one of the 275 markers passes in all three tiers; fixture pair 6/6.
+- The new marker-based CLI conformance runner passes all seven release tests
+  for the serialization filter, including both bytecode scripts. The debug
+  CLI attempt fails before tests while linking native graphics symbols
+  REAL0, INTEGER0, Rf_reEnc3 and mbcsTruncateToValid; no graphics files changed.
+  Runtime/C API unit and metadata checks above remain valid (same sources).
+- With the activated methods oracle, serialize/unserialize is still 317/322;
+  only the previously reproduced main timeout for the huge compact sequence
+  is listed as a regression locally. No expectations or masks are adjusted.
+  Full pinned-platform corpora and perf gates remain CI's responsibility.
