@@ -1294,3 +1294,43 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   ROBIGO_NATIVES pointing to the downloaded candidate/natives on both sides;
   leave ROBIGO_RDBFLAT unset. Local profiles and commands are retained under
   .robigo/perf100/ci2. No fixture output, mask or ratchet was removed.
+
+
+## 2026-10-30: approved opt-in bytecode fidelity
+
+`bytecode-fidelity` is a Cargo feature, off by default. Default builds use
+main's expression-only GNU bytecode reader and interpreter fallback. They
+compile out the Bytecode value variant, closure metadata field and collector
+metadata owners, restoring the original layouts as well as import work.
+No partial metadata preservation is retained in default builds without a
+measured benefit.
+
+**Default builds do not round-trip GNU R bytecode byte-identically.** They
+retain and execute the source expression, but discard GNU instructions,
+constant-pool layout, bytecode attributes and shared-cell replay metadata.
+Re-serializing an imported compiled closure writes its expression body in
+place of BCODESXP; serializing an imported standalone BCODESXP writes the
+expression. The divergence concerns serialized bytes; execution continues
+through the existing interpreter fallback. This is an explicit temporary
+serialization conformance gap, not a zero-cost fidelity implementation.
+
+Enable `cargo build --release -p robigo-cli --features bytecode-fidelity`
+to preserve those bytes. The feature retains the unchanged oracle fixtures
+and ratchet markers. `.requires` sidecars select the feature build for the
+two fidelity scripts; default CI runs all other scripts. A dedicated trixie
+CI job runs the metadata/encoding tests and the two scripts in all three
+tiers (6/6 comparisons). Unknown feature requirements fail loudly.
+
+The split is necessary because CI at cc2bb64 measured fannkuchredux +0.58%,
+nbody_naive_2 +0.91%, profiler-shared +0.59%. The retained metadata changes
+allocator behavior even when never inspected; the rejected lazy-container
+experiments did not remove that cost. Shipping that tax for opt-in
+serialization use was unacceptable.
+
+Retire the flag after coordinating an owned serialized-input API with the
+startup track: validate and retain raw bytecode spans and reference handles
+without constructing Rust replay vectors, then decode only when forced or
+re-serialized. Prove byte-identical native/XDR round trips and <=0.5% on
+every affected benchmark with both exact binaries, caches disabled and the
+same native libraries, before restoring fidelity to default builds.
+Round 10 mkCode/bcClose work remains behind this same feature.

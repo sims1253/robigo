@@ -3,6 +3,7 @@
 //! and 3, including references, environments, ALTREP compact sequences
 //! and portable GNU R bytecode.
 
+#[cfg(feature = "bytecode-fidelity")]
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -124,6 +125,7 @@ struct PNode {
     car: Value,
 }
 
+#[cfg(feature = "bytecode-fidelity")]
 struct BcLevel {
     pos: Option<usize>,
     lang: bool,
@@ -139,9 +141,13 @@ pub struct Reader<'a, 'i> {
     refs: Vec<Value>,
     interp: &'i mut Interp,
     hook: Value,
+    #[cfg(feature = "bytecode-fidelity")]
     bc_records: BytecodeCells,
+    #[cfg(feature = "bytecode-fidelity")]
     bc_operations: Vec<i64>,
+    #[cfg(feature = "bytecode-fidelity")]
     bc_bytes: Option<Rc<RefCell<BytecodeBytes>>>,
+    #[cfg(feature = "bytecode-fidelity")]
     bc_words: Option<Rc<RefCell<BytecodeWords>>>,
 }
 
@@ -532,6 +538,11 @@ impl<'a, 'i> Reader<'a, 'i> {
             BCODESXP => {
                 let nreps = self.int()?;
                 let mut reps = vec![Value::Null; nreps.max(0) as usize];
+                #[cfg(not(feature = "bytecode-fidelity"))]
+                {
+                    self.read_bc(&mut reps)?
+                }
+                #[cfg(feature = "bytecode-fidelity")]
                 {
                     let shared = Rc::new(OnceCell::new());
                     let value = self.read_bc(&mut reps, &shared)?;
@@ -571,6 +582,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         let _ = hastag;
         // R: serialize.c:ReadItem returns R_BytecodeExpr for an unsupported
         // bytecode version, after consuming its attributes and constants.
+        #[cfg(feature = "bytecode-fidelity")]
         if let Value::Bytecode(b) = &v {
             if b.instructions.version().is_some_and(|v| !(9..=12).contains(&v)) {
                 return Ok(b.expression.clone());
@@ -640,8 +652,19 @@ impl<'a, 'i> Reader<'a, 'i> {
             flags = self.int()? as u32;
             ty = flags & 255;
         }
+        #[cfg(not(feature = "bytecode-fidelity"))]
+        let mut bytecode_body = false;
         let cdr = if matches!(head_type, CLOSXP | PROMSXP) {
-            self.read_item()?
+            #[cfg(not(feature = "bytecode-fidelity"))]
+            {
+                let f = self.int()? as u32;
+                bytecode_body = f & 255 == BCODESXP;
+                self.read_item_flags(f)?
+            }
+            #[cfg(feature = "bytecode-fidelity")]
+            {
+                self.read_item()?
+            }
         } else {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
@@ -664,12 +687,18 @@ impl<'a, 'i> Reader<'a, 'i> {
                     },
                     _ => Rc::from(Vec::new()),
                 };
+                #[cfg(feature = "bytecode-fidelity")]
                 let (body, gnu_bytecode) = match cdr {
+                    #[cfg(feature = "bytecode-fidelity")]
                     Value::Bytecode(b) => (b.expression.clone(), Some(b)),
                     v => (v, None),
                 };
+                #[cfg(feature = "bytecode-fidelity")]
                 let bytecode_body = gnu_bytecode.is_some();
+                #[cfg(not(feature = "bytecode-fidelity"))]
+                let body = cdr;
                 let mut v = Value::Closure(Rc::new(Closure {
+                    #[cfg(feature = "bytecode-fidelity")]
                     gnu_bytecode,
                     formals,
                     body,
@@ -753,14 +782,158 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(v)
     }
 
-    // R: serialize.c:ReadBC1. Keep the portable cells rather than GNU R's
-    // process-local threaded addresses (eval.c:R_bcEncode/R_bcDecode).
+    // Default import retains the source expression and executes it through
+    // the interpreter, as before the optional fidelity implementation.
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
+        let _code = self.read_item()?;
+        let consts = self.read_bc_consts(reps)?;
+        // The first constant is the expression the code was compiled from.
+        Ok(consts.into_iter().next().unwrap_or(Value::Null))
+    }
+
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
+        let n = self.int()?;
+        let mut out = Vec::with_capacity(n.max(0) as usize);
+        for _ in 0..n.max(0) {
+            let ty = self.int()? as u32;
+            let c = match ty {
+                BCODESXP => self.read_bc(reps)?,
+                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(ty, reps)?,
+                _ => self.read_item()?,
+            };
+            out.push(c);
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>) -> RResult<Value> {
+        match ty {
+            BCREPREF => {
+                let i = self.int()? as usize;
+                Ok(reps.get(i).cloned().unwrap_or(Value::Null))
+            }
+            BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
+                // R: serialize.c:ReadBCLang. The chain is walked cell by
+                // cell; collecting the spine first avoids rebuilding the
+                // suffix Value at every level (each rebuild cloned the
+                // tail's items again, and dropped the intermediate).
+                // A cell stored for a BCREPDEF (`reps`) spans from its own
+                // level to the end — a contiguous slice of the flat items.
+                struct Level {
+                    pos: Option<usize>,
+                    lang: bool,
+                    attr: Value,
+                    tag: Value,
+                    car: Value,
+                }
+                let translate = |t: u32| match t {
+                    ATTRLANGSXP => (LANGSXP, true),
+                    ATTRLISTSXP => (LISTSXP, true),
+                    t => (t, false),
+                };
+                // Chains are short (a call's spine is its argument count);
+                // inline storage keeps the common case allocation-free,
+                // where a growing Vec paid realloc + copy per few cells.
+                let mut spine: smallvec::SmallVec<[Level; 8]> = smallvec::SmallVec::new();
+                let mut pos = None;
+                let mut ty = ty;
+                if ty == BCREPDEF {
+                    pos = Some(self.int()? as usize);
+                    ty = self.int()? as u32;
+                }
+                let (mut ty, mut hasattr) = translate(ty);
+                let cdr;
+                loop {
+                    let attr = if hasattr { self.read_item()? } else { Value::Null };
+                    let tag = self.read_item()?;
+                    let t1 = self.int()? as u32;
+                    let car = self.read_bc_lang(t1, reps)?;
+                    spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
+                    let t2 = self.int()? as u32;
+                    let mut npos = None;
+                    let mut nty = t2;
+                    if nty == BCREPDEF {
+                        npos = Some(self.int()? as usize);
+                        nty = self.int()? as u32;
+                    }
+                    let (nty, nhasattr) = translate(nty);
+                    if matches!(nty, LANGSXP | LISTSXP) {
+                        pos = npos;
+                        ty = nty;
+                        hasattr = nhasattr;
+                        continue;
+                    }
+                    // The chain's tail, as `read_bc_lang(t2)` reads it.
+                    cdr = match nty {
+                        BCREPREF => {
+                            let i = self.int()? as usize;
+                            reps.get(i).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => self.read_item()?,
+                    };
+                    break;
+                }
+                // Every level's cell, then the tail's; the spine's cars
+                // move into the items (each level's Value was only
+                // buffered here).
+                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + 4);
+                for l in spine.iter_mut() {
+                    let car = std::mem::replace(&mut l.car, Value::Null);
+                    items.push(Arg::new(l.tag.as_sym(), car));
+                }
+                match cdr {
+                    // A tail read fresh from the stream is uniquely
+                    // owned: its items can move instead of being cloned.
+                    Value::Pairlist(p) => match Rc::try_unwrap(p) {
+                        Ok(mut p) => items.append(&mut p.items),
+                        Err(p) => items.extend(p.items.iter().cloned()),
+                    },
+                    Value::Lang(l) => match Rc::try_unwrap(l) {
+                        Ok(mut l) => {
+                            items.push(Arg::new(l.fun_tag, l.fun));
+                            items.append(&mut l.args);
+                        }
+                        Err(l) => items.extend(l.items()),
+                    },
+                    _ => {}
+                }
+                // Cells referenced again (BCREPDEF) get their own Value for
+                // `reps`; the head carries the first level's attributes.
+                for (i, l) in spine.iter().enumerate() {
+                    if let Some(p) = l.pos {
+                        if p < reps.len() {
+                            let mut v = if l.lang {
+                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                            } else {
+                                Value::pairlist(items[i..].to_vec())
+                            };
+                            set_attr_pairlist(&mut v, l.attr.clone());
+                            reps[p] = v;
+                        }
+                    }
+                }
+                let mut v = if spine[0].lang {
+                    Value::Lang(Rc::new(Lang::from_items(items, None)))
+                } else {
+                    Value::pairlist(items)
+                };
+                set_attr_pairlist(&mut v, spine[0].attr.clone());
+                Ok(v)
+            }
+            _ => self.read_item(),
+        }
+    }
+    #[cfg(feature = "bytecode-fidelity")]
     fn save_bc_bytes(&mut self, bytes: &[u8]) -> BytecodeSpan {
         let arena = self.bc_bytes.get_or_insert_with(|| Rc::new(RefCell::new(BytecodeBytes::default())));
         self.bc_records.bytes = Some(arena.clone());
         arena.borrow_mut().append(bytes)
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn save_bc_words(&mut self, words: &[i64]) -> BytecodeSpan {
         let arena = self.bc_words.get_or_insert_with(|| Rc::new(RefCell::new(BytecodeWords::default())));
         self.bc_records.words = Some(arena.clone());
@@ -769,6 +942,7 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     // R: eval.c:R_bcEncode, validating opcode boundaries over the serialized
     // integer words. Only inspection needs an INTSXP allocation.
+    #[cfg(feature = "bytecode-fidelity")]
     fn read_bc_instructions(&mut self) -> RResult<BytecodeInstructions> {
         let flags = self.int()? as u32;
         if flags & 255 != INTSXP || self.format == Format::Ascii {
@@ -810,6 +984,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(BytecodeInstructions::Encoded { span, words: if mismatch { 2 } else { n }, version, mismatch })
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn bc_item_maybe(&mut self, materialize: bool) -> RResult<Value> {
         if materialize || self.format == Format::Ascii {
             return self.bc_item();
@@ -840,6 +1015,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(Value::Null)
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn read_bc(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
         let outer = std::mem::take(&mut self.bc_records);
         let outer_operations = std::mem::take(&mut self.bc_operations);
@@ -867,6 +1043,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         })))
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn bc_int(&mut self) -> RResult<i32> {
         let v = self.int()?;
         BytecodeCells::integer(&mut self.bc_operations, v);
@@ -874,6 +1051,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[inline(always)]
+    #[cfg(feature = "bytecode-fidelity")]
     fn bc_item(&mut self) -> RResult<Value> {
         // R: serialize.c:ReadItem. These special/reference cells return before
         // attribute handling; keep the common bytecode leaves on that path.
@@ -882,6 +1060,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[inline(always)]
+    #[cfg(feature = "bytecode-fidelity")]
     fn bc_item_flags(&mut self, flags: u32) -> RResult<Value> {
         let v = match flags & 255 {
             NILVALUE_SXP => Value::Null,
@@ -896,6 +1075,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(v)
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
         let n = self.bc_int()?;
         let mut expression = Value::Null;
@@ -919,6 +1099,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(expression)
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, materialize: bool) -> RResult<Value> {
         match ty {
             BCREPREF => {
@@ -1049,6 +1230,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 }
 
+#[cfg(feature = "bytecode-fidelity")]
 fn vector_width(ty: u32) -> Option<usize> {
     match ty {
         INTSXP | LGLSXP => Some(4),
@@ -1058,14 +1240,17 @@ fn vector_width(ty: u32) -> Option<usize> {
         _ => None,
     }
 }
+#[cfg(feature = "bytecode-fidelity")]
 fn code_word(bytes: &[u8], i: usize, little: bool) -> i32 {
     let a = bytes[i * 4..i * 4 + 4].try_into().unwrap();
     if little { i32::from_le_bytes(a) } else { i32::from_be_bytes(a) }
 }
+#[cfg(feature = "bytecode-fidelity")]
 fn real_word(bytes: &[u8], i: usize, little: bool) -> f64 {
     let a = bytes[i * 8..i * 8 + 8].try_into().unwrap();
     f64::from_bits(if little { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) })
 }
+#[cfg(feature = "bytecode-fidelity")]
 fn instruction_word(bytes: &[u8], i: usize, little: bool, version: i32, mismatch: bool) -> i32 {
     if i == 0 {
         version
@@ -1075,6 +1260,7 @@ fn instruction_word(bytes: &[u8], i: usize, little: bool, version: i32, mismatch
         code_word(bytes, i, little)
     }
 }
+#[cfg(feature = "bytecode-fidelity")]
 pub(crate) fn materialize_bytecode_code(b: &Bytecode) -> Value {
     match &b.instructions {
         BytecodeInstructions::Decoded(value) => value.clone(),
@@ -1087,6 +1273,7 @@ pub(crate) fn materialize_bytecode_code(b: &Bytecode) -> Value {
         }
     }
 }
+#[cfg(feature = "bytecode-fidelity")]
 fn materialize_encoded_vector(cells: &BytecodeCells, index: usize) -> Value {
     let item = &cells.encoded[index];
     let arena = cells.bytes.as_ref().unwrap().borrow();
@@ -1115,6 +1302,7 @@ fn materialize_encoded_vector(cells: &BytecodeCells, index: usize) -> Value {
 // R: serialize.c:ReadBCConsts / ReadBCLang, deferred until metadata inspection.
 // WriteBC replays cells directly and never forces this vector. The shared
 // repetition table preserves cross-nested-code identity without copying it.
+#[cfg(feature = "bytecode-fidelity")]
 pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
     let mut reader = ConstantReader { cells: &b.cells, pos: 0 };
     let reps = b.rep_values.get().expect("completed bytecode repetition table");
@@ -1134,10 +1322,12 @@ pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
     result.unwrap_or_else(|_| panic!("invalid validated bytecode cells"))
 }
 
+#[cfg(feature = "bytecode-fidelity")]
 struct ConstantReader<'a> {
     cells: &'a BytecodeCells,
     pos: usize,
 }
+#[cfg(feature = "bytecode-fidelity")]
 impl ConstantReader<'_> {
     fn record(&mut self) -> RResult<i64> {
         self.cells.next_record(&mut self.pos).ok_or_else(corrupt)
@@ -1268,6 +1458,7 @@ impl ConstantReader<'_> {
     }
 }
 
+#[cfg(feature = "bytecode-fidelity")]
 const BC_ARGC: &[usize] = &[
     0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 2, 0,
@@ -1278,6 +1469,7 @@ const BC_ARGC: &[usize] = &[
 // R: eval.c:R_bcEncode / R_bcDecode. Opcode cells remain integer indices;
 // robigo never installs GNU R's threaded addresses. Normalize the version and
 // check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
+#[cfg(feature = "bytecode-fidelity")]
 fn portable_bc_code(mut code: Value) -> RResult<Value> {
     let Value::Int(v) = &mut code else { return Err(corrupt()) };
     let Some(&version) = v.data.first() else { return Ok(Value::Null) };
@@ -1506,9 +1698,13 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
         refs: Vec::with_capacity(16),
         interp,
         hook,
+        #[cfg(feature = "bytecode-fidelity")]
         bc_records: BytecodeCells::default(),
+        #[cfg(feature = "bytecode-fidelity")]
         bc_operations: Vec::new(),
+        #[cfg(feature = "bytecode-fidelity")]
         bc_bytes: None,
+        #[cfg(feature = "bytecode-fidelity")]
         bc_words: None,
     };
     let version = r.int()?;
@@ -1767,6 +1963,7 @@ impl Writer<'_> {
     }
     // R: serialize.c:WriteBC1 / WriteBCLang. Replay cell definitions with
     // WriteItem so symbols and environments enter this stream's reference table.
+    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode(&mut self, b: &Bytecode) {
         if let Some(code) = b.code.get() {
             self.item(code);
@@ -1801,6 +1998,7 @@ impl Writer<'_> {
         }
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode_instructions(&mut self, b: &Bytecode) {
         match &b.instructions {
             BytecodeInstructions::Decoded(value) => self.item(value),
@@ -1816,6 +2014,7 @@ impl Writer<'_> {
         }
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn encoded_vector(&mut self, cells: &BytecodeCells, index: usize) {
         let item = &cells.encoded[index];
         self.int(item.flags as i32);
@@ -1915,6 +2114,7 @@ impl Writer<'_> {
             Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), &[]),
             Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
+            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => {
                 self.flags(BCODESXP, levs, obj, has_attr, false);
                 self.int(b.reps as i32);
@@ -1930,6 +2130,9 @@ impl Writer<'_> {
                 }
                 self.item(&Value::Env(c.env.clone()));
                 self.item(&Value::pairlist(c.formals.to_vec()));
+                #[cfg(not(feature = "bytecode-fidelity"))]
+                self.item(&c.body);
+                #[cfg(feature = "bytecode-fidelity")]
                 match &c.gnu_bytecode {
                     Some(b) => self.item(&Value::Bytecode(b.clone())),
                     None => self.item(&c.body),

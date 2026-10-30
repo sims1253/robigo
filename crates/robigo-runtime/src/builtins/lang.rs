@@ -243,6 +243,7 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
     let clo = Closure {
+        #[cfg(feature = "bytecode-fidelity")]
         gnu_bytecode: None,
         formals,
         body,

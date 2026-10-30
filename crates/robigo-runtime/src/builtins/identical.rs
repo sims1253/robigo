@@ -123,6 +123,7 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
         }
         // R: identical.c:R_compute_identical, BCODESXP. The expression tag
         // is NULL for loaded bytecode; the source is constant zero.
+        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(x), Value::Bytecode(y)) => {
             identical_flags(x.code(), y.code(), f)
                 && x.constants().len() == y.constants().len()

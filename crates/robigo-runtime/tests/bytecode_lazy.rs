@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(feature = "bytecode-fidelity")]
 mod bytecode_lazy_tests {
     use robigo_runtime::{
         Interp, Value,
@@ -130,4 +130,30 @@ mod bytecode_lazy_tests {
         let actual = Value::list(code.constants().to_vec());
         assert!(robigo_runtime::builtins::identical::identical(&actual, &expected));
     }
+}
+
+#[cfg(not(feature = "bytecode-fidelity"))]
+#[test]
+fn default_import_keeps_the_expression_without_bytecode_serialization() {
+    use robigo_runtime::{
+        Interp, Value,
+        serialize::{serialize, unserialize},
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/r/serialize/bytecode-fixtures");
+    let mut interp = Interp::new();
+    // The GNU fixture's first constant is 42L. The default reader returns
+    // that expression, rather than retaining the BCODESXP container.
+    let bytes = std::fs::read(root.join("constant-code.rds")).unwrap();
+    let Ok(expression) = unserialize(&mut interp, &bytes, Value::Null) else { panic!("oracle bytecode") };
+    let Value::Int(v) = &expression else { panic!("source constant") };
+    assert_eq!(v.data.as_slice(), &[42]);
+    let env = interp.global.clone();
+    let Ok(result) = interp.eval(&expression, &env) else { panic!("evaluate source") };
+    assert!(result.ptr_eq(&expression));
+    assert_ne!(serialize(&expression), bytes);
+    let bytes = std::fs::read(root.join("closure-v3-xdr.rds")).unwrap();
+    let Ok(closure) = unserialize(&mut interp, &bytes, Value::Null) else { panic!("oracle closure") };
+    let Value::Closure(f) = &closure else { panic!("closure") };
+    assert!(matches!(f.body, Value::Lang(_)));
+    assert_ne!(serialize(&closure), bytes);
 }

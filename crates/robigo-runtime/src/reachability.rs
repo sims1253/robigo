@@ -5,13 +5,17 @@
 //! counted once per owning allocation. Remaining references are conservative
 //! roots, including evaluator temporaries and opaque Rust payloads.
 
-use std::cell::{OnceCell, RefCell};
+#[cfg(feature = "bytecode-fidelity")]
+use std::cell::OnceCell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compile::Code;
 use crate::env::{Env, Frame};
-use crate::value::{Arg, Attrs, Bytecode, BytecodeCells, BytecodeInstructions, Value};
+use crate::value::{Arg, Attrs, Value};
+#[cfg(feature = "bytecode-fidelity")]
+use crate::value::{Bytecode, BytecodeCells, BytecodeInstructions};
 
 #[derive(Clone)]
 enum Owner {
@@ -20,8 +24,11 @@ enum Owner {
     Formals(Rc<[Arg]>),
     Code(Rc<Code>),
     Defaults(Rc<[Option<Rc<Code>>]>),
+    #[cfg(feature = "bytecode-fidelity")]
     BytecodeCells(Rc<BytecodeCells>),
+    #[cfg(feature = "bytecode-fidelity")]
     BytecodeConsts(Rc<Vec<Value>>),
+    #[cfg(feature = "bytecode-fidelity")]
     BytecodeReps(Rc<OnceCell<Vec<Value>>>),
     Inline(Rc<crate::vm::Inline>),
 }
@@ -55,6 +62,7 @@ fn identity(v: &Value) -> Option<(usize, usize)> {
         Value::Pairlist(v) => rc!(v),
         Value::Lang(v) => rc!(v),
         Value::Closure(v) => rc!(v),
+        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(v) => rc!(v),
         Value::Env(v) => rc!(&v.0),
         Value::Promise(v) => rc!(v),
@@ -111,6 +119,7 @@ impl ObjectGraph {
         edges.push(self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || Owner::Code(code.clone())));
     }
 
+    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode(&mut self, edges: &mut Vec<usize>, code: &Rc<Bytecode>) {
         edges.push(
             self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || {
@@ -178,6 +187,7 @@ impl ObjectGraph {
                                 self.edge(&mut edges, &a.value);
                             }
                         }
+                        #[cfg(feature = "bytecode-fidelity")]
                         Value::Bytecode(v) => {
                             self.edge(&mut edges, &v.expression);
                             if let Some(code) = v.code.get() {
@@ -201,6 +211,7 @@ impl ObjectGraph {
                             ));
                         }
                         Value::Closure(v) => {
+                            #[cfg(feature = "bytecode-fidelity")]
                             if let Some(code) = &v.gnu_bytecode {
                                 self.bytecode(&mut edges, code);
                             }
@@ -260,6 +271,7 @@ impl ObjectGraph {
                         | Value::Raw(_) => {}
                     }
                 }
+                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeCells(cells) => {
                     for value in &cells.items {
                         self.edge(&mut edges, value);
@@ -268,11 +280,13 @@ impl ObjectGraph {
                         self.edge(&mut edges, &encoded.attrs);
                     }
                 }
+                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeConsts(pool) => {
                     for value in pool.iter() {
                         self.edge(&mut edges, value);
                     }
                 }
+                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeReps(reps) => {
                     for value in reps.get().into_iter().flatten() {
                         self.edge(&mut edges, value);
@@ -418,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bytecode-fidelity")]
     fn shared_bytecode_metadata_cycles_are_traced_without_forcing() {
         for forced in [false, true] {
             let a = key();
@@ -515,6 +530,7 @@ mod tests {
         let b = key();
         let promise = Value::Promise(Rc::new(Promise::new(b.clone(), env(&a).clone())));
         let closure = Value::Closure(Rc::new(Closure {
+            #[cfg(feature = "bytecode-fidelity")]
             gnu_bytecode: None,
             formals: vec![Arg::pos(promise)].into(),
             body: Value::Null,
@@ -541,6 +557,7 @@ mod tests {
         let body = Value::lang(Value::sym("f"), vec![]);
         let code = crate::compile::compile_thunk(&body).unwrap();
         let instance_method = Value::Closure(Rc::new(Closure {
+            #[cfg(feature = "bytecode-fidelity")]
             gnu_bytecode: None,
             formals: vec![].into(),
             body: Value::Null,
@@ -553,6 +570,7 @@ mod tests {
         }));
         *code.call_sites[0].memo.borrow_mut() = Some((0, 0, instance_method));
         let constructor = Closure {
+            #[cfg(feature = "bytecode-fidelity")]
             gnu_bytecode: None,
             formals: vec![].into(),
             body,

@@ -38,6 +38,7 @@ fn do_body(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 
 // R: builtin.c:do_bodyCode. Unlike body(), this exposes BCODESXP.
 fn do_body_code(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    #[cfg(feature = "bytecode-fidelity")]
     if let Value::Closure(c) = arg(&args, 0) {
         if let Some(b) = &c.gnu_bytecode {
             return Ok(Value::Bytecode(b.clone()));
@@ -58,6 +59,7 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
     }
     match &f {
         Value::Closure(c) => Ok(Value::Closure(Rc::new(Closure {
+            #[cfg(feature = "bytecode-fidelity")]
             gnu_bytecode: None,
             formals: c.formals.clone(),
             body: Value::Null,
@@ -75,6 +77,7 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
                 if let Some(Value::Env(e)) = i.base_binding(Sym::new(name)) {
                     if let Some(Value::Closure(t)) = e.get_local(Sym::new(b.name)) {
                         return Ok(Value::Closure(Rc::new(Closure {
+                            #[cfg(feature = "bytecode-fidelity")]
                             gnu_bytecode: None,
                             formals: t.formals.clone(),
                             body: Value::Null,

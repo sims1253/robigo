@@ -27,3 +27,15 @@ its IEEE bits and serialized bytes before and after inspection.
 
 `string-constants.rds` covers deferred UTF-8, latin1, bytes, NA, empty and
 named character vectors, including native-binary and XDR round trips.
+
+Run the fidelity comparisons with the opt-in runtime feature:
+
+```sh
+ROBIGO_CONF_FILTER=tests/r/serialize/bytecode_ cargo test --release \
+  -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance
+```
+
+The scripts' `.requires` sidecars select this build. Default builds execute
+imported bytecode through its source expression and do not preserve its
+serialized bytecode representation. CI runs both scripts in all three tiers
+with the feature enabled.
