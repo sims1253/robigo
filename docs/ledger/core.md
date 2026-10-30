@@ -4,6 +4,79 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-10-30: SET_VECTOR_ELT shared-list mutation
+
+- Why: the sweep track's `putconst` port is blocked on one core
+  behaviour. eval.c:do_putconst stores a constant with
+  `SET_VECTOR_ELT(constBuf, constCount, x)` and the compiler then reads the
+  buffer through its binding, so GNU R mutates a shared VECSXP *through an
+  alias*; robigo's `Rc::make_mut` copied instead. The same rule makes
+  datetime.c:valid_POSIXlt coerce its argument in place.
+- Spec read: memory.c `VECTOR_ELT`/`SET_VECTOR_ELT`/`SET_VECTOR_ELT_0`,
+  `FIX_REFCNT`, `CHECK_OLD_TO_NEW`, duplicate.c `duplicate1`/`duplicate`
+  (deep) vs `shallow_duplicate`. The rule: the C cell store never
+  duplicates; the R-level replacement primitives are the ones that check
+  `MAYBE_REFERENCED` and duplicate first. `CHECK_OLD_TO_NEW` is a
+  generational barrier (no counterpart on the Rc heap) and `FIX_REFCNT` is
+  the retain/drop this already does. `VECTOR_ELT` reads without
+  duplicating and only ALTREP adds MARK_NOT_MUTABLE; runtime compact
+  sequences are atomic, so no list ALTREP exists here.
+- Implementation: `Value::set_vector_elt_through_alias(i, value)` for
+  List (VECSXP) and Expr (EXPRSXP). The unique case writes the cell
+  through `Rc::as_ptr` (the `Rc::get_mut` unique branch); the shared case
+  is the out-of-line `store_cell_shared`, which replaces the cell where
+  the allocation keeps it and drops the old element. `Rc::make_mut` is
+  untouched, so `[[<-`, `[<-` and `attr<-` still copy a shared object.
+  `Value` clones share the Rc, so my, y's and an environment's or
+  attribute's view are the same object as in GNU R (there is no separate
+  shallow-duplicate object to keep in sync).
+- Datetime: valid_POSIXlt now writes each coerced component back with the
+  primitive, in C's order (0 first, then 1..n_check skipping the zone,
+  then the zone/gmtoff checks, then tzone), so a validation error keeps
+  the stores already made. The three C callers that `duplicate(CAR(args))`
+  first (as.POSIXct, format.POSIXlt, POSIXlt2Date) get a private cell
+  array (`private_cells`: make_mut's copy-if-shared) and leave their
+  argument untouched; balancePOSIXlt calls valid on the argument itself,
+  as datetime.c does.
+- Before: `tests/r/datetime/shared_list_mutation.R` on main printed
+  `bindings: integer integer`, GNU R prints `double double`; the same for
+  the environment and attribute aliases. After: stdout, stderr and status
+  match the Debian GNU R 4.5.0 recording exactly in interpreter, VM and
+  JIT; the script is ratcheted. Five value.rs tests pin: every alias sees
+  the write, Expr and unique vectors work, non-vectors/out-of-range are
+  rejected, the replaced element is dropped once, and R-level CoW still
+  copies.
+- Perf: paired harness with both exact binaries (main a32c5623 and this
+  branch), cache off, Rust ports (no natives locally), 2 repeats:
+  0 faster / 0 slower above 0.5% / 0 broken. Stored instruction counts
+  bytecodes 229,171,915 -> 229,179,145 (+0.003%), listFor 302,514,415 ->
+  302,466,374 (-0.016%), listWhile 408,935,161 -> 408,958,827 (+0.006%),
+  s4-generic 578,710,927 -> 578,510,903 (-0.035%), s4-new -0.003%,
+  s4-slot-read -0.007%, s4-slot-write 479,923,126 -> 480,051,407
+  (+0.027%), s4-valid -0.003%. CI's cache/natives gate is the judge.
+- Verification: both datetime script runs match; runtime lib 66 pass with
+  only the two documented host-glibc complex oracles failing (unchanged);
+  `cargo fmt --check` clean.
+
+### Handoff to conformance-sweep-data
+
+`Value::set_vector_elt_through_alias(&self, i, value) -> bool` (value.rs)
+is the SET_VECTOR_ELT port: true when `self` is List/Expr and `i` is in
+range, false otherwise. eval.c:do_putconst has already rejected a
+non-VECSXP and `constCount >= LENGTH`, so port it as:
+
+```rust
+if x == y || interp.compute_identical(&x, &y, 16)? { return Ok(Value::int(i)) }
+buf.set_vector_elt_through_alias(const_count as usize, x);
+Ok(Value::int(const_count))
+```
+
+Do not clone/replace the buffer: the caller's binding keeps the same Rc,
+which is the point. getconst/growconst allocate fresh lists and stay as
+they are. Once putconst is in, add compiler::cmpfun constant-layout
+fixtures; the primitive itself is covered by value.rs's shared_list_tests
+and tests/r/datetime/shared_list_mutation.R.
+
 Local setup (this machine): system R is 4.6.1, so the capi corpus's
 `R CMD SHLIB` build step runs GNU R 4.5.0 from the `robigo-oracle:4.5.0`
 image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
