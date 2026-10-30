@@ -1,0 +1,5 @@
+if (dir.exists('tests/r/serialize/bytecode-fixtures')) setwd('tests/r/serialize')
+e <- readRDS('bytecode-fixtures/unforced-promise.rds')
+print(identical(serialize(e, NULL), readBin('bytecode-fixtures/unforced-promise.rds', 'raw', n = 100000L)))
+print(e$x)
+print(identical(serialize(e, NULL), readBin('bytecode-fixtures/forced-promise.rds', 'raw', n = 100000L)))

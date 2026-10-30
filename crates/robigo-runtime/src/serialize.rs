@@ -688,8 +688,19 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     #[inline(always)]
     fn bc_item(&mut self) -> RResult<Value> {
-        let v = self.read_item()?;
-        self.bc_records.item(v.clone(), false);
+        // R: serialize.c:ReadItem. These special/reference cells return before
+        // attribute handling; keep the common bytecode leaves on that path.
+        let flags = self.int()? as u32;
+        let v = match flags & 255 {
+            NILVALUE_SXP => Value::Null,
+            MISSINGARG_SXP => Value::missing_arg(),
+            REFSXP => {
+                let i = self.ref_index(flags)?;
+                self.refs.get(i.wrapping_sub(1)).cloned().ok_or_else(corrupt)?
+            }
+            _ => self.read_item_flags(flags)?,
+        };
+        self.bc_records.item(&v, false);
         Ok(v)
     }
 
@@ -701,9 +712,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             let c = match ty {
                 BCODESXP => {
                     let v = self.read_bc(reps)?;
-                    if let Value::Bytecode(b) = &v {
-                        self.bc_records.item(Value::Bytecode(b.clone()), true);
-                    }
+                    self.bc_records.item(&v, true);
                     v
                 }
                 LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(ty, reps)?,
@@ -1318,13 +1327,21 @@ impl Writer<'_> {
     fn bytecode(&mut self, b: &Bytecode) {
         self.item(&b.code);
         for &record in &b.cells.operations {
-            match record & 3 {
-                0 => self.int((record >> 2) as i32),
-                1 => self.item(&b.cells.items[(record >> 2) as usize]),
-                _ => {
-                    let Value::Bytecode(nested) = &b.cells.items[(record >> 2) as usize] else { unreachable!() };
+            match record & 7 {
+                0 => self.int((record >> 3) as i32),
+                1 => self.item(&b.cells.items[(record >> 3) as usize]),
+                2 => {
+                    let Value::Bytecode(nested) = &b.cells.items[(record >> 3) as usize] else { unreachable!() };
                     self.bytecode(nested);
                 }
+                3 => self.int(NILVALUE_SXP as i32),
+                4 => self.item(&Value::Sym(Sym((record >> 3) as u32))),
+                kind @ (5 | 6) => {
+                    self.flags(if kind == 5 { INTSXP } else { LGLSXP }, 0, false, false, false);
+                    self.length(1);
+                    self.int((record >> 3) as i32);
+                }
+                _ => unreachable!("invalid bytecode cell record"),
             }
         }
     }
