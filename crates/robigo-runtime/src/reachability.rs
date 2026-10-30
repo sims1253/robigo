@@ -646,6 +646,24 @@ mod tests {
     }
 
     #[test]
+    fn a_reclaimed_frame_forgets_its_hash_index() {
+        let a = key();
+        for i in 0..20 {
+            env(&a).set_local(Sym::new(&format!("v{i}")), Value::int(i));
+        }
+        let g = graph(&[&a]);
+        let live = g.externally_live();
+        assert_eq!(g.reclaim_unreachable(&live), 1);
+        drop(g);
+        env(&a).set_local(Sym::new("v19"), Value::int(7));
+        assert!(matches!(
+            env(&a).get_local(Sym::new("v19")),
+            Some(Value::Int(v)) if v.data == [7]
+        ));
+        env(&a).0.frame().borrow_mut().clear();
+    }
+
+    #[test]
     fn a_shared_frame_of_a_live_alias_survives_reclamation() {
         let base = Value::Env(Env::new_search(None, "test base"));
         let alias = Value::Env(Env::alias(env(&base), None, "test alias"));
