@@ -244,6 +244,19 @@ Slice used throughout ("S4 slice"):
   passes (4 examples, 5 demos, 4 intro) into their ratchets. These counts
   include improvements already on main; they are fresh coverage, not an
   isolated attribution to methods startup.
+- Final verification: `CARGO_BUILD_JOBS=2 R_HOME=~/.local/opt/R-4.5.0
+  ROBIGO_NATIVES=$PWD/.robigo/natives cargo test --release -p robigo-runtime
+  -p robigo-cli -- --skip c_library_oracle --skip c_library_trig_oracle`
+  passes: 36 runtime tests, 7 CLI tests, 2 lazy-load tests, all three
+  conformance checks (including execution-tier comparisons). Both skipped
+  complex C-oracle tests are the documented host-glibc mismatch; CI keeps
+  them enabled. Formatting, five Python harness tests and diff checks pass.
+- PR remains draft pending full CI on the latest push. The T3
+  `watch_pull_request` tool is unavailable in this session (discovery
+  returned no watcher, and direct invocation was not callable), so no
+  automatic CI continuation is registered. Next: inspect latest PR checks,
+  fix any real losses, undraft only after all jobs pass. Job 2 has not
+  started because #71 is not yet ready.
 - To finish FastR: core must implement environment `reg.finalizer` and
   collect reference-class cycles at `gc()`. Then restore the methods-aware
   FastR record from commit 2e2945b (or re-record with the oracle if sources
