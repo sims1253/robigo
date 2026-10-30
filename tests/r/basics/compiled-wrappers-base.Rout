@@ -1,0 +1,36 @@
+lapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+sapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+NULL
+[[1]]
+[1] 1
+
+NULL
+[[1]]
+[1] 1
+
+lapply(x, identity)
+[[1]]
+[1] 1
+
+lapply(stop("argument error"), identity)
+[1] "argument error"
+[1] FALSE  TRUE FALSE
+[1] NA NA NA
+rep.int(a, -1, "extra")
+[1] "unused argument (\"extra\")"
+rep.int(a, b, b)
+[1] "unused argument (b)"
+is.vector(x)
+[1] "local"
+is.vector(x)
+[1] "local"
+[[1]]
+[1] 1
+
+[1] TRUE
+[[1]]
+[1] 1
+
+restored

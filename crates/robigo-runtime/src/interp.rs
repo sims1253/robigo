@@ -66,6 +66,21 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
+    /// The shipped simple-`.Internal` wrapper bindings (R: installed
+    /// bytecode is fixed at install; see `vm::snapshot_simple_internals`),
+    /// by `compile::SIMPLE_INTERNALS` index. Promises stay unforced until
+    /// first use.
+    pub si_snaps: [Option<Value>; 20],
+    /// Whether [`Interp::si_snaps`] is complete. Calls made while base is
+    /// still loading stay generic (and unmemoized): resolving against a
+    /// partial snapshot would poison the memo for user code.
+    pub si_ready: bool,
+    /// Record-first resolutions of interpreted simple-`.Internal` calls
+    /// (see `vm::try_inline_expr`), by caller closure and call
+    /// expression: the inline, or never-inline. The key's addresses stay
+    /// valid because the value holds both alive (freed addresses could
+    /// otherwise be reused by unrelated calls).
+    pub si_expr_memo: HashMap<(usize, usize), Option<(crate::compile::SiInline, Rc<Closure>, Rc<Lang>)>>,
     /// Cache of function lookups through the search path, keyed by symbol
     /// and starting environment, valid for `fun_cache_epoch`.
     pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,
@@ -167,6 +182,9 @@ impl Interp {
             in_error: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
+            si_snaps: std::array::from_fn(|_| None),
+            si_ready: false,
+            si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
             unboxed_ret: None,
@@ -598,7 +616,11 @@ impl Interp {
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
-                if let Some(r) = crate::vm::inline_base_isvector(self, call, c, env) {
+                // R: compiler/R/cmp.R:cmpSimpleInternal. Installed base
+                // bytecode inlines simple wrappers before forcing X; only
+                // installed (namespace) code observes the inline. Out of
+                // line: candidate calls are rare.
+                if let Some(r) = self.try_inline_call(l, call, env) {
                     return r;
                 }
                 let promargs = self.promise_args(&l.args, env)?;
@@ -606,6 +628,17 @@ impl Interp {
             }
             _ => Err(Flow::error("attempt to apply non-function")),
         }
+    }
+
+    /// An interpreted call taking the simple-internal path (see
+    /// `vm::try_inline_expr`). Out of line and cold: only candidate
+    /// call heads reach `try_inline_expr`.
+    #[cold]
+    #[inline(never)]
+    fn try_inline_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> Option<RResult<Value>> {
+        let sym = l.fun_sym()?;
+        let si = sym.with_name(|n| crate::compile::SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8))?;
+        crate::vm::try_inline_expr(self, si, l, call, env)
     }
 
     pub fn call_builtin(&mut self, b: &'static Builtin, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {

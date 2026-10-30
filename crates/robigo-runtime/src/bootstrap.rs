@@ -143,5 +143,11 @@ pub fn load_base(interp: &mut Interp) -> Result<(), String> {
         }
         let _ = writeln!(err, "boot: {} failing top-level expressions", failures.len());
     }
+    // R: installed bytecode is fixed at install: snapshot the shipped
+    // simple-`.Internal` wrappers for namespace callers (see
+    // `vm::snapshot_simple_internals`). The snapshot holds the raw
+    // bindings without forcing them; forcing happens on first use, at
+    // the same point the generic call would force them.
+    crate::vm::snapshot_simple_internals(interp);
     Ok(())
 }

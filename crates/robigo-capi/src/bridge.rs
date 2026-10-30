@@ -958,6 +958,18 @@ unsafe fn int_arg(x: Sexp) -> i32 {
     *(x.std_data() as *const i32)
 }
 
+/// Write bytes to a host connection without wrapping them in a RAWSXP
+/// and an integer scalar and dispatching the generic `writeConnection`
+/// op (R: connections.c:R_WriteConnection, for native callers handing
+/// over each cell, separator and newline). Returns 0, or the flow token
+/// on failure; the caller jumps, as `host::op` does.
+pub(crate) fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
+    guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
+        Ok(()) => 0,
+        Err(f) => store_flow(f),
+    })
+}
+
 /// Host operations by name (`host::op`).
 unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     Ok(match name {

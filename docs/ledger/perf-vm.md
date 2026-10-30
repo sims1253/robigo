@@ -6,6 +6,227 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 11, rescue #108 (rebase + perf verdict)
+
+- Took over `track/perf-vm-r10-wrappers` at 628f43c (CONFLICTING with
+  main 0bee8896) on a rescue branch in this worktree (the PR branch is
+  checked out in round 10's worktree; pushed via explicit refspec).
+  Merge commit e38a5f6a, pushed to #108; GitHub reports MERGEABLE/CLEAN.
+- Conflict resolutions: compile.rs keeps `CallSite::si`/`si_memo`
+  (HEAD's general 20-internal port) and drops main's narrower
+  `inline_base_isvector` field (round 9's merged #103 mechanism is
+  superseded: one construction site, no other users); interp.rs keeps
+  `try_inline_call`; vm.rs keeps `try_inline_site`/`try_inline_expr`
+  and drops `inline_base_isvector`. Ledger keeps both sides' sections.
+  Ratchets: kept main's deletion of both legacy `passing.txt` lists and
+  added `tests/r/passing/basics/compiled-wrappers-{base,user}.R.pass`
+  (the branch's fastr `245e62b` marker already exists on main).
+- Host release verification of the merge: conformance 7/7 incl. both
+  wrapper fixtures in all three tiers; full conformance 7/7;
+  `cargo test --release -p robigo-runtime`: 55 pass + the 2 documented
+  host-glibc complex-oracle 1-ulp failures (untouched files, pass in
+  Debian CI). `cargo fmt --check` clean. (Debug `cargo test` does not
+  link on this host; release is the documented path.)
+- Paired perf gate in `robigo-build:4.5.0` (Debian R 4.5.0-3, valgrind,
+  CI native set built fresh from the R sources, both exact release
+  binaries from fresh target dirs, same job, cache disabled, min of 2;
+  i.e. CI's `perf-paired.py` mechanism on an 11-program change-sensitive
+  subset: csv, lapply, lapplyDots, profiler-microbenchmark,
+  profiler-shared, matrixFor, fib, binarytrees, nbody, pidigits,
+  Storage). Result: **6 faster, 0 slower above 0.5%, 0 broken**; all 11
+  outputs match GNU R; csv **1,783,838,989 -> 1,394,969,387 (-21.80%)**,
+  1.16x -> 0.91x GNU R, now 11/11 faster. Other paired wins: Storage
+  -2.12%, nbody -1.47%, pidigits -0.88%, lapply -0.58%, matrixFor
+  -0.65% (fib/binarytrees/profilers/lapplyDots neutral, all < 0.5%).
+- Caution replayed: two source trees sharing one cargo target dir
+  poison each other through mtime-based fingerprint reuse (the second
+  build silently reuses the first's build-script output: here
+  `--dynamic-list=/base/.../exports.list` broke the link and exposed
+  it). Paired binaries came from isolated fresh target dirs.
+- CI run 41049290827 on e38a5f6a: SUCCESS (build, all corpus shards,
+  full performance gate). The rebase verdict is verified both locally
+  (focused paired gate) and by CI (full gate).
+- Open queue: remaining connection-write cost per round 10
+  (EncodeElement/native formatting out of scope; con_write_bytes ~75M +
+  copy/strlen ~25M in csv; m_vfprintf's scratch copy stays as finalizer
+  protection). #116 (core cycle reclamation) has MERGED since the round
+  brief, so the value.rs prohibition lapsed; scalar promise storage
+  (round 10 design) is the next step, still needing core agreement on
+  tracing before landing.
+
+## 2026-10-30: round 10, general simple-internal inlining
+
+- Supersedes the mechanism of open #103 (base `is.vector` argument
+  contexts): this ports GNU R's full `cmpSimpleInternal` rule for all 20
+  `safeBaseInternals` (verified simple wrappers in R 4.5.0), for installed
+  and user callers. #103's fixtures stay valid; rebase coordination: if
+  #103 merges first, keep both fixture files (different scope) and drop
+  nothing here.
+- Port (vm.rs, compile.rs; one field + hook each in interp.rs and
+  bootstrap.rs, called out in the PR): `CallSite::si` (head-name index,
+  computed once at compile time, no interning) with a write-once
+  `SiMemo` per caller closure.
+  - Definition once per site (GNU R compiles once): namespace callers
+    (locked env chain, no search env) inline the STARTUP SNAPSHOT
+    (`snapshot_simple_internals` at end of base loading = installed
+    bytecode, no runtime guard, survives unlockBinding surgery before
+    the first call); user callers inline the current base definition
+    only while `resolves_to_base` holds (DO_BASEGUARD) and only once
+    the caller runs as compiled code (`jit.is_bytecode`, R_CheckJIT
+    timing: first calls stay interpreted and generic).
+  - Argument matching reuses `match_args` on marker-valued skeletons
+    (exact R semantics incl. partial matching and duplicate/unused
+    errors, which fall back to the generic call that reproduces them);
+    substituted-missing also falls back (R: cmpBuiltin bails).
+  - Evaluation is eager in formal order (R: MAKEPROM on builtin frames,
+    same as evalList), constants embedded, inner call keeps actual
+    expressions (error calls deparse them, e.g. `rep.int(v, -1)`), and
+    the USER's call is pushed as the error context (R: getCurrentCall
+    over the bytecode expressionsIndex: plain errors/warnings report
+    it, e.g. `nchar(v, type = 2)`; arg-eval errors report the caller,
+    e.g. `n2("a")`).
+- Correctness found by oracle probes, all pinned in two new fixtures
+  (`compiled-wrappers-base.R`, `compiled-wrappers-user.R`, recorded
+  with Debian R 4.5.0): missing/`...`/extra/duplicate args stay
+  generic; partial tags align; local and global rebindings are ignored
+  by installed callers but honored by user callers after compilation;
+  base-namespace surgery before the first call keeps the internal;
+  sys.calls/warning/error calls match in every tier.
+- Rejected intermediate without the compile-timing gate: VM inlined
+  first calls that GNU R interprets, dropping the wrapper frame from
+  default tracebacks (`err-rep-len.R`, `math2-nonnumeric.R`,
+  `pos-to-env.R` failed `compiled_matches_interpreted`). The
+  `is_bytecode` gate fixes all three; the retained user-closure oracle
+  from #103 now passes.
+- Rejected layout: the hook code inlined into `closure_call`
+  (+1264 bytes, +12.5%) cost csv +0.61% despite only 614 candidate
+  executions. All mechanism functions are `#[cold] #[inline(never)]`
+  (`run_simple_internal` out of line but normally optimized);
+  `closure_call` is back to +80 bytes and the eval_call hook body is a
+  cold helper. csv: +0.61% -> -0.08% vs the conn build.
+- Metric (in-container, CI natives, full paired suite): job 2 alone
+  (vs the conn build): **7 faster, 0 slower above 0.5%, 0 broken**
+  (profiler-shared -1.39%, profiler-microbenchmark -2.27%, s4-new
+  -1.84%, s4-valid -1.58%, nbody -1.05%, pidigits -0.74%, Storage
+  -1.79%). With job 1 (vs main d81d29c): **11 faster, 0 slower,
+  0 broken**, csv -21.73%, geomean **0.488 -> 0.484** over 71 correct
+  programs, faster on **70 -> 71**.
+- Verified: both new fixtures pass in all three tiers (252 ratcheted
+  scripts incl. the 2 new ones), full conformance green, runtime unit
+  tests 44 + 2 pre-existing host-glibc complex-oracle failures
+  (untouched files; pass in Debian CI), FastR lapply/sapply/is.vector/
+  match/rep/which/inherits/identical/nchar/typeof/vector slice
+  1561/1573 with 0 regressions and 1 new pass (the same
+  `TestBuiltin_lapply/245e62b143e432a3` #103 fixed), connections/
+  write/read/scan slice 241/242 with 0 regressions, serialize slice
+  clean except the known environmental 2G timeout.
+- Open: the 46 `safeStatsInternals` use the same mechanism with a stats
+  snapshot; land only if measurable (no distribution benchmarks use
+  them hot). The `lockEnvironment` + locked-user-frame exotic stays on
+  the namespace path (noted, no fixture).
+- Hardening after CI's first perf gate (3 slower on CI's runner, all
+  faster-or-neutral locally): (1) the startup snapshot forced 20 lazy
+  promises, perturbing the heap layout for the whole run (profiler
+  benchmarks swung +-2% by runner); the snapshot now holds raw bindings
+  and forces on first use, where the generic call would force anyway.
+  (2) Memo keys are raw addresses: a freed call Lang reused by an
+  unrelated call hit a stale `None` entry and skipped an inlinable
+  lchoose (wrong values). Keys now hold their `Rc`s alive, so a hit is
+  always the same objects. (3) Base-namespace callers match by pointer:
+  base_ns aliases the search-path frame, so the locked-chain walk alone
+  misclassified them as user code. (4) Resolutions record `None`
+  write-once too (matching code GNU R compiled against a replacement),
+  and no resolution happens while base is still loading (a partial
+  snapshot would poison the memo).
+- Local re-measurement after hardening: **25 faster, 0 slower above
+  0.5%, 0 broken** vs main (csv -21.7%, profiler swings gone).
+- Setup gotcha (2026-10-30): another track's parser work (`StrNative`
+  in `robigo-syntax`, now on main) poisoned the shared
+  `~/.cache/cargo-target`: cargo reused its newer syntax rlib for this
+  tree and failed this tree's `lang.rs` exhaustiveness. Host builds
+  and tests now use a private `CARGO_TARGET_DIR`
+  (`/tmp/perf-vm-r10/host-target`); container builds already use the
+  track's private trixie target. Rebase onto the new main only on
+  conflicts; none with 1a591ff.
+
+## 2026-10-30: round 10, scalar promise storage (design only)
+
+- Not landed: core's environment finalizers (#98) are still open, and
+  unboxed promise storage changes `value.rs` with core-owned tracing
+  implications. Design note for after #98 lands; needs core agreement.
+- Current cost (round 6/9): `Promise::forced` stores a boxed `Value`
+  (two allocations: `Rc<Vector>` + buffer) installed both in the frame
+  binding and `Context.promargs`. fib pays ~582 instructions/call in
+  `caller_promargs` (mostly boxing + the forced-promise allocation)
+  and 4.000074 allocator requests/call (2× `Value::real`, 1×
+  `Env::with_frame`, ~1× closure-call path).
+- Design (extends round 9's note): keep one `Rc<Promise>` shared by the
+  environment and `Context.promargs`; let its forced state hold
+  integer, logical or double bits directly, with a boxed `Value`
+  alternative. VM reads copy scalar bits; AST/native/introspection
+  reads materialize and cache the `Value` once. Commit the forced
+  state and clear `PRENV` at GNU R's `forcePromise` success boundary
+  only (failed forces keep env + expression for the retry); apply
+  `ENSURE_NAMEDMAX`-equivalent sharing semantics on materialization.
+  Escaping promises retain their expression and old scalar after a
+  parent binding changes; `missing`/`substitute`/`parent.frame` and
+  S4 context hooks observe the expression, never the bits.
+- Core tracing must follow the boxed alternative, the expression and
+  any unforced env; scalar states add no graph edge. `value.rs`,
+  `env.rs` and every direct promise-value reader change, so this
+  follows core's finalizer reachability work, with missing/substitute/
+  parent.frame/native-root tests before landing.
+- Expected cut once landed: the per-call box (2 allocs) and most of
+  the 582 `caller_promargs` instructions on scalar-heavy call
+  benchmarks (fib, binarytrees); re-measure the per-call
+  instruction/allocator deltas from the round 6 baseline then.
+
+## 2026-10-30: round 10, direct connection writes
+
+- Base: main d81d29c. In-container flow (robigo-build:4.5.0): host
+  rustup 1.99.0 toolchain mounted, private target
+  ~/.cache/robigo-trixie-target, natives built fresh from the R 4.5.0
+  sources (stats splines tools parallel utils grDevices graphics grid,
+  the CI set). perf.py runs with the bench cache mounted. Without
+  natives csv measures the Rust port (943M); with natives it is
+  1,781,299,235 (1.16x GNU R), matching round 9's 1,782,142,078.
+- Fresh instruction table on main (CI configuration, both runtimes):
+  geomean **0.488 over 71 correct programs, faster on 70**. csv is the
+  only program slower than GNU R (1.16x). spectralnorm_math is the only
+  wrong-output program; the other 11 excluded programs exit nonzero on
+  both sides (matching error exits). Saved as .robigo/perf-base.json
+  (gitignored) and /tmp/perf-vm-r10/base.json.
+- csv profile (callgrind, inclusive): writetable 852.8M (47.9%),
+  m_vfprintf 506.4M, R_WriteConnection 469.9M (of which h_op 251.6M,
+  bridge op 133.3M, con_write_bytes 75.2M, alloc_vector 109.5M,
+  hashbrown+siphhash lookups ~90M), EncodeElement2 307.8M,
+  Rf_EncodeElement0 283.7M. The write path is ~470M of formatting
+  round-trip (RAWSXP + scalar per write, generic op dispatch, copies).
+- Change (outside vm.rs, minimal, called out): capi
+  R_WriteConnection hands the borrowed bytes straight to
+  con_write_bytes via a new bridge write_connection_bytes helper
+  (same guarded/store_flow/jump shape as h_op: identical handler and
+  jump behavior, no Sexp wrapping, no copies), plus a one-entry
+  pointer->number cache in number_of (connections are never removed,
+  numbers never change; native writers use one connection per table).
+  m_vfprintf's scratch/Vec copy stays: it protects the native
+  formatter's static buffer from finalizers run by con_write_bytes'
+  own allocations.
+- csv: **1,781,299,235 -> 1,395,449,324 instructions (-21.7%)**,
+  ratio 1.16 -> 0.91. Paired full gate: **1 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed**; geomean **0.488 -> 0.486, faster on
+  70 -> 71** (every correct program now beats GNU R).
+- Verified: csv-connection-format fixture passes (all three tiers),
+  full conformance passes (250 ratcheted, 3 tiers), FastR
+  connections/write/read/scan/cat/save slice 241/242 with 0
+  regressions, serialize slice 320/326 with the only regression the
+  pre-existing environmental timeout (2G doubles need ~16GB; fails on
+  the saved baseline binary too). saveRDS-to-connection cases pass.
+- Remaining connection costs (in csv): EncodeElement2 307.8M +
+  Rf_EncodeElement0 283.7M + Rf_EncodeReal0 192M (native formatting,
+  out of scope), con_write_bytes 75M, copy/strlen ~25M. Reads
+  (R_ReadConnection) untouched.
+
 ## 2026-10-30: round 9 baseline and builtin wrapper diagnosis
 
 - Started at main 1b4670a. #102 is still open; do not attribute its
@@ -113,7 +334,6 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Remaining work: general cmpSimpleInternal scope/argument matching for
   user closures (the retained oracle), a direct connection-write bridge
   with core, and scalar promise states after core's finalizer work.
-  No Value/Promise layout or connection implementation was changed.
 
 ## 2026-10-30: round 8, CSV connection formatting
 
