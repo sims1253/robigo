@@ -253,3 +253,11 @@ tests/r/vec/print-max-index.R
 tests/r/basics/base-isvector-context.R
 tests/r/basics/compiled-isvector-missing.R
 tests/r/lang/substitute-dots-cell.R
+tests/r/linalg/battery.R
+tests/r/linalg/chol.R
+tests/r/linalg/eigen.R
+tests/r/linalg/svd.R
+tests/r/linalg/chol-pivot.R
+tests/r/linalg/solve-cmplx.R
+tests/r/linalg/solve-tol.R
+tests/r/linalg/svd-direct.R
