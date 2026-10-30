@@ -11,6 +11,31 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: combine closure source printing with byte windows
+
+- Kept green remote a41e59d and merged main 4754027. Only passing.txt
+  conflicted; preserved the union. Closure srcref transfer, original-source
+  printing and serialization metadata combine without manual changes.
+- Extra oracle probe found one-line UTF-8 original source prints as
+  mojibake: as.character.srcref temporarily marks lines as bytes and
+  substring rebuilt the Unicode view. Ported character.c:substr's CE_BYTES
+  branch: slice original bytes and preserve the mark. Added a direct tag
+  predicate so ordinary substring calls do not scan for ASCII.
+- New closure_source_bytes recording comes from Debian GNU R 4.5.0.
+  Before the fix, two of three literals match; literal UTF-8 source fails
+  both original printing and its serialization round trip. Octal source
+  bytes and computed return bytes match. After fix: all three literals
+  and serialization round trips match. Conformance 241/241 in all tiers;
+  runtime 41 unit + two integration tests pass (two host-glibc oracles
+  excluded), substring corpus 56/56, graphics 182/184 and Hershey 1/1.
+  Final host strings 767,917,160: +0.07% versus the merge before the fix,
+  -0.04% versus green a41e59d. Formatting and diff checks pass.
+- Before substring fix, merged conformance 240/240 across all tiers;
+  runtime 41 unit + two integration tests pass with the two host-glibc
+  numeric oracles excluded. Graphics 182/184, no regressions; Hershey 1/1.
+  Host strings with identical a41 natives and flat cache: green a41
+  768,253,311 -> merge 767,378,363 (-0.11%).
+
 ## 2026-10-30: cache text length to retain string-vector allocation sizes
 
 - Rebased onto 29cac51 (#60 and #91); kept both sides of the passing

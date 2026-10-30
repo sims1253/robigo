@@ -169,6 +169,10 @@ impl RString {
     fn from_text(text: &str, mark: Encoding) -> Self {
         Self::from_text_tag(text, mark as usize)
     }
+    #[inline]
+    pub fn is_bytes(&self) -> bool {
+        self.tag() == Encoding::Bytes as usize
+    }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
             0 => Encoding::Native,

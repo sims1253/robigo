@@ -389,6 +389,13 @@ fn do_substr(_: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
             }
             if start > stop {
                 out.push(Some(crate::value::RString::from("")));
+            } else if el.is_bytes() {
+                // R: character.c:substr -- CE_BYTES counts original bytes
+                // and do_substr preserves that mark in mkCharLenCE.
+                let bytes = el.raw_bytes();
+                let a = ((start - 1) as usize).min(bytes.len());
+                let b = (stop as usize).min(bytes.len());
+                out.push(Some(RString::from_bytes(&bytes[a..b], Encoding::Bytes)));
             } else {
                 let (a, b) = char_range(el, start, stop);
                 out.push(Some(crate::value::RString::from(&el[a..b])));
