@@ -15,6 +15,7 @@ extern SEXP Rf_setAttrib(SEXP, SEXP, SEXP), R_do_slot_assign(SEXP, SEXP, SEXP);
 extern double *REAL(SEXP);
 SEXP replace(SEXP x, SEXP v) { SET_VECTOR_ELT(x, 0, v); return x; }
 SEXP alias(SEXP x) { SET_VECTOR_ELT(x, 0, VECTOR_ELT(x, 1)); return x; }
+SEXP touch(SEXP x) { REAL(x)[0] = 99; return x; }
 SEXP text(SEXP x) { SET_STRING_ELT(x, 0, Rf_mkChar("changed")); return x; }
 SEXP attribute(SEXP x, SEXP v) { Rf_setAttrib(x, Rf_install("note"), v); return x; }
 SEXP slot(SEXP x, SEXP v) { return R_do_slot_assign(x, Rf_install("x"), v); }
@@ -32,6 +33,10 @@ print(x); print(y)
 x <- list(1, 2)
 invisible(.Call("alias", x))
 invisible(.Call("replace", x, 3))
+print(x)
+x <- list(c(1, 2), c(3, 4))
+invisible(.Call("alias", x))
+invisible(.Call("touch", x[[1]]))
 print(x)
 x <- "original"; y <- x
 invisible(.Call("text", x))
