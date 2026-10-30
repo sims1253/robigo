@@ -121,6 +121,13 @@ struct PNode {
     car: Value,
 }
 
+// Tail attributes are not retained by the flattened call representation.
+// Only the rare LANGSXP tails carry this marker; ordinary reads never scan.
+#[cold]
+fn exceptional_cells(nodes: &[PNode]) -> Vec<usize> {
+    nodes.iter().skip(1).enumerate().filter_map(|(k, n)| n.attr.is_missing_arg().then_some(k)).collect()
+}
+
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
     pos: usize,
@@ -590,19 +597,21 @@ impl<'a, 'i> Reader<'a, 'i> {
         let mut flags = first_flags;
         let mut ty = head_type;
         let mut head_attr = Value::Null;
-        let mut lang_cells = Vec::new();
+        let mut has_lang_cells = false;
         while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
-            let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+            let mut attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
             let car = self.read_item()?;
             if nodes.is_empty() {
                 head_attr = attr.clone();
             }
             // R: serialize.c:ReadItem_Iterative allocates the streamed type.
-            // Record only exceptional argument cells, while the type is
-            // already decoded; keep PNode identical to the ordinary reader.
-            if ty == LANGSXP && head_type == LANGSXP && !nodes.is_empty() {
-                lang_cells.push(nodes.len() - 1);
+            // Only head attributes survive this flattened representation.
+            // Use the otherwise unused tail attribute slot as a type marker,
+            // keeping PNode and ordinary reads free of side-vector storage.
+            if ty == LANGSXP && !nodes.is_empty() {
+                attr = Value::missing_arg();
+                has_lang_cells = true;
             }
             nodes.push(PNode { attr, tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
@@ -661,6 +670,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
+                let lang_cells =
+                    if head_type == LANGSXP && has_lang_cells { Some(exceptional_cells(&nodes)) } else { None };
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
@@ -675,8 +686,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut v = match head_type {
                     LANGSXP => {
                         let l = Rc::new(Lang::from_items(items, None));
-                        if !lang_cells.is_empty() {
-                            set_lang_cells(&l, lang_cells);
+                        if let Some(cells) = lang_cells {
+                            set_lang_cells(&l, cells);
                         }
                         Value::Lang(l)
                     }

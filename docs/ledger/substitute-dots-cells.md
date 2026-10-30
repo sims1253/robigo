@@ -36,3 +36,18 @@
 - Next experiment restores the original PNode layout and collects rare
   cell indices during streaming, eliminating the extra pass and preserving
   the ordinary reader's allocation behavior. Measurements pending.
+
+### Rejected unconditional side-vector state
+
+- Local d81d29c versus the streaming reader: fib 958,598,789 -> 958,628,116;
+  bytecodes 231,035,544 -> 231,139,073; S4 generic 585,150,263 -> 585,978,244;
+  new 622,732,066 -> 623,288,207; slot read 459,461,548 -> 460,165,835;
+  slot write 485,423,431 -> 486,144,190; valid 625,465,013 -> 626,120,300.
+  Rejected: S4 overhead remains 0.10–0.15%, above 0.1%.
+- Expanded oracle fixture and both original class-generator cases match.
+  FastR substitute/serialize slice remains 259/262, with the same existing
+  failure identities as baseline, including the old print-width mismatch.
+- Next experiment uses the unused tail attribute slot in PNode as a rare
+  LANGSXP marker. Only the head attribute is retained by the existing
+  reader. Collect indices on the exceptional path; ordinary reads retain
+  only a boolean and perform no side-vector initialization or drop.
