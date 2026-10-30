@@ -33,7 +33,91 @@ Slice used throughout ("S4 slice"):
   .AllMTable writes do not advance it. Do not guard metadata with that
   counter. #114's table-function cache is a different cache and must keep
   its weak table/closure ownership and active-binding exclusion.
-- Verification and paired instruction measurements follow below.
+- Additional metadata cases distinguish replacement during argument forcing
+  from mutation of the already captured table. Replacement takes effect on
+  the next dispatch, whereas editing a method in the captured table takes
+  effect immediately. All four scripts still match in every tier.
+- S4 FastR slice: **644/662 -> 644/662**, zero regressions. The sole new
+  failing oracle script differs at exactly the warmed global @ case.
+
+### Metadata guard handoff to core
+
+GNU R's relevant paths are methods_list_dispatch.c:R_dispatchGeneric,
+Methods.R:removeMethod/setMethod, and
+methodsTable.R:.updateMethodsInTable/.resetInheritedMethods. removeMethod
+calls setMethod with NULL. The R code removes inherited entries and copies
+changed direct methods into .AllMTable. Preserve those live R operations.
+
+A safe metadata guard needs three binding tokens keyed by weak generic
+environment identity and symbol, one each for .AllMTable, .SigArgs and
+.SigLength. A token must change on any write, removal/recreation, or active
+binding conversion, regardless of the old and new value types. Expose this
+through Env rather than accessing a raw Binding pointer: frame storage can
+move. Avoid adding a counter update to every ordinary closure argument bind;
+a watched-binding mechanism is a candidate for core to measure. Counter
+wrap must invalidate outstanding tokens. Do not retain generic environments,
+tables or closures through cache roots.
+
+Exclude active bindings and unresolved promises from metadata caching.
+Snapshot metadata in GNU R's order before forcing arguments. Do not re-read
+.AllMTable after forcing: the replacement-during-forcing test proves that
+would dispatch against the wrong table. Look up the selected method after
+forcing, since mutation of the captured table is visible to that dispatch.
+Keep signature symbols and nargs derived from the same validated snapshot.
+
+### Slot instruction handoff to perf-vm and sweep-data
+
+No vm.rs or compile.rs edits in this round. Proposed instruction shape is
+`SlotRead { dst, object, name: Sym, call }`, emitted only for literal slot
+names once the compiler has selected the primitive @. Evaluate the object
+once. With methods dispatch enabled, an S4 object, an ordinary existing
+slot, and a name other than .Data, read the current attribute by symbol.
+Decode the pseudo-NULL symbol as NULL just as R_do_slot does. Never cache a
+slot value or an attribute offset: slot replacement and copy-on-modify must
+be visible. Fall back to the original primitive call for .Data, non-S4
+objects (including S3 @ dispatch), missing attributes, invalid slot names,
+and methods disabled, preserving condition call and evaluation count.
+
+GNU R's compiler source explains the recorded binding mismatch: the warmed global @ case returns 7 in GNU R and 100 in
+robigo, while a lexically bound local @ returns 200 in both. A guard that
+always deoptimizes on global @ reassignment would preserve robigo's current
+mismatch. cmp.R registers cmpSpecial for base specials; cmpSpecial emits CALLSPECIAL.
+eval.c:CALLSPECIAL retrieves getPrimitive(symbol, SPECIALSXP) directly,
+without resolving the current global binding. Port getInlineInfo's eligibility
+rules when selecting primitive @ during compilation. The instruction's guards
+then check the object and slot fast-path conditions, rather than assuming an
+ordinary runtime function-binding guard matches GNU R for this special. The oracle script is a permanent
+unratcheted reproducer. After the owning rounds merge, implement the
+instruction, run all five invalidation scripts and S4 ratchets, then compare
+paired slot costs and the full perf gate. Target the roughly 749 marginal
+instructions/read above GNU R on this base.
+
+### Paired instruction costs on 5bff0ca
+
+Callgrind total(work) minus total(base), divided by extra calls; identical
+setup in benchmarks/suite/s4-*.R, with only seq_len changed. Base/work counts
+are 1000/2000 for generic and slot-read, 100/200 for slot-write and valid,
+and 30/60 for new. GNU R uses the pinned Debian oracle container, not the
+host R 4.6.1. robigo uses the worktree release binary with R_HOME pointing
+to the 4.5.0 library. R_DEFAULT_PACKAGES=NULL; both scripts load methods.
+These short marginal samples are not directly comparable to round 10's
+longer steady-state samples. Before and after are identical runtime code;
+this PR changes only oracle tests and this ledger.
+
+| workload | robigo before/after | GNU R 4.5.0-3 | robigo/R |
+| --- | ---: | ---: | ---: |
+| generic | 10,856.195 | 11,685.320 | 0.929 |
+| slot-read | 1,405.523 | 656.160 | 2.142 |
+| slot-write | 40,044.290 | 38,619.280 | 1.037 |
+| new | 353,235.867 | 306,909.200 | 1.151 |
+| valid | 180,800.550 | 159,720.800 | 1.132 |
+
+Reproduce robigo measurements with scripts/callgrind-diff.py WORK.R BASE.R
+EXTRA_CALLS, setting ROBIGO to .robigo/bin/robigo. Reproduce GNU R with
+valgrind --tool=callgrind /usr/lib/R/bin/exec/R --vanilla --slave -f FILE.R
+inside robigo-oracle:4.5.0 and subtract its summary counts. Keep containers
+capped at 4 GiB. No performance claim for this test-only PR.
+
 
 ## 2026-10-30: round 9 — FastR switch activated (#98 merged as b7ee268)
 
