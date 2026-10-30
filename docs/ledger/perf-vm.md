@@ -6,6 +6,23 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 9 baseline and builtin wrapper diagnosis
+
+- Started at main 1b4670a. #102 is still open; do not attribute its
+  connection optimization to this base. Build queued behind core's tests.
+- Reprofiled #102's saved rebased binary with its matching natives and
+  R_HOME: CSV **1,785,398,182 instructions**, identical output. This is
+  a reproduction of the round 8 result, not a new main benchmark table.
+- The lapply missing-X case retains an extra is.vector traceback frame.
+  GNU R compiler/R/cmp.R:cmpSimpleInternal inlines the wrapper before
+  forcing X. GETINTLBUILTIN creates a VM call frame, not an RCNTXT;
+  adding a C context around all argument evaluation would be incorrect.
+- New Debian 4.5.0-3 fixture covers missing arguments, sys.calls,
+  named argument ordering, warning calls and a replacement closure.
+  Baseline fails its warning call: is.vector({...}) instead of w().
+- Core's finalizer reachability work is active. Keep Value/Promise layout
+  unchanged; unboxed promise storage remains a coordinated follow-up.
+
 ## 2026-10-30: round 8, CSV connection formatting
 
 - Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).
