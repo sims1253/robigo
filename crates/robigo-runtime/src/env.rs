@@ -94,6 +94,13 @@ fn sym_bit(sym: Sym) -> u64 {
     1 << (sym.0 & 63)
 }
 
+/// A value that can lead to an environment through reference-count edges;
+/// binding or unbinding one can create or break a runtime cycle.
+#[inline]
+fn cycle_value(v: &Value) -> bool {
+    matches!(v, Value::Env(_) | Value::Closure(_) | Value::ExtPtr(_))
+}
+
 thread_local! {
     /// Incremented whenever a binding that could hold a function changes
     /// in an environment on the search path (global, attached packages,
@@ -193,8 +200,14 @@ impl Frame {
     }
 
     pub fn insert(&mut self, sym: Sym, value: Value, flags: u8) {
+        if cycle_value(&value) {
+            trace::cycle_changed();
+        }
         if let Some(i) = self.position(sym) {
             let b = &mut self.entries[i];
+            if cycle_value(&b.value) {
+                trace::cycle_changed();
+            }
             b.value = value;
             b.flags = (b.flags & BIND_LOCKED) | flags;
             return;
@@ -206,6 +219,9 @@ impl Frame {
     /// be bound already, lookups keep finding the first binding, as in a
     /// GNU R frame with repeated tags.
     fn push_new(&mut self, sym: Sym, value: Value, flags: u8) {
+        if cycle_value(&value) {
+            trace::cycle_changed();
+        }
         if self.search && (function_like(&value) || flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
         }
@@ -236,6 +252,7 @@ impl Frame {
 
     pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
         let i = self.position(sym)?;
+        trace::cycle_changed();
         let b = self.entries.remove(i);
         if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
             bump_search_epoch();
@@ -314,6 +331,17 @@ impl Env {
 
     pub(crate) fn track_escape(&self) {
         trace::track(self);
+    }
+
+    /// The collector's view of "a cycle may have become unreachable".
+    pub fn cycle_epoch() -> u64 {
+        trace::cycle_epoch()
+    }
+
+    /// Mark that an environment or a path to one changed outside the
+    /// binding paths (`gc()` dropping caches, a finalizer clearing a key).
+    pub fn mark_cycle_dirty() {
+        trace::cycle_changed();
     }
 
     pub(crate) fn visit_escaped(visitor: impl FnMut(&Env)) {
@@ -433,6 +461,7 @@ impl Env {
         }
         // Function lookups through this frame may now resolve elsewhere.
         self.bump_fn_version();
+        trace::cycle_changed();
         *self.0.parent.borrow_mut() = p;
     }
 
@@ -510,11 +539,17 @@ impl Env {
     }
 
     pub fn set_local_flags(&self, sym: Sym, value: Value, flags: u8) -> bool {
+        if cycle_value(&value) {
+            trace::cycle_changed();
+        }
         let mut f = self.0.frame().borrow_mut();
         let search = f.search;
         if let Some(b) = f.get_mut(sym) {
             if b.flags & BIND_LOCKED != 0 {
                 return false;
+            }
+            if cycle_value(&b.value) {
+                trace::cycle_changed();
             }
             if function_like(&b.value) || function_like(&value) || b.flags & BIND_ACTIVE != 0 {
                 if search {
@@ -573,6 +608,9 @@ impl Env {
                 bump_search_epoch();
             }
             self.bump_fn_version();
+        }
+        if cycle_value(&b.value) {
+            trace::cycle_changed();
         }
         Some(std::mem::replace(&mut b.value, Value::Null))
     }

@@ -5,6 +5,7 @@
 //! counted once per owning allocation. Remaining references are conservative
 //! roots, including evaluator temporaries and opaque Rust payloads.
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -12,6 +13,25 @@ use std::rc::Rc;
 use crate::compile::Code;
 use crate::env::{Env, Frame};
 use crate::value::{Arg, Attrs, Value};
+
+thread_local! {
+    /// The environment epoch the last reclamation saw. Nothing that could
+    /// have made a cycle unreachable changed since then: skip rebuilding
+    /// the allocation graph (an explicit gc() loop with no allocation
+    /// should stay cheap).
+    static LAST_RECLAIM: Cell<u64> = const { Cell::new(u64::MAX) };
+}
+
+/// Whether an environment or a binding that can reach one changed since the
+/// last reclamation.
+pub fn reclaim_pending() -> bool {
+    LAST_RECLAIM.with(|last| last.get() != Env::cycle_epoch())
+}
+
+pub fn mark_reclaimed() {
+    let epoch = Env::cycle_epoch();
+    LAST_RECLAIM.with(|last| last.set(epoch));
+}
 
 #[derive(Clone)]
 enum Owner {
@@ -386,6 +406,9 @@ impl ObjectGraph {
 /// environments were freed.
 // R: memory.c:R_gc_internal -- reclaim unreachable cycles
 pub fn reclaim_cycles() -> usize {
+    if !reclaim_pending() {
+        return 0;
+    }
     let mut graph = ObjectGraph::default();
     graph.include_escaped();
     graph.expand();
@@ -401,7 +424,9 @@ pub fn reclaim_cycles() -> usize {
         graph
     };
     let live = graph.externally_live();
-    graph.reclaim_unreachable(&live)
+    let freed = graph.reclaim_unreachable(&live);
+    mark_reclaimed();
+    freed
 }
 
 #[cfg(test)]
@@ -643,6 +668,23 @@ mod tests {
         if let Some(env) = weak.upgrade() {
             env.frame().borrow_mut().clear();
         }
+    }
+
+    #[test]
+    fn reclamation_waits_for_a_cycle_relevant_change() {
+        mark_reclaimed();
+        assert!(!reclaim_pending(), "nothing changed since the last sweep");
+        let a = key();
+        let b = key();
+        assert!(!reclaim_pending(), "creating environments alone cannot strand a cycle");
+        env(&a).set_local(Sym::new("other"), b.clone());
+        assert!(reclaim_pending(), "an environment edge may have formed a cycle");
+        mark_reclaimed();
+        assert!(!reclaim_pending());
+        env(&a).remove(Sym::new("other"));
+        assert!(reclaim_pending(), "removing the edge may have stranded one");
+        mark_reclaimed();
+        cleanup(&graph(&[&a, &b]));
     }
 
     #[test]

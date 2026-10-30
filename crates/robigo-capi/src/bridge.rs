@@ -189,6 +189,7 @@ unsafe fn sweep_stored() {
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
         keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
     });
+    let removed_stored = !dead.is_empty();
     for x in dead {
         core().release(x);
     }
@@ -202,6 +203,11 @@ unsafe fn sweep_stored() {
     });
     for x in unpinned {
         core().release(x);
+    }
+    if removed_stored {
+        // Dropping the bridge's own value can make its runtime cycle
+        // unreachable.
+        robigo_runtime::env::Env::mark_cycle_dirty();
     }
     SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
 }
@@ -298,9 +304,13 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
 /// reference has run and left the list, its key's cycle is ordinary garbage.
 // R: memory.c:R_gc_internal / RunGenCollect
 unsafe fn reclaim_host_cycles() {
+    if !robigo_runtime::reachability::reclaim_pending() {
+        return;
+    }
     let graph = cycle_graph();
     let live = graph.externally_live();
     graph.reclaim_unreachable(&live);
+    robigo_runtime::reachability::mark_reclaimed();
 }
 
 fn kept_count() -> usize {
@@ -309,6 +319,7 @@ fn kept_count() -> usize {
 
 fn drain_dead() {
     let dead = DEAD.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    let had = !dead.is_empty();
     for h in dead {
         if let Some((key, _v)) = PROXIED.with(|m| m.borrow_mut().remove(&h)) {
             PROXY_OF.with(|m| {
@@ -318,6 +329,10 @@ fn drain_dead() {
                 }
             });
         }
+    }
+    if had {
+        // Dropping a proxy's runtime value can make its cycle unreachable.
+        robigo_runtime::env::Env::mark_cycle_dirty();
     }
 }
 

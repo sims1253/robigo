@@ -1078,10 +1078,12 @@ impl Value {
     pub fn set_attr_raw(&mut self, name: Sym, value: Value) {
         match self {
             Value::Env(e) => {
+                crate::env::Env::mark_cycle_dirty();
                 let mut slot = e.0.attrs.borrow_mut();
                 set_in_box(&mut slot, name, value);
             }
             Value::ExtPtr(p) => {
+                crate::env::Env::mark_cycle_dirty();
                 let mut slot = p.attrs.borrow_mut();
                 set_in_box(&mut slot, name, value);
             }
@@ -1098,8 +1100,14 @@ impl Value {
 
     pub fn clear_attrs(&mut self) {
         match self {
-            Value::Env(e) => *e.0.attrs.borrow_mut() = None,
-            Value::ExtPtr(p) => *p.attrs.borrow_mut() = None,
+            Value::Env(e) => {
+                crate::env::Env::mark_cycle_dirty();
+                *e.0.attrs.borrow_mut() = None;
+            }
+            Value::ExtPtr(p) => {
+                crate::env::Env::mark_cycle_dirty();
+                *p.attrs.borrow_mut() = None;
+            }
             _ => {
                 if self.has_attrs() {
                     if let Some(slot) = self.attrs_slot_mut() {
@@ -1113,8 +1121,14 @@ impl Value {
     pub fn set_attrs(&mut self, attrs: AttrBox) {
         let attrs = attrs.filter(|a| !a.is_blank());
         match self {
-            Value::Env(e) => *e.0.attrs.borrow_mut() = attrs,
-            Value::ExtPtr(p) => *p.attrs.borrow_mut() = attrs,
+            Value::Env(e) => {
+                crate::env::Env::mark_cycle_dirty();
+                *e.0.attrs.borrow_mut() = attrs;
+            }
+            Value::ExtPtr(p) => {
+                crate::env::Env::mark_cycle_dirty();
+                *p.attrs.borrow_mut() = attrs;
+            }
             _ => {
                 if attrs.is_none() && !self.has_attrs() {
                     return;

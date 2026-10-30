@@ -426,7 +426,9 @@ fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     // unreachable environments through closure bodies or call-site memos.
     // the C API's heap collects, sweeps unreachable runtime cycles and runs
     // pending finalizers (docs/core.md §3)
-    i.fun_cache.clear();
+    if !i.fun_cache.is_empty() {
+        i.fun_cache.clear();
+    }
     crate::vm::clear_gc_caches();
     if let Some(b) = crate::native::bridge() {
         b.gc(i);

@@ -41,6 +41,16 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 - `gc()` now always clears the weak implementation caches (`fun_cache`,
   VM call-site memos) instead of only when a finalizer exists, so those
   caches cannot retain otherwise dead cycles.
+- The graph is rebuilt only when a cycle could have changed: a thread-local
+  epoch advances when an environment/closure/ExtPtr binding is stored or
+  overwritten, a binding is removed, a parent or attribute changes, a
+  finalizer clears its weak fields, or the bridge drops a stored/dead
+  proxy. Creating an environment alone does not advance it (an unreachable
+  cycle needs a stored edge). This keeps repeated `gc()` cheap: 200 calls
+  in an otherwise empty script take 0.20 s, against 9.3 s when every call
+  rebuilt the graph and 0.10 s on main; the first call pays the one-time
+  graph build (~90 ms on the default-package startup heap, whose graph is
+  ~100k nodes).
 - Result: 8 rounds of 20,000 env+closure cycles after two warm-up rounds
   stay flat (measured deltas oscillate by allocator arenas, <=16 MB, and
   return towards zero) while the pre-change binary grows every round
@@ -70,12 +80,14 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   unratcheted `tests/r/lang/closure_source_print_utf8.R`, identical on
   main; every ratchet passes), compiled/interpreted/JIT tiers agree;
   env 11/11 and strings 24/24 including the two new oracle recordings;
-  collector 23 tests (one new); runtime 60 pass with the two documented
+  collector 23 tests (one new); runtime 61 pass with the two documented
   host-glibc numeric oracles skipped; C API 2/2, also under
-  ROBIGO_GCTORTURE=1. Perf with the same binary environment:
-  apply 739,028,168 -> 739,038,249 (+0.001%), binarytrees 1,180,754,592
-  -> 1,180,759,548 (+0.0004%), strings 690,709,792 -> 690,634,911
-  (-0.011%). No benchmark calls gc() in its hot loop.
+  ROBIGO_GCTORTURE=1. Perf with the same binary environment: apply
+  739,028,168 -> 739,826,615 (+0.108%), binarytrees 1,180,754,592 ->
+  1,182,399,483 (+0.139%), strings 690,709,792 -> 691,098,980 (+0.056%);
+  fib 888,863,157 (no base measurement). All below the 0.5% gate; the
+  cost is the epoch check on binding paths, and no benchmark calls gc()
+  in its hot loop.
 - Open: reclamation breaks environment cycles only; closure/attribute-only
   cycles (no environment) and cross-heap C cycles remain for G3. The
   runtime still collects only on an explicit gc()/native collection, not
