@@ -937,6 +937,43 @@ fn fmt_g(x: f64) -> String {
     robigo_syntax::cfmt::fmt_g(x, 6, false, false)
 }
 
+/// dgesdd/zgesdd's own argument checks for LDU/LDVT, in its order:
+/// LDU < 1, or (A|S and LDU < M), or (O and M < N and LDU < M) → -8;
+/// LDVT < 1, or (A and LDVT < N), or (S and LDVT < MINMN), or
+/// (O and M >= N and LDVT < N) → -10.
+fn svd_ldu_info(job: u8, n: usize, p: usize, ldu: usize, ldvt: usize) -> i32 {
+    if ldu < 1 {
+        return -8;
+    }
+    match job {
+        b'A' | b'S' if ldu < n => -8,
+        b'O' if n < p && ldu < n => -8,
+        _ if ldvt < 1 => -10,
+        b'A' if ldvt < p => -10,
+        b'S' if ldvt < n.min(p) => -10,
+        b'O' if n >= p && ldvt < p => -10,
+        _ => 0,
+    }
+}
+
+/// The elements dgesdd/zgesdd write into U and VT for this job
+/// (0 = untouched).
+fn svd_writes(job: u8, n: usize, p: usize) -> (usize, usize) {
+    let k = n.min(p);
+    match job {
+        b'A' => (n * n, p * p),
+        b'S' => (n * k, k * p),
+        b'O' => {
+            if n >= p {
+                (0, p * p)
+            } else {
+                (n * k, 0)
+            }
+        }
+        _ => (0, 0),
+    }
+}
+
 /// R: Lapack.c:La_rs
 fn do_la_rs(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
@@ -947,6 +984,12 @@ fn do_la_rs(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let ov = as_logical(&arg(&args, 1));
     if ov == NA_LOGICAL {
         return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // dsyevr would reject LDA = 0 < max(1, N) (parameter 6); R
+        // reports it through libR's interposed xerbla, which robigo
+        // cannot interpose the same way (Debian's own xerbla STOPs).
+        return Err(Flow::error("BLAS/LAPACK routine 'DSYEVR' gave error code -6"));
     }
     let n_i = n as i32;
     // LAPACK trashes its first argument, so hand it a copy as R does.
@@ -1051,6 +1094,12 @@ fn do_la_rs_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     if ov == NA_LOGICAL {
         return Err(Flow::error("invalid 'only.values' argument"));
     }
+    if n == 0 {
+        // zheev would reject LDA = 0 < max(1, N) (parameter 5). R's own
+        // answer here reads an uninitialized workspace size and fails in
+        // R_alloc; this deterministic guard mirrors the xerbla report.
+        return Err(Flow::error("BLAS/LAPACK routine 'ZHEEV ' gave error code -5"));
+    }
     let n_i = n as i32;
     let mut rx = cplx_data(&xin); // zheev overwrites it with the vectors
     let mut values = vec![0.0f64; n];
@@ -1150,6 +1199,11 @@ fn do_la_rg(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     if ov == NA_LOGICAL {
         return Err(Flow::error("invalid 'only.values' argument"));
     }
+    if n == 0 {
+        // dgeev would reject LDA = 0 < max(1, N) (parameter 5; %6s pads
+        // the name in R's interposed-xerbla report).
+        return Err(Flow::error("BLAS/LAPACK routine 'DGEEV ' gave error code -5"));
+    }
     let vectors = ov == 0;
     let jobvr: u8 = if vectors { b'V' } else { b'N' };
     let n_i = n as i32;
@@ -1240,6 +1294,10 @@ fn do_la_rg_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let ov = as_logical(&arg(&args, 1));
     if ov == NA_LOGICAL {
         return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // zgeev would reject LDA = 0 < max(1, N) (parameter 5).
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGEEV ' gave error code -5"));
     }
     let vectors = ov == 0;
     let jobvr: u8 = if vectors { b'V' } else { b'N' };
@@ -1336,25 +1394,32 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
         _ => return Err(Flow::error("robigo: dim(vt) is empty")),
     };
+    // dgesdd validates in this order: JOBZ (-1), then LDA = n (-5), then
+    // LDU (-8), then LDVT (-10). R surfaces each as its interposed-
+    // xerbla error; robigo pre-checks so Debian's xerbla (which STOPs
+    // the process) is never reached.
+    let job = ju.as_bytes().first().copied().unwrap_or(0);
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -5"));
+    }
+    let info = svd_ldu_info(job, n, p, ldu, ldvt);
+    if info != 0 {
+        return Err(Flow::error(format!("BLAS/LAPACK routine 'DGESDD' gave error code {info}")));
+    }
     if !matches!(s, Value::Real(_)) || !matches!(u, Value::Real(_)) || !matches!(vt, Value::Real(_)) {
         return Err(Flow::error("robigo: non-real SVD output buffers are not supported"));
     }
+    // Memory safety for direct .Internal calls: the R wrapper always
+    // allocates exactly these shapes.
     let k = n.min(p);
-    if s.len() < k {
-        return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
-    }
-    // dgesdd writes U and VT only for the job variants R uses ('S', 'A');
-    // 'N' (and 'O', which overwrites A instead) leave them untouched.
-    let ucols = match ju.as_bytes().first() {
-        Some(b'A') => n,
-        Some(b'S') => k,
-        _ => 0,
-    };
-    let vtcols = match ju.as_bytes().first() {
-        Some(b'A') | Some(b'S') => p,
-        _ => 0,
-    };
-    if u.len() < ldu * ucols || vt.len() < ldvt * vtcols {
+    let (ucols, vtcols) = svd_writes(job, n, p);
+    if matches!(&s, Value::Real(r) if r.data.len() < k)
+        || matches!(&u, Value::Real(r) if r.data.len() < ucols)
+        || matches!(&vt, Value::Real(r) if r.data.len() < vtcols)
+    {
         return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
     }
     let mut d = reals(&s);
@@ -1367,7 +1432,6 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     let ldvt_i = ldvt as i32;
     let mut info = 0i32;
     let mut tmp = 0.0f64;
-    let job = ju.as_bytes().first().copied().unwrap_or(0);
     let f = system_lapack()?.dgesdd;
     // SAFETY: as in La_rs; the output buffers were validated above.
     unsafe {
@@ -1452,25 +1516,29 @@ fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
         _ => return Err(Flow::error("non-integer dims")),
     };
+    // zgesdd validates JOBZ (-1), then LDA = n (-5), then LDU (-8), then
+    // LDVT (-10), like dgesdd.
+    let job = jz.as_bytes().first().copied().unwrap_or(0);
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -5"));
+    }
+    let info = svd_ldu_info(job, n, p, ldu, ldv);
+    if info != 0 {
+        return Err(Flow::error(format!("BLAS/LAPACK routine 'ZGESDD' gave error code {info}")));
+    }
     if !matches!(s, Value::Real(_)) || !matches!(u, Value::Cplx(_)) || !matches!(v, Value::Cplx(_)) {
         return Err(Flow::error("robigo: complex SVD needs the real/complex buffers R allocates"));
     }
+    // Memory safety for direct .Internal calls, as in La_svd.
     let k = n.min(p);
-    if s.len() < k {
-        return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
-    }
-    let job = jz.as_bytes().first().copied().unwrap_or(0);
-    // zgesdd writes U/V for the job variants R uses; 'N' leaves them alone.
-    let ucols = match job {
-        b'A' => n,
-        b'S' => k,
-        _ => 0,
-    };
-    let vcols = match job {
-        b'A' | b'S' => p,
-        _ => 0,
-    };
-    if u.len() < ldu * ucols || v.len() < ldv * vcols {
+    let (ucols, vcols) = svd_writes(job, n, p);
+    if matches!(&s, Value::Real(r) if r.data.len() < k)
+        || matches!(&u, Value::Cplx(c) if c.data.len() < ucols)
+        || matches!(&v, Value::Cplx(c) if c.data.len() < vcols)
+    {
         return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
     }
     let mut xvals = cplx_data(&x);
@@ -1621,7 +1689,11 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     dgetrs(&avals, n, &ipiv, &mut b, p);
     let ok = avals.iter().all(|v| v.is_finite());
     if ok && tol > 0.0 {
-        let anorm = dlange_one(&aorig, n, n);
+        // Lapack.c:La_solve computes dlange on REAL(A): the original for
+        // real input (avals is a copy), but the FACTORED buffer when A was
+        // coerced (integer/logical), because the C factors A's own storage
+        // in place. Mirror the aliasing.
+        let anorm = if matches!(a, Value::Real(_)) { dlange_one(&aorig, n, n) } else { dlange_one(&avals, n, n) };
         let rcond = dgecon(true, n, &avals, anorm);
         if rcond < tol {
             return Err(Flow::error(format!(
@@ -1720,9 +1792,14 @@ fn do_la_solve_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     let ok = avals.iter().all(|z| z.r.is_finite() && z.i.is_finite());
     let tol = as_real(&tolin);
     if ok && tol > 0.0 {
+        // Lapack.c:La_solve_cmplx computes zlange on COMPLEX(A): the
+        // original for complex input (avals is a copy), but the FACTORED
+        // buffer when A was coerced (a real a with complex b), exactly as
+        // the C's aliasing behaves.
+        let anorm_src: &[Z] = if matches!(a, Value::Cplx(_)) { &aorig } else { &avals };
         let lib = system_lapack()?;
         // SAFETY: zlange with NORM='1' does not reference WORK.
-        let anorm = unsafe { (lib.zlange)(&b'1', &n_i, &n_i, aorig.as_ptr(), &n_i, std::ptr::null_mut(), 1) };
+        let anorm = unsafe { (lib.zlange)(&b'1', &n_i, &n_i, anorm_src.as_ptr(), &n_i, std::ptr::null_mut(), 1) };
         let mut work = vec![Z::default(); 2 * n];
         let mut rwork = vec![0.0f64; 2 * n];
         let mut rcond = 0.0f64;

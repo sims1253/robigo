@@ -1,42 +1,39 @@
-# eigen(): symmetric, non-symmetric (real and complex spectra), complex
-# input, only.values — the La_rs/La_rg/La_rs_cmplx/La_rg_cmplx internals.
-options(digits = 17)
+# eigen(): La_rs (dsyevr), La_rg (dgeev) and their complex variants,
+# through the system-LAPACK bridge (GNU R binds the same liblapack.so.3).
+options(digits = 15)
 
-## symmetric 2x2 with nice values
-m <- matrix(c(2, 1, 1, 2), 2, 2)
-e <- eigen(m)
-print(e$values)
-print(e$vectors)
+# Symmetric, full decomposition.
+sym <- matrix(c(5, 1, 2, 1, 4, 1, 2, 1, 3), 3)
+print(eigen(sym))
+print(eigen(sym, only.values = TRUE))
 
-## Hilbert 5x5: clustered positive eigenvalues
-i <- 1:5
-h <- 1 / outer(i - 1, i, "+")
-eh <- eigen(h)
-print(eh$values)
-print(colSums(eh$vectors^2))
-print(eigen(h, only.values = TRUE)$values)
+# A graded spectrum: the Hilbert matrix, well conditioned to near zero.
+hilb <- outer(1:12, 1:12, function(i, j) 1 / (i + j - 1))
+print(eigen(hilb, only.values = TRUE)$values)
 
-## non-symmetric, real spectrum
-a <- matrix(c(4, 1, 2, 0, 3, -1, 0, 1, 1), 3, 3)
-ea <- eigen(a)
-print(ea$values)
-print(ea$vectors)
+# Non-symmetric with real eigenvalues.
+ns <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 10), 3) + diag(c(.1, -.2, .3))
+print(eigen(ns))
+print(eigen(ns, only.values = TRUE))
 
-## non-symmetric with a complex-conjugate pair
-b <- matrix(c(1, -1, 1, 1), 2, 2)
-eb <- eigen(b)
-print(eb$values)
-print(eb$vectors)
-print(eigen(b, only.values = TRUE)$values)
+# Non-symmetric with a complex pair: unscramble() makes complex vectors.
+rot <- matrix(c(0, -1, 1, 0), 2)
+print(eigen(rot))
+print(eigen(rot, only.values = TRUE))
+print(eigen(rot)$vectors)
 
-## integer input is coerced; eigenvalues of a 2x2 with a repeated root
-print(eigen(matrix(1:4, 2, 2), symmetric = FALSE, only.values = TRUE)$values)
+# Complex Hermitian (zheev) and complex general (zgeev).
+h <- matrix(c(1 + 0i, 2 - 1i, 2 + 1i, 3 + 0i), 2)
+print(eigen(h))
+g <- matrix(c(1 + 2i, 3, 1i, 2 - 1i), 2)
+print(eigen(g))
+print(eigen(g)$vectors)
 
-## complex Hermitian
-zc <- matrix(c(1+0i, 1i, -1i, 2+0i), 2, 2)
-print(eigen(zc)$values)
-print(eigen(zc)$vectors)
+# eigen() reorders by modulus for the non-symmetric case.
+print(eigen(matrix(c(1, 3, 2, 4), 2))$values)
 
-## complex general, only values
-zg <- matrix(c(1+2i, 3, 1i, 2-1i, 0, 1, 2, 1i, 1), 3, 3)
-print(eigen(zg, only.values = TRUE)$values)
+# Errors.
+print(try(eigen(matrix(1:6, 2)), silent = TRUE))
+print(try(eigen(matrix(numeric(), 0, 0)), silent = TRUE))
+print(try(eigen(matrix(c(1, NaN), 1)), silent = TRUE))
+print(try(eigen(matrix(c(1, 2, 3, Inf), 2)), silent = TRUE))

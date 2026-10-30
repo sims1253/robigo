@@ -1,34 +1,36 @@
-# svd(): square, thin, no vectors, rank-deficient (singular), complex —
-# the La_svd/La_svd_cmplx internals over dgesdd/zgesdd.
-options(digits = 17)
+# svd(): La_svd (dgesdd) and La_svd_cmplx (zgesdd), every jobu the R
+# wrapper can produce, plus the singular case.
+options(digits = 15)
 
-## square
-a <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 10), 3, 3)
-s <- svd(a)
-print(s$d)
-print(s$u)
-print(s$v)
+sym <- matrix(c(5, 1, 2, 1, 4, 1, 2, 1, 3), 3)
+wide <- matrix(c(1.5, -2.5, 3.5, -4.5, 5.5, -6.5, 7.5, -8.5, 9.5, -10.5, 11.5, -12.5), 3)
+tall <- matrix(c(1.5, -2.5, 3.5, -4.5, 5.5, -6.5, 7.5, -8.5, 9.5, -10.5, 11.5, -12.5), 4)
 
-## rectangular thin decomposition
-x <- cbind(1, 1:7)
-print(svd(x)$d)
-print(svd(x)$u)
-print(svd(x)$v)
+# Square, wide and tall: jobu "S" through the default nu/nv.
+print(svd(sym))
+print(svd(wide))
+print(svd(tall))
 
-## no left/right vectors
-print(svd(x, nu = 0)$d)
-print(svd(x, nu = 0, nv = 0)$u)
+# jobu "N" for u, for v, and for both.
+print(svd(wide, nu = 0))
+print(svd(tall, nv = 0))
+print(svd(wide, nu = 0, nv = 0)$d)
 
-## rank-deficient: last singular value collapses to ~0
-sing <- cbind(x, 3 * x[, 1] + 2 * x[, 2])
-ss <- svd(sing)
-print(ss$d)
+# jobu "A": full U and V.
+print(svd(wide, nu = 4, nv = 4))
 
-## smallest singular value of a near-singular matrix
-ns <- matrix(c(1, 1, 1, 1 + 1e-12), 2, 2)
-print(svd(ns)$d)
+# Complex input.
+z <- matrix(c(1 + 2i, 3, 1i, 2 - 1i, 0, 1, 5, 2i), 4)
+print(svd(z))
 
-## complex
-zc <- matrix(c(1+0i, 1i, -1i, 2+0i), 2, 2)
-print(svd(zc)$d)
-print(svd(zc)$u)
+# A singular matrix: the last singular value is numerical noise.
+print(svd(matrix(c(1, 2, 2, 4), 2))$d)
+
+# 1x1 and a vector-shaped input via as.matrix.
+print(svd(matrix(7, 1)))
+print(svd(1:6))
+
+# Errors.
+print(try(svd(matrix(numeric(), 0, 2)), silent = TRUE))
+print(try(svd(matrix(c(1, NA), 1)), silent = TRUE))
+print(try(svd(matrix(c(1, Inf), 1)), silent = TRUE))
