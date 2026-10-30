@@ -191,3 +191,61 @@ jobs:
           name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
           path: perf.json
           retention-days: 90
+
+  progress:
+    # main only: record this commit's speed and compatibility on the orphan
+    # branch progress-data and publish the README's charts and badges on
+    # GitHub Pages (scripts/history.py, docs/verification.md). `sync`
+    # also records earlier main runs the history lacks.
+    needs: [build, corpora, perf]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.result == 'success' }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    concurrency:
+      group: progress
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git gh python3 ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Record on progress-data
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for try in 1 2 3 4 5; do
+            rm -rf data && git worktree prune
+            git fetch -q --depth 1 origin +refs/heads/progress-data:refs/remotes/origin/progress-data
+            git worktree add -q --detach data origin/progress-data
+            python3 scripts/history.py add data/history.jsonl artifacts --commit "$GITHUB_SHA" \
+              --run "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+            python3 scripts/history.py sync data/history.jsonl --repo "$GITHUB_REPOSITORY" --limit 20 ||
+              echo "::warning::history sync failed; recording this commit only"
+            git -C data add history.jsonl
+            if git -C data diff --cached --quiet; then break; fi
+            git -C data commit -q -m "history: ${GITHUB_SHA::12}"
+            if git -C data push -q origin HEAD:refs/heads/progress-data; then break; fi
+            if [ "$try" = 5 ]; then exit 1; fi
+            sleep $((try * 5))   # another run pushed first: redo on top of it
+          done
+      - run: python3 scripts/history.py render data/history.jsonl --out site --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5

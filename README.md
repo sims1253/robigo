@@ -33,6 +33,28 @@ everything in the AST interpreter and `ROBIGO_JIT=0` turns off native code.
 `ROBIGO_TYPE_PROFILE=out.json` records observed types for comparison with
 ry ([docs/ry-integration.md](docs/ry-integration.md)).
 
+## Progress
+
+[![speed vs GNU R](https://img.shields.io/endpoint?url=https%3A%2F%2Fsims1253.github.io%2Frobigo%2Fbadges%2Fspeed.json)](https://sims1253.github.io/robigo/)
+[![builtins](https://img.shields.io/endpoint?url=https%3A%2F%2Fsims1253.github.io%2Frobigo%2Fbadges%2Fbuiltins.json)](https://sims1253.github.io/robigo/)
+[![GNU R's regression tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fsims1253.github.io%2Frobigo%2Fbadges%2Fcorpus-gnur-tests.json)](https://sims1253.github.io/robigo/)
+[![help-page examples](https://img.shields.io/endpoint?url=https%3A%2F%2Fsims1253.github.io%2Frobigo%2Fbadges%2Fcorpus-gnur-examples.json)](https://sims1253.github.io/robigo/)
+[![FastR test snippets](https://img.shields.io/endpoint?url=https%3A%2F%2Fsims1253.github.io%2Frobigo%2Fbadges%2Fcorpus-fastr.json)](https://sims1253.github.io/robigo/)
+
+Measured by CI on every merge to `main` (see
+[docs/verification.md](docs/verification.md)); every benchmark and corpus
+over time is on the [progress page](https://sims1253.github.io/robigo/).
+
+<a href="https://sims1253.github.io/robigo/"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://sims1253.github.io/robigo/speed-dark.svg">
+  <img alt="Speed of robigo relative to GNU R 4.5.0 over time" src="https://sims1253.github.io/robigo/speed.svg">
+</picture></a>
+
+<a href="https://sims1253.github.io/robigo/"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://sims1253.github.io/robigo/compat-dark.svg">
+  <img alt="Share of each test corpus that matches GNU R 4.5.0 over time" src="https://sims1253.github.io/robigo/compat.svg">
+</picture></a>
+
 ## Try it
 
 ```sh
