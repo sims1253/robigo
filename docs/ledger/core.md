@@ -11,6 +11,42 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: onexit finalizers on every exit path (#98)
+
+- GNU R's R_CleanUp (unix/sys-std.c) calls R_RunExitFinalizers on normal
+  termination, the "Execution halted" error exit and q(), after .Last.
+  robigo ignored onexit=TRUE entirely: a probe script printed no finalizer
+  output on any of the three paths.
+- Ported R_RunExitFinalizers: it marks every FINALIZE_ON_EXIT reference
+  ready and sends it through RunFinalizers. The runner now moves them to
+  the finalizer queue in weak-reference list order (Core::
+  queue_exit_finalizers) instead of invoking them directly, so errors are
+  isolated, the caller's contexts and handler stacks are restored and the
+  weak reference leaves the list exactly as for a collected key.
+- The CLI exit hook (finish) runs them for script, echo, -e and stdin
+  exits; q() runs them before process::exit. The interactive repl's EOF
+  now takes the same finish path.
+- Six oracle-recorded scripts: onexit at normal exit (a still-live plain
+  key must not run), onexit at the error exit with status 1, q(status=3),
+  an unforced default-argument promise, an argument promise, three
+  finalizers on one key and three keys in reverse registration order,
+  a parent chain, and the reg.finalizer argument errors (character or NA
+  onexit, builtin second argument, non-environment key).
+- Verified: 262/262 conformance scripts match stdout, stderr and status
+  in all three tiers; collector 22 tests (one new: onexit queue order and
+  live keys staying in the weak list); runtime 47 unit plus two
+  integration tests (the two host-glibc complex oracles excluded); both
+  C API integration tests. The exit hook is the last thing a process does:
+  it cannot change any benchmark's measured work, only a few hundred
+  instructions after the final expression.
+- GNU R quirk left unimplemented: a finalizer registered *during* a
+  finalizer is prepended to R_weak_refs while RunFinalizers is walking the
+  old list; if a later ready entry is then unlinked, R sets R_weak_refs to
+  that entry's next and loses the new head. Standalone probes show such a
+  finalizer never running. robigo defers new queue entries and runs them
+  at the next safe point instead of losing them; probes where GNU R does
+  run them on the next collection (I1/I2, J1/J2 shapes) match.
+
 ## 2026-10-30: cycle-aware environment finalizers (#98)
 
 - New topic branch track/core-environment-finalizers starts at merged
