@@ -125,9 +125,30 @@ unsafe extern "C" fn m_destroy(_: *mut Rconn) {}
 
 unsafe extern "C" {
     fn vasprintf(strp: *mut *mut c_char, fmt: *const c_char, ap: *mut c_void) -> c_int;
+    fn robigo_connection_string_arg(fmt: *const c_char, ap: *mut c_void) -> *const c_char;
 }
 
 unsafe extern "C" fn m_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_void) -> c_int {
+    // R: library/utils/src/io.c:writetable uses literal %s for cells and separators.
+    // Null strings and counts outside printf's int range use libc unchanged.
+    let arg = robigo_connection_string_arg(fmt, ap);
+    if !arg.is_null() {
+        let n = libc::strlen(arg);
+        if n <= c_int::MAX as usize {
+            // Copy before entering R_WriteConnection: its allocation may run
+            // finalizers that overwrite a native formatter's static buffer.
+            if n <= 256 {
+                let mut scratch = std::mem::MaybeUninit::<[u8; 256]>::uninit();
+                let dst = scratch.as_mut_ptr().cast::<u8>();
+                std::ptr::copy_nonoverlapping(arg.cast::<u8>(), dst, n);
+                R_WriteConnection(con as *mut c_void, dst.cast(), n);
+            } else {
+                let bytes = std::slice::from_raw_parts(arg.cast::<u8>(), n).to_vec();
+                R_WriteConnection(con as *mut c_void, bytes.as_ptr().cast(), n);
+            }
+            return n as c_int;
+        }
+    }
     let mut s: *mut c_char = std::ptr::null_mut();
     let r = vasprintf(&mut s, fmt, ap);
     if r < 0 {

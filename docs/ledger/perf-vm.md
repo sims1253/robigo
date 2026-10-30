@@ -6,6 +6,55 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 8, CSV connection formatting
+
+- Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).
+  Saved baseline executable at 9b9bab5. Restored the round 7 stash.
+- Kept native-utils CSV optimization: **1,950,190,065 -> 1,784,048,659
+  instructions (-8.52%)**. The native library and R_HOME are identical.
+  Recognize literal %s using a copied va_list; bypass vasprintf and copy
+  up to 256 bytes on the stack. Longer strings use an owned Vec. Copy
+  before R_WriteConnection can allocate or run finalizers. Other formats,
+  null strings and lengths beyond printf's int range retain libc behavior.
+- Authorized shared edits: capi src/connections.rs and main/robigo_sys.c.
+  GNU R contract: library/utils/src/io.c:writetable, connections.c:Rconn_printf.
+  No runtime layout, promise, or vendored R source changes.
+- Standard Rust-utils CSV is neutral: 947,271,725 -> 947,268,993.
+  Fresh table contains 83 programs, 82 correct and all 82 faster than
+  GNU R, geomean 0.493. spectralnorm_math remains the output mismatch;
+  flexclust_no_s4 has an existing stderr difference. Every benchmark's
+  stdout, stderr and status is identical between the saved binaries.
+  Paired 83-program instruction gate: zero slowdowns above 0.5%,
+  zero broken outputs; geomean and 82 correct faster programs unchanged.
+- Standard and native conformance each pass **244/244** in all three
+  tiers, before and after. Focused FastR write/read-table, scan and
+  connections: **180/181 -> 180/181**, identical per-case outcomes,
+  zero regressions. Debian R 4.5.0-3 recorded the new fixture covering
+  quoting, UTF-8, missing values, percent directives, row names,
+  255/256/257-byte writes, CRLF and CSV parsing. Added its passing entry.
+- Shared Cargo artifacts twice mixed worktrees (missing parse_data and
+  missing C helper at link time). Rebuilt workspace crates in a private
+  reflinked target under .robigo/r8/target, retaining third-party caches.
+  Artifacts and scripts: .robigo/r8/. C API crate tests pass (two
+  integration tests), as do cargo fmt --check and source diff checks.
+- Rebased onto merged #94 at 1b4670a, retaining both ledger entries and
+  all passing entries. Native conformance now passes 249/249 in all three
+  tiers. Native CSV recheck is 1,785,203,686 instructions. The isolated
+  before/after figures above both use f5dae40; this recheck also includes
+  #94. Its flexclust_no_s4 stderr now matches GNU R; this improvement
+  comes from the merged setter diagnostics, not the CSV formatter.
+- Native CSV still costs 1.159x GNU R. Next profile R_WriteConnection
+  and its host writeConnection bridge, especially per-cell raw allocation.
+- Promise storage stays deferred while core's finalizer reachability work
+  is in flight. Promise::forced owns a boxed Value retained by frame
+  bindings and Context.promargs. Removing that allocation needs agreement
+  on value.rs storage and materialization; a VM-local shortcut is unsafe.
+- VM follow-up: lapply/245e62b needs GETINTLBUILTIN/CALLBUILTIN behavior
+  for is.vector before X is forced. compile.rs currently emits argument
+  evaluation before CallBuiltin. Establish the builtin error context
+  before forcing, preserving cleanup on every exit, then measure calls.
+
+
 ## 2026-10-30: setter fix rebased onto the byte window
 
 - Rebased #94 onto **df3d535** (#84). The conditions.rs conflict keeps
