@@ -7,6 +7,100 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: #104 merged — FastR methods census 223/224
+
+- Rebased `track/methods-fastr-switch` (#107) onto main `532be45`, which
+  merges #104. No conflicts. Main's complete conformance ratchet,
+  including substitute-dots-cell.R, is retained byte-for-byte. No runtime
+  changes in this branch; no exclusions or oracle changes.
+- Before -> after: methods profile **221/224 -> 223/224 in each of AST,
+  VM and JIT**. Normal FastR remains **224/224**, zero losses. Compared
+  passing-case identities in each tier: exactly the two class-generator
+  cases gained, no passing case lost. Census TSV updated for all 224.
+- Both `builtins/TestBuiltin_serialize/4a71e01f0301e4a5` and
+  `builtins/TestBuiltin_serialize/bfd38dfb85177afa` now match the pinned
+  oracle, including the formerly incorrect LANGSXP argument-cell byte.
+- The sole remaining case is **S4/TestR5/474b742f1785a587**, blocked on
+  #98, which is still open. All tiers print `fun` but omit
+  `finalizer: 456` at gc(); stderr and exit status match. Keep that output
+  compared. No re-recording, masking or removal from passing.txt.
+- Measurement uses #104's successful CI artifact, run 41006679303,
+  commit 5616b86. `git diff 5616b86 origin/main -- crates rlib` is empty,
+  so the tested runtime is exactly main 532be45's. Used that artifact's
+  natives and flat cache, R_HOME=/home/m0hawk/.local/opt/R-4.5.0, jobs=2.
+  Each run selects every ID from methods-changes.tsv with an anchored
+  --filter and --profile methods. Tiers use ROBIGO_COMPILE/ROBIGO_JIT
+  values 0/0, 1/0 and 1/1. Six Python harness checks, cargo fmt --check
+  and git diff --check pass.
+- Profile remains inactive. After #98 merges: rebase, then one
+  manifest-only commit sets `[fastr]` default_packages to the methods
+  profile's value and expected_file to expected-methods.jsonl.gz.
+  Verify 224/224 across all tiers, the S4 slice, all corpora in CI and
+  three-tier conformance before activation is delivered. Existing FastR
+  expected bytes and passing.txt are identical to main.
+
+## 2026-10-30: round 8 — prepare FastR methods profile
+
+- Base eb7a7ae, branch `track/methods-fastr-switch`. #98 and #104 are
+  still open. No runtime, serializer, environment, VM or ratchet edits.
+- Historical methods recording from 2e2945b has all 31,374 current source
+  hashes. Compared with the active oracle, 224 records differ across 24
+  groups, beyond the previous 187-case S4/serialization slice.
+- Added a named `methods` profile to record/run/show. It selects separate
+  expected bytes and result files, checks the existing ratchet, and
+  rejects both --update and absorb of candidate results. Ordinary runs
+  retain their original packages and expected file.
+- Harness verification: five existing checks -> six, including a profile
+  integration check of oracle/result isolation, regression detection and
+  rejected ratchet updates. All pass. Oracle re-recording and runtime
+  baseline measurement follow before delivery.
+
+- Pinned oracle image `robigo-oracle:4.5.0`, capped at 4 GiB, jobs=2,
+  repeat=2: re-recorded all 224 changed cases. No unstable cases or
+  varying-line masks; all 224 still differ from the active recording.
+  The remaining 31,150 records are identical. Snapshot contains every
+  case; neither corpus ratchet nor active oracle changes.
+- Paired run using main eb7a7ae's CI artifact from run 41004969021,
+  its native libraries and flat cache, R_HOME 4.5.0, jobs=2:
+  **normal 224/224 -> methods 221/224**, exactly three ratchet losses.
+  No runtime changes in this branch. Full FastR stays on CI.
+- `tests/corpora/fastr/methods-changes.tsv` enumerates all 224 cases,
+  baseline/profile results, and the three blockers. All source hashes
+  match. The class-generator cases are NOT solved on current main:
+  `builtins/TestBuiltin_serialize/4a71e01f0301e4a5` differs only at raw
+  byte offset 384, and `builtins/TestBuiltin_serialize/bfd38dfb85177afa`
+  only at offset 375. GNU R writes 6 (LANGSXP), main writes 2 (LISTSXP).
+  #104 preserves these argument-cell types; do not duplicate its pending
+  serializer changes in this branch. Reference-class method ordering
+  and every other changed case match.
+- Remaining finalizer case: `S4/TestR5/474b742f1785a587`. It creates a
+  Foo18R5 reference-class instance whose finalize method prints its `a`
+  field, drops the instance, then calls gc(). Main prints `fun` but
+  omits `finalizer: 456`. Stderr and exit status match. The oracle's
+  finalizer line is unmasked; only allocator counts are normalized.
+- Activation after #98 AND #104 merge: rebase; set `[fastr]`
+  `default_packages` to the profile's value and `expected_file` to
+  `expected-methods.jsonl.gz` in corpora.toml. This is one manifest-only
+  commit. Re-run all 224 changes, the 187-case S4 slice, all corpora in
+  CI and three-tier conformance; compare case identities before adding
+  new passes. If #98 leaves the finalizer case failing, inspect cycle
+  reachability and callback scheduling for the reference-class object.
+- Three-tier check with the exact base CI artifact: conformance ratchet
+  **252/252 in AST, VM and JIT** (756 byte comparisons, zero failures).
+  The 224 changed FastR cases also give **221/224 in each tier**, with
+  identical three-case loss sets. Run with ROBIGO_COMPILE=0/ROBIGO_JIT=0,
+  ROBIGO_COMPILE=1/ROBIGO_JIT=0, and ROBIGO_COMPILE=1/ROBIGO_JIT=1.
+  Six Python checks, cargo fmt --check and git diff --check pass.
+  Active expected.jsonl.gz, FastR passing.txt and conformance passing.txt
+  are byte-identical to eb7a7ae. Shared edits are confined to the corpus
+  harness, its tests, manifest and corpus documentation.
+- Local release build completed with CARGO_BUILD_JOBS=2 after waiting for
+  the shared build lock. Repeated the paired 224-case run with this
+  worktree's binary and the same natives/cache: **224/224 normal,
+  221/224 methods**, exactly the same three identities as the base CI
+  artifact. No commands remain running. PR #107 leaves activation pending
+  the two prerequisite merges; CI is pending at handback.
+
 ## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
 
 - Rebased `track/methods-default-2` (#71) onto current main (`d81d29c`).

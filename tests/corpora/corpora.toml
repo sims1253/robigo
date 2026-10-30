@@ -28,6 +28,11 @@ path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutp
 exclude_prefix = ["library.fastr.", "rffi."]
 # Sets the en_US.utf8 collation locale, which not every machine has.
 
+# Opt-in until core environment finalizers preserve every FastR pass.
+[fastr.profiles.methods]
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
+expected_file = "expected-methods.jsonl.gz"
+
 [gnur-tests]
 description = "GNU R 4.5.0's own regression tests (tests/*.R), as `make check` runs them"
 mode = "echo"
