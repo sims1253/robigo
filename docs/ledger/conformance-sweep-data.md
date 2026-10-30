@@ -1,5 +1,80 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 8): syntax reduction records
+
+- Baseline 4754027. Requested branch name was already attached to another
+  worktree; use track/conformance-sweep-data-8-records in this checkout.
+- Parser corpus baseline: 17/28, all eleven parse-data cases fail. New
+  oracle-recorded runtime fixture: 0/3 across interpreter, VM and JIT.
+- Port gram.y:YYLLOC_DEFAULT, token_, record_, recordParents,
+  modif_token and finalizeData through an optional syntax-side LR recorder.
+  Tables are extracted from GNU R 4.5.0's generated gram.c; the generator
+  is committed alongside them. The ordinary AST parser remains unchanged.
+- Initial raw-matrix differential check: all 47 Debian oracle programs
+  match exact row order, numeric token codes, IDs, parent links, text and
+  locations. Include assignment direction, nested grammar-only reductions,
+  formals, calls, missing arguments, comments, tabs, UTF-8 and pipe rewrites.
+  Two line-directive probes were added after that check. Runtime integration
+  attaches the matrix to the source environment for base getParseData.
+- Fixed-binary broad baseline is 8,407/8,426. Its sole recorded-pass
+  failure is the existing order/add626 host collation mismatch.
+- BCODESXP handoff (core/startup): read serialize.c:ReadBC1/WriteBC1,
+  ReadBCConsts and ReadBCLang together. Preserve code, every constant,
+  nested BCODESXP constants and the shared BCREPDEF/BCREPREF language
+  graph; expose the source expression separately for body()/evaluation.
+  serialize.rs:read_bc currently discards code and all but constant zero.
+  Value has no BCODESXP case and the writer cannot emit one. Port
+  eval.c:do_mkcode/do_bcclose only after that representation exists;
+  bcVersion alone does not unblock compiler::cmpfun. Read core #84's
+  PR body: strings must preserve raw bytes and encoding marks through
+  serialization; never serialize the UTF-8 display view instead. #84
+  remained open during this batch, so no oracle expectations were changed
+  for its unmerged representation.
+- perf-vm handoff: lapply/245e62b needs GETINTLBUILTIN/CALLBUILTIN for
+  is.vector(X, "any") before forcing missing X. A builtin-side change
+  cannot remove the extra R is.vector closure frame. Compile and execute
+  that internal call in vm.rs, then check the error and traceback against
+  the existing oracle in all tiers. No vm.rs edit in this batch.
+- First runtime candidate: parser corpus 17/28 -> 28/28 (+11), zero
+  regressions. Added all eleven verified passes to the FastR ratchet.
+  Runtime oracle fixture improves 0/3 -> 3/3 across interpreter, VM and JIT.
+- Expanded raw oracle now matches all 59 programs, also with the final
+  newline omitted. This caught and corrected empty-production locations
+  for {;} and {;;}. Malformed #line comments have empty recorded text,
+  matching SkipComment. A final runtime rebuild follows these corrections.
+- Syntax crate passes all nine unit tests, the raw-data differential test
+  and the curated parse-tree oracle. The optional external corpus oracle
+  remains ignored by default.
+- Final fixed-binary parser/subset comparison: 169/192 -> 180/192,
+  exactly eleven gains and zero regressions. Broad data holds at
+  8,407/8,426, with identical per-case outcomes and difference categories.
+  The only listed failure on both binaries is the known order/add626
+  host collation case. Candidate corpora use a private TMPDIR to avoid
+  collisions with other worktrees' runs.
+- Strict stdout/stderr/status comparison in all three tiers improves
+  714/720 -> 717/720. All 239 passing scripts pass in every tier; the
+  unlisted closure_source_print_utf8 probe still fails in all tiers on
+  both binaries pending core #84. Added parse_data.R to the fixture ratchet.
+- Final startup: 44,821,179 -> 44,819,937 callgrind instructions (-0.003%).
+  All Debian CI jobs on code commit 43a05b8 pass, including every corpus
+  shard and the performance gate. CI runs cargo test --release --workspace:
+  all 43 runtime unit tests, both lazy-load integrations, nine syntax unit
+  tests, the raw-data differential and curated parser oracle pass without
+  host exclusions. Local cargo fmt --check and source diff checks pass.
+- Build failure was rejected as a measurement: the shared target reused
+  another checkout's syntax artifact and reported no parse_data module.
+  Seeded a private .robigo/runtime-target, forced this checkout's syntax
+  and runtime to rebuild, and verified its fixed candidate binary above.
+  No build was killed. Initial LR replay also needed xxexprlist's
+  EatLines reset before the empty-brace expression matched the oracle.
+- Further metadata work: port #line source aliases in SourceRefs together
+  with PS_SRCFILE/PS_ORIGINAL transfer; the new recorder already keeps
+  physical parsed-line positions and LINE_DIRECTIVE records. Audit
+  MAXELTSIZE text truncation for very long strings/comments against
+  StringValue/RawStringValue/SkipComment before extending that coverage.
+  No whole-program AST reconstruction or R-level getParseData override.
+
+
 ## 2026-10-30 (round 7): closure source metadata and ownership audit
 
 - Baseline main 29cac51, branch track/conformance-sweep-data-7.

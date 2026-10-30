@@ -9,6 +9,7 @@ pub mod ast;
 pub mod cfmt;
 pub mod dump;
 pub mod lexer;
+pub mod parse_data;
 pub mod parser;
 
 pub use arena::Arena;
