@@ -71,7 +71,6 @@ pub static DEFS: &[Builtin] = &[
     internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
-    internal("is.builtin.internal", do_is_builtin_internal, 1),
     internal("setNumMathThreads", do_one, 1),
     internal("setMaxNumMathThreads", do_one, 1),
     internal("makeLazy", do_make_lazy, 5).invisible(),
@@ -539,14 +538,6 @@ fn do_active_binding_function(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &
         Some(_) => Err(Flow::error_call(call.clone(), format!("no active binding for \"{}\"", sym))),
         None => Err(Flow::error_call(call.clone(), format!("no binding for \"{}\"", sym))),
     }
-}
-
-fn do_is_builtin_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Sym(s) => s.name().to_string(),
-        _ => return Err(Flow::error("invalid symbol")),
-    };
-    Ok(Value::lgl(super::lookup_internal(&name).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
 }
 
 fn do_make_lazy(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

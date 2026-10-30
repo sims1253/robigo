@@ -1004,3 +1004,11 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   GNU R util.c:Rf_checkArityCall uses .Internal(name), without quotes, for
   internals. Port this locally in the owned module; do not change other
   tracks' builtin errors globally.
+- First candidate exactly matches every construction/import serialization
+  comparison. Debian GNU R also reads, executes and byte-identically
+  reserializes all four robigo-written RDS artifacts (both stream versions).
+- Reject first candidate as final: two arity probes still use older
+  duplicate getconst/is.builtin.internal registrations in lang.rs/misc.rs.
+  Remove those registrations and their old implementations, keeping the
+  canonical versions in bytecode.rs. These are additional shared-file
+  migrations only. Rebuild and repeat all verification on the final binary.
