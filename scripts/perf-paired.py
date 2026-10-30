@@ -7,6 +7,7 @@ Original measurements and callgrind profiles are retained for diagnosis.
 """
 import argparse
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shutil
@@ -17,16 +18,17 @@ from types import SimpleNamespace
 import perf
 
 
-def confirm(base, new, programs, measure, threshold):
+def confirm(base, new, programs, measure, threshold, jobs=1):
     baseline = copy.deepcopy(base)
     candidate = copy.deepcopy(new)
-    for name, row in new['results'].items():
+    def compare_case(item):
+        name, row = item
         old = base['results'].get(name, {})
         b, n = old.get('robigo', {}), row.get('robigo', {})
         if old.get('wrong') or row.get('wrong') or 'error' in b or 'error' in n:
-            continue
+            return
         if 'instr' not in b or 'instr' not in n:
-            continue
+            return
         program = programs[name]
         oracle = measure(program, 'gnur', 0)
         if 'error' in oracle or oracle.get('status') != 0 or 'out' not in oracle:
@@ -44,6 +46,8 @@ def confirm(base, new, programs, measure, threshold):
         candidate['results'][name]['robigo']['instr'] = min(counts['candidate'])
         print(f"paired cache OFF {name}: stored {b['instr']:,} -> {n['instr']:,}; "
               f"base {counts['base']}; candidate {counts['candidate']}", flush=True)
+    with ThreadPoolExecutor(max_workers=jobs) as workers:
+        list(workers.map(compare_case, new['results'].items()))
     return baseline, candidate
 
 
@@ -53,6 +57,7 @@ def main():
     parser.add_argument('new')
     parser.add_argument('--base-robigo', required=True)
     parser.add_argument('--robigo', required=True)
+    parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--profiles', default='.robigo/perf-paired')
     args = parser.parse_args()
@@ -112,7 +117,7 @@ def run(args, profiles, binaries):
     original = json.loads(Path(args.new).read_text())
     (profiles / 'unpaired.json').write_text(json.dumps(original, indent=1))
     base, new = confirm(json.loads(Path(args.base).read_text()), original,
-                        programs, measure, args.threshold)
+                        programs, measure, args.threshold, args.jobs)
     paired = profiles / 'base.json'
     paired.write_text(json.dumps(base, indent=1))
     Path(args.new).write_text(json.dumps(new, indent=1))
