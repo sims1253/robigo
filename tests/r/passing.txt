@@ -15,6 +15,7 @@ tests/r/basics/super-assign-index.R
 tests/r/basics/super-assign-loops.R
 tests/r/basics/unboxed-returns.R
 tests/r/basics/vectors.R
+tests/r/capi/write-back.R
 tests/r/cli/chunks.R
 tests/r/cli/comment-chunks.R
 tests/r/cli/eof-incomplete.R

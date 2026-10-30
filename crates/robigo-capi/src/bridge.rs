@@ -5,9 +5,8 @@
 //! table: evaluation, environments and conditions stay in the runtime.
 //!
 //! Limits (council item 11; G3 removes them): arguments are copied in and
-//! atomic vectors written back after the call (in-place C writes become
-//! visible, as in GNU R), but `SET_STRING_ELT`/`SET_VECTOR_ELT` on an
-//! argument do not reach the caller; environments, closures, promises and
+//! vectors and their attributes written back after the call (in-place C
+//! writes become visible, as in GNU R); environments, closures, promises and
 //! builtins are HOST proxies; core objects without a runtime counterpart
 //! (external pointers, weak references, S4 objects) are wrapped in a
 //! runtime `ExtPtr` that keeps them preserved; cycles across the two heaps
@@ -167,7 +166,7 @@ fn only_stored(v: &Value) -> bool {
         Value::Cplx(x) => Rc::strong_count(x) == 1,
         Value::Str(x) => Rc::strong_count(x) == 1,
         Value::Raw(x) => Rc::strong_count(x) == 1,
-        Value::List(x) | Value::Expr(x) => Rc::strong_count(x) == 1,
+        Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x) == 1,
         Value::Lang(x) => Rc::strong_count(x) == 1,
         Value::Pairlist(x) => Rc::strong_count(x) == 1,
         _ => true,
@@ -401,7 +400,7 @@ fn vector_identity(v: &Value) -> Option<usize> {
         Value::Cplx(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Str(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Raw(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::List(x) | Value::Expr(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Lang(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Pairlist(x) => Rc::as_ptr(x) as *const u8 as usize,
         _ => return None,
@@ -1222,7 +1221,7 @@ fn iface_of(k: c_int) -> Interface {
 
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
-unsafe fn write_back(v: &Value, x: Sexp) {
+unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
     // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
         return;
@@ -1241,7 +1240,42 @@ unsafe fn write_back(v: &Value, x: Sexp) {
             }
         }
     }
+    // R: memory.c:SET_STRING_ELT, SET_VECTOR_ELT; attrib.c:installAttrib
+    // The bridge copy is the same R object: native writes bypass copy-on-
+    // modify, including writes to list elements and attributes.
+    unsafe fn converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Value {
+        if let Some(v) = originals.get(&x.addr()) {
+            return v.clone();
+        }
+        let v = from_sexp(x);
+        originals.insert(x.addr(), v.clone());
+        v
+    }
+    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
+        let mut a = x.attrib_raw();
+        let mut out = Vec::new();
+        while a != R_NilValue && !a.is_null() {
+            if a.tag().typ() == SYMSXP {
+                out.push((sym_of(a.tag()), converted(a.car(), originals)));
+            }
+            a = a.cdr();
+        }
+        let s4 = x.gp() & gp::S4 != 0;
+        let value = if out.is_empty() && !s4 { None } else { Some(Box::new(Attrs(out, s4))) };
+        let p = Rc::as_ptr(rc) as *mut Vector<T>;
+        (*p).attrs = value;
+    }
     match v {
+        Value::Str(rc) => {
+            let data = (0..xlength(x)).map(|j| rstr_of(STRING_ELT(x, j))).collect();
+            let p = Rc::as_ptr(rc) as *mut Vector<RStr>;
+            (*p).data = data;
+        }
+        Value::List(rc) | Value::Expr(rc) => {
+            let data = (0..xlength(x)).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
+            let p = Rc::as_ptr(rc) as *mut Vector<Value>;
+            (*p).data = data;
+        }
         Value::Lgl(rc) | Value::Int(rc) => back(rc, x),
         Value::Real(rc) => back(rc, x),
         Value::Raw(rc) => back(rc, x),
@@ -1257,6 +1291,15 @@ unsafe fn write_back(v: &Value, x: Sexp) {
         }
         _ => {}
     }
+    match v {
+        Value::Lgl(rc) | Value::Int(rc) => attrs(rc, x, originals),
+        Value::Real(rc) => attrs(rc, x, originals),
+        Value::Raw(rc) => attrs(rc, x, originals),
+        Value::Cplx(rc) => attrs(rc, x, originals),
+        Value::Str(rc) => attrs(rc, x, originals),
+        Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
+        _ => {}
+    }
 }
 
 /// References to an argument's object besides the argument list itself.
@@ -1267,7 +1310,7 @@ fn sharing(v: &Value) -> u16 {
         Value::Cplx(x) => Rc::strong_count(x),
         Value::Str(x) => Rc::strong_count(x),
         Value::Raw(x) => Rc::strong_count(x),
-        Value::List(x) | Value::Expr(x) => Rc::strong_count(x),
+        Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x),
         _ => return 0,
     };
     n.saturating_sub(1).min(u16::MAX as usize) as u16
@@ -1407,8 +1450,15 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
                 &mut out,
                 &mut info,
             );
+            let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
+            let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+            for (x, value) in &seen {
+                if !xs.contains(x) {
+                    write_back(value, *x, &mut originals);
+                }
+            }
             for (a, &x) in args.iter().zip(&xs) {
-                write_back(&a.value, x);
+                write_back(&a.value, x, &mut originals);
             }
             stack_imbalance(interp, ".Call", &info);
             result(t, out)

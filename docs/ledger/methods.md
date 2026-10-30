@@ -7,6 +7,133 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 8 — native write-back and VM slot handoff
+
+- Branch `track/methods-slot-bridge`, PR #101. Paired measurements
+  below use d2ce510; rebased onto 1b4670a after #94/#96/#97 landed.
+  #71 is untouched; no vm.rs, value.rs, or serialization edits.
+- Port basis: memory.c:SET_STRING_ELT/SET_VECTOR_ELT mutate the existing
+  SEXP; attrib.c:installAttrib and R_do_slot_assign do likewise.
+  duplicate.c:duplicate1 recursively copies children for deep duplication,
+  while shallow duplication shares them. The core duplication already
+  does that; the bridge lost the shared child's write on return.
+- Fix: synchronize converted children as well as arguments, write back
+  lists, strings and attributes, and preserve existing child identities
+  through a reverse SEXP map. Include OBJSXP in bridge identity/sharing.
+- Fixture `tests/r/capi/write-back.R` builds a small public-function-ABI
+  native library, avoiding dependence on a preinstalled Rcpp. It covers
+  list aliases, character writes, matrix attributes, S4 slots, and
+  deep/shallow duplication. Recorded with Debian GNU R 4.5.0-3's copied
+  libR and private ICU 76, never the host's 4.6.1 wrapper.
+- Guarded VM handoff: compile literal-symbol `x@slot` under the existing
+  primitive-binding guard. Read/force x once, then require methods enabled
+  and an S4 object. For ordinary names, use do_slot (including pseudo-NULL,
+  missing-slot and .S3Class behavior); defer .Data to the slow path because
+  data_part can evaluate R. Non-S4 objects must fall back to do_AT for S3
+  dispatch and exact errors. Guard misses must not evaluate x twice; pass
+  the evaluated value in a forced promise to the primitive fallback.
+  Restrict the first fast path to present ordinary slots; missing-slot
+  errors should retain do_AT's context. Object forcing can run R: invalidate
+  VM variable caches afterwards, but keep the primitive selected before
+  forcing for this call (do not look up a newly rebound @). Preserve
+  visibility. Existing entry guards account for rebinding @. No cached attribute offset without checking the
+  actual attribute layout: same-class objects can have different layouts.
+- Method-table lookup caching remains a separate experiment: cache against
+  both table identity and environment mutation version, including changes
+  in inherited tables and method bindings. Cache metadata, never a method
+  result across setMethod/removeMethod without invalidation. C API
+  attribute writes can mutate metadata without rebinding an environment
+  variable, so an environment version alone cannot guard such metadata.
+- Rcpp classification: listof 4/5 (list elements), matrix 30/31/34
+  (dimnames), S4 2/3 (slot attributes), vector 116/120/135 (character
+  element writes): ten bridge bugs. misc 51 is connection message sinking:
+  plain message() under sink(type="message") also bypasses the sink,
+  with no C/Rcpp involved; hand off builtins/io.rs:cat_output/conn_write
+  to its owner. xptr 7/8 also fail in the same GNU R shim. No failing
+  comparison requires exposing undocumented GNU R layout internals.
+- Baseline full existing conformance ratchet: 241 scripts x 3 tiers all
+  pass. New native write-back fixture fails in all three tiers. C API
+  corpus 19/21 (objects and strings fail); S4 corpus 644/662. All result
+  sets saved before candidate runs, so compare identities too.
+- Rejected measurement setup: moving a saved robigo executable to /tmp
+  discovers /tmp/natives (unrelated experiments) and fails to load methods
+  with undefined DDVAL. Save binaries under the worktree .robigo/bin.
+  Discarded those Rcpp/instruction runs. Oracle measurements use the
+  direct R executable with copied libR + ICU, not bin/R's host wrapper.
+- Native message sink reproduction: direct message("direct") and a
+  C Rf_eval(message("native"), R_BaseEnv), while a textConnection is the
+  message sink, both print to stderr and leave the connection empty.
+  This is independent of the SEXP write-back bug; no io.rs edits here.
+- Rcpp baseline: 1,610 PASS / 13 FAIL, sugar 493/493, no PROTECT-stack
+  imbalance warnings. The diagnostic runner printed sys.calls on failures
+  and exited with a parser error after the Matrix file; reran that file
+  with the original shim: exit 0, same 80 assertion records byte-for-byte.
+  Use the original shim for the candidate.
+- Candidate conformance: **242/242 scripts in each of AST/VM/JIT**;
+  fixture added to passing.txt (minimal shared ratchet edit). S4
+  **644/662 -> 644/662**, C API **19/21 -> 19/21**, methods/stats4
+  examples **45/50**, all zero regressions. Saved result identities
+  confirm no previously passing S4/C API case was lost.
+
+| workload | robigo before | robigo after | GNU R, same host | before/R | after/R |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| generic | 11,284.436 | 11,288.298 | 12,193.281 | 0.925 | 0.926 |
+| slot | 1,366.447 | 1,372.986 | 656.124 | 2.083 | 2.093 |
+| replace | 39,153.106 | 39,179.670 | 38,692.237 | 1.012 | 1.013 |
+| new | 353,364.510 | 353,522.362 | 315,224.912 | 1.121 | 1.121 |
+| valid | 179,077.188 | 178,996.576 | 163,136.676 | 1.098 | 1.097 |
+
+- Paired callgrind, 2N minus N iterations after identical setup, as in
+  round 7; no S4 hot-path edits. All changes are below the 0.5% gate
+  (slot read +0.479%, generic +0.034%, replacement +0.068%, new +0.045%,
+  validation -0.045%). Rank remains slot read, new, validObject,
+  replacement, generic. Slot fast path is a handoff, not a claimed win.
+
+- Full candidate Rcpp: **1,610 pass / 13 fail -> 1,620 pass / 3 fail**,
+  exactly ten FAIL->PASS records and no PASS->FAIL or missing records.
+  Sugar remains **493/493**, all files complete with exit 0 and no
+  stack-imbalance warnings. Fixes are the ten assertions classified above.
+- Corrected XPtr classification: both failures were child R processes
+  reporting "there is no package called 'Rcpp'". Exporting
+  `R_LIBS=/tmp/methods7/lib` makes XPtr **8/8 on baseline and candidate**.
+  Replacing those two harness failures gives **1,612/11 ->
+  1,622/1**; the sole remaining runtime failure is message sinking.
+  Also reran the S4 file freshly on the copied GNU R 4.5.0 executable:
+  **20/20**, matching the candidate; the old full-oracle S4 failures
+  are not reproducible in isolation and are not a spec to emulate.
+- Message-sink handoff: in builtins/io.rs, `conn_write` treats terminal
+  stderr directly, bypassing `Interp::write_err`'s error_con diversion.
+  Reproduce with `out <- character(); con <- textConnection("out", "w",
+  local=TRUE); sink(con, type="message"); message("direct");
+  sink(type="message"); close(con); print(out)`: out is empty on robigo,
+  `"direct"` on GNU R. Fix belongs to the connections owner.
+- Remaining bridge work beyond these assertions: immediate visibility of
+  C writes during C->R callbacks, `.External` write-back, and aliasing of
+  newly created nested C objects across returns. These need separate
+  fixtures; do not claim the transitional bridge is a shared object heap.
+
+- Rebased verification on 1b4670a: **248/248 scripts in AST/VM/JIT**,
+  S4 **644/662**, C API **19/21**, methods/stats4 examples **45/50**,
+  zero regressions. `cargo test --release -p robigo-capi` passes all
+  unit/integration/doc tests under the build lock. The first unlocked
+  invocation passed both integration tests, then rustdoc lost its runtime
+  .rlib to shared-target turnover; rejected that failed invocation and
+  reran build + tests within one lock. Formatting and whitespace pass.
+- Rebased focused Rcpp (listof, matrix, misc, modref, S4, sugar, vector,
+  XPtr) with R_LIBS exported: **819 pass / 1 fail**, all eight files exit 0;
+  sugar **493/493**, S4 **20/20**, XPtr **8/8**. The only failure is
+  misc 51, the independently reproduced message sink. No stack imbalance.
+- Current rebased-head instruction ratios (the isolated bridge experiment
+  is the before/after table above; #97's dispatch gain is inherited here):
+
+| workload | rebased head | GNU R, same host | head/R |
+| --- | ---: | ---: | ---: |
+| generic | 10,893.902 | 12,193.281 | 0.893 |
+| slot | 1,378.657 | 656.124 | 2.101 |
+| replace | 39,126.714 | 38,692.237 | 1.011 |
+| new | 352,891.758 | 315,224.912 | 1.119 |
+| valid | 178,971.906 | 163,136.676 | 1.097 |
+
 ## 2026-10-30: round 7 Rcpp retest and S4 dispatch allocations
 
 - Branch `track/methods-s4-fastpaths`; #71 is untouched. Measurements and
