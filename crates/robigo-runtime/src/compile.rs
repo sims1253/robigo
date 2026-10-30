@@ -362,6 +362,14 @@ pub enum Op {
         name: u32,
         call: u32,
     },
+    /// `x@name` (call `consts[call]`) with `object` evaluated into register `object`
+    /// and the slot name as a symbol `name`.
+    SlotRead {
+        dst: Reg,
+        object: Reg,
+        name: Sym,
+        call: u32,
+    },
     /// `missing(sym)` (call `consts[call]`).
     Missing {
         dst: Reg,
@@ -1343,6 +1351,30 @@ impl Compiler {
                 let name = self.konst(name);
                 let call = self.konst(whole.clone());
                 self.emit(Op::Dollar { dst, x, name, call });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "@" if l.args.len() == 2
+                && l.args.iter().all(|a| a.tag.is_none())
+                && !l.args[0].value.is_missing_arg()
+                && l.args[0].value.as_sym() != Some(s::DOTS)
+                && match &l.args[1].value {
+                    Value::Sym(s) => is_var(*s),
+                    Value::Str(v) => v.data.len() == 1 && v.attrs.is_none() && v.data[0].is_some(),
+                    _ => false,
+                } =>
+            {
+                let g = self.guard(h, whole, dst);
+                let object = self.reg();
+                self.expr(&l.args[0].value, object, Want::Value);
+                let name = match &l.args[1].value {
+                    Value::Sym(s) => *s,
+                    Value::Str(v) => Sym::new(v.data[0].as_deref().unwrap()),
+                    _ => unreachable!(),
+                };
+                let call = self.konst(whole.clone());
+                self.emit(Op::SlotRead { dst, object, name, call });
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
