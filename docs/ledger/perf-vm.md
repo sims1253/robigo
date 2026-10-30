@@ -6,6 +6,54 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 11, rescue #108 (rebase + perf verdict)
+
+- Took over `track/perf-vm-r10-wrappers` at 628f43c (CONFLICTING with
+  main 0bee8896) on a rescue branch in this worktree (the PR branch is
+  checked out in round 10's worktree; pushed via explicit refspec).
+  Merge commit e38a5f6a, pushed to #108; GitHub reports MERGEABLE/CLEAN.
+- Conflict resolutions: compile.rs keeps `CallSite::si`/`si_memo`
+  (HEAD's general 20-internal port) and drops main's narrower
+  `inline_base_isvector` field (round 9's merged #103 mechanism is
+  superseded: one construction site, no other users); interp.rs keeps
+  `try_inline_call`; vm.rs keeps `try_inline_site`/`try_inline_expr`
+  and drops `inline_base_isvector`. Ledger keeps both sides' sections.
+  Ratchets: kept main's deletion of both legacy `passing.txt` lists and
+  added `tests/r/passing/basics/compiled-wrappers-{base,user}.R.pass`
+  (the branch's fastr `245e62b` marker already exists on main).
+- Host release verification of the merge: conformance 7/7 incl. both
+  wrapper fixtures in all three tiers; full conformance 7/7;
+  `cargo test --release -p robigo-runtime`: 55 pass + the 2 documented
+  host-glibc complex-oracle 1-ulp failures (untouched files, pass in
+  Debian CI). `cargo fmt --check` clean. (Debug `cargo test` does not
+  link on this host; release is the documented path.)
+- Paired perf gate in `robigo-build:4.5.0` (Debian R 4.5.0-3, valgrind,
+  CI native set built fresh from the R sources, both exact release
+  binaries from fresh target dirs, same job, cache disabled, min of 2;
+  i.e. CI's `perf-paired.py` mechanism on an 11-program change-sensitive
+  subset: csv, lapply, lapplyDots, profiler-microbenchmark,
+  profiler-shared, matrixFor, fib, binarytrees, nbody, pidigits,
+  Storage). Result: **6 faster, 0 slower above 0.5%, 0 broken**; all 11
+  outputs match GNU R; csv **1,783,838,989 -> 1,394,969,387 (-21.80%)**,
+  1.16x -> 0.91x GNU R, now 11/11 faster. Other paired wins: Storage
+  -2.12%, nbody -1.47%, pidigits -0.88%, lapply -0.58%, matrixFor
+  -0.65% (fib/binarytrees/profilers/lapplyDots neutral, all < 0.5%).
+- Caution replayed: two source trees sharing one cargo target dir
+  poison each other through mtime-based fingerprint reuse (the second
+  build silently reuses the first's build-script output: here
+  `--dynamic-list=/base/.../exports.list` broke the link and exposed
+  it). Paired binaries came from isolated fresh target dirs.
+- CI run 41049290827 on e38a5f6a: SUCCESS (build, all corpus shards,
+  full performance gate). The rebase verdict is verified both locally
+  (focused paired gate) and by CI (full gate).
+- Open queue: remaining connection-write cost per round 10
+  (EncodeElement/native formatting out of scope; con_write_bytes ~75M +
+  copy/strlen ~25M in csv; m_vfprintf's scratch copy stays as finalizer
+  protection). #116 (core cycle reclamation) has MERGED since the round
+  brief, so the value.rs prohibition lapsed; scalar promise storage
+  (round 10 design) is the next step, still needing core agreement on
+  tracing before landing.
+
 ## 2026-10-30: round 10, general simple-internal inlining
 
 - Supersedes the mechanism of open #103 (base `is.vector` argument
