@@ -1,0 +1,18 @@
+for (version in 2:3) {
+  path <- sprintf('bytecode-fixtures/closure-v%d-xdr.rds', version)
+  f <- readRDS(path)
+  print(f(3L))
+  print(identical(body(f), body(unserialize(serialize(f, NULL, version = version)))))
+  expected <- readBin(path, 'raw', n = 100000L)
+  actual <- serialize(f, NULL, version = version)
+  print(identical(actual, expected))
+  out <- tempfile()
+  saveRDS(f, out, version = version, compress = FALSE)
+  print(identical(readBin(out, 'raw', n = 100000L), expected))
+  unlink(out)
+}
+for (version in 2:3) {
+  f <- readRDS(sprintf('bytecode-fixtures/closure-v%d-ascii.rds', version))
+  path <- sprintf('bytecode-fixtures/closure-v%d-ascii.rds', version)
+  print(identical(serialize(f, NULL, ascii = TRUE, version = version), readBin(path, 'raw', n = 100000L)))
+}
