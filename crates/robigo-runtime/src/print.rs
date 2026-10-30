@@ -15,6 +15,7 @@ const R_MIN_LBLOFF: usize = 2;
 
 pub struct Printer {
     pub pp: PrintParams,
+    pub use_source: bool,
     pub tagbuf: String,
     pub env: Env,
     pub out: String,
@@ -41,6 +42,7 @@ impl Interp {
 pub fn print_value(interp: &mut Interp, v: &Value, env: &Env) -> RResult<()> {
     let mut p = Printer {
         pp: interp.print_params(),
+        use_source: true,
         tagbuf: String::new(),
         env: env.clone(),
         out: String::new(),
@@ -55,6 +57,7 @@ impl Printer {
     pub fn new(interp: &Interp, env: &Env) -> Printer {
         Printer {
             pp: interp.print_params(),
+            use_source: true,
             tagbuf: String::new(),
             env: env.clone(),
             out: String::new(),
@@ -151,9 +154,28 @@ impl Printer {
                 }
             }
             Value::Closure(c) => {
-                let lines = interp.deparse_prepared(v, || {
-                    crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
-                })?;
+                // R: print.c:PrintLanguage -- use the R as.character
+                // generic so srcref extraction and dispatch run in base R.
+                let lines = if let Some(srcref) =
+                    v.get_attr(s::SRCREF).filter(|r| self.use_source && matches!(r, Value::Int(_)))
+                {
+                    let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(srcref)]);
+                    let base = interp.base.clone();
+                    match interp.eval(&call, &base)? {
+                        Value::Str(v) => v.data.iter().map(|s| s.as_deref().unwrap_or("NA").to_string()).collect(),
+                        v if v.is_empty() => Vec::new(),
+                        v => {
+                            return Err(crate::error::Flow::error(format!(
+                                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+                                v.type_name()
+                            )));
+                        }
+                    }
+                } else {
+                    interp.deparse_prepared(v, || {
+                        crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
+                    })?
+                };
                 for l in lines {
                     self.p(&l);
                     self.p("\n");

@@ -1,5 +1,69 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 7): closure source metadata and ownership audit
+
+- Baseline main 29cac51, branch track/conformance-sweep-data-7.
+  Two new Debian 4.5.0-3 oracle fixtures fail in each execution tier
+  (0/6). Startup baseline is 44,820,180 callgrind instructions.
+- Port eval.c:do_function's transfer of CADDR(args) to the closure's
+  srcref attribute. Preserve the source environment by reference, body
+  attributes independently, nested functions and defaults. Serialization
+  versions 2 and 3 already preserve these attributes and shared srcfiles;
+  no serialize.rs change is needed.
+- Port print.c:PrintLanguage for closures with integer srcrefs and
+  print.c:do_printdefault's useSource validation. Extract the source via
+  the base as.character generic, retaining original comments and spacing.
+  Shared edits are confined to builtins/lang.rs and print.rs; no vm.rs,
+  value.rs, serialization or finalizer edits.
+- Kept: both fixtures improve **0/6 -> 6/6** across interpreter,
+  VM and JIT. They cover nested/default closures, environment changes,
+  body/formal replacement, comments, serialization versions 2 and 3,
+  original spacing and source printing inside a list. Added both passes
+  to tests/r/passing.txt.
+- Startup **44,820,180 -> 44,817,780** instructions (-0.005%).
+  Fixed-binary broad sweep holds **8,407/8,426 -> 8,407/8,426**,
+  with identical per-case outcomes. The sole recorded-pass failure on
+  both binaries is order/add626's known host collation mismatch.
+  Parser/subset holds **169/192 -> 169/192**, identical per-case outcomes.
+- Full oracle comparison improves **708/717 -> 714/717** across the
+  interpreter, VM and JIT. All 236 original scripts pass in every tier,
+  the two new fixes gain six checks, and the separate UTF-8 probe fails
+  in all tiers on both binaries. No tier differences or regressions.
+- Runtime checks pass: 36 unit tests and two lazy-load integration tests,
+  with the two documented host libc oracle tests excluded. Debian CI
+  runs those tests unmodified. cargo fmt --check and source diff checks
+  pass. Oracle recordings retain GNU R's trailing whitespace verbatim.
+  Final shared ratchet diff only appends the two verified fixture paths.
+- Rejected folding the UTF-8 print probe into the passing fixture: base
+  as.character.srcref sets Encoding(lines) to bytes, and core's current
+  implementation rejects non-ASCII bytes marking. Retained the exact
+  Debian oracle probe separately as closure_source_print_utf8.R, without
+  a passing entry. It fails before and after this batch. Follow up with
+  core #84's byte-window work; do not replace base source extraction with
+  a guessed string slice. Tabs and UTF-8 source references themselves
+  remain covered by round 6's passing source_refs.R.
+- Rejected an extra global as.character.srcref override probe: GNU R's
+  base-environment call does not invoke that global override. The probe
+  produced no distinct behavior, so its proposed buffering change and
+  redundant fixture extension were removed before the next build.
+- Parser audit: parser.md leaves eleven parse-data cases unclaimed.
+  gram.y:token_, record_, recordParents, modif_token and finalizeData
+  need token IDs, grammar reductions, token reclassification and comment
+  parents. The current arena AST has discarded those reductions and the
+  lexer discards comments. A correct next slice must add an optional
+  syntax-side recording mode before attaching runtime parseData. Do not
+  reconstruct the grammar history from the runtime AST or synthesize a
+  getParseData replacement. This batch keeps syntax ownership unchanged.
+- VM coordination for perf-vm: lapply/245e62b still needs GNU compiler's
+  GETINTLBUILTIN/CALLBUILTIN behavior for is.vector before X is forced.
+  The available traceback frames cannot fix that by filtering names.
+  Next step belongs to the internal-call compilation path in vm.rs.
+- Bytecode coordination for startup/core/perf-vm: serialize.rs:read_bc
+  explicitly discards the instruction vector and all but constant zero.
+  Value still has no BCODESXP variant. Faithful mkCode/bcClose and compiler
+  round trips need that representation and serializer support together.
+  No version-only builtin or guessed bytecode representation was added.
+
 ## 2026-10-29 (round 6): parsed source-reference attributes
 
 - Port gram.y:makeSrcref, attachSrcrefs, xxexprlist and xxdefun in
