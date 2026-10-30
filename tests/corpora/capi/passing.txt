@@ -4,6 +4,7 @@ attributes
 ccallable
 coerce
 console
+envir
 errors
 eval
 extptr
@@ -13,6 +14,6 @@ onintr
 pairlist
 registration
 serialize
+statics
 unwind
 vectors
-statics
