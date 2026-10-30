@@ -24,3 +24,6 @@ cover standalone bytecode, attributes, equality and source evaluation. Version
 `real-constants.rds` covers the deferred scalar representation, including
 negative zero, R NA, IEEE NaN and infinities. The Rust metadata tests compare
 its IEEE bits and serialized bytes before and after inspection.
+
+`string-constants.rds` covers deferred UTF-8, latin1, bytes, NA, empty and
+named character vectors, including native-binary and XDR round trips.

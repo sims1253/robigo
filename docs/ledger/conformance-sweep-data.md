@@ -1233,3 +1233,64 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   only the previously reproduced main timeout for the huge compact sequence
   is listed as a regression locally. No expectations or masks are adjusted.
   Full pinned-platform corpora and perf gates remain CI's responsibility.
+
+## 2026-10-30: reproduce cc2bb64's remaining CI performance failures
+
+- Prior local <=0.2% claim did not reproduce the gate. CI sets ROBIGO_NATIVES
+  to its built native libraries; the local isolated binary run omitted that
+  override. Additionally, host-linked binaries require GLIBC_2.44 and cannot
+  stand in for trixie's binaries. Withdraw that local result as gate evidence.
+- Exact failing base is 5bff0caf, run 41031760764. Downloaded both exact
+  binaries, native libraries and retained profiles from run 41038742565.
+  Replayed the unchanged paired harness in robigo-oracle:4.5.0, both caches
+  disabled and both executables using the same candidate natives, matching CI.
+  fannkuchredux +0.576%, naive_2 +0.702%, profiler-shared +0.297% on this CPU.
+- CI's naive_2 delta is 11,387,976 instructions. Exclusive increases include
+  _mi_malloc_generic 5,440,874; mi_find_page 4,374,147; memcpy 1,122,617.
+  No bytecode materializer appears in that profile; vm.rs does not access
+  GNU metadata caches. The two proposed hot-access hypotheses are unsupported.
+- Experiment: defer unused STRSXP containers and CHARSXP decoding. Validate
+  headers/lengths without allocating R strings; fall back to ReadItem for
+  attributed CHARSXP children. Replay canonical encoding flags and byte-order
+  headers; materialize through the same RString constructor on inspection.
+  GNU-recorded new fixture covers UTF-8, latin1, bytes, NA, empty/named vectors
+  and native/XDR round trips. Six metadata tests and all prior crate checks pass.
+  Container screen: fannkuchredux -0.199%, naive_2 +1.071%, profiler -0.030%.
+  Reject as final: descriptor allocations worsened naive_2.
+- Next inline descriptors without attributes into existing cell words; keep
+  the existing attributed descriptor path and GC ownership unchanged. This
+  removes small retained descriptor allocations, rather than adding padding
+  or changing allocator/test settings. Every marker still passes in all three
+  tiers and the two original bytecode fixture scripts remain 6/6 in trixie.
+
+- Inline-descriptor screen also fails naive_2: +1.062%; fannkuchredux
+  -0.200%, profiler-shared -0.029%. Revert both runtime experiments. Keep
+  only the GNU-recorded encoding fixture and extra round-trip coverage.
+  No runtime/perf improvement is claimed for this push. #100 remains blocked
+  on performance; round 10 remains paused.
+
+### Proposed split, pending a default-behavior decision
+
+- Cargo feature `gnu-bytecode-fidelity`, off by default. Compile out the
+  Bytecode variant, Closure metadata field and collector metadata owners in
+  the default build, and use main's expression-only ReadBC path. Merely
+  suppressing metadata allocation would leave the changed closure layout.
+- Feature-enabled builds retain the full current serialization behavior,
+  exact GNU fixtures and all existing marker entries. CI must run the whole
+  conformance suite with the feature enabled, including the unchanged 6/6
+  byte comparisons and native/XDR encoding tests. The default binary gets
+  its own paired perf gate against an identically configured first parent.
+- This deliberately leaves compiled-closure serialization fidelity opt-in.
+  It is a policy compromise, not an achieved zero-cost implementation, and
+  should be explicit before changing the default or test configurations.
+- The alternative needs startup coordination: an owned serialized-input API
+  and validated raw bytecode spans/reference handles, avoiding eagerly built
+  replay vectors and most cold allocations. The current borrowed-slice API
+  cannot keep input spans alive after return. That work crosses the rdb/input
+  ownership boundary; it has not been implemented or measured here.
+- Reproduction artifacts: CI run 41038742565 / job 124010650025, base build
+  run 41031760764 at 5bff0caf, artifact hashes recorded in the retained
+  binaries.json. Run scripts/perf-paired.py inside robigo-oracle:4.5.0 with
+  ROBIGO_NATIVES pointing to the downloaded candidate/natives on both sides;
+  leave ROBIGO_RDBFLAT unset. Local profiles and commands are retained under
+  .robigo/perf100/ci2. No fixture output, mask or ratchet was removed.

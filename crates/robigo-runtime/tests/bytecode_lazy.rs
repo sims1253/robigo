@@ -34,7 +34,7 @@ mod bytecode_lazy_tests {
 
     #[test]
     fn native_binary_import_replays_oracle_xdr_without_forcing() {
-        for name in ["body-code.rds", "real-constants.rds"] {
+        for name in ["body-code.rds", "real-constants.rds", "string-constants.rds"] {
             let (bytes, value) = fixture(name);
             let native = serialize_binary(&value, 3);
             let mut interp = Interp::new();
@@ -69,6 +69,25 @@ mod bytecode_lazy_tests {
             let Value::Real(v) = value else { panic!("oracle real") };
             assert_eq!(v.data[0].to_bits(), bits);
         }
+        assert_eq!(serialize(&value), bytes);
+    }
+
+    #[test]
+    fn deferred_strings_preserve_encoding_and_na() {
+        let (bytes, value) = fixture("string-constants.rds");
+        let Value::Bytecode(code) = &value else { panic!("bytecode fixture") };
+        assert!(code.consts.get().is_none());
+        assert_eq!(serialize(&value), bytes);
+        let pool = code.constants();
+        assert_eq!(pool.len(), 5);
+        let Value::Str(v) = &pool[1] else { panic!("strings") };
+        assert_eq!(v.data[0].as_ref().unwrap().as_ref(), "ascii");
+        assert_eq!(v.data[1].as_ref().unwrap().as_ref(), "é");
+        assert!(v.data[2].is_none());
+        let Value::Str(latin) = &pool[2] else { panic!("latin1") };
+        assert_eq!(latin.data[0].as_ref().unwrap().encoding_name(), "latin1");
+        let Value::Str(raw) = &pool[3] else { panic!("bytes") };
+        assert_eq!(&*raw.data[0].as_ref().unwrap().raw_bytes(), &[255, 128]);
         assert_eq!(serialize(&value), bytes);
     }
 

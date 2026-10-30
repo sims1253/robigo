@@ -47,3 +47,8 @@ saveRDS(e, paste0(path, 'forced-promise.rds'), compress = FALSE)
 # Scalar real bits include negative zero, R NA and IEEE NaN.
 b <- .Internal(mkCode(c(12L, 16L, 0L, 1L), list(42, -0, NA_real_, NaN, Inf, -Inf, 2.5, 1+2i)))
 saveRDS(b, 'tests/r/serialize/bytecode-fixtures/real-constants.rds', compress = FALSE)
+u <- intToUtf8(233L); Encoding(u) <- 'UTF-8'
+l <- rawToChar(as.raw(233L)); Encoding(l) <- 'latin1'
+b <- rawToChar(as.raw(c(255L,128L))); Encoding(b) <- 'bytes'
+x <- .Internal(mkCode(c(12L,16L,0L,1L), list(42L,c('ascii',u,NA_character_,''),l,b,structure(c('left','right'),names=c('a','b')))))
+saveRDS(x,'tests/r/serialize/bytecode-fixtures/string-constants.rds',compress=FALSE)
