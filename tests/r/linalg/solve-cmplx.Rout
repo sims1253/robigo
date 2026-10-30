@@ -23,6 +23,11 @@ attr(,"class")
 [1] "try-error"
 attr(,"condition")
 <simpleError in solve.default(a, c(1 + (0+1i), 2), tol = 10): system is computationally singular: reciprocal condition number = 0.205283>
+[1] "Error in solve.default(matrix(c(4, 1, 2, 3), 2), c(1 + (0+2i), 3), tol = 10) : \n  system is computationally singular: reciprocal condition number = 0.37037\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in solve.default(matrix(c(4, 1, 2, 3), 2), c(1 + (0+2i), 3), tol = 10): system is computationally singular: reciprocal condition number = 0.37037>
             [,1]        [,2]
 [1,] -0.25+0.25i  0.75+0.00i
 [2,]  0.50+0.00i -0.25-0.25i

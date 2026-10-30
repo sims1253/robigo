@@ -55,6 +55,7 @@ tests/r/jit/setter-eval-handlers.R
 tests/r/linalg/chol-pivot.R
 tests/r/linalg/eigen.R
 tests/r/linalg/solve-cmplx.R
+tests/r/linalg/solve-tol.R
 tests/r/linalg/svd.R
 tests/r/lang/call-head-tag.R
 tests/r/lang/compiled-append.R

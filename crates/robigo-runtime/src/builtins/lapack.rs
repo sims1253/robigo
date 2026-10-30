@@ -770,7 +770,11 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     dgetrs(&avals, n, &ipiv, &mut b, p);
     let ok = avals.iter().all(|v| v.is_finite());
     if ok && tol > 0.0 {
-        let anorm = dlange_one(&aorig, n, n);
+        // Lapack.c:La_solve computes dlange on REAL(A): the original for
+        // real input (avals is a copy), but the FACTORED buffer when A was
+        // coerced (integer/logical), because the C factors A's own storage
+        // in place. Mirror the aliasing.
+        let anorm = if matches!(a, Value::Real(_)) { dlange_one(&aorig, n, n) } else { dlange_one(&avals, n, n) };
         let rcond = dgecon(true, n, &avals, anorm);
         if rcond < tol {
             return Err(Flow::error(format!(
@@ -844,7 +848,8 @@ fn do_la_solve_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     let mut b = cplxs(&bin);
     b.truncate(n * p);
     b.resize(n * p, Complex::new(0.0, 0.0));
-    let mut avals = cplxs(&a);
+    let aorig_c = cplxs(&a);
+    let mut avals = aorig_c.clone();
     let mut ipiv = vec![0i32; n];
     let mut info = 0i32;
     let n32 = n as i32;
@@ -863,12 +868,15 @@ fn do_la_solve_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
     let ok = avals.iter().all(|v| v.re.is_finite() && v.im.is_finite());
     if ok && tol > 0.0 {
-        // The C computes the norm on the factored matrix and hands it to
-        // zgecon, exactly as written (Lapack.c:La_solve_cmplx).
+        // Lapack.c:La_solve_cmplx computes zlange on COMPLEX(A): the
+        // original for complex input (avals is a copy), but the FACTORED
+        // buffer when A was coerced, exactly as the C's aliasing behaves.
+        let anorm_src: &[Complex] = if matches!(a, Value::Cplx(_)) { &aorig_c } else { &avals };
         let la = system_lapack()?;
         let mut work = vec![Complex::new(0.0, 0.0); 2 * n];
         let mut rwork = vec![0.0; 2 * n];
-        let anorm = unsafe { (la.zlange)(&b'1', &n32, &n32, avals.as_ptr(), &n32, std::ptr::null_mut(), 1) };
+        let n32 = n as i32;
+        let anorm = unsafe { (la.zlange)(&b'1', &n32, &n32, anorm_src.as_ptr(), &n32, std::ptr::null_mut(), 1) };
         let mut rcond = 0.0;
         let mut info2 = 0i32;
         unsafe {
@@ -1512,8 +1520,10 @@ fn do_la_rs_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error("invalid 'only.values' argument"));
     }
     if n == 0 {
-        // zheev would reject LDA = 0 < max(1, N).
-        return Err(Flow::error("BLAS/LAPACK routine 'ZHEEV' gave error code -5"));
+        // zheev would reject LDA = 0 < max(1, N) (parameter 5). R's own
+        // answer here reads an uninitialized workspace size and fails in
+        // R_alloc; this guard is deterministic instead.
+        return Err(Flow::error("BLAS/LAPACK routine 'ZHEEV ' gave error code -5"));
     }
     let job = if ov != 0 { b'N' } else { b'V' };
     let n32 = n as i32;
@@ -1597,8 +1607,9 @@ fn do_la_rg(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Err(Flow::error("invalid 'only.values' argument"));
     }
     if n == 0 {
-        // dgeev would reject LDVL = 0 < 1 (jobVL = 'N' still needs >= 1).
-        return Err(Flow::error("BLAS/LAPACK routine 'DGEEV' gave error code -7"));
+        // dgeev would reject LDA = 0 < max(1, N) (parameter 5; R reports
+        // it through libR's interposed xerbla, %6s pads the name).
+        return Err(Flow::error("BLAS/LAPACK routine 'DGEEV ' gave error code -5"));
     }
     let vectors = ov == 0;
     let n32 = n as i32;
@@ -1672,8 +1683,8 @@ fn do_la_rg_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error("invalid 'only.values' argument"));
     }
     if n == 0 {
-        // zgeev would reject LDVL = 0 < 1.
-        return Err(Flow::error("BLAS/LAPACK routine 'ZGEEV' gave error code -8"));
+        // zgeev would reject LDA = 0 < max(1, N) (parameter 5).
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGEEV ' gave error code -5"));
     }
     let vectors = ov == 0;
     let n32 = n as i32;
@@ -1785,12 +1796,19 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     if !matches!(vt.get_attr(s::DIM), Some(Value::Int(_))) {
         return Err(Flow::error("non-integer dim(vt)"));
     }
+    // dgesdd validates in this order: JOBZ (-1), then LDA = n (-5), then
+    // LDU (-8), then LDVT (-10). R surfaces each as its interposed-xerbla
+    // error; robigo pre-checks so Debian's xerbla (which STOPs) is never
+    // reached.
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -5"));
+    }
     let info = svd_ldu_info(job, n, p, ldu, ldvt);
     if info != 0 {
         return Err(Flow::error(format!("BLAS/LAPACK routine 'DGESDD' gave error code {info}")));
-    }
-    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
-        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -1"));
     }
     if !matches!(s, Value::Real(_)) || !matches!(u, Value::Real(_)) || !matches!(vt, Value::Real(_)) {
         return Err(Flow::error("robigo: non-real SVD buffers are not supported"));
@@ -1888,12 +1906,17 @@ fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     if !matches!(vt.get_attr(s::DIM), Some(Value::Int(_))) {
         return Err(Flow::error("non-integer dims"));
     }
+    // zgesdd validates JOBZ (-1), then LDA = n (-5), then LDU (-8), then
+    // LDVT (-10), like dgesdd.
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -5"));
+    }
     let info = svd_ldu_info(job, n, p, ldu, ldvt);
     if info != 0 {
         return Err(Flow::error(format!("BLAS/LAPACK routine 'ZGESDD' gave error code {info}")));
-    }
-    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
-        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -1"));
     }
     if !matches!(s, Value::Real(_)) || !matches!(u, Value::Cplx(_)) || !matches!(vt, Value::Cplx(_)) {
         return Err(Flow::error("robigo: wrong-typed SVD buffers are not supported"));
