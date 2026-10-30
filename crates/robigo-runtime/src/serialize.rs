@@ -116,9 +116,9 @@ fn lang_cells(l: &Rc<Lang>) -> Vec<usize> {
 
 /// A node of a pairlist-like chain while reading.
 struct PNode {
+    attr: Value,
     tag: Value,
     car: Value,
-    ty: u32,
 }
 
 pub struct Reader<'a, 'i> {
@@ -590,6 +590,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         let mut flags = first_flags;
         let mut ty = head_type;
         let mut head_attr = Value::Null;
+        let mut lang_cells = Vec::new();
         while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
             let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
@@ -597,7 +598,13 @@ impl<'a, 'i> Reader<'a, 'i> {
             if nodes.is_empty() {
                 head_attr = attr.clone();
             }
-            nodes.push(PNode { tag, car, ty });
+            // R: serialize.c:ReadItem_Iterative allocates the streamed type.
+            // Record only exceptional argument cells, while the type is
+            // already decoded; keep PNode identical to the ordinary reader.
+            if ty == LANGSXP && head_type == LANGSXP && !nodes.is_empty() {
+                lang_cells.push(nodes.len() - 1);
+            }
+            nodes.push(PNode { attr, tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
                 // The CDR is the body / expression, read as a single item.
                 break;
@@ -614,6 +621,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
         };
+        let _ = nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
                 let n = nodes.into_iter().next().unwrap();
@@ -653,13 +661,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
-                // LANGSXP cells after a call's first (see `set_lang_cells`)
-                let lang_cells = nodes
-                    .iter()
-                    .skip(1)
-                    .enumerate()
-                    .filter_map(|(k, n)| (n.ty == LANGSXP).then_some(k))
-                    .collect::<Vec<_>>();
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
