@@ -76,17 +76,18 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   position, tag writes and epoch, cdr splice and NULL truncation, nested
   element identity, bad cells/dotted tails, one drop of the replaced
   cell, bulk rewrites, R-level CoW).
-- Perf: paired harness, both exact binaries, cache OFF, fresh isolated
-  copies, Rust ports (`ROBIGO_NATIVES` empty), 2 repeats, final binary.
-  Before -> after (paired minima): listFor 302,501,827 -> 302,531,223
-  (+0.010%), listWhile 408,966,174 -> 408,965,965 (-0.000%), bytecodes
-  229,167,361 -> 229,214,535 (+0.021%), s4-generic 578,482,557 ->
-  578,553,340 (+0.012%), s4-new 608,463,689 -> 608,524,700 (+0.010%),
-  s4-portfolio 567,552,311 -> 567,601,563 (+0.009%), s4-slot-read
-  453,587,099 -> 453,615,458 (+0.006%), s4-slot-write 479,918,682 ->
-  479,900,424 (-0.004%), s4-valid 612,488,264 -> 612,489,140 (+0.000%).
-  0 faster/0 slower above 0.5%, 0 broken. The new writes are out-of-line
-  and only the bridge calls them in these programs.
+- Perf: paired harness against the PR base (main 2c46ca3), both binaries
+  built from scratch in private target dirs, cache OFF, Rust ports
+  (`ROBIGO_NATIVES` empty), 2 repeats. Before -> after (paired minima):
+  listFor 302,484,277 -> 302,497,072 (+0.004%), listWhile 408,992,915 ->
+  408,981,756 (-0.003%), bytecodes 229,176,607 -> 229,182,913 (+0.003%),
+  s4-generic 578,520,220 -> 578,517,591 (-0.001%), s4-new 608,409,567 ->
+  608,477,310 (+0.011%), s4-portfolio 567,558,619 -> 567,589,628
+  (+0.006%), s4-slot-read 453,638,104 -> 453,618,109 (-0.004%),
+  s4-slot-write 479,914,862 -> 479,858,794 (-0.012%), s4-valid
+  612,489,510 -> 612,565,004 (+0.012%). 0 faster/0 slower above 0.5%, 0
+  broken. The new writes are out-of-line and only the bridge calls them in
+  these programs.
 - Open: (a) a cons cell whose cdr a native routine sets to a non-list
   (dotted pair) cannot be represented by the flat Pairlist/Lang; the
   write-back keeps the representable prefix and `set_pair_cdr_through_alias`
