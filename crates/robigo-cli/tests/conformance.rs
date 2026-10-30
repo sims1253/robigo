@@ -249,6 +249,7 @@ fn conformance() {
     if let Some(f) = &filter {
         scripts.retain(|p| p.display().to_string().contains(f.as_str()));
     }
+    assert!(!scripts.is_empty(), "no enabled conformance scripts match {filter:?}");
     let show_diff = std::env::var_os("ROBIGO_CONF_DIFF").is_some();
 
     // Run on two worker threads.

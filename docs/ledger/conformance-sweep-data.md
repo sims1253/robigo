@@ -1345,3 +1345,42 @@ Round 10 mkCode/bcClose work remains behind this same feature.
   Cell/OnceCell import conflict and initialize the guarded metadata field in
   core's new test closure. No legacy lists are restored. Measurements and
   final verification must use this merged tree.
+
+
+### Matched default-feature result after merging main
+
+Main advanced once more to a142ca65 (#117's JIT invalidation fix). Merge it
+unchanged and freeze that commit for both sides. Build base a142ca65 and
+candidate 7fad78f5 in robigo-oracle:4.5.0 with Rust 1.99.0 and the same private
+Cargo target, sequentially. Run the unchanged scripts/perf-paired.py against
+the two saved exact binaries: two samples each, caches disabled, isolated
+executable directories, the same downloaded CI natives on both sides, and
+GNU R output checks. This replaces the earlier unmatched local evidence.
+
+| Benchmark | Main instructions | Default feature instructions | Change |
+| --- | ---: | ---: | ---: |
+| rbench/awf/Bounce | 620,888,075 | 620,855,834 | -0.0052% |
+| rbench/shootout/fannkuchredux | 571,465,189 | 571,424,643 | -0.0071% |
+| rbench/shootout/nbody_2 | 869,290,969 | 869,273,305 | -0.0020% |
+| rbench/shootout/nbody_3 | 969,065,278 | 969,030,640 | -0.0036% |
+| rbench/shootout/nbody_naive_2 | 1,260,971,232 | 1,260,964,169 | -0.0006% |
+| rbench/simple/bytecodes | 232,710,173 | 232,687,949 | -0.0096% |
+| rbench/simple/profiler-shared | 5,775,348,497 | 5,775,329,756 | -0.0003% |
+| robigo/fib | 962,270,514 | 962,265,718 | -0.0005% |
+
+All eight are flat within 0.01%; do not claim these small differences as
+speedups. The unchanged harness reports 0 slower, 0 broken at 0.5%. The old
+CI tax (0.58%, 0.91%, 0.59%) and this new local result have different base
+commits/platforms; CI remains the final judge, not a claim that CI is green.
+Base SHA256: 971004b1bc458d0cfc65b5529e4fbb63d5f5e4b2ff35485ddf5df02d5a012fe9.
+Candidate SHA256: 7bf62d960db6bad46533d86a4691c059a262464b89ea32d1064279e739cec7cb.
+Profiles, samples and environment manifest: .robigo/perf100/ci2/flag-default
+and flag-manifest.json.
+
+Merged default CLI verification: all 9 conformance/selection/tier tests
+pass, all 281 active script ratchets hold (282/283 scripts match the oracle;
+the sole mismatch is the known unratcheted compiled-isvector-context.R).
+All 32,238 marker files remain. Add a nonempty-selection assertion so a
+mistyped feature fixture filter cannot silently turn the CI job into 0/0.
+Feature-enabled full release tests are compiling for this checkpoint; the
+PR remains draft pending their result and the complete CI gate.
