@@ -577,7 +577,6 @@ pub enum Value {
     Pairlist(Rc<Pairlist>),
     Lang(Rc<Lang>),
     Closure(Rc<Closure>),
-    Bytecode(Rc<Bytecode>),
     Builtin(&'static Builtin),
     Env(Env),
     Promise(Rc<Promise>),
@@ -588,6 +587,7 @@ pub enum Value {
     /// An `OBJSXP` (S4 object without a data part, `typeof` "S4" or
     /// "object"): nothing but attributes.
     Obj(Rc<Obj>),
+    Bytecode(Rc<Bytecode>),
 }
 
 /// GNU R's portable BCODESXP data. Instructions stay in R_bcDecode's integer

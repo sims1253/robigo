@@ -814,12 +814,10 @@ impl<'a, 'i> Reader<'a, 'i> {
         if materialize || self.format == Format::Ascii {
             return self.bc_item();
         }
-        let start = self.pos;
         let flags = self.int()? as u32;
         let ty = flags & 255;
         let Some(width) = vector_width(ty) else {
-            self.pos = start;
-            return self.bc_item();
+            return self.bc_item_flags(flags);
         };
         let len = self.length()?;
         if len == 1 && flags == ty && matches!(ty, INTSXP | LGLSXP) {
@@ -849,7 +847,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         let instructions = self.read_bc_instructions()?;
         // Most records describe the source corresponding to these instructions.
         // Reserve once instead of repeatedly reallocating the two streams.
-        self.bc_operations.reserve((instructions.len() * 2).min(512));
+        self.bc_operations.reserve(instructions.len() * 8);
         // Ordinary leaves are mostly packed scalars; avoid a code-sized
         // allocation for the few heap objects in the cell stream.
         let expression = self.read_bc_consts(reps, shared)?;
@@ -880,6 +878,11 @@ impl<'a, 'i> Reader<'a, 'i> {
         // R: serialize.c:ReadItem. These special/reference cells return before
         // attribute handling; keep the common bytecode leaves on that path.
         let flags = self.int()? as u32;
+        self.bc_item_flags(flags)
+    }
+
+    #[inline(always)]
+    fn bc_item_flags(&mut self, flags: u32) -> RResult<Value> {
         let v = match flags & 255 {
             NILVALUE_SXP => Value::Null,
             MISSINGARG_SXP => Value::missing_arg(),

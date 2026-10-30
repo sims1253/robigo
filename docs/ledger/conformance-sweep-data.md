@@ -1176,3 +1176,32 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   reservation to instructions.len()*4, then release it after packing. This
   targets the observed 891 added reallocations and their 745,399 copy
   instructions without retaining the oversized capacity.
+
+- Reserve-four candidate still fails: profiler-shared +0.797%, fib +0.204%.
+  Fixtures, metadata tests and all script ratchets hold. Reject as final.
+- Keep the reserve-eight candidate: retain packed backing storage, release
+  every temporary builder after packing, and reserve enough for the observed
+  source-cell expansion to avoid growth copies. The real unchanged paired
+  harness compares exact b7ee268 main and candidate binaries with cache OFF,
+  identical drivers/parameters, R 4.5.0 and two samples per side (minimum):
+  rbench/awf/Bounce: 619,734,433 -> 619,274,834 (-0.0742%).
+  rbench/shootout/nbody_2: 868,246,785 -> 868,338,976 (+0.0106%).
+  rbench/shootout/nbody_3: 967,680,015 -> 967,006,794 (-0.0696%).
+  rbench/shootout/nbody_naive_2: 1,258,876,962 -> 1,260,316,460 (+0.1143%).
+  rbench/simple/bytecodes: 231,921,199 -> 230,933,261 (-0.4260%).
+  rbench/simple/profiler-shared: 5,769,774,970 -> 5,761,489,684 (-0.1436%).
+  robigo/fib: 957,423,730 -> 959,026,818 (+0.1674%).
+  All seven satisfy <=0.2%; zero broken cases. Bytecode fixtures remain
+  6/6; all recorded-script ratchets hold in interpreter, VM and JIT
+  (276/277 scripts per tier, only the known unlisted compiled-context probe).
+  Runtime tests: 56 pass with only the two documented host glibc oracles
+  filtered from the follow-up run; metadata 5/5, lazyload 2/2, C API 2/2.
+  cargo fmt --all --check and git diff --check pass.
+- Shared changes are narrow: the new Bytecode fields/cold attribute helper,
+  evaluator bytecode helper, C API metadata access, and #98 collector edges.
+  Main's PNode stays 48 bytes. passing.txt retains every main and PR entry.
+- Still open: full pinned-platform CI; coordinator merge only. Then resume
+  round 10's construction work on a fresh branch from merged main, adapting
+  mkCode/bcClose to the lazy metadata API. #105 is saved and paused. Future
+  import work can also defer unused string-vector containers; the remaining
+  scalar/encoding paths currently keep their existing ReadItem behavior.
