@@ -6,6 +6,25 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 8, CSV connection formatting
+
+- Fresh branch from main d2ce510. Recover the round 7 literal-%s
+  candidate from the stash after measuring this baseline. The authorized
+  shared edits are capi connections.rs and main/robigo_sys.c.
+- Add a Debian R 4.5.0-3 recording for CSV file bytes and parsing,
+  missing values, UTF-8, percent directives in data, quoted fields,
+  255/256/257-byte writes, row names and CRLF. The delivered round 7
+  binary matches the recording. Current-main measurement is queued behind
+  other tracks' builds; no formatter change is kept before that measurement.
+- Core's ledger leaves environment finalizers and cycle reachability in
+  flight. Promise::forced still owns a boxed Value retained by both frame
+  bindings and Context.promargs. Leave value.rs unchanged. A VM-only
+  shortcut cannot remove that box while preserving observable promises.
+- Sweep-data's internal-call handoff is lapply/245e62b: is.vector must be
+  recognized before X is forced, following GETINTLBUILTIN/CALLBUILTIN.
+  Keep this as a separate follow-up after the CSV batch.
+
+
 ## 2026-10-30: setter fix rebased onto the byte window
 
 - Rebased #94 onto **df3d535** (#84). The conditions.rs conflict keeps
