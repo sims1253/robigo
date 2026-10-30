@@ -471,6 +471,7 @@ pub struct GuardMemo {
 
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
+    pub inline_base_isvector: bool,
     pub call: Value,
     /// Bytecode for each argument's promise (`None`: use the interpreter).
     pub codes: Vec<Option<Rc<Code>>>,
@@ -1021,6 +1022,7 @@ impl Compiler {
                 .collect::<Option<Vec<_>>>()
         });
         self.call_sites.push(CallSite {
+            inline_base_isvector: f.with_name(|n| n == "is.vector"),
             call: whole.clone(),
             codes,
             memo: Default::default(),

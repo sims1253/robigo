@@ -1782,6 +1782,45 @@ fn inline_site_call(
     })
 }
 
+/// R: compiler/R/cmp.R:cmpSimpleInternal, inlineSimpleInternalCall.
+/// Installed base bytecode removes this wrapper before forcing X. Limit
+/// this port to its one positional argument in base namespace callers;
+/// user closures retain their own compilation and lookup rules.
+pub(crate) fn inline_base_isvector(
+    interp: &mut Interp,
+    call: &Value,
+    clo: &Rc<Closure>,
+    env: &Env,
+) -> Option<RResult<Value>> {
+    let Value::Lang(l) = call else { return None };
+    let sym = l.fun_sym()?;
+    if !sym.with_name(|n| n == "is.vector")
+        || l.args.len() != 1
+        || l.args[0].tag.is_some()
+        || l.args[0].value.is_missing_arg()
+        || l.args[0].value.as_sym() == Some(s::DOTS)
+    {
+        return None;
+    }
+    let frame = interp.current_frame()?;
+    let Value::Closure(caller) = &interp.frames[frame].function else { return None };
+    if !caller.env.ptr_eq(&interp.base_ns) || !caller.jit.is_bytecode() {
+        return None;
+    }
+    // R: eval.c:DO_BASEGUARD compares with the *current* base binding,
+    // not with the wrapper definition at compilation time. Installed
+    // bytecode keeps its internal call even after that binding changes.
+    let Value::Closure(base) = interp.base_binding(sym)? else { return None };
+    if !Rc::ptr_eq(&base, clo) {
+        return None;
+    }
+    let call = Value::lang(Value::Sym(sym), vec![l.args[0].clone(), Arg::pos(Value::str("any"))]);
+    let Value::Lang(inner) = &call else { unreachable!() };
+    let b = crate::builtins::lookup_internal("is.vector").unwrap();
+    let r = interp.call_builtin(b, &call, &inner.args, env);
+    Some(signal(interp, r))
+}
+
 /// `Op::Call` of the closure `clo` (call site `site`, call `l`): promised
 /// arguments (some forced by the caller, see [`caller_promargs`]), then
 /// the call, whose compiled body may leave a scalar result unboxed.
@@ -1795,6 +1834,11 @@ fn closure_call(
     vars: &mut Vars<'_>,
     regs: &[RVal],
 ) -> RResult<RVal> {
+    if site.inline_base_isvector
+        && let Some(r) = inline_base_isvector(interp, &site.call, clo, env)
+    {
+        return r.map(RVal::V);
+    }
     let promargs = if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
         caller_promargs(interp, site, clo, l, env, vars, regs)
     } else {

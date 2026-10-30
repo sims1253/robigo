@@ -20,6 +20,53 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - New Debian 4.5.0-3 fixture covers missing arguments, sys.calls,
   named argument ordering, warning calls and a replacement closure.
   Baseline fails its warning call: is.vector({...}) instead of w().
+- Source rebase before filing picked up fb99c0b (#101); saved a fresh
+  release baseline from that tree at .robigo/r9/main. All existing
+  conformance entries pass in AST/VM/JIT. The namespace and uncaught-missing fixtures fail.
+- Main fib(21) minus fib(20): 154,341,597 - 112,602,925 instructions
+  over 13,530 additional calls, **3,084.90 instructions/call**. This
+  reproduces round 6's ~3,083 cost; it does not measure a promise change.
+- Post-#102 inclusive CSV attribution (nested totals, do not add):
+  writetable 851,759,356; m_vfprintf 507,631,044; R_WriteConnection
+  467,558,422; host callback 252,241,775; con_write_bytes 71,200,000.
+  R_WriteConnection allocates/protects a RAWSXP and scalar connection
+  number per write, resolves the generic host operation, then copies the
+  bytes again in bridge.rs. A dedicated synchronous NativeBridge write
+  callback could bypass those objects and generic dispatch. Preserve the
+  caller's byte ownership across allocation/finalizer safe points and
+  validate binary/text/file connections before landing with core.
+- Rejected measurement setup: perf.py overwrites exported R_HOME with
+  R RHOME. Host R returned 4.6.1 and several programs failed. Discarded
+  .robigo/r9/before.json; reran through round 8's RHOME wrapper, which
+  returns the supplied Debian R 4.5.0 path.
+- Promise design for core review: keep one Rc<Promise> shared by the
+  environment and Context.promargs; let its forced state hold integer,
+  logical or double bits directly, with a boxed Value alternative. VM
+  reads can copy scalar bits; AST/native/introspection reads materialize
+  and cache the Value once. Commit the forced state and clear PRENV at
+  GNU R's forcePromise success boundary. Escaping promises retain their
+  expression and old scalar after a parent binding changes. Core tracing
+  must follow the boxed alternative, expression and any unforced env;
+  scalar states add no graph edge. This changes value.rs and every direct
+  promise-value reader, so it must follow core's finalizer reachability
+  change, with missing/substitute/parent.frame/native-root tests.
+- Scope: retain compiled-isvector-context.R as the original unfixed
+  user-closure reproduction. The kept change targets installed base
+  bytecode only; base-isvector-context.R and compiled-isvector-missing.R
+  cover those fixes. General user-closure inlining needs cmp.R's full
+  compile-time scope checks and argument matching before it is safe.
+- Fresh main streams match the saved Debian GNU R oracle on 82/83
+  programs, including 71 successful runs and 11 matching error exits.
+  spectralnorm_math remains different. Do not describe matching error
+  exits as successful benchmark programs.
+- First candidate: focused FastR lapply/sapply/is.vector slice
+  **118/119 -> 119/119**, zero regressions. Argument warning/error and
+  missing-X diagnostics match. The base-rebinding fixture exposed an
+  existing mismatch retained by that candidate: GNU R DO_BASEGUARD
+  compares findFun with the current SymbolValue, so changing the base
+  wrapper does not replace the installed internal opcode. Removed the
+  original-definition shape check to port that rule. Stopped the
+  superseded intermediate performance run; final verification follows.
 - Core's finalizer reachability work is active. Keep Value/Promise layout
   unchanged; unboxed promise storage remains a coordinated follow-up.
 
