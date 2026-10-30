@@ -27,3 +27,12 @@ fenv$.SigLength <- 1L
 print(metadataValue(x, x))
 fenv$.SigLength <- 2L
 print(metadataValue(0, x))
+# Dispatch captures the table before it forces x. A replacement during
+# forcing affects the next call, while mutation of the captured table is live.
+print(metadataValue({fenv$.AllMTable <- replacement; x}, 0))
+print(metadataValue(x, 0))
+fenv$.AllMTable <- table
+savedMethod <- table$`MetadataValue#numeric`
+print(metadataValue({table$`MetadataValue#numeric` <- replacement$`MetadataValue#numeric`; x}, 0))
+table$`MetadataValue#numeric` <- savedMethod
+print(metadataValue(x, 0))

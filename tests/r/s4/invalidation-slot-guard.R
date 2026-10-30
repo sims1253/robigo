@@ -8,7 +8,7 @@ print(x@nullable)
 y <- x
 y@x <- 8
 print(c(read(x), read(y)))
-# An inlined slot read must still respect the current @ binding.
+# GNU R compiles the warmed read before this global @ replacement.
 `@` <- function(object, name) 100
 print(read(x))
 rm(`@`)
