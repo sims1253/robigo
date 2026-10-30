@@ -812,7 +812,21 @@ impl Interp {
             return self.set_data_part(obj, value);
         }
         let value = if value.is_null() { Value::Sym(syms::pseudo_null()) } else { value };
-        if obj.attrs_slot_mut().is_none() && !matches!(obj, Value::Env(_) | Value::ExtPtr(_)) {
+        // Check support without triggering copy-on-modify. installAttrib's
+        // mutation below makes the one required copy after validation.
+        if !obj.is_atomic()
+            && !matches!(
+                obj,
+                Value::List(_)
+                    | Value::Expr(_)
+                    | Value::Pairlist(_)
+                    | Value::Lang(_)
+                    | Value::Closure(_)
+                    | Value::Obj(_)
+                    | Value::Env(_)
+                    | Value::ExtPtr(_)
+            )
+        {
             return Err(Flow::error(format!(
                 "robigo: slots on objects of type '{}' are not implemented yet",
                 obj.type_name()

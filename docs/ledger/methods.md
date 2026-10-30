@@ -7,6 +7,47 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 10 single-class labels and borrowed slot access
+
+- Kept GNU R's R_dispatchGeneric label semantics while interning a single
+  class directly, without allocating a temporary joined string. R_get_slot
+  borrows its two arguments as the C port does. R_do_slot_assign validates
+  attribute support before triggering copy-on-modify; NULL encoding,
+  .Data handling and initialize's binding write-back stay on their existing paths.
+- Paired instructions/iteration, baseline -> final, with same-host GNU R:
+
+  | workload | baseline | final | GNU R | final/R |
+  | --- | ---: | ---: | ---: | ---: |
+  | generic | 10,920.312 | 10,702.198 | 12,193.287 | 0.878 |
+  | slot read | 1,376.734 | 1,377.449 | 656.122 | 2.099 |
+  | replacement | 39,429.751 | 39,455.266 | 38,692.235 | 1.020 |
+  | new | 354,252.890 | 353,990.606 | 315,063.616 | 1.124 |
+  | validObject | 180,072.314 | 180,071.719 | 163,070.796 | 1.104 |
+  | portfolio update | 676,582.090 | 677,009.550 | 615,098.430 | 1.101 |
+
+- Generic dispatch improves 2.00%; every other delta is below 0.1%.
+  `perf.py compare` on the six S4 scripts plus fib reports zero slowdowns
+  above 0.5% and zero wrong outputs. Rcpp sugar stays 493/493 with an
+  identical assertion sequence. S4 slice stays 644/662, zero regressions.
+- Corrected the portfolio measurement to run execute(N) and execute(2N),
+  reusing one holding as the benchmark does. Re-measured the saved baseline
+  and GNU R. The earlier portfolio figures below measured execute(1) in a
+  loop and included construction in each unit; those figures are historical.
+- Expanded the oracle test to cover table identity changes and method
+  redefinition during argument evaluation, besides active bindings,
+  self-redefinition, removal, NULL slots and initialize's in-place updates.
+- Full methods/stats4 examples without base natives are 45/50 on both saved
+  baseline and candidate. Three existing markers need the CI base natives
+  (setMethod graphics, mle and update-methods optim); no candidate loss.
+  With /tmp/core98-base-eb7/natives enabled: 48/50, zero regressions.
+- Full three-tier conformance and final runtime unit checks follow.
+- Open: slot reads still cost 2.10x GNU R. The existing profile attributes
+  most of that gap to VM execution and variable flushing. Next step for
+  perf-vm is a guarded slot-read instruction; value/GC changes belong to core.
+  Construction and validation remain 12% and 10% above GNU R. A cache of
+  mutable generic metadata needs binding-level invalidation beyond the
+  function version; this change deliberately reads that metadata on every call.
+
 ## 2026-10-30: round 10 method-table lookup cache
 
 - Kept a single direct function lookup per interpreter, guarded by table
