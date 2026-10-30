@@ -44,7 +44,35 @@
   matching SkipComment. A final runtime rebuild follows these corrections.
 - Syntax crate passes all nine unit tests, the raw-data differential test
   and the curated parse-tree oracle. The optional external corpus oracle
-  remains ignored by default. Runtime and broad final checks follow.
+  remains ignored by default.
+- Final fixed-binary parser/subset comparison: 169/192 -> 180/192,
+  exactly eleven gains and zero regressions. Broad data holds at
+  8,407/8,426, with identical per-case outcomes and difference categories.
+  The only listed failure on both binaries is the known order/add626
+  host collation case. Candidate corpora use a private TMPDIR to avoid
+  collisions with other worktrees' runs.
+- Strict stdout/stderr/status comparison in all three tiers improves
+  714/720 -> 717/720. All 239 passing scripts pass in every tier; the
+  unlisted closure_source_print_utf8 probe still fails in all tiers on
+  both binaries pending core #84. Added parse_data.R to the fixture ratchet.
+- Final startup: 44,821,179 -> 44,819,937 callgrind instructions (-0.003%).
+  All Debian CI jobs on code commit 43a05b8 pass, including every corpus
+  shard and the performance gate. CI runs cargo test --release --workspace:
+  all 43 runtime unit tests, both lazy-load integrations, nine syntax unit
+  tests, the raw-data differential and curated parser oracle pass without
+  host exclusions. Local cargo fmt --check and source diff checks pass.
+- Build failure was rejected as a measurement: the shared target reused
+  another checkout's syntax artifact and reported no parse_data module.
+  Seeded a private .robigo/runtime-target, forced this checkout's syntax
+  and runtime to rebuild, and verified its fixed candidate binary above.
+  No build was killed. Initial LR replay also needed xxexprlist's
+  EatLines reset before the empty-brace expression matched the oracle.
+- Further metadata work: port #line source aliases in SourceRefs together
+  with PS_SRCFILE/PS_ORIGINAL transfer; the new recorder already keeps
+  physical parsed-line positions and LINE_DIRECTIVE records. Audit
+  MAXELTSIZE text truncation for very long strings/comments against
+  StringValue/RawStringValue/SkipComment before extending that coverage.
+  No whole-program AST reconstruction or R-level getParseData override.
 
 
 ## 2026-10-30 (round 7): closure source metadata and ownership audit
