@@ -1,5 +1,15 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): integration rebase onto d81d29c
+
+- Rebased over #94, #101, #92 and #102. Preserve main's SmallVec inline
+  ReadBCLang spine and moved-tail optimization; remove the now-redundant
+  scratch pool, retain exact item capacity and shared head registration.
+  Keep every incoming and new conformance ratchet entry.
+- Rebuild in the private target and remeasure against this base before
+  delivery. The earlier f5dae40 measurements remain historical results.
+
+
 ## 2026-10-30 (round 9): verified persistence on f5dae40
 
 - Keep bytecode persistence with moved CARs, shared head registration and
