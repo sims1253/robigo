@@ -404,7 +404,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::NsGet(op) => {
                     let pkg = match lhs {
-                        Expr::Sym(..) | Expr::Const(Const::Str(Some(_)), _) => lhs,
+                        Expr::Sym(..) | Expr::Const(Const::Str(Some(_)) | Const::StrNative(_), _) => lhs,
                         _ => return Err(self.unexpected(&t)),
                     };
                     let name = self.member_name()?;
@@ -472,7 +472,7 @@ impl<'a> Parser<'a> {
         let t = self.bump();
         match t.tok {
             Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), t.span)),
-            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(str_bytes(arena, &s))), t.span)),
+            Tok::Str(s) => Ok(Expr::Const(str_const(arena, &s), t.span)),
             _ => unreachable!("checked above"),
         }
     }
@@ -562,7 +562,7 @@ impl<'a> Parser<'a> {
         let span = t.span;
         match t.tok {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
-            Tok::Str(s) => Ok(Expr::Const(Const::Str(Some(str_bytes(arena, &s))), span)),
+            Tok::Str(s) => Ok(Expr::Const(str_const(arena, &s), span)),
             Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), span)),
             Tok::Placeholder => Ok(Expr::Placeholder(span)),
             Tok::LParen => {
@@ -805,7 +805,7 @@ impl<'a> Parser<'a> {
                     // placeholder stays the string constant it is
                     // (`xxfuncall` in gram.y). `install("")` errors.
                     let fun = match lhs {
-                        Expr::Const(Const::Str(Some(name)), sp) => {
+                        Expr::Const(Const::Str(Some(name)) | Const::StrNative(name), sp) => {
                             if name.is_empty() {
                                 return Err(self.zero_length_name_error());
                             }
@@ -922,10 +922,18 @@ fn sym_name<'a>(arena: &'a Arena, s: &SymStr<'a>) -> &'a str {
 /// String-literal bytes: escape-free literals reference the source,
 /// unescaped bytes are copied into the arena.
 fn str_bytes<'a>(arena: &'a Arena, s: &StrTok<'a>) -> &'a [u8] {
-    match s.src() {
+    match s.src_bytes() {
         Some(src) => src,
         None => arena.bytes(s),
     }
+}
+
+/// A string constant with gram.y's encoding decision: an octal or hex
+/// escape forces CE_NATIVE (mkString2's `escaped` argument); everything
+/// else keeps the locale's UTF-8 mark.
+fn str_const<'a>(arena: &'a Arena, s: &StrTok<'a>) -> Const<'a> {
+    let bytes = str_bytes(arena, s);
+    if s.byte_escape() { Const::StrNative(bytes) } else { Const::Str(Some(bytes)) }
 }
 
 fn infix_bp(t: &Tok) -> Option<(u8, u8)> {

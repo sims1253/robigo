@@ -11,6 +11,26 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: preserve octal/hex escape origin for string encoding
+
+- gram.y's StringValue tracks `oct_or_hex` and passes it to mkString2 as
+  `escaped`; mkString2 only takes `known_to_be_utf8` when the literal had
+  no octal/hex escape. So `Encoding("\303\251")` and `Encoding("\xc3\xa9")`
+  are "unknown" (CE_NATIVE) while `"é"`, `"\u00e9"` and raw strings are
+  UTF-8. Symbols (mkChar2) ignore the flag.
+- Before: the lexer computed the escape flag and then discarded it, so
+  const_to_value guessed from UTF-8 validity: 4/7 probe marks matched.
+  Three octal/hex UTF-8 literals and an ASCII string containing one were
+  wrongly marked UTF-8.
+- The lexer's StrTok now carries `byte_escape`; the parser emits
+  `Const::StrNative` for those literals, and lang::const_to_value maps
+  them to Encoding::Native (ASCII still short-circuits to native as in
+  GNU R). Dump, hashing and the parse-data paths treat the variant like
+  any string constant, so parse-oracle output is unchanged.
+- Oracle-recorded tests/r/strings/escape_origin.R covers plain, escaped,
+  Unicode, raw, invalid-byte, parsed and quoted literals and the compiled
+  path; its ten marks and byte dumps match GNU R 4.5.0.
+
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
 - Rebased #95 onto merged byte-window main df3d535. The resulting source
