@@ -30,12 +30,12 @@ use crate::value::*;
 
 /// `languageFuns` (compiler/R/cmp.R) with an inline (or setter inline)
 /// handler for package base: inlined without a guard when they resolve to
-/// base at compile time. (`%%`, `%/%`, `%*%`, `~`, `@` and `[<-`'s getter
+/// base at compile time. (`%%`, `%/%`, `%*%`, `~` and `[<-`'s getter
 /// have no handler: they are called as found.)
 const FROZEN_FUNS: &[&str] = &[
     "function", "{", "if", "&&", "||", "<-", "=", "<<-", "break", "next", "repeat", "while", "for", "+", "-", "*", "/",
     "^", "==", "!=", "<", "<=", ">=", ">", "&", "|", "!", "(", "[", "[[", "$", "local", "return", "switch", ":", "::",
-    ":::", "[<-", "[[<-", "$<-", "@<-",
+    ":::", "[<-", "[[<-", "$<-", "@<-", "@",
 ];
 
 // R: eval.c (MIN_JIT_SCORE, LOOP_JIT_SCORE)
@@ -176,6 +176,7 @@ fn class_of_name(n: &str) -> u8 {
         "[[<-" => 38,
         "$<-" => 39,
         "@<-" => 40,
+        "@" => 41,
         "assign" => C_ASSIGN_FN,
         "delayedAssign" => C_DELAYED_ASSIGN,
         "expression" => C_EXPRESSION,
