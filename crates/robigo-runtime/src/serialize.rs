@@ -1818,6 +1818,7 @@ pub struct Writer<'a> {
     pub version: i32,
     /// Native binary format writes little-endian on this platform.
     little_endian: bool,
+    ascii: bool,
 }
 
 /// R: serialize.c defaultSerializeVersion — 3, or `R_DEFAULT_SERIALIZE_VERSION`.
@@ -1842,24 +1843,82 @@ fn write_header(w: &mut Writer) {
             w.int((4 << 16) | (5 << 8));
             w.int((3 << 16) | (5 << 8));
             w.int(5);
-            w.out.extend_from_slice(b"UTF-8");
+            w.string(b"UTF-8");
         }
     }
 }
 
 impl Writer<'_> {
     fn int(&mut self, i: i32) {
-        if self.little_endian {
+        if self.ascii {
+            self.out.extend_from_slice(if i == NA_INTEGER { "NA\n".to_string() } else { format!("{i}\n") }.as_bytes());
+        } else if self.little_endian {
             self.out.extend_from_slice(&i.to_le_bytes());
         } else {
             self.out.extend_from_slice(&i.to_be_bytes());
         }
     }
     fn real(&mut self, x: f64) {
-        if self.little_endian {
+        if self.ascii {
+            // R: serialize.c:OutReal (decimal ASCII uses 16 significant digits).
+            let text = if is_na_real(x) {
+                "NA\n".to_string()
+            } else if x.is_nan() {
+                "NaN\n".to_string()
+            } else if x == f64::INFINITY {
+                "Inf\n".to_string()
+            } else if x == f64::NEG_INFINITY {
+                "-Inf\n".to_string()
+            } else {
+                let mut buf = [0u8; 128];
+                unsafe {
+                    libc::snprintf(buf.as_mut_ptr().cast(), buf.len(), c"%.16g\n".as_ptr(), x);
+                }
+                String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap()]).into_owned()
+            };
+            self.out.extend_from_slice(text.as_bytes());
+        } else if self.little_endian {
             self.out.extend_from_slice(&x.to_le_bytes());
         } else {
             self.out.extend_from_slice(&x.to_be_bytes());
+        }
+    }
+    // R: serialize.c:OutString
+    fn string(&mut self, bytes: &[u8]) {
+        if !self.ascii {
+            self.out.extend_from_slice(bytes);
+            return;
+        }
+        for &b in bytes {
+            let escape = match b {
+                b'\n' => Some(b'n'),
+                b'\t' => Some(b't'),
+                11 => Some(b'v'),
+                8 => Some(b'b'),
+                b'\r' => Some(b'r'),
+                12 => Some(b'f'),
+                7 => Some(b'a'),
+                b'\\' | b'?' | b'\'' | b'"' => Some(b),
+                _ => None,
+            };
+            if let Some(e) = escape {
+                self.out.extend_from_slice(&[b'\\', e]);
+            } else if !(33..=126).contains(&b) {
+                self.out.extend_from_slice(format!("\\{b:03o}").as_bytes());
+            } else {
+                self.out.push(b);
+            }
+        }
+        self.out.push(b'\n');
+    }
+    // R: serialize.c:OutByte
+    fn bytes(&mut self, bytes: &[u8]) {
+        if self.ascii {
+            for b in bytes {
+                self.out.extend_from_slice(format!("{b:02x}\n").as_bytes());
+            }
+        } else {
+            self.out.extend_from_slice(bytes);
         }
     }
     fn flags(&mut self, ty: u32, levs: u32, obj: bool, attr: bool, tag: bool) {
@@ -1923,7 +1982,7 @@ impl Writer<'_> {
                 };
                 self.flags(CHARSXP, levs, false, false, false);
                 self.int(bytes.len() as i32);
-                self.out.extend_from_slice(&bytes);
+                self.string(&bytes);
             }
         }
     }
@@ -2075,7 +2134,29 @@ impl Writer<'_> {
         let arena = cells.bytes.as_ref().unwrap().borrow();
         let width = vector_width(item.flags & 255).unwrap();
         let bytes = &arena.chunks[item.span.chunk][item.span.offset..item.span.offset + item.len * width];
-        if width == 1 || cells.little_endian == self.little_endian {
+        if self.ascii {
+            match item.flags & 255 {
+                RAWSXP => self.bytes(bytes),
+                INTSXP | LGLSXP => {
+                    for part in bytes.chunks_exact(4) {
+                        self.int(if cells.little_endian {
+                            i32::from_le_bytes(part.try_into().unwrap())
+                        } else {
+                            i32::from_be_bytes(part.try_into().unwrap())
+                        });
+                    }
+                }
+                _ => {
+                    for part in bytes.chunks_exact(8) {
+                        self.real(if cells.little_endian {
+                            f64::from_le_bytes(part.try_into().unwrap())
+                        } else {
+                            f64::from_be_bytes(part.try_into().unwrap())
+                        });
+                    }
+                }
+            }
+        } else if width == 1 || cells.little_endian == self.little_endian {
             self.out.extend_from_slice(bytes);
         } else {
             let word = if width == 4 { 4 } else { 8 };
@@ -2216,7 +2297,7 @@ impl Writer<'_> {
                     false,
                 );
                 self.int(b.name.len() as i32);
-                self.out.extend_from_slice(b.name.as_bytes());
+                self.string(b.name.as_bytes());
             }
             Value::ExtPtr(_) if self.hook.is_some() && self.err.is_none() => match self.persistent_name(v) {
                 Some(name) => {
@@ -2299,7 +2380,7 @@ impl Writer<'_> {
             Value::Raw(x) => {
                 self.flags(RAWSXP, levs, obj, has_attr, false);
                 self.length(x.data.len());
-                self.out.extend_from_slice(&x.data);
+                self.bytes(&x.data);
                 if has_attr {
                     self.attrs(v);
                 }
@@ -2326,7 +2407,15 @@ impl Writer<'_> {
 
 /// Serialize to an XDR stream of `version` (2 or 3).
 pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: false };
+    let mut w = Writer {
+        out: Vec::new(),
+        hook: None,
+        err: None,
+        refs: Vec::new(),
+        version,
+        little_endian: false,
+        ascii: false,
+    };
     w.out.extend_from_slice(b"X\n");
     write_header(&mut w);
     w.item(v);
@@ -2336,8 +2425,15 @@ pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
 /// Serialize to an XDR stream of `version` with a persistence hook
 /// (R: serialize.c R_Serialize with OutPersistHookFunc).
 pub fn serialize_hooked(v: &Value, version: i32, hook: PersistHook<'_>) -> RResult<Vec<u8>> {
-    let mut w =
-        Writer { out: Vec::new(), hook: Some(hook), err: None, refs: Vec::new(), version, little_endian: false };
+    let mut w = Writer {
+        out: Vec::new(),
+        hook: Some(hook),
+        err: None,
+        refs: Vec::new(),
+        version,
+        little_endian: false,
+        ascii: false,
+    };
     w.out.extend_from_slice(b"X\n");
     write_header(&mut w);
     w.item(v);
@@ -2372,7 +2468,8 @@ fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
 
 /// Serialize to a native binary ("B") stream of `version` (2 or 3).
 pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: true };
+    let mut w =
+        Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: true, ascii: false };
     w.out.extend_from_slice(b"B\n");
     write_header(&mut w);
     w.item(v);
@@ -2390,4 +2487,20 @@ mod tests {
     fn call_cells_do_not_enlarge_deserialization_nodes() {
         assert_eq!(std::mem::size_of::<super::PNode>(), 48);
     }
+}
+
+/// R: serialize.c:R_Serialize, R_pstream_ascii_format.
+pub fn serialize_ascii(v: &Value, version: i32) -> Vec<u8> {
+    let mut w = Writer {
+        out: b"A\n".to_vec(),
+        hook: None,
+        err: None,
+        refs: Vec::new(),
+        version,
+        little_endian: false,
+        ascii: true,
+    };
+    write_header(&mut w);
+    w.item(v);
+    w.out
 }
