@@ -30,6 +30,47 @@
   two lazy-load integrations (the two documented host libm oracle tests are
   excluded locally only).
 
+## 2026-10-30 (round 11): rescue #105 onto opt-in bytecode fidelity
+
+- Take over #105 at e145aba0 after it conflicted with main. The original
+  merge conflict was substantive: round 10 expected the eager Bytecode
+  representation from round 9, but #100 merged round 9 behind the
+  `bytecode-fidelity` feature with a lazy encoded instruction/constant
+  representation and restored the default import layout.
+- First merged main 0bee8896, keeping #104's LANGSXP cell registry and the
+  48-byte PNode reader beside the bytecode writer, and taught the new
+  reachability graph about Value::Bytecode. Both substitute cell tests and
+  all three bytecode fixtures pass. That merge is in the branch history;
+  main then moved to #100/#116/#117.
+- Rebased the round-10 construction work onto merged main (2ac8f810):
+  adapted mkCode to build Decoded instructions plus a replay cell stream
+  (BytecodeSpan/BytecodeWords), import consts/rep_values lazily, and use
+  `Bytecode::code()/constants()`. `bcClose` still rejects attributed
+  formals. `getconst`/`is.builtin.internal` remain registered in default
+  builds (GNU R base defines them) and are owned by the construction module
+  under the feature, so there is exactly one definition per build.
+- Default-build performance is back to main's layout because bytecode
+  fidelity is opt-in. Against a freshly built 2ac8f810: 0 faster, 0 slower
+  above 0.5%, 0 broken over 73 measured benchmarks. Targeted pre-rebase
+  experiments (out-of-line bytecode attribute copy and eval arm) reduced
+  nbody_2/nbody_3 but were superseded by main's `bytecode_attrs_slot`; the
+  remaining nbody_naive_2 delta was heap-layout sensitivity of the eager
+  representation and disappears with the opt-in default.
+- Verification on df28a332: default conformance 282/283, the only failure
+  main's unlisted compiled-isvector-context probe; feature conformance
+  3/3 bytecode scripts with stdout/stderr/status exact in interpreter, VM
+  and JIT; six bytecode_lazy tests; 62 runtime unit + 2 C API with only the
+  two documented host-libm oracle tests excluded locally; data 8,410/8,426
+  with the known host order/add626 collation case. Both merged ratchet
+  lists are gone; all branch entries have markers, including
+  bytecode_construct.R.
+- `putconst` remains blocked on core shared-list mutation: the compiler
+  fills one VECSXP alias with SET_VECTOR_ELT and reads it back without an
+  assignment, which Rc<Vector<Value>> cannot express in place. Next: core
+  supplies shared list mutation, then port constant deduplication with
+  identical flags 16, add compiler::cmpfun layout cases, and re-enable
+  those probes in the feature CI job.
+
 ## 2026-10-30 (round 9): final append-conflict rebase
 
 - Rebased onto 805e5fb after newer main ratchet entries caused an append
