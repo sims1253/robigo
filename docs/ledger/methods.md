@@ -62,6 +62,12 @@ Slice used throughout ("S4 slice"):
   Active expected.jsonl.gz, FastR passing.txt and conformance passing.txt
   are byte-identical to eb7a7ae. Shared edits are confined to the corpus
   harness, its tests, manifest and corpus documentation.
+- Local release build completed with CARGO_BUILD_JOBS=2 after waiting for
+  the shared build lock. Repeated the paired 224-case run with this
+  worktree's binary and the same natives/cache: **224/224 normal,
+  221/224 methods**, exactly the same three identities as the base CI
+  artifact. No commands remain running. PR #107 leaves activation pending
+  the two prerequisite merges; CI is pending at handback.
 
 ## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
 
