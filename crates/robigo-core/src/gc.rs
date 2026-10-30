@@ -491,9 +491,13 @@ impl Core {
         self.weak_refs.insert(0, w);
     }
 
+    /// Number of references queued before a finalizer batch begins.
+    pub fn pending_finalizer_count(&self) -> usize {
+        self.finalize_queue.len()
+    }
+
     /// The next weak reference whose key died, ready for its finalizer.
-    /// It stays on the collector's queue (rooted) until popped; the
-    /// caller protects it while the finalizer runs.
+    /// It stays rooted until popped; the caller protects it while it runs.
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {
         if self.finalize_queue.is_empty() { None } else { Some(self.finalize_queue.remove(0)) }
     }

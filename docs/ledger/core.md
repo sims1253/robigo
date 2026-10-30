@@ -11,7 +11,7 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
-## 2026-10-30: cycle-aware environment finalizers (in progress)
+## 2026-10-30: cycle-aware environment finalizers (#98)
 
 - New topic branch track/core-environment-finalizers starts at merged
   df3d535, independently of #95. Six GNU R oracle cases finalize plain,
@@ -61,19 +61,31 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   methods reference-class probe prints fun followed by finalizer: 456,
   exactly matching GNU R. Four oracle-recorded scripts now match, including
   live temporaries, resurrection, nested GC ordering and error isolation.
-- Conformance 246/246 in all tiers; touched-crate release tests pass:
-  collector 21 tests, runtime 49 unit + two integration tests (two known
-  host-glibc numeric oracles excluded), and C API tests. Four host counts
-  against df3d535 CI artifact with identical natives and flat cache:
-  strings 768,298,482 -> 769,105,219 (+0.105%); fib 962,381,944 ->
-  961,987,541 (-0.041%); lm 684,848,459 -> 687,240,342 (+0.349%);
-  binarytrees 1,261,671,034 -> 1,257,449,627 (-0.335%). No gate regression.
-- Remaining: newly registered finalizers queued by a nested GC currently
-  run in the same outer batch, unlike memory.c:RunFinalizers. Batch-at-entry
-  scheduling and extra inventory hooks for search environments are being
-  verified separately. Runtime cycles are traced for eligibility but not
-  physically reclaimed; opaque/native Rust owners remain conservative
-  roots. Full cross-heap cycle reclamation belongs to the live-heap GC work.
+- Corrected initial verification report: the suite has 245 scripts, not
+  246 (#95's extra script is on its independent branch). The first run
+  matched 244/245; the reference-class fixture exposed an optional
+  codetools setup message that differed between host and oracle. Wrapped
+  class construction in suppressMessages, as existing reference-class
+  fixtures do, and re-recorded with Debian GNU R 4.5.0. Final conformance
+  is 245/245 across all three tiers, including stdout, stderr and status.
+- Source-current release tests pass: collector 21 tests, runtime 49 unit
+  plus two integration tests (two documented host-glibc numeric oracles
+  excluded), and C API tests. Added search/alias environment inventory
+  hooks and bounded finalizer batches to the entry queue length.
+- Final host instruction counts against df3d535 CI artifact with identical
+  natives and flat cache: strings 768,298,482 -> 769,110,955 (+0.106%);
+  fib 962,381,944 -> 962,045,393 (-0.035%); lm 684,848,459 ->
+  687,236,803 (+0.349%); binarytrees 1,261,671,034 -> 1,257,527,411
+  (-0.328%). No measured gate regression. Hershey remains 1/1.
+- Remaining: a probe registering another finalizer during a nested GC now
+  defers it beyond the outer batch, but runs it on the next explicit GC
+  where GNU R retains it longer. Port weak-list mutation/iteration and
+  native hidden roots before claiming matching nested-registration timing.
+  Runtime cycles are traced for eligibility but not physically reclaimed;
+  opaque/native Rust owners remain conservative roots. Full cross-heap
+  cycle reclamation belongs to the live-heap GC work. Parser escape-origin
+  metadata remains a separate topic: gram.y's oct_or_hex suppresses the
+  UTF-8 mark; carry this through lexer constants and their interning keys.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 

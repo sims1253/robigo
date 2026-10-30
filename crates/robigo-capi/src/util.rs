@@ -413,7 +413,11 @@ pub unsafe fn run_finalizers() {
         }
     }
     let _running = Running;
-    while let Some(w) = core().pop_finalizable() {
+    // R: memory.c:RunFinalizers walks the references present at entry.
+    // References queued by a nested GC wait for a later safe point.
+    let count = core().pending_finalizer_count();
+    for _ in 0..count {
+        let Some(w) = core().pop_finalizable() else { break };
         Rf_protect(w);
         // R: memory.c:RunFinalizers -- isolate errors from the caller and
         // restore its contexts, condition stacks and visibility afterwards.

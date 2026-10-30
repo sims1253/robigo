@@ -360,6 +360,7 @@ impl Env {
             panic!("Env::alias: the frame of {:?} is not shareable", other.special_name());
         };
         let e = Env::with_frame(parent, FrameCell::Shared(frame.clone()));
+        e.track_escape();
         *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
@@ -376,6 +377,7 @@ impl Env {
             hashed: false,
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
+        e.track_escape();
         *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
