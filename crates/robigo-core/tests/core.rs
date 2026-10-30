@@ -448,3 +448,108 @@ fn collections_do_not_abandon_bump_space() {
     let blocks = c.heap_reserved() / (64 << 10);
     assert!(blocks < 400, "{blocks} blocks for 2,000 x 8 KiB live vectors (8 per block)");
 }
+
+thread_local! {
+    static HOST_EDGES: RefCell<std::collections::HashMap<usize, Vec<Sexp>>> = RefCell::new(std::collections::HashMap::new());
+}
+
+unsafe fn trace_test_host(c: &mut Core, handle: usize) {
+    HOST_EDGES.with(|edges| {
+        if let Some(children) = edges.borrow().get(&handle) {
+            for &child in children {
+                c.mark(child);
+            }
+        }
+    });
+}
+
+fn host_core() -> Box<Core> {
+    HOST_EDGES.with(|edges| edges.borrow_mut().clear());
+    let mut c = core_with_roots();
+    c.set_scan_top(0);
+    c.host_trace = Some(trace_test_host);
+    c.gc_inhibit += 1;
+    c
+}
+
+fn test_weak(c: &mut Core, key: Sexp, fin: Sexp) -> Sexp {
+    let w = c.alloc_vector(WEAKREFSXP, 4);
+    unsafe {
+        let data = w.std_data() as *mut Sexp;
+        *data = key;
+        *data.add(2) = fin;
+    }
+    c.register_weak_ref(w);
+    w
+}
+
+#[test]
+fn host_trace_preserves_native_roots_and_terminates_on_cycles() {
+    let mut c = host_core();
+    let a = c.alloc_host(ENVSXP, 1, None);
+    let b = c.alloc_host(ENVSXP, 2, None);
+    HOST_EDGES.with(|e| {
+        e.borrow_mut().insert(1, vec![b]);
+        e.borrow_mut().insert(2, vec![a]);
+    });
+    root(a);
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert!(c.resolve(a.addr()).is_some());
+    assert!(c.resolve(b.addr()).is_some());
+    ROOTS.with(|r| r.borrow_mut().clear());
+    c.collect();
+    assert!(c.resolve(a.addr()).is_none());
+    assert!(c.resolve(b.addr()).is_none());
+}
+
+#[test]
+fn host_edges_participate_in_weak_reference_fixed_point() {
+    let mut c = host_core();
+    let key = c.alloc_host(ENVSXP, 1, None);
+    let finalizer = c.alloc_host(CLOSXP, 2, None);
+    let other_key = c.alloc_host(ENVSXP, 3, None);
+    let other_fin = c.alloc_vector(RAWSXP, 8);
+    HOST_EDGES.with(|e| e.borrow_mut().insert(2, vec![other_key]));
+    let first = test_weak(&mut c, key, finalizer);
+    let second = test_weak(&mut c, other_key, other_fin);
+    root(key);
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs().len(), 2);
+    ROOTS.with(|r| r.borrow_mut().clear());
+    c.collect();
+    assert_eq!(c.pop_finalizable(), Some(second));
+    assert_eq!(c.pop_finalizable(), Some(first));
+    assert!(c.pop_finalizable().is_none());
+}
+
+#[test]
+fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
+    let mut c = host_core();
+    let nil = c.nil;
+    let w = test_weak(&mut c, nil, nil);
+    unsafe {
+        w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
+    }
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert!(c.weak_refs().is_empty());
+    assert_eq!(c.pop_finalizable(), Some(w));
+    assert!(c.pop_finalizable().is_none());
+}
+
+#[test]
+fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
+    let mut c = host_core();
+    let key = c.alloc_host(ENVSXP, 1, None);
+    let fin = c.alloc_vector(RAWSXP, 8);
+    let first = test_weak(&mut c, key, fin);
+    let second = test_weak(&mut c, key, fin);
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert_eq!(c.pop_finalizable(), Some(second));
+    assert_eq!(c.pop_finalizable(), Some(first));
+    assert!(c.pop_finalizable().is_none());
+}

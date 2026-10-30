@@ -9,6 +9,7 @@ use crate::sym::{Sym, s};
 use crate::value::{AttrBox, Value};
 
 mod table;
+mod trace;
 
 pub const BIND_LOCKED: u8 = 1;
 pub const BIND_ACTIVE: u8 = 2;
@@ -295,7 +296,17 @@ thread_local! {
 
 impl Env {
     pub fn new(parent: Option<Env>) -> Env {
-        Env::with_capacity(parent, 0)
+        let env = Env::with_capacity(parent, 0);
+        env.track_escape();
+        env
+    }
+
+    pub(crate) fn track_escape(&self) {
+        trace::track(self);
+    }
+
+    pub(crate) fn visit_escaped(visitor: impl FnMut(&Env)) {
+        trace::visit(visitor);
     }
 
     /// A new environment with room for `n` bindings.

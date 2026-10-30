@@ -91,6 +91,14 @@ pub trait NativeBridge: Sync {
         args: Vec<Arg>,
         env: &crate::env::Env,
     ) -> RResult<Value>;
+    /// Whether runtime weak keys require clearing implementation caches.
+    fn finalizers_active(&self) -> bool {
+        false
+    }
+    /// Register a runtime reference object in the native weakref queue.
+    fn register_finalizer(&self, _interp: &mut Interp, _key: &Value, _fun: &Value, _onexit: bool) -> RResult<()> {
+        Err(Flow::error("robigo: environment finalizers require the native bridge"))
+    }
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
     /// A `.Internal` GNU R implements in its graphics engine (C code in

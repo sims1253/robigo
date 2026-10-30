@@ -90,17 +90,18 @@ unsafe fn new_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: bool) -> Sexp {
         NILSXP | ENVSXP | EXTPTRSXP | BCODESXP => {}
         _ => error_str("can only weakly reference/finalize reference objects"),
     }
+    if key.has_flag(robigo_core::flags::HOST)
+        || fin.has_flag(robigo_core::flags::HOST)
+        || val.has_flag(robigo_core::flags::HOST)
+    {
+        crate::bridge::enable_host_weak_refs();
+    }
     Rf_protect(key);
     Rf_protect(val);
     Rf_protect(fin);
     let nil = R_NilValue;
     let w = core().alloc_vector(WEAKREFSXP, 4);
     if key != nil {
-        // a host proxy key would die while the host still holds the
-        // object: keep it alive instead (never finalized)
-        if key.has_flag(robigo_core::flags::HOST) {
-            core().preserve(key);
-        }
         set_weak_field(w, 0, key);
         set_weak_field(w, 1, val);
         set_weak_field(w, 2, fin);
@@ -188,7 +189,9 @@ pub unsafe fn run_finalizer(w: Sexp) {
     set_weak_field(w, 0, R_NilValue);
     set_weak_field(w, 1, R_NilValue);
     set_weak_field(w, 2, R_NilValue);
-    w.set_gp(w.gp() & !gp::READY_TO_FINALIZE);
+    // R: memory.c:R_RunWeakRefFinalizer -- a manually run weak reference
+    // is removed at the next collection, even if its cleared key is NIL.
+    w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
     if fin == R_NilValue {
         return;
     }

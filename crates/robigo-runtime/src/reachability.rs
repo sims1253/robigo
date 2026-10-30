@@ -118,6 +118,14 @@ impl ObjectGraph {
     /// Iterative walk: environment parent, frame, attribute and closure cycles
     /// do not recurse on the Rust stack. No R code is evaluated here.
     // R: memory.c:RunGenCollect (strong edges before weak-reference closure)
+    pub fn include_escaped(&mut self) {
+        Env::visit_escaped(|env| {
+            // The weak inventory's upgrade is temporary, not an R root.
+            let count = Rc::strong_count(&env.0) - 1;
+            self.insert(Rc::as_ptr(&env.0) as usize, count, || Owner::Value(Value::Env(env.clone())));
+        });
+    }
+
     pub fn expand(&mut self) {
         let mut at = 0;
         while at < self.nodes.len() {
@@ -251,6 +259,22 @@ impl ObjectGraph {
         }
     }
 
+    /// Call-site lookup memos are implementation caches, not R roots. Clear
+    /// them outside a collection, then rebuild to snapshot the new counts.
+    pub fn clear_callsite_memos(&self) -> bool {
+        let mut changed = false;
+        for node in &self.nodes {
+            if let Owner::Code(code) = &node.owner {
+                for site in &code.call_sites {
+                    if let Ok(mut memo) = site.memo.try_borrow_mut() {
+                        changed |= memo.take().is_some();
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     /// Reachability from references outside this graph, excluding owners
     /// explicitly identified as the bridge's weak proxy table.
     pub fn externally_live(&self) -> Vec<bool> {
@@ -281,6 +305,26 @@ impl ObjectGraph {
 
     pub fn is_live(&self, value: &Value, live: &[bool]) -> bool {
         identity(value).and_then(|(key, _)| self.ids.get(&key)).is_none_or(|&id| live[id])
+    }
+
+    /// Visit strong successors once across all native roots in a collection.
+    pub fn visit(&self, root: &Value, visited: &mut [bool], mut f: impl FnMut(&Value)) {
+        let Some(id) = identity(root).and_then(|(key, _)| self.ids.get(&key).copied()) else { return };
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            if visited[id] {
+                continue;
+            }
+            visited[id] = true;
+            if let Owner::Value(value) = &self.nodes[id].owner {
+                f(value);
+            }
+            pending.extend(self.nodes[id].edges.iter().copied());
+        }
+    }
+
+    pub fn visited_set(&self) -> Vec<bool> {
+        vec![false; self.nodes.len()]
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Value> {
@@ -394,6 +438,66 @@ mod tests {
         let live = g.externally_live();
         assert!(!g.is_live(&a, &live));
         assert!(!g.is_live(&b, &live));
+        cleanup(&g);
+    }
+
+    #[test]
+    fn a_reachable_codes_lookup_memo_does_not_keep_an_instance_alive() {
+        let key = key();
+        let root = super::tests::key();
+        let body = Value::lang(Value::sym("f"), vec![]);
+        let code = crate::compile::compile_thunk(&body).unwrap();
+        let instance_method = Value::Closure(Rc::new(Closure {
+            formals: vec![].into(),
+            body: Value::Null,
+            env: env(&key).clone(),
+            attrs: None,
+            code: Default::default(),
+            inline: Default::default(),
+            defaults: Default::default(),
+            jit: Default::default(),
+        }));
+        *code.call_sites[0].memo.borrow_mut() = Some((0, 0, instance_method));
+        let constructor = Closure {
+            formals: vec![].into(),
+            body,
+            env: env(&root).clone(),
+            attrs: None,
+            code: Default::default(),
+            inline: Default::default(),
+            defaults: Default::default(),
+            jit: Default::default(),
+        };
+        constructor.code.set(Some(code)).unwrap_or_else(|_| panic!("empty code cell"));
+        env(&root).set_local(Sym::new("constructor"), Value::Closure(Rc::new(constructor)));
+        let mut g = graph(&[&key]);
+        g.add(&root);
+        g.expand();
+        assert!(g.is_live(&key, &g.externally_live()));
+        assert!(g.clear_callsite_memos());
+        drop(g);
+        let mut g = graph(&[&key]);
+        g.add(&root);
+        g.expand();
+        assert!(!g.is_live(&key, &g.externally_live()));
+        cleanup(&g);
+    }
+
+    #[test]
+    fn an_unreachable_incoming_environment_cycle_is_not_an_external_root() {
+        let key = key();
+        let orphan = Env::new(None);
+        orphan.set_local(Sym::new("self"), Value::Env(orphan.clone()));
+        orphan.set_local(Sym::new("key"), key.clone());
+        drop(orphan);
+        let g = graph(&[&key]);
+        assert!(g.is_live(&key, &g.externally_live()));
+        drop(g);
+        let mut g = ObjectGraph::default();
+        g.ignore_owner(&key);
+        g.include_escaped();
+        g.expand();
+        assert!(!g.is_live(&key, &g.externally_live()));
         cleanup(&g);
     }
 

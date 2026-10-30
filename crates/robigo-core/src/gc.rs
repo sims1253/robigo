@@ -88,6 +88,11 @@ pub struct Core {
     precious: Vec<Sexp>,
     /// extra precise roots: called during marking with this core
     pub root_fns: Vec<unsafe fn(&mut Core)>,
+    /// Strong runtime edges of a marked HOST object, visited during every
+    /// tracing phase (including the weak-reference fixed point).
+    pub host_trace: Option<unsafe fn(&mut Core, usize)>,
+    /// Release temporary host graph owners before deferred proxy releases.
+    pub host_trace_end: Option<unsafe fn()>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
     /// weak references whose key died, waiting for their finalizer
@@ -171,6 +176,8 @@ impl Core {
             syms: HashMap::default(),
             precious: Vec::new(),
             root_fns: Vec::new(),
+            host_trace: None,
+            host_trace_end: None,
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
             releases: Vec::new(),
@@ -480,7 +487,8 @@ impl Core {
     /// Register a weak reference object (a WEAKREFSXP: key, value,
     /// finalizer, next) with the collector.
     pub fn register_weak_ref(&mut self, w: Sexp) {
-        self.weak_refs.push(w);
+        // R: memory.c:NewWeakRef prepends to R_weak_refs.
+        self.weak_refs.insert(0, w);
     }
 
     /// The next weak reference whose key died, ready for its finalizer.
@@ -627,6 +635,9 @@ impl Core {
                 self.mark_obj(p.attrib_raw());
                 let f = p.flags();
                 if f & flags::HOST != 0 {
+                    if let Some(trace) = self.host_trace {
+                        trace(self, Self::host_handle(p));
+                    }
                     continue;
                 }
                 if f & flags::ALTREP != 0 {
@@ -699,12 +710,24 @@ impl Core {
             let mut keep = Vec::with_capacity(refs.len());
             for w in refs {
                 let key = Self::weak_field(w, 0);
-                if !self.is_marked(key) {
+                if w.gp() & gp::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
                     w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
                     self.finalize_queue.push(w);
                 } else {
                     keep.push(w);
                 }
+            }
+            // R: memory.c:RunGenCollect determines every ready key before
+            // keeping keys/finalizers alive for this collection. Marking
+            // during classification would defer another finalizer of the
+            // same key (or a mutually reachable key) by one collection.
+            for &w in &keep {
+                for k in 0..3 {
+                    self.mark_obj(Self::weak_field(w, k));
+                }
+            }
+            for i in 0..self.finalize_queue.len() {
+                let w = self.finalize_queue[i];
                 for k in 0..3 {
                     self.mark_obj(Self::weak_field(w, k));
                 }
@@ -787,6 +810,9 @@ impl Core {
             self.process_weak_refs();
             self.prune_chars();
             self.sweep();
+            if let Some(end) = self.host_trace_end {
+                end();
+            }
         }
         let dt = t0.elapsed().as_nanos() as u64;
         self.stats.collections += 1;

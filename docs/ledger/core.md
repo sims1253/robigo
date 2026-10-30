@@ -25,11 +25,55 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 - Six graph tests pass: self/mutual parent cycles, live temporaries,
   shared list allocation edges, aliased frames, closures/promises/attrs,
   and a 10,000-environment parent walk without machine-stack recursion.
-- Next: native HOST tracing through this graph, remove the permanent
-  preserve of HOST weak keys, register runtime finalizers through the
-  existing native weakref queue, and release implementation-only VM
-  caches at explicit GC. Then run the six oracle cases and methods
-  TestR5/474b742f1785a587 before claiming the blocker fixed.
+- Local integration prototype: 0/6 -> 5/6 oracle cycle cases; the shared
+  key released after an earlier collection is still retained, and the
+  methods case still does not finalize. Advanced checks preserve live
+  lapply temporaries, finalize them after removal, and run resurrected
+  objects only once. Multiple finalizers of one key exposed a core bug:
+  eligibility was interleaved with marking queued keys. Ported the two
+  passes from RunGenCollect so every eligible reference is classified
+  before those keys are retained for finalization.
+- Registration now uses the native weakref queue. HOST tracing participates
+  in native-root and weak-reference fixed-point tracing, cached once per
+  collection. Weak HOST keys lose permanent preservation; explicit GC
+  removes bridge pins with the graph, and clears implementation caches.
+  Ordinary GC keeps its previous path until runtime weakrefs exist.
+- Added native-root/weak-fixed-point/manual-finalization core tests and
+  a weak call-site memo test. Constructor code may cache instance-bound
+  methods; those memo values must be cleared before snapshotting counts.
+  Diagnostic retention paths are temporary and will be removed.
+- Debug CLI linking fails on existing graphics helper symbols REAL0,
+  INTEGER0, Rf_reEnc3 and mbcsTruncateToValid. Rejected as a verification
+  route; use the required release build. Pending release build includes
+  queue classification, weak memo cleanup and retention diagnostics.
+- Retention diagnostics found incoming references from unreachable call
+  frames, outside the proxy graph. Shared case retained its former
+  caller frame (refs 2, known incoming 1); methods instance had refs 7,
+  known incoming 3, proxy 1. Added a weak inventory of explicit envs and
+  escaping/cyclic completed frames; weak upgrades are excluded from graph
+  snapshots. Inventory does not make those frames roots or change EnvData
+  allocation sizes. Native classification now includes these owners.
+- Shared target reused old core metadata despite new fields in this tree.
+  Forced owned-crate timestamps after taking the build lock for subsequent
+  builds. Source-current release verification is pending; no test/ratchet
+  was weakened. The interrupted four-test oracle recording completed.
+- Verified inventory candidate: six cycle oracle cases 0/6 -> 6/6;
+  methods reference-class probe prints fun followed by finalizer: 456,
+  exactly matching GNU R. Four oracle-recorded scripts now match, including
+  live temporaries, resurrection, nested GC ordering and error isolation.
+- Conformance 246/246 in all tiers; touched-crate release tests pass:
+  collector 21 tests, runtime 49 unit + two integration tests (two known
+  host-glibc numeric oracles excluded), and C API tests. Four host counts
+  against df3d535 CI artifact with identical natives and flat cache:
+  strings 768,298,482 -> 769,105,219 (+0.105%); fib 962,381,944 ->
+  961,987,541 (-0.041%); lm 684,848,459 -> 687,240,342 (+0.349%);
+  binarytrees 1,261,671,034 -> 1,257,449,627 (-0.335%). No gate regression.
+- Remaining: newly registered finalizers queued by a nested GC currently
+  run in the same outer batch, unlike memory.c:RunFinalizers. Batch-at-entry
+  scheduling and extra inventory hooks for search environments are being
+  verified separately. Runtime cycles are traced for eligibility but not
+  physically reclaimed; opaque/native Rust owners remain conservative
+  roots. Full cross-heap cycle reclamation belongs to the live-heap GC work.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
