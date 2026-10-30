@@ -82,13 +82,38 @@ conformance` (interpreter, VM and VM+JIT against each other).
   main. Fresh main instructions: 82 fully matching cases, geometric mean
   **0.492429** GNU R, all 82 faster. Of these, 71 exit successfully
   (geomean **0.483327**); 11 are matching error exits. Candidate
-  instruction comparison is running; do not reuse older benchmark rows.
+  instruction comparison is complete (below); do not reuse older rows.
 - Shared-target build failed with missing robigo_syntax::parse_data from
   another worktree's artifact. Reflinked the stable round 8 private target,
   cleaned workspace crates only, and rebuilt in .robigo/r9/target.
 - #102 merged during verification. Rebased onto d81d29c; ledger conflict
   preserves both rounds. The isolated performance pair remains based on
   fb99c0b. Rebased build and runtime tests run in the private target.
+- Final isolated instruction gate: **0 faster, 0 slower above 0.5%,
+  0 broken, 0 fixed** among successful programs. All 83 stream triples
+  are unchanged. Successful matching-program geomean **0.483327 ->
+  0.483532** GNU R; including 11 matching error exits, **0.492429 ->
+  0.492628**. Largest individual increase across all 83: **0.2754%**.
+  Kept for the verified context fidelity gain, within the performance gate.
+- Rebased conformance: **252/253** oracle matches in every tier, all
+  **252 required scripts pass**; the sole unmatched script remains the
+  explicitly retained user-closure reproduction. FastR **119/119**,
+  zero regressions. All 83 benchmark streams are unchanged after rebase.
+- Rebased native CSV recheck: **1,782,142,078 instructions**, matching
+  output. This also includes intervening main/startup/C API changes and
+  is not an isolated VM speedup. Three post-rebase instruction probes
+  (fib, CSV, lapply) pass the 0.5% gate. vm/compile/interp sources equal
+  the isolated candidate's; inherited serialization changes are main's.
+- Private host runtime tests: **44 unit + 2 integration pass**, with
+  the two documented host-libm oracles excluded. Debian CI's full build
+  and test step passes, including those oracles and C API tests. Format
+  and whitespace checks pass. Final full corpora/performance CI continues
+  on the PR; the manually dispatched run was canceled because its parent
+  is a PR commit, not the intended main performance baseline.
+- Remaining work: general cmpSimpleInternal scope/argument matching for
+  user closures (the retained oracle), a direct connection-write bridge
+  with core, and scalar promise states after core's finalizer work.
+  No Value/Promise layout or connection implementation was changed.
 
 ## 2026-10-30: round 8, CSV connection formatting
 
