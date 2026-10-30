@@ -109,7 +109,7 @@ def command(runtime, robigo, file, instr):
     return ["Rscript", "--vanilla", file]
 
 
-def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout):
+def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None):
     name, _, text, pk = prog
     env = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES=pk, R_HOME=r_home())
     res = {}
@@ -132,7 +132,7 @@ def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout):
                 out = (p.stdout, p.returncode)
             res["secs"] = round(best, 4)
         if metric in ("instr", "both"):
-            cg = os.path.join(tmp, "cg.out")
+            cg = profile or os.path.join(tmp, "cg.out")
             try:
                 p = subprocess.run([valgrind, "--tool=callgrind", f"--callgrind-out-file={cg}"] +
                                    command(runtime, robigo, file, True), cwd=tmp, env=env, capture_output=True,

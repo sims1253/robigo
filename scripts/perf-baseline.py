@@ -63,6 +63,7 @@ def main():
     ap.add_argument("outdir")
     ap.add_argument("--wait-minutes", type=float, default=50)
     ap.add_argument("--ancestors", type=int, default=30, help="how far back to fall back")
+    ap.add_argument("--binary", action="store_true", help="download this same run's executable for paired checks")
     a = ap.parse_args()
     used, note = a.sha, ""
     run = find(a.sha, a.wait_minutes * 60)
@@ -85,6 +86,10 @@ def main():
         return 0
     os.makedirs(a.outdir, exist_ok=True)
     subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", "perf-main", "-D", a.outdir], check=True)
+    if a.binary:
+        subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", "robigo",
+                        "-D", os.path.join(a.outdir, "binary")], check=True)
+        os.chmod(os.path.join(a.outdir, "binary", "robigo"), 0o755)
     with open(os.path.join(a.outdir, "BASELINE"), "w") as f:
         f.write(used + "\n")
     print(f"baseline: main {used[:7]} (run {run}){note}")

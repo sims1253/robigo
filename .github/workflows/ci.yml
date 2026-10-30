@@ -170,7 +170,7 @@ jobs:
           # run finished last (main may have moved since, or that commit's
           # run may still be going: perf-baseline.py waits for it).
           base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
-          python3 scripts/perf-baseline.py "$base" base | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf-baseline.py "$base" base --binary | tee -a "$GITHUB_STEP_SUMMARY"
           if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
@@ -182,13 +182,20 @@ jobs:
           json.dump(n, open("perf.json", "w"))
           PY
           python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-          # Programs found slower are measured once more and keep the lower
-          # count: a regression is slower in both runs, an outlier is not.
-          VALGRIND=valgrind python3 scripts/perf.py recheck base/perf.json perf.json --robigo dist/robigo \
-            --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Confirm flagged regressions with both exact executables on this
+          # runner, sharing the same cache and natives. Preserve the original
+          # measurements and profiles; the 0.5% threshold is unchanged.
+          python3 scripts/test-perf-paired.py
+          python3 scripts/perf-paired.py base/perf.json perf.json \
+            --base-robigo base/binary/robigo --robigo dist/robigo | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
         run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && github.ref != 'refs/heads/main'
+        with:
+          name: perf-paired-profiles
+          path: .robigo/perf-paired
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
