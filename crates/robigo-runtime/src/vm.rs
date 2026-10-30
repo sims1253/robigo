@@ -3065,6 +3065,8 @@ fn run_with(
             }
             Op::SetComplex { val, slot, k } => {
                 flush!();
+                let Value::Lang(l) = &code.consts[*k as usize] else { unreachable!() };
+                regs[*val as usize] = RVal::V(tryop!(interp.eval(&l.args[1].value, env)));
                 tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
             }
             Op::SetIndex2 { val, x, slot, i, j, two, k } => {

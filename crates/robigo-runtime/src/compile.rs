@@ -243,8 +243,8 @@ pub enum Op {
         two: bool,
         k: u32,
     },
-    /// A setter with arbitrary or missing indices. Evaluate the RHS in
-    /// compiled code, then let the assignment helper evaluate the indices.
+    /// A setter with arbitrary or missing indices. Delegate evaluation to
+    /// the interpreter while retaining the compiled diagnostic source.
     SetComplex {
         val: Reg,
         slot: Slot,
@@ -1231,17 +1231,14 @@ impl Compiler {
             {
                 let Value::Lang(lhs) = &l.args[0].value else { unreachable!() };
                 let target = lhs.args[0].value.as_sym().unwrap();
-                let setter = Sym::new(&format!("{}<-", head(lhs).unwrap().name()));
                 let g = self.guard(h, whole, dst);
-                let g2 = self.guard(setter, whole, dst);
-                self.expr(&l.args[1].value, dst, Want::Value);
+                // The helper resolves and dispatches the setter at runtime.
                 let slot = self.slot(target);
                 let k = self.konst(whole.clone());
                 self.emit(Op::SetComplex { val: dst, slot, k });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
-                self.patch(g2, end);
             }
             "[" | "[[" if index2_form(whole).is_some() => {
                 let (x, two, i, j) = index2_form(whole).unwrap();
