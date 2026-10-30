@@ -1031,6 +1031,11 @@ impl Value {
         if i >= v.data.len() {
             return false;
         }
+        // Replacing a cell changes which environments the vector can reach
+        // (the new value may reach one, the old value may have been the last
+        // path to one). The binding-store paths already advance the
+        // collector's epoch; an in-place write has no binding store.
+        crate::env::Env::mark_cycle_dirty();
         if Rc::strong_count(v) == 1 {
             // The only owner: the unique branch of Rc::get_mut.
             unsafe {
@@ -1625,6 +1630,7 @@ mod shared_list_tests {
         let mut holder = Value::list(vec![Value::Null]);
         holder.set_attr_raw(Sym::new("tag"), x.clone());
 
+        let epoch = Env::cycle_epoch();
         assert!(x.set_vector_elt_through_alias(0, Value::int(42)));
 
         assert_eq!(int(&elt(&binding, 0)), 42);
@@ -1635,6 +1641,9 @@ mod shared_list_tests {
         let Some(Value::Str(names)) = binding.get_attr(s::NAMES) else { panic!("names lost") };
         assert_eq!(names.data, vec![Some(RString::from("first")), Some(RString::from("second"))]);
         assert_eq!(x.len(), 2);
+        // The write is not a binding store: it must still tell the cycle
+        // collector that reachability may have changed.
+        assert_ne!(Env::cycle_epoch(), epoch);
     }
 
     #[test]

@@ -31,9 +31,16 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   is the out-of-line `store_cell_shared`, which replaces the cell where
   the allocation keeps it and drops the old element. `Rc::make_mut` is
   untouched, so `[[<-`, `[<-` and `attr<-` still copy a shared object.
-  `Value` clones share the Rc, so my, y's and an environment's or
-  attribute's view are the same object as in GNU R (there is no separate
+  `Value` clones share the Rc, so `y`, an environment's or an attribute's
+  view are the same object as in GNU R (there is no separate
   shallow-duplicate object to keep in sync).
+- Cycle epoch: an in-place cell write is not a binding store, but it
+  changes which environments the vector can reach (the new value may
+  reach one, the old value may have been the last path to one), so the
+  primitive advances `Env::cycle_epoch`. R-level `x[[i]] <- e` is complex
+  assignment, whose rebinding already advances it; do_putconst can store
+  a closure (eval.c's flags-16 comment says constant closures occur), so
+  this path needed its own trigger.
 - Datetime: valid_POSIXlt now writes each coerced component back with the
   primitive, in C's order (0 first, then 1..n_check skipping the zone,
   then the zone/gmtoff checks, then tzone), so a validation error keeps
@@ -53,13 +60,14 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   out-of-range index are rejected, the replaced element is dropped once,
   attributes survive, and R-level CoW still copies.
 - Perf: paired harness with both exact binaries (main a32c5623 and this
-  branch), cache off, Rust ports (no natives locally), 2 repeats:
-  0 faster / 0 slower above 0.5% / 0 broken. Stored instruction counts
-  bytecodes 229,171,915 -> 229,179,145 (+0.003%), listFor 302,514,415 ->
-  302,466,374 (-0.016%), listWhile 408,935,161 -> 408,958,827 (+0.006%),
-  s4-generic 578,710,927 -> 578,510,903 (-0.035%), s4-new -0.003%,
-  s4-slot-read -0.007%, s4-slot-write 479,923,126 -> 480,051,407
-  (+0.027%), s4-valid -0.003%. CI's cache/natives gate is the judge.
+  branch), cache off, Rust ports (no natives locally), 2 repeats, after the
+  final epoch-mark build: 0 faster / 0 slower above 0.5% / 0 broken.
+  Stored instruction counts bytecodes 229,171,915 -> 229,160,354
+  (-0.005%), listFor 302,514,415 -> 302,547,025 (+0.011%), listWhile
+  408,935,161 -> 408,940,321 (+0.001%), s4-generic 578,710,927 ->
+  578,555,086 (-0.027%), s4-new +0.002%, s4-slot-read -0.004%,
+  s4-slot-write 479,923,126 -> 479,992,705 (+0.015%), s4-valid +0.013%.
+  CI's cache/natives gate is the judge.
 - Verification: both datetime script runs match; runtime lib 66 pass with
   only the two documented host-glibc complex oracles failing (unchanged);
   full conformance 286/286 (stdout, stderr and status) in interpreter, VM
