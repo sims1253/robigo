@@ -78,3 +78,51 @@ print(err(.Internal(putconst())))
 print(err(.Internal(putconst(pool))))
 print(err(.Internal(putconst(pool, 0L))))
 print(err(.Internal(putconst(pool, 0L, 1L, 2L))))
+
+# Live compiler::cmpfun constant-layout comparisons
+cf_live <- compiler::cmpfun(function(x) x + 1L)
+print(cf_live(5L))
+print(body(cf_live))
+print(typeof(.Internal(bodyCode(cf_live))))
+print(identical(compiler::disassemble(cf_live), compiler::disassemble(cf)))
+compiler::disassemble(cf_live)
+
+cf_math <- compiler::cmpfun(function(x, y = 2L) { z <- 10L; (x + y) * z + 1L })
+print(cf_math(3L))
+print(cf_math(3L, 4L))
+compiler::disassemble(cf_math)
+
+cf_nested <- compiler::cmpfun(function(x = 3L) {
+  g <- function(y) y + 1L
+  for (i in seq_len(x)) x <- g(x)
+  x
+})
+print(cf_nested(1L))
+print(cf_nested(4L))
+compiler::disassemble(cf_nested)
+
+# Constant buffer growth and extraction via growconst / putconst / getconst
+cbuf <- vector("list", 1L)
+ccount <- 0L
+test_consts <- list(
+  100L, 200L, 100L, quote(a + b), quote(a), 200L, "hello", 1L,
+  structure(c(NA, 1L, 1L, 2L, 2L, 0L, 0L, 0L), class = "expressionsIndex")
+)
+for (c in test_consts) {
+  if (ccount == length(cbuf))
+    cbuf <- .Internal(growconst(cbuf))
+  idx <- .Internal(putconst(cbuf, ccount, c))
+  if (idx == ccount)
+    ccount <- ccount + 1L
+  print(c(idx, ccount, length(cbuf)))
+}
+print(.Internal(getconst(cbuf, ccount)))
+
+# Aliased buffer mutation in putconst
+alias_target <- list(10L, 20L, NULL, NULL)
+alias_observer <- alias_target
+print(.Internal(putconst(alias_target, 2L, quote(mutated_val))))
+print(identical(alias_target, alias_observer))
+print(alias_target[[3]])
+print(alias_observer[[3]])
+
