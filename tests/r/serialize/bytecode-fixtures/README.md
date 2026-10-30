@@ -9,5 +9,14 @@ docker run --rm -m 4g -v "$PWD:/src" -w /src robigo-oracle:4.5.0 \
   Rscript --vanilla tests/r/serialize/bytecode-fixtures/generate.r
 ```
 
-Record `bytecode_roundtrip.R` from its own directory so its relative fixture
-paths resolve. Its byte comparisons exercise both `serialize()` and `saveRDS()`.
+Record the expected transcript from the repository root:
+
+```sh
+docker run --rm -m 4g -v "$PWD:/src" -w /src robigo-oracle:4.5.0 \
+  scripts/regen-expected.sh tests/r/serialize/bytecode_roundtrip.R
+```
+
+The byte comparisons exercise both `serialize()` and `saveRDS()`. Fixtures also
+cover standalone bytecode, attributes, equality and source evaluation. Version
+9 and 13 inputs change the portable instruction version word through GNU R's
+`writeBin()`. GNU R's `readRDS()` and `saveRDS()` produce their canonical outputs.

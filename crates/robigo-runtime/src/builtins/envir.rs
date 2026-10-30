@@ -937,7 +937,8 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
                 }
                 Ok(v)
             }
-            Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => i.eval(&expr, &env),
+            // R: eval.c:do_eval also evaluates BCODESXP, rather than returning it.
+            Value::Sym(_) | Value::Lang(_) | Value::Promise(_) | Value::Bytecode(_) => i.eval(&expr, &env),
             v => {
                 i.visible = true;
                 Ok(v.clone())
