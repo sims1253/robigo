@@ -2050,10 +2050,17 @@ fn try_inline_site(
             Some(r.map(RVal::V))
         }
         None => {
-            let (fsym, def, map) = resolve_simple_site(interp, si, ns, l, call, env)?;
-            let inline = SiInline { def, fun: fsym, args: map };
+            // Write-once either way (GNU R compiles once): a failed
+            // resolution stays generic, matching code compiled against a
+            // replacement definition.
+            let resolved = resolve_simple_site(interp, si, ns, l, call, env).map(|(fsym, def, map)| SiInline {
+                def,
+                fun: fsym,
+                args: map,
+            });
+            *site.si_memo.borrow_mut() = Some((caller, ns, resolved.clone()));
+            let inline = resolved?;
             let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
-            *site.si_memo.borrow_mut() = Some((caller, ns, Some(inline)));
             Some(r.map(RVal::V))
         }
     }
