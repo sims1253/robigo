@@ -989,3 +989,14 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   equal under every env tried locally). Skipped the case via
   `host_dependent` (it dumps the machine's environment); the proper fix is
   a re-record with `record --mask-against-previous` on the oracle platform.
+
+- Baseline strict oracle checks: 759/762, exactly the new construction
+  fixture fails in all three tiers; all 253 prior scripts pass per tier.
+  Baseline startup: 44,173,974 callgrind instructions.
+- Extended probes preserve attributed/shared language constants, discard
+  instruction-vector attributes, validate arity, and use only the first
+  atomic getconst count element (coerce.c:asInteger). Initial CI compile
+  failure from a missing coerce borrow was fixed in 64b6939; no metric
+  result was claimed for that failed build.
+- load.from.file/save.to.file remain startup-owned I/O; putconst remains
+  the shared-mutation dependency. No R-level compiler replacement added.

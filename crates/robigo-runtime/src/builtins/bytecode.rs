@@ -1,5 +1,5 @@
 //! GNU R eval.c's portable bytecode construction and inspection internals.
-use super::{arg, internal};
+use super::{arg, check_arity, internal};
 use crate::{
     env::Env,
     error::{Flow, RResult},
@@ -18,13 +18,20 @@ pub static DEFS: &[Builtin] = &[
     internal("getconst", getconst, 2),
 ];
 
-fn version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn version(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "bcVersion", call)?;
     Ok(Value::int(12))
 }
 
 // R: eval.c:do_mkcode. Constants are retained without coercion or deduplication.
-fn mkcode(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let code = crate::serialize::portable_bc_code(arg(&args, 0))?;
+fn mkcode(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 2, "mkCode", call)?;
+    // R_bcEncode/R_bcDecode allocate a fresh instruction vector without attributes.
+    let input = arg(&args, 0);
+    let Value::Int(input) = input else {
+        return Err(Flow::error("robigo: non-integer bytecode instructions are not implemented yet"));
+    };
+    let code = crate::serialize::portable_bc_code(Value::ints(input.data.clone()))?;
     let Value::List(constants) = arg(&args, 1) else {
         return Err(Flow::error("robigo: non-list bytecode constants are not implemented yet"));
     };
@@ -47,8 +54,8 @@ fn mkcode(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> 
 }
 
 // R: serialize.c:ScanForCircles1 / WriteBCLang / WriteBC1. A flattened
-// call's suffixes have identity (allocation, offset); visiting a repeated
-// head stops the scan, as AddCircleHash does in GNU R.
+// language head keeps its Rc identity; visiting a repeated head stops the
+// scan, as AddCircleHash does in GNU R.
 fn key(v: &Value) -> Option<usize> {
     match v {
         Value::Lang(x) => Some(Rc::as_ptr(x) as usize),
@@ -186,7 +193,8 @@ fn constants_cells(
 }
 
 // R: eval.c:do_bcclose / CheckFormals, preserving validation order.
-fn bcclose(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 3, "bcClose", call)?;
     let formals = match arg(&args, 0) {
         Value::Null => Vec::new(),
         Value::Pairlist(p) if p.items.iter().all(|a| a.tag.is_some()) => p.items.clone(),
@@ -228,20 +236,23 @@ fn disasm(b: &Bytecode) -> Value {
         ),
     ])
 }
-fn disassemble(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn disassemble(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "disassemble", call)?;
     match arg(&args, 0) {
         Value::Bytecode(b) => Ok(disasm(&b)),
         _ => Err(Flow::error("argument is not a byte code object")),
     }
 }
-fn is_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn is_internal(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "is.builtin.internal", call)?;
     let Value::Sym(s) = arg(&args, 0) else {
         return Err(Flow::error("invalid symbol"));
     };
     Ok(Value::lgl(super::lookup_internal(s.name().as_ref()).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
 }
 // R: eval.c:do_growconst / do_getconst. Both allocate fresh, attribute-free lists.
-fn growconst(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn growconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "growconst", call)?;
     let Value::List(x) = arg(&args, 0) else {
         return Err(Flow::error("constant buffer must be a generic vector"));
     };
@@ -249,8 +260,15 @@ fn growconst(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     v.resize(v.len() * 2, Value::Null);
     Ok(Value::list(v))
 }
-fn getconst(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let n = crate::coerce::as_integer(&i.coerce(&arg(&args, 1), VType::Int)?);
+fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 2, "getconst", call)?;
+    // R: coerce.c:asInteger examines only the first atomic element.
+    let count = arg(&args, 1);
+    let n = if count.is_atomic() && !count.is_empty() {
+        crate::coerce::as_integer(&i.coerce(&crate::coerce::first_elt(&count), VType::Int)?)
+    } else {
+        NA_INTEGER
+    };
     let Value::List(x) = arg(&args, 0) else {
         return Err(Flow::error("constant buffer must be a generic vector"));
     };

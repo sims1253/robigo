@@ -1,4 +1,5 @@
 [1] 12
+[1] TRUE
 [[1]]
 .Code
 
@@ -124,3 +125,14 @@ NULL
 [1] "constant buffer must be a generic vector"
 [1] "bad constant count"
 [1] "unknown instruction code"
+[1] "1 argument passed to .Internal(bcVersion) which requires 0"
+[1] "0 arguments passed to .Internal(mkCode) which requires 2"
+[1] "2 arguments passed to .Internal(bcClose) which requires 3"
+[1] "0 arguments passed to .Internal(disassemble) which requires 1"
+[1] "0 arguments passed to .Internal(growconst) which requires 1"
+[1] "1 argument passed to .Internal(getconst) which requires 2"
+[1] "0 arguments passed to .Internal(is.builtin.internal) which requires 1"
+[[1]]
+[1] 1
+
+[1] "bad constant count"
