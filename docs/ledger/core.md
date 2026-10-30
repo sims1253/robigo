@@ -13,6 +13,12 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
+- Rebased #95 onto merged byte-window main df3d535. The resulting source
+  tree equals the verified pre-rebase tree; the diff against main now
+  contains only iconv, its tests and ratchets, and this ledger.
+  Reverification: conformance 242/242 in all tiers, graphics 182/184,
+  Hershey 1/1. Host strings 767,900,957 -> 767,911,865 (+0.0014%), neutral.
+
 - New branch off #84's verified source-printing combination. Baseline
   oracle probe: 1/8 matching cases. Explicit latin1 input was read from
   its UTF-8 view, explicit UTF-8 accepted invalid original bytes, Latin-1
