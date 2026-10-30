@@ -1020,3 +1020,13 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   before failing, confirming the precise core dependency. No fallback added.
 - First-candidate startup 44,175,690 versus 44,173,974 (+0.004%). The
   final registration migration removes two duplicate table entries.
+- Original-base final binary passes all 254 scripts in all three tiers:
+  759/762 -> 762/762; add bytecode_construct.R to the conformance ratchet.
+  GNU R accepts, executes and exactly reserializes all four exported files.
+  Final original-base startup is 44,186,757 (+0.029% from 44,173,974).
+- Private release crate checks pass: 44 runtime unit tests and two lazy-load
+  integrations. The two documented host-libm oracle tests are excluded
+  locally only; Debian CI checks them unmodified. Formatting passes.
+- Main moved to eb7a7ae (#103), introducing the expected ratchet append
+  conflict. Rebase next, preserving all entries and the VM owner's context
+  changes. Its lapply gain is inherited, not a compiler-construction gain.
