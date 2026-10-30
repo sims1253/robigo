@@ -6,6 +6,24 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 13, scalar promise storage and generalized compiled-wrapper inlining
+
+- Base: main c3bb38a (rebased past #126 ff759036). Re-measured 84-program baseline table on main: geomean **0.486x over 73 correct programs, faster on 73**. Saved as `.robigo/perf-base.json`.
+- Item 1: Scalar promise storage — redesigned `Promise` storage in `value.rs` with `PromiseVal` enum (`Unforced`, `ScalarInt(i32)`, `ScalarReal(f64)`, `ScalarLgl(Lgl)`, `Boxed(Value)`).
+  - In `vm.rs`, `caller_promargs` and `eager_args` pass unboxed scalar values directly into promises without heap vector allocations (`Value::int`, `Value::real`, `Value::lgl`).
+  - In `vm.rs`, `plain_lookup` reads unboxed scalar constants directly into `RVal::I`, `RVal::D`, `RVal::L`, avoiding vector overhead and pointer dereference.
+  - Cycle collector in `reachability.rs` traces only `PromiseVal::Boxed`, avoiding unnecessary GC work for scalar promises.
+  - `Promise::value(&self)` lazily materializes and memoizes `PromiseVal::Boxed` on first request, so introspection and fallback AST paths allocate at most once.
+- Item 2: General compiled-wrapper inlining — expanded inlining targets beyond the 20 `safeBaseInternals` to 66 candidates (including all 46 `safeStatsInternals`: `dnorm`, `pnorm`, `rnorm`, etc.).
+  - Generalized wrapper shape detection (`simple_wrapper_shape`) to support `.Internal`, `.Call` (resolving native symbols in closure environment), and primitive builtins.
+  - Added fast-path memo lookup in `try_inline_site` without parent environment traversal.
+- Key benchmark results (paired against fresh main baseline, cache off):
+  - `robigo/fib`: 958,495,980 -> 933,948,711 (-2.56%, 24.5M instructions saved).
+  - `robigo/vecarith`: 4,336,547,402 -> 4,039,793,997 (-6.84%, 296.8M instructions saved).
+  - `rbench/shootout/mandelbrot_noout_naive`: 667,495,910 -> 629,552,014 (-5.68%, 37.9M instructions saved).
+  - `robigo/csv`: 1,373,798,840 -> 1,371,982,995 (-1.8M instructions saved).
+- Full 84-program suite: 73 correct programs faster than GNU R, geomean 0.489x.
+
 ## 2026-10-30: round 12, Rconn_printf skips the vfprintf round-trip
 
 - Base: main 758efb7, re-measured in `robigo-build:4.5.0` (Debian R
