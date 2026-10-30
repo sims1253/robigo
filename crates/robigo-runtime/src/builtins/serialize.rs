@@ -622,7 +622,9 @@ fn do_load_from_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     let name = valid_file_name(&file).ok_or_else(|| Flow::error("bad file name"))?;
     let mut file = open_save_file(i, name, false)?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|_| Flow::error("error reading from connection"))?;
+    // R_ReadMagic uses fread's count even on an I/O error (e.g. a
+    // directory is reported as empty). A short payload fails in the reader.
+    let _ = file.read_to_end(&mut bytes);
     if bytes.is_empty() {
         return Err(Flow::error("restore file may be empty -- no data loaded"));
     }
@@ -631,7 +633,28 @@ fn do_load_from_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
             .iter()
             .any(|magic| bytes.starts_with(*magic))
     {
-        return crate::serialize::unserialize(i, &bytes[5..], Value::Null);
+        // R: serialize.c:InFormat, InBytesFile. The workspace magic
+        // fixes the expected stream format; file EOF uses "read failed".
+        if bytes.len() < 7 {
+            return Err(Flow::error("read failed"));
+        }
+        // InFormat also tolerates one newline before an ASCII stream.
+        let start = if bytes[5..7] == *b"\nA" { 6 } else { 5 };
+        if bytes.len() < start + 2 {
+            return Err(Flow::error("read failed"));
+        }
+        if !matches!(bytes[start], b'A' | b'B' | b'X') {
+            return Err(Flow::error("unknown input format"));
+        }
+        if bytes[start] != bytes[2] {
+            return Err(Flow::error("input format does not match specified format"));
+        }
+        // InFormat consumes, but does not validate, the second byte.
+        bytes[start + 1] = b'\n';
+        return crate::serialize::unserialize(i, &bytes[start..], Value::Null).map_err(|flow| match flow {
+            Flow::Error(e) if e.message == "error reading from connection" => Flow::error("read failed"),
+            other => other,
+        });
     }
     if bytes.len() >= 5 && [b"RDA1\n", b"RDB1\n", b"RDX1\n"].iter().any(|magic| bytes.starts_with(*magic)) {
         return Err(Flow::error("robigo: version 1 save files are not implemented yet"));
@@ -651,29 +674,38 @@ fn valid_file_name(v: &Value) -> Option<&RStr> {
 
 // R: saveload.c:do_savefile, R_SaveToFileV.
 fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    use std::io::Write;
+    use std::os::fd::IntoRawFd;
     let file = arg(&args, 1);
     let name = valid_file_name(&file).ok_or_else(|| Flow::error("'file' must be non-empty string"))?;
     let ascii = arg(&args, 2);
     let Value::Lgl(a) = ascii else { return Err(Flow::error("'ascii' must be logical")) };
     let ascii = a.data.first().copied().unwrap_or(NA_LOGICAL) != 0;
     let version = match arg(&args, 3) {
-        Value::Null => match std::env::var("R_DEFAULT_SAVE_VERSION").ok().and_then(|v| v.parse::<i32>().ok()) {
-            Some(v @ (2 | 3)) => v,
-            _ => 3,
-        },
+        Value::Null => default_save_version(),
         v => as_integer(&v),
     };
     if version == NA_INTEGER || version <= 0 {
         return Err(Flow::error("invalid 'version' argument"));
     }
-    let mut file = open_save_file(i, name, true)?;
+    let file = open_save_file(i, name, true)?;
     if version == 1 {
         return Err(Flow::error("robigo: version 1 save files are not implemented yet"));
     }
+    // R uses buffered FILE output, including on an error that unwinds
+    // past fclose. Keep libc's pending bytes and exit-time flushing too.
+    let fd = file.into_raw_fd();
+    let file = unsafe { libc::fdopen(fd, c"wb".as_ptr()) };
+    if file.is_null() {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(Flow::error("unable to open 'file'"));
+    }
     let magic = format!("RD{}{}\n", if ascii { 'A' } else { 'X' }, if version == 2 { 2 } else { 3 });
-    file.write_all(magic.as_bytes()).map_err(|_| Flow::error("write failed"))?;
+    write_save_bytes(file, magic.as_bytes())?;
     if version > 3 {
+        // R_Serialize writes OutFormat before validating the version.
+        write_save_bytes(file, if ascii { b"A\n" } else { b"X\n" })?;
         return Err(Flow::error(format!("version {version} not supported")));
     }
     let object = arg(&args, 0);
@@ -682,8 +714,19 @@ fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     } else {
         crate::serialize::serialize_version(&object, version)
     };
-    file.write_all(&bytes).map_err(|_| Flow::error("write failed"))?;
+    write_save_bytes(file, &bytes)?;
+    unsafe {
+        libc::fclose(file);
+    }
     Ok(Value::Null)
+}
+
+// R: serialize.c:OutBytesFile.
+fn write_save_bytes(file: *mut libc::FILE, bytes: &[u8]) -> RResult<()> {
+    if unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), file) } != bytes.len() {
+        return Err(Flow::error("write failed"));
+    }
+    Ok(())
 }
 
 // R: sysutils.c:RC_fopen.
@@ -692,4 +735,19 @@ fn open_save_file(_: &mut Interp, name: &RStr, write: bool) -> RResult<std::fs::
     let path = super::io::expand_file_name(name);
     let result = if write { std::fs::File::create(&path) } else { std::fs::File::open(&path) };
     result.map_err(|_| Flow::error("unable to open 'file'"))
+}
+
+// R: saveload.c:defaultSaveVersion (cached on first use; atoi accepts suffixes).
+fn default_save_version() -> i32 {
+    static VERSION: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let version = std::env::var("R_DEFAULT_SAVE_VERSION")
+            .ok()
+            .and_then(|v| std::ffi::CString::new(v).ok())
+            .map(|v| unsafe { libc::atoi(v.as_ptr()) });
+        match version {
+            Some(v @ (2 | 3)) => v,
+            _ => 3,
+        }
+    })
 }
