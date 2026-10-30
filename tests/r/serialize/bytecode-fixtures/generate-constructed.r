@@ -7,3 +7,6 @@ attr(x, 'note') <- 'shared language'
 constants <- list(x,x,pairlist(a=x,b=2L),b,TRUE,NA_integer_,1:3)
 b <- .Internal(mkCode(c(12L,16L,0L,1L),constants))
 for (v in 2:3) saveRDS(b,paste0(p,'constructed-code-v',v,'.rds'),version=v,compress=FALSE)
+b <- readRDS(paste0(p,'body-code.rds'))
+b <- .Internal(mkCode(c(12L,16L,0L,1L),list(42L,b)))
+saveRDS(b,paste0(p,'constructed-imported-inner.rds'),compress=FALSE)

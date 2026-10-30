@@ -136,3 +136,5 @@ NULL
 [1] 1
 
 [1] "bad constant count"
+[1] TRUE
+list(.Code, list(12L, LDCONST.OP, 0L, RETURN.OP), list(42L))

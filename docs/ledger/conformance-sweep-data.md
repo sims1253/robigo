@@ -1012,3 +1012,11 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   Remove those registrations and their old implementations, keeping the
   canonical versions in bytecode.rs. These are additional shared-file
   migrations only. Rebuild and repeat all verification on the final binary.
+- Additional nested-import experiment: wrap the round 9 body-code.rds
+  inside newly constructed code. Its complete 6,791-byte serialization
+  matches the Debian oracle; retain as constructed-imported-inner.rds.
+- GNU compiler::disassemble reads a robigo-constructed closure successfully.
+  compiler::cmpfun now reaches .Internal(putconst(constBuf, constCount, x))
+  before failing, confirming the precise core dependency. No fallback added.
+- First-candidate startup 44,175,690 versus 44,173,974 (+0.004%). The
+  final registration migration removes two duplicate table entries.
