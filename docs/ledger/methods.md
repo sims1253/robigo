@@ -224,6 +224,31 @@ Slice used throughout ("S4 slice"):
   notably attrib.c:check_slot_assign's checkAtAssignment closure; measure
   the S4State/Interp layout impact before retaining that change. Rcpp's
   remaining failures need C API bridge alias/write-back and vector work.
+## 2026-10-30: round 6 — defer only FastR, preserve zero loss
+
+- Fresh rebased release, methods attached: focused fastr `S4|TestBuiltin_serialize/(4a71e01f|bfd38dfb)`
+  **179/187**, exactly one ratchet loss, `S4/TestR5/474b742f1785a587`.
+  Both serialized class generators and reference-class method ordering
+  pass. No serializer or environment-order blocker remains in this slice.
+- Former GNU R ratchet losses now both pass: `reg-S4-examples` on host
+  with R_HOME 4.5.0 and built natives; `reg-packages` in
+  `robigo-oracle:4.5.0` with seccomp unconfined, host binary run through
+  host's loader/libc. Each is **1/1**, zero regressions.
+- Followed the rescue brief's finalizer fallback: retain main's FastR
+  defaults AND main's compressed records exactly. Nothing is excluded,
+  removed from a ratchet, re-recorded to match robigo, or masked beyond
+  allocator counts. Same focused slice is now **180/187, zero losses**.
+  The four GNU R corpora retain methods-aware records and defaults.
+- To finish FastR: core must implement environment `reg.finalizer` and
+  collect reference-class cycles at `gc()`. Then restore the methods-aware
+  FastR record from commit 2e2945b (or re-record with the oracle if sources
+  changed), attach methods in `[fastr]`, and rerun the 187-case slice plus
+  full CI. The allocator mask must retain `finalizer: 456`.
+- Shared paths inherited from #71: `builtins/lang.rs` and `serialize.rs`
+  preserve LANGSXP argument cells, orthogonal to source-reference changes
+  now on main. Rebased without touching VM/evaluator or core's encoding
+  and finalization paths. All original commit authorship is retained.
+
 ## 2026-10-30: round 6 rescue, rebase and baseline
 
 - Continued #71 in this worktree on local `track/methods-default-rescue`:
