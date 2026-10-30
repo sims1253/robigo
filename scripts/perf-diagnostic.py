@@ -25,7 +25,10 @@ metadata = {'environment': {k: v for k, v in os.environ.items()
                             if k.startswith(('ROBIGO_', 'R_', 'MIMALLOC_', 'LD_'))}}
 for name, command in [('cpu', ['lscpu']), ('libc', ['ldd', '--version']),
                       ('valgrind', ['valgrind', '--version']), ('R', ['R', '--version'])]:
-    metadata[name] = subprocess.run(command, capture_output=True, text=True).stdout
+    try:
+        metadata[name] = subprocess.run(command, capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        metadata[name] = 'unavailable'
 for label, artifact in [('base', base), ('candidate', candidate)]:
     metadata[label + '_files'] = {
         str(p.relative_to(artifact)): hashlib.sha256(p.read_bytes()).hexdigest()

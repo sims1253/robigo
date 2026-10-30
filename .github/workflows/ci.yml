@@ -53,8 +53,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 40980827065 -n robigo -D .robigo/diagnostic-base
-          gh run download 40982799591 -n robigo -D .robigo/diagnostic-candidate
+          gh run download 40980827065 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-base
+          gh run download 40982799591 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-candidate
           chmod +x .robigo/diagnostic-{base,candidate}/robigo
           python3 scripts/perf.py fetch
       - name: Profile both binaries and audit cache guards
