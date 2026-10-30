@@ -130,7 +130,7 @@ pub struct Reader<'a, 'i> {
     refs: Vec<Value>,
     interp: &'i mut Interp,
     hook: Value,
-    bc_records: Vec<BytecodeRecord>,
+    bc_records: BytecodeCells,
 }
 
 fn corrupt() -> Flow {
@@ -552,6 +552,15 @@ impl<'a, 'i> Reader<'a, 'i> {
             set_attr_pairlist(&mut v, a);
         }
         let _ = hastag;
+        // R: serialize.c:ReadItem returns R_BytecodeExpr for an unsupported
+        // bytecode version, after consuming its attributes and constants.
+        if let Value::Bytecode(b) = &v {
+            if let Value::Int(code) = &b.code {
+                if code.data.first().is_some_and(|v| !(9..=12).contains(v)) {
+                    return Ok(b.expression.clone());
+                }
+            }
+        }
         Ok(v)
     }
 
@@ -616,11 +625,8 @@ impl<'a, 'i> Reader<'a, 'i> {
             flags = self.int()? as u32;
             ty = flags & 255;
         }
-        let mut bytecode_body = false;
         let cdr = if matches!(head_type, CLOSXP | PROMSXP) {
-            let body_flags = self.int()? as u32;
-            bytecode_body = body_flags & 255 == BCODESXP;
-            self.read_item_flags(body_flags)?
+            self.read_item()?
         } else {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
@@ -647,6 +653,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     Value::Bytecode(b) => (b.expression.clone(), Some(b)),
                     v => (v, None),
                 };
+                let bytecode_body = gnu_bytecode.is_some();
                 let mut v = Value::Closure(Rc::new(Closure {
                     gnu_bytecode,
                     formals,
@@ -749,15 +756,13 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     fn bc_int(&mut self) -> RResult<i32> {
         let v = self.int()?;
-        self.bc_records.push(BytecodeRecord::Integer(v));
+        self.bc_records.integer(v);
         Ok(v)
     }
 
     fn bc_item(&mut self) -> RResult<Value> {
-        let outer = std::mem::take(&mut self.bc_records);
         let v = self.read_item()?;
-        self.bc_records = outer;
-        self.bc_records.push(BytecodeRecord::Item(v.clone()));
+        self.bc_records.item(v.clone(), false);
         Ok(v)
     }
 
@@ -770,7 +775,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 BCODESXP => {
                     let v = self.read_bc(reps)?;
                     if let Value::Bytecode(b) = &v {
-                        self.bc_records.push(BytecodeRecord::Nested(b.clone()));
+                        self.bc_records.item(Value::Bytecode(b.clone()), true);
                     }
                     v
                 }
@@ -1131,7 +1136,8 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     }
     // 16 covers the reference count of a typical lazy-load entry without
     // the 4→8→16 reallocation chain; big entries still grow.
-    let mut r = Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook, bc_records: Vec::new() };
+    let mut r =
+        Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook, bc_records: BytecodeCells::default() };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;
@@ -1390,11 +1396,14 @@ impl Writer<'_> {
     // WriteItem so symbols and environments enter this stream's reference table.
     fn bytecode(&mut self, b: &Bytecode) {
         self.item(&b.code);
-        for record in &b.cells {
-            match record {
-                BytecodeRecord::Integer(v) => self.int(*v),
-                BytecodeRecord::Item(v) => self.item(v),
-                BytecodeRecord::Nested(b) => self.bytecode(b),
+        for &record in &b.cells.operations {
+            match record & 3 {
+                0 => self.int((record >> 2) as i32),
+                1 => self.item(&b.cells.items[(record >> 2) as usize]),
+                _ => {
+                    let Value::Bytecode(nested) = &b.cells.items[(record >> 2) as usize] else { unreachable!() };
+                    self.bytecode(nested);
+                }
             }
         }
     }
