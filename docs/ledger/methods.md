@@ -239,6 +239,11 @@ Slice used throughout ("S4 slice"):
   removed from a ratchet, re-recorded to match robigo, or masked beyond
   allocator counts. Same focused slice is now **180/187, zero losses**.
   The four GNU R corpora retain methods-aware records and defaults.
+- Additional local slices: methods/stats4 examples **48/50**, demos
+  **13/16**, R-intro **8/13**; zero regressions in each. Absorbed 13 new
+  passes (4 examples, 5 demos, 4 intro) into their ratchets. These counts
+  include improvements already on main; they are fresh coverage, not an
+  isolated attribution to methods startup.
 - To finish FastR: core must implement environment `reg.finalizer` and
   collect reference-class cycles at `gc()`. Then restore the methods-aware
   FastR record from commit 2e2945b (or re-record with the oracle if sources

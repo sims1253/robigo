@@ -1,9 +1,14 @@
+base/recursion
 base/scoping
 grDevices/colors
 grDevices/hclColors
 graphics/Hershey
 graphics/Japanese
 graphics/graphics
+graphics/image
 graphics/persp
 graphics/plotmath
 stats/glm.vr
+stats/lm.glm
+stats/nlm
+stats/smooth

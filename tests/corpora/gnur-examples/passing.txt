@@ -489,6 +489,7 @@ grid/viewportTransform
 grid/viewports
 grid/vpPath
 grid/xsplinePoints
+methods/GenericFunctions
 methods/LanguageClasses
 methods/Methods_for_Nongenerics
 methods/NextMethod
@@ -509,6 +510,7 @@ methods/getClass
 methods/getMethod
 methods/getPackageName
 methods/hasArg
+methods/implicitGeneric
 methods/is
 methods/isSealedMethod
 methods/localRefClass
@@ -526,6 +528,7 @@ methods/setGeneric
 methods/setGroupGeneric
 methods/setIs
 methods/setLoadActions
+methods/setMethod
 methods/setOldClass
 methods/show
 methods/showMethods
@@ -652,6 +655,8 @@ stats/weighted.mean
 stats/window
 stats/xtabs
 stats/zC
+stats4/mle
+stats4/update-methods
 tools/CRANtools
 tools/HTMLheader
 tools/R
@@ -771,4 +776,3 @@ utils/url.show
 utils/winDialog
 utils/winMenus
 utils/winextras
-stats4/update-methods
