@@ -8,25 +8,43 @@ conformance` (interpreter, VM and VM+JIT against each other).
 
 ## 2026-10-30: round 8, CSV connection formatting
 
-- Fresh branch from main d2ce510, rebased before filing onto f5dae40
-  (#96/#97). Saved baseline executable at 9b9bab5. Recover the round 7
-  literal-%s candidate from the stash after measuring this baseline. The authorized
-  shared edits are capi connections.rs and main/robigo_sys.c.
-- Baseline: standard CSV 947,271,725 instructions, native utils CSV
-  1,950,190,065. Both use the same immutable executable and R_HOME.
-  Standard and native conformance each pass 244/244 scripts in all tiers;
-  both focused FastR slices pass 180/181 with zero regressions.
-- Add a Debian R 4.5.0-3 recording for CSV file bytes and parsing,
-  missing values, UTF-8, percent directives in data, quoted fields,
-  255/256/257-byte writes, row names and CRLF. The delivered round 7
-  binary matches the recording. Current-main measurement is complete; candidate verification follows.
-- Core's ledger leaves environment finalizers and cycle reachability in
-  flight. Promise::forced still owns a boxed Value retained by both frame
-  bindings and Context.promargs. Leave value.rs unchanged. A VM-only
-  shortcut cannot remove that box while preserving observable promises.
-- Sweep-data's internal-call handoff is lapply/245e62b: is.vector must be
-  recognized before X is forced, following GETINTLBUILTIN/CALLBUILTIN.
-  Keep this as a separate follow-up after the CSV batch.
+- Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).
+  Saved baseline executable at 9b9bab5. Restored the round 7 stash.
+- Kept native-utils CSV optimization: **1,950,190,065 -> 1,784,048,659
+  instructions (-8.52%)**. The native library and R_HOME are identical.
+  Recognize literal %s using a copied va_list; bypass vasprintf and copy
+  up to 256 bytes on the stack. Longer strings use an owned Vec. Copy
+  before R_WriteConnection can allocate or run finalizers. Other formats,
+  null strings and lengths beyond printf's int range retain libc behavior.
+- Authorized shared edits: capi src/connections.rs and main/robigo_sys.c.
+  GNU R contract: library/utils/src/io.c:writetable, connections.c:Rconn_printf.
+  No runtime layout, promise, or vendored R source changes.
+- Standard Rust-utils CSV is neutral: 947,271,725 -> 947,268,993.
+  Fresh table contains 83 programs, 82 correct and all 82 faster than
+  GNU R, geomean 0.493. spectralnorm_math remains the output mismatch;
+  flexclust_no_s4 has an existing stderr difference. Every benchmark's
+  stdout, stderr and status is identical between the saved binaries.
+  Full paired instruction gate verification follows.
+- Standard and native conformance each pass **244/244** in all three
+  tiers, before and after. Focused FastR write/read-table, scan and
+  connections: **180/181 -> 180/181**, identical per-case outcomes,
+  zero regressions. Debian R 4.5.0-3 recorded the new fixture covering
+  quoting, UTF-8, missing values, percent directives, row names,
+  255/256/257-byte writes, CRLF and CSV parsing. Added its passing entry.
+- Shared Cargo artifacts twice mixed worktrees (missing parse_data and
+  missing C helper at link time). Rebuilt workspace crates in a private
+  reflinked target under .robigo/r8/target, retaining third-party caches.
+  Artifacts and scripts: .robigo/r8/. C API crate checks are pending.
+- Native CSV still costs 1.159x GNU R. Next profile R_WriteConnection
+  and its host writeConnection bridge, especially per-cell raw allocation.
+- Promise storage stays deferred while core's finalizer reachability work
+  is in flight. Promise::forced owns a boxed Value retained by frame
+  bindings and Context.promargs. Removing that allocation needs agreement
+  on value.rs storage and materialization; a VM-local shortcut is unsafe.
+- VM follow-up: lapply/245e62b needs GETINTLBUILTIN/CALLBUILTIN behavior
+  for is.vector before X is forced. compile.rs currently emits argument
+  evaluation before CallBuiltin. Establish the builtin error context
+  before forcing, preserving cleanup on every exit, then measure calls.
 
 
 ## 2026-10-30: setter fix rebased onto the byte window
