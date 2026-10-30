@@ -1,0 +1,124 @@
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+[1] NA -1  0 42
+
+[[2]]
+[1]            NA           NaN           Inf          -Inf  0.000000e+00
+[6]  3.141593e+00 1.000000e-300
+
+[[3]]
+[1] "a b"        "a\n\t\\?\"" "é"          NA          
+
+[[4]]
+[1] 00 0a ff
+
+[[5]]
+f(x = 1L)
+
+[1] "'file' must be non-empty string"
+[1] "'file' must be non-empty string"
+[1] "unable to open 'file'"
+[1] "'file' must be non-empty string"
+[1] "'ascii' must be logical"
+[1] "invalid 'version' argument"
+[1] "invalid 'version' argument"
+[1] "invalid 'version' argument"
+[1] "version 4 not supported"
+[1] "bad file name"
+[1] "bad file name"
+[1] "unable to open 'file'"
+[1] "restore file may be empty -- no data loaded"
+[1] "bad restore file magic number (file may be corrupted) -- no data loaded"
+[1] "bad restore file magic number (file may be corrupted) -- no data loaded"
+[1] "restore file may be from a newer version of R -- no data loaded"

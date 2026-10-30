@@ -1,0 +1,1 @@
+loaded_compiled <- function(x=1L) x+42L
