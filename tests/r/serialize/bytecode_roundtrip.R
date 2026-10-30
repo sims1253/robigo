@@ -30,3 +30,6 @@ for (version in c(9L, 13L)) {
   expected <- readBin(paste0(path, '-canonical.rds'), 'raw', n = 100000L)
   print(identical(serialize(b, NULL), expected))
 }
+b <- readRDS('bytecode-fixtures/constant-code.rds')
+print(identical(b, unserialize(serialize(b, NULL))))
+print(eval(b))

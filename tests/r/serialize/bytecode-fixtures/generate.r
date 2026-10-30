@@ -26,3 +26,5 @@ for (version in c(9L, 13L)) {
   writeBin(input, paste0(file, '.rds'))
   saveRDS(readRDS(paste0(file, '.rds')), paste0(file, '-canonical.rds'), compress = FALSE)
 }
+b <- .Internal(mkCode(c(12L, 16L, 0L, 1L), list(42L)))
+saveRDS(b, 'tests/r/serialize/bytecode-fixtures/constant-code.rds', compress = FALSE)
