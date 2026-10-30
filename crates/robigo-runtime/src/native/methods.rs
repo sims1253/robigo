@@ -826,7 +826,7 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
     let Value::Env(mtable_env) = &mtable else {
         return Err(Flow::error("robigo: '.AllMTable' is not an environment"));
     };
-    let mut method = find_var_in_frame(i, mtable_env, Sym::new(&label))?;
+    let mut method = lookup_table_method(i, mtable_env, Sym::new(&label))?;
     if let Some(Value::Env(t)) = &method {
         let t = t.clone();
         method = select_by_package(i, &t, &classes)?;
@@ -858,6 +858,26 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
         Value::Builtin(_) => Ok(deferred_default()),
         _ => Err(Flow::error("invalid object (non-function) used as method")),
     }
+}
+
+/// R: methods_list_dispatch.c:R_dispatchGeneric, findVarInFrame(mtable, label).
+/// Only ordinary function bindings are cached. Redefinition, removal and
+/// conversion to an active binding advance the table's function version.
+fn lookup_table_method(i: &mut Interp, table: &Env, label: Sym) -> RResult<Option<Value>> {
+    let version = table.fn_version();
+    if let Some((env, stamp, key, method)) = &i.s4.method_lookup {
+        if env.ptr_eq(table) && *stamp == version && *key == label {
+            return Ok(Some(method.clone()));
+        }
+    }
+    let method = find_var_in_frame(i, table, label)?;
+    if table.fn_version() == version
+        && method.as_ref().is_some_and(Value::is_function)
+        && table.binding_flags(label).is_some_and(|flags| flags & crate::env::BIND_ACTIVE == 0)
+    {
+        i.s4.method_lookup = Some((table.clone(), table.fn_version(), label, method.clone().unwrap()));
+    }
+    Ok(method)
 }
 
 /// `R_nextMethodCall(matched_call, ev)`.

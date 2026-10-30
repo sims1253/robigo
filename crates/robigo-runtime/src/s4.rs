@@ -66,6 +66,9 @@ pub struct S4State {
     pub prim: HashMap<usize, PrimEntry>,
     /// `R_S4_extends_table`.
     pub extends_table: Option<Env>,
+    /// Last direct method-table lookup. The owning environment keeps its
+    /// identity stable; function binding changes invalidate the entry.
+    pub(crate) method_lookup: Option<(Env, u32, Sym, Value)>,
 }
 
 impl Default for S4State {
@@ -77,6 +80,7 @@ impl Default for S4State {
             allow_prim: true,
             prim: HashMap::new(),
             extends_table: None,
+            method_lookup: None,
         }
     }
 }

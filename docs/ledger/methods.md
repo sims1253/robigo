@@ -7,6 +7,25 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 10 method-table lookup cache
+
+- Kept a single direct function lookup per interpreter, guarded by table
+  identity, signature symbol and Env::fn_version. Replacing/removing a
+  method or changing its binding to active invalidates it. Active bindings,
+  package-selection environments and missing entries are never cached.
+  Generic metadata stays live, including after argument evaluation.
+- Instructions/iteration before -> cache: generic 10,920.312 -> 10,864.640
+  (0.51% fewer); slot 1,376.734 -> 1,380.392 (+0.27%);
+  replacement 39,429.751 -> 39,489.078 (+0.15%);
+  new 354,252.890 -> 354,259.058; valid 180,072.314 -> 180,076.499;
+  portfolio 1,516,823.910 -> 1,516,787.600. All other deltas below 0.01%.
+- Seven-program perf comparison (S4 plus fib): zero slowdowns above 0.5%,
+  zero wrong outputs. S4 slice 644/662, zero regressions; Rcpp sugar
+  493/493 with identical assertion records. New cache regression matches R.
+- Runtime unit tests: 55 pass, two known host-glibc failures in unchanged
+  complex.rs (c_library_oracle, c_library_trig_oracle). Debian CI judges
+  these last-bit differences. Full three-tier conformance follows.
+
 ## 2026-10-30: round 10 baseline after methods became the default
 
 - Base b5c3373, branch `track/methods-s4-speed`. Same-host Debian
