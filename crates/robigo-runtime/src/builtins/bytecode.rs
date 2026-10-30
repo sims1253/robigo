@@ -1,5 +1,5 @@
 //! GNU R eval.c's portable bytecode construction and inspection internals.
-use super::{arg, check_arity, internal};
+use super::{arg, internal};
 use crate::{
     env::Env,
     error::{Flow, RResult},
@@ -179,6 +179,7 @@ fn constants_cells(
                     Value::Real(_) => 14,
                     Value::Cplx(_) => 15,
                     Value::Str(_) => 16,
+                    Value::Dots(_) => 17,
                     Value::List(_) => 19,
                     Value::Expr(_) => 20,
                     Value::ExtPtr(_) => 22,
@@ -276,4 +277,21 @@ fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         return Err(Flow::error("bad constant count"));
     }
     Ok(Value::list(x.data[..n as usize].to_vec()))
+}
+
+// R: util.c:Rf_checkArityCall distinguishes .Internal from primitives.
+fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {
+    if args.len() != n {
+        return Err(Flow::error_call(
+            call.clone(),
+            format!(
+                "{} argument{} passed to .Internal({}) which requires {}",
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                name,
+                n
+            ),
+        ));
+    }
+    Ok(())
 }

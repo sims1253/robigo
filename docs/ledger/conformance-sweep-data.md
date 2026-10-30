@@ -1000,3 +1000,7 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   result was claimed for that failed build.
 - load.from.file/save.to.file remain startup-owned I/O; putconst remains
   the shared-mutation dependency. No R-level compiler replacement added.
+- Oracle arity probes exposed a mismatch in the shared check_arity helper:
+  GNU R util.c:Rf_checkArityCall uses .Internal(name), without quotes, for
+  internals. Port this locally in the owned module; do not change other
+  tracks' builtin errors globally.
