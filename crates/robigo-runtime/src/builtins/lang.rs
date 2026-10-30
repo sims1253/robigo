@@ -486,8 +486,7 @@ fn complex_assign_inner(
         if let Value::Sym(fsym) = &fname {
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
                 if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
-                    drop(base_val);
-                    return fast_replace(interp, b, *fsym, l, target, rhs, env, pre, rhs_call);
+                    return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
                 }
             }
         }
@@ -567,6 +566,7 @@ fn fast_replace(
     fsym: Sym,
     l: &Lang,
     target: Sym,
+    obj: Value,
     rhs: Value,
     env: &Env,
     pre: Option<&[Value]>,
@@ -602,11 +602,34 @@ fn fast_replace(
     // applydefine/replaceCall deparses the forced RHS promise's value.
     let rhs_shown = rhs_call.unwrap_or(&rhs).clone();
     argv.push(Arg::new(Some(s::VALUE), if b.kind == BuiltinKind::Special { quote_if_needed(rhs) } else { rhs }));
-    // Now take the value out of its binding so we hold the only reference.
-    let obj = match env.take_local(target).unwrap_or(Value::Null) {
-        // An argument: its promise was forced when the target was looked up.
-        Value::Promise(p) => p.value().unwrap_or(Value::Null),
-        v => v,
+    // R: eval.c:evalseq saves the LHS before evaluating setter indices.
+    // Release the binding's reference after index evaluation, retaining that
+    // saved object even when an index assigned a different value to target.
+    // Value::ptr_eq does not cover every mutable variant. Comparing those
+    // buffers explicitly lets an unchanged binding go before Rc::make_mut;
+    // retaining it would copy the entire vector on every replacement.
+    let same_target = |v: &Value| match (v, &obj) {
+        (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
+        (Value::Cplx(a), Value::Cplx(b)) => Rc::ptr_eq(a, b),
+        (Value::Raw(a), Value::Raw(b)) => Rc::ptr_eq(a, b),
+        (Value::Expr(a), Value::Expr(b)) => Rc::ptr_eq(a, b),
+        (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
+        (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
+        (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
+        _ => v.ptr_eq(&obj),
+    };
+    let restore_binding = match env.take_local(target) {
+        Some(v)
+            if match &v {
+                Value::Promise(p) => p.value().is_some_and(|v| same_target(&v)),
+                v => same_target(v),
+            } =>
+        {
+            None
+        }
+        // If evaluation of an index changed or removed the binding, keep
+        // that side effect on error: applydefine assigns only on success.
+        binding => Some(binding),
     };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
@@ -626,7 +649,17 @@ fn fast_replace(
         Err(f) => {
             // The replacement function owned the object; `[<-` and friends
             // hand it back (unchanged) when they fail.
-            if let Some(orig) = crate::builtins::subassign::take_restore() {
+            let orig = crate::builtins::subassign::take_restore();
+            if let Some(binding) = restore_binding {
+                match binding {
+                    Some(v) => {
+                        env.set_local(target, v);
+                    }
+                    None => {
+                        env.remove(target);
+                    }
+                }
+            } else if let Some(orig) = orig {
                 env.set_local(target, orig);
             }
             Err(f)
@@ -1554,4 +1587,38 @@ fn do_getconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error("bad constant count"));
     }
     Ok(Value::list(buf.data[..n as usize].to_vec()))
+}
+
+#[cfg(test)]
+mod assignment_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_replacement_targets_reuse_their_buffers() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let env = interp.global.clone();
+        let target = Sym::new("x");
+        let cases = [
+            (Value::Cplx(Rc::new(Vector::new(vec![Complex::new(0.0, 0.0); 256]))), "x[2] <- 1i"),
+            (Value::Lgl(Rc::new(Vector::new(vec![0; 256]))), "x[2] <- TRUE"),
+            (Value::Raw(Rc::new(Vector::new(vec![0; 256]))), "x[2] <- as.raw(1)"),
+            (Value::Expr(Rc::new(Vector::new(vec![Value::Null; 256]))), "x[2] <- expression(a)"),
+        ];
+        for (value, source) in cases {
+            let address = |v: &Value| match v {
+                Value::Cplx(v) => Rc::as_ptr(v) as usize,
+                Value::Lgl(v) => Rc::as_ptr(v) as usize,
+                Value::Raw(v) => Rc::as_ptr(v) as usize,
+                Value::Expr(v) => Rc::as_ptr(v) as usize,
+                _ => panic!("unexpected replacement type"),
+            };
+            let original = address(&value);
+            env.set_local(target, value);
+            let expr = crate::lang::parse_to_values(source).unwrap().remove(0);
+            for _ in 0..3 {
+                assert!(interp.eval(&expr, &env).is_ok(), "{source}");
+                assert_eq!(address(&env.get_local(target).unwrap()), original, "{source}");
+            }
+        }
+    }
 }

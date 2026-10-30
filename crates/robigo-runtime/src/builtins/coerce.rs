@@ -78,11 +78,12 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
     }
     match &x {
         Value::Env(_) | Value::Closure(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
-            return Err(Flow::error(format!(
-                "cannot coerce type '{}' to vector of type '{}'",
-                x.type_name(),
-                t.name()
-            )));
+            // R: coerce.c:coerceVector -> error; eval.c establishes the
+            // ascommon builtin context, selected by errors.c:getCurrentCall.
+            return Err(Flow::error_call(
+                call.clone(),
+                format!("cannot coerce type '{}' to vector of type '{}'", x.type_name(), t.name()),
+            ));
         }
         Value::Sym(sy) if t == VType::Str => return Ok(Value::strs(vec![Some(sy.name().into())])),
         Value::Sym(_) => {
