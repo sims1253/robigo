@@ -1307,8 +1307,9 @@ measured benefit.
 
 **Default builds do not round-trip GNU R bytecode byte-identically.** They
 retain and execute the source expression, but discard GNU instructions,
-constant-pool layout, bytecode attributes and shared-cell replay metadata.
-Re-serializing an imported compiled closure writes its expression body in
+constant-pool layout and shared-cell replay metadata. There is no retained
+BCODESXP owner for attributes: the expression-only reader can attach them
+to the source expression instead. Re-serializing an imported compiled closure writes its expression body in
 place of BCODESXP; serializing an imported standalone BCODESXP writes the
 expression. The divergence concerns serialized bytes; execution continues
 through the existing interpreter fallback. This is an explicit temporary
@@ -1384,3 +1385,23 @@ All 32,238 marker files remain. Add a nonempty-selection assertion so a
 mistyped feature fixture filter cannot silently turn the CI job into 0/0.
 Feature-enabled full release tests are compiling for this checkpoint; the
 PR remains draft pending their result and the complete CI gate.
+
+
+### Feature-enabled release verification
+
+- In the same capped trixie container, cargo test --release for runtime,
+  C API and CLI with bytecode-fidelity passes: runtime 64 unit tests
+  (including core's physical reclamation tests and bytecode ownership),
+  six metadata/encoding tests, two lazy-load tests; C API 9 integration
+  tests; CLI 9 conformance/feature-selection/tier tests.
+- Run the exact dedicated-CI fixture commands in interpreter, VM without
+  JIT and VM with JIT: 2/2 each, **6/6** total. Oracle transcripts and every
+  marker are unchanged. The entire feature-enabled script suite also holds
+  its ratchets and agrees across all three execution tiers.
+- Even the worst candidate sample against the best base sample in the
+  eight benchmark pairs is only +0.0152% (fannkuchredux). The table above
+  uses the official harness's minimum-of-two rule, not an average.
+- cargo fmt --all -- --check and git diff --check pass. No default metadata
+  partial optimization is claimed. The PR stays draft until the complete
+  CI gate is green; coordinator merge precedes the fresh-main round 10
+  mkCode/bcClose work behind bytecode-fidelity.
