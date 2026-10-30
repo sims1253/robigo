@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Confirm flagged regressions with both exact binaries in the current environment.
+"""Compare both exact binaries in the current environment without cache credit.
 
-Stored measurements select candidates; the paired measurements decide the gate.
+Every successful benchmark is compared with the cache disabled on both sides.
+Cache-enabled measurements are diagnostic only and cannot clear the gate.
 Original measurements and callgrind profiles are retained for diagnosis.
 """
 import argparse
 import copy
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,10 +25,12 @@ def confirm(base, new, programs, measure, threshold):
         b, n = old.get('robigo', {}), row.get('robigo', {})
         if old.get('wrong') or row.get('wrong') or 'error' in b or 'error' in n:
             continue
-        if 'instr' not in b or 'instr' not in n or n['instr'] <= b['instr'] * (1 + threshold / 100):
+        if 'instr' not in b or 'instr' not in n:
             continue
         program = programs[name]
         oracle = measure(program, 'gnur', 0)
+        if 'error' in oracle or oracle.get('status') != 0 or 'out' not in oracle:
+            raise RuntimeError(f'{name}: GNU R measurement failed: {oracle}')
         samples = {side: [measure(program, side, repeat) for repeat in (1, 2)]
                    for side in ('base', 'candidate')}
         for side, runs in samples.items():
@@ -36,7 +42,7 @@ def confirm(base, new, programs, measure, threshold):
         counts = {side: [r['instr'] for r in runs] for side, runs in samples.items()}
         baseline['results'][name]['robigo']['instr'] = min(counts['base'])
         candidate['results'][name]['robigo']['instr'] = min(counts['candidate'])
-        print(f"paired {name}: stored {b['instr']:,} -> {n['instr']:,}; "
+        print(f"paired cache OFF {name}: stored {b['instr']:,} -> {n['instr']:,}; "
               f"base {counts['base']}; candidate {counts['candidate']}", flush=True)
     return baseline, candidate
 
@@ -52,19 +58,61 @@ def main():
     args = parser.parse_args()
     profiles = Path(args.profiles).resolve()
     profiles.mkdir(parents=True, exist_ok=True)
-    binaries = {'base': str(Path(args.base_robigo).resolve()),
-                'candidate': str(Path(args.robigo).resolve())}
+    # Isolate executables from artifact caches: unset also searches beside
+    # the executable. The isolated parent has no rdbflat/ directory.
+    with tempfile.TemporaryDirectory(prefix='robigo-paired-') as isolated:
+        binaries = {}
+        for side, source in [('base', args.base_robigo), ('candidate', args.robigo)]:
+            target = Path(isolated) / side / 'bin' / 'robigo'
+            target.parent.mkdir(parents=True)
+            shutil.copy2(source, target)
+            binaries[side] = str(target)
+        return run(args, profiles, binaries)
+
+
+def run(args, profiles, binaries):
+    cache = os.environ.pop('ROBIGO_RDBFLAT', None)
 
     def measure(program, side, repeat):
         profile = profiles / f"{program[0].replace('/', '_')}-{side}-{repeat}.cg"
-        return perf.run_one(program, 'gnur' if side == 'gnur' else 'robigo',
-                            binaries.get(side, ''), 'instr', 1, 'valgrind', 600,
-                            profile=str(profile))
+        result = perf.run_one(program, 'gnur' if side == 'gnur' else 'robigo',
+                              binaries.get(side, ''), 'instr', 1, 'valgrind', 600,
+                              profile=str(profile))
+        (profile.with_suffix('.json')).write_text(json.dumps(result, indent=1))
+        return result
+
+    # Four combinations in one job on the same program. These measurements
+    # explain cache savings; only cache-OFF samples below decide pass/fail.
+    programs = {p[0]: p for p in perf.programs(perf.conf())}
+    diagnostic = {}
+    if cache:
+        for name, program in programs.items():
+            if not name.endswith('/nbody_2'):
+                continue
+            oracle = measure(program, 'gnur', 'diagnostic')
+            if 'error' in oracle or oracle.get('status') != 0 or 'out' not in oracle:
+                raise RuntimeError(f'{name}: GNU R measurement failed: {oracle}')
+            for mode in ('unset', 'set'):
+                if mode == 'set':
+                    os.environ['ROBIGO_RDBFLAT'] = cache
+                else:
+                    os.environ.pop('ROBIGO_RDBFLAT', None)
+                for side in binaries:
+                    result = measure(program, side, mode)
+                    if 'error' in result or 'instr' not in result or result.get('status') != 0:
+                        raise RuntimeError(f'{name}: {side}-{mode} measurement failed: {result}')
+                    if result.get('out') != oracle['out']:
+                        raise RuntimeError(f'{name}: {side}-{mode} output differs from GNU R')
+                    diagnostic[f'{side}-{mode}'] = result
+            os.environ.pop('ROBIGO_RDBFLAT', None)
+        (profiles / 'cache-diagnostic.json').write_text(json.dumps(diagnostic, indent=1))
+        print('rdbflat diagnostic ONLY (excluded from gate): ' +
+              json.dumps(diagnostic), flush=True)
 
     original = json.loads(Path(args.new).read_text())
     (profiles / 'unpaired.json').write_text(json.dumps(original, indent=1))
     base, new = confirm(json.loads(Path(args.base).read_text()), original,
-                        {p[0]: p for p in perf.programs(perf.conf())}, measure, args.threshold)
+                        programs, measure, args.threshold)
     paired = profiles / 'base.json'
     paired.write_text(json.dumps(base, indent=1))
     Path(args.new).write_text(json.dumps(new, indent=1))

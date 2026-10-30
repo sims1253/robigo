@@ -182,8 +182,8 @@ jobs:
           json.dump(n, open("perf.json", "w"))
           PY
           python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-          # Confirm flagged regressions with both exact executables on this
-          # runner, sharing the same cache and natives. Preserve the original
+          # Compare every successful case with both exact executables and the
+          # cache disabled. Cache wins are diagnostic only. Preserve original
           # measurements and profiles; the 0.5% threshold is unchanged.
           python3 scripts/test-perf-paired.py
           python3 scripts/perf-paired.py base/perf.json perf.json \

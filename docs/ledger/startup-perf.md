@@ -7,6 +7,23 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 9): feature-neutral performance gate
+
+- Rebased #92 onto main 1b4670a. Stored counts can hide a regression
+  when only the candidate uses a newly supported cache. Rechecking only
+  flagged slowdowns does not detect that false pass.
+- Compare every successful benchmark with both exact artifact executables,
+  twice, with ROBIGO_RDBFLAT unset and executables copied into isolated
+  directories without an automatically discoverable cache. Keep the 0.5%
+  threshold, output checks, measurement errors, and original profiles.
+- Run the four nbody_2 combinations in the same job as a separate cache
+  diagnostic. Cache-on counts never enter the pass/fail comparison.
+- Verification: 4 -> 7 gate tests pass. The new end-to-end adversarial
+  test simulates a base that ignores the cache and a candidate that uses
+  it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
+  Failed oracle measurements also fail. cargo fmt --check and diff
+  whitespace checks pass. No runtime source or ratchet changes.
+
 ## 2026-10-30 (round 7): resume #92 and repair perf validation
 
 - Took over #92 at 48556b1, preserving its commits and authorship, and
