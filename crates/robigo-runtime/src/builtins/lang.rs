@@ -605,7 +605,19 @@ fn fast_replace(
     // R: eval.c:evalseq saves the LHS before evaluating setter indices.
     // Release the binding's reference after index evaluation, retaining that
     // saved object even when an index assigned a different value to target.
-    drop(env.take_local(target));
+    let restore_binding = match env.take_local(target) {
+        Some(v)
+            if match &v {
+                Value::Promise(p) => p.value().is_some_and(|v| v.ptr_eq(&obj)),
+                v => v.ptr_eq(&obj),
+            } =>
+        {
+            None
+        }
+        // If evaluation of an index changed or removed the binding, keep
+        // that side effect on error: applydefine assigns only on success.
+        binding => Some(binding),
+    };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
@@ -624,7 +636,17 @@ fn fast_replace(
         Err(f) => {
             // The replacement function owned the object; `[<-` and friends
             // hand it back (unchanged) when they fail.
-            if let Some(orig) = crate::builtins::subassign::take_restore() {
+            let orig = crate::builtins::subassign::take_restore();
+            if let Some(binding) = restore_binding {
+                match binding {
+                    Some(v) => {
+                        env.set_local(target, v);
+                    }
+                    None => {
+                        env.remove(target);
+                    }
+                }
+            } else if let Some(orig) = orig {
                 env.set_local(target, orig);
             }
             Err(f)

@@ -45,3 +45,31 @@
   No changes to value.rs, env.rs, vm.rs, parser/codegen, S4 or rlib.
 - Full-filter comparison, runtime tests and paired performance checks are
   still running. Do not treat this checkpoint as a completed CI result.
+
+### Assignment error boundary
+
+- First candidate full filter: 8,411 -> 8,423/8,426, exactly 12 gains and
+  zero lost passes. Coercion slice holds 323/323 on both saved binaries.
+- Extra boundary probe rejects the first candidate's error restoration:
+  `x <- 1:5; try(x[{x <- 9L; c(NA, 1L)}] <- 1:2)` must leave x=9L.
+  Saving the target fixes successful replacement, but restoring that saved
+  target after failure erases the index's side effect. Preserve the current
+  binding separately only when it differs from the saved target.
+- Record tests/r/lang/assignment-index-effects.R with the pinned Docker
+  oracle. It covers successful nested updates, failure after rebinding,
+  failure after removing the binding, and a promised function argument.
+  Baseline 0/1 scripts; final candidate verification is pending.
+- First-candidate local screening: fib 889,086,614 -> 889,245,621
+  (+0.0179%); vector assignment default 484,834,841 -> 484,764,517
+  (-0.0145%); interpreter 3,422,350,113 -> 3,412,361,461 (-0.2919%).
+  Output matches the pinned oracle; no slowdown above 0.5%. Re-measure
+  after the error-restoration correction. CI is the performance judge.
+
+- Corrected assignment fixture: 0/1 -> 1/1, and 3/3 execution tiers.
+  All 286 default-build scripts now match the oracle in all three tiers
+  (858/858). Add its conformance marker. Final full-filter, unit/integration
+  and performance reruns are pending at this checkpoint.
+- Initial runtime invocation: 61 unit tests pass; only the two documented
+  host c_library_oracle/c_library_trig_oracle tests differ by one bit in
+  complex sqrt/sin. Final follow-up excludes only these host-specific
+  tests, without changing their source or CI selection.
