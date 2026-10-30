@@ -2,7 +2,6 @@
 //! (names.c). Modules are named after the C files they port.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -351,13 +350,13 @@ pub fn arg(args: &[Arg], i: usize) -> Value {
     args.get(i).map(|a| a.value.clone()).unwrap_or(Value::Null)
 }
 
-pub fn str_arg(v: &Value, what: &str) -> RResult<Rc<str>> {
+pub fn str_arg(v: &Value, what: &str) -> RResult<crate::value::RString> {
     match v {
         Value::Str(s) if !s.data.is_empty() => match &s.data[0] {
             Some(x) => Ok(x.clone()),
             None => Err(Flow::error(format!("invalid '{}' argument", what))),
         },
-        Value::Sym(s) => Ok(s.name()),
+        Value::Sym(s) => Ok(s.name().into()),
         _ => Err(Flow::error(format!("invalid '{}' argument", what))),
     }
 }

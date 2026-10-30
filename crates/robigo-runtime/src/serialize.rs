@@ -62,6 +62,7 @@ const HAS_ATTR_BIT: u32 = 1 << 9;
 const HAS_TAG_BIT: u32 = 1 << 10;
 
 const LATIN1_MASK: u32 = 1 << 2;
+const BYTES_MASK: u32 = 1 << 1;
 const UTF8_MASK: u32 = 1 << 3;
 const ASCII_MASK: u32 = 1 << 6;
 
@@ -244,15 +245,16 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             _ => self.bytes(len as usize)?,
         };
-        let s: Rc<str> = if levs & LATIN1_MASK != 0 && levs & (UTF8_MASK | ASCII_MASK) == 0 {
-            b.iter().map(|&c| c as char).collect::<String>().into()
+        let mark = if levs & LATIN1_MASK != 0 {
+            Encoding::Latin1
+        } else if levs & UTF8_MASK != 0 {
+            Encoding::Utf8
+        } else if levs & BYTES_MASK != 0 {
+            Encoding::Bytes
         } else {
-            match std::str::from_utf8(b) {
-                Ok(s) => s.into(),
-                Err(_) => String::from_utf8_lossy(b).into_owned().into(),
-            }
+            Encoding::Native
         };
-        Ok(Some(s))
+        Ok(Some(RString::from_bytes(b, mark)))
     }
 
     fn ref_index(&mut self, flags: u32) -> RResult<usize> {
@@ -314,7 +316,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 return Ok(v);
             }
             SYMSXP => {
-                let n = self.read_charsxp_item()?.unwrap_or_else(|| Rc::from("NA"));
+                let n = self.read_charsxp_item()?.unwrap_or_else(|| RString::from("NA"));
                 let v = Value::Sym(Sym::new(&n));
                 self.refs.push(v.clone());
                 return Ok(v);
@@ -1096,10 +1098,20 @@ impl Writer<'_> {
                 self.int(-1);
             }
             Some(s) => {
-                let levs = if s.is_ascii() { ASCII_MASK } else { UTF8_MASK };
+                let bytes = s.raw_bytes();
+                let levs = if bytes.is_ascii() {
+                    ASCII_MASK
+                } else {
+                    match s.encoding() {
+                        Encoding::Utf8 | Encoding::Utf8Invalid => UTF8_MASK,
+                        Encoding::Latin1 => LATIN1_MASK,
+                        Encoding::Bytes => BYTES_MASK,
+                        _ => 0,
+                    }
+                };
                 self.flags(CHARSXP, levs, false, false, false);
-                self.int(s.len() as i32);
-                self.out.extend_from_slice(s.as_bytes());
+                self.int(bytes.len() as i32);
+                self.out.extend_from_slice(&bytes);
             }
         }
     }
@@ -1119,7 +1131,7 @@ impl Writer<'_> {
         }
         self.refs.push(RefKey::Sym(s));
         self.int(SYMSXP as i32);
-        self.charsxp(&Some(s.name()));
+        self.charsxp(&Some(s.name().into()));
     }
     /// R: serialize.c:GetPersistentName (environments and external
     /// pointers go to the hook)

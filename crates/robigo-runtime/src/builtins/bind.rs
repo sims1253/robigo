@@ -1,8 +1,6 @@
 //! `c()`, `unlist()`, `list()`, `length()` and friends (GNU R's bind.c and
 //! parts of builtin.c).
 
-use std::rc::Rc;
-
 use super::{arg, check_arity, internal, prim};
 use crate::attrib::{get_attrib, set_attrib};
 use crate::env::Env;
@@ -241,30 +239,33 @@ fn combine_atomic(leaves: &[&Value], mode: VType) -> Value {
 thread_local! {
     /// The name NA_STRING: spelled "NA" (its CHAR) when names are built
     /// from it, itself (NA) when passed through; told apart by identity.
-    static NA_NAME: Rc<str> = Rc::from("NA");
+    static NA_NAME: crate::value::RString = crate::value::RString::from("NA");
 }
 
-fn na_name() -> Rc<str> {
+fn na_name() -> crate::value::RString {
     NA_NAME.with(|n| n.clone())
 }
 
 /// A name as a CHARSXP: the NA name is NA.
-fn name_rstr(s: &Rc<str>) -> RStr {
-    if NA_NAME.with(|n| Rc::ptr_eq(n, s)) { None } else { Some(s.clone()) }
+fn name_rstr(s: &crate::value::RString) -> RStr {
+    if NA_NAME.with(|n| crate::value::RString::ptr_eq(n, s)) { None } else { Some(s.clone()) }
 }
 
-fn item_name(names: &Option<Vec<RStr>>, i: usize) -> Option<Rc<str>> {
+fn item_name(names: &Option<Vec<RStr>>, i: usize) -> Option<crate::value::RString> {
     // R's `translateChar(NA_STRING)` is "NA": a missing name still names the
     // element (c(list(b = <named>) ) yields "b.NA").
     names.as_ref().and_then(|n| n.get(i).map(|s| s.clone().unwrap_or_else(na_name))).filter(|s| !s.is_empty())
 }
 
 // R: bind.c:NewBase
-fn new_base(base: &Option<Rc<str>>, tag: &Option<Rc<str>>) -> Option<Rc<str>> {
+fn new_base(
+    base: &Option<crate::value::RString>,
+    tag: &Option<crate::value::RString>,
+) -> Option<crate::value::RString> {
     let b = base.clone().filter(|s| !s.is_empty());
     let t = tag.clone().filter(|s| !s.is_empty());
     match (b, t) {
-        (Some(b), Some(t)) => Some(Rc::from(format!("{}.{}", b, t))),
+        (Some(b), Some(t)) => Some(crate::value::RString::from(format!("{}.{}", b, t))),
         (None, Some(t)) => Some(t),
         (Some(b), None) => Some(b),
         _ => None,
@@ -273,15 +274,20 @@ fn new_base(base: &Option<Rc<str>>, tag: &Option<Rc<str>>) -> Option<Rc<str>> {
 
 // R: bind.c:NewName — NA_STRING's CHAR is "NA": it counts as a name, is
 // spelled "NA" inside new names and is returned as itself
-fn new_name(base: &Option<Rc<str>>, tag: &Option<Rc<str>>, seqno: usize, count: usize) -> RStr {
+fn new_name(
+    base: &Option<crate::value::RString>,
+    tag: &Option<crate::value::RString>,
+    seqno: usize,
+    count: usize,
+) -> RStr {
     let b = base.as_ref().filter(|s| !s.is_empty());
     let t = tag.as_ref().filter(|s| !s.is_empty());
     match (b, t) {
-        (Some(b), Some(t)) => Some(Rc::from(format!("{}.{}", b, t))),
+        (Some(b), Some(t)) => Some(crate::value::RString::from(format!("{}.{}", b, t))),
         (Some(b), None) if count == 1 => name_rstr(b),
-        (Some(b), None) => Some(Rc::from(format!("{}{}", b, seqno))),
+        (Some(b), None) => Some(crate::value::RString::from(format!("{}{}", b, seqno))),
         (None, Some(t)) => name_rstr(t),
-        (None, None) => Some(Rc::from("")),
+        (None, None) => Some(crate::value::RString::from("")),
     }
 }
 
@@ -331,8 +337,8 @@ struct NameData {
 
 fn extract_names(
     v: &Value,
-    base: &Option<Rc<str>>,
-    tag: &Option<Rc<str>>,
+    base: &Option<crate::value::RString>,
+    tag: &Option<crate::value::RString>,
     recurse: bool,
     out: &mut Vec<RStr>,
     nd: &mut NameData,
@@ -355,7 +361,7 @@ fn extract_names(
         Value::Null => {}
         Value::Pairlist(p) => {
             for a in &p.items {
-                let namei = a.tag.map(|t| t.name());
+                let namei = a.tag.map(|t| t.name().into());
                 if recurse {
                     extract_names(&a.value, &base, &namei, recurse, out, nd);
                 } else {
@@ -446,10 +452,10 @@ pub fn c_default(args: &[Arg], recurse: bool, usenames: bool) -> Value {
         let mut names = Vec::with_capacity(ans.len());
         for a in args {
             let mut nd = NameData { count: 0, seqno: 0 };
-            let tag = a.tag.map(|t| t.name());
+            let tag = a.tag.map(|t| t.name().into());
             extract_names(&a.value, &None, &tag, recurse, &mut names, &mut nd);
         }
-        names.resize(ans.len(), Some(Rc::from("")));
+        names.resize(ans.len(), Some(crate::value::RString::from("")));
         ans.set_attr_raw(s::NAMES, Value::strs(names));
     }
     ans
@@ -541,13 +547,13 @@ fn do_unlist(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
         let mut nd = NameData { count: 0, seqno: 0 };
         if !recurse {
             for a in &items {
-                let tag = a.tag.map(|t| t.name());
+                let tag = a.tag.map(|t| t.name().into());
                 extract_names(&a.value, &None, &tag, recurse, &mut names, &mut nd);
             }
         } else {
             extract_names(&x, &None, &None, recurse, &mut names, &mut nd);
         }
-        names.resize(ans.len(), Some(Rc::from("")));
+        names.resize(ans.len(), Some(crate::value::RString::from("")));
         ans.set_attr_raw(s::NAMES, Value::strs(names));
     }
     Ok(ans)
@@ -557,7 +563,10 @@ fn do_list(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     if !args.iter().any(|a| a.tag.is_some()) {
         return Ok(Value::list(args.into_iter().map(|a| a.value).collect()));
     }
-    let names: Vec<RStr> = args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect();
+    let names: Vec<RStr> = args
+        .iter()
+        .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+        .collect();
     let mut v = Value::list(args.into_iter().map(|a| a.value).collect());
     v.set_attr_raw(s::NAMES, Value::strs(names));
     Ok(v)
@@ -604,7 +613,7 @@ pub fn length_gets(x: &Value, n: usize) -> RResult<Value> {
         _ => unreachable!(),
     };
     if let Some(nm) = names {
-        out.set_attr_raw(s::NAMES, Value::strs(resize(&nm, n, Some(Rc::from("")))));
+        out.set_attr_raw(s::NAMES, Value::strs(resize(&nm, n, Some(crate::value::RString::from("")))));
     }
     Ok(out)
 }
@@ -675,7 +684,7 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 
 fn do_vector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mode = match arg(&args, 0) {
-        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
+        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
         _ => return Err(Flow::error_call(call.clone(), "vector: cannot make a vector of mode 'NA'.")),
     };
     let n = crate::coerce::as_real(&arg(&args, 1));
@@ -688,7 +697,7 @@ fn do_vector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         "integer" => Value::ints(vec![0; n]),
         "numeric" | "double" => Value::reals(vec![0.0; n]),
         "complex" => Value::cplxs(vec![Complex::default(); n]),
-        "character" => Value::strs(vec![Some(Rc::from("")); n]),
+        "character" => Value::strs(vec![Some(crate::value::RString::from("")); n]),
         "raw" => Value::raws(vec![0; n]),
         "list" => Value::list(vec![Value::Null; n]),
         "expression" => Value::expr_vec(vec![Value::Null; n]),

@@ -591,8 +591,11 @@ fn do_as_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> 
             b.zone.push(rstr(&tz));
             b.gmtoff.push(0);
         } else {
-            let p: Rc<str> =
-                if valid && ptm.isdst >= 0 { tz::tzname()[ptm.isdst.min(1) as usize].clone() } else { Rc::from("") };
+            let p: crate::value::RString = if valid && ptm.isdst >= 0 {
+                tz::tzname()[ptm.isdst.min(1) as usize].clone()
+            } else {
+                crate::value::RString::from("")
+            };
             b.zone.push(Some(p));
             b.gmtoff.push(if valid { ptm.gmtoff as i32 } else { NA_INTEGER });
         }
@@ -731,7 +734,7 @@ fn do_format_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env)
                 }
                 zz.truncate(cut);
             }
-            tm.zone = Some(Rc::from(zz.as_str()));
+            tm.zone = Some(crate::value::RString::from(zz.as_str()));
             Some(z)
         } else {
             None
@@ -819,7 +822,7 @@ fn do_format_posixlt(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env)
                     }
                 }
             }
-            ans.push(Some(Rc::from(buff.as_str())));
+            ans.push(Some(crate::value::RString::from(buff.as_str())));
         }
     }
     let mut out = Value::strs(ans);
@@ -984,13 +987,13 @@ fn do_strptime(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
             b.zone.push(rstr(&tz));
             b.gmtoff.push(0);
         } else {
-            let p: Rc<str> = if !invalid && tm.isdst >= 0 {
+            let p: crate::value::RString = if !invalid && tm.isdst >= 0 {
                 match &tm.zone {
                     Some(z) => z.clone(),
                     None => tz::tzname()[tm.isdst.min(1) as usize].clone(),
                 }
             } else {
-                Rc::from("")
+                crate::value::RString::from("")
             };
             b.zone.push(Some(p));
             b.gmtoff.push(if invalid { NA_INTEGER } else { tm.gmtoff as i32 });
@@ -1218,7 +1221,7 @@ fn balance_posixlt(interp: &mut Interp, x: Value, fill_only: bool, do_class: boo
     for i in 0..n {
         let (secs, mut tm) = tm_from_comps(&comps, &nlen, i);
         let fsecs = secs.floor();
-        let zone_i: Option<Rc<str>> = if have_10 {
+        let zone_i: Option<crate::value::RString> = if have_10 {
             let z = match &comps[9] {
                 Value::Str(v) => v.data[i % nlen[9]].as_deref().unwrap_or("NA").to_string(),
                 _ => String::new(),
@@ -1231,7 +1234,7 @@ fn balance_posixlt(interp: &mut Interp, x: Value, fill_only: bool, do_class: boo
                 }
                 zz.truncate(cut);
             }
-            Some(Rc::from(zz.as_str()))
+            Some(crate::value::RString::from(zz.as_str()))
         } else {
             None
         };
@@ -1254,10 +1257,10 @@ fn balance_posixlt(interp: &mut Interp, x: Value, fill_only: bool, do_class: boo
             },
         );
         if have_10 {
-            let p: Rc<str> = if valid && tm.isdst >= 0 {
+            let p: crate::value::RString = if valid && tm.isdst >= 0 {
                 zone_i.clone().unwrap_or_else(|| tz::tzname()[tm.isdst.min(1) as usize].clone())
             } else {
-                Rc::from("")
+                crate::value::RString::from("")
             };
             b.zone.push(Some(p));
         }

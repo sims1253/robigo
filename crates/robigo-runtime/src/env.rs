@@ -266,7 +266,7 @@ pub struct EnvData {
     pub attrs: RefCell<AttrBox>,
     pub locked: Cell<bool>,
     /// Special name used when printing (`R_GlobalEnv`, `base`, `namespace:foo`).
-    pub name: RefCell<Option<Rc<str>>>,
+    pub name: RefCell<Option<crate::value::RString>>,
     pub id: usize,
     /// Incremented when a binding in this frame that could hold a function
     /// is created, changed or removed (see [`Env::fn_version`]).
@@ -341,7 +341,7 @@ impl Env {
             panic!("Env::alias: the frame of {:?} is not shareable", other.special_name());
         };
         let e = Env::with_frame(parent, FrameCell::Shared(frame.clone()));
-        *e.0.name.borrow_mut() = Some(Rc::from(name));
+        *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
 
@@ -357,7 +357,7 @@ impl Env {
             hashed: false,
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
-        *e.0.name.borrow_mut() = Some(Rc::from(name));
+        *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
 
@@ -382,7 +382,7 @@ impl Env {
 
     pub fn named(parent: Option<Env>, name: &str) -> Env {
         let e = Env::new(parent);
-        *e.0.name.borrow_mut() = Some(Rc::from(name));
+        *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
 
@@ -403,13 +403,13 @@ impl Env {
         *self.0.parent.borrow_mut() = p;
     }
 
-    pub fn special_name(&self) -> Option<Rc<str>> {
+    pub fn special_name(&self) -> Option<crate::value::RString> {
         self.0.name.borrow().clone()
     }
 
     /// `"package:foo"` for an attached package environment
     /// (R's `R_IsPackageEnv`/`R_PackageEnvName`).
-    pub fn package_env_name(&self) -> Option<Rc<str>> {
+    pub fn package_env_name(&self) -> Option<crate::value::RString> {
         match Value::Env(self.clone()).get_attr(s::NAME) {
             Some(Value::Str(s)) => s.data.first()?.clone().filter(|n| n.starts_with("package:")),
             _ => None,
@@ -419,10 +419,10 @@ impl Env {
     /// The package name of a namespace environment: `base` for the base
     /// namespace, otherwise the first element of `.__NAMESPACE__.$spec`
     /// (R's `R_IsNamespaceEnv`/`R_NamespaceEnvSpec`).
-    pub fn namespace_name(&self) -> Option<Rc<str>> {
+    pub fn namespace_name(&self) -> Option<crate::value::RString> {
         if let Some(n) = self.special_name() {
             if let Some(n) = n.strip_prefix("namespace:") {
-                return Some(Rc::from(n));
+                return Some(crate::value::RString::from(n));
             }
         }
         let Some(Value::Env(info)) = self.get_local(s::DOT_NAMESPACE) else { return None };

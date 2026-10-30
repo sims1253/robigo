@@ -37,7 +37,7 @@ fn paste_args(interp: &mut Interp, x: &Value, env: &Env, name: &str) -> RResult<
     for xj in &l.data {
         let v = match xj {
             Value::Str(s) => s.data.clone(),
-            Value::Sym(sy) => vec![Some(sy.name())],
+            Value::Sym(sy) => vec![Some(sy.name().into())],
             xj if xj.is_object() => {
                 let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(xj.clone())]);
                 match interp.eval(&call, env)? {
@@ -88,7 +88,7 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     if !x.is_vector_list() {
         return Err(Flow::error("invalid first argument"));
     }
-    let mut sep: Rc<str> = Rc::from("");
+    let mut sep: crate::value::RString = crate::value::RString::from("");
     let collapse;
     let mut recycle0 = false;
     if use_sep {
@@ -106,12 +106,12 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
             recycle0 = as_bool2(&args[2].value, call)?;
         }
     }
-    let collapse: Option<Rc<str>> = match &collapse {
+    let collapse: Option<crate::value::RString> = match &collapse {
         Value::Null => None,
         Value::Str(s) if !s.data.is_empty() && s.data[0].is_some() => s.data[0].clone(),
         _ => return Err(Flow::error("invalid 'collapse' argument")),
     };
-    let zero = |collapse: &Option<Rc<str>>| {
+    let zero = |collapse: &Option<crate::value::RString>| {
         if collapse.is_some() { Value::str("") } else { Value::strs(vec![]) }
     };
     if x.is_empty() {
@@ -353,7 +353,7 @@ fn do_format(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
                         if b > 0 && adj != 1 {
                             buf.push_str(&" ".repeat(b as usize));
                         }
-                        Some(Rc::from(buf.as_str()))
+                        Some(crate::value::RString::from(buf.as_str()))
                     })
                     .collect();
                 Value::strs(out)

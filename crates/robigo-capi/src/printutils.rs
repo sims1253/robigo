@@ -16,7 +16,7 @@ thread_local! {
 }
 
 unsafe fn char_str(x: Sexp) -> robigo_runtime::value::RStr {
-    if x == R_NaString { None } else { Some(std::rc::Rc::from(String::from_utf8_lossy(x.char_bytes()).as_ref())) }
+    if x == R_NaString { None } else { crate::bridge::rstr_of(x) }
 }
 
 // R: printutils.c:EncodeString — the CHARSXP escaped (and quoted), padded

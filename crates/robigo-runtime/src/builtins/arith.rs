@@ -763,7 +763,7 @@ impl RelOp {
 
 fn lang_to_str(v: &Value) -> Value {
     match v {
-        Value::Sym(sy) => Value::strs(vec![Some(sy.name())]),
+        Value::Sym(sy) => Value::strs(vec![Some(sy.name().into())]),
         Value::Lang(_) => Value::str(&crate::deparse::deparse_one_line(v)),
         _ => v.clone(),
     }

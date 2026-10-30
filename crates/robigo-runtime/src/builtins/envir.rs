@@ -357,9 +357,9 @@ fn do_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 // R: envir.c:str2mode, util.c:TypeTable
-fn lookup_mode(v: &Value) -> RResult<Rc<str>> {
+fn lookup_mode(v: &Value) -> RResult<crate::value::RString> {
     let mode = match v {
-        Value::Str(s) if !s.data.is_empty() => s.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
+        Value::Str(s) if !s.data.is_empty() => s.data[0].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
         _ => return Err(Flow::error("invalid 'mode' argument")),
     };
     match &*mode {
@@ -385,7 +385,7 @@ fn mode_matches(v: &Value, mode: &str) -> bool {
 }
 
 // R: envir.c:do_get (shared by get, get0 and exists).
-fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, Rc<str>, bool)> {
+fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, crate::value::RString, bool)> {
     let sym = match arg(args, 0) {
         Value::Sym(s) => s,
         Value::Str(s) if !s.data.is_empty() && s.data[0].as_deref() != Some("") => {
@@ -500,7 +500,7 @@ fn do_mget(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let inherits = lgl_arg(&arg(&args, 4), "inherits")?;
     let mut out = Vec::new();
     for (k, n) in names.iter().enumerate() {
-        let n = n.clone().unwrap_or_else(|| Rc::from("NA"));
+        let n = n.clone().unwrap_or_else(|| crate::value::RString::from("NA"));
         match find_var_mode(i, Sym::new(&n), &env, &mode, inherits)? {
             Some(v) => out.push(v),
             None => {
@@ -555,7 +555,7 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     };
     let inherits = lgl_arg(&arg(&args, 2), "inherits")?;
     for n in names.iter() {
-        let n = n.clone().unwrap_or_else(|| Rc::from("NA"));
+        let n = n.clone().unwrap_or_else(|| crate::value::RString::from("NA"));
         let sym = Sym::new(&n);
         let mut cur = Some(env.clone());
         let mut done = false;

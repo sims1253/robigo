@@ -1,0 +1,55 @@
+[1] c4
+[1] "unknown"
+[1] FALSE
+[1] FALSE
+[1] 1
+[1] "\xc4"
+[1] ""     "A"    "\177" "\x80" "\xc4" "\xff"
+[1] "unknown" "unknown" "unknown" "unknown" "unknown" "unknown"
+[[1]]
+raw(0)
+
+[[2]]
+[1] 41
+
+[[3]]
+[1] 7f
+
+[[4]]
+[1] 80
+
+[[5]]
+[1] c4
+
+[[6]]
+[1] ff
+
+[1]  TRUE  TRUE  TRUE FALSE FALSE FALSE
+[1]  TRUE  TRUE  TRUE FALSE FALSE FALSE
+[1] "unknown"
+[1] c4
+[1] FALSE
+[1] FALSE
+[1] "unknown"
+[1] c4
+[1] "latin1"
+[1] c4
+[1] FALSE
+[1] TRUE
+[1] "latin1"
+[1] c4
+[1] "bytes"
+[1] c4
+[1] FALSE
+[1] TRUE
+[1] "bytes"
+[1] c4
+[1] "UTF-8"
+[1] c4
+[1] FALSE
+[1] FALSE
+[1] "UTF-8"
+[1] c4
+[1] c3 a9
+[1] "unknown"
+[1] "unknown" "unknown"

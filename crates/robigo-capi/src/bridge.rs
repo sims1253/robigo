@@ -341,8 +341,14 @@ unsafe fn char_sexp(s: &RStr) -> Sexp {
     match s {
         None => R_NaString,
         Some(t) => {
-            let b = t.as_bytes();
-            core().mk_char(b, if b.is_ascii() { 0 } else { gp::UTF8 })
+            let b = t.raw_bytes();
+            let mark = match t.encoding() {
+                Encoding::Utf8 | Encoding::Utf8Invalid => gp::UTF8,
+                Encoding::Latin1 => gp::LATIN1,
+                Encoding::Bytes => gp::BYTES,
+                _ => 0,
+            };
+            core().mk_char(&b, mark)
         }
     }
 }
@@ -530,11 +536,16 @@ pub unsafe fn rstr_of(c: Sexp) -> RStr {
     if c == R_NaString {
         return None;
     }
-    let b = c.char_bytes();
-    if c.gp() & gp::LATIN1 != 0 {
-        return Some(Rc::from(b.iter().map(|&ch| ch as char).collect::<String>().as_str()));
-    }
-    Some(Rc::from(String::from_utf8_lossy(b).as_ref()))
+    let encoding = if c.gp() & gp::BYTES != 0 {
+        Encoding::Bytes
+    } else if c.gp() & gp::LATIN1 != 0 {
+        Encoding::Latin1
+    } else if c.gp() & gp::UTF8 != 0 {
+        Encoding::Utf8
+    } else {
+        Encoding::Native
+    };
+    Some(RString::from_bytes(c.char_bytes(), encoding))
 }
 
 unsafe fn copy_data<T: Copy>(x: Sexp) -> Vec<T> {
@@ -1498,7 +1509,9 @@ unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>,
                 (Buf::Z(d), _) => Value::Cplx(Rc::new(Vector::new(d))),
                 (Buf::R(d), _) => Value::Raw(Rc::new(Vector::new(d))),
                 (Buf::S(_, p), _) => Value::Str(Rc::new(Vector::new(
-                    p.iter().map(|&q| Some(Rc::from(CStr::from_ptr(q).to_string_lossy().as_ref()))).collect(),
+                    p.iter()
+                        .map(|&q| Some(RString::from_bytes(CStr::from_ptr(q).to_bytes(), Encoding::Native)))
+                        .collect(),
                 ))),
             };
             (k, v)

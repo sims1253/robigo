@@ -900,7 +900,7 @@ fn do_switch(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
         }
         if let Value::Str(sv) = &x {
             // pmatch() compares CHAR(): NA_STRING is "NA".
-            let key: Option<std::rc::Rc<str>> = Some(sv.data[0].clone().unwrap_or_else(|| "NA".into()));
+            let key: Option<crate::value::RString> = Some(sv.data[0].clone().unwrap_or_else(|| "NA".into()));
             let mut dflt: Option<Value> = None;
             let set_dflt = |d: &mut Option<Value>, v: &Value| -> RResult<()> {
                 if let Some(old) = d {
@@ -1078,7 +1078,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     let get = |e: &Env, sym: Sym| e.get_local(sym);
     // .Generic
     let generic_arg = args.first().map(|a| a.value.clone()).unwrap_or(Value::Null);
-    let generic: Rc<str> = match get(&method_env, s::DOT_GENERIC) {
+    let generic: crate::value::RString = match get(&method_env, s::DOT_GENERIC) {
         Some(v) => match crate::coerce::as_string(&interp.force(v)?) {
             Some(g) => g,
             None => return Err(Flow::error("generic function not specified")),
@@ -1088,10 +1088,10 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             None => return Err(Flow::error("generic function not specified")),
         },
     };
-    let generic: Rc<str> =
+    let generic: crate::value::RString =
         if !generic_arg.is_null() { crate::coerce::as_string(&generic_arg).unwrap_or(generic) } else { generic };
     // .Class
-    let klass: Vec<Rc<str>> = match get(&method_env, s::DOT_CLASS) {
+    let klass: Vec<crate::value::RString> = match get(&method_env, s::DOT_CLASS) {
         Some(v) => match interp.force(v)? {
             Value::Str(c) => c.data.iter().flatten().cloned().collect(),
             Value::Null => vec![],
@@ -1102,11 +1102,11 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             crate::dispatch::dispatch_class(&obj)
         }
     };
-    let group: Rc<str> = match get(&method_env, s::DOT_GROUP) {
-        Some(v) => crate::coerce::as_string(&interp.force(v)?).unwrap_or_else(|| Rc::from("")),
-        None => Rc::from(""),
+    let group: crate::value::RString = match get(&method_env, s::DOT_GROUP) {
+        Some(v) => crate::coerce::as_string(&interp.force(v)?).unwrap_or_else(|| crate::value::RString::from("")),
+        None => crate::value::RString::from(""),
     };
-    let basename: Rc<str> = if group.is_empty() { generic.clone() } else { group.clone() };
+    let basename: crate::value::RString = if group.is_empty() { generic.clone() } else { group.clone() };
     // The current method name: .Method, or the call's function name.
     let method = get(&method_env, s::DOT_METHOD).map(|v| interp.force(v)).transpose()?;
     let cur_method: String = match &method {
@@ -1270,7 +1270,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
         Some(Value::Str(mut m)) => {
             for name in &mut Rc::make_mut(&mut m).data {
                 if name.as_deref() != Some("") {
-                    *name = Some(method_sym.name());
+                    *name = Some(method_sym.name().into());
                 }
             }
             Value::Str(m)
@@ -1458,7 +1458,11 @@ fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<V
     if d.iter().all(|a| a.tag.is_none()) {
         return Ok(Value::Null);
     }
-    Ok(Value::strs(d.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect()))
+    Ok(Value::strs(
+        d.iter()
+            .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+            .collect(),
+    ))
 }
 
 fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

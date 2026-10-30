@@ -39,10 +39,268 @@ pub fn is_nan_or_na(x: f64) -> bool {
 }
 
 /// A CHARSXP; `None` is `NA_character_`.
-pub type RStr = Option<Rc<str>>;
+pub type RStr = Option<RString>;
+
+/// An immutable CHARSXP handle. The allocation owns the reference count,
+/// length, encoding and UTF-8 view. The handle caches the text length so
+/// text access and vector buffer sizes match the original Rc<str> layout.
+pub struct RString {
+    data: std::ptr::NonNull<StringHeader>,
+    len: usize,
+}
+
+#[repr(C)]
+struct StringHeader {
+    refs: Cell<usize>,
+    len_tag: usize,
+    #[cfg(not(target_pointer_width = "64"))]
+    encoding: u8,
+}
+
+impl StringHeader {
+    #[inline]
+    fn new(len: usize, encoding: u8) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert!(len <= usize::MAX >> 3, "string allocation overflow");
+            Self { refs: Cell::new(1), len_tag: (len << 3) | encoding as usize }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            Self { refs: Cell::new(1), len_tag: len, encoding }
+        }
+    }
+    #[inline]
+    fn len(&self) -> usize {
+        if cfg!(target_pointer_width = "64") { self.len_tag >> 3 } else { self.len_tag }
+    }
+    #[inline]
+    fn encoding(&self) -> u8 {
+        #[cfg(target_pointer_width = "64")]
+        {
+            (self.len_tag & 7) as u8
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            self.encoding
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Encoding {
+    Native = 0,
+    Utf8 = 1,
+    Latin1 = 2,
+    Bytes = 3,
+    NativeInvalid = 4,
+    Utf8Invalid = 5,
+}
+
+impl RString {
+    const AUTO: usize = 7;
+    const HEADER_SIZE: usize = std::mem::size_of::<StringHeader>();
+
+    #[inline]
+    fn from_text_tag(text: &str, tag: usize) -> Self {
+        let header = StringHeader::new(text.len(), tag as u8);
+        let size = Self::HEADER_SIZE.checked_add(text.len()).expect("string allocation overflow");
+        let layout = std::alloc::Layout::from_size_align(size, std::mem::align_of::<StringHeader>())
+            .expect("string allocation overflow");
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        let Some(ptr) = std::ptr::NonNull::new(ptr) else { std::alloc::handle_alloc_error(layout) };
+        let data = ptr.cast::<StringHeader>();
+        // The checked layout fits the header followed by all bytes. The
+        // payload is initialized once and never mutated after publication.
+        unsafe {
+            data.as_ptr().write(header);
+            std::ptr::copy_nonoverlapping(text.as_ptr(), ptr.as_ptr().add(Self::HEADER_SIZE), text.len());
+        }
+        Self { data, len: text.len() }
+    }
+    fn from_rc(text: Rc<str>, tag: usize) -> Self {
+        Self::from_text_tag(&text, tag)
+    }
+    #[inline]
+    fn text_ptr(&self) -> *const u8 {
+        unsafe { self.data.as_ptr().cast::<u8>().add(Self::HEADER_SIZE) }
+    }
+    #[inline]
+    fn tag(&self) -> usize {
+        unsafe { self.data.as_ref().encoding() as usize }
+    }
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        a.data == b.data
+    }
+    #[inline(never)]
+    unsafe fn deallocate(data: std::ptr::NonNull<StringHeader>) {
+        // Only the final owner calls this. The original checked allocation
+        // layout is recovered from its immutable length and fixed alignment.
+        unsafe {
+            let size = Self::HEADER_SIZE + data.as_ref().len();
+            let layout = std::alloc::Layout::from_size_align_unchecked(size, std::mem::align_of::<StringHeader>());
+            std::alloc::dealloc(data.as_ptr().cast::<u8>(), layout);
+        }
+    }
+    #[inline]
+    pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
+        if bytes.is_ascii() {
+            Self::from_text(unsafe { std::str::from_utf8_unchecked(bytes) }, Encoding::Native)
+        } else {
+            Self::from_non_ascii_bytes(bytes, encoding)
+        }
+    }
+    fn from_non_ascii_bytes(bytes: &[u8], encoding: Encoding) -> Self {
+        let (mark, text) = if matches!(encoding, Encoding::Latin1 | Encoding::Bytes) {
+            (encoding, std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()))
+        } else {
+            match std::str::from_utf8(bytes) {
+                Ok(s) => (encoding, std::borrow::Cow::Borrowed(s)),
+                Err(_) => (
+                    if encoding == Encoding::Utf8 { Encoding::Utf8Invalid } else { Encoding::NativeInvalid },
+                    std::borrow::Cow::Owned(bytes.iter().map(|&b| b as char).collect::<String>()),
+                ),
+            }
+        };
+        Self::from_text(&text, mark)
+    }
+    #[inline]
+    fn from_text(text: &str, mark: Encoding) -> Self {
+        Self::from_text_tag(text, mark as usize)
+    }
+    #[inline]
+    pub fn is_bytes(&self) -> bool {
+        self.tag() == Encoding::Bytes as usize
+    }
+    pub fn encoding(&self) -> Encoding {
+        match self.tag() {
+            0 => Encoding::Native,
+            1 => Encoding::Utf8,
+            2 => Encoding::Latin1,
+            3 => Encoding::Bytes,
+            4 => Encoding::NativeInvalid,
+            5 => Encoding::Utf8Invalid,
+            _ => {
+                if self.is_ascii() {
+                    Encoding::Native
+                } else {
+                    Encoding::Utf8
+                }
+            }
+        }
+    }
+    pub fn raw_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        match self.tag() {
+            2..=5 => std::borrow::Cow::Owned(self.chars().map(|c| c as u8).collect()),
+            _ => std::borrow::Cow::Borrowed(self.as_bytes()),
+        }
+    }
+    pub fn encoding_name(&self) -> &'static str {
+        match self.encoding() {
+            Encoding::Utf8 | Encoding::Utf8Invalid => "UTF-8",
+            Encoding::Latin1 => "latin1",
+            Encoding::Bytes => "bytes",
+            _ => "unknown",
+        }
+    }
+}
+impl Clone for RString {
+    #[inline]
+    fn clone(&self) -> Self {
+        let refs = unsafe { &self.data.as_ref().refs };
+        let count = refs.get().wrapping_add(1);
+        if count == 0 {
+            std::process::abort();
+        }
+        refs.set(count);
+        Self { data: self.data, len: self.len }
+    }
+}
+impl Drop for RString {
+    #[inline]
+    fn drop(&mut self) {
+        let refs = unsafe { &self.data.as_ref().refs };
+        let count = refs.get() - 1;
+        refs.set(count);
+        if count == 0 {
+            unsafe {
+                Self::deallocate(self.data);
+            }
+        }
+    }
+}
+impl std::fmt::Debug for RString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+impl From<&str> for RString {
+    #[inline]
+    fn from(s: &str) -> Self {
+        Self::from_text_tag(s, Self::AUTO)
+    }
+}
+impl From<String> for RString {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+impl From<Rc<str>> for RString {
+    fn from(s: Rc<str>) -> Self {
+        Self::from_rc(s, Self::AUTO)
+    }
+}
+impl std::ops::Deref for RString {
+    type Target = str;
+    #[inline]
+    fn deref(&self) -> &str {
+        // Constructors initialize a valid UTF-8 view after the header.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.len)) }
+    }
+}
+impl AsRef<str> for RString {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+impl std::borrow::Borrow<str> for RString {
+    fn borrow(&self) -> &str {
+        self
+    }
+}
+impl std::fmt::Display for RString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&**self, f)
+    }
+}
+impl PartialEq for RString {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        // Match Rc<str>'s identity shortcut. Identical handles
+        // share the same text; different encodings still compare by text.
+        self.data == other.data || **self == **other
+    }
+}
+impl Eq for RString {}
+impl std::hash::Hash for RString {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        std::hash::Hash::hash(&**self, h)
+    }
+}
+impl PartialOrd for RString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
 
 pub fn rstr(s: &str) -> RStr {
-    Some(Rc::from(s))
+    Some(crate::value::RString::from(s))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -964,7 +1222,12 @@ fn tags_to_names(items: &[Arg]) -> Option<Value> {
     if items.iter().all(|a| a.tag.is_none()) {
         return None;
     }
-    Some(Value::strs(items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| Rc::from("")))).collect()))
+    Some(Value::strs(
+        items
+            .iter()
+            .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+            .collect(),
+    ))
 }
 
 impl Lang {
@@ -984,5 +1247,98 @@ impl Lang {
     pub fn from_items(mut items: Vec<Arg>, attrs: AttrBox) -> Lang {
         let head = items.remove(0);
         Lang { fun: head.value, args: items, attrs, fun_tag: head.tag }
+    }
+}
+
+impl Default for RString {
+    fn default() -> Self {
+        Self::from("")
+    }
+}
+
+#[cfg(test)]
+mod string_window_tests {
+    use super::*;
+
+    #[test]
+    fn string_window_copy_preserves_text_at_allocation_boundaries() {
+        for len in [0, 1, 7, 15, 16, 31, 32, 63, 64, 255, 4096] {
+            for unit in ["a", "é", "𝄞"] {
+                let text = unit.repeat(len);
+                let string = RString::from(text.as_str());
+                assert_eq!(&*string, text);
+                assert_eq!(&*string.raw_bytes(), text.as_bytes());
+                assert_eq!(string.encoding(), if text.is_ascii() { Encoding::Native } else { Encoding::Utf8 });
+            }
+        }
+    }
+
+    #[test]
+    fn optional_window_preserves_leading_nuls_and_shared_text() {
+        for text in ["", "\0", "\0\0", "\0é", "\x01é", "é"] {
+            let shared: Rc<str> = Rc::from(text);
+            for string in [RString::from(text), RString::from(text.to_owned()), RString::from(shared.clone())] {
+                assert_eq!(&*string, text);
+                assert_eq!(&*string.raw_bytes(), text.as_bytes());
+            }
+            if !text.is_empty() && !text.starts_with('\0') {
+                assert_eq!(Rc::strong_count(&shared), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn string_handles_balance_reference_counts() {
+        for tag in [0, 1, 2, 3, 4, 5, RString::AUTO] {
+            for text in ["", "abc", "é", "\0é"] {
+                let shared: Rc<str> = Rc::from(text);
+                let weak = Rc::downgrade(&shared);
+                let handle = RString::from_rc(shared.clone(), tag);
+                assert_eq!(Rc::strong_count(&shared), 1);
+                drop(shared);
+                assert!(weak.upgrade().is_none());
+                assert_eq!(&*handle, text);
+                let clone = handle.clone();
+                assert!(RString::ptr_eq(&handle, &clone));
+                assert_eq!(handle, clone);
+                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 2);
+                drop(handle);
+                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 1);
+                assert_eq!(&*clone, text);
+                drop(clone);
+            }
+        }
+    }
+
+    #[test]
+    fn original_bytes_survive_every_encoding_window() {
+        assert_eq!(
+            std::mem::size_of::<StringHeader>(),
+            if cfg!(target_pointer_width = "64") { 2 } else { 3 } * std::mem::size_of::<usize>()
+        );
+        assert_eq!(std::mem::size_of::<RString>(), 2 * std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<RStr>(), 2 * std::mem::size_of::<usize>());
+        for mark in [Encoding::Native, Encoding::Utf8, Encoding::Latin1, Encoding::Bytes] {
+            for byte in 1..=255 {
+                let string = RString::from_bytes(&[byte], mark);
+                assert_eq!(&*string.raw_bytes(), &[byte]);
+                assert_eq!(
+                    string.encoding_name(),
+                    if byte < 128 {
+                        "unknown"
+                    } else {
+                        match mark {
+                            Encoding::Native => "unknown",
+                            Encoding::Utf8 => "UTF-8",
+                            Encoding::Latin1 => "latin1",
+                            Encoding::Bytes => "bytes",
+                            _ => unreachable!(),
+                        }
+                    }
+                );
+            }
+            let bytes = b"\xc3\xa9\\\"\xff";
+            assert_eq!(&*RString::from_bytes(bytes, mark).raw_bytes(), bytes);
+        }
     }
 }

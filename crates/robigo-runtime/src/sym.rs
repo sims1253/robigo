@@ -4,10 +4,10 @@
 //! is an integer comparison. Frequently used symbols are pre-interned at fixed
 //! indices so they can be named as constants.
 
+use crate::value::RString;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Sym(pub u32);
@@ -138,8 +138,8 @@ pub type StrHash = std::hash::BuildHasherDefault<StrHasher>;
 
 #[derive(Default)]
 struct Interner {
-    names: Vec<Rc<str>>,
-    map: HashMap<Rc<str>, Sym, StrHash>,
+    names: Vec<RString>,
+    map: HashMap<RString, Sym, StrHash>,
     /// `..n` index of each symbol, 0 if it is not of that form.
     ddvals: Vec<u32>,
 }
@@ -159,7 +159,7 @@ impl Interner {
         if let Some(s) = self.map.get(name) {
             return *s;
         }
-        let rc: Rc<str> = Rc::from(name);
+        let rc = RString::from(name);
         let sym = Sym(self.names.len() as u32);
         let dd = name.strip_prefix("..").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
         self.ddvals.push(dd);
@@ -196,7 +196,7 @@ impl Sym {
         })
     }
 
-    pub fn name(self) -> Rc<str> {
+    pub fn name(self) -> RString {
         INTERNER.with(|i| i.borrow().names[self.0 as usize].clone())
     }
 
@@ -225,5 +225,22 @@ impl fmt::Debug for Sym {
 impl fmt::Display for Sym {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.with_name(|n| f.write_str(n))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_names_share_the_interned_string() {
+        for text in ["", "ordinary", "é", "..12"] {
+            let sym = Sym::new(text);
+            let a = sym.name();
+            let b = sym.name();
+            assert_eq!(&*a, text);
+            assert!(RString::ptr_eq(&a, &b));
+            assert_eq!(Sym::lookup(text), Some(sym));
+        }
     }
 }

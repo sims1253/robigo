@@ -453,12 +453,12 @@ fn do_inherits(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error_call(call.clone(), "'which' must be a length 1 logical vector"));
     }
     // R: objects.c:inherits3
-    let klass: Vec<std::rc::Rc<str>> = if x.is_s4() {
+    let klass: Vec<crate::value::RString> = if x.is_s4() {
         i.data_class2(&x)?
     } else {
         crate::coerce::to_str(&crate::s4::data_class(&x, false))
             .into_iter()
-            .map(|c| c.unwrap_or_else(|| std::rc::Rc::from("NA")))
+            .map(|c| c.unwrap_or_else(|| crate::value::RString::from("NA")))
             .collect()
     };
     if which != 0 {

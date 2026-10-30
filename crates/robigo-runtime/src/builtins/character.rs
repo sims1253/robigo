@@ -276,7 +276,7 @@ pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool) -> i32 {
             }
         }
         Some(s) => match ty {
-            NcharType::Bytes => s.len() as i32,
+            NcharType::Bytes => s.raw_bytes().len() as i32,
             NcharType::Chars => s.chars().count() as i32,
             NcharType::Width => str_width(s) as i32,
         },
@@ -304,7 +304,7 @@ fn do_nchar(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     }
     let x = coerce_to_str(&args[0].value)?;
     let ty = match &args[1].value {
-        Value::Str(t) if t.data.len() == 1 => t.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
+        Value::Str(t) if t.data.len() == 1 => t.data[0].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
         _ => return Err(Flow::error("invalid 'type' argument")),
     };
     if ty.is_empty() {
@@ -388,10 +388,17 @@ fn do_substr(_: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
                 start = 1;
             }
             if start > stop {
-                out.push(Some(Rc::from("")));
+                out.push(Some(crate::value::RString::from("")));
+            } else if el.is_bytes() {
+                // R: character.c:substr -- CE_BYTES counts original bytes
+                // and do_substr preserves that mark in mkCharLenCE.
+                let bytes = el.raw_bytes();
+                let a = ((start - 1) as usize).min(bytes.len());
+                let b = (stop as usize).min(bytes.len());
+                out.push(Some(RString::from_bytes(&bytes[a..b], Encoding::Bytes)));
             } else {
                 let (a, b) = char_range(el, start, stop);
-                out.push(Some(Rc::from(&el[a..b])));
+                out.push(Some(crate::value::RString::from(&el[a..b])));
             }
         }
     }
@@ -465,7 +472,7 @@ fn do_substrgets(_: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &Env) -> 
                 k += 1;
             }
             buf.extend(rest);
-            out.push(Some(Rc::from(buf.as_str())));
+            out.push(Some(crate::value::RString::from(buf.as_str())));
         }
     }
     let mut ans = Value::strs(out);
@@ -628,13 +635,13 @@ fn do_abbrev(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
             Some(s) => {
                 if s.is_ascii() {
                     if s.len() > minlen {
-                        Some(Rc::from(stripchars(s, minlen, usecl != 0, false).as_str()))
+                        Some(crate::value::RString::from(stripchars(s, minlen, usecl != 0, false).as_str()))
                     } else {
                         Some(s.clone())
                     }
                 } else if s.chars().count() > minlen {
                     warn = true;
-                    Some(Rc::from(stripchars(s, minlen, usecl != 0, true).as_str()))
+                    Some(crate::value::RString::from(stripchars(s, minlen, usecl != 0, true).as_str()))
                 } else {
                     Some(s.clone())
                 }
@@ -728,7 +735,7 @@ fn do_makenames(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             if !is_valid_name(&tmp) {
                 tmp.push('.');
             }
-            Some(Rc::from(tmp.as_str()))
+            Some(crate::value::RString::from(tmp.as_str()))
         })
         .collect();
     Ok(Value::strs(out))
@@ -750,7 +757,7 @@ fn case_map(args: &[Arg], upper: bool) -> RResult<Value> {
             e.as_ref().map(|s| {
                 let t: String =
                     if upper { s.chars().map(simple_upper).collect() } else { s.chars().map(simple_lower).collect() };
-                Rc::from(t.as_str())
+                crate::value::RString::from(t.as_str())
             })
         })
         .collect();
@@ -834,7 +841,7 @@ fn do_chartr(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         .map(|e| {
             e.as_ref().map(|s| {
                 let t: String = s.chars().map(|c| *table.get(&c).unwrap_or(&c)).collect();
-                Rc::from(t.as_str())
+                crate::value::RString::from(t.as_str())
             })
         })
         .collect();
@@ -881,7 +888,7 @@ fn do_strtrim(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
                     break;
                 }
             }
-            out.push(Some(Rc::from(buf.as_str())));
+            out.push(Some(crate::value::RString::from(buf.as_str())));
         }
     }
     let mut ans = Value::strs(out);
@@ -984,7 +991,7 @@ fn do_strrep(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
                 if (s.len() as f64) * (ni as f64) > i32::MAX as f64 {
                     return Err(Flow::error("R character strings are limited to 2^31-1 bytes"));
                 }
-                out.push(Some(Rc::from(s.repeat(ni as usize).as_str())));
+                out.push(Some(crate::value::RString::from(s.repeat(ni as usize).as_str())));
             }
             _ => out.push(None),
         }
@@ -1013,7 +1020,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
         return Err(Flow::error("invalid 'width' value"));
     }
     let q = match &args[2].value {
-        Value::Str(q) if q.data.len() == 1 => q.data[0].clone().unwrap_or_else(|| Rc::from("NA")),
+        Value::Str(q) if q.data.len() == 1 => q.data[0].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
         _ => return Err(Flow::error("invalid 'quote' value")),
     };
     let quote = q.chars().next();
@@ -1058,7 +1065,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
         .iter()
         .map(|e| {
             if na != 0 || e.is_some() {
-                Some(Rc::from(encode_string_q(e, w.max(0) as usize, quote, just, &pp).as_str()))
+                Some(crate::value::RString::from(encode_string_q(e, w.max(0) as usize, quote, just, &pp).as_str()))
             } else {
                 None
             }
@@ -1121,24 +1128,20 @@ fn encode_string_q(
     }
 }
 
-fn str_is_ascii(s: &RStr) -> bool {
-    s.as_deref().is_none_or(|s| s.is_ascii())
-}
-
 // R: util.c:do_encoding
 fn do_encoding(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 1, "Encoding")?;
     let Value::Str(x) = &args[0].value else {
         return Err(Flow::error("a character vector argument expected"));
     };
-    Ok(Value::strs_from(x.data.iter().map(|e| if str_is_ascii(e) { "unknown" } else { "UTF-8" })))
+    Ok(Value::strs_from(x.data.iter().map(|e| e.as_ref().map_or("unknown", RString::encoding_name))))
 }
 
 // R: util.c:do_setencoding
 fn do_setencoding(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 2, "setEncoding")?;
     let x = std::mem::replace(&mut args[0].value, Value::Null);
-    let Value::Str(xv) = &x else {
+    let Value::Str(_) = &x else {
         return Err(Flow::error("a character vector argument expected"));
     };
     let Value::Str(enc) = &args[1].value else {
@@ -1147,10 +1150,18 @@ fn do_setencoding(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
     if enc.data.is_empty() {
         return Err(Flow::error("'value' must be of positive length"));
     }
-    for (i, e) in xv.data.iter().enumerate() {
+    let mut x = x;
+    let Value::Str(xv) = &mut x else { unreachable!() };
+    for (i, e) in Rc::make_mut(xv).data.iter_mut().enumerate() {
         let this = enc.data[i % enc.data.len()].as_deref().unwrap_or("NA");
-        if e.is_some() && !str_is_ascii(e) && (this == "latin1" || this == "bytes") {
-            return Err(Flow::error(format!("robigo: marking strings as \"{}\" is not implemented yet", this)));
+        let mark = match this {
+            "latin1" => Encoding::Latin1,
+            "bytes" => Encoding::Bytes,
+            "UTF-8" => Encoding::Utf8,
+            _ => Encoding::Native,
+        };
+        if let Some(text) = e {
+            *text = RString::from_bytes(&text.raw_bytes(), mark);
         }
     }
     Ok(x)
@@ -1234,8 +1245,8 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             _ => Err(Flow::error(format!("invalid '{}' argument", what))),
         }
     };
-    let from = one(&args[1].value, "from")?.unwrap_or_else(|| Rc::from("NA"));
-    let to = one(&args[2].value, "to")?.unwrap_or_else(|| Rc::from("NA"));
+    let from = one(&args[1].value, "from")?.unwrap_or_else(|| crate::value::RString::from("NA"));
+    let to = one(&args[2].value, "to")?.unwrap_or_else(|| crate::value::RString::from("NA"));
     let sub = one(&args[3].value, "sub")?;
     let mark = as_logical(&args[4].value);
     if mark == NA_LOGICAL {
@@ -1378,7 +1389,7 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
                     return Err(Flow::error("robigo: latin1-encoded strings are not implemented yet"));
                 }
                 _ => match String::from_utf8(bytes) {
-                    Ok(s) => out.push(Some(Rc::from(s.as_str()))),
+                    Ok(s) => out.push(Some(crate::value::RString::from(s.as_str()))),
                     Err(_) => return Err(Flow::error("robigo: strings that are not valid UTF-8 are not supported")),
                 },
             },
@@ -1439,9 +1450,9 @@ fn do_inttoutf8(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
                 if v == NA_INTEGER {
                     None
                 } else if v == 0 {
-                    Some(Rc::from(""))
+                    Some(crate::value::RString::from(""))
                 } else {
-                    int_to_char(v).map(|c| Rc::from(c.to_string().as_str()))
+                    int_to_char(v).map(|c| crate::value::RString::from(c.to_string().as_str()))
                 }
             })
             .collect();
@@ -1481,7 +1492,9 @@ fn do_validutf8(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let Value::Str(x) = &args[0].value else {
         return Err(Flow::error("invalid 'x' argument"));
     };
-    Ok(Value::lgls(vec![TRUE; x.data.len()]))
+    Ok(Value::lgls(
+        x.data.iter().map(|s| s.as_ref().is_none_or(|s| std::str::from_utf8(&s.raw_bytes()).is_ok()) as i32).collect(),
+    ))
 }
 
 fn do_validenc(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -1489,7 +1502,17 @@ fn do_validenc(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let Value::Str(x) = &args[0].value else {
         return Err(Flow::error("invalid 'x' argument"));
     };
-    Ok(Value::lgls(vec![TRUE; x.data.len()]))
+    Ok(Value::lgls(
+        x.data
+            .iter()
+            .map(|s| {
+                s.as_ref().is_none_or(|s| {
+                    matches!(s.encoding(), Encoding::Latin1 | Encoding::Bytes)
+                        || std::str::from_utf8(&s.raw_bytes()).is_ok()
+                }) as i32
+            })
+            .collect(),
+    ))
 }
 
 // R: raw.c:do_charToRaw
@@ -1505,7 +1528,7 @@ fn do_chartoraw(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
     let bytes = match &x.data[0] {
         None => b"NA".to_vec(),
-        Some(s) => s.as_bytes().to_vec(),
+        Some(s) => s.raw_bytes().into_owned(),
     };
     Ok(Value::raws(bytes))
 }
@@ -1527,15 +1550,12 @@ fn do_rawtochar(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
                 b.iter().map(|&c| if c == 0 { "\\0".to_string() } else { (c as char).to_string() }).collect::<String>()
             )));
         }
-        match std::str::from_utf8(b) {
-            Ok(s) => Ok(Some(Rc::from(s))),
-            Err(_) => Err(Flow::error("robigo: strings that are not valid UTF-8 are not supported")),
-        }
+        Ok(Some(RString::from_bytes(b, Encoding::Native)))
     };
     if multiple != 0 {
         let mut out = Vec::with_capacity(x.data.len());
         for &b in &x.data {
-            out.push(if b == 0 { Some(Rc::from("")) } else { to_str(&[b])? });
+            out.push(if b == 0 { Some(crate::value::RString::from("")) } else { to_str(&[b])? });
         }
         Ok(Value::strs(out))
     } else {
@@ -1583,7 +1603,7 @@ fn do_basename(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
                 while ff > 0 && b[ff - 1] != b'/' {
                     ff -= 1;
                 }
-                out.push(Some(Rc::from(&pp[ff..ll])));
+                out.push(Some(crate::value::RString::from(&pp[ff..ll])));
             }
         }
     }
@@ -1608,31 +1628,31 @@ fn do_dirname(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 let b = pp.as_bytes();
                 let mut ll = b.len();
                 if ll == 0 {
-                    out.push(Some(Rc::from("")));
+                    out.push(Some(crate::value::RString::from("")));
                     continue;
                 }
                 while ll > 0 && b[ll - 1] == b'/' {
                     ll -= 1;
                 }
                 if ll == 0 {
-                    out.push(Some(Rc::from("/")));
+                    out.push(Some(crate::value::RString::from("/")));
                     continue;
                 }
                 while ll > 0 && b[ll - 1] != b'/' {
                     ll -= 1;
                 }
                 if ll == 0 {
-                    out.push(Some(Rc::from(".")));
+                    out.push(Some(crate::value::RString::from(".")));
                     continue;
                 }
                 while ll > 0 && b[ll - 1] == b'/' {
                     ll -= 1;
                 }
                 if ll == 0 {
-                    out.push(Some(Rc::from("/")));
+                    out.push(Some(crate::value::RString::from("/")));
                     continue;
                 }
-                out.push(Some(Rc::from(&pp[..ll])));
+                out.push(Some(crate::value::RString::from(&pp[..ll])));
             }
         }
     }

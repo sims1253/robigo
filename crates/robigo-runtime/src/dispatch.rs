@@ -11,10 +11,10 @@ use crate::value::*;
 
 /// R's `R_data_class2`: the class vector used for S3 dispatch, including
 /// implicit classes.
-pub fn dispatch_class(v: &Value) -> Vec<Rc<str>> {
+pub fn dispatch_class(v: &Value) -> Vec<crate::value::RString> {
     if let Some(Value::Str(c)) = v.get_attr(s::CLASS) {
         if !c.data.is_empty() {
-            return c.data.iter().map(|x| x.clone().unwrap_or_else(|| Rc::from("NA"))).collect();
+            return c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect();
         }
     }
     let ndim = match v.get_attr(s::DIM) {
@@ -33,22 +33,22 @@ pub fn dispatch_class(v: &Value) -> Vec<Rc<str>> {
         Value::Lang(l) => out.push(lang_class(l)),
         other => out.push(implicit_type_class(other)),
     }
-    out.into_iter().map(Rc::from).collect()
+    out.into_iter().map(crate::value::RString::from).collect()
 }
 
 /// `class(x)` for objects without a class attribute (R's `R_data_class`
 /// with singleString = FALSE).
-pub fn implicit_class(v: &Value) -> Vec<Rc<str>> {
+pub fn implicit_class(v: &Value) -> Vec<crate::value::RString> {
     if let Some(Value::Str(c)) = v.get_attr(s::CLASS) {
         if !c.data.is_empty() {
-            return c.data.iter().map(|x| x.clone().unwrap_or_else(|| Rc::from("NA"))).collect();
+            return c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect();
         }
     }
     let ndim = v.get_attr(s::DIM).map(|d| d.len()).unwrap_or(0);
     match ndim {
         0 => {}
-        2 => return vec![Rc::from("matrix"), Rc::from("array")],
-        _ => return vec![Rc::from("array")],
+        2 => return vec![crate::value::RString::from("matrix"), crate::value::RString::from("array")],
+        _ => return vec![crate::value::RString::from("array")],
     }
     let s = match v {
         Value::Int(_) => "integer",
@@ -56,7 +56,7 @@ pub fn implicit_class(v: &Value) -> Vec<Rc<str>> {
         Value::Lang(l) => lang_class(l),
         other => implicit_type_class(other),
     };
-    vec![Rc::from(s)]
+    vec![crate::value::RString::from(s)]
 }
 
 fn lang_class(l: &Lang) -> &'static str {
@@ -108,7 +108,7 @@ fn implicit_type_class(v: &Value) -> &'static str {
 pub struct DispatchInfo {
     pub generic: String,
     pub group: String,
-    pub classes: Vec<Rc<str>>,
+    pub classes: Vec<crate::value::RString>,
     pub method: Value,
     pub call_env: Env,
     pub def_env: Env,
@@ -283,7 +283,7 @@ impl Interp {
         let vars = vec![
             (s::DOT_GENERIC, Value::str(&info.generic)),
             (s::DOT_CLASS, dot_class),
-            (s::DOT_METHOD, Value::strs(vec![Some(info.method.as_sym().unwrap().name())])),
+            (s::DOT_METHOD, Value::strs(vec![Some(info.method.as_sym().unwrap().name().into())])),
             (s::DOT_GENERIC_CALL_ENV, Value::Env(info.call_env.clone())),
             (s::DOT_GENERIC_DEF_ENV, Value::Env(info.def_env.clone())),
             (s::DOT_GROUP, Value::str(&info.group)),
@@ -470,9 +470,11 @@ impl Interp {
         if nargs == 1 && !a0 {
             return Ok(None);
         }
-        let class_of = |v: &Value| -> Vec<Rc<str>> {
+        let class_of = |v: &Value| -> Vec<crate::value::RString> {
             match v.get_attr(s::CLASS) {
-                Some(Value::Str(c)) => c.data.iter().map(|x| x.clone().unwrap_or_else(|| Rc::from("NA"))).collect(),
+                Some(Value::Str(c)) => {
+                    c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect()
+                }
                 _ => vec![],
             }
         };
@@ -515,7 +517,11 @@ impl Interp {
             .iter()
             .map(|a| {
                 let t = class_of(&a.value);
-                if t.iter().any(|c| *c == dispatch_class_name) { Some(lmeth.name()) } else { Some(Rc::from("")) }
+                if t.iter().any(|c| *c == dispatch_class_name) {
+                    Some(lmeth.name().into())
+                } else {
+                    Some(crate::value::RString::from(""))
+                }
             })
             .collect();
         let vars = vec![
@@ -545,7 +551,7 @@ impl Interp {
     #[allow(clippy::type_complexity)]
     fn findmethod(
         &mut self,
-        class: &[Rc<str>],
+        class: &[crate::value::RString],
         group: &str,
         generic: &str,
         env: &Env,

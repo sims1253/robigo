@@ -270,7 +270,7 @@ fn dimnames_gets(mut v: Value, val: Value) -> RResult<Value> {
     if items.len() < k {
         items.resize(k, Value::Null);
         if let Some(n) = names_out.as_mut() {
-            n.resize(k, Some(Rc::from("")));
+            n.resize(k, Some(crate::value::RString::from("")));
         }
     }
     for (i, it) in items.iter_mut().enumerate() {
@@ -430,7 +430,7 @@ pub fn attributes_list(v: &Value) -> Value {
     let attrs = v.attrs().cloned().or_else(|| v.ref_attrs());
     if let Some(a) = attrs {
         for (k, _) in &a.0 {
-            names.push(Some(k.name()));
+            names.push(Some(k.name().into()));
             vals.push(get_attrib(v, *k));
         }
     }

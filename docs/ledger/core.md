@@ -11,6 +11,254 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: combine closure source printing with byte windows
+
+- Kept green remote a41e59d and merged main 4754027. Only passing.txt
+  conflicted; preserved the union. Closure srcref transfer, original-source
+  printing and serialization metadata combine without manual changes.
+- Extra oracle probe found one-line UTF-8 original source prints as
+  mojibake: as.character.srcref temporarily marks lines as bytes and
+  substring rebuilt the Unicode view. Ported character.c:substr's CE_BYTES
+  branch: slice original bytes and preserve the mark. Added a direct tag
+  predicate so ordinary substring calls do not scan for ASCII.
+- New closure_source_bytes recording comes from Debian GNU R 4.5.0.
+  Before the fix, two of three literals match; literal UTF-8 source fails
+  both original printing and its serialization round trip. Octal source
+  bytes and computed return bytes match. After fix: all three literals
+  and serialization round trips match. Conformance 241/241 in all tiers;
+  runtime 41 unit + two integration tests pass (two host-glibc oracles
+  excluded), substring corpus 56/56, graphics 182/184 and Hershey 1/1.
+  Final host strings 767,917,160: +0.07% versus the merge before the fix,
+  -0.04% versus green a41e59d. Formatting and diff checks pass.
+- Before substring fix, merged conformance 240/240 across all tiers;
+  runtime 41 unit + two integration tests pass with the two host-glibc
+  numeric oracles excluded. Graphics 182/184, no regressions; Hershey 1/1.
+  Host strings with identical a41 natives and flat cache: green a41
+  768,253,311 -> merge 767,378,363 (-0.11%).
+
+## 2026-10-30: cache text length to retain string-vector allocation sizes
+
+- Rebased onto 29cac51 (#60 and #91); kept both sides of the passing
+  ratchet conflict and checked that every main entry remains present.
+
+- The 16-byte-header candidate passes every CI corpus ratchet and the
+  build, but mandelbrot_naive_ascii remains +0.89%; strings is -1.07%.
+  Its exact Debian profile adds 14.6M instructions, primarily mimalloc's
+  malloc_generic and find_page. The smaller string-vector element also
+  changes allocator traffic even though text allocations have been fixed.
+- Restore a two-word handle by caching the immutable text length. String
+  vectors again request the original Rc<str> buffer sizes; dereference
+  reads the cached length directly. The allocation header remains 16
+  bytes and clone/drop still update its own reference count directly.
+- Host, same dbf6754 CI binary/natives/flat cache environment, before ->
+  candidate instructions: strings 771,869,922 -> 767,406,728 (-0.58%);
+  lm 683,492,324 -> 684,658,080 (+0.17%); Storage 569,236,671 ->
+  567,276,371; binarytrees 421,916,382 -> 419,912,235; binarytrees_2
+  421,554,231 -> 419,561,508; mandelbrot_naive_ascii 1,221,816,547 ->
+  1,217,247,237; spectralnorm_alt_3 1,253,977,981 -> 1,252,020,400.
+  All statuses are zero; compare: one faster, zero slower above 0.5%.
+  These host counts do not replace the pending exact Debian CI gate.
+- Conformance 234/234 in all three tiers and VM guards; runtime 41 unit
+  plus two integration tests pass (only the two documented host-glibc
+  oracles excluded). Graphics now 180/184, two new passes and no
+  regressions; Hershey 1/1. Focused strings 478/495; its only reported
+  regression is the previously reproduced base-binary huge serialized
+  sequence timeout, not removed from the ratchet. Prior CI passes it.
+- Five exact-source boundary/encoding/ownership/symbol tests pass. The
+  independent random-byte ownership stress program passes Debian
+  Valgrind with zero errors and zero lost allocations. The libtest
+  harness itself retains a 48-byte thread allocation; the ordinary-main
+  stress check avoids that harness artifact. cargo fmt and diff checks
+  pass. CI will decide whether the allocator regression is resolved.
+
+## 2026-10-29: keep immutable string allocations in the original size classes
+
+- All-feature type checks and the final local runtime tests pass: 41 unit
+  tests plus two integration tests, excluding only the two documented
+  host-glibc complex oracles. Local full robigo suite: seven faster, zero
+  slower. Graphics 178/184 and Hershey 1/1 hold. All five affected rbench
+  programs match Debian GNU R's output, stderr and status exactly.
+- CI still found four regressions after symbol sharing: Storage +0.65%,
+  binarytrees_2 +1.09%, mandelbrot_naive_ascii +0.84%, spectralnorm_alt_3
+  +3.15%. Host-only counts did not reproduce these; use the CI artifacts,
+  flat caches, natives and ROBIGO_BENCH_CACHE explicitly inside Docker.
+- Exact spectralnorm_alt_3 profile: base 1,215,021,089 -> 1,253,422,734.
+  The extra 38.4M instructions are allocator slow paths: page-queue search,
+  malloc_generic, find_page and bin selection, not evaluator/arithmetic
+  work. The 24-byte string header moved some strings into larger mimalloc
+  bins than the old 16-byte Rc allocation header.
+- New candidate packs encoding into the length word on 64-bit platforms,
+  restoring a 16-byte allocation header. Handles remain one pointer.
+  32-bit platforms retain a separate encoding byte and full length range.
+  Both exact-source layout paths pass all five tests; Valgrind reports
+  zero errors and no lost allocations. Full workload verification pending.
+- Rebased onto dbf6754 (#89); preserved bytecode metadata in serialization
+  and kept both sides' ratchets. No serialization algorithm was replaced.
+- Next source-mark boundary confirmed against gram.y:mkString2: octal/hex
+  escapes set `escaped`, suppressing CE_UTF8. For c("\303\251",
+  "\xc3\xa9", "\u00e9", "é"), GNU R's Encoding is unknown, unknown,
+  UTF-8, UTF-8; robigo currently reports UTF-8 for all four, with identical
+  raw bytes. Carry origin metadata through lexer StrTok, AST Const::Str
+  and ConstKey into lang.rs; do not infer marks from UTF-8 validity alone.
+
+## 2026-10-29: canonical symbol print names share immutable strings
+
+- One-word handles fix the original targets: exact CI artifacts in the
+  oracle container, with native libraries and flat caches enabled:
+  strings 735,221,395 -> 728,497,892 (-0.91%); lm 641,638,559 ->
+  633,306,778 (-1.30%). Host full robigo suite: six faster, zero slower
+  above 0.5%. Conformance 230/230, runtime 40 unit + two integration tests
+  pass (two documented host-glibc numeric oracles excluded); graphics
+  178/184 and Hershey 1/1 hold. Strings peak RSS, one host sample with
+  identical output: 66,464 -> 60,924 KiB (-8.3%).
+- CI on 000cd13 found five other regressions: Storage +0.72%, binarytrees
+  +0.53%, binarytrees_2 +0.95%, mandelbrot_naive_ascii +1.05%, and
+  spectralnorm_alt_3 +3.19%. String conversion from Sym::name() still
+  copied its Rc<str> into the new header on each lookup.
+- The symbol interner now owns RString keys and print names. Sym::name()
+  returns a shared handle, preserving the pre-existing canonical-name
+  identity and avoiding those conversions. Debug's symbol address and
+  stats/model.rs head_name return type are mechanical API adaptations.
+  No symbol ids, lookup order or hash algorithm changed.
+- Verified host instructions (e25e6cc -> shared names):
+  Storage 568,767,410 -> 566,005,339; binarytrees 421,394,607 -> 418,512,163;
+  binarytrees_2 421,079,714 -> 418,932,449; mandelbrot_naive_ascii
+  1,220,917,860 -> 1,209,690,730; spectralnorm_alt_3
+  1,253,401,302 -> 1,250,597,342. All five also match Debian GNU R 4.5.0
+  stdout, stderr and exit status exactly in direct comparisons.
+- Strings remains faster: 771,218,043 -> 764,347,838 (-0.89%); lm
+  682,843,800 -> 675,979,413 (-1.01%). Seven targeted benchmarks: none
+  slower. Conformance including all tiers and VM guards: 230/230.
+  Focused strings slice remains 478/495, with only the baseline huge
+  sequence timing out on this host. Five ownership/identity tests and
+  Valgrind pass; cargo check --release --all-features passes. The final
+  runtime test build, full suite recheck and CI are pending at this push.
+
+## 2026-10-29: one-word immutable string handles (candidate)
+
+- Tagged handles pass Debian's full build/tests, conformance 230/230 in
+  all tiers, graphics 178/184 and Hershey 1/1. Host strings without the
+  flat cache: 771,218,043 -> 774,326,194 (+0.40%). This does not establish
+  CI compliance: CI explicitly exports ROBIGO_RDBFLAT too. With both CI
+  artifacts and their flat caches in the oracle image: strings
+  735,283,335 -> 739,288,434 (+0.545%). CI reports +0.53%, and lm +1.81%.
+- The equality identity shortcut alone is neutral: host strings 774,359,512
+  and lm 695,357,890 (tagged baseline 774,326,194 and 695,377,629).
+- lm profile with CI natives and flat caches: 643,707,539 -> 655,341,400.
+  After normalizing the generic type names, string-vector drop_slow adds
+  8,341,212 self instructions. Its loop reconstructs a temporary fat Rc
+  on the stack before every reference decrement, even for shared strings.
+- New candidate: a one-word pointer to an immutable string allocation
+  whose header holds the reference count, length and encoding. Clone/drop
+  update the header directly; final-owner deallocation recovers the exact
+  checked layout. RStr and RString are one pointer (8 bytes on this host).
+  No tagged pointers or private Rc layout assumptions remain. Rc<str>
+  inputs are copied into the owned allocation; cloned handles share it.
+- Four exact-source tests pass; Debian Valgrind reports zero errors and no
+  lost allocations. Full workload validation is pending for this candidate.
+- Focused serialization case 6260e145 materializes 1:2147483649 (about 17GB)
+  and times out locally; the e25e6cc CI binary does too (65s under a 4GB
+  Docker cap). The sequence implementation is unchanged by this PR. This
+  case entered the ratchet in #86; keep its entry and let CI judge it.
+- spectralnorm_math is not actually fixed: original c989884, e25e6cc and
+  the tagged candidate exit 1 with the same missing .Internal(La_rs).
+  perf.py compare ignores exit status and a runtime-only run lacks `wrong`,
+  producing the misleading FIXED line. The perf track should compare
+  status and stdout with GNU R before claiming a fix; La_rs remains open.
+
+## 2026-10-29: encoding tags in the string handle (candidate)
+
+- Rebased onto e25e6cc after #88/#85/#86 landed. Preserve #88's direct
+  binary-string slice and read_charsxp_item symbol path in serialize.rs;
+  convert the result with the encoding mark. Set comparison confirms every
+  main conformance/corpus ratchet entry is retained.
+- Prefix candidate e0a22f3 passes Debian CI's build and full workspace tests.
+  Exact CI artifact comparison in robigo-oracle:4.5.0: e25e6cc strings
+  768,560,203 -> 774,394,375 (+0.76%), still rejected as a gate fix.
+  Host: base 771,218,043 -> 776,131,292. Removing duplicate ASCII scans
+  is insufficient while every text access checks for a prefix.
+- Current candidate stores the tag in the Rc payload address alignment bits
+  instead. On 64-bit hosts all three tag bits fit there; on 32-bit hosts
+  two address bits and the unused high length bit hold them. The allocation
+  remains an ordinary Rc<str>; the handle restores the exact original
+  pointer and length before cloning or dropping the Rc. Alignment is
+  checked before tagging, with pointer provenance retained by map_addr.
+- Four representation tests pass, covering all byte/encoding combinations,
+  allocation boundaries, leading NULs, shared text and strong/weak reference
+  counts for every tag. Debian Valgrind: zero errors, no lost allocations.
+  Full benchmark and conformance validation for this candidate is pending.
+
+## 2026-10-29: round 4 resume, strings gate regression
+
+- Reproduced #84's real `robigo/strings` regression with CI artifacts and
+  natives in robigo-oracle:4.5.0: base 74e8c73 779,550,355 instructions,
+  c989884 806,243,566 (+3.42%). perf.py independently measures the PR at
+  806,390,741. Host comparison with identical R_HOME and natives:
+  781,982,844 -> 808,301,250 (+3.37%). The earlier 75M-instruction paste
+  microbenchmark was insufficient to check the strings gate.
+- Profile: RString::from_text accounts for 20,942,215 extra self
+  instructions. A bulk-copy-only candidate measures 807,452,168 on the
+  host, saving 849,082 but still +3.26% over main. Rejected as a fix.
+  Focused raw/encoding/iconv/serialization/nchar/paste fastr slice on that
+  candidate: 478/495, zero regressions.
+- Next candidate keeps ordinary UTF-8 as unprefixed Rc<str> and uses a
+  NUL sentinel plus encoding byte for windows. Leading NUL text is
+  escaped into a window, so Rust constructors remain lossless too.
+  Rc<str> inputs reuse their existing allocation. Encoding queries derive
+  the ASCII mark only when needed; raw_bytes borrows ordinary UTF-8.
+- Optional-window candidate: host strings 786,260,592 instructions,
+  +0.547% over base, saving 22,040,658 versus #84. Still outside the gate;
+  constructor inlining was the next candidate. Its focused fastr slice
+  stays 478/495 with zero regressions. All three representation tests pass.
+- Constructor inlining rejected: 786,620,716 instructions, worse than
+  the optional-window candidate. Current bda4730 CI artifact baseline on
+  this host is 781,926,487. Next candidate stores empty strings in windows
+  too, guaranteeing nonempty storage and removing the length check from
+  each window test. Rejected: 788,478,354 instructions despite passing
+  227/227 conformance and the focused 478/495 fastr slice. Three standalone
+  representation tests pass. Current candidate restores optional empty
+  storage and removes the second ASCII scan in from_bytes, keeping its
+  ASCII path small and moving non-ASCII conversion into a helper.
+  Full-workload performance verification remains pending for this candidate.
+- Graphics examples 178/184, Hershey 1/1, zero regressions. Optional-window
+  conformance is 227/227 with all tiers and VM guards passing.
+- Runtime tests: 38 pass with the two glibc-dependent complex oracles
+  excluded. c_library_trig_oracle fails by one ULP on this host's glibc
+  2.44; a standalone C csin(0.5 + 2i) reproduces the same low bit
+  (4009768441e05d6c versus Debian's 4009768441e05d6d). The fixture itself
+  documents the glibc dependency. Debian CI must judge both numeric oracles.
+- Environment finalizers still require runtime environment reachability,
+  including closure cycles, before registration can run on gc(). The
+  concrete methods blocker remains TestR5/474b742f. Do not approximate
+  reachability with Rc counts. Follow-up: trace runtime roots and weak
+  environment keys, then port memory.c's finalizer scheduling and add
+  the methods regression before implementing on-exit handling.
+
+## 2026-10-29: round 5 encoding window: raw-byte increment
+
+- Baseline 74e8c73: charToRaw("\304") returns c3 84 instead of c4;
+  rawToChar(as.raw(196), TRUE) errors. Focused fastr rawToChar/charToRaw/
+  Encoding/setEncoding/validUTF8/validEnc slice: 22/22.
+- The lexer already emits raw bytes; loss occurs in lang.rs. Added the
+  proposed RString encoding window (same 16-byte representation), byte
+  reconstruction, native bridge marks, raw conversion, Encoding assignment,
+  validity checks and serialization. Constructor changes in other tracks'
+  files are mechanical adaptations to RString. Shared env/compile edits
+  only adapt their string fields and constructors.
+- The handed ELF marker-reader correction already exists in main, with
+  native::tests::native_marker_with_distinct_file_and_virtual_addresses. No duplicate fix needed.
+- Environment finalizers remain open: do_reg_finalizer currently discards
+  registrations and runtime closure/environment cycles are not collected.
+  Needs runtime reachability integrated with core weakref finalizers;
+  checking Rc counts alone would miss reference-class cycles.
+- Oracle regression recorded in robigo-oracle:4.5.0, the exact Debian
+  package, using regen-expected.sh. Covers every nonzero raw byte,
+  native/Latin1/bytes/UTF8 marking and serialization, and trailing NULs.
+- Remaining encoding work: carry source literal encoding marks through
+  syntax (valid octal UTF-8 must remain native), adapt iconv/useBytes and
+  nchar character/width validation, plus readLines/scan encoding marks.
+  This increment preserves previous valid-UTF8 literal behavior.
+
 ## 2026-10-29: round 4 native-enabled verification
 
 - Same binary, utils.so disabled/enabled: focused fastr filter
@@ -948,3 +1196,45 @@ into the build).
   registers no code, `.Call` fails with "native routine ... is not
   implemented yet".
 - census coverage by robigo exports: 0 / 5339 (no `libR.so`).
+
+### Round 5 first verification cycle
+
+- Exact-oracle byte_window script: 0/1 -> 1/1. Conformance 225/225,
+  all three tiers and VM guards pass. C API integration 2/2 passes;
+  runtime 36/37 passes (only the previously documented host complex sqrt
+  one-ULP mismatch). The exhaustive encoding-window test passes.
+- Graphics examples with stats/grDevices/graphics/grid natives present:
+  177/184 -> 178/184; plotmath newly passes, no lost passes.
+- Combined raw/encoding/iconv/serialization/nchar/paste fastr slice:
+  480/505 -> 488/505, eight iconv gains, zero lost passes. Recorded the
+  eight gains, plotmath and the byte_window conformance regression.
+- First performance candidate rejected: paste workload instructions
+  75,331,679 -> 76,640,204 (+1.74%). Profile identifies redundant UTF-8
+  validation and prefix-window bounds checks. Next candidate uses the
+  known UTF-8 invariant of Rust strings and the structural-byte invariant
+  of RString to avoid those checks; measurement follows.
+- Hershey demo: 0/1 -> 1/1; stdout, stderr and status match the oracle.
+  Recorded the new pass. It now gets through rawToChar(multiple = TRUE).
+- CI build for aaad964 passes in Debian, including the numeric oracle
+  that differs on this host. The new constructor optimization is pending
+  local release verification and its own CI run.
+
+### Round 5 final constructor verification
+
+- Kept optimized window: string workload 75,331,679 -> 75,403,997
+  instructions (+0.096%, within the 0.5% limit); default-package startup
+  518,619,492 -> 513,864,994 (-0.917%). Outputs match in both profiles.
+  Profiles are /tmp/core-{before,optimized}.callgrind and
+  /tmp/core-startup-{before,optimized}.callgrind. Both binaries use the
+  same R_HOME and native package set for startup.
+- String workload (R_DEFAULT_PACKAGES=NULL): x <- rep("abc", 1000);
+  for (i in 1:100) y <- paste(x, collapse=""); print(nchar(y)).
+  Startup: default packages, -e 1. Both run with valgrind --tool=callgrind.
+- Optimized runtime tests: 36/36 pass with the already reproduced host
+  complex sqrt oracle excluded (the unfiltered run is 36/37); C API
+  integration 2/2 and runtime integration 2/2 pass. Exhaustive byte/mark
+  tests also pass as a standalone optimized rustc test of the same source.
+- Remaining work belongs in follow-up core batches: environment-cycle
+  reachability and finalizers; syntax encoding marks for valid octal/hex
+  UTF-8 literals; byte-aware iconv/useBytes/nchar and connection consumers.
+  No finalizer behavior is claimed by this PR.

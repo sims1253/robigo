@@ -440,6 +440,33 @@ pub fn escape_string(s: &str, quote: Option<char>) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// R: printutils.c:EncodeString, invalid native and bytes payloads.
+pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
+    if !matches!(s.encoding(), Encoding::Bytes | Encoding::NativeInvalid | Encoding::Utf8Invalid) {
+        return escape_string(s, quote);
+    }
+    let mut encoded = Vec::new();
+    let q = quote.unwrap_or('"') as u8;
+    encoded.push(q);
+    if s.encoding() == Encoding::Bytes {
+        for &b in s.raw_bytes().iter() {
+            let mut one = Vec::new();
+            robigo_syntax::dump::encode_string(&[b], q, &mut one);
+            encoded.extend_from_slice(&one[1..one.len() - 1]);
+        }
+    } else {
+        encoded.clear();
+        robigo_syntax::dump::encode_string(&s.raw_bytes(), q, &mut encoded);
+        encoded.pop();
+    }
+    encoded.push(q);
+    let out = String::from_utf8(encoded).unwrap();
+    if quote.is_none() {
+        return out[1..out.len() - 1].replace("\\\"", "\"");
+    }
+    out
+}
+
 /// `Rstrlen`: display width of the escaped (and maybe quoted) string.
 pub fn rstrlen(s: &str, quote: Option<char>) -> usize {
     str_width(&escape_string(s, quote))
@@ -463,7 +490,7 @@ pub fn encode_string(s: &RStr, w: usize, quote: Option<char>, justify: Justify, 
                 pp.na_string_noquote.clone()
             }
         }
-        Some(s) => escape_string(s, quote),
+        Some(s) => escape_rstring(s, quote),
     };
     let bw = str_width(&body);
     if bw >= w || justify == Justify::None {
@@ -492,7 +519,7 @@ pub fn format_string(x: &[RStr], quote: Option<char>, pp: &PrintParams) -> usize
                     pp.na_width_noquote
                 }
             }
-            Some(s) => rstrlen(s, quote),
+            Some(s) => str_width(&escape_rstring(s, quote)),
         };
         w = w.max(l);
     }
@@ -554,7 +581,7 @@ pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
         }
         Value::Str(x) => match &x.data[i] {
             None => "NA".into(),
-            Some(s) => escape_string(s, Some('"')),
+            Some(s) => escape_rstring(s, Some('"')),
         },
         Value::Raw(x) => format!("{:02x}", x.data[i]),
         _ => String::new(),

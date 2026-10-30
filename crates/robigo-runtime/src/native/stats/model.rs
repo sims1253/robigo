@@ -21,7 +21,7 @@ type Term = Vec<u32>;
 // Expression helpers
 
 /// The call's function name, if it is a symbol.
-fn head_name(e: &Value) -> Option<Rc<str>> {
+fn head_name(e: &Value) -> Option<RString> {
     match e {
         Value::Lang(l) => l.fun.as_sym().map(|s| s.name()),
         _ => None,

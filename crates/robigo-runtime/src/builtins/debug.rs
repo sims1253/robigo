@@ -43,7 +43,7 @@ fn object_ptr(v: &Value) -> usize {
     match v {
         // Symbols are interned: their name allocation has the same lifetime
         // and identity as the symbol. Keep NULL's zero identity separate.
-        Value::Sym(s) => Rc::as_ptr(&s.name()) as *const () as usize,
+        Value::Sym(s) => s.name().as_ptr() as usize,
         Value::Env(e) => ptr!(&e.0),
         Value::Lgl(x) => ptr!(x),
         Value::Int(x) => ptr!(x),

@@ -1,6 +1,7 @@
 base/scoping
 grDevices/colors
 grDevices/hclColors
+graphics/Hershey
 graphics/Japanese
 graphics/graphics
 graphics/persp

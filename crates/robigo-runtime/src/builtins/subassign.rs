@@ -329,7 +329,7 @@ fn enlarge_vector(x: &mut Value, newlen: usize) -> RResult<()> {
         Value::Null => None,
         Value::Str(n) if n.data.len() == len => {
             let mut d = n.data.clone();
-            d.resize(newlen.max(len), Some(Rc::from("")));
+            d.resize(newlen.max(len), Some(crate::value::RString::from("")));
             Some(Value::strs(d))
         }
         _ => return Err(Flow::error("bad names attribute")),
@@ -542,7 +542,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
         let nx = x.len();
         let mut names: Vec<RStr> = match get_attrib(x, s::NAMES) {
             Value::Str(n) => n.data.clone(),
-            _ => vec![Some(Rc::from("")); nx],
+            _ => vec![Some(crate::value::RString::from("")); nx],
         };
         for (i, nn) in newnames.into_iter().enumerate() {
             if let Some(nn) = nn {
@@ -946,7 +946,7 @@ fn assign2_level(
             if let Some(nn) = newname {
                 let mut names: Vec<RStr> = match get_attrib(x, s::NAMES) {
                     Value::Str(n) => n.data.clone(),
-                    _ => vec![Some(Rc::from("")); x.len()],
+                    _ => vec![Some(crate::value::RString::from("")); x.len()],
                 };
                 names[o] = nn;
                 x.set_attr_raw(s::NAMES, Value::strs(names));
@@ -1211,8 +1211,8 @@ pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Valu
                     _ => vec![],
                 };
                 data.push(val);
-                let mut nn = names.unwrap_or_else(|| vec![Some(Rc::from("")); nx]);
-                nn.push(Some(nl));
+                let mut nn = names.unwrap_or_else(|| vec![Some(crate::value::RString::from("")); nx]);
+                nn.push(Some(nl.into()));
                 let attrs = rebuilt_attrs(x, Some(Value::strs(nn)));
                 let mut ans = Value::list(data);
                 ans.set_attrs(attrs);

@@ -108,7 +108,7 @@ fn internal(format: &[char], tp: &Tm, tzset_called: &mut bool) -> Option<String>
     } else if hour12 == 0 {
         hour12 = 12;
     }
-    let mut zone: Option<std::rc::Rc<str>> = tp.zone.clone();
+    let mut zone: Option<crate::value::RString> = tp.zone.clone();
     let mut f = 0usize;
     let at = |i: usize| format.get(i).copied().unwrap_or('\0');
     while f < format.len() {
@@ -344,7 +344,7 @@ fn internal(format: &[char], tp: &Tm, tzset_called: &mut bool) -> Option<String>
                     zone = Some(if tp.isdst <= 1 {
                         tz::tzname()[tp.isdst as usize].clone()
                     } else {
-                        std::rc::Rc::from("?")
+                        crate::value::RString::from("?")
                     });
                 }
                 Spec::Text(zone.as_deref().unwrap_or("").to_string())

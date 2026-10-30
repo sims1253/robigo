@@ -298,7 +298,7 @@ fn do_load_from_conn2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRe
                 for a in &p.items {
                     if let Some(t) = a.tag {
                         aenv.set_local(t, a.value.clone());
-                        names.push(Some(t.name()));
+                        names.push(Some(t.name().into()));
                     }
                 }
             }

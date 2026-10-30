@@ -813,7 +813,7 @@ fn dollar_form(e: &Value) -> Option<(Sym, RStr)> {
     }
     let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
     let name = match &l.args[1].value {
-        Value::Sym(s) if is_var(*s) => Some(s.name()),
+        Value::Sym(s) if is_var(*s) => Some(s.name().into()),
         Value::Str(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0].clone(),
         _ => return None,
     };

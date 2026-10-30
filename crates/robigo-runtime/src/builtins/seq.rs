@@ -72,7 +72,8 @@ pub fn xlengthgets(x: &Value, len: usize) -> Value {
     let idx: Vec<Option<usize>> = (0..len).map(|k| if k < n { Some(k) } else { None }).collect();
     let mut out = gather(x, &idx);
     if let Value::Str(nm) = get_attrib(x, s::NAMES) {
-        let nn: Vec<RStr> = (0..len).map(|k| if k < n { nm.data[k].clone() } else { Some(Rc::from("")) }).collect();
+        let nn: Vec<RStr> =
+            (0..len).map(|k| if k < n { nm.data[k].clone() } else { Some(crate::value::RString::from("")) }).collect();
         out.set_attr_raw(s::NAMES, Value::strs(nn));
     }
     out
