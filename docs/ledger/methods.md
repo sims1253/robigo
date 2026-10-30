@@ -23,6 +23,37 @@ Slice used throughout ("S4 slice"):
   rejected ratchet updates. All pass. Oracle re-recording and runtime
   baseline measurement follow before delivery.
 
+- Pinned oracle image `robigo-oracle:4.5.0`, capped at 4 GiB, jobs=2,
+  repeat=2: re-recorded all 224 changed cases. No unstable cases or
+  varying-line masks; all 224 still differ from the active recording.
+  The remaining 31,150 records are identical. Snapshot contains every
+  case; neither corpus ratchet nor active oracle changes.
+- Paired run using main eb7a7ae's CI artifact from run 41004969021,
+  its native libraries and flat cache, R_HOME 4.5.0, jobs=2:
+  **normal 224/224 -> methods 221/224**, exactly three ratchet losses.
+  No runtime changes in this branch. Full FastR stays on CI.
+- `tests/corpora/fastr/methods-changes.tsv` enumerates all 224 cases,
+  baseline/profile results, and the three blockers. All source hashes
+  match. The class-generator cases are NOT solved on current main:
+  `builtins/TestBuiltin_serialize/4a71e01f0301e4a5` differs only at raw
+  byte offset 384, and `builtins/TestBuiltin_serialize/bfd38dfb85177afa`
+  only at offset 375. GNU R writes 6 (LANGSXP), main writes 2 (LISTSXP).
+  #104 preserves these argument-cell types; do not duplicate its pending
+  serializer changes in this branch. Reference-class method ordering
+  and every other changed case match.
+- Remaining finalizer case: `S4/TestR5/474b742f1785a587`. It creates a
+  Foo18R5 reference-class instance whose finalize method prints its `a`
+  field, drops the instance, then calls gc(). Main prints `fun` but
+  omits `finalizer: 456`. Stderr and exit status match. The oracle's
+  finalizer line is unmasked; only allocator counts are normalized.
+- Activation after #98 AND #104 merge: rebase; set `[fastr]`
+  `default_packages` to the profile's value and `expected_file` to
+  `expected-methods.jsonl.gz` in corpora.toml. This is one manifest-only
+  commit. Re-run all 224 changes, the 187-case S4 slice, all corpora in
+  CI and three-tier conformance; compare case identities before adding
+  new passes. If #98 leaves the finalizer case failing, inspect cycle
+  reachability and callback scheduling for the reference-class object.
+
 ## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
 
 - Rebased `track/methods-default-2` (#71) onto current main (`d81d29c`).

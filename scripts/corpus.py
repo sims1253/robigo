@@ -504,7 +504,7 @@ def cmd_score(a):
     for name, conf in manifest().items():
         if not os.path.isdir(cdir(name)):
             continue
-        exp = load_expected(name)
+        exp = load_expected(name, conf.get("expected_file", "expected.jsonl.gz"))
         skip = host_dependent(conf)
         ids = {k for k, e in exp.items() if not e.get("unstable") and k not in skip}
         rows.append((name, len(load_passing(name) & ids), len(ids), conf.get("description", "")))
@@ -527,7 +527,8 @@ def cmd_absorb(a):
             sys.exit(f"{fn}: profile results cannot update the shared ratchet; activate the profile first")
         by.setdefault(doc["summary"]["corpus"], set()).update(r["id"] for r in doc["results"] if r["pass"])
     for name, ok in sorted(by.items()):
-        exp = load_expected(name)
+        conf = corpus_conf(name)
+        exp = load_expected(name, conf.get("expected_file", "expected.jsonl.gz"))
         ok = {i for i in ok if i in exp}
         old = load_passing(name)
         if ok - old:
