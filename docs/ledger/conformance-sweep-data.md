@@ -1,5 +1,22 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): verified persistence on f5dae40
+
+- Keep bytecode persistence with moved CARs, shared head registration and
+  pooled scratch. Startup: 44,371,718 -> 44,571,940 instructions (+0.451%).
+  Binarytrees: 1,174,133,259 -> 1,174,062,320; fib: 879,739,190 ->
+  879,735,563. perf.py compare reports zero slowdowns above 0.5%.
+- All 244 conformance scripts match the oracle in interpreter, VM and JIT
+  (732/732). New bytecode fixture improves 0/3 -> 3/3; add its passing
+  entry. Runtime and C API crate checks pass with the two documented host
+  libc numeric oracle tests excluded; Debian CI runs those unmodified.
+- Expanded data stays 8,407/8,426, with identical per-case outcomes. The
+  existing order/add626 host collation mismatch remains the sole listed
+  failure on both binaries. No new FastR pass to absorb from this slice.
+- Main subsequently merged setter, C API writeback and startup work.
+  Rebase and verify their combination before final delivery.
+
+
 ## 2026-10-30 (round 9): scratch reuse and materialization costs
 
 - Fully corrected compact candidate passes all 244 scripts in all tiers,
