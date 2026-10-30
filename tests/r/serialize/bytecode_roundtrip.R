@@ -24,3 +24,9 @@ print(typeof(.Internal(bodyCode(f))))
 body(f) <- quote(42L)
 print(f())
 print(typeof(.Internal(bodyCode(f))))
+for (version in c(9L, 13L)) {
+  path <- paste0('bytecode-fixtures/code-version-', version)
+  b <- readRDS(paste0(path, '.rds'))
+  expected <- readBin(paste0(path, '-canonical.rds'), 'raw', n = 100000L)
+  print(identical(serialize(b, NULL), expected))
+}
