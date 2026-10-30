@@ -152,15 +152,18 @@ jobs:
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           export VALGRIND=valgrind
-          runtime=robigo
-          [ "${{ github.ref }}" = refs/heads/main ] && runtime=both
-          python3 scripts/perf.py run --metric instr --runtime $runtime --robigo dist/robigo \
+          # Compare outputs in this run too. Copying only GNU R's counts
+          # from the baseline cannot establish correctness of a PR run.
+          python3 scripts/perf.py run --metric instr --runtime both --robigo dist/robigo \
             --jobs "$(nproc)" --out perf.json --quiet
       - name: Compare with main
         if: github.ref != 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Rechecks must use the same cache and natives as the first run.
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           # The PR's merge commit is built on main's commit HEAD^1 (its first
           # parent, read from the commit object, which the shallow checkout
           # has): compare with that commit's numbers, not with whichever main

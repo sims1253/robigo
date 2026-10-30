@@ -7,6 +7,47 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 7): resume #92 and repair perf validation
+
+- Took over #92 at 48556b1, preserving its commits and authorship, and
+  rebased onto main 1074f6c. The failed run 40978398420 compared with
+  main 4754027, not the PR's git merge base f668f60. All correctness
+  jobs passed; only nbody_2 exceeded the perf threshold.
+- Reproduced the original CI artifacts in robigo-oracle:4.5.0, with
+  one shared ROBIGO_NATIVES and ROBIGO_RDBFLAT directory for both.
+  Two runs each: base nbody_2 838,351,321 / 838,271,596 instructions;
+  candidate 836,006,852 / 836,068,130. Both outputs match GNU R byte
+  for byte. This does not reproduce CI's 839,190,277 -> 861,813,460
+  regression; do not claim it is fixed until CI verifies the new head.
+  Callgrind profiles show a 2.21M reduction, mostly reader allocations,
+  Value clones, path hashing and native marker scanning. No evidence
+  supports adding MAP_POPULATE or abandoning mmap.
+- CI rechecks lost ROBIGO_RDBFLAT and ROBIGO_NATIVES at the step
+  boundary (the recheck measured 871,047,321 instead of 861,813,460).
+  Export both in the comparison step, matching the first measurement.
+  The main baseline already enables the cache, so both sides use it.
+- The spectralnorm_math FIXED report was false. Both original artifacts
+  fail at the missing La_rs internal, with status 1. PR CI ran only
+  robigo, discarded stdout, then copied GNU R's counts without deriving
+  the wrong-output flag. Run both runtimes in PR perf jobs, so stdout
+  and status are actually checked. No benchmark recordings changed.
+- Fixed two ineffective Rc::try_unwrap(p.clone()) paths in the inherited
+  reader by consuming the owned formals and dotted tail. Shared tails
+  retain their clone fallback. Reject incomplete flat headers and
+  overflowing offsets before slicing; use metadata from the open fd.
+- The builder now publishes via atomic rename. Truncating a flat file
+  that an existing process has mapped can SIGBUS; atomic replacement
+  preserves the old inode. A live-mapping replacement probe confirms
+  old readers retain their bytes and new readers see the replacement.
+
+Reproduction: download the robigo artifacts from runs 40977240404 and
+40978398420; run scripts/perf.py run --metric instr --runtime both
+--filter 'rbench/shootout/(nbody_2|spectralnorm_math)$' --jobs 1 twice
+per binary in the oracle container, with the same explicit cache and
+native directories. On the host, perf.py overrides R_HOME via R RHOME;
+use a PATH shim returning /home/m0hawk/.local/opt/R-4.5.0 for that query.
+
+
 ## 2026-10-29: what is left of PR #36 on top of core's #56
 
 - Core's #56 (merged as d709287) loads base from base.rdb with a reused
