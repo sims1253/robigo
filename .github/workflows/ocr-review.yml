@@ -120,8 +120,9 @@ jobs:
           llm_model: ${{ vars.OCR_LLM_MODEL || secrets.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
           effort: high
-          # 'max' works only on the OpenAI-compatible protocol.
-          llm_reasoning_effort: max
+          # 'high', not 'max': this provider answers 'max' with 400 code
+          # 1210 on some calls ("please use low, high, or max").
+          llm_reasoning_effort: high
           stream_progress: 'true'
           background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
           # Set only for issue_comment. The action reads pull_request events.
@@ -142,8 +143,9 @@ jobs:
           llm_model: ${{ vars.OCR_LLM_MODEL || secrets.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
           effort: high
-          # 'max' works only on the OpenAI-compatible protocol.
-          llm_reasoning_effort: max
+          # 'high', not 'max': this provider answers 'max' with 400 code
+          # 1210 on some calls ("please use low, high, or max").
+          llm_reasoning_effort: high
           stream_progress: 'true'
           background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
           # Set only for issue_comment. The action reads pull_request events.
