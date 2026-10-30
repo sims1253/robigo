@@ -473,7 +473,14 @@ pub struct GuardMemo {
 /// bytecode inlines as direct `.Internal` calls (guard-free in locked
 /// namespaces, `BASEGUARD`-checked in user code). The index is the
 /// [`CallSite::si`] value and the position in the startup snapshot.
-pub const SIMPLE_INTERNALS: [&str; 20] = [
+pub const NUM_SIMPLE_INTERNALS: usize = 66;
+
+/// R: compiler/R/cmp.R:safeBaseInternals and safeStatsInternals.
+/// Base and stats closures that installed bytecode inlines as direct
+/// `.Internal`, `.Call` or primitive calls. The index is the
+/// [`CallSite::si`] value and the position in the startup snapshot.
+pub const SIMPLE_INTERNALS: [&str; NUM_SIMPLE_INTERNALS] = [
+    // safeBaseInternals (20)
     "atan2",
     "besselY",
     "beta",
@@ -494,12 +501,65 @@ pub const SIMPLE_INTERNALS: [&str; 20] = [
     "match",
     "rep.int",
     "rep_len",
+    // safeStatsInternals (46)
+    "dbinom",
+    "dcauchy",
+    "dgeom",
+    "dhyper",
+    "dlnorm",
+    "dlogis",
+    "dnorm",
+    "dpois",
+    "dunif",
+    "dweibull",
+    "fft",
+    "mvfft",
+    "pbinom",
+    "pcauchy",
+    "pgeom",
+    "phyper",
+    "plnorm",
+    "plogis",
+    "pnorm",
+    "ppois",
+    "punif",
+    "pweibull",
+    "qbinom",
+    "qcauchy",
+    "qgeom",
+    "qhyper",
+    "qlnorm",
+    "qlogis",
+    "qnorm",
+    "qpois",
+    "qunif",
+    "qweibull",
+    "rbinom",
+    "rcauchy",
+    "rgeom",
+    "rhyper",
+    "rlnorm",
+    "rlogis",
+    "rnorm",
+    "rpois",
+    "rsignrank",
+    "runif",
+    "rweibull",
+    "rwilcox",
+    "ptukey",
+    "qtukey",
 ];
 
-/// One substituted argument of an inlined `.Internal` call (R:
-/// compiler/R/cmp.R:inlineSimpleInternalCall): an actual argument of the
-/// call, or a constant formal default (`simpleFormals` allows only
-/// constants and missing, and missing falls back to the generic call).
+/// Target of an inlined wrapper function.
+#[derive(Clone)]
+pub enum WrapperTarget {
+    Internal(Sym),
+    DotCall { ctarget: Value },
+    Builtin(Sym),
+}
+
+/// One substituted argument of an inlined wrapper call:
+/// an actual argument of the call, or a constant formal default.
 #[derive(Clone)]
 pub enum SiArg {
     Actual(usize),
@@ -507,12 +567,12 @@ pub enum SiArg {
 }
 
 /// The inlined form of a [`CallSite::si`] call site for one caller
-/// closure: the definition it was resolved against, the internal name,
+/// closure: the definition it was resolved against, the wrapper target,
 /// and the argument map.
 #[derive(Clone)]
 pub struct SiInline {
     pub def: Rc<Closure>,
-    pub fun: Sym,
+    pub target: WrapperTarget,
     pub args: Vec<SiArg>,
 }
 

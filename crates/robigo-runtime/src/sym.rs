@@ -77,6 +77,7 @@ predefined! {
     NAMESPACE_GET = "::",
     NAMESPACE_GET_INT = ":::",
     DOT_INTERNAL = ".Internal",
+    DOT_CALL = ".Call",
     PREVIOUS = "previous",
     CALL = "call",
     MESSAGE = "message",

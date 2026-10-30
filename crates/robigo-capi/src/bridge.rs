@@ -1290,7 +1290,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
         #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
-        (Value::Promise(p), 0) => match p.value.borrow().clone() {
+        (Value::Promise(p), 0) => match p.value() {
             Some(v) => to_sexp(&v),
             None => R_UnboundValue,
         },

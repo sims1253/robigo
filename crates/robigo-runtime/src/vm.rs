@@ -21,7 +21,7 @@ use std::rc::Rc;
 use crate::builtins::arith::{ArithOp, RelOp, int_to_real, myfmod, r_pow, real_op};
 use crate::compile::{
     Builtin1, CallSite, Code, GuardMemo, InlineArg, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, SiArg, SiInline, Slot,
-    compile_body, compile_loop,
+    WrapperTarget, compile_body, compile_loop,
 };
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -393,7 +393,13 @@ fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
             return Some(None);
         }
         Some(match &b.value {
-            Value::Promise(p) => p.value.borrow().as_ref().and_then(read),
+            Value::Promise(p) => match &*p.value.borrow() {
+                crate::value::PromiseVal::Unforced => None,
+                crate::value::PromiseVal::ScalarInt(x) => Some(RVal::I(*x)),
+                crate::value::PromiseVal::ScalarReal(x) => Some(RVal::D(*x)),
+                crate::value::PromiseVal::ScalarLgl(x) => Some(RVal::L(*x)),
+                crate::value::PromiseVal::Boxed(v) => read(v),
+            },
             v => read(v),
         })
     }
@@ -543,7 +549,7 @@ fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
     if b.flags != 0 {
         return None;
     }
-    if p.value.borrow().is_some() {
+    if p.is_forced() {
         return Some(false);
     }
     match &p.expr {
@@ -561,7 +567,7 @@ fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
                 None => Some(true),
                 Some(b2) if b2.flags != 0 || b2.value.is_missing_arg() => None,
                 Some(b2) => match &b2.value {
-                    Value::Promise(q) if q.value.borrow().is_none() => None,
+                    Value::Promise(q) if !q.is_forced() => None,
                     _ => Some(true),
                 },
             }
@@ -1810,11 +1816,31 @@ fn inline_site_call(
 pub fn snapshot_simple_internals(interp: &mut Interp) {
     // The raw bindings, promises unforced; `None` entries (or no
     // snapshot on paths that skip base loading) fall back to generic.
-    for (i, name) in crate::compile::SIMPLE_INTERNALS.iter().enumerate() {
+    for (i, name) in crate::compile::SIMPLE_INTERNALS[..20].iter().enumerate() {
         let Some(sym) = Sym::lookup(name) else { continue };
         interp.si_snaps[i] = interp.base.get_local(sym);
     }
     interp.si_ready = true;
+}
+
+#[inline(always)]
+fn get_stats_ns(interp: &Interp) -> Option<Env> {
+    interp.get_namespace("stats")
+}
+
+fn resolves_to_target(interp: &mut Interp, si: usize, sym: Sym, env: &Env) -> bool {
+    if si < 20 {
+        interp.resolves_to_base(sym, env)
+    } else {
+        if let Some(live) = interp.find_fun_cached(sym, env) {
+            if let Some(stats_ns) = get_stats_ns(interp) {
+                if let Value::Closure(clo) = live {
+                    return clo.env.ptr_eq(&stats_ns);
+                }
+            }
+        }
+        false
+    }
 }
 
 /// The caller of a call that may inline: top-level calls are never
@@ -1833,14 +1859,12 @@ fn simple_caller(interp: &Interp) -> Option<(Rc<Closure>, bool, bool)> {
     Some((caller.clone(), ns, caller.jit.is_bytecode()))
 }
 
-/// R: compiler/R/cmp.R:is.simpleInternal. The definition is a closure
-/// with simple formals (no `...`, constant defaults) whose body is
-/// `.Internal(ifun(...))` for a builtin internal with formal-symbol or
-/// constant arguments. Returns the internal name with the formals and
-/// the inner template.
+/// Inspect the definition of a potential wrapper closure. Returns the
+/// wrapper target (`.Internal`, `.Call`, or primitive), the wrapper's formals,
+/// and the inner template arguments.
 #[cold]
 #[inline(never)]
-fn simple_internal_shape(clo: &Closure) -> Option<(Sym, &[Arg], &[Arg])> {
+fn simple_wrapper_shape(clo: &Closure) -> Option<(WrapperTarget, &[Arg], &[Arg])> {
     if clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
         return None;
     }
@@ -1860,29 +1884,81 @@ fn simple_internal_shape(clo: &Closure) -> Option<(Sym, &[Arg], &[Arg])> {
         }
     }
     let Value::Lang(l) = b else { return None };
-    if l.fun_sym() != Some(s::DOT_INTERNAL) || l.args.len() != 1 || l.args[0].tag.is_some() {
-        return None;
-    }
-    let Value::Lang(icall) = &l.args[0].value else { return None };
-    let fsym = icall.fun_sym()?;
-    // R: is.builtin.internal.
-    crate::builtins::lookup_internal(&fsym.name())?;
-    // R: simpleArgs (tags never appear in the shipped templates).
-    for a in &icall.args {
-        if a.tag.is_some() || a.value.is_missing_arg() {
-            return None;
-        }
-        match &a.value {
-            Value::Sym(sym) => {
-                if !clo.formals.iter().any(|f| f.tag == Some(*sym)) {
-                    return None;
-                }
+
+    // Case 1: .Internal(ifun(...))
+    if l.fun_sym() == Some(s::DOT_INTERNAL) && l.args.len() == 1 && l.args[0].tag.is_none() {
+        let Value::Lang(icall) = &l.args[0].value else { return None };
+        let fsym = icall.fun_sym()?;
+        crate::builtins::lookup_internal(&fsym.name())?;
+        for a in &icall.args {
+            if a.tag.is_some() || a.value.is_missing_arg() {
+                return None;
             }
-            Value::Lang(_) | Value::Promise(_) => return None,
-            _ => {}
+            match &a.value {
+                Value::Sym(sym) => {
+                    if !clo.formals.iter().any(|f| f.tag == Some(*sym)) {
+                        return None;
+                    }
+                }
+                Value::Lang(_) | Value::Promise(_) => return None,
+                _ => {}
+            }
+        }
+        return Some((WrapperTarget::Internal(fsym), &clo.formals, &icall.args));
+    }
+
+    // Case 2: .Call(ctarget, ...)
+    if l.fun_sym() == Some(s::DOT_CALL) && !l.args.is_empty() && l.args[0].tag.is_none() {
+        let ctarget_expr = &l.args[0].value;
+        let ctarget = match ctarget_expr {
+            Value::Sym(sym) => {
+                let frame = clo.env.0.frame().borrow();
+                frame.get(*sym).map(|b| b.value.clone())?
+            }
+            val => val.clone(),
+        };
+        let template_args = &l.args[1..];
+        for a in template_args {
+            if a.tag.is_some() || a.value.is_missing_arg() {
+                return None;
+            }
+            match &a.value {
+                Value::Sym(sym) => {
+                    if !clo.formals.iter().any(|f| f.tag == Some(*sym)) {
+                        return None;
+                    }
+                }
+                Value::Lang(_) | Value::Promise(_) => return None,
+                _ => {}
+            }
+        }
+        return Some((WrapperTarget::DotCall { ctarget }, &clo.formals, template_args));
+    }
+
+    // Case 3: Builtin primitive
+    if let Some(fsym) = l.fun_sym() {
+        if let Some(b) = crate::builtins::lookup_primitive(&fsym.name()) {
+            if b.kind == BuiltinKind::Builtin {
+                for a in &l.args {
+                    if a.tag.is_some() || a.value.is_missing_arg() {
+                        return None;
+                    }
+                    match &a.value {
+                        Value::Sym(sym) => {
+                            if !clo.formals.iter().any(|f| f.tag == Some(*sym)) {
+                                return None;
+                            }
+                        }
+                        Value::Lang(_) | Value::Promise(_) => return None,
+                        _ => {}
+                    }
+                }
+                return Some((WrapperTarget::Builtin(fsym), &clo.formals, &l.args));
+            }
         }
     }
-    Some((fsym, &clo.formals, &icall.args))
+
+    None
 }
 
 /// Align this call's actuals to the wrapper formals (R: match.call) and
@@ -1932,14 +2008,14 @@ fn simple_arg_map(
 
 /// Run the substituted inner call: actuals evaluate eagerly in formal
 /// order (R: cmpBuiltinArgs; evalList does the same for interpreted
-/// calls), then the internal runs with the user's call as its error
+/// calls), then the wrapper runs with the user's call as its error
 /// context (R: getCurrentCall over the bytecode expressionsIndex).
 /// Out of line (so callers stay lean) but normally optimized: this runs
 /// once per inlined call.
 #[inline(never)]
-fn run_simple_internal(
+fn run_wrapper(
     interp: &mut Interp,
-    fsym: Sym,
+    target: &WrapperTarget,
     map: &[SiArg],
     args: &[Arg],
     call: &Value,
@@ -1958,25 +2034,41 @@ fn run_simple_internal(
         Ok(argv) => argv,
         Err(e) => return signal(interp, Err(e)),
     };
-    let inner = Value::lang(Value::Sym(fsym), cargs);
-    let Some(b) = crate::builtins::lookup_internal(&fsym.name()) else {
-        return Err(Flow::error(format!("robigo: no .Internal function '{fsym}'")));
-    };
-    // R: names.c:do_internal evaluates the arguments, then runs the
-    // primitive with the inner call.
     interp.visible = true;
-    let argv = match b.kind {
-        BuiltinKind::Special => {
-            let Value::Lang(l) = &inner else { unreachable!() };
-            l.args.clone()
-        }
-        BuiltinKind::Builtin => argv,
-    };
-    // R: eval.c:getCurrentCall via the bytecode expressionsIndex: plain
-    // errors and warnings from the inlined internal report the user's
-    // call, as the wrapper frame does when interpreted.
     interp.ccode_calls.push((interp.frames.len(), call.clone()));
-    let r = interp.invoke_builtin(b, &inner, argv, env);
+    let r = match target {
+        WrapperTarget::Internal(fsym) => {
+            let inner = Value::lang(Value::Sym(*fsym), cargs);
+            let Some(b) = crate::builtins::lookup_internal(&fsym.name()) else {
+                interp.ccode_calls.pop();
+                return Err(Flow::error(format!("robigo: no .Internal function '{fsym}'")));
+            };
+            let argv = match b.kind {
+                BuiltinKind::Special => {
+                    let Value::Lang(l) = &inner else { unreachable!() };
+                    l.args.clone()
+                }
+                BuiltinKind::Builtin => argv,
+            };
+            interp.invoke_builtin(b, &inner, argv, env)
+        }
+        WrapperTarget::DotCall { ctarget } => {
+            let dot_call = crate::builtins::lookup_primitive(".Call").unwrap();
+            let mut dot_args = Vec::with_capacity(argv.len() + 1);
+            dot_args.push(Arg::pos(ctarget.clone()));
+            dot_args.extend(argv);
+            let inner = Value::lang(Value::Sym(s::DOT_CALL), dot_args.clone());
+            interp.invoke_builtin(dot_call, &inner, dot_args, env)
+        }
+        WrapperTarget::Builtin(fsym) => {
+            let inner = Value::lang(Value::Sym(*fsym), cargs);
+            let Some(b) = crate::builtins::lookup_primitive(&fsym.name()) else {
+                interp.ccode_calls.pop();
+                return Err(Flow::error(format!("robigo: no primitive function '{fsym}'")));
+            };
+            interp.invoke_builtin(b, &inner, argv, env)
+        }
+    };
     let r = signal(interp, r);
     interp.ccode_calls.pop();
     r
@@ -1994,32 +2086,42 @@ fn resolve_simple_site(
     l: &crate::value::Lang,
     call: &Value,
     env: &Env,
-) -> Option<(Sym, Rc<Closure>, Vec<SiArg>)> {
+) -> Option<(WrapperTarget, Rc<Closure>, Vec<SiArg>)> {
     let head = l.fun_sym()?;
     let def = if ns {
-        // Installed code: the shipped definition, used unconditionally
-        // (R: no guard in namespaces). The snapshot holds the raw
-        // binding; forcing happens here, where the generic call would
-        // force it anyway. A failed force falls back to the generic
-        // call, which reproduces the failure.
-        let raw = interp.si_snaps[si].clone()?;
+        let raw = if let Some(raw) = &interp.si_snaps[si] {
+            raw.clone()
+        } else if si >= 20 {
+            let stats_ns = get_stats_ns(interp)?;
+            let sym = Sym::lookup(crate::compile::SIMPLE_INTERNALS[si])?;
+            let raw = stats_ns.get_local(sym)?;
+            interp.si_snaps[si] = Some(raw.clone());
+            raw
+        } else {
+            return None;
+        };
         let Value::Closure(d) = interp.force(raw).ok()? else { return None };
-        // The live lookup must still reach base, else the generic call
-        // reports the lookup failure.
-        if !interp.resolves_to_base(head, env) {
+        if !resolves_to_target(interp, si, head, env) {
             return None;
         }
         d
     } else {
-        // User code: the current base definition (R: BASEGUARD compares
-        // against the base namespace; the recorded definition is what
-        // the call was compiled against).
-        let Value::Closure(d) = interp.base_binding(head)? else { return None };
-        d
+        if si < 20 {
+            let Value::Closure(d) = interp.base_binding(head)? else { return None };
+            d
+        } else {
+            let stats_ns = get_stats_ns(interp)?;
+            let live = interp.find_fun_cached(head, env)?;
+            let Value::Closure(d) = live else { return None };
+            if !d.env.ptr_eq(&stats_ns) {
+                return None;
+            }
+            d
+        }
     };
-    let (fsym, formals, template) = simple_internal_shape(&def)?;
+    let (target, formals, template) = simple_wrapper_shape(&def)?;
     let map = simple_arg_map(interp, formals, template, &l.args, call)?;
-    Some((fsym, def, map))
+    Some((target, def, map))
 }
 
 /// A `si` call site taking the inlined path: the memoized definition
@@ -2064,24 +2166,24 @@ fn try_inline_site(
     match hit {
         Some(inline) => {
             let Some(inline) = inline else { return None };
-            if !ns && !interp.resolves_to_base(head, env) {
+            if !ns && !resolves_to_target(interp, si, head, env) {
                 return None;
             }
-            let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
+            let r = run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
         }
         None => {
             // Write-once either way (GNU R compiles once): a failed
             // resolution stays generic, matching code compiled against a
             // replacement definition.
-            let resolved = resolve_simple_site(interp, si, ns, l, call, env).map(|(fsym, def, map)| SiInline {
+            let resolved = resolve_simple_site(interp, si, ns, l, call, env).map(|(target, def, map)| SiInline {
                 def,
-                fun: fsym,
+                target,
                 args: map,
             });
             *site.si_memo.borrow_mut() = Some((caller, ns, resolved.clone()));
             let inline = resolved?;
-            let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
+            let r = run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
         }
     }
@@ -2119,19 +2221,19 @@ pub(crate) fn try_inline_expr(
     let key = (Rc::as_ptr(&caller) as usize, Rc::as_ptr(l) as usize);
     if let Some(hit) = interp.si_expr_memo.get(&key).cloned() {
         let (inline, _, _) = hit?;
-        if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
+        if !ns && !resolves_to_target(interp, si as usize, l.fun_sym()?, env) {
             return None;
         }
-        return Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env));
+        return Some(run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env));
     }
-    let resolved = resolve_simple_site(interp, si as usize, ns, l, call, env).map(|(fsym, def, map)| SiInline {
+    let resolved = resolve_simple_site(interp, si as usize, ns, l, call, env).map(|(target, def, map)| SiInline {
         def,
-        fun: fsym,
+        target,
         args: map,
     });
     interp.si_expr_memo.insert(key, resolved.clone().map(|inline| (inline, caller, l.clone())));
     let inline = resolved?;
-    Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
+    Some(run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env))
 }
 
 /// `Op::Call` of the closure `clo` (call site `site`, call `l`): promised
@@ -2241,7 +2343,10 @@ fn caller_promargs(
         let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
             out.push(match (v, &a.value) {
-                (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))),
+                (Some(RVal::I(i)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i)))),
+                (Some(RVal::D(d)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_real(a.value.clone(), d)))),
+                (Some(RVal::L(l)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_lgl(a.value.clone(), l)))),
+                (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value())))),
                 (None, Value::Sym(_) | Value::Lang(_)) => Arg::new(
                     a.tag,
                     Value::Promise(Rc::new(Promise::with_code(a.value.clone(), env.clone(), c.clone()))),
@@ -2262,7 +2367,7 @@ fn eager_args(
     env: &Env,
     vars: &mut Vars<'_>,
     regs: &[RVal],
-) -> Option<[Option<Value>; 4]> {
+) -> Option<[Option<RVal>; 4]> {
     let args = site.inline_args.as_ref()?;
     let code = clo.code.get()?.as_ref()?;
     // Reasons that depend on the call site and the closure's definition
@@ -2296,7 +2401,7 @@ fn eager_args(
             return None;
         }
     }
-    let mut out: [Option<Value>; 4] = [None, None, None, None];
+    let mut out: [Option<RVal>; 4] = [None, None, None, None];
     let mut any = false;
     for sym in &code.strict {
         // (In order: stop at the first read that would need the callee.)
@@ -2307,7 +2412,7 @@ fn eager_args(
         let v = match &args[k] {
             InlineArg::Leaf(Leaf::D(_) | Leaf::I(_)) => continue,
             InlineArg::Leaf(Leaf::Var(s, slot)) => match read_var(vars, env, *s, *slot) {
-                Some(v) => v.to_value(),
+                Some(v) => v.clone(),
                 None => break,
             },
             InlineArg::Leaf(Leaf::R(_)) => break,
@@ -2317,7 +2422,7 @@ fn eager_args(
                 }
                 let (Some(x), Some(y)) = (leaf_num(vars, env, regs, a), leaf_num(vars, env, regs, b)) else { break };
                 match arith_fast(*op, x, y) {
-                    Some(v) => v.into_value(),
+                    Some(v) => v,
                     None => break,
                 }
             }
@@ -2386,7 +2491,7 @@ fn frame_dies(interp: &Interp, env: &Env) -> bool {
 /// Whether `sym` is bound in `env`'s own frame to a promise not yet forced.
 fn unforced_promise(env: &Env, sym: Sym) -> bool {
     let frame = env.0.frame().borrow();
-    matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if p.value.borrow().is_none()))
+    matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if !p.is_forced()))
 }
 
 /// An active loop: break and next targets, its `LoopEnter` index and how
@@ -2748,8 +2853,11 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
             match &b.value {
                 Value::Closure(_) | Value::Builtin(_) => return Some(b.value.clone()),
                 Value::Promise(p) => match &*p.value.borrow() {
-                    Some(v @ (Value::Closure(_) | Value::Builtin(_))) => return Some(v.clone()),
-                    Some(v) if !v.is_missing_arg() => {}
+                    crate::value::PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => return Some(v.clone()),
+                    crate::value::PromiseVal::Boxed(v) if !v.is_missing_arg() => {}
+                    crate::value::PromiseVal::ScalarInt(_)
+                    | crate::value::PromiseVal::ScalarReal(_)
+                    | crate::value::PromiseVal::ScalarLgl(_) => {}
                     _ => return None,
                 },
                 _ => return None,

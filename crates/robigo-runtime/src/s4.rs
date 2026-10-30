@@ -662,7 +662,7 @@ impl Interp {
             let unforced_default = missing
                 && match &val {
                     Value::Promise(p) => {
-                        p.value.borrow().is_none() && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho))
+                        !p.is_forced() && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho))
                     }
                     v => !v.is_missing_arg(),
                 };

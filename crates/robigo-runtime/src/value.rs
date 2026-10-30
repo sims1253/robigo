@@ -533,10 +533,19 @@ pub struct Closure {
     pub jit: crate::vm::JitState,
 }
 
+#[derive(Clone)]
+pub enum PromiseVal {
+    Unforced,
+    ScalarInt(i32),
+    ScalarReal(f64),
+    ScalarLgl(Lgl),
+    Boxed(Value),
+}
+
 pub struct Promise {
     pub expr: Value,
     pub env: RefCell<Option<Env>>,
-    pub value: RefCell<Option<Value>>,
+    pub value: RefCell<PromiseVal>,
     pub forcing: Cell<bool>,
     /// Bytecode for `expr`, when the promise was created by compiled code.
     pub code: Option<Rc<crate::compile::Code>>,
@@ -548,21 +557,81 @@ impl Promise {
     }
 
     pub fn with_code(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
-        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(None), forcing: Cell::new(false), code }
+        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(PromiseVal::Unforced), forcing: Cell::new(false), code }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
+        let pval = match &value {
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarInt(v.data[0]),
+            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarReal(v.data[0]),
+            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarLgl(v.data[0]),
+            _ => PromiseVal::Boxed(value),
+        };
         Promise {
             expr,
             env: RefCell::new(None),
-            value: RefCell::new(Some(value)),
+            value: RefCell::new(pval),
             forcing: Cell::new(false),
             code: None,
         }
     }
 
+    #[inline(always)]
+    pub fn forced_int(expr: Value, x: i32) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarInt(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn forced_real(expr: Value, x: f64) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarReal(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn forced_lgl(expr: Value, x: Lgl) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarLgl(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    pub fn set_value(&self, value: Value) {
+        let pval = match &value {
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarInt(v.data[0]),
+            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarReal(v.data[0]),
+            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarLgl(v.data[0]),
+            _ => PromiseVal::Boxed(value),
+        };
+        *self.value.borrow_mut() = pval;
+    }
+
     pub fn value(&self) -> Option<Value> {
-        self.value.borrow().clone()
+        match &*self.value.borrow() {
+            PromiseVal::Unforced => None,
+            PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
+            PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
+            PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
+            PromiseVal::Boxed(v) => Some(v.clone()),
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_forced(&self) -> bool {
+        !matches!(*self.value.borrow(), PromiseVal::Unforced)
     }
 }
 
