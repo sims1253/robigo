@@ -88,8 +88,9 @@ share a method, which robigo adopts:
     `src/library` (833 match; the remaining file uses Latin-1 byte strings).
   - `tests/r`: conformance scripts whose stdout, stderr and exit status are
     recorded from `Rscript` (`scripts/regen-expected.sh`).
-- **A ratchet.** `tests/r/passing.txt` lists scripts that must keep
-  passing; a regression fails the build, new passes are added explicitly.
+- **A ratchet.** `tests/r/passing/` marks, one empty file per script, the
+  scripts that must keep passing; a regression fails the build, new passes
+  are added explicitly (one file per case, so branches never conflict).
 - **The C source is the spec.** Builtins are ports of the C functions they
   replace, organised one module per C file, with verbatim messages
   ("improvements are bugs").

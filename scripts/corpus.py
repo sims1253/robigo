@@ -7,16 +7,16 @@
     scripts/corpus.py run NAME [--jobs N] [--filter RE] [--shard I/N] [--update]
     scripts/corpus.py show NAME ID            # source, expected and actual output
     scripts/corpus.py score [--markdown]      # pass counts of every corpus
-    scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to passing.txt
+    scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to the ratchet
 
 A corpus lives in tests/corpora/NAME/ (see tests/corpora/README.md):
 cases (cases/*.R or cases.jsonl), expected.jsonl.gz (GNU R's stdout,
-stderr and exit status per case), passing.txt (the ratchet). `run`
-compares robigo's output with the expected bytes; a case passes only if
-stdout, stderr and the exit status all match. Cases in passing.txt that
-fail are regressions and make `run` exit with status 1. `--update` adds
-new passes to passing.txt (it never removes any). Results of the last run
-are written to .robigo/results/NAME.json.
+stderr and exit status per case), passing/ (the ratchet: one empty marker
+file per case, `<id>.pass`). `run` compares robigo's output with the
+expected bytes; a case passes only if stdout, stderr and the exit status
+all match. Cases in the ratchet that fail are regressions and make `run`
+exit with status 1. `--update` ratchets new passes (it never removes any).
+Results of the last run are written to .robigo/results/NAME.json.
 
 The robigo binary is $ROBIGO, else .robigo/bin/robigo (scripts/build.sh),
 else the release binary in cargo's target directory.
@@ -121,6 +121,14 @@ def corpus_conf(name, profile=None):
 
 def cdir(name):
     return os.path.join(CORPORA, name)
+
+
+def passing_dir(name):
+    return os.path.join(cdir(name), "passing")
+
+
+# Ratchet marker suffix: `passing/<case id>.pass`, one file per case.
+MARKER = ".pass"
 
 
 def ensure_natives():
@@ -256,17 +264,51 @@ def host_dependent(conf):
 
 
 def load_passing(name):
-    p = os.path.join(cdir(name), "passing.txt")
-    if not os.path.exists(p):
-        return set()
-    with open(p) as f:
-        return {l.strip() for l in f if l.strip() and not l.startswith("#")}
+    """The ratchet: case ids that must keep passing.
+
+    Each id is one empty marker file, `passing/<id>.pass` (an id with `/`
+    nests directories). One file per case, so two branches that ratchet
+    different cases add different files and never conflict on a shared line.
+    The old single `passing.txt` is still read while branches migrate
+    (`scripts/ratchet.py migrate`); a marker that names no case is an
+    error, where a dangling list entry used to be a silent no-op."""
+    d = passing_dir(name)
+    ids = set()
+    if os.path.isdir(d):
+        for root, _, files in os.walk(d):
+            for fn in files:
+                p = os.path.join(root, fn)
+                if not fn.endswith(MARKER):
+                    sys.exit(f"{p}: not a ratchet marker (markers are named <case>{MARKER})")
+                ids.add(os.path.relpath(p, d)[: -len(MARKER)].replace(os.sep, "/"))
+    legacy = os.path.join(cdir(name), "passing.txt")
+    if os.path.exists(legacy):
+        print(f"note: {os.path.relpath(legacy, ROOT)} is deprecated; run scripts/ratchet.py migrate",
+              file=sys.stderr)
+        with open(legacy) as f:
+            ids |= {l.strip() for l in f if l.strip() and not l.startswith("#")}
+    dangling = sorted(ids - {cid for cid, _ in load_cases(name)})
+    if dangling:
+        sys.exit(f"{name}: {len(dangling)} ratchet marker(s) name no case, e.g. {dangling[0]}; "
+                 "remove the marker or restore the case")
+    return ids
 
 
-def write_passing(name, ids):
-    with open(os.path.join(cdir(name), "passing.txt"), "w") as f:
-        for i in sorted(ids):
-            f.write(i + "\n")
+def add_passing(name, ids):
+    """Add case ids to the ratchet as marker files; never removes any."""
+    d = passing_dir(name)
+    added = []
+    for cid in sorted(ids):
+        parts = cid.split("/")
+        if not cid or cid.startswith("/") or ".." in parts:
+            sys.exit(f"refusing to ratchet {cid!r}: not a relative case id")
+        p = os.path.join(d, *parts) + MARKER
+        if os.path.exists(p):
+            continue
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").close()
+        added.append(cid)
+    return added
 
 
 def robigo_path(arg):
@@ -468,8 +510,8 @@ def cmd_run(a):
     for cid in regressions[:50]:
         print(f"  REGRESSION {cid}")
     if a.update and new:
-        write_passing(a.name, passing | ok)
-        print(f"added {len(new)} case(s) to tests/corpora/{a.name}/passing.txt")
+        added = add_passing(a.name, new)
+        print(f"ratcheted {len(added)} case(s) under tests/corpora/{a.name}/passing/")
     elif new and not a.quiet:
         print(f"  ({len(new)} new passes; --update records them)")
     return 1 if regressions else 0
@@ -531,9 +573,8 @@ def cmd_absorb(a):
         exp = load_expected(name, conf.get("expected_file", "expected.jsonl.gz"))
         ok = {i for i in ok if i in exp}
         old = load_passing(name)
-        if ok - old:
-            write_passing(name, old | ok)
-        print(f"{name}: {len(ok - old)} new pass(es) added")
+        added = add_passing(name, ok - old)
+        print(f"{name}: {len(added)} new pass(es) added")
 
 
 # --------------------------------------------------------------- import
