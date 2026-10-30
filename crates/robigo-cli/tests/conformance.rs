@@ -31,9 +31,22 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = e.unwrap().path();
         if p.is_dir() {
             collect(&p, out);
-        } else if p.extension().is_some_and(|x| x == "R") {
+        } else if p.extension().is_some_and(|x| x == "R") && enabled(&p) {
             out.push(p);
         }
+    }
+}
+
+// Feature requirements select the build that owns a fixture, without
+// changing its oracle or removing its ratchet marker.
+fn enabled(script: &Path) -> bool {
+    match std::fs::read_to_string(script.with_extension("requires")) {
+        Ok(features) => features.split_whitespace().all(|feature| match feature {
+            "bytecode-fidelity" => cfg!(feature = "bytecode-fidelity"),
+            other => panic!("unknown conformance feature requirement: {other}"),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => panic!("read feature requirements: {e}"),
     }
 }
 
@@ -236,6 +249,7 @@ fn conformance() {
     if let Some(f) = &filter {
         scripts.retain(|p| p.display().to_string().contains(f.as_str()));
     }
+    assert!(!scripts.is_empty(), "no enabled conformance scripts match {filter:?}");
     let show_diff = std::env::var_os("ROBIGO_CONF_DIFF").is_some();
 
     // Run on two worker threads.
@@ -442,5 +456,30 @@ fn ratchet_reads_legacy_list() {
     assert_eq!(load_ratchet(&root).unwrap().len(), 1);
     std::fs::write(root.join("tests/r/passing.txt"), "tests/r/basics/ghost.R\n").unwrap();
     assert!(load_ratchet(&root).is_err(), "a dangling legacy entry must be an error");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn feature_requirements_select_the_owning_build() {
+    let root = ratchet_fixture("features");
+    let script = root.join("tests/r/basics/arith.R");
+    assert!(enabled(&script));
+    std::fs::write(script.with_extension("requires"), "bytecode-fidelity\n").unwrap();
+    assert_eq!(enabled(&script), cfg!(feature = "bytecode-fidelity"));
+    let mut scripts = Vec::new();
+    collect(&root.join("tests/r"), &mut scripts);
+    assert_eq!(scripts.len(), usize::from(cfg!(feature = "bytecode-fidelity")));
+    // Selection must leave the fidelity fixture's ratchet intact.
+    mark(&root, "basics/arith.R");
+    assert_eq!(load_ratchet(&root).unwrap().len(), 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn feature_requirements_reject_unknown_features() {
+    let root = ratchet_fixture("unknown-feature");
+    let script = root.join("tests/r/basics/arith.R");
+    std::fs::write(script.with_extension("requires"), "misspelled-feature\n").unwrap();
+    assert!(std::panic::catch_unwind(|| enabled(&script)).is_err());
     std::fs::remove_dir_all(&root).unwrap();
 }

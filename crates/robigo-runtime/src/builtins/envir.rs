@@ -937,6 +937,9 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
                 }
                 Ok(v)
             }
+            // R: eval.c:do_eval also evaluates BCODESXP, rather than returning it.
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(_) => i.eval(&expr, &env),
             Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => i.eval(&expr, &env),
             v => {
                 i.visible = true;

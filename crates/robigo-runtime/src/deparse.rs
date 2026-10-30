@@ -493,6 +493,8 @@ impl D {
             }
             Value::Dots(_) => self.print("<...>"),
             Value::ExtPtr(_) => self.print("<pointer: 0x0>"),
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(_) => self.print("<bytecode>"),
             Value::Obj(_) => self.print("<object>"),
             Value::Lang(l) => self.deparse_lang(l, opts_in, fnarg, prev_left),
             Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_) => {

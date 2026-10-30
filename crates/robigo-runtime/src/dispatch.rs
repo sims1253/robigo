@@ -92,6 +92,8 @@ fn implicit_type_class(v: &Value) -> &'static str {
         Value::Closure(_) | Value::Builtin(_) => "function",
         Value::Env(_) => "environment",
         Value::Promise(_) => "promise",
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(_) => "bytecode",
         Value::Dots(_) => "...",
         Value::ExtPtr(_) => "externalptr",
         // R: attrib.c:R_data_class (OBJSXP)

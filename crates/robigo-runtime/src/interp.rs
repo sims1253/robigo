@@ -253,10 +253,21 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(b) => self.eval_bytecode(b, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
             _ => Ok(e.clone()),
         }
+    }
+
+    // R: eval.c:eval, BCODESXP. Avoid making the common evaluator directly
+    // recursive just for imported code; it changes LLVM's hot-path lowering.
+    #[cold]
+    #[inline(never)]
+    #[cfg(feature = "bytecode-fidelity")]
+    fn eval_bytecode(&mut self, b: &Bytecode, env: &Env) -> RResult<Value> {
+        self.eval(&b.expression, env)
     }
 
     // R: context.c:getLexicalCall

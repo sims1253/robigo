@@ -120,6 +120,26 @@ jobs:
           path: dist
           retention-days: 7
 
+  bytecode-fidelity:
+    if: ${{ inputs.perf_diagnostic != true }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bytecode-fidelity
+      - name: Bytecode metadata and encoding round trips
+        run: cargo test --release -p robigo-runtime -p robigo-capi --features bytecode-fidelity
+      - name: GNU bytecode fixtures in all three tiers
+        run: |
+          export ROBIGO_CONF_FILTER=tests/r/serialize/bytecode_
+          ROBIGO_COMPILE=0 cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+          ROBIGO_JIT=0 cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+          cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+
   corpora:
     needs: build
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}

@@ -69,6 +69,8 @@ pub fn sexptype(v: &Value) -> u8 {
         Value::Dots(_) => 17,
         Value::List(_) => 19,
         Value::Expr(_) => 20,
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(_) => 21,
         Value::ExtPtr(_) => 22,
         Value::Raw(_) => 24,
         Value::Obj(_) => 25,

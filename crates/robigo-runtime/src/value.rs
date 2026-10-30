@@ -13,6 +13,8 @@
 //! * Environments are reference objects (`Rc<EnvData>` with interior
 //!   mutability). Closure/environment cycles are not collected yet.
 
+#[cfg(feature = "bytecode-fidelity")]
+use std::cell::OnceCell;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -479,6 +481,9 @@ pub struct Pairlist {
 
 #[derive(Clone)]
 pub struct Closure {
+    /// GNU R bytecode retained independently of the executable source body.
+    #[cfg(feature = "bytecode-fidelity")]
+    pub gnu_bytecode: Option<Rc<Bytecode>>,
     /// Formals with their defaults; a missing default is the missing arg.
     pub formals: Rc<[Arg]>,
     pub body: Value,
@@ -585,6 +590,179 @@ pub enum Value {
     /// An `OBJSXP` (S4 object without a data part, `typeof` "S4" or
     /// "object"): nothing but attributes.
     Obj(Rc<Obj>),
+    #[cfg(feature = "bytecode-fidelity")]
+    Bytecode(Rc<Bytecode>),
+}
+
+/// GNU R's portable BCODESXP data. Instructions stay in R_bcDecode's integer
+/// representation; threaded opcode addresses are specific to GNU R's process.
+/// Constants retain the ReadBC stream's cell definitions and references because
+/// flattened Lang/Pairlist values cannot express shared CDR cells.
+#[derive(Clone)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct Bytecode {
+    pub attrs: AttrBox,
+    pub code: OnceCell<Value>,
+    pub instructions: BytecodeInstructions,
+    pub expression: Value,
+    pub reps: usize,
+    pub consts: OnceCell<Rc<Vec<Value>>>,
+    pub cells: Rc<BytecodeCells>,
+    pub rep_values: Rc<OnceCell<Vec<Value>>>,
+}
+
+#[cfg(feature = "bytecode-fidelity")]
+impl Bytecode {
+    pub fn code(&self) -> &Value {
+        self.code.get_or_init(|| crate::serialize::materialize_bytecode_code(self))
+    }
+    /// R's constant pool is inspected rarely; execution uses expression.
+    pub fn constants(&self) -> &[Value] {
+        self.consts.get_or_init(|| Rc::new(crate::serialize::materialize_bytecode_constants(self))).as_slice()
+    }
+}
+
+// Keep copying the cold BCODESXP metadata out of ordinary attribute updates.
+#[cold]
+#[inline(never)]
+#[cfg(feature = "bytecode-fidelity")]
+fn bytecode_attrs_slot(b: &mut Rc<Bytecode>) -> &mut AttrBox {
+    &mut Rc::make_mut(b).attrs
+}
+
+/// Cell operations are packed separately from their R objects. Integer
+/// records have no destructor; objects are visited only once on drop.
+#[derive(Clone, Default)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct BytecodeCells {
+    pub operations: BytecodeSpan,
+    pub operation_len: usize,
+    pub items: Vec<Value>,
+    pub encoded: Vec<BytecodeEncodedVector>,
+    pub bytes: Option<Rc<RefCell<BytecodeBytes>>>,
+    pub words: Option<Rc<RefCell<BytecodeWords>>>,
+    pub little_endian: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct BytecodeSpan {
+    pub chunk: usize,
+    pub offset: usize,
+}
+
+#[derive(Clone)]
+#[cfg(feature = "bytecode-fidelity")]
+pub enum BytecodeInstructions {
+    Encoded { span: BytecodeSpan, words: usize, version: i32, mismatch: bool },
+    Decoded(Value),
+}
+#[cfg(feature = "bytecode-fidelity")]
+impl BytecodeInstructions {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Encoded { words, .. } => *words,
+            Self::Decoded(v) => v.len(),
+        }
+    }
+    pub fn version(&self) -> Option<i32> {
+        match self {
+            Self::Encoded { version, .. } => Some(*version),
+            Self::Decoded(Value::Int(v)) => v.data.first().copied(),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct BytecodeEncodedVector {
+    pub flags: u32,
+    pub span: BytecodeSpan,
+    pub len: usize,
+    pub attrs: Value,
+}
+
+/// Bounded byte chunks avoid both per-vector R allocations and repeated
+/// reallocations of a large contiguous metadata buffer.
+#[derive(Default)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct BytecodeBytes {
+    pub chunks: Vec<Vec<u8>>,
+}
+#[cfg(feature = "bytecode-fidelity")]
+impl BytecodeBytes {
+    pub fn append(&mut self, bytes: &[u8]) -> BytecodeSpan {
+        if self.chunks.last().is_none_or(|c| c.capacity() - c.len() < bytes.len()) {
+            self.chunks.push(Vec::with_capacity(bytes.len().max(4096)));
+        }
+        let chunk = self.chunks.len() - 1;
+        let offset = self.chunks[chunk].len();
+        self.chunks[chunk].extend_from_slice(bytes);
+        BytecodeSpan { chunk, offset }
+    }
+}
+
+/// The replay log owns no R objects. Small chunks keep its backing allocation
+/// separate from the short-lived per-code builders and their unused capacity.
+#[derive(Default)]
+#[cfg(feature = "bytecode-fidelity")]
+pub struct BytecodeWords {
+    pub chunks: Vec<Vec<i64>>,
+}
+#[cfg(feature = "bytecode-fidelity")]
+impl BytecodeWords {
+    pub fn append(&mut self, words: &[i64]) -> BytecodeSpan {
+        if self.chunks.last().is_none_or(|c| c.capacity() - c.len() < words.len()) {
+            self.chunks.push(Vec::with_capacity(words.len().max(512)));
+        }
+        let chunk = self.chunks.len() - 1;
+        let offset = self.chunks[chunk].len();
+        self.chunks[chunk].extend_from_slice(words);
+        BytecodeSpan { chunk, offset }
+    }
+}
+
+#[cfg(feature = "bytecode-fidelity")]
+impl BytecodeCells {
+    pub fn record(operations: &mut Vec<i64>, value: i64) {
+        operations.push(value);
+    }
+    pub fn next_record(&self, pos: &mut usize) -> Option<i64> {
+        if *pos >= self.operation_len {
+            return None;
+        }
+        let arena = self.words.as_ref()?.borrow();
+        let record = *arena.chunks[self.operations.chunk].get(self.operations.offset + *pos)?;
+        *pos += 1;
+        Some(record)
+    }
+    pub fn integer(operations: &mut Vec<i64>, value: i32) {
+        Self::record(operations, (value as i64) << 3);
+    }
+    #[inline(always)]
+    pub fn item(&mut self, operations: &mut Vec<i64>, value: &Value, nested: bool) {
+        match value {
+            // These carry no heap ownership. Symbol IDs are the same interned
+            // IDs held by Value::Sym; the writer still resolves stream refs.
+            Value::Null => Self::record(operations, 3),
+            Value::Sym(symbol) => Self::record(operations, ((symbol.0 as i64) << 3) | 4),
+            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                Self::record(operations, ((v.data[0] as i64) << 3) | 5);
+            }
+            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                Self::record(operations, -1);
+                Self::record(operations, v.data[0].to_bits() as i64);
+            }
+            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => {
+                Self::record(operations, ((v.data[0] as i64) << 3) | 6);
+            }
+            _ => {
+                Self::record(operations, ((self.items.len() as i64) << 3) | if nested { 2 } else { 1 });
+                self.items.push(value.clone());
+            }
+        }
+    }
 }
 
 /// The body of an `OBJSXP`: only its attributes are used (`data` stays
@@ -931,6 +1109,8 @@ impl Value {
             Value::Pairlist(_) => "pairlist",
             Value::Lang(_) => "language",
             Value::Closure(_) => "closure",
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(_) => "bytecode",
             Value::Builtin(b) => match b.kind {
                 BuiltinKind::Builtin => "builtin",
                 BuiltinKind::Special => "special",
@@ -986,6 +1166,8 @@ impl Value {
             Value::Pairlist(p) => &p.attrs,
             Value::Lang(l) => &l.attrs,
             Value::Closure(c) => &c.attrs,
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(b) => &b.attrs,
             Value::Obj(o) => &o.attrs,
             _ => return None,
         };
@@ -1032,6 +1214,8 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(b) => bytecode_attrs_slot(b),
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
             _ => return None,
         })
@@ -1206,6 +1390,8 @@ impl Value {
             (Value::Sym(a), Value::Sym(b)) => a == b,
             (Value::Env(a), Value::Env(b)) => a.ptr_eq(b),
             (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
+            #[cfg(feature = "bytecode-fidelity")]
+            (Value::Bytecode(a), Value::Bytecode(b)) => Rc::ptr_eq(a, b),
             (Value::Builtin(a), Value::Builtin(b)) => std::ptr::eq(*a, *b),
             (Value::Lang(a), Value::Lang(b)) => Rc::ptr_eq(a, b),
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
