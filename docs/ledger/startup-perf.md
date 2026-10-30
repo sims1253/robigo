@@ -60,9 +60,18 @@ lands; the natives work is PR #78 below.
   environment and package bytes. Do not compare to older container-built
   binary counts as a paired speedup.
 
+- Re-profiled #92 with the complete cache. Self instructions remain
+  VM run_with 7.92M, memcpy 5.12M, Reader::int 5.08M,
+  read_item_flags0 4.44M, read_bc_lang 3.14M. No new reader optimization
+  is claimed in this round. An int-inlining candidate was deferred
+  before compilation while main advanced with #95; a useful next
+  experiment needs a fresh paired baseline on that revision.
+- Rebased cleanly onto d2ce510 (#95). Source changes in this round do
+  not alter reader semantics; the release rebuild is queued behind
+  other tracks' foreground builds. No build was killed.
+
 La_rs follow-up: GNU R src/main/names.c registers La_rs with opcode 1,
-internal/evaluated, arity 2. src/main/lapack.c dispatches through the
-LAPACK module; src/modules/lapack/Lapack.c:La_rs calls dsyevr_ with
+internal/evaluated, arity 2. the LAPACK dispatcher calls src/modules/lapack/Lapack.c:La_rs calls dsyevr_ with
 JOBZ=N/V, RANGE=A, UPLO=L, ABSTOL=0 and queries LWORK/LIWORK first.
 Missing: the runtime DEFS registration and SEXP wrapper, plus a callable
 native dsyevr_ binding. R_ext/Lapack.h already declares the function
