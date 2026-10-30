@@ -639,6 +639,8 @@ fn fast_replace(
 pub fn quote_if_needed(v: Value) -> Value {
     match &v {
         Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => Value::call_sym("quote", vec![v]),
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(_) => Value::call_sym("quote", vec![v]),
         _ => v,
     }
 }
@@ -1544,9 +1546,14 @@ fn do_tilde(_: &mut Interp, call: &Value, _: Vec<Arg>, env: &Env) -> RResult<Val
 // R: eval.c:do_getconst. The construction module owns the feature build's
 // constant pool; the default build keeps GNU R's reader behavior.
 #[cfg(not(feature = "bytecode-fidelity"))]
-fn do_getconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     super::check_arity(&args, 2, "getconst", call)?;
-    let n = as_integer(&args[1].value);
+    let count = super::arg(&args, 1);
+    let n = if count.is_atomic() && !count.is_empty() {
+        crate::coerce::as_integer(&i.coerce(&crate::coerce::first_elt(&count), VType::Int)?)
+    } else {
+        NA_INTEGER
+    };
     let Value::List(buf) = &args[0].value else {
         return Err(Flow::error("constant buffer must be a generic vector"));
     };

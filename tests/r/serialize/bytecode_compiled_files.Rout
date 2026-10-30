@@ -20,3 +20,18 @@
 [1] 52
 [1] 43
 [1] 52
+saving to file "compiled-fixtures/test-out.Rc" ... done
+[1] TRUE
+[1] 43
+[1] 47
+saving to file "compiled-fixtures/test-out-ascii.Rc" ... done
+[1] 49
+saving to file "compiled-fixtures/test-out-v2.Rc" ... done
+[1] 62
+saving to file "compiled-fixtures/test-out-v3.Rc" ... done
+[1] 72
+[1] 19
+[1] 26
+saving to file "compiled-fixtures/test-sq.Rc" ... done
+[1] 19
+[1] 26
