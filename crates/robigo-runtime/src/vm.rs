@@ -2068,8 +2068,8 @@ fn try_inline_site(
 
 /// An interpreted call taking the inlined path (see [`try_inline_site`]).
 /// Interpreted callers outside locked namespaces stay generic: only
-/// installed code observes the inline. There is no memo: interpreted
-/// callers of installed wrappers are `Eval` fragments and cold.
+/// installed code observes the inline. Resolutions are memoized per
+/// caller and call expression, as for compiled call sites.
 #[cold]
 #[inline(never)]
 pub(crate) fn try_inline_expr(
