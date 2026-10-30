@@ -3,6 +3,7 @@
 //! and 3, including references, environments, ALTREP compact sequences
 //! and byte-code (which is read back as the original expression).
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::env::Env;
@@ -71,6 +72,48 @@ enum Format {
     Xdr,
     Binary,
     Ascii,
+}
+
+thread_local! {
+    /// Calls with LANGSXP cells among their arguments, by the address of
+    /// their `Lang`: each index identifies an argument cell. GNU R's `substitute()`
+    /// leaves an unbound `...` as `LCONS(R_DotsSymbol, R_NilValue)` (every
+    /// class generator's body has one), and only `serialize()` shows it, so
+    /// it is kept here rather than in every call. The weak reference keeps
+    /// the address from being reused while the entry exists; entries of
+    /// dropped calls are swept when the map has doubled.
+    /// R: duplicate.c:duplicate1 normalizes duplicated call tails to LISTSXP,
+    /// so metadata intentionally does not follow a cloned Lang.
+    static LANG_CELLS: std::cell::RefCell<HashMap<usize, (std::rc::Weak<Lang>, Vec<usize>)>> =
+        std::cell::RefCell::new(HashMap::new());
+    static LANG_CELLS_SWEEP: std::cell::Cell<usize> = const { std::cell::Cell::new(64) };
+}
+
+/// Record only exceptional calls with LANGSXP argument cells.
+#[cold]
+pub fn set_lang_cells(l: &Rc<Lang>, cells: Vec<usize>) {
+    if cells.is_empty() {
+        return;
+    }
+    LANG_CELLS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= LANG_CELLS_SWEEP.with(|c| c.get()) {
+            m.retain(|_, e| e.0.strong_count() > 0);
+            LANG_CELLS_SWEEP.with(|c| c.set((2 * m.len()).max(64)));
+        }
+        m.insert(Rc::as_ptr(l) as usize, (Rc::downgrade(l), cells));
+    });
+}
+
+/// The LANGSXP argument cells of `l` (see `set_lang_cells`).
+fn lang_cells(l: &Rc<Lang>) -> Vec<usize> {
+    LANG_CELLS.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() {
+            return Vec::new();
+        }
+        m.get(&(Rc::as_ptr(l) as usize)).filter(|e| e.0.strong_count() > 0).map_or_else(Vec::new, |e| e.1.clone())
+    })
 }
 
 /// A node of a pairlist-like chain while reading.
@@ -549,6 +592,11 @@ impl<'a, 'i> Reader<'a, 'i> {
         let mut ty = head_type;
         let mut head_attr = Value::Null;
         while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
+            // R: serialize.c:ReadItem_Iterative preserves LANGSXP tail cells.
+            // Keep all exceptional bookkeeping out of the ordinary reader.
+            if ty == LANGSXP && !nodes.is_empty() && head_type == LANGSXP {
+                return self.read_call_tail(nodes, head_attr, flags);
+            }
             let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
             let car = self.read_item()?;
@@ -632,6 +680,45 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(v)
             }
         }
+    }
+
+    // R: serialize.c:ReadItem_Iterative. Continue a call once a LANGSXP
+    // argument cell is encountered. Only this rare path needs cell indices;
+    // PNode and the ordinary conversion loop retain their original layout.
+    #[cold]
+    fn read_call_tail(&mut self, mut nodes: Vec<PNode>, head_attr: Value, mut flags: u32) -> RResult<Value> {
+        let mut cells = Vec::new();
+        let mut ty = flags & 255;
+        while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
+            let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+            let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
+            let car = self.read_item()?;
+            if ty == LANGSXP {
+                cells.push(nodes.len() - 1);
+            }
+            nodes.push(PNode { attr, tag, car });
+            if matches!(ty, CLOSXP | PROMSXP) {
+                break;
+            }
+            flags = self.int()? as u32;
+            ty = flags & 255;
+        }
+        let cdr = self.read_item_flags(flags)?;
+        let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
+        if let Value::Pairlist(p) = cdr {
+            match Rc::try_unwrap(p) {
+                Ok(mut p) => items.append(&mut p.items),
+                Err(p) => items.extend(p.items.iter().cloned()),
+            }
+        }
+        let mut v = Value::Lang(Rc::new(Lang::from_items(items, None)));
+        // Attach attributes before creating a weak registry reference:
+        // Rc::make_mut can otherwise dissociate that reference.
+        set_attr_pairlist(&mut v, head_attr);
+        if let Value::Lang(l) = &v {
+            set_lang_cells(l, cells);
+        }
+        Ok(v)
     }
 
     fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
@@ -1183,7 +1270,7 @@ impl Writer<'_> {
     fn altrep_seq(&mut self, class: &str, ty: u32, n: usize, n1: f64, inc: f64) {
         self.flags(ALTREP_SXP, 0, false, false, false);
         let info = vec![Arg::pos(Value::sym(class)), Arg::pos(Value::sym("base")), Arg::pos(Value::int(ty as i32))];
-        self.pairlist_items(LISTSXP, &info, None);
+        self.pairlist_items(LISTSXP, &info, None, &[]);
         self.item(&Value::reals(vec![n as f64, n1, inc]));
         self.int(NILVALUE_SXP as i32);
     }
@@ -1206,10 +1293,18 @@ impl Writer<'_> {
             self.int(i as i32);
         }
     }
-    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>) {
+    /// The cells of a pairlist or call: the first of type `ty`, the others
+    /// LISTSXP unless argument k - 1 occurs in `lang_cells`.
+    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>, lang_cells: &[usize]) {
         for (k, a) in items.iter().enumerate() {
             let has_attr = k == 0 && attr_of.is_some_and(|v| v.has_attrs());
-            let t = if k == 0 { ty } else { LISTSXP };
+            let t = if k == 0 {
+                ty
+            } else if lang_cells.contains(&(k - 1)) {
+                LANGSXP
+            } else {
+                LISTSXP
+            };
             self.flags(t, 0, false, has_attr, a.tag.is_some());
             if has_attr {
                 self.attrs(attr_of.unwrap());
@@ -1296,9 +1391,9 @@ impl Writer<'_> {
                     }
                 }
             }
-            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v)),
-            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v)),
-            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None),
+            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), &[]),
+            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
+            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);
                 if has_attr {
@@ -1499,4 +1594,12 @@ pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
 /// Serialize to an XDR version-3 stream.
 pub fn serialize(v: &Value) -> Vec<u8> {
     serialize_version(v, 3)
+}
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    #[test]
+    fn call_cells_do_not_enlarge_deserialization_nodes() {
+        assert_eq!(std::mem::size_of::<super::PNode>(), 48);
+    }
 }
