@@ -19,6 +19,7 @@ pub static DEFS: &[Builtin] = &[
     internal("disassemble", disassemble, 1),
     internal("is.builtin.internal", is_internal, 1),
     internal("growconst", growconst, 1),
+    internal("putconst", putconst, 3),
     internal("getconst", getconst, 2),
 ];
 
@@ -301,6 +302,46 @@ fn growconst(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let mut v = x.data.clone();
     v.resize(v.len() * 2, Value::Null);
     Ok(Value::list(v))
+}
+// R: eval.c:do_putconst. Performs argument validation, duplicate constant lookup
+// via R_compute_identical (flags 16: take closure environments into account),
+// and index reporting. In-place mutation of an aliased buffer requires core's
+// shared-list mutation (SET_VECTOR_ELT through an alias).
+fn putconst(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 3, "putconst", call)?;
+    let count_val = arg(&args, 1);
+    let n = if count_val.is_atomic() && !count_val.is_empty() {
+        crate::coerce::as_integer(&i.coerce(&crate::coerce::first_elt(&count_val), VType::Int)?)
+    } else {
+        NA_INTEGER
+    };
+    let Value::List(buf) = &args[0].value else {
+        return Err(Flow::error("constant buffer must be a generic vector"));
+    };
+    if n < 0 || n as usize >= buf.data.len() {
+        return Err(Flow::error("bad constCount value"));
+    }
+    let x = arg(&args, 2);
+    let count = n as usize;
+    for (idx, y) in buf.data[..count].iter().enumerate() {
+        if x.ptr_eq(y)
+            || crate::builtins::identical::identical_flags(
+                &x,
+                y,
+                crate::builtins::identical::IdFlags { ignore_env: false, ..Default::default() },
+            )
+        {
+            return Ok(Value::int(idx as i32));
+        }
+    }
+    let mut buf_val = args.remove(0).value;
+    if let Value::List(ref mut rc) = buf_val {
+        if let Some(vec) = Rc::get_mut(rc) {
+            vec.data[count] = x;
+            return Ok(Value::int(count as i32));
+        }
+    }
+    Err(Flow::error("robigo: shared-list mutation in putconst is blocked on core (SET_VECTOR_ELT through alias)"))
 }
 fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "getconst", call)?;

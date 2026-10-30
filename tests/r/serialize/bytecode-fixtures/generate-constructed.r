@@ -10,3 +10,5 @@ for (v in 2:3) saveRDS(b,paste0(p,'constructed-code-v',v,'.rds'),version=v,compr
 b <- readRDS(paste0(p,'body-code.rds'))
 b <- .Internal(mkCode(c(12L,16L,0L,1L),list(42L,b)))
 saveRDS(b,paste0(p,'constructed-imported-inner.rds'),compress=FALSE)
+fcmp <- compiler::cmpfun(function(x) x + 1L)
+saveRDS(fcmp,paste0(p,'cmpfun-simple.rds'),compress=FALSE)
