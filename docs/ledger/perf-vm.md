@@ -70,6 +70,26 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - Core's finalizer reachability work is active. Keep Value/Promise layout
   unchanged; unboxed promise storage remains a coordinated follow-up.
 
+### Round 9 verification
+
+- Corrected candidate on fb99c0b: **249/252 -> 251/252** conformance
+  matches in AST/VM/JIT, no tier differences and no lost passes. Added
+  base-isvector-context and compiled-isvector-missing to the ratchet.
+  The unchanged user-closure reproduction is the sole unmatched script.
+- Final focused FastR slice **118/119 -> 119/119**, zero regressions;
+  recorded builtins/TestBuiltin_lapply/245e62b143e432a3 as a new pass.
+- All 83 benchmark stdout/stderr/status triples are identical to saved
+  main. Fresh main instructions: 82 fully matching cases, geometric mean
+  **0.492429** GNU R, all 82 faster. Of these, 71 exit successfully
+  (geomean **0.483327**); 11 are matching error exits. Candidate
+  instruction comparison is running; do not reuse older benchmark rows.
+- Shared-target build failed with missing robigo_syntax::parse_data from
+  another worktree's artifact. Reflinked the stable round 8 private target,
+  cleaned workspace crates only, and rebuilt in .robigo/r9/target.
+- #102 merged during verification. Rebased onto d81d29c; ledger conflict
+  preserves both rounds. The isolated performance pair remains based on
+  fb99c0b. Rebased build and runtime tests run in the private target.
+
 ## 2026-10-30: round 8, CSV connection formatting
 
 - Started at d2ce510, rebased before filing onto f5dae40 (#96/#97).
