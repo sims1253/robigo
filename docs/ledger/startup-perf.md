@@ -7,6 +7,32 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 9): remaining native bridge boundary
+
+- Rechecked GNU R 4.5.0 src/main/names.c: La_rs has eval=11, arity=2,
+  opcode 1 (and opcode 5 in the alternate HAVE_LAPACK configuration).
+  src/main/lapack.c loads the module; src/modules/lapack/Lapack.c:La_rs
+  is the object wrapper to port, not an eigenvalue algorithm to replace.
+- Exact native symbol: dsyevr_. Binding: R_ext/Lapack.h:1328,
+  F77_NAME(dsyevr), with arguments jobz/range/uplo, n/a/lda, vl/vu/il/iu,
+  abstol/m/w/z/ldz/isuppz, work/lwork/iwork/liwork/info, followed by
+  three Fortran character lengths. On this GNU Fortran ABI those are
+  size_t values 1,1,1 (Rust usize). La_INT is the native integer ABI.
+  Query both workspace sizes with lwork=liwork=-1 before the real call.
+  The wrapper copies input because LAPACK overwrites it; JOBZ=N/V,
+  RANGE=A, UPLO=L, ABSTOL=0. Preserve its errors and result list names.
+- The stats archive pulls only its referenced LAPACK objects and does
+  not provide dsyevr_ or the La_rs object wrapper. Next work crosses
+  into native bindings/build ownership: build GNU R's LAPACK module
+  against robigo's API, or expose this symbol and port that wrapper.
+  Check eigenvalues/vectors, nonsquare input, zero dimensions and
+  only.values=NA against the oracle. spectralnorm_math is still wrong,
+  so exclude its instruction counts from speed claims.
+- library(stats) remains at the round 8 measurement 173.122M, 0.667x
+  GNU R. No additional startup speedup is claimed for the gate changes.
+  Next profile the rebased reader, then measure a single reduction in
+  Reader::int/read_item_flags0/read_bc_lang allocations before keeping it.
+
 ## 2026-10-30 (round 9): four-way exact-artifact measurement
 
 One foreground robigo-oracle:4.5.0 container, R 4.5.0-3, valgrind 3.24.0,
