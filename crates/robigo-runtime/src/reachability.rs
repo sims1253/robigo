@@ -434,6 +434,7 @@ mod tests {
         let b = key();
         let promise = Value::Promise(Rc::new(Promise::new(b.clone(), env(&a).clone())));
         let closure = Value::Closure(Rc::new(Closure {
+            gnu_bytecode: None,
             formals: vec![Arg::pos(promise)].into(),
             body: Value::Null,
             env: env(&a).clone(),
@@ -459,6 +460,7 @@ mod tests {
         let body = Value::lang(Value::sym("f"), vec![]);
         let code = crate::compile::compile_thunk(&body).unwrap();
         let instance_method = Value::Closure(Rc::new(Closure {
+            gnu_bytecode: None,
             formals: vec![].into(),
             body: Value::Null,
             env: env(&key).clone(),
@@ -470,6 +472,7 @@ mod tests {
         }));
         *code.call_sites[0].memo.borrow_mut() = Some((0, 0, instance_method));
         let constructor = Closure {
+            gnu_bytecode: None,
             formals: vec![].into(),
             body,
             env: env(&root).clone(),
