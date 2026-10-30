@@ -59,6 +59,79 @@ fn gather(src: &Value, idx: &[usize]) -> Value {
     }
 }
 
+/// Efficiently repeat `vals` to length `n` without allocating index vectors.
+fn repeat_to_len(vals: &Value, n: usize) -> Value {
+    let lendat = vals.len();
+    if lendat == 0 || n == 0 {
+        return match vals {
+            Value::Lgl(_) => Value::lgls(vec![]),
+            Value::Int(_) => Value::ints(vec![]),
+            Value::Real(_) => Value::reals(vec![]),
+            Value::Cplx(_) => Value::cplxs(vec![]),
+            Value::Str(_) => Value::strs(vec![]),
+            Value::Raw(_) => Value::raws(vec![]),
+            Value::List(_) => Value::list(vec![]),
+            Value::Expr(_) => Value::expr_vec(vec![]),
+            _ => Value::Null,
+        };
+    }
+    if lendat == 1 {
+        return match vals {
+            Value::Real(r) => Value::reals(vec![r.data[0]; n]),
+            Value::Int(v) => Value::ints(vec![v.data[0]; n]),
+            Value::Lgl(v) => Value::lgls(vec![v.data[0]; n]),
+            Value::Str(v) => Value::strs(vec![v.data[0].clone(); n]),
+            Value::Cplx(v) => Value::cplxs(vec![v.data[0]; n]),
+            Value::Raw(v) => Value::raws(vec![v.data[0]; n]),
+            Value::List(v) => Value::list(vec![v.data[0].clone(); n]),
+            Value::Expr(v) => Value::expr_vec(vec![v.data[0].clone(); n]),
+            _ => gather(vals, &vec![0; n]),
+        };
+    }
+    if lendat == n {
+        return match vals {
+            Value::Real(r) => Value::reals(r.data.clone()),
+            Value::Int(v) => Value::ints(v.data.clone()),
+            Value::Lgl(v) => Value::lgls(v.data.clone()),
+            Value::Str(v) => Value::strs(v.data.clone()),
+            Value::Cplx(v) => Value::cplxs(v.data.clone()),
+            Value::Raw(v) => Value::raws(v.data.clone()),
+            Value::List(v) => Value::list(v.data.clone()),
+            Value::Expr(v) => Value::expr_vec(v.data.clone()),
+            _ => {
+                let idx: Vec<usize> = (0..n).collect();
+                gather(vals, &idx)
+            }
+        };
+    }
+    let q = n / lendat;
+    let rem = n % lendat;
+    macro_rules! rep {
+        ($v:expr, $ctor:ident) => {{
+            let mut data = Vec::with_capacity(n);
+            for _ in 0..q {
+                data.extend_from_slice(&$v.data);
+            }
+            data.extend_from_slice(&$v.data[..rem]);
+            Value::$ctor(data)
+        }};
+    }
+    match vals {
+        Value::Real(r) => rep!(r, reals),
+        Value::Int(v) => rep!(v, ints),
+        Value::Lgl(v) => rep!(v, lgls),
+        Value::Str(v) => rep!(v, strs),
+        Value::Raw(v) => rep!(v, raws),
+        Value::Cplx(v) => rep!(v, cplxs),
+        Value::List(v) => rep!(v, list),
+        Value::Expr(v) => rep!(v, expr_vec),
+        _ => {
+            let idx: Vec<usize> = (0..n).map(|k| k % lendat).collect();
+            gather(vals, &idx)
+        }
+    }
+}
+
 /// The elements of the `nrow` x `ncol` column-major `src` in row-major
 /// order (R: array.c:do_transpose's loop, "filling in columnwise, accessing
 /// row-wise"): element `i + j * nrow` for `i` in rows, `j` in columns.
@@ -106,53 +179,33 @@ fn na_vector(t: VType, n: usize, cplx_im_zero: bool) -> Value {
     }
 }
 
-/// `src[idx[k]]` gathered from several same-typed sources: `map[k] =
-/// (source, index)`.
-fn gather_multi(t: VType, srcs: &[Value], map: &[(usize, usize)]) -> Value {
-    macro_rules! g {
-        ($variant:ident, $ctor:ident) => {{
-            let data = map
-                .iter()
-                .map(|&(a, k)| match &srcs[a] {
-                    Value::$variant(x) => x.data[k].clone(),
-                    _ => unreachable!(),
-                })
-                .collect();
-            Value::$ctor(data)
-        }};
+fn dims_slice(v: &Value) -> &[i32] {
+    match v.attrs() {
+        Some(attrs) => match attrs.get(s::DIM) {
+            Some(Value::Int(d)) => &d.data,
+            _ => &[],
+        },
+        None => &[],
     }
-    match t {
-        VType::Lgl => g!(Lgl, lgls),
-        VType::Int => g!(Int, ints),
-        VType::Real => g!(Real, reals),
-        VType::Cplx => g!(Cplx, cplxs),
-        VType::Str => g!(Str, strs),
-        VType::Raw => g!(Raw, raws),
-        VType::List => g!(List, list),
-        _ => Value::Null,
-    }
-}
-
-fn is_matrix(v: &Value) -> bool {
-    matches!(v.get_attr(s::DIM), Some(d) if d.len() == 2)
 }
 
 fn dims_of(v: &Value) -> Vec<i32> {
-    match v.get_attr(s::DIM) {
-        Some(Value::Int(d)) => d.data.clone(),
-        _ => vec![],
-    }
+    dims_slice(v).to_vec()
+}
+
+fn is_matrix(v: &Value) -> bool {
+    dims_slice(v).len() == 2
 }
 
 /// R's `nrows()`.
 fn nrows(v: &Value) -> usize {
-    let d = dims_of(v);
+    let d = dims_slice(v);
     if d.is_empty() { v.len() } else { d[0] as usize }
 }
 
 /// R's `ncols()`.
 fn ncols(v: &Value) -> usize {
-    let d = dims_of(v);
+    let d = dims_slice(v);
     if d.len() >= 2 { d[1] as usize } else { 1 }
 }
 
@@ -280,8 +333,9 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     let (nr, nc) = (nr as usize, nc as usize);
     let n = nr * nc;
     let mut ans = if lendat > 0 {
-        // R: duplicate.c:copyMatrix
-        let idx: Vec<usize> = if byrow != 0 {
+        if byrow == 0 {
+            repeat_to_len(&vals, n)
+        } else {
             let mut idx = vec![0usize; n];
             let mut sidx = 0;
             for r in 0..nr {
@@ -293,11 +347,8 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
                     }
                 }
             }
-            idx
-        } else {
-            (0..n).map(|k| k % lendat).collect()
-        };
-        gather(&vals, &idx)
+            gather(&vals, &idx)
+        }
     } else {
         na_vector(t, n, true)
     };
@@ -346,7 +397,7 @@ fn do_array(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     }
     let nans = d as usize;
     let mut ans = if nans > 0 && lendat > 0 {
-        gather(&vals, &(0..nans).map(|k| k % lendat).collect::<Vec<_>>())
+        repeat_to_len(&vals, nans)
     } else {
         match t {
             VType::List | VType::Expr => {
@@ -1720,7 +1771,7 @@ fn cbind(
         }
     }
     for (na, u) in args.iter().enumerate() {
-        let d = dims_of(u);
+        let d = dims_slice(u);
         if d.len() == 2 {
             if mrows == -1 {
                 mrows = d[0] as i64;
@@ -1738,7 +1789,7 @@ fn cbind(
     }
     let mut warned = false;
     for (na, u) in args.iter().enumerate() {
-        let d = dims_of(u);
+        let d = dims_slice(u);
         if d.len() == 2 {
             let dn = u.get_attr(s::DIMNAMES).unwrap_or(Value::Null);
             if dn.len() == 2 {
@@ -1771,39 +1822,20 @@ fn cbind(
     }
     // Fill the result column by column.
     let mut srcs: Vec<Value> = Vec::new();
-    let mut map: Vec<(usize, usize)> = Vec::with_capacity(rows * cols);
-    for u in args {
-        let umatrix = is_matrix(u);
-        if !(umatrix || u.len() >= lenmin) {
-            continue;
-        }
-        if mode == VType::Null {
-            continue;
-        }
-        let cu = coerce_for_bind(i, u, mode, false)?;
-        let k = cu.len();
-        let idx = if umatrix { k } else { rows };
-        if k == 0 {
-            continue;
-        }
-        let a = srcs.len();
-        srcs.push(cu);
-        for m in 0..idx {
-            map.push((a, m % k));
+    if mode != VType::Null {
+        for u in args {
+            let umatrix = is_matrix(u);
+            if !(umatrix || u.len() >= lenmin) {
+                continue;
+            }
+            let cu = coerce_for_bind(i, u, mode, false)?;
+            srcs.push(cu);
         }
     }
     let mut result = if mode == VType::Null {
         Value::lgls(vec![])
-    } else if map.len() == rows * cols {
-        gather_multi(mode, &srcs, &map)
     } else {
-        // zero-length pieces (only possible with rows == 0)
-        let mut v = na_vector(mode, rows * cols, false);
-        if map.len() < rows * cols {
-            let filled = gather_multi(mode, &srcs, &map);
-            v = concat_pad(mode, filled, rows * cols);
-        }
-        v
+        fill_cbind(mode, &srcs, rows, cols)
     };
     result.set_attr_raw(s::DIM, Value::ints(vec![rows as i32, cols as i32]));
     if have_cnames || have_rnames {
@@ -1842,16 +1874,188 @@ fn cbind(
     Ok(result)
 }
 
-fn concat_pad(mode: VType, v: Value, n: usize) -> Value {
-    let pad = na_vector(mode, n.saturating_sub(v.len()), false);
-    let mut map = Vec::new();
-    for k in 0..v.len() {
-        map.push((0, k));
+fn fill_cbind(mode: VType, srcs: &[Value], rows: usize, cols: usize) -> Value {
+    if rows == 0 || cols == 0 {
+        return na_vector(mode, rows * cols, false);
     }
-    for k in 0..pad.len() {
-        map.push((1, k));
+    macro_rules! dispatch_cbind_copy {
+        ($ctor:ident, $zero:expr, $na:expr, $field:ident) => {{
+            let mut out = vec![$zero; rows * cols];
+            let mut n = 0usize; // column offset
+            for u in srcs {
+                let umatrix = is_matrix(u);
+                let ucols = if umatrix { ncols(u) } else { 1 };
+                let k = u.len();
+                if k == 0 {
+                    continue;
+                }
+                let data = match u {
+                    Value::$ctor(v) => &v.data,
+                    _ => unreachable!(),
+                };
+                if umatrix {
+                    let total = ucols * rows;
+                    out[(n * rows)..(n * rows + total)].copy_from_slice(&data[..total]);
+                    n += ucols;
+                } else {
+                    let dst_slice = &mut out[(n * rows)..((n + 1) * rows)];
+                    for r in 0..rows {
+                        dst_slice[r] = data[r % k];
+                    }
+                    n += 1;
+                }
+            }
+            if n < cols {
+                for c in n..cols {
+                    for r in 0..rows {
+                        out[c * rows + r] = $na;
+                    }
+                }
+            }
+            Value::$field(out)
+        }};
     }
-    gather_multi(mode, &[v, pad], &map)
+    macro_rules! dispatch_cbind_clone {
+        ($ctor:ident, $zero:expr, $na:expr, $field:ident) => {{
+            let mut out = vec![$zero; rows * cols];
+            let mut n = 0usize; // column offset
+            for u in srcs {
+                let umatrix = is_matrix(u);
+                let ucols = if umatrix { ncols(u) } else { 1 };
+                let k = u.len();
+                if k == 0 {
+                    continue;
+                }
+                let data = match u {
+                    Value::$ctor(v) => &v.data,
+                    _ => unreachable!(),
+                };
+                if umatrix {
+                    let total = ucols * rows;
+                    out[(n * rows)..(n * rows + total)].clone_from_slice(&data[..total]);
+                    n += ucols;
+                } else {
+                    let dst_slice = &mut out[(n * rows)..((n + 1) * rows)];
+                    for r in 0..rows {
+                        dst_slice[r] = data[r % k].clone();
+                    }
+                    n += 1;
+                }
+            }
+            if n < cols {
+                for c in n..cols {
+                    for r in 0..rows {
+                        out[c * rows + r] = $na;
+                    }
+                }
+            }
+            Value::$field(out)
+        }};
+    }
+    match mode {
+        VType::Real => dispatch_cbind_copy!(Real, 0.0f64, NA_REAL, reals),
+        VType::Int => dispatch_cbind_copy!(Int, 0i32, NA_INTEGER, ints),
+        VType::Lgl => dispatch_cbind_copy!(Lgl, 0i32, NA_LOGICAL, lgls),
+        VType::Raw => dispatch_cbind_copy!(Raw, 0u8, 0u8, raws),
+        VType::Cplx => dispatch_cbind_copy!(Cplx, Complex::new(0.0, 0.0), Complex::new(NA_REAL, 0.0), cplxs),
+        VType::Str => dispatch_cbind_clone!(Str, rstr(""), None, strs),
+        VType::List => dispatch_cbind_clone!(List, Value::Null, Value::Null, list),
+        _ => na_vector(mode, rows * cols, false),
+    }
+}
+
+fn fill_rbind(mode: VType, srcs: &[Value], rows: usize, cols: usize) -> Value {
+    if rows == 0 || cols == 0 {
+        return na_vector(mode, rows * cols, false);
+    }
+    macro_rules! dispatch_rbind_copy {
+        ($ctor:ident, $zero:expr, $na:expr, $field:ident) => {{
+            let mut out = vec![$zero; rows * cols];
+            let mut n = 0usize;
+            for u in srcs {
+                let umatrix = is_matrix(u);
+                let urows = if umatrix { nrows(u) } else { 1 };
+                let k = u.len();
+                let idx = if umatrix { urows } else { (k > 0) as usize };
+                if idx == 0 {
+                    continue;
+                }
+                let data = match u {
+                    Value::$ctor(v) => &v.data,
+                    _ => unreachable!(),
+                };
+                if umatrix {
+                    for c in 0..cols {
+                        let src_slice = &data[(c * idx)..((c + 1) * idx)];
+                        let dst_slice = &mut out[(c * rows + n)..(c * rows + n + idx)];
+                        dst_slice.copy_from_slice(src_slice);
+                    }
+                } else {
+                    for c in 0..cols {
+                        out[c * rows + n] = data[c % k];
+                    }
+                }
+                n += idx;
+            }
+            if n < rows {
+                for r in n..rows {
+                    for c in 0..cols {
+                        out[c * rows + r] = $na;
+                    }
+                }
+            }
+            Value::$field(out)
+        }};
+    }
+    macro_rules! dispatch_rbind_clone {
+        ($ctor:ident, $zero:expr, $na:expr, $field:ident) => {{
+            let mut out = vec![$zero; rows * cols];
+            let mut n = 0usize;
+            for u in srcs {
+                let umatrix = is_matrix(u);
+                let urows = if umatrix { nrows(u) } else { 1 };
+                let k = u.len();
+                let idx = if umatrix { urows } else { (k > 0) as usize };
+                if idx == 0 {
+                    continue;
+                }
+                let data = match u {
+                    Value::$ctor(v) => &v.data,
+                    _ => unreachable!(),
+                };
+                if umatrix {
+                    for c in 0..cols {
+                        let src_slice = &data[(c * idx)..((c + 1) * idx)];
+                        let dst_slice = &mut out[(c * rows + n)..(c * rows + n + idx)];
+                        dst_slice.clone_from_slice(src_slice);
+                    }
+                } else {
+                    for c in 0..cols {
+                        out[c * rows + n] = data[c % k].clone();
+                    }
+                }
+                n += idx;
+            }
+            if n < rows {
+                for r in n..rows {
+                    for c in 0..cols {
+                        out[c * rows + r] = $na;
+                    }
+                }
+            }
+            Value::$field(out)
+        }};
+    }
+    match mode {
+        VType::Real => dispatch_rbind_copy!(Real, 0.0f64, NA_REAL, reals),
+        VType::Int => dispatch_rbind_copy!(Int, 0i32, NA_INTEGER, ints),
+        VType::Lgl => dispatch_rbind_copy!(Lgl, 0i32, NA_LOGICAL, lgls),
+        VType::Raw => dispatch_rbind_copy!(Raw, 0u8, 0u8, raws),
+        VType::Cplx => dispatch_rbind_copy!(Cplx, Complex::new(0.0, 0.0), Complex::new(NA_REAL, 0.0), cplxs),
+        VType::Str => dispatch_rbind_clone!(Str, rstr(""), None, strs),
+        VType::List => dispatch_rbind_clone!(List, Value::Null, Value::Null, list),
+        _ => na_vector(mode, rows * cols, false),
+    }
 }
 
 /// R: bind.c:rbind
@@ -1877,7 +2081,7 @@ fn rbind(
         }
     }
     for (na, u) in args.iter().enumerate() {
-        let d = dims_of(u);
+        let d = dims_slice(u);
         if d.len() == 2 {
             if mcols == -1 {
                 mcols = d[1] as i64;
@@ -1895,7 +2099,7 @@ fn rbind(
     }
     let mut warned = false;
     for (na, u) in args.iter().enumerate() {
-        let d = dims_of(u);
+        let d = dims_slice(u);
         if d.len() == 2 {
             let dn = u.get_attr(s::DIMNAMES).unwrap_or(Value::Null);
             if dn.len() == 2 {
@@ -1928,43 +2132,20 @@ fn rbind(
     }
     // R: FILL_MATRIX_ITERATE into rows [n, n + idx) of the result.
     let mut srcs: Vec<Value> = Vec::new();
-    let mut map: Vec<(usize, usize)> = vec![(usize::MAX, 0); rows * cols];
-    let mut n = 0usize;
     if mode != VType::Null {
         for u in args {
             let umatrix = is_matrix(u);
             if !(umatrix || u.len() >= lenmin) {
                 continue;
             }
-            let urows = if umatrix { nrows(u) } else { 1 };
             let cu = coerce_for_bind(i, u, mode, true)?;
-            let k = cu.len();
-            let idx = if umatrix { urows } else { (k > 0) as usize };
-            let a = srcs.len();
             srcs.push(cu);
-            for r in 0..idx {
-                let mut sidx = r;
-                for c in 0..cols {
-                    map[n + r + c * rows] = (a, sidx);
-                    sidx += idx;
-                    if sidx >= k {
-                        sidx -= k;
-                    }
-                }
-            }
-            n += idx;
         }
     }
     let mut result = if mode == VType::Null {
         Value::lgls(vec![])
-    } else if map.iter().all(|m| m.0 != usize::MAX) {
-        gather_multi(mode, &srcs, &map)
     } else {
-        let pad = na_vector(mode, 1, false);
-        let pi = srcs.len();
-        srcs.push(pad);
-        let map: Vec<(usize, usize)> = map.into_iter().map(|m| if m.0 == usize::MAX { (pi, 0) } else { m }).collect();
-        gather_multi(mode, &srcs, &map)
+        fill_rbind(mode, &srcs, rows, cols)
     };
     result.set_attr_raw(s::DIM, Value::ints(vec![rows as i32, cols as i32]));
     if have_rnames || have_cnames {

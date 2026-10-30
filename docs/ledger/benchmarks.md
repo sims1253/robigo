@@ -109,3 +109,25 @@ Callgrind profiling of `rbench/shootout/nbody_naive_2` revealed heavy overhead i
 - Delta: **-270,800,013 instructions (-21.55%)**
 - Conformance: Output verified byte-identical against GNU R. Gate comparison: 0 regressions > 0.5%.
 
+---
+
+## Target 2: `rbench/real/convolution_v`
+
+### Profiling & Gap Attribution
+Callgrind profiling of `rbench/real/convolution_v` (`convolveV(1:583, 1:583)`) revealed:
+1. `rbind` in `crates/robigo-runtime/src/builtins/array.rs`: Allocated a `Vec<(usize, usize)>` coordinate mapping of `rows * cols` entries (679,778 tuples = ~11 MB per call), scanned the vector with `.all()`, and invoked `gather_multi` which matched variants and indexed scalar-by-scalar. Attributed to ~175M instructions in callgrind profile.
+2. `do_matrix` in `crates/robigo-runtime/src/builtins/array.rs`: Allocated `(0..n).map(|k| k % lendat).collect::<Vec<usize>>()` for `matrix(0, nx, ny)` and gathered element-by-element. Attributed to ~57.4M instructions in callgrind profile.
+3. Dimension lookups: `dims_of` cloned `s::DIM` attributes (`Vec<i32>`) on every dimension check in `is_matrix`, `nrows`, and `ncols`.
+
+### Optimizations
+1. Implemented `fill_rbind` and `fill_cbind`: Replaced coordinate mapping and `gather_multi` with direct column-slice chunk copies (`copy_from_slice` / `clone_from_slice`) for matrices and unrolled indexing for vectors, matching GNU R's direct matrix fill loops in `bind.c`.
+2. Implemented `repeat_to_len`: Fast scalar repetition (`vec![x; n]`), full-length clone, or slice extension loops for `do_matrix` (when `byrow == false`) and `do_array`, eliminating all index vector allocations.
+3. Zero-copy dimension inspection: Switched `is_matrix`, `nrows`, `ncols`, `cbind`, and `rbind` to inspect `dims_slice` without allocating `Vec<i32>`.
+
+### Results
+- Before: `640,829,588` instructions (GNU R: `737,331,643`, ratio 0.869x)
+- After: `297,511,256` instructions (GNU R: `737,331,643`, ratio 0.403x)
+- Delta: **-343,318,332 instructions (-53.58%)**
+- Conformance: Output verified byte-identical against GNU R. Gate comparison: 0 regressions > 0.5% (candidate is 53.57% faster).
+
+
