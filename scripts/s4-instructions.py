@@ -19,6 +19,8 @@ CASES = {
     "replace": ("", "x@x <- 1", 1000),
     "new": ("", 'new("P", x=1)', 500),
     "valid": ("", "validObject(x)", 1000),
+    "portfolio": (f'source({str(Path(__file__).resolve().parent.parent / "benchmarks/suite/s4-portfolio.R")!r})\n',
+                  "execute({count}L)", 100),
 }
 SETUP = 'setClass("P", slots=c(x="numeric")); x <- new("P", x=1)\n'
 
@@ -49,8 +51,9 @@ def main():
                 totals = []
                 for count in (n, 2 * n):
                     script, profile = directory / "work.R", directory / "callgrind.out"
-                    script.write_text(SETUP + extra +
-                                      f"for (i in seq_len({count})) {{ {expression} }}\n")
+                    workload = (expression.format(count=count) if "{count}" in expression else
+                                f"for (i in seq_len({count})) {{ {expression} }}")
+                    script.write_text(SETUP + extra + workload + "\n")
                     run = subprocess.run(["valgrind", "--tool=callgrind",
                                           f"--callgrind-out-file={profile}",
                                           *command, str(script)], env=env, capture_output=True)
