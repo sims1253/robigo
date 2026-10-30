@@ -32,6 +32,28 @@ lands; the natives work is PR #78 below.
   refreshed measurement, not a startup speedup. Next measure inlining
   Reader::int against this scenario before changing reader allocations.
 
+### Final continuation verification
+
+- Built this checkout in robigo-build:4.5.0 using the private
+  `.robigo/r12/target` directory. All eight linalg recordings pass in
+  the interpreter, VM and JIT (24/24 byte comparisons) against the
+  Debian 4.5.0-3 oracle. Added the remaining four linalg scripts to
+  passing.txt; the full ratchet passes 261/261 in the pinned container.
+- spectralnorm_math's original rbench source, execute(267), prints
+  `1.274223917 ` plus newline in both runtimes; stdout, stderr and
+  status match exactly. The benchmark is now a working computation.
+- Focused FastR TestBuiltin_La: 13/14, five new passes, zero regressions.
+- Current library(stats) scenario, NULL packages, complete enumerated
+  cache and natives off: 173,049,715 instructions versus the previous
+  ledger baseline of 173,087,503. Different base revisions, no speedup
+  claim. Job 2 remains open: test Reader::int inlining first, then
+  allocation changes, with paired counts and serialize corpus checks.
+- Reproduction harnesses for this run are `.robigo/r12/{profile.sh,
+  container-build.sh,container-run.sh,check.py,ratchet.py}`. All commands
+  ran in the foreground. No build directory was shared with another
+  track. #109 remains a separate reference implementation; this work
+  updates #106 only and leaves merge/close decisions to the coordinator.
+
 ## 2026-10-30 (round 12): the LAPACK bridge, wired and proven
 
 Branch `track/startup-perf-r12-lapack`. Three r12 attempts shared this
