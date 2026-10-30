@@ -1,5 +1,23 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): first persistence candidate, rejected storage cost
+
+- Rebased f5dae40 baseline startup: 44,371,718 instructions. First
+  candidate: 45,380,739 (+2.274%). Reject this recording representation.
+  Recursive benchmark counts improve slightly: binarytrees 1,174,133,259
+  -> 1,174,069,667; fib 879,739,190 -> 879,711,752.
+- XDR v2/v3 saveRDS/serialize bytes, ASCII import, standalone bytecode,
+  bodyCode, body replacement and supported-version normalization match.
+  Future-version probe exposed serialize.c:ReadItem's final conversion
+  to R_BytecodeExpr. Port that conversion, including closure JIT metadata.
+- Callgrind identifies bc_item's unnecessary take/restore of the recording
+  vector and destructor visits to integer records. Replace tagged record
+  objects with packed integer operations plus a separate object vector.
+  Nested read_bc already isolates its recording state; ordinary read_item
+  does not need an additional state save. Candidate measurements pending.
+- Broad fixed d2ce510 data baseline is 8,407/8,426. Only the documented
+  order/add626 host collation case fails a recorded passing entry.
+
 ## 2026-10-30 (round 9): bytecode persistence and ownership
 
 - Start from main d2ce510. Round 8 PR #96 remains open and is not in

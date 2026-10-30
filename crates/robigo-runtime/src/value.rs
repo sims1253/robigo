@@ -600,14 +600,25 @@ pub struct Bytecode {
     pub expression: Value,
     pub reps: usize,
     pub consts: Vec<Value>,
-    pub cells: Vec<BytecodeRecord>,
+    pub cells: BytecodeCells,
 }
 
-#[derive(Clone)]
-pub enum BytecodeRecord {
-    Integer(i32),
-    Item(Value),
-    Nested(Rc<Bytecode>),
+/// Cell operations are packed separately from their R objects. Integer
+/// records have no destructor; objects are visited only once on drop.
+#[derive(Clone, Default)]
+pub struct BytecodeCells {
+    pub operations: Vec<i64>,
+    pub items: Vec<Value>,
+}
+
+impl BytecodeCells {
+    pub fn integer(&mut self, value: i32) {
+        self.operations.push((value as i64) << 2);
+    }
+    pub fn item(&mut self, value: Value, nested: bool) {
+        self.operations.push(((self.items.len() as i64) << 2) | if nested { 2 } else { 1 });
+        self.items.push(value);
+    }
 }
 
 /// The body of an `OBJSXP`: only its attributes are used (`data` stays
