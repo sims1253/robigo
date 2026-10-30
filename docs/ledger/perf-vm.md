@@ -71,6 +71,10 @@ conformance` (interpreter, VM and VM+JIT against each other).
   cost but restructures `ConnKind::File` (read/write switching,
   seek positions, flush/close) in startup-owned `builtins/io.rs` —
   a follow-up with the startup track, not this chunk.
+- CI (run 41102465273) is fully green: build, bytecode-fidelity, all
+  ten corpus shards, and the perf gate. Official paired verdict:
+  csv **-1.38%** (`1,393,5M -> 1,374,2M`), **1 faster, 0 slower above
+  0.5%, 0 broken, 0 fixed** — identical to the local paired number.
 - Scalar promise storage waits: any real fix changes `value.rs` layout
   (Promise gains scalar states; every promise-value reader changes),
   which is core's active round 7 area (`fix/core-shared-list-mutation`
