@@ -249,3 +249,5 @@ tests/r/strings/closure_source_bytes.R
 tests/r/strings/iconv_byte_window.R
 tests/r/lang/parse_data.R
 tests/r/vec/print-max-index.R
+tests/r/basics/base-isvector-context.R
+tests/r/basics/compiled-isvector-missing.R

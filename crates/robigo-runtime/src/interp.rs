@@ -587,6 +587,9 @@ impl Interp {
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
+                if let Some(r) = crate::vm::inline_base_isvector(self, call, c, env) {
+                    return r;
+                }
                 let promargs = self.promise_args(&l.args, env)?;
                 self.apply_closure(call, c, promargs, env, None)
             }
