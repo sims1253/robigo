@@ -39,6 +39,42 @@
   executables must load the same system libraries and candidate natives.
 
 
+
+### Verified repair
+
+- Fresh base a32c5623 and original head 4144a0e4, isolated private Cargo
+  targets, same completed Debian build image and identical system liblzma:
+  **667,516,685 -> 862,136,244 (+29.16%)** on the flagged benchmark.
+- Final fixed binary compared against fresh base with unchanged
+  scripts/perf-paired.py, caches disabled, isolated executable directories,
+  identical CI native libraries, same drivers and parameters, and the
+  minimum of two samples per executable. Every output matches GNU R.
+
+| Benchmark | Base instructions | Corrected instructions | Change |
+| --- | ---: | ---: | ---: |
+| rbench/shootout/mandelbrot_noout_naive | 667,522,766 | 667,527,886 | +0.0008% |
+| rbench/shootout/mandelbrot_noout | 567,656,487 | 567,640,029 | -0.0029% |
+| rbench/shootout/mandelbrot_naive_ascii | 853,934,789 | 853,951,926 | +0.0020% |
+| rbench/shootout/mandelbrot_ascii | 483,040,836 | 483,102,211 | +0.0127% |
+| robigo/mandelbrot | 254,848,310 | 254,855,181 | +0.0027% |
+
+- **0 slower above 0.5%, 0 broken.** Largest increase +0.0127%; flagged
+  mandelbrot_noout_naive is +0.0008%, effectively neutral. Keep the repair.
+- Pinned Debian tests, no exclusions: 64 unit tests and all three runtime
+  integration tests pass, including the new buffer reuse test and both
+  host-sensitive complex/libm comparisons. All 12 fixed corpus cases pass.
+  All 286 recorded scripts match in interpreter, VM and JIT (858/858).
+- Full Debian data slice: 8,424/8,426, zero failed markers. Only the two
+  recorded GNU R crashes remain. The host's 8,423 includes its known
+  locale failure; this extra Debian pass is environmental, not a new fix.
+- Formatting and marker integrity pass; no recording, mask or marker was
+  changed. This repair touches only builtins/lang.rs and this ledger.
+- Reproduction artifacts under .robigo/perf123: CI job log and profiles,
+  exact binary hashes, fresh build logs, source hash, raw paired samples,
+  drivers, output checks and profiles. base-target and head-target are
+  separate and private. The corrected source's SHA256 matches the source
+  used for the pinned tests. Shared cargo target directories are not used.
+
 ## 2026-10-30: revived data-filter ownership
 
 - Start from a32c5623. Claim the 12 actionable cases left by the finished
