@@ -23,3 +23,8 @@ print(serialize(substitute(f(tag = ...), list()), NULL, version = 2))
 f <- function(...) substitute(g(...))
 print(f())
 print(f(, a = 1))
+# Read head attributes before registering the exceptional tail cells.
+e <- structure(quote(f(...)), test = 1L)
+x <- do.call('substitute', list(e, list()))
+r <- serialize(x, NULL, version = 2)
+print(identical(r, serialize(unserialize(r), NULL, version = 2)))
