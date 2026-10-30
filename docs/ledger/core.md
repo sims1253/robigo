@@ -82,12 +82,13 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   env 11/11 and strings 24/24 including the two new oracle recordings;
   collector 23 tests (one new); runtime 61 pass with the two documented
   host-glibc numeric oracles skipped; C API 2/2, also under
-  ROBIGO_GCTORTURE=1. Perf with the same binary environment: apply
-  739,028,168 -> 739,826,615 (+0.108%), binarytrees 1,180,754,592 ->
-  1,182,399,483 (+0.139%), strings 690,709,792 -> 691,098,980 (+0.056%);
-  fib 888,863,157 (no base measurement). All below the 0.5% gate; the
-  cost is the epoch check on binding paths, and no benchmark calls gc()
-  in its hot loop.
+  ROBIGO_GCTORTURE=1. Perf with the same binary environment, full
+  `robigo/` suite (20 benchmarks): every one is within the 0.5% gate; the
+  largest increases are fib 887,309,910 -> 888,870,076 (+0.176%),
+  binarytrees 1,180,741,660 -> 1,182,386,581 (+0.139%), apply
+  738,980,349 -> 739,853,068 (+0.118%); vecops is -0.001% and vecarith
+  +0.003%. The cost is the epoch check on binding paths, and no benchmark
+  calls gc() in its hot loop.
 - Open: reclamation breaks environment cycles only; closure/attribute-only
   cycles (no environment) and cross-heap C cycles remain for G3. The
   runtime still collects only on an explicit gc()/native collection, not
