@@ -30,7 +30,10 @@ lands; the natives work is PR #78 below.
   read_item_flags0 4,442,153; read_bc_lang 3,140,109. Next optimize
   one reader allocation path and compare these exact settings.
 - Seven gate tests, Python compilation, shell syntax and cargo fmt
-  --check pass. Runtime crate tests are queued on the shared target.
+  --check pass. Runtime crate unit tests: 44 pass, 2 fail at the same
+  documented host-glibc complex sqrt/sin one-ULP oracles. All reader,
+  cache and native-marker tests pass. Both lazy-load integration tests
+  pass separately. No complex arithmetic changed.
 
 ## 2026-10-30 (round 9): remaining native bridge boundary
 
