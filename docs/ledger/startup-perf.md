@@ -23,6 +23,38 @@ lands; the natives work is PR #78 below.
   it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
   Failed oracle measurements also fail. cargo fmt --check and diff
   whitespace checks pass. No runtime source or ratchet changes.
+## 2026-10-30 (round 8): confirm regressions with a paired gate
+
+- GitHub-hosted diagnostic run 40985993806 succeeds (AMD EPYC 7763,
+  Debian glibc 2.41-12+deb13u4, valgrind 3.24.0). Exact artifact pair:
+  own resources base 836,703,649 / 836,707,540; candidate 834,454,992 /
+  834,470,376. Shared cache/native directory: base 836,708,252 /
+  836,713,676; candidate 834,422,960 / 834,465,977. Outputs and statuses
+  match, and all 32 guards pass on each cache. Profiles and environment
+  are in that run's perf-diagnostic artifact. This does not explain the
+  original stable 859.6M candidate count; no claim of noise is made.
+- Confirmed the local result through perf.py:run_one itself, including
+  its temporary bench.R and working directory. Base 836,388,886 /
+  836,394,996; candidate 833,959,576 / 833,911,532. The diagnostic
+  script now uses the same temporary working-directory convention.
+- The gate now downloads the baseline executable from the exact run
+  whose stored metrics selected it. For cases flagged slower it runs
+  baseline and candidate twice in the current job, sharing the cache,
+  native directory and environment, and compares the minimums with
+  the same 0.5% threshold. It checks both outputs/statuses against
+  GNU R and retains the original metrics plus callgrind profiles.
+  Stored baseline files remain unchanged. A failed measurement or
+  mismatched output fails confirmation, rather than accepting a prefix.
+- Four Python checks cover historical environment differences, actual
+  slowdowns, wrong output and failed baseline runs. A real-artifact
+  end-to-end confirmation of the logged nbody_2 failure gives paired
+  base 836,441,083 / 836,373,747 and candidate 833,929,154 / 833,919,422,
+  with identical GNU R output. The gate reports 0 slower, 0 broken.
+- Applied this gate-only commit to #92 as 8966a92. Its runtime changes
+  remain untouched; new CI is required before the coordinator merges.
+  Original gate counts stay in this ledger as evidence, not as an
+  alleged fixed runtime regression. Cache enumeration remains in #99.
+
 ## 2026-10-30 (round 8): #92's repeated nbody_2 failure is unresolved
 
 - The stable CI increase must be investigated as a real regression, not

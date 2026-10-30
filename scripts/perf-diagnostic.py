@@ -12,6 +12,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 
 import perf
 
@@ -52,9 +53,13 @@ for mode in ('own', 'shared'):
         for repeat in (1, 2):
             stem = f'{mode}-{label}-{repeat}'
             cg = output / (stem + '.cg')
-            result = subprocess.run(['valgrind', '--tool=callgrind',
-                                     f'--callgrind-out-file={cg}', str(artifact / 'robigo'),
-                                     '--vanilla', str(script)], env=env, capture_output=True)
+            with tempfile.TemporaryDirectory(prefix='robigo-bench-') as tmp:
+                benchmark = Path(tmp) / 'bench.R'
+                benchmark.write_text(program[2])
+                result = subprocess.run(['valgrind', '--tool=callgrind',
+                                         f'--callgrind-out-file={cg}', str(artifact / 'robigo'),
+                                         '--vanilla', str(benchmark)], cwd=tmp, env=env,
+                                        capture_output=True)
             (output / (stem + '.stdout')).write_bytes(result.stdout)
             (output / (stem + '.stderr')).write_bytes(result.stderr)
             count = int(re.search(r'^summary: (\d+)', cg.read_text(), re.M)[1])
