@@ -7,6 +7,75 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 12): LAPACK bridge — two builds, one verdict
+
+Round 12 was spawned three times by the coordinator; two attempts
+survived the t3-server restart at 03:16. My worktree was deleted out
+from under the session twice; the branch refs survived in the main repo
+every time — commit and push early. The other surviving agent shipped
+the same design first as PR #106; mine is on
+`track/startup-perf-r12-lapack-pi` (kept as the reference/review
+branch, no competing PR opened).
+
+The design both arrived at independently: bind the system
+`liblapack.so.3` lazily (the soname R's own `lapack.so` module needs;
+verified it has exactly one C object — every Fortran symbol undefined),
+so eigen/svd/chol(pivot)/complex-solve bits are whatever R produces on
+the same machine. Host lapack 3.12.0 and trixie 3.12.1 agree bit for
+bit on everything tested; only `La_library()`'s path string differs
+between machines (keep it out of recorded tests).
+
+Verification I ran against PR #106 head 73b7ec6 (clean checkout, trixie
+build): byte-identical to R 4.5.0-3 on my full battery and on all five
+of my oracle recordings — plus two findings it missed, both fixed on my
+branch (4e61c23):
+
+1. **La_solve/La_solve_cmplx norm aliasing — R-level reachable.**
+   Lapack.c takes the 1-norm from `REAL(A)`/`COMPLEX(A)`, which is the
+   pristine original for double/complex input (avals is a copy) but the
+   in-place FACTORED buffer when A was coerced (integer/logical `a`, or
+   real `a` with complex `b`). R therefore prints different rcond
+   values for the same matrix by storage mode: solve(matrix(1:4,2),
+   8:9, tol=1) answers 0.0666667 from integer storage and 0.047619 from
+   double storage. PR #106's binary fails both recordings (0.047619 /
+   0.333333 where R says 0.0666667 / 0.37037). Pinned by
+   tests/r/linalg/{solve-tol,solve-cmplx}.R, oracle-recorded.
+2. **xerbla interposition — direct .Internal only.** libR.so's exported
+   `xerbla_` interposes the system LAPACK's own, turning illegal
+   arguments into R's error "BLAS/LAPACK routine '%6s' gave error code
+   %d". Robigo cannot interpose across the FFI seam, and Debian's
+   xerbla prints to stdout and STOPs the process (verified in C: the
+   printf after the call never runs). An unguarded call site dies
+   mid-script where R survives: `.Internal(La_svd("Q",...))` on an
+   unguarded binary stops the process. Guards must follow LAPACK's own
+   check order — jobu (-1), then LDA (parameter 5: dgeev/zgeev/dgesdd/
+   zgesdd answer -5 for n = 0, dsyevr -6), then ldu (-8), ldvt (-10) —
+   and %6s pads 5-character names: 'DGEEV ', 'ZGEEV ', 'ZHEEV '. All
+   seven adversarial direct-.Internal cases match R byte for byte on my
+   build (stdout, stderr, status). If a real xerbla path ever shows up,
+   the fix is a setjmp seam at the FFI boundary like R's — open item.
+
+Also learned this round, for everyone's host work:
+
+- **The host's "R 4.5.0 copy" is R 4.6.1** (`R.version.string` in
+  /home/m0hawk/.local/opt/R-4.5.0). Every host-side R comparison is
+  poisoned (4.6 chol(pivot=TRUE) zeroes the dpstrf residual that
+  4.5.0 leaves; only that differed across my battery). The
+  robigo-oracle:4.5.0 container is the only judge; a trixie build is
+  required (host-built binaries need glibc 2.44, container has 2.41 —
+  build recipe: mount /usr/bin/rustup + ~/.rustup + ~/.cargo, symlink
+  rustc/cargo to it, CARGO_TARGET_DIR=~/.cache/robigo-r12lapack-target,
+  ~6 min).
+- The corpora/perf CI containers all install r-base-core 4.5.0-3 via
+  .github/actions/setup, so liblapack.so.3 (via its dependency chain)
+  is guaranteed wherever robigo runs in CI.
+- spectralnorm_math (n=267, one dsyevr with vectors) runs identically
+  to GNU R through the bridge; the missing-La_rs era is over.
+
+Round 12 job 2 (library(stats) at 0.667×, 173.088M) is untouched — the
+round-6 profile list (regex compile 13M, mimalloc ~11M, reader ~15M,
+VM ~12M) is still the map; G6-snapshot remains the structural endgame.
+
 ## 2026-10-30: repair #92's GNU R failure handling
 
 - Evidence: [run 40988268342, perf job 123847416068](https://github.com/sims1253/robigo/actions/runs/40988268342/job/123847416068),
