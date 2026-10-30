@@ -141,10 +141,10 @@ builtins/TestBuiltin_inherits/06e52656085ca487	PASS	PASS	matches
 builtins/TestBuiltin_length/16f1870d68cfc6c7	PASS	PASS	matches
 builtins/TestBuiltin_rbind/7cbdae22bfe9c7c5	PASS	PASS	matches
 builtins/TestBuiltin_serialize/05039cf611373bba	PASS	PASS	matches
-builtins/TestBuiltin_serialize/4a71e01f0301e4a5	PASS	FAIL	LANGSXP argument cell serialization (#104)
+builtins/TestBuiltin_serialize/4a71e01f0301e4a5	PASS	PASS	matches
 builtins/TestBuiltin_serialize/58d7274d25aa5dd6	PASS	PASS	matches
 builtins/TestBuiltin_serialize/bfa11f606570f443	PASS	PASS	matches
-builtins/TestBuiltin_serialize/bfd38dfb85177afa	PASS	FAIL	LANGSXP argument cell serialization (#104)
+builtins/TestBuiltin_serialize/bfd38dfb85177afa	PASS	PASS	matches
 builtins/TestBuiltin_serialize/e15164559e2f607d	PASS	PASS	matches
 builtins/TestBuiltin_serialize/f2356fce90017edf	PASS	PASS	matches
 builtins/TestBuiltin_serialize/f78e2f1a1fdb000d	PASS	PASS	matches

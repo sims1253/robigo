@@ -7,6 +7,38 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: #104 merged — FastR methods census 223/224
+
+- Rebased `track/methods-fastr-switch` (#107) onto main `532be45`, which
+  merges #104. No conflicts. Main's complete conformance ratchet,
+  including substitute-dots-cell.R, is retained byte-for-byte. No runtime
+  changes in this branch; no exclusions or oracle changes.
+- Before -> after: methods profile **221/224 -> 223/224 in each of AST,
+  VM and JIT**. Normal FastR remains **224/224**, zero losses. Compared
+  passing-case identities in each tier: exactly the two class-generator
+  cases gained, no passing case lost. Census TSV updated for all 224.
+- Both `builtins/TestBuiltin_serialize/4a71e01f0301e4a5` and
+  `builtins/TestBuiltin_serialize/bfd38dfb85177afa` now match the pinned
+  oracle, including the formerly incorrect LANGSXP argument-cell byte.
+- The sole remaining case is **S4/TestR5/474b742f1785a587**, blocked on
+  #98, which is still open. All tiers print `fun` but omit
+  `finalizer: 456` at gc(); stderr and exit status match. Keep that output
+  compared. No re-recording, masking or removal from passing.txt.
+- Measurement uses #104's successful CI artifact, run 41006679303,
+  commit 5616b86. `git diff 5616b86 origin/main -- crates rlib` is empty,
+  so the tested runtime is exactly main 532be45's. Used that artifact's
+  natives and flat cache, R_HOME=/home/m0hawk/.local/opt/R-4.5.0, jobs=2.
+  Each run selects every ID from methods-changes.tsv with an anchored
+  --filter and --profile methods. Tiers use ROBIGO_COMPILE/ROBIGO_JIT
+  values 0/0, 1/0 and 1/1. Six Python harness checks, cargo fmt --check
+  and git diff --check pass.
+- Profile remains inactive. After #98 merges: rebase, then one
+  manifest-only commit sets `[fastr]` default_packages to the methods
+  profile's value and expected_file to expected-methods.jsonl.gz.
+  Verify 224/224 across all tiers, the S4 slice, all corpora in CI and
+  three-tier conformance before activation is delivered. Existing FastR
+  expected bytes and passing.txt are identical to main.
+
 ## 2026-10-30: round 8 — prepare FastR methods profile
 
 - Base eb7a7ae, branch `track/methods-fastr-switch`. #98 and #104 are
