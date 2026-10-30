@@ -1,5 +1,24 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): bytecode persistence and ownership
+
+- Start from main d2ce510. Round 8 PR #96 remains open and is not in
+  this baseline. Its parser reduction changes remain separate.
+- VM handoff to perf-vm (#94): lapply/245e62b143e432a3 still needs
+  GNU compiler GETINTLBUILTIN.OP/CALLBUILTIN.OP for is.vector before
+  forcing X. GNU R bypasses the R wrapper, so its error lacks that
+  closure's traceback frame. Implement in the internal-call compilation
+  path; do not filter traceback names globally. No vm.rs edits here.
+- Ownership audit of remaining data failures: factor/Calls contexts,
+  replacement capture order and unused-argument diagnostics belong to
+  evaluator/lang; match.arg list coercion to values; raw-address tracemem
+  cases need oracle-owner investigation; order/add626 is host collation.
+  No additional unclaimed data-filter fix was identified in the ledgers.
+- BCODESXP baseline and candidate measurements pending the shared build
+  queue. Oracle fixtures generated in robigo-oracle:4.5.0 retain source
+  references, nested bytecode and versions 2 and 3.
+
+
 ## 2026-10-30 (round 8): syntax reduction records
 
 - Baseline 4754027. Requested branch name was already attached to another
