@@ -680,7 +680,12 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
                 Value::pairlist(items)
             } else {
                 let l = Rc::new(Lang::from_items(items, l.attrs.clone()));
-                crate::serialize::set_lang_cells(&l, lang_cells >> 1);
+                if !lang_cells.is_empty() {
+                    crate::serialize::set_lang_cells(
+                        &l,
+                        lang_cells.into_iter().filter_map(|k| k.checked_sub(1)).collect(),
+                    );
+                }
                 Value::Lang(l)
             }
         }
@@ -688,12 +693,12 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
     })
 }
 
-/// The substituted items, and a bit per item whose cell is a LANGSXP: an
+/// The substituted items, and indices of exceptional LANGSXP cells: an
 /// unbound `...` becomes `LCONS(R_DotsSymbol, R_NilValue)` (no tag).
 // R: coerce.c:substituteList
-fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<(Vec<Arg>, u64)> {
+fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<(Vec<Arg>, Vec<usize>)> {
     let mut out = Vec::with_capacity(items.len());
-    let mut lang_cells = 0u64;
+    let mut lang_cells = Vec::new();
     for a in items {
         if a.value.as_sym() == Some(s::DOTS) {
             match env.and_then(|e| e.get_local(s::DOTS)) {
@@ -704,9 +709,7 @@ fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<(Vec<Arg>, u64)>
                 }
                 Some(v) if v.is_missing_arg() || v.is_null() => {}
                 None => {
-                    if out.len() < 64 {
-                        lang_cells |= 1 << out.len();
-                    }
+                    lang_cells.push(out.len());
                     out.push(Arg::new(None, a.value.clone()));
                 }
                 _ => return Err(Flow::error("'...' used in an incorrect context")),

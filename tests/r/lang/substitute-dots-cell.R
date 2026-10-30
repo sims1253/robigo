@@ -10,3 +10,16 @@ print(serialize(quote(f(1, ...)), NULL, version = 2))
 g <- function(...) substitute(h(..., z))
 print(serialize(g(1, b = 2), NULL, version = 2))
 print(serialize(substitute(k(...)), NULL, version = 2))
+# Cell types must survive beyond the old 64-argument mask and repeated use.
+for (n in c(0L, 1L, 63L, 64L, 65L, 130L)) {
+    q <- as.call(c(list(as.name('f')), rep(list(1), n), list(as.name('...'))))
+    x <- substitute(EXPR, list(EXPR = q))
+    x <- do.call('substitute', list(x, list()))
+    raw <- serialize(x, NULL, version = 2)
+    print(c(n, length(raw), sum(as.integer(raw))))
+    print(identical(raw, serialize(unserialize(raw), NULL, version = 2)))
+}
+print(serialize(substitute(f(tag = ...), list()), NULL, version = 2))
+f <- function(...) substitute(g(...))
+print(f())
+print(f(, a = 1))

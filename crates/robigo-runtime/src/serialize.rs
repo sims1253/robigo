@@ -76,20 +76,21 @@ enum Format {
 
 thread_local! {
     /// Calls with LANGSXP cells among their arguments, by the address of
-    /// their `Lang`: bit k is argument k's cell. GNU R's `substitute()`
+    /// their `Lang`: each index identifies an argument cell. GNU R's `substitute()`
     /// leaves an unbound `...` as `LCONS(R_DotsSymbol, R_NilValue)` (every
     /// class generator's body has one), and only `serialize()` shows it, so
     /// it is kept here rather than in every call. The weak reference keeps
     /// the address from being reused while the entry exists; entries of
     /// dropped calls are swept when the map has doubled.
-    static LANG_CELLS: std::cell::RefCell<HashMap<usize, (std::rc::Weak<Lang>, u64)>> =
+    static LANG_CELLS: std::cell::RefCell<HashMap<usize, (std::rc::Weak<Lang>, Vec<usize>)>> =
         std::cell::RefCell::new(HashMap::new());
     static LANG_CELLS_SWEEP: std::cell::Cell<usize> = const { std::cell::Cell::new(64) };
 }
 
-/// Record that some argument cells of `l` are LANGSXP (no-op for none).
-pub fn set_lang_cells(l: &Rc<Lang>, bits: u64) {
-    if bits == 0 {
+/// Record only exceptional calls with LANGSXP argument cells.
+#[cold]
+pub fn set_lang_cells(l: &Rc<Lang>, cells: Vec<usize>) {
+    if cells.is_empty() {
         return;
     }
     LANG_CELLS.with(|m| {
@@ -98,24 +99,23 @@ pub fn set_lang_cells(l: &Rc<Lang>, bits: u64) {
             m.retain(|_, e| e.0.strong_count() > 0);
             LANG_CELLS_SWEEP.with(|c| c.set((2 * m.len()).max(64)));
         }
-        m.insert(Rc::as_ptr(l) as usize, (Rc::downgrade(l), bits));
+        m.insert(Rc::as_ptr(l) as usize, (Rc::downgrade(l), cells));
     });
 }
 
 /// The LANGSXP argument cells of `l` (see `set_lang_cells`).
-fn lang_cells(l: &Rc<Lang>) -> u64 {
+fn lang_cells(l: &Rc<Lang>) -> Vec<usize> {
     LANG_CELLS.with(|m| {
         let m = m.borrow();
         if m.is_empty() {
-            return 0;
+            return Vec::new();
         }
-        m.get(&(Rc::as_ptr(l) as usize)).filter(|e| e.0.strong_count() > 0).map_or(0, |e| e.1)
+        m.get(&(Rc::as_ptr(l) as usize)).filter(|e| e.0.strong_count() > 0).map_or_else(Vec::new, |e| e.1.clone())
     })
 }
 
 /// A node of a pairlist-like chain while reading.
 struct PNode {
-    attr: Value,
     tag: Value,
     car: Value,
     ty: u32,
@@ -583,6 +583,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
+    // R: serialize.c:ReadItem_Iterative preserves each cons cell type.
     fn read_pairlist(&mut self, first_flags: u32) -> RResult<Value> {
         let head_type = first_flags & 255;
         let mut nodes: Vec<PNode> = Vec::new();
@@ -596,7 +597,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             if nodes.is_empty() {
                 head_attr = attr.clone();
             }
-            nodes.push(PNode { attr, tag, car, ty });
+            nodes.push(PNode { tag, car, ty });
             if matches!(ty, CLOSXP | PROMSXP) {
                 // The CDR is the body / expression, read as a single item.
                 break;
@@ -613,7 +614,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
         };
-        let _ = &nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
                 let n = nodes.into_iter().next().unwrap();
@@ -657,9 +657,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let lang_cells = nodes
                     .iter()
                     .skip(1)
-                    .take(64)
                     .enumerate()
-                    .fold(0u64, |m, (k, n)| if n.ty == LANGSXP { m | 1 << k } else { m });
+                    .filter_map(|(k, n)| (n.ty == LANGSXP).then_some(k))
+                    .collect::<Vec<_>>();
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
@@ -674,7 +674,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut v = match head_type {
                     LANGSXP => {
                         let l = Rc::new(Lang::from_items(items, None));
-                        set_lang_cells(&l, lang_cells);
+                        if !lang_cells.is_empty() {
+                            set_lang_cells(&l, lang_cells);
+                        }
                         Value::Lang(l)
                     }
                     DOTSXP => Value::Dots(Rc::new(items)),
@@ -1235,7 +1237,7 @@ impl Writer<'_> {
     fn altrep_seq(&mut self, class: &str, ty: u32, n: usize, n1: f64, inc: f64) {
         self.flags(ALTREP_SXP, 0, false, false, false);
         let info = vec![Arg::pos(Value::sym(class)), Arg::pos(Value::sym("base")), Arg::pos(Value::int(ty as i32))];
-        self.pairlist_items(LISTSXP, &info, None, 0);
+        self.pairlist_items(LISTSXP, &info, None, &[]);
         self.item(&Value::reals(vec![n as f64, n1, inc]));
         self.int(NILVALUE_SXP as i32);
     }
@@ -1259,13 +1261,13 @@ impl Writer<'_> {
         }
     }
     /// The cells of a pairlist or call: the first of type `ty`, the others
-    /// LISTSXP unless bit k - 1 of `lang_cells` is set.
-    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>, lang_cells: u64) {
+    /// LISTSXP unless argument k - 1 occurs in `lang_cells`.
+    fn pairlist_items(&mut self, ty: u32, items: &[Arg], attr_of: Option<&Value>, lang_cells: &[usize]) {
         for (k, a) in items.iter().enumerate() {
             let has_attr = k == 0 && attr_of.is_some_and(|v| v.has_attrs());
             let t = if k == 0 {
                 ty
-            } else if k <= 64 && lang_cells & (1 << (k - 1)) != 0 {
+            } else if lang_cells.contains(&(k - 1)) {
                 LANGSXP
             } else {
                 LISTSXP
@@ -1356,9 +1358,9 @@ impl Writer<'_> {
                     }
                 }
             }
-            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), 0),
-            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), lang_cells(l)),
-            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, 0),
+            Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), &[]),
+            Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
+            Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
             Value::Closure(c) => {
                 self.flags(CLOSXP, levs, obj, has_attr, true);
                 if has_attr {
