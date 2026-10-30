@@ -11,6 +11,34 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: iconv consumes preserved bytes (follow-up)
+
+- New branch off #84's verified source-printing combination. Baseline
+  oracle probe: 1/8 matching cases. Explicit latin1 input was read from
+  its UTF-8 view, explicit UTF-8 accepted invalid original bytes, Latin-1
+  string output raised a placeholder error, and mark=FALSE was ignored.
+- Port sysutils.c:do_iconv's boundaries: CHAR/LENGTH input bytes, per-item
+  marks only when from is empty, and mkCharLenCE output with its exact
+  encoding alias tests. Keep the existing converter's supported encoding
+  set. Test recording generated with Debian GNU R 4.5.0, not host R.
+- Verified: oracle boundary cases 1/8 -> 8/8; FastR iconv 44/55 ->
+  53/55, nine new ratchet entries and zero regressions. The remaining
+  9a3d0cfc73aec861 and ea6e70a8017468fc cases change LC_CTYPE to C and
+  back to UTF-8; native conversion still assumes a UTF-8 locale.
+- Conformance 242/242 in all tiers; runtime 41 unit + two integration
+  tests pass (two documented host-glibc numeric oracles excluded).
+  Host strings 767,917,160 -> 767,900,957 (-0.002%); compare has zero
+  slowdowns. cargo fmt and diff checks pass. Dedicated conformance test
+  and nine corpus cases added to their ratchets.
+- Next: preserve octal/hex escape origin through
+  syntax StrTok/Const/ConstKey into runtime lang; source validity alone
+  cannot distinguish CE_NATIVE from CE_UTF8. Environment finalizers still
+  need cycle-aware reachability: bridge::mark_proxies counts references,
+  including cycle edges, as roots. Methods TestR5/474b742f remains blocked;
+  trace Env parents/frames/attributes, closure environments, promises and
+  vector graphs, reconcile native roots, then schedule weak-key finalizers
+  via memory.c's existing core queue. Do not substitute strong_count==1.
+
 ## 2026-10-30: combine closure source printing with byte windows
 
 - Kept green remote a41e59d and merged main 4754027. Only passing.txt

@@ -239,3 +239,4 @@ tests/r/strings/byte_window.R
 tests/r/lang/closure_source_refs.R
 tests/r/lang/closure_source_print.R
 tests/r/strings/closure_source_bytes.R
+tests/r/strings/iconv_byte_window.R
