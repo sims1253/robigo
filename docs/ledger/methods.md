@@ -7,6 +7,22 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 8 — prepare FastR methods profile
+
+- Base eb7a7ae, branch `track/methods-fastr-switch`. #98 and #104 are
+  still open. No runtime, serializer, environment, VM or ratchet edits.
+- Historical methods recording from 2e2945b has all 31,374 current source
+  hashes. Compared with the active oracle, 224 records differ across 24
+  groups, beyond the previous 187-case S4/serialization slice.
+- Added a named `methods` profile to record/run/show. It selects separate
+  expected bytes and result files, checks the existing ratchet, and
+  rejects both --update and absorb of candidate results. Ordinary runs
+  retain their original packages and expected file.
+- Harness verification: five existing checks -> six, including a profile
+  integration check of oracle/result isolation, regression detection and
+  rejected ratchet updates. All pass. Oracle re-recording and runtime
+  baseline measurement follow before delivery.
+
 ## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
 
 - Rebased `track/methods-default-2` (#71) onto current main (`d81d29c`).

@@ -107,11 +107,16 @@ def manifest():
         return tomllib.load(f)
 
 
-def corpus_conf(name):
+def corpus_conf(name, profile=None):
     m = manifest()
     if name not in m:
         sys.exit(f"unknown corpus '{name}' (have: {', '.join(m)})")
-    return m[name]
+    conf = m[name]
+    if profile:
+        if profile not in conf.get("profiles", {}):
+            sys.exit(f"unknown profile {profile!r} for corpus {name!r}")
+        conf = dict(conf, **conf["profiles"][profile])
+    return conf
 
 
 def cdir(name):
@@ -222,8 +227,8 @@ def dec(d):
     return d["t"].encode("utf-8") if "t" in d else base64.b64decode(d["b64"])
 
 
-def load_expected(name):
-    p = os.path.join(cdir(name), "expected.jsonl.gz")
+def load_expected(name, filename="expected.jsonl.gz"):
+    p = os.path.join(cdir(name), filename)
     if not os.path.exists(p):
         return {}
     out = {}
@@ -234,8 +239,8 @@ def load_expected(name):
     return out
 
 
-def write_expected(name, exp):
-    p = os.path.join(cdir(name), "expected.jsonl.gz")
+def write_expected(name, exp, filename="expected.jsonl.gz"):
+    p = os.path.join(cdir(name), filename)
     # mtime=0: the file only changes when its content does.
     with open(p, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
         for k in sorted(exp):
@@ -306,13 +311,13 @@ def cmd_list(_):
 
 
 def cmd_record(a):
-    conf = corpus_conf(a.name)
+    conf = corpus_conf(a.name, a.profile)
     build_corpus(a.name, conf)
     cases = load_cases(a.name)
     if a.filter:
         rx = re.compile(a.filter)
         cases = [c for c in cases if rx.search(c[0])]
-    old = load_expected(a.name)
+    old = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz"))
     todo = cases if a.all else [c for c in cases if old.get(c[0], {}).get("sha") != sha(c[1])]
     ver = subprocess.run(["R", "--version"], capture_output=True, text=True).stdout.splitlines()[0]
     if "4.5.0" not in ver:
@@ -375,7 +380,7 @@ def cmd_record(a):
     exp = {k: v for k, v in old.items() if keep is None or k in keep}
     for r in recs:
         exp[r["id"]] = r
-    write_expected(a.name, exp)
+    write_expected(a.name, exp, conf.get("expected_file", "expected.jsonl.gz"))
     unstable = sum(1 for r in recs if r.get("unstable"))
     partly = sum(1 for r in recs if not r.get("unstable") and ("mask_out" in r or "mask_err" in r))
     print(f"recorded {len(recs)} case(s) of {a.name} with {ver}; {partly} with varying lines masked, "
@@ -408,7 +413,9 @@ def classify(exp, o, e, s):
 
 
 def cmd_run(a):
-    conf = corpus_conf(a.name)
+    conf = corpus_conf(a.name, a.profile)
+    if a.profile and a.update:
+        sys.exit("profile runs cannot update the shared ratchet; activate the profile first")
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
@@ -416,7 +423,7 @@ def cmd_run(a):
     os.environ["ROBIGO"] = os.path.abspath(robigo)
     ensure_natives()
     build_corpus(a.name, conf)
-    exp = load_expected(a.name)
+    exp = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz"))
     if not exp:
         sys.exit(f"{a.name} has no expected output; run: scripts/corpus.py record {a.name}")
     skip = host_dependent(conf)
@@ -450,10 +457,10 @@ def cmd_run(a):
     count = lambda k: sum(1 for r in res if k not in r["differs"])
     os.makedirs(os.path.join(STATE, "results"), exist_ok=True)
     summary = {
-        "corpus": a.name, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
+        "corpus": a.name, "profile": a.profile, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
         "stderr": count("stderr"), "status": count("status"), "regressions": regressions, "new": new,
     }
-    out = os.path.join(STATE, "results", a.name + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
+    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
     with open(out, "w") as f:
         json.dump({"summary": summary, "results": res}, f, indent=0)
     print(f"{a.name}: {len(ok)}/{len(res)} pass; stdout {summary['stdout']}, stderr {summary['stderr']}, "
@@ -469,12 +476,12 @@ def cmd_run(a):
 
 
 def cmd_show(a):
-    conf = corpus_conf(a.name)
+    conf = corpus_conf(a.name, a.profile)
     cases = dict(load_cases(a.name))
     if a.id not in cases:
         sys.exit(f"no case {a.id}")
     src = cases[a.id]
-    exp = load_expected(a.name).get(a.id)
+    exp = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz")).get(a.id)
     print("== source\n" + src.decode("utf-8", "replace"))
     o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo))
     if exp:
@@ -516,6 +523,8 @@ def cmd_absorb(a):
     for fn in a.files:
         with open(fn) as f:
             doc = json.load(f)
+        if doc["summary"].get("profile"):
+            sys.exit(f"{fn}: profile results cannot update the shared ratchet; activate the profile first")
         by.setdefault(doc["summary"]["corpus"], set()).update(r["id"] for r in doc["results"] if r["pass"])
     for name, ok in sorted(by.items()):
         exp = load_expected(name)
@@ -623,6 +632,7 @@ def main():
     p.add_argument("name")
     p = sub.add_parser("record")
     p.add_argument("name")
+    p.add_argument("--profile", help="named corpus configuration and oracle recording")
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--repeat", type=int, default=2, help="runs per case to detect unstable output")
     p.add_argument("--all", action="store_true", help="re-record unchanged cases too")
@@ -631,6 +641,7 @@ def main():
                    help="also mask lines that differ from the existing recording (made on another machine)")
     p = sub.add_parser("run")
     p.add_argument("name")
+    p.add_argument("--profile", help="named corpus configuration and oracle recording")
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--filter")
     p.add_argument("--shard")
@@ -640,6 +651,7 @@ def main():
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
     p.add_argument("name")
+    p.add_argument("--profile", help="named corpus configuration and oracle recording")
     p.add_argument("id")
     p.add_argument("--robigo")
     p = sub.add_parser("score")
