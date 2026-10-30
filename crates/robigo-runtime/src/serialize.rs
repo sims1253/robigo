@@ -80,6 +80,14 @@ struct PNode {
     car: Value,
 }
 
+struct BcLevel {
+    pos: Option<usize>,
+    lang: bool,
+    attr: Value,
+    tag: Value,
+    car: Value,
+}
+
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
     pos: usize,
@@ -656,6 +664,10 @@ impl<'a, 'i> Reader<'a, 'i> {
     fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
         let outer = std::mem::take(&mut self.bc_records);
         let code = portable_bc_code(self.read_item()?)?;
+        // Most records describe the source corresponding to these instructions.
+        // Reserve once instead of repeatedly reallocating the two streams.
+        self.bc_records.operations.reserve(code.len() * 4);
+        self.bc_records.items.reserve(code.len() * 2);
         let consts = self.read_bc_consts(reps)?;
         let cells = std::mem::replace(&mut self.bc_records, outer);
         Ok(Value::Bytecode(Rc::new(Bytecode {
@@ -674,6 +686,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(v)
     }
 
+    #[inline(always)]
     fn bc_item(&mut self) -> RResult<Value> {
         let v = self.read_item()?;
         self.bc_records.item(v.clone(), false);
@@ -714,13 +727,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // tail's items again, and dropped the intermediate).
                 // A cell stored for a BCREPDEF (`reps`) spans from its own
                 // level to the end — a contiguous slice of the flat items.
-                struct Level {
-                    pos: Option<usize>,
-                    lang: bool,
-                    attr: Value,
-                    tag: Value,
-                    car: Value,
-                }
                 let translate = |t: u32| match t {
                     ATTRLANGSXP => (LANGSXP, true),
                     ATTRLISTSXP => (LISTSXP, true),
@@ -729,7 +735,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // Chains are short (a call's spine is its argument count);
                 // inline storage keeps the common case allocation-free,
                 // where a growing Vec paid realloc + copy per few cells.
-                let mut spine: smallvec::SmallVec<[Level; 8]> = smallvec::SmallVec::new();
+                let mut spine: smallvec::SmallVec<[BcLevel; 8]> = smallvec::SmallVec::new();
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
@@ -743,7 +749,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let tag = self.bc_item()?;
                     let t1 = self.bc_int()? as u32;
                     let car = self.read_bc_lang(t1, reps)?;
-                    spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
+                    spine.push(BcLevel { pos, lang: ty == LANGSXP, attr, tag, car });
                     let t2 = self.bc_int()? as u32;
                     let mut npos = None;
                     let mut nty = t2;
@@ -768,13 +774,15 @@ impl<'a, 'i> Reader<'a, 'i> {
                     };
                     break;
                 }
-                // Every level's cell, then the tail's; the spine's cars
-                // move into the items (each level's Value was only
-                // buffered here).
-                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + 4);
-                for l in spine.iter_mut() {
-                    let car = std::mem::replace(&mut l.car, Value::Null);
-                    items.push(Arg::new(l.tag.as_sym(), car));
+                // Every level's cell, then the tail's.
+                let tail_len = match &cdr {
+                    Value::Pairlist(p) => p.items.len(),
+                    Value::Lang(l) => l.args.len() + 1,
+                    _ => 0,
+                };
+                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + tail_len);
+                for l in &mut spine {
+                    items.push(Arg::new(l.tag.as_sym(), std::mem::replace(&mut l.car, Value::Null)));
                 }
                 match cdr {
                     // A tail read fresh from the stream is uniquely
@@ -794,7 +802,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for
                 // `reps`; the head carries the first level's attributes.
-                for (i, l) in spine.iter().enumerate() {
+                for (i, l) in spine.iter().enumerate().skip(1) {
                     if let Some(p) = l.pos {
                         if p < reps.len() {
                             let mut v = if l.lang {
@@ -812,7 +820,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                 } else {
                     Value::pairlist(items)
                 };
-                set_attr_pairlist(&mut v, spine[0].attr.clone());
+                set_attr_pairlist(&mut v, std::mem::replace(&mut spine[0].attr, Value::Null));
+                // R: serialize.c:ReadBCLang registers this very cell. Reusing
+                // the head avoids a second allocation and preserves identity.
+                if let Some(p) = spine[0].pos {
+                    if p < reps.len() {
+                        reps[p] = v.clone();
+                    }
+                }
                 Ok(v)
             }
             _ => self.bc_item(),
@@ -1050,8 +1065,15 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     }
     // 16 covers the reference count of a typical lazy-load entry without
     // the 4→8→16 reallocation chain; big entries still grow.
-    let mut r =
-        Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook, bc_records: BytecodeCells::default() };
+    let mut r = Reader {
+        data,
+        pos,
+        format,
+        refs: Vec::with_capacity(16),
+        interp,
+        hook,
+        bc_records: BytecodeCells::default(),
+    };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;

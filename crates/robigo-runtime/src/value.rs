@@ -616,6 +616,7 @@ impl BytecodeCells {
     pub fn integer(&mut self, value: i32) {
         self.operations.push((value as i64) << 2);
     }
+    #[inline(always)]
     pub fn item(&mut self, value: Value, nested: bool) {
         self.operations.push(((self.items.len() as i64) << 2) | if nested { 2 } else { 1 });
         self.items.push(value);
