@@ -70,7 +70,7 @@ pub struct Interp {
     /// bytecode is fixed at install; see `vm::snapshot_simple_internals`),
     /// by `compile::SIMPLE_INTERNALS` index. Promises stay unforced until
     /// first use.
-    pub si_snaps: [Option<Value>; crate::compile::NUM_SIMPLE_INTERNALS],
+    pub si_snaps: [Option<Value>; 20],
     /// Whether [`Interp::si_snaps`] is complete. Calls made while base is
     /// still loading stay generic (and unmemoized): resolving against a
     /// partial snapshot would poison the memo for user code.
@@ -120,7 +120,13 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                     return None;
                 }
                 return match &b.value {
-                    Value::Promise(q) => q.value(),
+                    Value::Promise(q) => match &*q.value.borrow() {
+                        crate::value::PromiseVal::Boxed(v) => Some(v.clone()),
+                        crate::value::PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
+                        crate::value::PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
+                        crate::value::PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
+                        crate::value::PromiseVal::Unforced => None,
+                    },
                     v if v.is_missing_arg() => None,
                     v => Some(v.clone()),
                 };
@@ -198,14 +204,6 @@ impl Interp {
         interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));
         crate::builtins::install(&mut interp);
         interp
-    }
-
-    pub fn get_namespace(&self, pkg: &str) -> Option<Env> {
-        let sym = Sym::lookup(pkg)?;
-        match self.ns_registry.get_local(sym)? {
-            Value::Env(e) => Some(e),
-            _ => None,
-        }
     }
 
     /// Allow R evaluation to use about `limit` bytes of Rust stack below
@@ -365,8 +363,12 @@ impl Interp {
     }
 
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
-        if let Some(v) = p.value() {
-            return Ok(v);
+        match &*p.value.borrow() {
+            crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
+            crate::value::PromiseVal::ScalarInt(i) => return Ok(Value::int(*i)),
+            crate::value::PromiseVal::ScalarReal(d) => return Ok(Value::real(*d)),
+            crate::value::PromiseVal::ScalarLgl(l) => return Ok(Value::lgl_raw(*l)),
+            crate::value::PromiseVal::Unforced => {}
         }
         if p.forcing.get() {
             return Err(Flow::error(
@@ -508,7 +510,10 @@ impl Interp {
                     // a forced promise (lazily loaded base) is its value,
                     // as findFun takes PRVALUE
                     Value::Promise(p) => {
-                        let f = p.value();
+                        let f = match &*p.value.borrow() {
+                            crate::value::PromiseVal::Boxed(v) => Some(v.clone()),
+                            _ => None,
+                        };
                         return match f {
                             Some(f @ (Value::Closure(_) | Value::Builtin(_))) => {
                                 self.fun_cache.insert(key, f.clone());
@@ -532,7 +537,10 @@ impl Interp {
             Some(v) => match self.base.0.frame().borrow().get(sym) {
                 // a lazily loaded base binding is a (forced) promise
                 Some(b) => match &b.value {
-                    Value::Promise(p) => p.value().as_ref().is_some_and(|f| f.ptr_eq(&v)),
+                    Value::Promise(p) => match &*p.value.borrow() {
+                        crate::value::PromiseVal::Boxed(f) => f.ptr_eq(&v),
+                        _ => false,
+                    },
                     f => f.ptr_eq(&v),
                 },
                 None => false,

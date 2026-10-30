@@ -567,13 +567,13 @@ impl Promise {
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
-        let pval = match &value {
-            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarInt(v.data[0]),
-            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarReal(v.data[0]),
-            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarLgl(v.data[0]),
-            _ => PromiseVal::Boxed(value),
-        };
-        Promise { expr, env: RefCell::new(None), value: RefCell::new(pval), forcing: Cell::new(false), code: None }
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::Boxed(value)),
+            forcing: Cell::new(false),
+            code: None,
+        }
     }
 
     #[inline(always)]
@@ -609,51 +609,37 @@ impl Promise {
         }
     }
 
+    #[inline(always)]
     pub fn set_value(&self, value: Value) {
-        let pval = match &value {
-            Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarInt(v.data[0]),
-            Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarReal(v.data[0]),
-            Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarLgl(v.data[0]),
-            _ => PromiseVal::Boxed(value),
-        };
-        *self.value.borrow_mut() = pval;
+        *self.value.borrow_mut() = PromiseVal::Boxed(value);
     }
 
     pub fn value(&self) -> Option<Value> {
-        if let Ok(mut b) = self.value.try_borrow_mut() {
-            match &*b {
-                PromiseVal::Unforced => None,
-                PromiseVal::ScalarInt(i) => {
-                    let v = Value::int(*i);
-                    *b = PromiseVal::Boxed(v.clone());
-                    Some(v)
-                }
-                PromiseVal::ScalarReal(d) => {
-                    let v = Value::real(*d);
-                    *b = PromiseVal::Boxed(v.clone());
-                    Some(v)
-                }
-                PromiseVal::ScalarLgl(l) => {
-                    let v = Value::lgl_raw(*l);
-                    *b = PromiseVal::Boxed(v.clone());
-                    Some(v)
-                }
-                PromiseVal::Boxed(v) => Some(v.clone()),
-            }
-        } else {
-            match &*self.value.borrow() {
-                PromiseVal::Unforced => None,
-                PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
-                PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
-                PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
-                PromiseVal::Boxed(v) => Some(v.clone()),
-            }
+        match &*self.value.borrow() {
+            PromiseVal::Boxed(v) => return Some(v.clone()),
+            PromiseVal::Unforced => return None,
+            _ => {}
         }
-    }
-
-    #[inline(always)]
-    pub fn is_forced(&self) -> bool {
-        !matches!(*self.value.borrow(), PromiseVal::Unforced)
+        let mut b = self.value.borrow_mut();
+        match &*b {
+            PromiseVal::Boxed(v) => Some(v.clone()),
+            PromiseVal::ScalarInt(i) => {
+                let v = Value::int(*i);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::ScalarReal(d) => {
+                let v = Value::real(*d);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::ScalarLgl(l) => {
+                let v = Value::lgl_raw(*l);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::Unforced => None,
+        }
     }
 }
 

@@ -15,7 +15,7 @@ use crate::nmath::binom as nb;
 use crate::nmath::dist as nd;
 use crate::nmath::norm as nn;
 use crate::nmath::pgamma as npg;
-use crate::sym::{Sym, s};
+use crate::sym::Sym;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[

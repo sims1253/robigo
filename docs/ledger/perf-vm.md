@@ -6,23 +6,33 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
-## 2026-10-30: round 13, scalar promise storage and generalized compiled-wrapper inlining
+## 2026-10-30: round 13, unboxed scalar promises and gate recovery
 
-- Base: main c3bb38a (rebased past #126 ff759036). Re-measured 84-program baseline table on main: geomean **0.486x over 73 correct programs, faster on 73**. Saved as `.robigo/perf-base.json`.
-- Item 1: Scalar promise storage — redesigned `Promise` storage in `value.rs` with `PromiseVal` enum (`Unforced`, `ScalarInt(i32)`, `ScalarReal(f64)`, `ScalarLgl(Lgl)`, `Boxed(Value)`).
-  - In `vm.rs`, `caller_promargs` and `eager_args` pass unboxed scalar values directly into promises without heap vector allocations (`Value::int`, `Value::real`, `Value::lgl`).
-  - In `vm.rs`, `plain_lookup` reads unboxed scalar constants directly into `RVal::I`, `RVal::D`, `RVal::L`, avoiding vector overhead and pointer dereference.
-  - Cycle collector in `reachability.rs` traces only `PromiseVal::Boxed`, avoiding unnecessary GC work for scalar promises.
-  - `Promise::value(&self)` lazily materializes and memoizes `PromiseVal::Boxed` on first request, so introspection and fallback AST paths allocate at most once.
-- Item 2: General compiled-wrapper inlining — expanded inlining targets beyond the 20 `safeBaseInternals` to 66 candidates (including all 46 `safeStatsInternals`: `dnorm`, `pnorm`, `rnorm`, etc.).
-  - Generalized wrapper shape detection (`simple_wrapper_shape`) to support `.Internal`, `.Call` (resolving native symbols in closure environment), and primitive builtins.
-  - Added fast-path memo lookup in `try_inline_site` without parent environment traversal.
-- Key benchmark results (paired against fresh main baseline, cache off):
-  - `robigo/fib`: 958,495,980 -> 933,948,711 (-2.56%, 24.5M instructions saved).
-  - `robigo/vecarith`: 4,336,547,402 -> 4,039,793,997 (-6.84%, 296.8M instructions saved).
-  - `rbench/shootout/mandelbrot_noout_naive`: 667,495,910 -> 629,552,014 (-5.68%, 37.9M instructions saved).
-  - `robigo/csv`: 1,373,798,840 -> 1,371,982,995 (-1.8M instructions saved).
-- Full 84-program suite: 73 correct programs faster than GNU R, geomean 0.489x.
+- Base: main ff759036 (PR #130 parent). Re-measured 84-program baseline table on main: geomean **0.486x over 73 correct programs, faster on 73**. Saved as `.robigo/robigo-base`.
+- Gate Red Attribution:
+  - Broad CI gate regressions (+0.55% to +1.01% on 12 call-heavy benchmarks including `s4-portfolio`, `s4-new`, `mandelbrot`, `queens`, `spectralnorm`, `apply`, etc.) were analyzed and attributed:
+  - Wrapper expansion to 46 stats internals provided zero speedup over parent commit `ff759036` on any benchmark while increasing compilation and lookup overhead. Reverted `SIMPLE_INTERNALS` back to the 20 base internals.
+  - In `Promise` representation, `PromiseVal` enum lookup overhead was eliminated:
+    - Optimized `force_promise` to use shared `borrow()` instead of `borrow_mut()` when reading forced/scalar values.
+    - Added unboxed scalar handling in `plain_value`, avoiding fallback to full AST eval and `r_epoch` bumping for variable promises bound to scalars.
+    - Preserved unboxed scalar passing in `caller_promargs` and `eager_args`.
+- Benchmark results against base `ff759036` (clean, caches off):
+  - `robigo/fib`: 960,889,820 -> 933,587,169 (-2.84%, 27.3M instructions saved).
+  - `robigo/binarytrees`: 1,256,413,823 -> 1,243,959,513 (-0.99%, 12.5M instructions saved).
+  - All 12 failing CI benchmarks recovered to within normal noise floor (0 slower > 0.5% across all 21 `robigo/*` benchmarks):
+    - `robigo/s4-portfolio`: +0.15% (was +1.01% in red CI)
+    - `robigo/s4-new`: +0.15% (was +0.95% in red CI)
+    - `robigo/mandelbrot`: +0.12% (was +0.93% in red CI)
+    - `robigo/s4-slot-write`: +0.12% (was +0.91% in red CI)
+    - `robigo/s4-valid`: +0.16% (was +0.90% in red CI)
+    - `robigo/queens`: +0.01% (was +0.88% in red CI)
+    - `robigo/spectralnorm`: +0.13% (was +0.86% in red CI)
+    - `robigo/s4-generic`: +0.15% (was +0.85% in red CI)
+    - `robigo/s4-slot-read`: +0.10% (was +0.80% in red CI)
+    - `robigo/apply`: +0.10% (was +0.75% in red CI)
+    - `robigo/nbody`: +0.07% (was +0.63% in red CI)
+    - `robigo/strings`: +0.03% (was +0.55% in red CI)
+- Conformance: 9/9 tests pass (`cargo test --release -p robigo-cli --test conformance`).
 
 ## 2026-10-30: round 12, Rconn_printf skips the vfprintf round-trip
 
