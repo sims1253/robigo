@@ -2,3 +2,7 @@
 02-simple-manipulations-numbers-and-vectors
 03-objects-their-modes-and-attributes
 04-ordered-and-unordered-factors
+05-arrays-and-matrices
+08-probability-distributions
+09-writing-your-own-functions
+11-graphical-procedures

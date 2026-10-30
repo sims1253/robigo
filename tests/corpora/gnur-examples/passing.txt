@@ -771,3 +771,8 @@ utils/url.show
 utils/winDialog
 utils/winMenus
 utils/winextras
+methods/GenericFunctions
+methods/implicitGeneric
+methods/setMethod
+stats4/mle
+stats4/update-methods
