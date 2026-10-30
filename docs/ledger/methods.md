@@ -7,6 +7,51 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 12 — fix warmed-`@` mismatch and ratchet S4 slice to 21/21
+
+- Base `a7eda4c4`, branch `track/methods-slot-warm`.
+- **Root cause & GNU R alignment**: In GNU R, `compiler/R/cmp.R` registers inline handlers
+  via `setInlineHandler(s, cmpSpecial)` for all `package:base` specials. Because `@` is a
+  special (`typeof("@") == "special"`), it receives `cmpSpecial` and emits `CALLSPECIAL`,
+  which evaluates `getPrimitive(symbol, SPECIALSXP)` directly and bypasses the global variable
+  lookup once compiled.
+  In robigo, compiler inlining and interpreter deoptimization fallback are governed by
+  `FROZEN_FUNS` and closure frame masks in `crates/robigo-runtime/src/vm/rjit.rs`.
+  `@<-` was already present in `FROZEN_FUNS` (index 40), but `@` was omitted under the assumption
+  that specials without explicit cmp handlers did not inline. Added `"@"` to `FROZEN_FUNS`
+  (index 41) and `class_of_name` (`"@" => 41`).
+- **Verified cold vs warmed semantics**:
+  - Cold read (`read_cold <- function(x) x@x` defined after `@ <- function(...) 100`) evaluates
+    to `100` in both GNU R and robigo.
+  - Warmed read (`read <- function(x) x@x` compiled prior to reassignment) continues to call
+    the primitive `@` and returns `7` in both GNU R and robigo.
+  - Lexical shadowing (`local({ `@` <- ...; x@x })`) evaluates to `200` in both GNU R and robigo.
+  - Test `tests/r/s4/invalidation-slot-guard.R` diff against GNU R `.Rout` is 0 across AST,
+    VM, and JIT tiers.
+  - Created passing marker `tests/r/passing/s4/invalidation-slot-guard.R.pass`. All **21/21**
+    S4 tests in `tests/r/s4/` now pass.
+- **Ratchets & conformance verification**:
+  - Full conformance suite (`cargo test --release -p robigo-cli --test conformance`): **7/7 tests
+    pass** (`ratchet_reads_markers`, `ratchet_rejects_marker_for_missing_script`,
+    `ratchet_rejects_stray_file`, `ratchet_reads_legacy_list`, `vm_guards_hold`, `conformance`,
+    `compiled_matches_interpreted`). 279/280 scripts pass with 0 regressions.
+  - S4 FastR slice: **644/662 pass**, 0 regressions.
+  - Rcpp sugar suite (`scripts/rcpp-mini.R` on `test_sugar.R`): **493/493 pass**, 0 fail.
+- **Job 2: Binding-version guards for metadata caching (handoff to core)**:
+  - Core owns `value.rs`/`env.rs` and is actively implementing cycle-aware environment finalizers
+    in round 12 (`docs/ledger/core.md`). In accordance with concurrency rules, no core files were
+    modified in this round.
+  - Generic dispatch metadata caching (`.AllMTable`, `.SigArgs`, `.SigLength`) cannot use
+    `Env::fn_version`, which only tracks function-like values. List-to-list, integer-to-integer,
+    and environment-to-environment updates do not advance `fn_version`.
+  - Handoff request: Core to expose a watched-binding or binding-level mutation counter on `Env`
+    that increments on any write, deletion, or active-binding conversion for designated symbols,
+    enabling metadata guards without adding overhead to general closure parameter binding.
+- **Job 3: Slot reads stay held (held for perf-vm)**:
+  - Held until perf-vm finishes work in `vm.rs` and `compile.rs` (round 10). No bytecode changes
+    were made. Design and measured instruction costs from round 11 (~1,405 robigo vs ~656 GNU R)
+    remain the target for the future `SlotRead` instruction.
+
 ## 2026-10-30: round 11 invalidation oracle and VM handoff
 
 - Base 5bff0ca, branch track/methods-s4-speed-2. #114 is still open,
