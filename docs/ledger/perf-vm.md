@@ -76,6 +76,14 @@ conformance` (interpreter, VM and VM+JIT against each other).
   snapshot; land only if measurable (no distribution benchmarks use
   them hot). The `lockEnvironment` + locked-user-frame exotic stays on
   the namespace path (noted, no fixture).
+- Setup gotcha (2026-10-30): another track's parser work (`StrNative`
+  in `robigo-syntax`, now on main) poisoned the shared
+  `~/.cache/cargo-target`: cargo reused its newer syntax rlib for this
+  tree and failed this tree's `lang.rs` exhaustiveness. Host builds
+  and tests now use a private `CARGO_TARGET_DIR`
+  (`/tmp/perf-vm-r10/host-target`); container builds already use the
+  track's private trixie target. Rebase onto the new main only on
+  conflicts; none with 1a591ff.
 
 ## 2026-10-30: round 10, scalar promise storage (design only)
 
