@@ -32,6 +32,8 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   finalizers on one key and three keys in reverse registration order,
   a parent chain, and the reg.finalizer argument errors (character or NA
   onexit, builtin second argument, non-environment key).
+- The gnur-examples case `base/reg.finalizer` (the help page's own
+  example) now passes and is added to that corpus's ratchet.
 - Verified: 262/262 conformance scripts match stdout, stderr and status
   in all three tiers; collector 22 tests (one new: onexit queue order and
   live keys staying in the weak list); runtime 47 unit plus two
