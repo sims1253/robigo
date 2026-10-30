@@ -6,6 +6,28 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: setter fix rebased onto the byte window
+
+- Rebased #94 onto **df3d535** (#84). The conditions.rs conflict keeps
+  main's RString class representation and the condition/default-call split.
+  Verified every main conformance entry remains, with five additions.
+- Post-rebase TestSimpleVectors: **1934/1937**, **zero regressions**.
+  All 27 reported failures pass again; the other 1910 classifications
+  match the original failing #94 snapshot. New main alone is 1932/1937.
+- All **246/246** conformance scripts match GNU R in AST, VM and JIT.
+  Debian runtime tests: **45/45**, including the unchanged 14-case setter
+  oracle, the JIT transition, and all 9440 arithmetic comparisons. The
+  6144-case payload fixture passes in the full conformance replay.
+- Matched private Debian builds of df3d535 and the rebased candidate:
+  seven-benchmark instruction geomean **0.661500 -> 0.661468** GNU R;
+  paired gate: zero slower above 0.5%, zero broken. Host runs use the
+  supplied R_HOME. Formatting and source whitespace checks pass.
+- The four old-base local shard runs were stopped after #84 merged;
+  they are not verification of the rebased tree. Full shards and the
+  complete performance gate must run in real CI after the rebased push.
+- Artifacts: `.robigo/r7-fix/`, including immutable matched binaries,
+  vector classifications, conformance results, and instruction profiles.
+
 ## 2026-10-30: round 7 follow-up, condition calls versus default errors
 
 - Reproduced all **27** #94 TestSimpleVectors regressions: **1907/1937**,
@@ -31,9 +53,9 @@ conformance` (interpreter, VM and VM+JIT against each other).
   arithmetic comparisons. The 6,144-case payload conformance fixture passes.
   Paired seven-benchmark gate against saved main: zero slowdowns above 0.5%,
   zero broken cases. Formatting/source whitespace checks pass.
-- All four full FastR shards are running after the focused slice passed.
-  Artifacts: `.robigo/r7-fix/`. No oracle recording or existing ratchet was
-  weakened; four conformance entries were added.
+- Four full FastR shards were started, then stopped when #84 merged and
+  required a new base. See the post-rebase verification above. No oracle
+  recording or existing ratchet was weakened; four entries were added.
 
 ## 2026-10-30: round 7, setter baseline and native CSV split
 
