@@ -386,6 +386,24 @@ fn store_cell_shared<T>(v: &Rc<Vector<T>>, i: usize, value: T) {
     }
 }
 
+/// The shared branch of SETCAR/SETCDR/SET_TAG on a cons spine: mutate the
+/// cells where the allocation keeps them, replacing (and dropping) what the
+/// cell held. The runtime is single-threaded and callers hold no Rust borrow
+/// into the pairlist across the write.
+#[cold]
+#[inline(never)]
+fn mut_pairlist(p: &Rc<Pairlist>, f: impl FnOnce(&mut Pairlist)) {
+    // R: main/memory.c:SETCAR/SETCDR/SET_TAG
+    unsafe { f(&mut *Rc::as_ptr(p).cast_mut()) }
+}
+
+#[cold]
+#[inline(never)]
+fn mut_lang(l: &Rc<Lang>, f: impl FnOnce(&mut Lang)) {
+    // R: main/memory.c:SETCAR/SETCDR/SET_TAG
+    unsafe { f(&mut *Rc::as_ptr(l).cast_mut()) }
+}
+
 // GNU R's compact sequences (altclasses.c compact_intseq / compact_realseq):
 // the vectors `:`, `seq_len`, `seq_along` and compact row names make. They
 // serialize in ALTREP form and go to C as ALTREP objects. GNU R's are
@@ -1048,6 +1066,167 @@ impl Value {
         true
     }
 
+    /// R: memory.c:CAR for a pairlist/call cell, 0-based; cell 0 of a call
+    /// is the function position.
+    pub fn pair_car(&self, cell: usize) -> Option<&Value> {
+        match self {
+            Value::Pairlist(p) => p.items.get(cell).map(|a| &a.value),
+            Value::Lang(l) => match cell {
+                0 => Some(&l.fun),
+                n => l.args.get(n - 1).map(|a| &a.value),
+            },
+            _ => None,
+        }
+    }
+
+    /// R: memory.c:SETCAR (LISTSXP/LANGSXP), the C cell write that mutates
+    /// *through every alias*: GNU R stores into the cons cell without
+    /// duplicating, and the cell's old value loses a reference while the new
+    /// one gains one (`FIX_BINDING_REFCNT`; `CHECK_OLD_TO_NEW` is a
+    /// generational barrier with no counterpart on the Rc heap).
+    ///
+    /// The R-level replacement primitives duplicate a shared object first
+    /// (`MAYBE_SHARED`/`MAYBE_REFERENCED`), which `Rc::make_mut` expresses;
+    /// this is the one pairlist operation that changes a shared object. The
+    /// flat model stores the whole spine in one `Rc`, so an alias sees the
+    /// same cells. `y == CAR(x)` returns before any refcount change.
+    ///
+    /// Returns false when `self` is not a pairlist/call or `cell` is absent.
+    pub fn set_pair_car_through_alias(&self, cell: usize, value: Value) -> bool {
+        let same = match self.pair_car(cell) {
+            Some(old) => old.ptr_eq(&value),
+            None => return false,
+        };
+        if same {
+            return true;
+        }
+        // The new value may reach an environment the old one did not (or vice
+        // versa); an in-place write is not a binding store and does not
+        // advance the epoch by itself.
+        crate::env::Env::mark_cycle_dirty();
+        match self {
+            Value::Pairlist(p) => mut_pairlist(p, |m| m.items[cell].value = value),
+            Value::Lang(l) => mut_lang(l, |m| {
+                if cell == 0 {
+                    m.fun = value;
+                } else {
+                    m.args[cell - 1].value = value;
+                }
+            }),
+            _ => unreachable!("pair_car accepted a non-pairlist"),
+        }
+        true
+    }
+
+    /// R: memory.c:SET_TAG (LISTSXP/LANGSXP). Tags are interned symbols, so
+    /// only the cell changes: no environment becomes reachable through one.
+    pub fn set_pair_tag_through_alias(&self, cell: usize, tag: Option<Sym>) -> bool {
+        match self {
+            Value::Pairlist(p) => {
+                if p.items.get(cell).map(|a| a.tag) == Some(tag) {
+                    return true;
+                }
+                if cell >= p.items.len() {
+                    return false;
+                }
+                mut_pairlist(p, |m| m.items[cell].tag = tag);
+                true
+            }
+            Value::Lang(l) => {
+                let old = if cell == 0 { Some(l.fun_tag) } else { l.args.get(cell - 1).map(|a| a.tag) };
+                let Some(old) = old else { return false };
+                if old == tag {
+                    return true;
+                }
+                mut_lang(l, |m| {
+                    if cell == 0 {
+                        m.fun_tag = tag;
+                    } else {
+                        m.args[cell - 1].tag = tag;
+                    }
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// R: memory.c:SETCDR (LISTSXP/LANGSXP): replace the rest of the spine
+    /// after `cell` with `tail`'s cells. `NULL` ends the list there.
+    ///
+    /// The flat model only carries proper spines, so a non-list `y` (C's
+    /// dotted pair) is rejected; callers report it rather than guessing.
+    /// Returns false when `self` is not a pairlist/call, `cell` is absent,
+    /// or `tail` is not a list.
+    pub fn set_pair_cdr_through_alias(&self, cell: usize, tail: &Value) -> bool {
+        let rest: Vec<Arg> = match tail {
+            Value::Null => Vec::new(),
+            Value::Pairlist(p) => p.items.clone(),
+            Value::Lang(l) => l.items(),
+            Value::Dots(d) => d.as_ref().clone(),
+            _ => return false,
+        };
+        match self {
+            Value::Pairlist(p) => {
+                if cell >= p.items.len() {
+                    return false;
+                }
+                crate::env::Env::mark_cycle_dirty();
+                mut_pairlist(p, |m| {
+                    m.items.truncate(cell + 1);
+                    m.items.extend(rest);
+                });
+                true
+            }
+            Value::Lang(l) => {
+                if cell > l.args.len() {
+                    return false;
+                }
+                crate::env::Env::mark_cycle_dirty();
+                mut_lang(l, |m| {
+                    m.args.truncate(cell);
+                    m.args.extend(rest);
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Rewrite a whole pairlist spine in the allocation, as a native routine
+    /// that ran SETCAR/SETCDR/SET_TAG over a cons chain did (the bridge's
+    /// write-back). Every alias keeps the same object and sees the cells.
+    pub fn set_pairlist_cells_through_alias(&self, items: Vec<Arg>, attrs: AttrBox) -> bool {
+        let Value::Pairlist(p) = self else { return false };
+        crate::env::Env::mark_cycle_dirty();
+        mut_pairlist(p, |m| {
+            m.items = items;
+            m.attrs = attrs;
+        });
+        true
+    }
+
+    /// Rewrite a whole call in the allocation (the bridge's write-back of
+    /// SETCAR/SETCDR/SET_TAG on a LANGSXP chain). Every alias keeps the same
+    /// object and sees the new function, tags and arguments.
+    pub fn set_lang_cells_through_alias(
+        &self,
+        fun: Value,
+        fun_tag: Option<Sym>,
+        args: Vec<Arg>,
+        attrs: AttrBox,
+    ) -> bool {
+        let Value::Lang(l) = self else { return false };
+        crate::env::Env::mark_cycle_dirty();
+        mut_lang(l, |m| {
+            m.fun = fun;
+            m.fun_tag = fun_tag;
+            m.args = args;
+            m.attrs = attrs;
+        });
+        true
+    }
+
     /// A list with names.
     /// The element of a named list called `name`, if any.
     pub fn list_get(&self, name: &str) -> Option<Value> {
@@ -1691,5 +1870,218 @@ mod shared_list_tests {
         assert_eq!(int(&elt(&original, 0)), 1);
         assert_eq!(int(&elt(&alias, 0)), 1);
         assert_eq!(int(&elt(&replacement, 0)), 2);
+    }
+}
+
+/// GNU R's SETCAR/SETCDR/SET_TAG mutate a cons cell in place (memory.c), so
+/// every alias of a pairlist or language object sees the new cell. The
+/// R-level replacement primitives still duplicate a shared object first;
+/// these tests pin both halves of the rule for LISTSXP and LANGSXP.
+#[cfg(test)]
+mod shared_pairlist_tests {
+    use super::*;
+
+    fn pl(items: Vec<Value>) -> Value {
+        Value::pairlist(items.into_iter().map(Arg::pos).collect())
+    }
+
+    fn elt(v: &Value, cell: usize) -> Value {
+        v.pair_car(cell).expect("cell").clone()
+    }
+
+    fn int(v: &Value) -> i32 {
+        match v {
+            Value::Int(x) => x.data[0],
+            _ => panic!("not an integer vector"),
+        }
+    }
+
+    fn strs(v: &Value) -> Vec<RStr> {
+        match v {
+            Value::Str(s) => s.data.clone(),
+            _ => panic!("not a string vector"),
+        }
+    }
+
+    #[test]
+    fn set_car_writes_through_every_pairlist_alias() {
+        let x = pl(vec![Value::int(1), Value::int(2)]);
+        let binding = x.clone();
+        let env = Env::new(None);
+        env.set_local(Sym::new("shared"), x.clone());
+        let mut holder = Value::list(vec![Value::Null]);
+        holder.set_attr_raw(Sym::new("tag"), x.clone());
+
+        let epoch = Env::cycle_epoch();
+        assert!(x.set_pair_car_through_alias(0, Value::int(42)));
+
+        assert_eq!(int(&elt(&binding, 0)), 42);
+        assert_eq!(int(&elt(&env.get_local(Sym::new("shared")).unwrap(), 0)), 42);
+        assert_eq!(int(&elt(&holder.get_attr(Sym::new("tag")).unwrap(), 0)), 42);
+        assert_eq!(int(&elt(&binding, 1)), 2);
+        assert_eq!(binding.len(), 2);
+        assert_ne!(Env::cycle_epoch(), epoch);
+    }
+
+    #[test]
+    fn set_car_writes_the_function_position_of_a_shared_call() {
+        let call =
+            Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1)), Arg::new(Some(Sym::new("b")), Value::int(2))]);
+        let alias = call.clone();
+        assert!(call.set_pair_car_through_alias(0, Value::sym("g")));
+        assert!(call.set_pair_car_through_alias(2, Value::int(9)));
+        match &alias {
+            Value::Lang(l) => {
+                assert_eq!(l.fun.as_sym().unwrap().name().as_ref(), "g");
+                assert_eq!(int(&l.args[1].value), 9);
+                assert_eq!(l.args[1].tag.unwrap().name().as_ref(), "b");
+            }
+            _ => panic!("not a call"),
+        }
+    }
+
+    #[test]
+    fn set_tag_writes_through_every_alias_without_touching_reachability() {
+        let x = pl(vec![Value::int(1), Value::int(2)]);
+        let alias = x.clone();
+        let call = Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1))]);
+        let call_alias = call.clone();
+        let epoch = Env::cycle_epoch();
+
+        assert!(x.set_pair_tag_through_alias(1, Some(Sym::new("z"))));
+        assert!(call.set_pair_tag_through_alias(0, Some(Sym::new("head"))));
+
+        assert_eq!(strs(&alias.names().unwrap()), vec![Some(RString::from("")), Some(RString::from("z"))]);
+        match &call_alias {
+            Value::Lang(l) => assert_eq!(l.fun_tag.unwrap().name().as_ref(), "head"),
+            _ => panic!("not a call"),
+        }
+        // Tags are interned symbols: no environment becomes reachable.
+        assert_eq!(Env::cycle_epoch(), epoch);
+    }
+
+    #[test]
+    fn set_cdr_replaces_the_tail_through_every_alias() {
+        let x = pl(vec![Value::int(1), Value::int(2), Value::int(3)]);
+        let alias = x.clone();
+        let epoch = Env::cycle_epoch();
+        assert!(x.set_pair_cdr_through_alias(0, &pl(vec![Value::int(8), Value::int(9)])));
+        assert_eq!(alias.len(), 3);
+        assert_eq!(int(&elt(&alias, 0)), 1);
+        assert_eq!(int(&elt(&alias, 1)), 8);
+        assert_eq!(int(&elt(&alias, 2)), 9);
+        assert_ne!(Env::cycle_epoch(), epoch);
+        // NULL ends the spine after the cell.
+        assert!(x.set_pair_cdr_through_alias(0, &Value::Null));
+        assert_eq!(alias.len(), 1);
+        assert_eq!(int(&elt(&alias, 0)), 1);
+    }
+
+    #[test]
+    fn set_cdr_replaces_a_call_argument_tail() {
+        let call = Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1)), Arg::pos(Value::int(2))]);
+        let alias = call.clone();
+        assert!(call.set_pair_cdr_through_alias(0, &pl(vec![Value::int(7)])));
+        match &alias {
+            Value::Lang(l) => {
+                assert_eq!(l.args.len(), 1);
+                assert_eq!(int(&l.args[0].value), 7);
+            }
+            _ => panic!("not a call"),
+        }
+        let plist = pl(vec![Value::int(1), Value::int(2), Value::int(3)]);
+        let plist_alias = plist.clone();
+        assert!(plist.set_pair_cdr_through_alias(1, &pl(vec![Value::int(4)])));
+        assert_eq!(plist_alias.len(), 3);
+        assert_eq!(int(&elt(&plist_alias, 1)), 2);
+        assert_eq!(int(&elt(&plist_alias, 2)), 4);
+        // a call spliced as a tail contributes its function cell too
+        let tail = Value::lang(Value::sym("g"), vec![Arg::pos(Value::int(5))]);
+        assert!(plist.set_pair_cdr_through_alias(1, &tail));
+        assert_eq!(plist_alias.len(), 4);
+        assert_eq!(elt(&plist_alias, 2).as_sym().unwrap().name().as_ref(), "g");
+        assert_eq!(int(&elt(&plist_alias, 3)), 5);
+    }
+
+    #[test]
+    fn set_cell_rejects_non_cons_values_bad_cells_and_dotted_tails() {
+        let x = Value::int(1);
+        assert!(!x.set_pair_car_through_alias(0, Value::int(2)));
+        assert!(!x.set_pair_tag_through_alias(0, None));
+        assert!(!x.set_pair_cdr_through_alias(0, &Value::Null));
+
+        let y = pl(vec![Value::int(1)]);
+        let alias = y.clone();
+        assert!(!y.set_pair_car_through_alias(1, Value::int(2)));
+        assert!(!y.set_pair_tag_through_alias(1, Some(Sym::new("z"))));
+        assert!(!y.set_pair_cdr_through_alias(1, &Value::Null));
+        // a dotted pair's cdr is not representable by the flat model
+        assert!(!y.set_pair_cdr_through_alias(0, &Value::int(3)));
+        assert_eq!(int(&elt(&alias, 0)), 1);
+        assert_eq!(alias.len(), 1);
+
+        let call = Value::lang(Value::sym("f"), vec![]);
+        assert!(!call.set_pair_car_through_alias(1, Value::int(1)));
+    }
+
+    #[test]
+    fn set_car_drops_the_replaced_element_once() {
+        let inner = Value::list(vec![Value::int(1)]);
+        let Value::List(inner_rc) = &inner else { unreachable!() };
+        let x = pl(vec![inner.clone(), Value::Null]);
+        let alias = x.clone();
+        assert_eq!(Rc::strong_count(inner_rc), 2); // inner and the shared cell
+        assert!(x.set_pair_car_through_alias(0, Value::Null));
+        assert_eq!(Rc::strong_count(inner_rc), 1);
+        assert!(matches!(elt(&alias, 0), Value::Null));
+    }
+
+    #[test]
+    fn bulk_spine_rewrites_keep_the_object_and_its_aliases() {
+        let x = pl(vec![Value::int(1)]);
+        let alias = x.clone();
+        let items = vec![Arg::new(Some(Sym::new("a")), Value::int(2)), Arg::pos(Value::int(3))];
+        assert!(x.set_pairlist_cells_through_alias(items, None));
+        assert_eq!(alias.len(), 2);
+        assert_eq!(strs(&alias.names().unwrap()), vec![Some(RString::from("a")), Some(RString::from(""))]);
+
+        let call = Value::lang(Value::sym("f"), vec![]);
+        let call_alias = call.clone();
+        assert!(call.set_lang_cells_through_alias(
+            Value::sym("h"),
+            Some(Sym::new("tag")),
+            vec![Arg::pos(Value::int(4))],
+            None
+        ));
+        match &call_alias {
+            Value::Lang(l) => {
+                assert_eq!(l.fun.as_sym().unwrap().name().as_ref(), "h");
+                assert_eq!(l.fun_tag.unwrap().name().as_ref(), "tag");
+                assert_eq!(int(&l.args[0].value), 4);
+            }
+            _ => panic!("not a call"),
+        }
+        assert!(!Value::int(1).set_pairlist_cells_through_alias(vec![], None));
+        assert!(!Value::int(1).set_lang_cells_through_alias(Value::Null, None, vec![], None));
+    }
+
+    #[test]
+    fn r_level_copy_on_modify_still_copies_a_shared_pairlist_and_call() {
+        let original = pl(vec![Value::int(1)]);
+        let alias = original.clone();
+        let mut replacement = original.clone();
+        let Value::Pairlist(p) = &mut replacement else { unreachable!() };
+        Rc::make_mut(p).items[0].value = Value::int(2);
+        assert_eq!(int(&elt(&original, 0)), 1);
+        assert_eq!(int(&elt(&alias, 0)), 1);
+        assert_eq!(int(&elt(&replacement, 0)), 2);
+
+        let call = Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1))]);
+        let call_alias = call.clone();
+        let mut call_replacement = call.clone();
+        let Value::Lang(l) = &mut call_replacement else { unreachable!() };
+        Rc::make_mut(l).args[0].value = Value::int(2);
+        assert_eq!(int(&elt(&call_alias, 1)), 1);
+        assert_eq!(int(&elt(&call_replacement, 1)), 2);
     }
 }

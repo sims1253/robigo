@@ -4,6 +4,103 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-10-30: SETCAR/SETCDR/SET_TAG shared cons-cell mutation
+
+- Why: round 7 left the pairlist/language half of the C cell-write rule
+  unported. GNU R's `memory.c:SETCAR`/`SETCDR`/`SET_TAG` mutate a
+  LISTSXP/LANGSXP cell in place; only the R-level replacement primitives
+  check `MAYBE_SHARED`/`MAYBE_REFERENCED` and duplicate first. The bridge
+  copies `.Call` arguments into cons cells, so a routine that ran those C
+  macros changed only the copy and the caller's pairlist/call stayed
+  unchanged. Graphics and stats code does this (the `.Devices` pairlist is
+  extended with `SETCDR`).
+- Spec read: `memory.c`'s `SETCAR` (empty-CAR early return, then
+  `FIX_BINDING_REFCNT`, `CHECK_OLD_TO_NEW`, store), `SETCDR`
+  (`FIX_REFCNT`, store; `TESTING_WRITE_BARRIER` rejects a non-tracking CDR
+  in a tracking cell), `SET_TAG` (`FIX_REFCNT`, store), and
+  `FIX_REFCNT_EX`: the old value is decremented, the new one incremented,
+  and `old == new` changes nothing. `CHECK_OLD_TO_NEW` is the
+  generational barrier, with no counterpart on the Rc heap (as for
+  `SET_VECTOR_ELT`).
+- Implementation: `Value::set_pair_car_through_alias(cell, value)`,
+  `set_pair_tag_through_alias(cell, tag)` and
+  `set_pair_cdr_through_alias(cell, tail)` in `value.rs` for Pairlist and
+  Lang (cell 0 of a call is the function position). They write the cell
+  where the `Rc` keeps it, drop the replaced value and no-op when the cell
+  already holds the same object (memory.c's `y == CAR(x)` early return).
+  The shared branch is an out-of-line helper next to
+  `store_cell_shared`; `Rc::make_mut` is untouched, so `[[<-`, `<-` and
+  `attr<-` still copy a shared object. `set_pair_cdr_through_alias`
+  splices a NULL/Pairlist/Lang/Dots tail (a C call's cdr can hold a
+  LANGSXP chain) and rejects a non-list tail: the flat spine cannot carry
+  C's dotted pair. A car/cdr write advances `Env::cycle_epoch` (the new
+  value may reach an environment the old one did not); a tag write does
+  not, since tags are interned symbols.
+- Whole-spine rewrite: `set_pairlist_cells_through_alias` and
+  `set_lang_cells_through_alias` replace every cell of the same object;
+  the bridge's `write_back` uses them with `pair_items_converted` and
+  `attrs_converted`. Each car is looked up by the address it was converted
+  from, so a cell the routine did not touch keeps the *same* runtime
+  object: mutation through a nested alias stays visible (the capi case
+  checks q[[1]] after mutating `inner`). `sharing()` now reports a
+  pairlist/call's references, so a routine that follows MAYBE_SHARED
+  duplicates first, as with the caller's own SEXP.
+- NAMED/Rc-count question: kept conservative, with evidence. `Rc` ownership
+  is a superset of GNU R's `NAMED`/`REFCNT`; when robigo copies and GNU R
+  mutates in place, the extra copy is unobservable at R level, and
+  robigo cannot under-copy because every owner is an `Rc` (the deliberate
+  exception is the new C cell write). Probe (`tracemem`, Debian GNU R
+  4.5.0): `dimnames(m) <-` on a fresh matrix held only by an argument
+  promise and `attr(p, "a") <-` on a fresh `pairlist(...)` literal do **not**
+  copy in GNU R; `Encoding(s) <-` copies even a computed fresh string,
+  and bound values, list elements, attributes, `delayedAssign` values,
+  `formals()`/`body()` and function-local variables all copy. The two
+  in-place cases have no alias an R script can reach: forcing the promise
+  and returning the value gives the same bytes either way. robigo's
+  `tracemem` deliberately does not report copies (debug.rs; it would need
+  allocator hooks and raw addresses no recording can match), so narrowing
+  the rule would need a NAMED-style flag through the whole runtime for no
+  observable output. `tests/r/lang/pairlist_shared_mutation.R` pins the
+  R-level half, including those promise shapes.
+- Conformance: new `tests/corpora/capi/cases/pairlist_alias.R` (recorded
+  with the Debian GNU R 4.5.0 oracle) binds a pairlist/call twice and
+  calls `SETCAR`/`SETCDR`/`SET_TAG` through `.Call`. Before, robigo kept
+  the old cells (`p: 1 2 3`, tags `x`, call `f(a, b)`, old length) where
+  GNU R reports `p: 99 2 3`, tags `zz`, `f(77L, b)` and the spliced tail;
+  after, stdout/stderr/status are byte-identical. `tests/r/lang/
+  pairlist_shared_mutation.R` covers `attr(x, "a") <-` on a shared
+  pairlist and call, a language object shared between two bindings,
+  `[[<-`/`names<-`/`class<-`/`unclass` CoW, `formals()`, and the promise
+  probes; it is ratcheted. Unit tests: nine `shared_pairlist_tests`
+  (aliases through a binding/environment/attribute, call function
+  position, tag writes and epoch, cdr splice and NULL truncation, nested
+  element identity, bad cells/dotted tails, one drop of the replaced
+  cell, bulk rewrites, R-level CoW).
+- Perf: paired harness against the PR base (main 2c46ca3), both binaries
+  built from scratch in private target dirs, cache OFF, Rust ports
+  (`ROBIGO_NATIVES` empty), 2 repeats. Before -> after (paired minima):
+  listFor 302,484,277 -> 302,497,072 (+0.004%), listWhile 408,992,915 ->
+  408,981,756 (-0.003%), bytecodes 229,176,607 -> 229,182,913 (+0.003%),
+  s4-generic 578,520,220 -> 578,517,591 (-0.001%), s4-new 608,409,567 ->
+  608,477,310 (+0.011%), s4-portfolio 567,558,619 -> 567,589,628
+  (+0.006%), s4-slot-read 453,638,104 -> 453,618,109 (-0.004%),
+  s4-slot-write 479,914,862 -> 479,858,794 (-0.012%), s4-valid
+  612,489,510 -> 612,565,004 (+0.012%). 0 faster/0 slower above 0.5%, 0
+  broken. The new writes are out-of-line and only the bridge calls them in
+  these programs.
+- Open: (a) a cons cell whose cdr a native routine sets to a non-list
+  (dotted pair) cannot be represented by the flat Pairlist/Lang; the
+  write-back keeps the representable prefix and `set_pair_cdr_through_alias`
+  rejects such a tail. Representing improper spines is the prerequisite.
+  (b) `write_back` skips a chain whose SEXP type the routine changed
+  (`SET_TYPEOF`). (c) Unrelated print difference found by the probe:
+  robigo's `print()` of a pairlist with a non-`names` attribute omits the
+  `attr(,"a")` trailer that GNU R prints (print.rs, not this track; the
+  conformance script prints `attributes()` instead). (d) The runtime still
+  replaces `.Devices` with a fresh value in `sync_devices`; with the new
+  primitive it can mutate the base binding's pairlist in place so an old
+  `dev.list()` alias sees device changes, but that belongs to graphics.
+
 ## 2026-10-30: SET_VECTOR_ELT shared-list mutation
 
 - Why: the sweep track's `putconst` port is blocked on one core
