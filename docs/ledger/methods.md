@@ -173,7 +173,49 @@ Slice used throughout ("S4 slice"):
   correctness and all ratchet entries; no bundled fix needs splitting.
 - Exact class-generator serialize(version=2/3) matches fresh GNU R;
   seven print/byte-window/iconv/substitute fixtures pass in all three
-  tiers (21/21). Full local gate on current main follows before push.
+  tiers (21/21). Full local gate on fb99c0b: all 83 benchmarks measured
+  with both runtimes; 0 slower above 0.5%, 0 broken. Current-main S4
+  deltas were +0.103%, +0.083%, +0.129%, +0.125%, +0.072% (generic, new,
+  slot-read, slot-write, valid). spectralnorm_math remains wrong on both
+  sides (missing La_rs), so the old CI FIXED label was not a code fix.
+- Main advanced through #92/#102 to d81d29c during validation. Rebased,
+  preserving startup's serializer optimizations and all ratchet entries.
+  #92 already fixes the recheck configuration and output comparison;
+  dropped the identical local workflow edit. The same seven fixtures in
+  three tiers and both fresh-GNU class-generator comparisons pass again.
+  Current Docker tests: 46 runtime + 7 CLI + 2 lazy-load, all three
+  conformance checks, no oracle exclusions. Fourteen paired-gate tests
+  pass. The new complete paired cache-OFF gate is running locally with
+  both exact d81-based executables; seed cache-ON measurements are
+  diagnostic only, and callgrind profiles and scenarios are retained in
+  `.robigo/perf-ablation/current-paired`.
+- Final updated gate on d81d29c passes: all 83 programs accounted for;
+  71 successful cases paired cache OFF, each with two base runs, two
+  candidate runs and fresh GNU R output validation. Twelve existing
+  nonzero-status cases are present in both exact CI baselines too; no
+  case was removed or weakened. Result: 0 slower above 0.5%, 0 broken.
+  The earlier progress estimate of 82 eligible cases counted only wrong
+  output, overlooking these known nonzero-status cases; final eligibility
+  uses perf-paired.py's unchanged rules.
+
+| final paired benchmark | base instructions | fixed instructions | change |
+|---|---:|---:|---:|
+| robigo/s4-generic | 586,697,344 | 587,038,961 | +0.058% |
+| robigo/s4-new | 628,211,043 | 628,494,683 | +0.045% |
+| robigo/s4-slot-read | 460,744,632 | 461,131,051 | +0.084% |
+| robigo/s4-slot-write | 486,497,736 | 486,827,904 | +0.068% |
+| robigo/s4-valid | 626,535,141 | 626,808,733 | +0.044% |
+
+- Final d81-based Docker tests pass without exclusions: 46 runtime tests,
+  7 CLI tests, 2 lazy-load tests and all three conformance checks. The
+  earlier fb99 full GNU R slices had zero losses (30/59 gnur-tests,
+  1024/1153 examples, 14/16 demos, 9/13 intro). Serialization/S4 slice
+  498/511 has only the documented 17GB sequence timeout under the local
+  4GB cap (6260e145); its ratchet entry stays for normal-memory CI.
+- Fresh print/byte-window/iconv/substitute checks remain 21/21 in all
+  tiers, and serialize(v2/v3) class generators match fresh GNU R bytes.
+  Original print-tests recording, all masks and every ratchet entry
+  remain intact. No split-out runtime fix was needed.
 - Recheck count reconciliation: the workflow exports ROBIGO_NATIVES and
   ROBIGO_RDBFLAT only in Measure, not Compare. Reproduced generic at
   499,316,980 configured vs 595,832,075 without both (CI 499,603,837 vs
