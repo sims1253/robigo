@@ -10,6 +10,10 @@
   bodyCode, body replacement and supported-version normalization match.
   Future-version probe exposed serialize.c:ReadItem's final conversion
   to R_BytecodeExpr. Port that conversion, including closure JIT metadata.
+- Debian CI caught the new eval(bytecode) probe returning the bytecode
+  object in do_eval's self-evaluating branch, causing raw pointer differences
+  across tiers. Port eval.c:do_eval's BCODESXP branch to use Interp::eval.
+  This is a minimal builtins/envir.rs type-integration change, not vm.rs.
 - Callgrind identifies bc_item's unnecessary take/restore of the recording
   vector and destructor visits to integer records. Replace tagged record
   objects with packed integer operations plus a separate object vector.

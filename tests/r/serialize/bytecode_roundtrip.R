@@ -1,3 +1,4 @@
+if (dir.exists("tests/r/serialize/bytecode-fixtures")) setwd("tests/r/serialize")
 for (version in 2:3) {
   path <- sprintf('bytecode-fixtures/closure-v%d-xdr.rds', version)
   f <- readRDS(path)
