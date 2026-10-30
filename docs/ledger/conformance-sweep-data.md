@@ -1,5 +1,32 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): delivery candidate
+
+- Keep direct special/reference-cell reads and immediate NULL, symbol,
+  integer/logical scalar records. Against exact d81d29c: startup
+  44,157,996 -> 44,177,552 instructions (+0.044%).
+- Both new oracle scripts improve 0/6 -> 6/6 across interpreter, VM and
+  JIT. All 252 scripts pass in every tier (756/756). Add the bytecode
+  promise script to the ratchet. Fixtures compare serialize/saveRDS bytes
+  for XDR v2/v3, ASCII import, nested code and shared cells, version 9/13
+  normalization/fallback, attributes, scalar constants, and promise PCODE
+  before/after forcing. eval/bodyCode, body replacement and equality match.
+- Current base and pre-final candidate data both hold 8,409/8,426 with
+  identical per-case outcomes. Absorb 0b6df291 and daaeabd5, two verified
+  main-inherited setter-context gains. The existing host order/add626
+  collation mismatch remains unchanged. Final immediate-record rerun pending.
+- Final recursive benchmarks pass perf.py compare, with no slowdown over
+  0.5%. Complete crate/standard conformance rerun is still in progress.
+- Follow-up: port GNU compiler construction/introspection internals
+  (bcVersion, mkCode, bcClose, disassemble) and generate shared-cell records
+  for newly constructed bytecode. This batch retains immutable GNU R
+  bytecode imported from serialized streams and executes its source.
+  No compile.rs or vm.rs changes. ASCII output remains startup work.
+- Core handoff: bytecode owns code, expression, constants, cell items and
+  attributes. Include those edges when extending runtime reachability for
+  native finalization; do not classify BCODESXP as an atomic owner.
+
+
 ## 2026-10-30 (round 9): immediate cell records on d81d29c
 
 - Rebased checks pass: 251 scripts across all tiers (753/753), standard
