@@ -20,6 +20,7 @@ for (version in 2:3) {
   unlink(out)
 }
 x <- quote(f(a=x, x+1L))
+attr(x, 'note') <- 'shared language'
 constants <- list(x,x, pairlist(a=x,b=2L), b, TRUE, NA_integer_, 1:3)
 b <- mk(c(12L,16L,0L,1L),constants)
 for (version in 2:3) {

@@ -55,13 +55,19 @@
 [[3]]
 [[3]][[1]]
 f(a = x, x + 1L)
+attr(,"note")
+[1] "shared language"
 
 [[3]][[2]]
 f(a = x, x + 1L)
+attr(,"note")
+[1] "shared language"
 
 [[3]][[3]]
 [[3]][[3]]$a
 f(a = x, x + 1L)
+attr(,"note")
+[1] "shared language"
 
 [[3]][[3]]$b
 [1] 2

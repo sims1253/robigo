@@ -250,7 +250,7 @@ fn growconst(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     Ok(Value::list(v))
 }
 fn getconst(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let n = crate::coerce::as_integer(&i.coerce(arg(&args, 1), VType::Int)?);
+    let n = crate::coerce::as_integer(&i.coerce(&arg(&args, 1), VType::Int)?);
     let Value::List(x) = arg(&args, 0) else {
         return Err(Flow::error("constant buffer must be a generic vector"));
     };
