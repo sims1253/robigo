@@ -847,7 +847,7 @@ impl<'a, 'i> Reader<'a, 'i> {
 // R: eval.c:R_bcEncode / R_bcDecode. Opcode cells remain integer indices;
 // robigo never installs GNU R's threaded addresses. Normalize the version and
 // check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
-fn portable_bc_code(mut code: Value) -> RResult<Value> {
+pub(crate) fn portable_bc_code(mut code: Value) -> RResult<Value> {
     const ARGC: &[usize] = &[
         0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0,
         0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2,

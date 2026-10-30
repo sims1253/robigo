@@ -1,5 +1,30 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 10): compiler construction internals
+
+- Claim builtins/bytecode.rs and its registration, plus construction fixtures.
+  GNU R 4.5.0 defines these functions in eval.c, not codegen.c.
+- Main 805e5fb does not yet contain round 9. Base this branch on #100 head
+  d72a5aa; #100 must land first. No VM, finalizer, S4 or value-model edits.
+- Baseline binary copied from round 9's verified build: construction script
+  fails at bcVersion (0/3 tiers). Oracle fixtures recorded with the local
+  robigo-oracle:4.5.0 image, never edited by hand.
+- Port mkCode, bcClose, bcVersion, disassemble, is.builtin.internal,
+  growconst and getconst. Reuse portable instruction validation through a
+  visibility-only serialize.rs change; construction builds cell records in
+  its owned module. Shared edits: two registration lines and that visibility.
+- putconst remains blocked on core ownership: eval.c:do_putconst mutates
+  VECSXP aliases with SET_VECTOR_ELT, which Rc<Vector<Value>> cannot express
+  safely. Do not clone the buffer and claim success. Next step: core supplies
+  shared list mutation, then port constant deduplication with identical flags
+  16 and run compiler::cmpfun layout comparisons.
+- Ownership audit: cli, conformance-sweep-lang, parser, core and methods
+  ledgers still assign remaining data errors to evaluator contexts/assignment
+  order, VM internal-call handling, as.character coercion, trace hooks and
+  host collation. No additional unclaimed data failure identified. No oracle
+  re-record needed for existing corpora; new fixtures use base only.
+
+
 ## 2026-10-30 (round 9): final append-conflict rebase
 
 - Rebased onto 805e5fb after newer main ratchet entries caused an append

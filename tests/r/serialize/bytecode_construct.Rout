@@ -1,0 +1,120 @@
+[1] 12
+[[1]]
+.Code
+
+[[2]]
+[1] 12 16  0  1
+
+[[3]]
+[[3]][[1]]
+[1] 42
+
+
+[[1]]
+.Code
+
+[[2]]
+[1] 12 16  0  1
+
+[[3]]
+[[3]][[1]]
+[1] 42
+
+
+[[1]]
+.Code
+
+[[2]]
+[1] 13  0
+
+[[3]]
+[[3]][[1]]
+[1] 42
+
+
+[1] 42
+[1] 42
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] 42
+[1] 42
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[[1]]
+.Code
+
+[[2]]
+[1] 12 16  0  1
+
+[[3]]
+[[3]][[1]]
+f(a = x, x + 1L)
+
+[[3]][[2]]
+f(a = x, x + 1L)
+
+[[3]][[3]]
+[[3]][[3]]$a
+f(a = x, x + 1L)
+
+[[3]][[3]]$b
+[1] 2
+
+
+[[3]][[4]]
+[[3]][[4]][[1]]
+.Code
+
+[[3]][[4]][[2]]
+[1] 12 16  0  1
+
+[[3]][[4]][[3]]
+[[3]][[4]][[3]][[1]]
+[1] 42
+
+
+
+[[3]][[5]]
+[1] TRUE
+
+[[3]][[6]]
+[1] NA
+
+[[3]][[7]]
+[1] 1 2 3
+
+
+[[1]]
+[1] 1
+
+[[2]]
+[1] 2
+
+[[3]]
+NULL
+
+[[4]]
+NULL
+
+[[1]]
+[1] 1
+
+[1] TRUE
+[1] FALSE
+[1] "invalid formal argument list for \"bcClose\""
+[1] "invalid formal argument list for \"bcClose\""
+[1] "invalid body"
+[1] "use of NULL environment is defunct"
+[1] "invalid environment"
+[1] "argument is not a byte code object"
+[1] "invalid symbol"
+[1] "constant buffer must be a generic vector"
+[1] "constant buffer must be a generic vector"
+[1] "bad constant count"
+[1] "unknown instruction code"
