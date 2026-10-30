@@ -256,7 +256,7 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // as C reads them with getAttrib (R_GE_maskType: a mask function's
     // "type")
     let attrs = match v {
-        Value::Closure(_) => v.attrs().cloned(),
+        Value::Closure(_) | Value::Bytecode(_) => v.attrs().cloned(),
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
     };

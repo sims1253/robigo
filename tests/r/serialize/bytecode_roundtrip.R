@@ -33,3 +33,7 @@ for (version in c(9L, 13L)) {
 b <- readRDS('bytecode-fixtures/constant-code.rds')
 print(identical(b, unserialize(serialize(b, NULL))))
 print(eval(b))
+b <- readRDS('bytecode-fixtures/attributed-code.rds')
+print(attr(b, 'note'))
+print(attr(b, 'srcref'))
+print(identical(serialize(b, NULL), readBin('bytecode-fixtures/attributed-code.rds', 'raw', n = 100000L)))
