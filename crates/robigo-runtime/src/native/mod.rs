@@ -103,6 +103,9 @@ pub trait NativeBridge: Sync {
     fn register_finalizer(&self, _interp: &mut Interp, _key: &Value, _fun: &Value, _onexit: bool) -> RResult<()> {
         Err(Flow::error("robigo: environment finalizers require the native bridge"))
     }
+    /// Run the finalizers registered with `onexit = TRUE` at exit
+    /// (memory.c:R_RunExitFinalizers).
+    fn run_exit_finalizers(&self, _interp: &mut Interp) {}
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
     /// A `.Internal` GNU R implements in its graphics engine (C code in

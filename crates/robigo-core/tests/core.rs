@@ -553,3 +553,28 @@ fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
     assert_eq!(c.pop_finalizable(), Some(first));
     assert!(c.pop_finalizable().is_none());
 }
+
+#[test]
+fn exit_finalizers_queue_in_weak_reference_list_order() {
+    let mut c = host_core();
+    let first_key = c.alloc_host(ENVSXP, 1, None);
+    let second_key = c.alloc_host(ENVSXP, 2, None);
+    let fin = c.alloc_vector(RAWSXP, 8);
+    let first = test_weak(&mut c, first_key, fin);
+    let second = test_weak(&mut c, second_key, fin);
+    root(first_key);
+    unsafe {
+        second.set_gp(second.gp() | gp::FINALIZE_ON_EXIT);
+    }
+    unsafe { c.queue_exit_finalizers() };
+    // only the onexit reference leaves the weak list; the other stays live
+    assert_eq!(c.weak_refs(), &[first]);
+    assert_eq!(c.pending_finalizer_count(), 1);
+    assert_eq!(c.pop_finalizable(), Some(second));
+    assert!(c.pop_finalizable().is_none());
+    // the live key is not queued by a later collection
+    c.gc_inhibit -= 1;
+    c.collect();
+    assert!(c.pop_finalizable().is_none());
+    ROOTS.with(|r| r.borrow_mut().clear());
+}

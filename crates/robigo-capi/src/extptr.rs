@@ -231,11 +231,6 @@ pub unsafe extern "C" fn R_RunPendingFinalizers() {
 /// R_RunExitFinalizers).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_RunExitFinalizers() {
-    let refs: Vec<Sexp> = core().weak_refs().to_vec();
-    for w in refs {
-        if w.gp() & gp::FINALIZE_ON_EXIT != 0 {
-            run_finalizer(w);
-        }
-    }
-    crate::util::safe_point();
+    unsafe { core().queue_exit_finalizers() };
+    crate::util::run_finalizers()
 }

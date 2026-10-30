@@ -1872,6 +1872,12 @@ impl NativeBridge for Bridge {
         Ok(())
     }
 
+    fn run_exit_finalizers(&self, interp: &mut Interp) {
+        enter(interp, |_| unsafe {
+            crate::extptr::R_RunExitFinalizers();
+        });
+    }
+
     fn gc(&self, interp: &mut Interp) {
         if READY.with(|r| r.get()) {
             unsafe {

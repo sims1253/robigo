@@ -496,6 +496,22 @@ impl Core {
         self.finalize_queue.len()
     }
 
+    /// R: memory.c:R_RunExitFinalizers -- mark every onexit reference
+    /// ready and move it to the finalizer queue in weak-reference list
+    /// order, then let the ordinary runner execute it.
+    pub unsafe fn queue_exit_finalizers(&mut self) {
+        let mut keep = Vec::with_capacity(self.weak_refs.len());
+        for w in std::mem::take(&mut self.weak_refs) {
+            if unsafe { w.gp() } & gp::FINALIZE_ON_EXIT != 0 {
+                unsafe { w.set_gp(w.gp() | gp::READY_TO_FINALIZE) };
+                self.finalize_queue.push(w);
+            } else {
+                keep.push(w);
+            }
+        }
+        self.weak_refs = keep;
+    }
+
     /// The next weak reference whose key died, ready for its finalizer.
     /// It stays rooted until popped; the caller protects it while it runs.
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {

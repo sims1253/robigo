@@ -623,6 +623,11 @@ fn line_profile(report: &pprof::Report) -> String {
 }
 
 fn finish(interp: &mut Interp, ok: bool) -> ExitCode {
+    // R: unix/sys-std.c:R_CleanUp -- R_RunExitFinalizers runs on every exit
+    // path after .Last, including the "Execution halted" error exit.
+    if let Some(bridge) = robigo_runtime::native::bridge() {
+        bridge.run_exit_finalizers(interp);
+    }
     interp.flush();
     if ok {
         ExitCode::SUCCESS
@@ -643,7 +648,7 @@ fn repl(interp: &mut Interp) -> ExitCode {
         match stdin.lock().read_line(&mut line) {
             Ok(0) => {
                 println!();
-                return ExitCode::SUCCESS;
+                return finish(interp, true);
             }
             Ok(_) => {}
             Err(_) => return ExitCode::FAILURE,

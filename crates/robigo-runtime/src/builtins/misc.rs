@@ -500,6 +500,11 @@ fn do_internals_id(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
 fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let status = as_integer(&arg(&args, 1));
     i.flush();
+    // R: unix/sys-std.c:R_CleanUp -- exit finalizers run before exit.
+    if let Some(b) = crate::native::bridge() {
+        b.run_exit_finalizers(i);
+    }
+    i.flush();
     std::process::exit(if status == NA_INTEGER { 0 } else { status });
 }
 
