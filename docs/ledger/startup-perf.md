@@ -23,6 +23,38 @@ lands; the natives work is PR #78 below.
   it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
   Failed oracle measurements also fail. cargo fmt --check and diff
   whitespace checks pass. No runtime source or ratchet changes.
+## 2026-10-30 (round 8): #92's repeated nbody_2 failure is unresolved
+
+- The stable CI increase must be investigated as a real regression, not
+  called noise. Downloaded the exact robigo artifacts from main run
+  40980827065 (df3d535) and PR run 40982799591 (d002511). The baseline
+  perf-main artifact records 837,063,202 instructions. The recheck log
+  prints the candidate's first and second counts, 859,603,490 and
+  859,648,780, not a baseline remeasurement (perf.py:cmd_recheck). Thus
+  the confirmed CI increase is 22,540,288 instructions, +2.69%.
+- Exact artifacts in local robigo-oracle:4.5.0, with each artifact's
+  own natives and flat cache, same utils,stats/locale/timezone and
+  benchmark parameter 921: base 836,330,549 / 836,320,174; candidate
+  833,981,641 / 833,967,367. Both produce identical energy output and
+  exit 0. The CI direction is NOT reproduced locally. All 32 source
+  size/mtime guards match in each downloaded cache, 6,793 entries each.
+- Local self-profile delta is -2.35M, chiefly reader allocations and
+  cloning, not a +22.54M hot-path cost. Disabling the candidate cache
+  gives 870,527,390 instructions. Cache state matters, but this is not
+  proof that CI lacked its cache. Per-lookup source stat validation is
+  only done while loading a database, not on each successful lookup.
+- Added a dispatch-only diagnostic to run these exact artifacts on the
+  CI runner, with own and shared cache/native directories, two runs per
+  pair. It saves callgrind profiles, cache guards, artifact hashes, and
+  CPU/libc/valgrind/environment details. The existing gate and its
+  threshold remain unchanged. Do not declare #92 cleared from the
+  local result; inspect the CI profiles before fixing the cause.
+- Rebased release binary passes the 10,057-key index comparison and
+  all 27 transcript comparisons. Runtime unit tests: 42 pass; the same
+  two host-glibc complex oracles fail. FastR serialize/connections:
+  451/458 on both #92 and the rebased binary, with the identical known
+  oversized-sequence serialization ratchet failure on both locally.
+
 ## 2026-10-30 (round 8): enumerate the real lazy-load indices
 
 - Based on #92 head d002511, whose reader changes are still awaiting
