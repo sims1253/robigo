@@ -1856,7 +1856,8 @@ impl NativeBridge for Bridge {
 
     // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.
     fn is_finalizer_key(&self, key: &Value) -> bool {
-        core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
+        matches!(key, Value::Env(_) | Value::ExtPtr(_))
+            && core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
     }
 
     fn register_finalizer(&self, interp: &mut Interp, key: &Value, fun: &Value, onexit: bool) -> RResult<()> {

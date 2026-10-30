@@ -256,3 +256,4 @@ tests/r/env/finalizer_cycles.R
 tests/r/env/finalizer_order.R
 tests/r/env/finalizer_errors.R
 tests/r/s4/refclass_finalizer.R
+tests/r/capi/finalizer-key.R
