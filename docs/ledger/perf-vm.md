@@ -76,6 +76,22 @@ conformance` (interpreter, VM and VM+JIT against each other).
   snapshot; land only if measurable (no distribution benchmarks use
   them hot). The `lockEnvironment` + locked-user-frame exotic stays on
   the namespace path (noted, no fixture).
+- Hardening after CI's first perf gate (3 slower on CI's runner, all
+  faster-or-neutral locally): (1) the startup snapshot forced 20 lazy
+  promises, perturbing the heap layout for the whole run (profiler
+  benchmarks swung +-2% by runner); the snapshot now holds raw bindings
+  and forces on first use, where the generic call would force anyway.
+  (2) Memo keys are raw addresses: a freed call Lang reused by an
+  unrelated call hit a stale `None` entry and skipped an inlinable
+  lchoose (wrong values). Keys now hold their `Rc`s alive, so a hit is
+  always the same objects. (3) Base-namespace callers match by pointer:
+  base_ns aliases the search-path frame, so the locked-chain walk alone
+  misclassified them as user code. (4) Resolutions record `None`
+  write-once too (matching code GNU R compiled against a replacement),
+  and no resolution happens while base is still loading (a partial
+  snapshot would poison the memo).
+- Local re-measurement after hardening: **25 faster, 0 slower above
+  0.5%, 0 broken** vs main (csv -21.7%, profiler swings gone).
 - Setup gotcha (2026-10-30): another track's parser work (`StrNative`
   in `robigo-syntax`, now on main) poisoned the shared
   `~/.cache/cargo-target`: cargo reused its newer syntax rlib for this
