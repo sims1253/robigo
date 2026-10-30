@@ -618,6 +618,14 @@ fn set_index_slow(
         }
         _ => None,
     };
+    // R: eval.c:R_CheckJIT. Eager VM execution does not imply that GNU R
+    // has byte-compiled this closure yet. Its interpreted setter calls
+    // display the forced RHS value until that transition actually occurs.
+    let source_rhs = !code.is_body
+        || interp.frames.last().is_none_or(|ctx| match &ctx.function {
+            Value::Closure(clo) => clo.jit.is_bytecode(),
+            _ => true,
+        });
     let r = crate::builtins::lang::complex_assign_pre(
         interp,
         whole,
@@ -627,7 +635,7 @@ fn set_index_slow(
         env,
         sup,
         pre.as_deref(),
-        Some(&l.args[1].value),
+        source_rhs.then_some(&l.args[1].value),
     );
     // The assignment rebound `x` in the frame.
     vars.slots[slot as usize] = SlotVal::Empty;
@@ -3581,6 +3589,29 @@ mod arithmetic_tests {
 mod setter_tests {
     use super::*;
 
+    #[test]
+    fn gnu_r_setter_jit_transition() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let env = interp.global.clone();
+        let definition = crate::lang::parse_to_values("f <- function(b, i, v) { b[[i]] <- v; b }").unwrap().remove(0);
+        assert!(interp.eval(&definition, &env).is_ok());
+        let call = crate::lang::parse_to_values("f(c(1, 2, b = c(x = 3)), c(\"b\", \"x\"), 10)").unwrap().remove(0);
+        for line in include_str!("vm_setter_jit_oracle.txt").lines() {
+            let observed = Rc::new(RefCell::new(None));
+            let captured = observed.clone();
+            let handler: crate::conditions::RustHandler = Rc::new(move |_, cond| {
+                let Value::List(v) = cond else { panic!("error condition") };
+                *captured.borrow_mut() = Some((v.data[0].clone(), v.data[1].clone()));
+                Ok(())
+            });
+            assert!(interp.with_calling_error_handler(handler, |i| i.eval(&call, &env)).is_err());
+            let (message, call) = observed.borrow().clone().expect("setter condition");
+            let (want_call, want_message) = line.split_once('\t').unwrap();
+            assert_eq!(crate::deparse::deparse(&call).join(" "), want_call);
+            assert_eq!(crate::coerce::as_string(&message).as_deref(), Some(want_message));
+        }
+    }
+
     // Recorded by vm_setter_oracle.R with Debian GNU R 4.5.0-3, JIT=0.
     // The script explicitly compiles the VM cases. GNU R deliberately
     // reports different calls for interpreted and compiled assignments.
@@ -3595,11 +3626,22 @@ mod setter_tests {
             env.set_local(Sym::new("m"), m);
             env.set_local(Sym::new("n"), Value::int(0));
             let expr = crate::lang::parse_to_values(fields[1]).unwrap().remove(0);
-            let result =
-                if fields[0] == "vm" { run(&mut interp, &compile_body(&expr), &env) } else { interp.eval(&expr, &env) };
+            let observed = Rc::new(RefCell::new(None));
+            let captured = observed.clone();
+            let handler: crate::conditions::RustHandler = Rc::new(move |_, cond| {
+                let Value::List(v) = cond else { panic!("error condition") };
+                *captured.borrow_mut() = Some(v.data[1].clone());
+                Ok(())
+            });
+            let result = interp.with_calling_error_handler(handler, |interp| {
+                if fields[0] == "vm" { run(interp, &compile_body(&expr), &env) } else { interp.eval(&expr, &env) }
+            });
             let Err(Flow::Error(err)) = result else { panic!("expected error: {line}") };
             assert_eq!(err.message, fields[3], "{line}");
-            let call = err.call.expect("setter error call");
+            if fields[1].starts_with("m[[") {
+                assert_eq!(err.call.as_ref().and_then(Value::as_sym), Some(Sym::new("<current-expression>")));
+            }
+            let call = observed.borrow().clone().expect("setter condition call");
             assert_eq!(crate::deparse::deparse(&call).join(" "), fields[2], "{line}");
             if fields[1].contains("n <-") {
                 assert_eq!(crate::coerce::as_integer(&env.get_local(Sym::new("n")).unwrap()), 1);

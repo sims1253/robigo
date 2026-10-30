@@ -427,12 +427,11 @@ pub(crate) fn complex_assign_pre(
     // Errors raised with `error()` by the replacement functions report the
     // assignment call: signal them while its context is still active.
     let r = match r {
-        Err(Flow::Error(mut e)) if !e.signaled => {
-            // R: subassign.c:errorOutOfBoundsSEXP uses R_CurrentExpression.
-            // Resolve its marker while the assignment context is active,
-            // before condition handlers can observe the call.
+        Err(Flow::Error(e)) if !e.signaled => {
+            // R: errors.c:R_vmakeErrorCondition resolves R_CurrentExpression
+            // for handlers while R_signalErrorConditionEx retains the marker
+            // for default output. Signal while the assignment is active.
             if e.call.as_ref().and_then(Value::as_sym) == Some(Sym::new("<current-expression>")) {
-                e.call = Some(call.clone());
                 Err(interp.signal_error(e))
             } else if e.call.is_none() {
                 Err(interp.signal_error(e))

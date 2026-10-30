@@ -47,6 +47,10 @@ tests/r/jit/base-rebinding.R
 tests/r/jit/locked-env-guards.R
 tests/r/jit/matrix-elements.R
 tests/r/jit/setter-context.R
+tests/r/jit/setter-default-direct.R
+tests/r/jit/setter-default-eval.R
+tests/r/jit/setter-default-subset.R
+tests/r/jit/setter-eval-handlers.R
 tests/r/lang/call-head-tag.R
 tests/r/lang/compiled-append.R
 tests/r/lang/compiled-arith.R

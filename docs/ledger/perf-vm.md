@@ -6,6 +6,35 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 7 follow-up, condition calls versus default errors
+
+- Reproduced all **27** #94 TestSimpleVectors regressions: **1907/1937**,
+  zero status differences. Read every affected recorded stderr; messages
+  are unchanged. Twenty-two failures need the sentinel in default output;
+  five need the evaluated RHS on a small closure's first invocation.
+- R: errors.c:R_vmakeErrorCondition resolves R_CurrentExpression through
+  getCurrentCall() for the condition. R_signalErrorConditionEx instead
+  passes the original marker to errorcall_dflt for uncaught output. Direct
+  assignments and closures exhibit this distinction too; it is not limited
+  to anonymous eval/parse. Resolve only the condition's call while the
+  assignment context is active, retaining the raw call for default output.
+- R: eval.c:R_CheckJIT also distinguishes eager robigo VM execution from
+  GNU R compilation. Use the existing closure JitState at the cold setter
+  boundary: small first-call setters show the RHS value; compiled setters
+  show its expression. A new GNU R oracle records first and second calls.
+- Kept: **1934/1937**, all 27 restored, the other **1910** classifications
+  unchanged. All **241** conformance scripts match in all three tiers,
+  including new direct/eval default-output and handler fixtures. The original
+  **14/14** oracle data is unchanged; its unit test now observes condition
+  calls through a handler and independently asserts the uncaught marker.
+- Debian runtime tests: **40/40**, including the JIT transition and 9,440
+  arithmetic comparisons. The 6,144-case payload conformance fixture passes.
+  Paired seven-benchmark gate against saved main: zero slowdowns above 0.5%,
+  zero broken cases. Formatting/source whitespace checks pass.
+- All four full FastR shards are running after the focused slice passed.
+  Artifacts: `.robigo/r7-fix/`. No oracle recording or existing ratchet was
+  weakened; four conformance entries were added.
+
 ## 2026-10-30: round 7, setter baseline and native CSV split
 
 - Baseline: main f668f60, saved binary `.robigo/r7/main`. A new Debian
