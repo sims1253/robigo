@@ -7,3 +7,8 @@ graphics/graphics
 graphics/persp
 graphics/plotmath
 stats/glm.vr
+base/recursion
+graphics/image
+stats/lm.glm
+stats/nlm
+stats/smooth

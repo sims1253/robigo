@@ -7,6 +7,36 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: #71 perf-neutral rebase, regression attribution, and corpora switch
+
+- Rebased `track/methods-default-2` (#71) onto current main (`d81d29c`).
+- Attribution of the five S4 benchmarks regression (+0.68% - +1.05%):
+  The ~3.9M instructions overhead across all five benchmarks was bisected
+  to bundled commits `d7855d4`/`29b07a2` (`LANGSXP` argument cell serialization
+  and `substitute()` side registry). Specifically:
+  1. `serialize.rs`: adding `ty: u32` to `PNode` expanded node allocation
+     during every pairlist/bytecode read in package startup (`library(methods)`).
+  2. `builtins/lang.rs`: every call to `substitute()` (heavily used during S4
+     class and generic setup) computed argument bitmasks and called `set_lang_cells`.
+  3. `LANG_CELLS` thread-local registry overhead: weak reference insertion,
+     hash table lookups, and sweep retention on every registered call.
+- Reconciliation of the odd recheck line (`s4-generic 499,603,837 then 596,128,961`):
+  In CI job 123840937307, the initial benchmark run exported
+  `ROBIGO_RDBFLAT="$PWD/dist/rdbflat"` (pre-inflated flat lazy-load cache enabled).
+  The subsequent `Compare with main` recheck step omitted `ROBIGO_RDBFLAT`,
+  causing robigo to fall back to dynamic zlib decompression during package
+  loading, adding exactly ~96.5M instructions (+19.3%).
+- Resolution: split `d7855d4`/`29b07a2` out of #71 into branch
+  `track/substitute-dots-cells` for isolated delivery and measurement.
+- Scope of #71: strictly the methods/corpora switch and ratchets, plus
+  the required `print.rs` index-width fix (`d6a2951`) for truncated vector labels.
+- Performance: without the bundled `serialize.rs` / `builtins/lang.rs` changes,
+  all five S4 benchmarks are 100% byte-identical to `main` (0.00% delta,
+  comfortably within the <=0.5% threshold).
+- Verification:
+  All three execution tiers pass (AST, VM, JIT).
+  `tests/r/passing.txt` retains all main additions and adds `print-max-index.R`.
+
 ## 2026-10-30: round 8 — native write-back and VM slot handoff
 
 - Branch `track/methods-slot-bridge`, PR #101. Paired measurements
@@ -224,6 +254,72 @@ Slice used throughout ("S4 slice"):
   notably attrib.c:check_slot_assign's checkAtAssignment closure; measure
   the S4State/Interp layout impact before retaining that change. Rcpp's
   remaining failures need C API bridge alias/write-back and vector work.
+
+## 2026-10-30: print-tests after #84 — real index-width bug
+
+- Reset this worktree to rewritten #71 head 0fccbd0, which includes
+  #84/df3d535. Downloaded run 40981200656's binary and natives for an
+  exact-head baseline. `print-tests` is **0/1**, stdout only: five atomic
+  vectors acquire one extra leading space with `max.print = 5`.
+- Debian GNU R 4.5.0-3 confirms the recording is correct. In
+  `printvector.c:printVector`, n_pr is passed to the typed printers;
+  `DO_first_lab` calculates IndexWidth(n_pr), not IndexWidth(XLENGTH(x)).
+  Ported that argument choice in `print.rs` (shared file, one expression).
+  No corpus oracle records or masks changed.
+- New `vec/print-max-index.R` is recorded by regen-expected.sh inside
+  robigo-oracle:4.5.0. It covers every atomic type, digit boundaries,
+  max.print + 1 and truncated string output with encoding marks. The
+  exact-head baseline fails it, including the five print-tests lines.
+- Separate #84 follow-up discovered by probing: non-ASCII CE_BYTES
+  strings need GNU R's two-stage EncodeString escaping (first expand
+  bytes to hex text, then escape that text). Existing escape_rstring
+  emits only one backslash. Outside this index-width fix; new regression
+  covers bytes-marked ASCII plus native-invalid/Latin-1/invalid-UTF8.
+- Full verification follows below. FastR defaults are unchanged; its
+  deferred finalizer switch is unrelated to this stdout failure.
+
+## 2026-10-30: round 6 — defer only FastR, preserve zero loss
+
+- Fresh rebased release, methods attached: focused fastr `S4|TestBuiltin_serialize/(4a71e01f|bfd38dfb)`
+  **179/187**, exactly one ratchet loss, `S4/TestR5/474b742f1785a587`.
+  Both serialized class generators and reference-class method ordering
+  pass. No serializer or environment-order blocker remains in this slice.
+- Former GNU R ratchet losses now both pass: `reg-S4-examples` on host
+  with R_HOME 4.5.0 and built natives; `reg-packages` in
+  `robigo-oracle:4.5.0` with seccomp unconfined, host binary run through
+  host's loader/libc. Each is **1/1**, zero regressions.
+- Followed the rescue brief's finalizer fallback: retain main's FastR
+  defaults AND main's compressed records exactly. Nothing is excluded,
+  removed from a ratchet, re-recorded to match robigo, or masked beyond
+  allocator counts. Same focused slice is now **180/187, zero losses**.
+  The four GNU R corpora retain methods-aware records and defaults.
+- To finish FastR: core must implement environment `reg.finalizer` and
+  collect reference-class cycles at `gc()`. Then restore the methods-aware
+  FastR record from commit 2e2945b (or re-record with the oracle if sources
+  changed), attach methods in `[fastr]`, and rerun the 187-case slice plus
+  full CI. The allocator mask must retain `finalizer: 456`.
+
+## 2026-10-30: round 6 rescue, rebase and baseline
+
+- Continued #71 in this worktree on local `track/methods-default-rescue`:
+  its remote branch remains checked out in the previous agent's worktree.
+  Rebased all eleven commits from 569f056 onto main 1074f6c; preserved
+  authorship. Ratchets retain every main entry (conformance +1,
+  fastr unchanged, examples +1). Binary record conflicts merged by case
+  using original JSON lines; the changed-case sets were disjoint.
+- Preserved both suites in the add/add Python harness conflict: all five
+  tests pass. `cargo fmt --check` and `git diff --check` pass.
+- Previous CI 40916249856 has exactly three losses: fastr
+  `S4/TestR5/474b742f1785a587`, gnur-tests `reg-S4-examples` and
+  `reg-packages`. Main now includes the latter two prerequisite fixes
+  (ELF native marker mapping, graphics natives in CI, intern stderr).
+- Environment finalization is still absent: `do_reg_finalizer` discards
+  callbacks. Oracle recheck in `robigo-oracle:4.5.0` prints `finalizer: 456`
+  at gc, after `fun`. No mask may hide it. Core owns this remaining gap.
+- Release build and focused corpus verification in progress. Host native
+  build failed because static LAPACK/BLAS are unavailable; copied existing
+  base native artifacts into this worktree's private `.robigo/natives`
+  for local checks. CI builds its own libraries in Debian.
 
 ## 2026-10-29: round 4 — the reg-packages blank line; complex Math group; Rcpp sugar 493/493
 
