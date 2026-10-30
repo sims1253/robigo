@@ -2,6 +2,8 @@
 //! `%*%`, `crossprod`, `t`, `aperm`, `colSums`, ...) and the `cbind` /
 //! `rbind` part of bind.c.
 
+use std::rc::Rc;
+
 use super::{arg, internal, prim};
 use crate::attrib::{get_attrib, set_attrib};
 use crate::coerce::{as_integer, as_logical, coerce_quiet};
@@ -1551,7 +1553,14 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
         if !missing_dl {
             margs.push(Arg::new(Some(Sym::new("deparse.level")), dl.clone()));
         }
-        margs.extend(pargs.iter().cloned());
+        // R: eval.c:promiseArgs repromises dots. matchArgs_NR removes
+        // the outer promise; deparse2buff then sees the forced inner one.
+        margs.extend(
+            pargs
+                .iter()
+                .zip(&values)
+                .map(|(a, v)| Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.clone()))))),
+        );
         return match &m {
             Value::Closure(c) => i.apply_closure(call, c, margs, env, None),
             _ => i.apply_function(&m, margs, env, call),

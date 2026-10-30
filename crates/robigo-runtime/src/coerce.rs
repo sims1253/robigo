@@ -564,8 +564,9 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
             .map(|e| match e {
                 Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
                 Value::Null => rstr("NULL"),
-                e if e.is_atomic() && e.len() == 1 => to_str(e)[0].clone(),
-                Value::Sym(sym) => Some(sym.name().into()),
+                // R: coerce.c:coerceVectorList deparses every non-string element.
+                // Raw scalars retain as.raw(0x..) and symbols retain backticks.
+                e if e.is_atomic() && e.len() == 1 && !matches!(e, Value::Raw(_)) => to_str(e)[0].clone(),
                 e => rstr(&crate::deparse::deparse_one_line(e)),
             })
             .collect(),

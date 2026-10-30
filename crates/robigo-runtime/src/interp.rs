@@ -1293,8 +1293,9 @@ impl Interp {
             return self.show_s4(v, env);
         }
         if (v.is_object() || matches!(v, Value::Closure(_))) && self.base.has_local(Sym::new("print")) {
-            let print = self.find_fun(Sym::new("print"), env)?;
-            let call = Value::lang(Value::sym("print"), vec![Arg::pos(Value::sym("x"))]);
+            // R: print.c:PrintObjectS3 puts the base print closure in CAR(call).
+            let print = self.find_fun(Sym::new("print"), &self.base.clone())?;
+            let call = Value::lang(print.clone(), vec![Arg::pos(Value::sym("x"))]);
             let pe = Env::new(Some(env.clone()));
             pe.set_local(Sym::new("x"), v.clone());
             self.apply_function(&print, vec![Arg::pos(v.clone())], &pe, &call)?;

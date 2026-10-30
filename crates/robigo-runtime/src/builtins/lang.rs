@@ -486,8 +486,7 @@ fn complex_assign_inner(
         if let Value::Sym(fsym) = &fname {
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
                 if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
-                    drop(base_val);
-                    return fast_replace(interp, b, *fsym, l, target, rhs, env, pre, rhs_call);
+                    return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
                 }
             }
         }
@@ -567,6 +566,7 @@ fn fast_replace(
     fsym: Sym,
     l: &Lang,
     target: Sym,
+    obj: Value,
     rhs: Value,
     env: &Env,
     pre: Option<&[Value]>,
@@ -602,12 +602,10 @@ fn fast_replace(
     // applydefine/replaceCall deparses the forced RHS promise's value.
     let rhs_shown = rhs_call.unwrap_or(&rhs).clone();
     argv.push(Arg::new(Some(s::VALUE), if b.kind == BuiltinKind::Special { quote_if_needed(rhs) } else { rhs }));
-    // Now take the value out of its binding so we hold the only reference.
-    let obj = match env.take_local(target).unwrap_or(Value::Null) {
-        // An argument: its promise was forced when the target was looked up.
-        Value::Promise(p) => p.value().unwrap_or(Value::Null),
-        v => v,
-    };
+    // R: eval.c:evalseq saves the LHS before evaluating setter indices.
+    // Release the binding's reference after index evaluation, retaining that
+    // saved object even when an index assigned a different value to target.
+    drop(env.take_local(target));
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
