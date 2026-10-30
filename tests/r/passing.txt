@@ -252,3 +252,4 @@ tests/r/vec/print-max-index.R
 tests/r/basics/base-isvector-context.R
 tests/r/basics/compiled-isvector-missing.R
 tests/r/serialize/bytecode_roundtrip.R
+tests/r/serialize/bytecode_promise.R
