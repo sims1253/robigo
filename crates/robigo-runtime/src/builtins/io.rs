@@ -77,6 +77,7 @@ pub enum ConnKind {
         fp: Option<File>,
         rbuf: Vec<u8>,
         rpos: usize,
+        wbuf: Vec<u8>,
         temp: bool,
         /// R: connections.c fileconn — whether the last operation was a
         /// write, to pick the position `seek()` reports.
@@ -159,6 +160,55 @@ impl Connection {
         c.canread = mode == "r";
         c.canwrite = mode == "w";
         c
+    }
+}
+
+const FILE_WBUF_SIZE: usize = 8192;
+
+fn flush_file_wbuf(f: &mut File, wbuf: &mut Vec<u8>) -> std::io::Result<()> {
+    if !wbuf.is_empty() {
+        f.write_all(wbuf)?;
+        wbuf.clear();
+    }
+    Ok(())
+}
+
+fn file_write_buffered(f: &mut File, wbuf: &mut Vec<u8>, fifo: bool, bytes: &[u8]) -> std::io::Result<()> {
+    if fifo {
+        return f.write_all(bytes);
+    }
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    if !wbuf.is_empty() {
+        if wbuf.len() + bytes.len() <= FILE_WBUF_SIZE {
+            wbuf.extend_from_slice(bytes);
+            if wbuf.len() == FILE_WBUF_SIZE {
+                f.write_all(wbuf)?;
+                wbuf.clear();
+            }
+            return Ok(());
+        }
+        f.write_all(wbuf)?;
+        wbuf.clear();
+    }
+    if bytes.len() >= FILE_WBUF_SIZE {
+        f.write_all(bytes)
+    } else {
+        if wbuf.capacity() < FILE_WBUF_SIZE {
+            wbuf.reserve(FILE_WBUF_SIZE);
+        }
+        wbuf.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if let ConnKind::File { fp: Some(f), wbuf, .. } = &mut self.kind {
+            let _ = flush_file_wbuf(f, wbuf);
+            let _ = f.flush();
+        }
     }
 }
 
@@ -311,10 +361,11 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
         let _ = std::fs::remove_file(&name);
     }
     let con = i.conns.get(n)?;
-    if let ConnKind::File { fp, rbuf, rpos, temp, .. } = &mut con.kind {
+    if let ConnKind::File { fp, rbuf, rpos, wbuf, temp, .. } = &mut con.kind {
         *fp = Some(f);
         rbuf.clear();
         *rpos = 0;
+        wbuf.clear();
         *temp = is_temp;
     }
     con.isopen = true;
@@ -465,10 +516,11 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     // SAFETY: fd is an open file descriptor we now own.
     let f = unsafe { File::from_raw_fd(fd) };
     let con = i.conns.get(n)?;
-    if let ConnKind::File { fp, rbuf, rpos, temp, .. } = &mut con.kind {
+    if let ConnKind::File { fp, rbuf, rpos, wbuf, temp, .. } = &mut con.kind {
         *fp = Some(f);
         rbuf.clear();
         *rpos = 0;
+        wbuf.clear();
         *temp = is_temp;
     }
     con.isopen = true;
@@ -688,9 +740,9 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
             }
             Ok(())
         }
-        ConnKind::File { fp: Some(f), last_was_write, .. } => {
+        ConnKind::File { fp: Some(f), wbuf, fifo, last_was_write, .. } => {
             *last_was_write = true;
-            f.write_all(bytes)
+            file_write_buffered(f, wbuf, *fifo, bytes)
                 .map_err(|e| Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))))
         }
         _ => Err(Flow::error("cannot write to this connection")),
@@ -705,8 +757,9 @@ fn i_tempdir() -> RResult<String> {
 pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
-        ConnKind::File { fp, .. } => {
+        ConnKind::File { fp, wbuf, .. } => {
             if let Some(mut f) = fp.take() {
+                let _ = flush_file_wbuf(&mut f, wbuf);
                 con.status = if f.flush().is_ok() { 0 } else { -1 };
             }
             con.isopen = false;
@@ -785,9 +838,20 @@ fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
-    file_switch_to_read(&mut con.kind);
-    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, .. } = &mut con.kind else { return EOF };
-    *last_was_write = false;
+    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, .. } = &mut con.kind else {
+        return EOF;
+    };
+    if *last_was_write {
+        if !*fifo {
+            use std::io::{Seek, SeekFrom};
+            let _ = flush_file_wbuf(f, wbuf);
+            *wpos = f.stream_position().unwrap_or(*wpos);
+            let _ = f.seek(SeekFrom::Start(*frpos));
+            rbuf.clear();
+            *rpos = 0;
+        }
+        *last_was_write = false;
+    }
     // R: connections.c fifo_fgetc_internal — fifos read unbuffered.
     if *fifo {
         let mut b = [0u8; 1];
@@ -917,10 +981,10 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             raw_bytes = Some(text.as_bytes().to_vec());
             Ok(())
         }
-        ConnKind::File { fp, last_was_write, .. } => match fp {
+        ConnKind::File { fp, wbuf, fifo, last_was_write, .. } => match fp {
             Some(f) => {
                 *last_was_write = true;
-                if let Err(e) = f.write_all(text.as_bytes()) {
+                if let Err(e) = file_write_buffered(f, wbuf, *fifo, text.as_bytes()) {
                     return Err(Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))));
                 }
                 Ok(())
@@ -968,7 +1032,8 @@ fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
         }
         _ => {
             let con = i.conns.get(n)?;
-            if let ConnKind::File { fp: Some(f), .. } = &mut con.kind {
+            if let ConnKind::File { fp: Some(f), wbuf, .. } = &mut con.kind {
+                let _ = flush_file_wbuf(f, wbuf);
                 let _ = f.flush();
             }
         }
@@ -1264,6 +1329,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         fp: None,
         rbuf: Vec::new(),
         rpos: 0,
+        wbuf: Vec::new(),
         temp: false,
         last_was_write: false,
         frpos: 0,
@@ -1334,6 +1400,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         fp: None,
         rbuf: Vec::new(),
         rpos: 0,
+        wbuf: Vec::new(),
         temp: false,
         last_was_write: false,
         frpos: 0,
@@ -2011,9 +2078,11 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
         // R: connections.c file_seek (the read buffer holds bytes already
         // consumed from the OS file)
         let (canread, canwrite) = (con.canread, con.canwrite);
-        let ConnKind::File { fp: Some(f), rbuf, rpos: rb, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+        let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind
+        else {
             return Ok(0.0);
         };
+        let _ = flush_file_wbuf(f, wbuf);
         // make sure both positions are set
         let os_pos = f.stream_position().unwrap_or(0);
         if *last_was_write {
@@ -2122,11 +2191,12 @@ fn do_truncate(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             return Err(Flow::error("truncation not enabled for this connection"));
         }
         // R: connections.c file_truncate
-        ConnKind::File { fp: Some(f), last_was_write, .. } => {
+        ConnKind::File { fp: Some(f), wbuf, last_was_write, .. } => {
             use std::io::Seek;
             if !con.isopen || !con.canwrite {
                 return Err(Flow::error("can only truncate connections open for writing"));
             }
+            let _ = flush_file_wbuf(f, wbuf);
             let size = f.stream_position().unwrap_or(0);
             if f.set_len(size).is_err() {
                 return Err(Flow::error("file truncation failed"));
@@ -3053,10 +3123,12 @@ fn init_file_positions(con: &mut Connection) {
 
 /// R: connections.c:file_fgetc_internal/file_read — before reading after
 /// a write: remember the write position, go back to the read position.
+#[inline]
 fn file_switch_to_read(kind: &mut ConnKind) {
-    if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
-        use std::io::{Seek, SeekFrom};
-        if *last_was_write {
+    if let ConnKind::File { last_was_write: true, .. } = kind {
+        if let ConnKind::File { fp: Some(f), rbuf, rpos, wbuf, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+            use std::io::{Seek, SeekFrom};
+            let _ = flush_file_wbuf(f, wbuf);
             *wpos = f.stream_position().unwrap_or(*wpos);
             *last_was_write = false;
             let _ = f.seek(SeekFrom::Start(*frpos));
@@ -3068,10 +3140,11 @@ fn file_switch_to_read(kind: &mut ConnKind) {
 
 /// R: connections.c:file_write — before writing after a read: remember
 /// the read position (less what is buffered), go to the write position.
+#[inline]
 fn file_switch_to_write(kind: &mut ConnKind) {
-    if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
-        use std::io::{Seek, SeekFrom};
-        if !*last_was_write {
+    if let ConnKind::File { last_was_write: false, .. } = kind {
+        if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+            use std::io::{Seek, SeekFrom};
             let buffered = (rbuf.len() - *rpos) as u64;
             *frpos = f.stream_position().unwrap_or(0).saturating_sub(buffered);
             *last_was_write = true;
@@ -3079,5 +3152,47 @@ fn file_switch_to_write(kind: &mut ConnKind) {
             rbuf.clear();
             *rpos = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_write_buffered_accumulates_and_flushes() {
+        let path = std::env::temp_dir().join(format!("robigo_test_io_{}", std::process::id()));
+        let mut tmp = std::fs::File::create(&path).unwrap();
+        let mut wbuf = Vec::new();
+        // Writing 100 bytes buffers without OS write
+        let data1 = vec![42u8; 100];
+        file_write_buffered(&mut tmp, &mut wbuf, false, &data1).unwrap();
+        assert_eq!(wbuf.len(), 100);
+        assert_eq!(tmp.metadata().unwrap().len(), 0);
+
+        // Flushing writes to underlying file
+        flush_file_wbuf(&mut tmp, &mut wbuf).unwrap();
+        assert!(wbuf.is_empty());
+        assert_eq!(tmp.metadata().unwrap().len(), 100);
+
+        // Writing exceeding FILE_WBUF_SIZE flushes buffer
+        let data2 = vec![1u8; FILE_WBUF_SIZE - 50];
+        file_write_buffered(&mut tmp, &mut wbuf, false, &data2).unwrap();
+        assert_eq!(wbuf.len(), FILE_WBUF_SIZE - 50);
+
+        let data3 = vec![2u8; 100];
+        file_write_buffered(&mut tmp, &mut wbuf, false, &data3).unwrap();
+        // data2 flushed, data3 buffered in wbuf
+        assert_eq!(wbuf.len(), 100);
+        assert_eq!(tmp.metadata().unwrap().len(), 100 + (FILE_WBUF_SIZE - 50) as u64);
+
+        // Fifo bypasses buffer
+        let data4 = vec![3u8; 50];
+        file_write_buffered(&mut tmp, &mut wbuf, true, &data4).unwrap();
+        assert_eq!(tmp.metadata().unwrap().len(), 100 + (FILE_WBUF_SIZE - 50) as u64 + 50);
+        assert_eq!(wbuf.len(), 100); // unaffected
+
+        drop(tmp);
+        let _ = std::fs::remove_file(&path);
     }
 }
