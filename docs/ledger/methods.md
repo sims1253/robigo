@@ -244,8 +244,25 @@ Slice used throughout ("S4 slice"):
   bytes to hex text, then escape that text). Existing escape_rstring
   emits only one backslash. Outside this index-width fix; new regression
   covers bytes-marked ASCII plus native-invalid/Latin-1/invalid-UTF8.
-- Full verification follows below. FastR defaults are unchanged; its
-  deferred finalizer switch is unrelated to this stdout failure.
+- Rebased onto #95 main d2ce510, preserving both ratchet sides including
+  iconv_byte_window.R. The coordinator's remote dfbd36b rebase has the
+  identical tree (94e73c6) to the independently rebuilt local rebase;
+  adopted it without rewriting remote history.
+- On that post-#95 tree, print-tests improves **0/1 -> 1/1**: stdout,
+  stderr and status match the unchanged oracle recording. Six fixtures
+  (new max-index, byte_window, iconv_byte_window, closure_source_bytes,
+  closure_source_print_utf8, format) pass in interpreter, VM and JIT:
+  **18/18** byte comparisons across all streams and status.
+- Full gnur-tests with methods attached: **29/59, zero losses** in the
+  oracle container with the host loader, CI natives/flat cache, 4 GiB
+  container cap and 3 GiB process virtual-memory limit. The resource
+  limit keeps unratcheted reg-large from exhausting this shared host;
+  CI runs the suite in its normal environment without this local limit.
+- Five harness tests, formatting and diff checks pass. Pre-#95 fix CI
+  40983086734 is fully green; post-#95 full corpus/perf verification is
+  running. Results and final CI head are also recorded in the PR body.
+  FastR defaults remain unchanged; its deferred finalizer switch is
+  unrelated to this stdout failure.
 
 ## 2026-10-30: round 6 — defer only FastR, preserve zero loss
 
