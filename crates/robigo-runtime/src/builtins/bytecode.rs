@@ -279,19 +279,16 @@ fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(Value::list(x.data[..n as usize].to_vec()))
 }
 
-// R: util.c:Rf_checkArityCall distinguishes .Internal from primitives.
-fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {
+// R: util.c:Rf_checkArityCall uses the context call for internals.
+fn check_arity(args: &[Arg], n: usize, name: &str, _call: &Value) -> RResult<()> {
     if args.len() != n {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!(
-                "{} argument{} passed to .Internal({}) which requires {}",
-                args.len(),
-                if args.len() == 1 { "" } else { "s" },
-                name,
-                n
-            ),
-        ));
+        return Err(Flow::error(format!(
+            "{} argument{} passed to .Internal({}) which requires {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            name,
+            n
+        )));
     }
     Ok(())
 }
