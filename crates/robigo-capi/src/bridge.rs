@@ -1458,6 +1458,46 @@ fn iface_of(k: c_int) -> Interface {
     }
 }
 
+/// R: memory.c:SET_STRING_ELT, SET_VECTOR_ELT; attrib.c:installAttrib
+/// The bridge copy is the same R object: native writes bypass copy-on-
+/// modify, including writes to list elements and attributes. A value the
+/// routine did not replace is looked up by the address it was converted
+/// from, so unchanged elements keep their identity.
+unsafe fn converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Value {
+    if let Some(v) = originals.get(&x.addr()) {
+        return v.clone();
+    }
+    let v = from_sexp(x);
+    originals.insert(x.addr(), v.clone());
+    v
+}
+
+/// A cons chain as runtime cells, keeping unchanged elements' identity.
+unsafe fn pair_items_converted(mut p: Sexp, originals: &mut HashMap<usize, Value>) -> Vec<Arg> {
+    let mut items = Vec::new();
+    while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+        let tag = if p.tag().typ() == SYMSXP { Some(sym_of(p.tag())) } else { None };
+        items.push(Arg::new(tag, converted(p.car(), originals)));
+        p = p.cdr();
+    }
+    items
+}
+
+unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+    if x.typ() == CHARSXP {
+        return None;
+    }
+    let mut a = x.attrib_raw();
+    let mut out = Vec::new();
+    while a != R_NilValue && !a.is_null() {
+        if a.tag().typ() == SYMSXP {
+            out.push((sym_of(a.tag()), converted(a.car(), originals)));
+        }
+        a = a.cdr();
+    }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+}
+
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
@@ -1479,28 +1519,16 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             }
         }
     }
-    // R: memory.c:SET_STRING_ELT, SET_VECTOR_ELT; attrib.c:installAttrib
-    // The bridge copy is the same R object: native writes bypass copy-on-
-    // modify, including writes to list elements and attributes.
-    unsafe fn converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Value {
-        if let Some(v) = originals.get(&x.addr()) {
-            return v.clone();
-        }
-        let v = from_sexp(x);
-        originals.insert(x.addr(), v.clone());
-        v
-    }
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
-        let mut a = x.attrib_raw();
-        let mut out = Vec::new();
-        while a != R_NilValue && !a.is_null() {
-            if a.tag().typ() == SYMSXP {
-                out.push((sym_of(a.tag()), converted(a.car(), originals)));
-            }
-            a = a.cdr();
-        }
         let s4 = x.gp() & gp::S4 != 0;
-        let value = if out.is_empty() && !s4 { None } else { Some(Box::new(Attrs(out, s4))) };
+        let value = match attrs_converted(x, originals) {
+            Some(mut a) => {
+                a.1 = s4;
+                Some(a)
+            }
+            None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
+            None => None,
+        };
         let p = Rc::as_ptr(rc) as *mut Vector<T>;
         (*p).attrs = value;
     }
@@ -1514,6 +1542,27 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             let data = (0..xlength(x)).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
             let p = Rc::as_ptr(rc) as *mut Vector<Value>;
             (*p).data = data;
+        }
+        // R: memory.c:SETCAR/SETCDR/SET_TAG on a LISTSXP/LANGSXP chain.
+        // The routine mutated the caller's own cells, so the runtime spine
+        // is rewritten in place: every alias keeps the object and sees it.
+        Value::Pairlist(_) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
+            let items = pair_items_converted(x, originals);
+            let mut attrs = attrs_converted(x, originals);
+            if x.gp() & gp::S4 != 0 {
+                attrs.get_or_insert_with(Default::default).1 = true;
+            }
+            v.set_pairlist_cells_through_alias(items, attrs);
+        }
+        Value::Lang(_) if x.typ() == LANGSXP => {
+            let fun = converted(x.car(), originals);
+            let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
+            let args = pair_items_converted(x.cdr(), originals);
+            let mut attrs = attrs_converted(x, originals);
+            if x.gp() & gp::S4 != 0 {
+                attrs.get_or_insert_with(Default::default).1 = true;
+            }
+            v.set_lang_cells_through_alias(fun, fun_tag, args, attrs);
         }
         Value::Lgl(rc) | Value::Int(rc) => back(rc, x),
         Value::Real(rc) => back(rc, x),
@@ -1550,6 +1599,8 @@ fn sharing(v: &Value) -> u16 {
         Value::Str(x) => Rc::strong_count(x),
         Value::Raw(x) => Rc::strong_count(x),
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x),
+        Value::Lang(x) => Rc::strong_count(x),
+        Value::Pairlist(x) => Rc::strong_count(x),
         _ => return 0,
     };
     n.saturating_sub(1).min(u16::MAX as usize) as u16
