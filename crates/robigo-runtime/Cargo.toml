@@ -17,6 +17,9 @@ cranelift-jit = "0.137"
 cranelift-module = "0.137"
 cranelift-native = "0.137"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# The rdbflat cache maps its files read-only (rdbflat.rs); already linked
+# by mimalloc-sys and liblzma, so this adds no library to the binary.
+libc = "0.2"
 # Raw LZMA2 streams for lazy-load databases (R: connections.c R_decompress3),
 # the same C library GNU R links against.
 liblzma = "0.4"

@@ -24,9 +24,14 @@
 //! the uncompressed entries, entry i at foff..foff+ulen
 //! ```
 //!
-//! `with_entry` serves an entry as a zero-copy slice; a missing or stale
-//! cache falls back to the per-fetch path, so behaviour is byte-identical
-//! either way (entries the battery did not record take that path too).
+//! `with_entry` serves an entry as a zero-copy slice of a private,
+//! read-only mapping of the flat file — only the pages of fetched
+//! entries are ever paged in, so a run that touches one entry of a
+//! package's database does not keep the whole pre-inflated file
+//! resident (reading them whole cost 35 MB of RSS on a default
+//! startup). A missing or stale cache falls back to the per-fetch path,
+//! so behaviour is byte-identical either way (entries the battery did
+//! not record take that path too).
 //! The same format caches a lazy-load database's `.rdx` index — a gzip
 //! file `lazyload.R`'s `readRDS` inflates whole at every open — as a
 //! single `(0, 0)` entry claimed on the `.rdx` itself; `builtins/io.rs`
@@ -36,8 +41,8 @@
 //! parent's parent (`.robigo/bin/robigo`, `.robigo/rdbflat` — the layout
 //! `scripts/build-rdbflat.sh` writes, as `scripts/build-natives.sh` does
 //! for natives); absent, the module costs a `getenv` and a `read_dir`.
-//! Flat files are read lazily, one at the first fetch from their rdb —
-//! a NULL-packages run reads base.rdb's cache and nothing else.
+//! Flat files open lazily, at the first fetch from their rdb —
+//! a NULL-packages run opens base.rdb's cache and nothing else.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -72,17 +77,55 @@ impl Hasher for Fx {
 /// (off, clen) -> (foff, ulen), FxHashed.
 type FlatIndex = HashMap<(u64, u32), (u64, u32), BuildHasherDefault<Fx>>;
 
+/// A cache table keyed by path: probed on every fetch (the rdb path is
+/// the key), so SipHash's finalization would cost more than the lookup.
+type PathMap<V> = HashMap<PathBuf, V, BuildHasherDefault<Fx>>;
+
 struct Flat {
-    data: Vec<u8>,
+    map: Mmap,
     index: FlatIndex,
 }
 
+/// A read-only, private file mapping. Only the pages actually served
+/// from it are ever read into the process, so a flat file costs memory
+/// for the entries a run fetched, not for all of them.
+struct Mmap {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Mmap {
+    fn new(f: &std::fs::File, len: u64) -> Option<Mmap> {
+        use std::os::unix::io::AsRawFd;
+        let len = usize::try_from(len).ok()?;
+        if len == 0 || len > isize::MAX as usize {
+            return None;
+        }
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
+        if p == libc::MAP_FAILED {
+            return None;
+        }
+        Some(Mmap { ptr: p as *mut u8, len })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Drop for Mmap {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+#[derive(Default)]
 struct Cache {
     /// rdb path -> the flat file claiming it, with its (size, mtime_ns)
     /// guard
-    claims: HashMap<PathBuf, (PathBuf, u64, u64)>,
+    claims: PathMap<(PathBuf, u64, u64)>,
     /// rdb path -> the loaded flat
-    loaded: HashMap<PathBuf, Rc<Flat>>,
+    loaded: PathMap<Rc<Flat>>,
 }
 
 fn u64_at(b: &[u8], off: usize) -> u64 {
@@ -105,13 +148,13 @@ impl Cache {
                     let root = e.parent().and_then(|p| p.parent())?;
                     Some(root.join("rdbflat"))
                 }) else {
-                    return Cache { claims: HashMap::new(), loaded: HashMap::new() };
+                    return Cache::default();
                 };
                 dir
             }
         };
-        let mut claims = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::new() } };
+        let mut claims: PathMap<(PathBuf, u64, u64)> = HashMap::default();
+        let Ok(entries) = std::fs::read_dir(dir) else { return Cache { claims, loaded: HashMap::default() } };
         for e in entries.flatten() {
             // the header: magic, guard, path (the path starts at byte 32)
             let Ok(mut f) = std::fs::File::open(e.path()) else { continue };
@@ -131,7 +174,7 @@ impl Cache {
             let Ok(path) = String::from_utf8(path) else { continue };
             claims.insert(PathBuf::from(path), (e.path(), u64_at(&head, 8), u64_at(&head, 16)));
         }
-        Cache { claims, loaded: HashMap::new() }
+        Cache { claims, loaded: HashMap::default() }
     }
 
     /// The flat for `file`, loading it on first use; `None` when there is
@@ -150,7 +193,10 @@ impl Cache {
 }
 
 /// Read a flat file, checking the rdb guard: it must still be the exact
-/// file (size and mtime) the cache was built from.
+/// file (size and mtime) the cache was built from. The file is mapped,
+/// not read: only the pages of fetched entries are ever paged in, so a
+/// run that touches one entry of a package's database does not pay for
+/// the whole pre-inflated file.
 fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = std::fs::metadata(rdb) else { return None };
@@ -158,16 +204,22 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
     if meta.len() != size || mtime != mtime_ns {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    let plen = u64_at(&bytes, 24) as usize;
-    let index = parse_index(&bytes, 32 + plen)?;
-    Some(Flat { data: bytes, index })
+    let f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let map = Mmap::new(&f, len)?;
+    let bytes = map.as_slice();
+    if bytes.len() < 32 || &bytes[..8] != b"RFLAT01\n" {
+        return None;
+    }
+    let plen = usize::try_from(u64_at(bytes, 24)).ok()?;
+    let index = parse_index(bytes, 32usize.checked_add(plen)?)?;
+    Some(Flat { map, index })
 }
 
 /// The entry index at `p` (just past the path); every entry's slice must
 /// lie inside the file.
 fn parse_index(bytes: &[u8], mut p: usize) -> Option<FlatIndex> {
-    if p + 8 > bytes.len() {
+    if p.checked_add(8)? > bytes.len() {
         return None;
     }
     let n = u64_at(bytes, p) as usize;
@@ -213,11 +265,19 @@ pub fn log_fetch(file: &str, off: usize, len: usize, compressed: i32) {
     });
 }
 
+impl Flat {
+    /// The entry `(off, len)`'s bytes, a slice of the mapping.
+    fn read_entry(&self, off: u64, len: u32) -> Option<&[u8]> {
+        let (foff, ulen) = self.index.get(&(off, len))?;
+        Some(&self.map.as_slice()[*foff as usize..*foff as usize + *ulen as usize])
+    }
+}
+
 /// Serve the entry `(off, len)` of `file`'s flat cache to `f`, or `None`
 /// when there is no usable cache for it.
 ///
-/// The entry's slice is borrowed from a thread-local `Rc` handle, not a
-/// held lock: unserializing an entry can call the environment hook, which
+/// The entry is a slice of a thread-local `Rc`'d mapping, not a held
+/// lock: unserializing an entry can call the environment hook, which
 /// fetches reference environments from the same database — the nested
 /// fetch must be able to re-enter.
 pub fn with_entry<T>(file: &str, off: usize, len: usize, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
@@ -229,9 +289,7 @@ pub fn with_entry<T>(file: &str, off: usize, len: usize, f: impl FnOnce(&[u8]) -
         let mut c = c.borrow_mut();
         c.get_or_insert_with(Cache::open).flat(Path::new(file))
     })?;
-    let (foff, ulen) = flat.index.get(&(off as u64, len as u32))?;
-    let end = *foff as usize + *ulen as usize;
-    Some(f(&flat.data[*foff as usize..end]))
+    Some(f(flat.read_entry(off as u64, len as u32)?))
 }
 
 #[cfg(test)]
@@ -286,5 +344,52 @@ mod tests {
         let far = (past.len() as u64 + 10).to_le_bytes();
         past[e..e + 8].copy_from_slice(&far);
         assert!(parse_index(&past, 32 + 1).is_none());
+    }
+
+    /// End to end: a written flat file maps in (guard checked) and
+    /// serves its entries as slices of the mapping; a missing entry
+    /// reports `None`; a stale guard rejects the cache.
+    #[test]
+    fn serves_entries_from_a_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("rdbflat-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rdb = dir.join("test.rdb");
+        std::fs::write(&rdb, b"x").unwrap();
+        let entries: Vec<((u64, u32), &[u8])> = vec![(0u64, 3u32, b"abc".as_slice()), (17, 2, b"de".as_slice())]
+            .into_iter()
+            .map(|(o, c, r)| ((o, c), r))
+            .collect();
+        let mut image = flat(rdb.to_str().unwrap(), &entries);
+        let meta = std::fs::metadata(&rdb).unwrap();
+        let mtime = (meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128) as u64;
+        image[8..16].copy_from_slice(&meta.len().to_le_bytes());
+        image[16..24].copy_from_slice(&mtime.to_le_bytes());
+        let flat_path = dir.join("t.flat");
+        std::fs::write(&flat_path, &image).unwrap();
+
+        let flat = load(&flat_path, &rdb, meta.len(), mtime).unwrap();
+        assert_eq!(flat.read_entry(0, 3), Some(b"abc".as_slice()));
+        assert_eq!(flat.read_entry(17, 2), Some(b"de".as_slice()));
+        assert_eq!(flat.read_entry(99, 1), None);
+
+        // A cache replaced with an incomplete or invalid image must
+        // fall back to the original database rather than panic.
+        drop(flat);
+        for bad in [&image[..0], &image[..24], &image[..31]] {
+            std::fs::write(&flat_path, bad).unwrap();
+            assert!(load(&flat_path, &rdb, meta.len(), mtime).is_none());
+        }
+        let mut bad = image.clone();
+        bad[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+        std::fs::write(&flat_path, bad).unwrap();
+        assert!(load(&flat_path, &rdb, meta.len(), mtime).is_none());
+        std::fs::write(&flat_path, &image).unwrap();
+
+        // a stale guard (the rdb changed since the cache was built)
+        // rejects the whole cache: the old size/mtime no longer match
+        std::fs::write(&rdb, b"xy").unwrap();
+        assert!(load(&flat_path, &rdb, meta.len(), mtime).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -17,9 +17,24 @@ length), 3 R_decompress3 (the length, a type byte, then the stream:
 import os
 import struct
 import sys
+import tempfile
 import zlib
 
 NA_INTEGER = -(2**31)
+
+
+def publish(dest: str, image: bytes) -> None:
+    # Readers mmap these files. Replacing the inode keeps existing
+    # mappings valid while a cache is rebuilt; truncating it can SIGBUS.
+    with tempfile.NamedTemporaryFile(dir=os.path.dirname(dest), delete=False) as f:
+        tmp = f.name
+        try:
+            f.write(image)
+            f.close()
+            os.replace(tmp, dest)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
 
 def inflate(buf: bytes, compressed: int) -> bytes:
@@ -72,8 +87,7 @@ def main() -> None:
             data += raw
             pos += len(raw)
         dest = os.path.join(flatdir, f"{i:02d}-{os.path.basename(file)}.flat")
-        with open(dest, "wb") as f:
-            f.write(head + struct.pack("<Q", len(entries)) + bytes(index) + bytes(data))
+        publish(dest, head + struct.pack("<Q", len(entries)) + bytes(index) + bytes(data))
         print(f"build-rdbflat: {dest} ({len(entries)} entries, "
               f"{pos - data_start} bytes from {file})")
         # The database's .rdx index (same stem) is a gzip file that
@@ -91,8 +105,7 @@ def main() -> None:
             head = struct.pack("<8sQQQ", b"RFLAT01\n", st.st_size, st.st_mtime_ns, len(path)) + path
             body = struct.pack("<Q", 1) + struct.pack("<QIIQ", 0, 0, len(raw), len(head) + 8 + 24) + raw
             dest = os.path.join(flatdir, f"{i:02d}-{os.path.basename(rdx)}.flat")
-            with open(dest, "wb") as f:
-                f.write(head + body)
+            publish(dest, head + body)
             print(f"build-rdbflat: {dest} (rdx index, {len(raw)} bytes from {rdx})")
 
 

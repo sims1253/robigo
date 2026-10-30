@@ -120,3 +120,22 @@ Ranked by count, with the first differing stream:
 
 (`substitute` (2) and two `subset` cases were fixed by the lang and
 vectors tracks while this branch was in review.)
+
+## From startup-perf (2026-10-30): Re::compile costs ~300k instructions per gsub
+
+`library(stats)` from NULL spends **11.6M of its 174.7M instructions
+inside `gsub_impl -> Re::compile`** (13M including grep/strsplit) —
+regex-automata's `meta::Regex` builder eagerly constructs all its
+engines (forward + reverse NFA, hybrid lazy DFA cache, one-pass DFA,
+UTF-8 automaton), ~300k instructions for a single hairy POSIX pattern.
+The whole run makes only ~38 `gsub` calls; the expensive ones are
+strftime-style spec patterns like `(^|[^%])(%%)*%v` (each `%`-spec of
+`format.POSIXlt`-family helpers compiles its own pattern) and `([\])`
+(14 calls). GNU R pays far less here (its TRE compile is much lighter;
+nothing regex-shaped shows in its profile at this scale).
+
+If a `meta::Regex` can be built with a subset of engines for the
+leftmost-longest POSIX path (or engines built lazily on first exec),
+that is worth ~10M instructions on `library(stats)` and a similar share
+of `-e 1` with default packages — details and the harness are in
+docs/ledger/startup-perf.md, round 6.

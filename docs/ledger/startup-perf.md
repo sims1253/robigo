@@ -7,6 +7,172 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30: repair #92's GNU R failure handling
+
+- Evidence: [run 40988268342, perf job 123847416068](https://github.com/sims1253/robigo/actions/runs/40988268342/job/123847416068),
+  head 30a556a, first-parent base 1b4670a (baseline run 40987005954).
+  Downloaded `perf-paired-profiles` into `.robigo/r92-profiles`.
+- The logged `suite/nbody_2 +10.00%` came from the adversarial unit test,
+  immediately after `python3 scripts/test-perf-paired.py`: stored 100/100,
+  paired base [100,100], candidate [110,110]. There is no such suite entry
+  in the manifest. Capture test stdout so synthetic failures cannot be
+  mistaken for measured CI regressions.
+- Real `rbench/shootout/nbody_2` diagnostic: cache off base 868,979,362,
+  candidate 866,898,984 instructions (-0.2394%); cache on 832,806,705 and
+  830,403,677. All four status codes are zero and stdout matches byte for
+  byte. The shared driver uses parameter 921, one `execute(921)` call,
+  921 `advance(0.01)` iterations, no warmup. Both binaries receive the
+  same driver and utils,stats package set. Raw callgrind headers confirm
+  separate isolated base/candidate executables. These are the existing
+  job's diagnostic measurements; the paired sweep aborted before reaching
+  this benchmark. No evidence of a measured 10% regression exists.
+- GNU R failure now warns, retains the benchmark and failed measurement,
+  and omits its ratio. Paired robigo counts still decide the 0.5% gate.
+  Without a working oracle, candidate stdout must match base stdout.
+  Wrong output and failed paired robigo runs still fail. Initial GNU R
+  failure no longer marks a successful robigo run as wrong output.
+- Both flexclust variants already exited 1 under robigo and GNU R in the
+  retained initial results. Per Max's clarification, known base failures
+  are visibly UNSUPPORTED; new failures are BROKEN. Failed prefixes never
+  enter the performance comparison. Added/removed benchmarks are visible
+  and have no fabricated baseline; failed new benchmarks still fail.
+- Retain each measurement's exact driver, package set, cache setting and
+  driver hash, plus both binary hashes. Log the parameter, repeat count,
+  package set and driver hash before each paired comparison. The existing
+  workflow's first-parent baseline selection and cache isolation remain.
+- Verification: 7 -> 14 gate tests pass, including failed GNU R with clean
+  robigo, slowdown and output mismatch despite failed GNU R, diagnostic
+  oracle failure, one-sided benchmarks, existing/new failures and failed
+  paired candidate. Python compilation, cargo fmt --check and git diff
+  --check pass. No runtime edits, benchmark sizes or ratchets changed.
+- Round 10 LAPACK work is paused until #92 is green. Its uncompiled draft
+  is `/tmp/r10-lapack.rs`, and oracle fixtures are `.robigo/r10/lapack-fixtures`.
+
+## 2026-10-30 (round 9): four-way exact-artifact measurement
+
+One foreground robigo-oracle:4.5.0 container, R 4.5.0-3, valgrind 3.24.0,
+same nbody_2 program/parameter 921, shared candidate natives/cache.
+Executables copied into separate bin directories with no sibling cache.
+Exact original artifacts: main df3d535 from run 40980827065 and candidate
+d002511 from run 40982799591. Every output/status matches GNU R.
+
+| executable | ROBIGO_RDBFLAT | instructions, run 1 | run 2 |
+|---|---|---:|---:|
+| base | unset | 872,645,331 | 872,605,219 |
+| base | set | 836,290,008 | 836,307,843 |
+| candidate | unset | 870,543,236 | 870,510,491 |
+| candidate | set | 834,030,673 | 834,000,430 |
+
+- Gate comparison, cache off: 872,605,219 -> 870,510,491 (-0.2401%).
+- rdbflat diagnostic ONLY, excluded from gate: base saves 36,315,211;
+  candidate saves 36,510,061 instructions. The base demonstrably takes
+  the cache path. Candidate cache-off self costs include inflate_fast_help
+  6,114,606, inflate_table 5,669,934, copy_match_runtime_dispatch 4,690,329,
+  and adler32 4,667,797 instructions. The main VM run_with self count is
+  identical with/without cache (30,751,320).
+- The historical +22,540,288 remains unresolved. Neither cache-off nor
+  cache-on like-for-like comparison reproduces it, and the complete
+  cache effect is about 36.5M, not 22.54M. The old perf run discarded
+  its profiles, so these data cannot prove which historical fetches
+  missed their cache. Do not label the historical increase noise or a
+  proven cache artefact. The new job retains every measurement/profile,
+  including its four-way diagnostic, to identify a recurrence.
+- Local raw profiles/results are in .robigo/r9, with the foreground
+  reproduction harness four.py. Mount ~/.cache/robigo-bench at
+  /root/.cache/robigo-bench in the oracle container so perf.py's external
+  nbody source exists; no recordings or benchmark definitions changed.
+
+## 2026-10-30 (round 9): feature-neutral performance gate
+
+- Rebased #92 onto main 1b4670a. Stored counts can hide a regression
+  when only the candidate uses a newly supported cache. Rechecking only
+  flagged slowdowns does not detect that false pass.
+- Compare every successful benchmark with both exact artifact executables,
+  twice, with ROBIGO_RDBFLAT unset and executables copied into isolated
+  directories without an automatically discoverable cache. Keep the 0.5%
+  threshold, output checks, measurement errors, and original profiles.
+- Run the four nbody_2 combinations in the same job as a separate cache
+  diagnostic. Cache-on counts never enter the pass/fail comparison.
+- Verification: 4 -> 7 gate tests pass. The new end-to-end adversarial
+  test simulates a base that ignores the cache and a candidate that uses
+  it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
+  Failed oracle measurements also fail. cargo fmt --check and diff
+  whitespace checks pass. No runtime source or ratchet changes.
+
+## 2026-10-30 (round 7): resume #92 and repair perf validation
+
+- Took over #92 at 48556b1, preserving its commits and authorship, and
+  rebased onto main 1074f6c. The failed run 40978398420 compared with
+  main 4754027, not the PR's git merge base f668f60. All correctness
+  jobs passed; only nbody_2 exceeded the perf threshold.
+- Reproduced the original CI artifacts in robigo-oracle:4.5.0, with
+  one shared ROBIGO_NATIVES and ROBIGO_RDBFLAT directory for both.
+  Two runs each: base nbody_2 838,351,321 / 838,271,596 instructions;
+  candidate 836,006,852 / 836,068,130. Both outputs match GNU R byte
+  for byte. This does not reproduce CI's 839,190,277 -> 861,813,460
+  regression; do not claim it is fixed until CI verifies the new head.
+  Callgrind profiles show a 2.21M reduction, mostly reader allocations,
+  Value clones, path hashing and native marker scanning. No evidence
+  supports adding MAP_POPULATE or abandoning mmap.
+- CI rechecks lost ROBIGO_RDBFLAT and ROBIGO_NATIVES at the step
+  boundary (the recheck measured 871,047,321 instead of 861,813,460).
+  Export both in the comparison step, matching the first measurement.
+  The main baseline already enables the cache, so both sides use it.
+- The spectralnorm_math FIXED report was false. Both original artifacts
+  fail at the missing La_rs internal, with status 1. PR CI ran only
+  robigo, discarded stdout, then copied GNU R's counts without deriving
+  the wrong-output flag. Run both runtimes in PR perf jobs, so stdout
+  and status are actually checked. No benchmark recordings changed.
+- Fixed two ineffective Rc::try_unwrap(p.clone()) paths in the inherited
+  reader by consuming the owned formals and dotted tail. Shared tails
+  retain their clone fallback. Reject incomplete flat headers and
+  overflowing offsets before slicing; use metadata from the open fd.
+- The builder now publishes via atomic rename. Truncating a flat file
+  that an existing process has mapped can SIGBUS; atomic replacement
+  preserves the old inode. A live-mapping replacement probe confirms
+  old readers retain their bytes and new readers see the replacement.
+
+- Local verification before the #84 rebase (base 4754027 and candidate
+  built on 1074f6c, whose runtime is identical to 4754027):
+  library(stats) NULL flat 177,418,533 -> 175,388,419 instructions;
+  plain 210,693,169 -> 208,834,362; default flat 397,858,068 ->
+  391,988,954; default plain 479,938,389 -> 474,440,305; NULL flat
+  38,868,211 -> 38,606,393. Natives disabled equally for these rows.
+  Host peak RSS default flat 88,920 -> 69,680 KB (21.6% lower).
+- Host paired nbody_2, same cache and natives for both: base
+  840,603,706 / 840,604,286; candidate 838,184,690 / 838,167,755
+  instructions (about 0.29% lower). The original CI artifacts were
+  separately verified in the pinned oracle container above.
+- 12 byte comparisons pass against GNU R 4.5.0: AST, VM and JIT each
+  with full, absent, partial and stale caches; the probe exercises
+  stats/lm, closures and GNU R-generated bytecode argument lists of
+  lengths 0, 1, 8, 9 and 40. Atomic cache rebuild preserves all 32
+  files byte for byte. Focused conformance 56/57 in all three tiers,
+  zero ratchet failures, identical to base. FastR serialize/connections
+  451/458 on both binaries, with the same oversized real-sequence
+  serialization case failing locally on the base and candidate;
+  pinned CI remains the judge. No ratchet entries changed.
+
+- Final rebase onto df3d535 (#84 string handles) applied cleanly.
+  Post-rebase runtime unit tests: 42 pass, including mapped-cache
+  rejection tests; only c_library_oracle and c_library_trig_oracle
+  fail by one ULP, matching the host glibc failures documented by
+  sweep-data and core. No complex arithmetic or oracle files changed.
+- Remaining stats profile before #84: VM run_with 7.92M self, memcpy
+  5.12M, Reader::int 5.08M, read_item_flags0 4.44M, read_bc_lang 3.14M.
+  Next measure these again on #84 before another reader optimization.
+  Direct rdx-key enumeration remains a builder follow-up; mmap and
+  CI cache wiring are complete. Regex construction and symbol handles
+  overlap other tracks; do not change them here.
+
+Reproduction: download the robigo artifacts from runs 40977240404 and
+40978398420; run scripts/perf.py run --metric instr --runtime both
+--filter 'rbench/shootout/(nbody_2|spectralnorm_math)$' --jobs 1 twice
+per binary in the oracle container, with the same explicit cache and
+native directories. On the host, perf.py overrides R_HOME via R RHOME;
+use a PATH shim returning /home/m0hawk/.local/opt/R-4.5.0 for that query.
+
+
 ## 2026-10-29: what is left of PR #36 on top of core's #56
 
 - Core's #56 (merged as d709287) loads base from base.rdb with a reused
@@ -248,14 +414,87 @@ are resident once read; GNU R 53.4MB) — mmap for the flats is open
 item 4. The wall-time numbers above were taken on an idle moment; under
 load both runtimes slow equally.
 
+## 2026-10-30 (round 6): library(stats) hill-climb + rdbflat mmap
+
+Branch `track/startup-perf-r6-stats` (PR #92), from main 24a5b8e (#88's
+round 5 + #85's tracemem were in). Baseline re-measured first, all
+scenarios reproduce round 5's table to <0.1%. GNU R targets unchanged
+(`library(stats)` NULL 259.54M, def `-e 1` 660.64M, NULL `-e 1`
+87.76M). Where `library(stats)`'s instructions go (callgrind, flat):
+serialize reader ~15M self, mimalloc ~11M, VM ~12M (perf-vm), regex
+compile ~13M inclusive (see below), Value drops/clones ~7M, memcpy 5M.
+GNU R's own profile for the same scenario: inflate 18.6M (skipped by
+the cache), xdr_int 14M, mkCharLenCE 7.6M, cons-cell writers 19.7M —
+robigo is ahead in every column; the remaining mass is spread thin.
+
+Five changes, all gates green after each (runtime tests, conformance 3
+tiers on the touched areas, fastr serialize/connections/library slices,
+0 regressions):
+
+1. **CHARSXP interning — REJECTED** (details above): +5.3M.
+2. **read_bc_lang inline spines** (SmallVec<[Level; 8]>): the
+   iterative ReadBCLang grew its spine Vec by push (1-3 reallocs per
+   bytecode chain). Chains are argument lists, ≤ 8 cells nearly always:
+   lib-null-flat −1.4M, **def-flat −4.4M**.
+3. **rdbflat mmap**: flat files are mapped read-only; entries are
+   zero-copy slices of the mapping. Instructions unchanged (±0.1M),
+   **def-flat peak RSS 89.6 → 71.1 MB** (GNU R 53.9). An intermediate
+   pread-per-fetch design measured +1.9M instructions for 64 MB —
+   rejected, instructions are the gate. `libc` dep added (already
+   linked by mimalloc-sys/liblzma; rbench/simple + profiler-shared
+   measured 0 slower, the memchr-layout lesson respected).
+4. **rdbflat path maps FxHashed** (claims/loaded were SipHash per
+   fetch): −0.17M lib, −0.39M def.
+5. **fresh-tail moves in the reader**: ReadBCLang's spine cars and
+   freshly-read pairlist/lang tails move into the items Vec instead of
+   cloning (a tail reached through BCREPREF still clones — it is
+   shared); CLOSXP formals and dotted-pairlist tails likewise: −0.22M
+   lib, −0.83M def.
+
+Where the scenarios ended:
+
+| scenario | main 24a5b8e | this branch | GNU R | ratio |
+|---|---|---|---|---|
+| `library(stats)` NULL, plain | 209.89M | 208.23M | 259.54M | 0.802× |
+| `library(stats)` NULL, flat | 176.56M | **174.70M** | 259.54M | **0.673×** |
+| `-e 1` default, flat | 396.51M | **390.98M** | 660.64M | 0.592× |
+| `-e 1` default, plain | 478.94M | 473.53M | 660.64M | 0.717× |
+| `-e 1` NULL, flat | 38.36M | 38.18M | 87.76M | 0.435× |
+
+Peak RSS: def+cache 89.6 → **71.1 MB**; NULL+cache 25.9 → 26.5 MB.
+Wall (idle moment): def+cache ~89 ms vs GNU R ~128 ms. Numbers
+re-measured after rebasing onto f668f60 (#90's inline-closure VM
+change did not move startup): lib-null-flat 174.70M, def-flat 390.94M.
+
+**Findings for other tracks:**
+
+- **regex compile is 13M of library(stats)** (11.6M under `gsub_impl`
+  → `Re::compile`): regex-automata's meta builder eagerly builds all
+  engines, ~300k instructions per hairy POSIX pattern (strftime-style
+  `(^|[^%])(%%)*%v` specs; only ~38 gsub calls in the whole run).
+  Logged in conformance-strings' ledger; ~10M available if engines can
+  be built lazily or pruned for the leftmost-longest path.
+- `compile::Op` Vec growth (~1.0M def: Compiler::call/guard push
+  without reserve) and `set_in_box`'s Arg growth (~0.6M) are perf-vm's
+  files; noted in their ledger section of the open items below.
+- The `read_item_flags0 → RawVec<compile::Op>` callgrind edge is
+  misattributed (closure compilation is lazy — `Closure::code` is a
+  OnceCell filled on first call); don't chase it.
+
 ## Open items (ranked)
 
-1. **CHARSXP interning** (R: serialize.c ReadItem calls mkChar, which
-   interns in R's CHARSXP cache; robigo allocates a fresh `Rc<str>` per
-   read — repeated argument names like "x", "object" are re-allocated
-   hundreds of times per package). Needs a string cache with weak
-   entries or an arena; ~0.8M of memcpy is `Rc::from` copies in
-   read_charsxp alone, plus the allocations.
+1. **CHARSXP interning — measured, rejected (round 6).** A thread-local
+   `HashMap<Box<str>, Weak<str>>` (FxHash) in `read_charsxp`, mirroring
+   R: envir.c:mkCharLenCE's `R_StringHash`, made `library(stats)` from
+   NULL **slower**: flat 176.56M → 181.82M (+5.3M), plain 209.89M →
+   215.05M. The byte-at-a-time hash plus the `Box<str>` key copy (a
+   second allocation per miss) cost more than the saved `Rc` allocs;
+   the duplicate rate is too low for the early hits to pay for it.
+   Ceiling check: `read_charsxp` self + `from_utf8` + the string share
+   of malloc/drop is ~2-3M on this scenario — GNU R itself pays 7.6M in
+   `mkCharLenCE`, so robigo's fresh-`Rc`-per-read is already cheaper
+   than R's cache. Do not retry without open addressing with inline
+   keys (no `Box` copy, chunked hash); even then the ceiling is ~2M.
 2. **Symbol interner hashing** (`sym::Interner` uses SipHash; ~1.5M on
    def in sip+memcmp+memcpy during unserialize). FxHash it — but sym.rs
    is hot for every track; measure the perf suite, coordinate with
