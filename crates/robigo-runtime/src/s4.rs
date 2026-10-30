@@ -661,9 +661,7 @@ impl Interp {
             // binds constant defaults without a promise.)
             let unforced_default = missing
                 && match &val {
-                    Value::Promise(p) => {
-                        !p.is_forced() && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho))
-                    }
+                    Value::Promise(p) => !p.is_forced() && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(rho)),
                     v => !v.is_missing_arg(),
                 };
             let val = if unforced_default {

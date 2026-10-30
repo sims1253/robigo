@@ -557,7 +557,13 @@ impl Promise {
     }
 
     pub fn with_code(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
-        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(PromiseVal::Unforced), forcing: Cell::new(false), code }
+        Promise {
+            expr,
+            env: RefCell::new(Some(env)),
+            value: RefCell::new(PromiseVal::Unforced),
+            forcing: Cell::new(false),
+            code,
+        }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
@@ -567,13 +573,7 @@ impl Promise {
             Value::Lgl(v) if v.data.len() == 1 && v.attrs.is_none() => PromiseVal::ScalarLgl(v.data[0]),
             _ => PromiseVal::Boxed(value),
         };
-        Promise {
-            expr,
-            env: RefCell::new(None),
-            value: RefCell::new(pval),
-            forcing: Cell::new(false),
-            code: None,
-        }
+        Promise { expr, env: RefCell::new(None), value: RefCell::new(pval), forcing: Cell::new(false), code: None }
     }
 
     #[inline(always)]
@@ -620,12 +620,34 @@ impl Promise {
     }
 
     pub fn value(&self) -> Option<Value> {
-        match &*self.value.borrow() {
-            PromiseVal::Unforced => None,
-            PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
-            PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
-            PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
-            PromiseVal::Boxed(v) => Some(v.clone()),
+        if let Ok(mut b) = self.value.try_borrow_mut() {
+            match &*b {
+                PromiseVal::Unforced => None,
+                PromiseVal::ScalarInt(i) => {
+                    let v = Value::int(*i);
+                    *b = PromiseVal::Boxed(v.clone());
+                    Some(v)
+                }
+                PromiseVal::ScalarReal(d) => {
+                    let v = Value::real(*d);
+                    *b = PromiseVal::Boxed(v.clone());
+                    Some(v)
+                }
+                PromiseVal::ScalarLgl(l) => {
+                    let v = Value::lgl_raw(*l);
+                    *b = PromiseVal::Boxed(v.clone());
+                    Some(v)
+                }
+                PromiseVal::Boxed(v) => Some(v.clone()),
+            }
+        } else {
+            match &*self.value.borrow() {
+                PromiseVal::Unforced => None,
+                PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
+                PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
+                PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
+                PromiseVal::Boxed(v) => Some(v.clone()),
+            }
         }
     }
 

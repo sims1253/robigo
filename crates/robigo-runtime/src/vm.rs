@@ -2147,46 +2147,34 @@ fn try_inline_site(
         return None;
     }
     let head = l.fun_sym()?;
+    let frame = interp.current_frame()?;
+    let Value::Closure(caller) = &interp.frames[frame].function else { return None };
+    {
+        let memo = site.si_memo.borrow();
+        if let Some((c, ns, inline)) = memo.as_ref() {
+            if Rc::ptr_eq(c, caller) {
+                let Some(inline) = inline else { return None };
+                if !*ns && !resolves_to_target(interp, si, head, env) {
+                    return None;
+                }
+                let target = inline.target.clone();
+                let args = inline.args.clone();
+                drop(memo);
+                let r = run_wrapper(interp, &target, &args, &l.args, call, env);
+                return Some(r.map(RVal::V));
+            }
+        }
+    }
     let (caller, ns, compiled) = simple_caller(interp)?;
-    // User code inlines only once compiled (R_CheckJIT timing); first
-    // calls stay interpreted and generic.
     if !ns && !compiled {
         return None;
     }
-    // The memoized resolution, if it was resolved for this caller. The
-    // borrow ends here: running the call may re-enter this site through
-    // a handler.
-    let hit = {
-        let memo = site.si_memo.borrow();
-        match memo.as_ref() {
-            Some((c, n, r)) if Rc::ptr_eq(c, &caller) && *n == ns => Some(r.clone()),
-            _ => None,
-        }
-    };
-    match hit {
-        Some(inline) => {
-            let Some(inline) = inline else { return None };
-            if !ns && !resolves_to_target(interp, si, head, env) {
-                return None;
-            }
-            let r = run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env);
-            Some(r.map(RVal::V))
-        }
-        None => {
-            // Write-once either way (GNU R compiles once): a failed
-            // resolution stays generic, matching code compiled against a
-            // replacement definition.
-            let resolved = resolve_simple_site(interp, si, ns, l, call, env).map(|(target, def, map)| SiInline {
-                def,
-                target,
-                args: map,
-            });
-            *site.si_memo.borrow_mut() = Some((caller, ns, resolved.clone()));
-            let inline = resolved?;
-            let r = run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env);
-            Some(r.map(RVal::V))
-        }
-    }
+    let resolved =
+        resolve_simple_site(interp, si, ns, l, call, env).map(|(target, def, map)| SiInline { def, target, args: map });
+    *site.si_memo.borrow_mut() = Some((caller, ns, resolved.clone()));
+    let inline = resolved?;
+    let r = run_wrapper(interp, &inline.target, &inline.args, &l.args, call, env);
+    Some(r.map(RVal::V))
 }
 
 /// An interpreted call taking the inlined path (see [`try_inline_site`]).
@@ -2343,10 +2331,18 @@ fn caller_promargs(
         let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
             out.push(match (v, &a.value) {
-                (Some(RVal::I(i)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i)))),
-                (Some(RVal::D(d)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_real(a.value.clone(), d)))),
-                (Some(RVal::L(l)), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_lgl(a.value.clone(), l)))),
-                (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value())))),
+                (Some(RVal::I(i)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i))))
+                }
+                (Some(RVal::D(d)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_real(a.value.clone(), d))))
+                }
+                (Some(RVal::L(l)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_lgl(a.value.clone(), l))))
+                }
+                (Some(v), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value()))))
+                }
                 (None, Value::Sym(_) | Value::Lang(_)) => Arg::new(
                     a.tag,
                     Value::Promise(Rc::new(Promise::with_code(a.value.clone(), env.clone(), c.clone()))),
@@ -2853,7 +2849,9 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
             match &b.value {
                 Value::Closure(_) | Value::Builtin(_) => return Some(b.value.clone()),
                 Value::Promise(p) => match &*p.value.borrow() {
-                    crate::value::PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => return Some(v.clone()),
+                    crate::value::PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => {
+                        return Some(v.clone());
+                    }
                     crate::value::PromiseVal::Boxed(v) if !v.is_missing_arg() => {}
                     crate::value::PromiseVal::ScalarInt(_)
                     | crate::value::PromiseVal::ScalarReal(_)
