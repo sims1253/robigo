@@ -1167,13 +1167,71 @@ fn do_setencoding(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
     Ok(x)
 }
 
+/// CP1252's 0x80..0x9F range. Debian's GNU R is built with
+/// `HAVE_ICONV_CP1252`, so `translateCharUTF8` translates latin1-marked
+/// strings through CP1252, not ISO-8859-1 (sysutils.c:translateToUTF8).
+/// The five undefined bytes are escaped as `<xx>` (mustWork = 0).
+// R: sysutils.c:translateToUTF8
+const CP1252_HIGH: [u32; 32] = [
+    0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0, 0,
+    0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178,
+];
+
+fn latin1_to_utf8(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let cp = match b {
+            0x80..=0x9F => CP1252_HIGH[(b - 0x80) as usize],
+            0xA0..=0xFF => b as u32,
+            _ => {
+                out.push(b as char);
+                continue;
+            }
+        };
+        match char::from_u32(cp) {
+            Some(_) if cp == 0 => out.push_str(&format!("<{b:02x}>")),
+            Some(c) => out.push(c),
+            None => out.push_str(&format!("<{b:02x}>")),
+        }
+    }
+    out
+}
+
+// R: util.c:do_enc2 -- robigo's native encoding is UTF-8, so GNU R's
+// known_to_be_utf8 is true and enc2native takes the enc2utf8 branch too.
+// UTF-8, ASCII and "bytes" strings are returned unchanged (the same
+// object, as GNU R does when nothing needs duplicating); native and
+// latin1 strings are re-marked UTF-8 after translation.
 fn enc2(call: &Value, args: Vec<Arg>, name: &str) -> RResult<Value> {
     super::check_arity(&args, 1, name, call)?;
     check1arg(&args, call, "x")?;
-    match &args[0].value {
-        Value::Str(_) => Ok(args.into_iter().next().unwrap().value),
-        _ => Err(Flow::error_call(call.clone(), "argument is not a character vector")),
+    let mut value = match args.into_iter().next().unwrap().value {
+        v @ Value::Str(_) => v,
+        _ => return Err(Flow::error_call(call.clone(), "argument is not a character vector")),
+    };
+    let Value::Str(x) = &mut value else { unreachable!() };
+    let convert = |s: &RString| {
+        !s.is_ascii() && !matches!(s.encoding(), Encoding::Utf8 | Encoding::Utf8Invalid | Encoding::Bytes)
+    };
+    if !x.data.iter().flatten().any(convert) {
+        return Ok(value);
     }
+    for e in Rc::make_mut(x).data.iter_mut() {
+        let Some(s) = e else { continue };
+        if !convert(s) {
+            continue;
+        }
+        let bytes = s.raw_bytes();
+        *s = if s.encoding() == Encoding::Latin1 {
+            RString::from_bytes(latin1_to_utf8(&bytes).as_bytes(), Encoding::Utf8)
+        } else {
+            // A native string already is UTF-8 in robigo's locale; invalid
+            // bytes keep their bytes and get the UTF-8 mark, as GNU R's
+            // mkCharCE(translateCharUTF8(el), CE_UTF8) does.
+            RString::from_bytes(&bytes, Encoding::Utf8)
+        };
+    }
+    Ok(value)
 }
 
 fn do_enc2native(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

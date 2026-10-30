@@ -218,6 +218,8 @@ unsafe fn unpin_cycles() {
         graph.include_escaped();
         graph.expand();
         let graph = if graph.clear_callsite_memos() {
+            // The first graph's own owners would look like outside
+            // references to the rebuilt one.
             drop(graph);
             let mut fresh = robigo_runtime::reachability::ObjectGraph::default();
             for (_, value) in proxies.values() {
@@ -240,6 +242,54 @@ unsafe fn unpin_cycles() {
     for x in dead {
         core().release(x);
     }
+}
+
+/// The runtime allocation graph over the proxy table. One bridge reference
+/// per proxy is excluded (the bridge does not keep R objects alive); every
+/// field of every weak reference is a root: GNU R keeps a weak reference's
+/// key, value and finalizer alive for its finalization round.
+unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
+    let pending = core().weak_ref_fields();
+    let build = || {
+        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
+        PROXIED.with(|m| {
+            let proxies = m.borrow();
+            for (_, value) in proxies.values() {
+                graph.ignore_owner(value);
+            }
+            for x in &pending {
+                if unsafe { x.has_flag(flags::HOST) } {
+                    let h = unsafe { robigo_core::Core::host_handle(*x) };
+                    if let Some((_, value)) = proxies.get(&h) {
+                        graph.root(value);
+                    }
+                }
+            }
+        });
+        graph.include_escaped();
+        graph.expand();
+        graph
+    };
+    let graph = build();
+    if graph.clear_callsite_memos() {
+        // The old graph's owners must not look like outside references.
+        drop(graph);
+        build()
+    } else {
+        graph
+    }
+}
+
+/// Physically free runtime reference cycles after a collection has run its
+/// finalizers: break the edges of every environment no external reference
+/// reaches anymore (memory.c's sweep). Weak-reference fields are roots
+/// because GNU R keeps them through the finalization round; once a
+/// reference has run and left the list, its key's cycle is ordinary garbage.
+// R: memory.c:R_gc_internal / RunGenCollect
+unsafe fn reclaim_host_cycles() {
+    let graph = cycle_graph();
+    let live = graph.externally_live();
+    graph.reclaim_unreachable(&live);
 }
 
 fn kept_count() -> usize {
@@ -1879,24 +1929,32 @@ impl NativeBridge for Bridge {
     }
 
     fn gc(&self, interp: &mut Interp) {
-        if READY.with(|r| r.get()) {
-            unsafe {
-                sweep_stored();
-                if HOST_WEAK_REFS.with(|active| active.get()) {
-                    unpin_cycles();
-                }
-            };
-            let outer = INTERP.with(|c| c.get().is_null());
-            enter(interp, |_| unsafe {
-                // gc() from R with no C code active: nothing on the
-                // machine stack can hold a core object
-                let old = if outer { core().set_scan_top(0) } else { 0 };
-                crate::host::robigo_gc();
-                if outer {
-                    core().set_scan_top(old);
-                }
-            });
-            drain_dead();
+        if !READY.with(|r| r.get()) {
+            // No C objects or proxies exist yet: the runtime's own graph is
+            // the whole heap, so its cycles can be reclaimed directly.
+            robigo_runtime::reachability::reclaim_cycles();
+            return;
         }
+        unsafe {
+            sweep_stored();
+            if HOST_WEAK_REFS.with(|active| active.get()) {
+                unpin_cycles();
+            }
+        };
+        let outer = INTERP.with(|c| c.get().is_null());
+        enter(interp, |_| unsafe {
+            // gc() from R with no C code active: nothing on the
+            // machine stack can hold a core object
+            let old = if outer { core().set_scan_top(0) } else { 0 };
+            crate::host::robigo_gc();
+            if outer {
+                core().set_scan_top(old);
+            }
+        });
+        drain_dead();
+        // After the collection and its finalizers (safe_point inside
+        // robigo_gc): the weak-reference round is over, so what only dead
+        // cycles reach can be reclaimed.
+        unsafe { reclaim_host_cycles() };
     }
 }

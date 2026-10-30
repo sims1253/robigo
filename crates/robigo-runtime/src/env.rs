@@ -251,6 +251,15 @@ impl Frame {
         }
         Some(b)
     }
+
+    /// Forget every binding: the sweep of a frame no live environment
+    /// reaches (memory.c's sweep frees the unreachable cells).
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.index = None;
+        self.mask = 0;
+        self.nbase = NBASE_OPEN;
+    }
 }
 
 /// An environment's frame: inline, or shared between environments.

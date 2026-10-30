@@ -424,12 +424,11 @@ fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     // Implementation caches are weak in R: they must not retain otherwise
     // unreachable environments through closure bodies or call-site memos.
-    // the C API's heap collects and runs pending finalizers (docs/core.md §3)
+    // the C API's heap collects, sweeps unreachable runtime cycles and runs
+    // pending finalizers (docs/core.md §3)
+    i.fun_cache.clear();
+    crate::vm::clear_gc_caches();
     if let Some(b) = crate::native::bridge() {
-        if b.finalizers_active() {
-            i.fun_cache.clear();
-            crate::vm::clear_gc_caches();
-        }
         b.gc(i);
     }
     Ok(Value::reals(vec![NA_REAL; 14]))
