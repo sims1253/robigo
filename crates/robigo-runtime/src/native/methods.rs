@@ -55,8 +55,9 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("R_getClassFromCache", |i, _, a, _| get_class_from_cache(i, &arg(&a, 0), &arg(&a, 1))),
     ("R_getGeneric", |i, _, a, _| get_generic_r(i, &arg(&a, 0), &arg(&a, 1), &arg(&a, 2), &arg(&a, 3))),
     ("R_get_slot", |i, _, a, _| {
-        let name = i.slot_name(&arg(&a, 1))?;
-        i.do_slot(&arg(&a, 0), name)
+        // R: slot.c:R_get_slot passes both objects straight to R_do_slot.
+        let name = i.slot_name(a.get(1).map(|a| &a.value).unwrap_or(&Value::Null))?;
+        i.do_slot(a.first().map(|a| &a.value).unwrap_or(&Value::Null), name)
     }),
     ("R_set_slot", |i, _, mut a, env| {
         let value = take(&mut a, 2);
@@ -812,21 +813,27 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
         };
         classes.push(this_class);
     }
-    // The label `class1#class2#...` (`.SigLabel`), built without copies.
-    let mut label = String::new();
-    for (k, c) in classes.iter().enumerate() {
-        if k > 0 {
-            label.push('#');
+    // R: methods_list_dispatch.c:R_dispatchGeneric installs the joined
+    // class label. A single class already supplies that exact string.
+    let label = if let [Value::Str(class)] = classes.as_slice() {
+        Sym::new(class.data.first().and_then(|c| c.as_deref()).unwrap_or("NA"))
+    } else {
+        let mut label = String::new();
+        for (k, c) in classes.iter().enumerate() {
+            if k > 0 {
+                label.push('#');
+            }
+            match c {
+                Value::Str(v) if !v.data.is_empty() => label.push_str(v.data[0].as_deref().unwrap_or("NA")),
+                other => label.push_str(&as_char(other)),
+            }
         }
-        match c {
-            Value::Str(v) if !v.data.is_empty() => label.push_str(v.data[0].as_deref().unwrap_or("NA")),
-            other => label.push_str(&as_char(other)),
-        }
-    }
+        Sym::new(&label)
+    };
     let Value::Env(mtable_env) = &mtable else {
         return Err(Flow::error("robigo: '.AllMTable' is not an environment"));
     };
-    let mut method = find_var_in_frame(i, mtable_env, Sym::new(&label))?;
+    let mut method = lookup_table_method(i, mtable_env, label)?;
     if let Some(Value::Env(t)) = &method {
         let t = t.clone();
         method = select_by_package(i, &t, &classes)?;
@@ -858,6 +865,29 @@ pub fn dispatch_generic(i: &mut Interp, fname: &Value, ev: &Env, fdef: &Value) -
         Value::Builtin(_) => Ok(deferred_default()),
         _ => Err(Flow::error("invalid object (non-function) used as method")),
     }
+}
+
+/// R: methods_list_dispatch.c:R_dispatchGeneric, findVarInFrame(mtable, label).
+/// Only ordinary closure bindings are cached. Redefinition, removal and
+/// conversion to an active binding advance the table's function version.
+fn lookup_table_method(i: &mut Interp, table: &Env, label: Sym) -> RResult<Option<Value>> {
+    let version = table.fn_version();
+    if let Some((env, stamp, key, method)) = &i.s4.method_lookup {
+        if env.as_ptr() == Rc::as_ptr(&table.0) && *stamp == version && *key == label {
+            if let Some(method) = method.upgrade() {
+                return Ok(Some(Value::Closure(method)));
+            }
+        }
+    }
+    let method = find_var_in_frame(i, table, label)?;
+    if let Some(Value::Closure(closure)) = &method {
+        if table.fn_version() == version
+            && table.binding_flags(label).is_some_and(|flags| flags & crate::env::BIND_ACTIVE == 0)
+        {
+            i.s4.method_lookup = Some((Rc::downgrade(&table.0), version, label, Rc::downgrade(closure)));
+        }
+    }
+    Ok(method)
 }
 
 /// `R_nextMethodCall(matched_call, ev)`.
