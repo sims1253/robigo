@@ -7,6 +7,31 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 9): rebased startup verification
+
+- Release build passes on main 1b4670a plus #92/#99. A first attempt
+  reused a shared parser artifact without parse_data; touching the
+  syntax module's timestamp and rebuilding corrected the stale artifact.
+  No parser source contents changed.
+- Pinned Debian oracle integration: all 10,057 keys match, all 27
+  stdout/stderr/status comparisons pass. The host Rscript launcher
+  still invokes R 4.6.1 even with R_HOME; run oracle checks inside
+  robigo-oracle:4.5.0. The host-built binary uses the mounted host
+  loader and libraries at /host-lib (mount /usr/lib, not the Debian
+  x86_64-linux-gnu subdirectory).
+- Focused serialize/unserialize/connections: 451/458. The sole ratchet
+  failure is the previously documented oversized-sequence case
+  6260e145e42c04ad; the exact original df3d535 baseline artifact also
+  fails it in the same 4 GB oracle container. No ratchet entries changed.
+- Fresh library(stats), NULL packages, enumerated cache, natives off:
+  173,087,503 instructions. Round 8 was 173,121,524; this is a fresh
+  baseline after the rebase, not a claimed reader optimization.
+  Profile self costs: VM run_with 7,929,388; Reader::int 5,081,622;
+  read_item_flags0 4,442,153; read_bc_lang 3,140,109. Next optimize
+  one reader allocation path and compare these exact settings.
+- Seven gate tests, Python compilation, shell syntax and cargo fmt
+  --check pass. Runtime crate tests are queued on the shared target.
+
 ## 2026-10-30 (round 9): remaining native bridge boundary
 
 - Rechecked GNU R 4.5.0 src/main/names.c: La_rs has eval=11, arity=2,
