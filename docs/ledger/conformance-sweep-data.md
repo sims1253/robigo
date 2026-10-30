@@ -964,3 +964,158 @@ its baseline restores array.rs from 49e0ee5, all other sources identical.
   equal under every env tried locally). Skipped the case via
   `host_dependent` (it dumps the machine's environment); the proper fix is
   a re-record with `record --mask-against-previous` on the oracle platform.
+
+## 2026-10-30: repair #100's paired performance regression
+
+- Round 10 is paused on track/conformance-sweep-data-10 / #105. Repair
+  #100 first; do not merge either PR. Resume construction from merged main.
+- Failed CI 41005186119, head 3fe3f4b: nbody_naive_2 sample 1 rises
+  1,259,933,960 -> 1,270,394,353 instructions (+10,460,393, +0.83%).
+  Recovered the exact retained base/candidate callgrind profiles.
+- Attribution: ReadBC now reserves both operations and heap-item vectors
+  per code object (5,372 reserve calls absent on base); the heap-item
+  reservation scales with twice the instruction count despite packed scalar
+  leaves. Its Bytecode clone also deep-copies consts and cell vectors.
+  The ordinary attrs_slot_mut body grows by 4,055,936 exclusive instructions,
+  and Interp::eval by 3,847,973 after its new direct self-recursive branch.
+  These hot-path lowering costs accompany importer allocations; they are
+  not evidence that all of the regression is spent parsing instructions.
+- Rebase onto 532be45 (#104): preserve main's 48-byte PNode, cold call-tail
+  reader, and lang-cell writer arguments; union passing.txt including
+  substitute-dots-cell.R. No changes to that PNode layout or main's cell logic.
+- Candidate: retain the validated cell stream and a shared repetition table;
+  materialize constants and non-source, unreferenced language objects only
+  on inspection. Serialization replays the stream without forcing metadata.
+  Rc shares immutable cells and forced constant pools across attribute COW.
+  Remove the oversized heap-item reservation. Keep bytecode evaluation and
+  bytecode attribute copying in cold helpers to protect ordinary evaluation.
+  Minimal bridge edit forces constants only when C API inspection asks.
+- Matched main binary built at 532be45 in a private cached target. Paired
+  cache-OFF verification targets all five reported regressions plus robigo/fib
+  and rbench/simple/bytecodes, using the real paired harness with threshold
+  0.2 and the supplied Debian R 4.5.0 home (host R RHOME is 4.6.1).
+- First lazy candidate: round-trip/promise fixtures remain 6/6, all 256
+  other oracle scripts pass per tier (only main's known unlisted user-closure
+  probe differs). Bounce and nbody_2 meet 0.2%, but nbody_3 is +0.326%:
+  reject as the final repair. Profiling still attributes the residual to
+  import allocation/page work, not the now-cold evaluator/attribute arms.
+- Second candidate records nested bytecode as indexed views in one validated
+  cell stream per ReadBC root. No nested Bytecode objects, separate operation
+  vectors or separate heap-item vectors are created until inspection. The
+  shared repetition table is moved into the backing data, not cloned.
+  Writers and lazy readers skip nested spans; canonical serialization does
+  not materialize those objects. This directly removes the remaining eager
+  nested allocations. Root PNode and main's LANGSXP call-tail handling stay
+  unchanged. Add oracle-backed tests for deferred pools, shared metadata
+  before/after forcing, nested views, and the scalar constant pool.
+- Initial new-test compile failed because Flow lacks Debug; use an explicit
+  fixture match instead of Result::unwrap. No performance or conformance
+  result was claimed for that failed test build.
+
+- Reject the second, global i64 stream: fixtures 6/6 and crate tests pass,
+  but nbody_2 +1.23%, nbody_3 +1.38%, nbody_naive_2 +1.58%,
+  profiler-shared +0.21%. Its large contiguous allocation adds about
+  8.0M exclusive instructions in _mi_malloc_generic and 5.73M in mi_find_page
+  on nbody_naive_2. Restore per-code streams before the next experiment.
+- Third candidate validates binary instructions directly over encoded words,
+  preserving R_bcEncode version normalization without an INTSXP allocation.
+  Keep unused atomic vectors as encoded payloads and attribute pairlists;
+  materialize typed vectors and attribute maps on inspection. Bounded shared
+  byte chunks own only retained payloads; Reader/input ownership APIs stay
+  unchanged. All six bytecode fixture runs and all previously passing oracle
+  scripts still pass. Against 532be45: nbody_2 -0.123%, nbody_3 -0.132%,
+  nbody_naive_2 +0.193%, bytecodes -0.745%, fib -0.010%, but Bounce +0.250%
+  and profiler-shared +1.411%. Reject as the final repair. profiler-shared's
+  remaining cost is allocator page work: _mi_malloc_generic +35,505,774,
+  mi_find_page +25,672,332 and mi_bin +9,043,412 exclusive instructions.
+- Compact the replay records with signed varints and cap initial reservation
+  at 4 KiB. All six bytecode fixture runs pass. Isolated paired measurement
+  against the same 532be45 binary reduces profiler-shared to +0.777%,
+  5,782,813,664 -> 5,827,721,539. Still above 0.2%; not a final repair.
+- Rebase again onto 1a591ff (#106/#107/#110). passing.txt keeps both sides,
+  including all LAPACK and escape-origin additions. Build an exact matching
+  main binary in the private target before measuring the rebased candidate.
+- Next experiment freezes each finished compact replay log into the bounded
+  shared byte arena, releasing its separate Vec allocation after import.
+  This targets retained heap size classes rather than removing validation.
+
+- Shared compact-log arena candidate: profiler-shared +0.124%, Bounce +0.128%,
+  nbody_2 +0.173%, nbody_3 +0.050%, fib +0.136%, but nbody_naive_2 +0.337%
+  and bytecodes +0.240%. All recorded-script ratchets hold in all three
+  tiers (265/266 scripts per tier, only main's unlisted compiled-context
+  probe differs); both bytecode fixtures remain 6/6. Crate tests: 45 runtime
+  unit, 4 metadata integration, 2 lazyload and 2 C API tests pass. The two
+  documented host glibc complex oracles fail unchanged; unmodified CI tests
+  remain the judge. Reject this as the final repair; retain the measured
+  allocation improvement while addressing eager nested source expressions.
+- The new methods-enabled FastR serialize/unserialize slice is 317/322.
+  Its sole listed regression, serialize/6260e145e42c04ad, serializes the
+  huge compact sequence 1:2147483649 and times out on this machine. The
+  exact matching main-1a591ff binary also times out on that case. No oracle
+  or ratchet changes; leave the full pinned-platform result to CI.
+- Next: source expression cache is lazy for nested ReadBC constants. Those
+  constants are replayed/inspected but are not needed to evaluate the outer
+  source body. Repetition definitions are still materialized when referenced;
+  the source is reconstructed from the validated log on demand.
+
+- Reject nested source-cache experiment: fidelity still 6/6, all script
+  ratchets hold; Bounce +0.228%, nbody_2 +0.225%, nbody_3 +0.097%,
+  nbody_naive_2 +0.378%, bytecodes +0.292%, fib +0.174%,
+  profiler-shared +0.126%. Restored the shared-arena candidate. The initial
+  new cache test assumed the first nested source was a call; GNU R's
+  disassembler shows it is the symbol x. Corrected that experimental test
+  (5/5 then pass) before reverting the whole unsuccessful design.
+- Next experiment packs scalar real constants as their exact IEEE bits in
+  the replay log. This avoids a separate encoded-vector descriptor and span
+  for every scalar, extending the existing scalar integer/logical encoding.
+  Added a Debian GNU R fixture with negative zero, R NA, NaN, infinities
+  and complex data; check its bits and bytes before/after inspection.
+
+- Packed scalar-real candidate preserves all five metadata tests, all
+  recorded-script ratchets, and the six bytecode fixture runs. Paired
+  against 1a591ff (cache off, two measurements per side):
+  rbench/awf/Bounce: 619,198,108 -> 620,104,773 (+0.146%).
+  rbench/shootout/nbody_2: 867,567,020 -> 869,177,206 (+0.186%).
+  rbench/shootout/nbody_3: 967,113,209 -> 967,743,364 (+0.065%).
+  rbench/shootout/nbody_naive_2: 1,258,198,001 -> 1,261,754,444 (+0.283%).
+  rbench/simple/bytecodes: 231,206,116 -> 231,833,211 (+0.271%).
+  rbench/simple/profiler-shared: 5,782,936,386 -> 5,792,841,598 (+0.171%).
+  robigo/fib: 958,970,882 -> 960,354,463 (+0.144%).
+  Not a final repair: naive_2 and bytecodes still exceed 0.2%.
+- Next remove duplicate flag reads, avoid spines for unmaterialized
+  prefixes, and specialize the common one-to-three-byte replay records.
+  No validation, repetition registration, or serialized records are omitted.
+
+- Reject the combined small-record fast paths: all five metadata tests,
+  six bytecode fixture runs and script ratchets hold, but the explicit
+  integer path adds 2,182,529 exclusive instructions on Bounce. Paired:
+  rbench/awf/Bounce: +0.405%.
+  rbench/shootout/nbody_2: +0.376%.
+  rbench/shootout/nbody_3: +0.242%.
+  rbench/shootout/nbody_naive_2: +0.413%.
+  rbench/simple/bytecodes: +0.961%.
+  rbench/simple/profiler-shared: +0.200%.
+  robigo/fib: +0.305%.
+  Restore the scalar-real shared-arena candidate.
+- Reject an explicit cold bytecode destructor wrapper: all metadata and
+  script checks hold, but the two remaining blockers stay at naive_2
+  +0.285% and bytecodes +0.280%. Revert the wrapper and its unsafe drop.
+- Next screen fixed-width replay words with a full-i64 escape. This keeps
+  the bounded backing arena but removes per-byte varint loop work.
+
+- Fixed-width bytes with an i64 escape also fail the screen: naive_2
+  +0.418%, bytecodes +0.969%; metadata/script checks all pass. Revert it.
+- Next use native i64 builder vectors and bounded shared i64 chunks for the
+  validated log. A record is one Vec push again. Copy each finished builder
+  once into backing chunks and release its capacity; do not retain either
+  the code-sized reservation or a single large global vector. The separate
+  encoded-byte arena still defers instruction and atomic-vector R objects.
+
+- Native-word chunk screen now clears both blockers: nbody_naive_2
+  1,258,197,030 -> 1,260,195,691 (+0.159%); bytecodes
+  231,232,586 -> 231,305,608 (+0.032%). All five metadata tests, 45 runtime
+  unit tests, two lazyload and two C API tests pass (the same two host glibc
+  oracles excluded only from the local follow-up run). The unchanged full
+  unit command still exposes those documented host failures. Script ratchets
+  hold across all three tiers, and the bytecode fixture pair remains 6/6.
+  Keep this candidate for the final seven-benchmark paired run.

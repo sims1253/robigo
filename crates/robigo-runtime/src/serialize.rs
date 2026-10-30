@@ -3,6 +3,7 @@
 //! and 3, including references, environments, ALTREP compact sequences
 //! and portable GNU R bytecode.
 
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -139,6 +140,9 @@ pub struct Reader<'a, 'i> {
     interp: &'i mut Interp,
     hook: Value,
     bc_records: BytecodeCells,
+    bc_operations: Vec<i64>,
+    bc_bytes: Option<Rc<RefCell<BytecodeBytes>>>,
+    bc_words: Option<Rc<RefCell<BytecodeWords>>>,
 }
 
 fn corrupt() -> Flow {
@@ -528,7 +532,12 @@ impl<'a, 'i> Reader<'a, 'i> {
             BCODESXP => {
                 let nreps = self.int()?;
                 let mut reps = vec![Value::Null; nreps.max(0) as usize];
-                self.read_bc(&mut reps)?
+                {
+                    let shared = Rc::new(OnceCell::new());
+                    let value = self.read_bc(&mut reps, &shared)?;
+                    assert!(shared.set(reps).is_ok());
+                    value
+                }
             }
             RAWSXP => {
                 let n = self.length()?;
@@ -563,10 +572,8 @@ impl<'a, 'i> Reader<'a, 'i> {
         // R: serialize.c:ReadItem returns R_BytecodeExpr for an unsupported
         // bytecode version, after consuming its attributes and constants.
         if let Value::Bytecode(b) = &v {
-            if let Value::Int(code) = &b.code {
-                if code.data.first().is_some_and(|v| !(9..=12).contains(v)) {
-                    return Ok(b.expression.clone());
-                }
+            if b.instructions.version().is_some_and(|v| !(9..=12).contains(&v)) {
+                return Ok(b.expression.clone());
             }
         }
         Ok(v)
@@ -748,28 +755,123 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     // R: serialize.c:ReadBC1. Keep the portable cells rather than GNU R's
     // process-local threaded addresses (eval.c:R_bcEncode/R_bcDecode).
-    fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
+    fn save_bc_bytes(&mut self, bytes: &[u8]) -> BytecodeSpan {
+        let arena = self.bc_bytes.get_or_insert_with(|| Rc::new(RefCell::new(BytecodeBytes::default())));
+        self.bc_records.bytes = Some(arena.clone());
+        arena.borrow_mut().append(bytes)
+    }
+
+    fn save_bc_words(&mut self, words: &[i64]) -> BytecodeSpan {
+        let arena = self.bc_words.get_or_insert_with(|| Rc::new(RefCell::new(BytecodeWords::default())));
+        self.bc_records.words = Some(arena.clone());
+        arena.borrow_mut().append(words)
+    }
+
+    // R: eval.c:R_bcEncode, validating opcode boundaries over the serialized
+    // integer words. Only inspection needs an INTSXP allocation.
+    fn read_bc_instructions(&mut self) -> RResult<BytecodeInstructions> {
+        let flags = self.int()? as u32;
+        if flags & 255 != INTSXP || self.format == Format::Ascii {
+            return Ok(BytecodeInstructions::Decoded(portable_bc_code(self.read_item_flags(flags)?)?));
+        }
+        let n = self.length()?;
+        let bytes = self.bytes(n.checked_mul(4).ok_or_else(corrupt)?)?;
+        let little = self.format == Format::Binary;
+        // ReadItem consumes attributes before R_bcEncode discards them.
+        if flags & HAS_ATTR_BIT != 0 {
+            self.read_item()?;
+        }
+        if n == 0 {
+            return Ok(BytecodeInstructions::Decoded(Value::Null));
+        }
+        let version = code_word(bytes, 0, little);
+        let mismatch = !(9..=12).contains(&version);
+        if !mismatch {
+            let mut pc = 1;
+            while pc < n {
+                let op = code_word(bytes, pc, little) as usize;
+                let Some(&argc) = BC_ARGC.get(op) else {
+                    return Err(Flow::error("unknown instruction code"));
+                };
+                pc += argc + 1;
+                if pc > n {
+                    return Err(corrupt());
+                }
+            }
+        }
+        let version = if mismatch {
+            version
+        } else if n == 2 && code_word(bytes, 1, little) == 0 {
+            2
+        } else {
+            12
+        };
+        let span = self.save_bc_bytes(bytes);
+        Ok(BytecodeInstructions::Encoded { span, words: if mismatch { 2 } else { n }, version, mismatch })
+    }
+
+    fn bc_item_maybe(&mut self, materialize: bool) -> RResult<Value> {
+        if materialize || self.format == Format::Ascii {
+            return self.bc_item();
+        }
+        let start = self.pos;
+        let flags = self.int()? as u32;
+        let ty = flags & 255;
+        let Some(width) = vector_width(ty) else {
+            self.pos = start;
+            return self.bc_item();
+        };
+        let len = self.length()?;
+        if len == 1 && flags == ty && matches!(ty, INTSXP | LGLSXP) {
+            let value = self.int()?;
+            BytecodeCells::record(&mut self.bc_operations, ((value as i64) << 3) | if ty == INTSXP { 5 } else { 6 });
+            return Ok(Value::Null);
+        }
+        if len == 1 && flags == REALSXP {
+            let value = self.real()?;
+            BytecodeCells::record(&mut self.bc_operations, -1);
+            BytecodeCells::record(&mut self.bc_operations, value.to_bits() as i64);
+            return Ok(Value::Null);
+        }
+        let bytes = self.bytes(len.checked_mul(width).ok_or_else(corrupt)?)?;
+        let span = self.save_bc_bytes(bytes);
+        let attrs = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+        let index = self.bc_records.encoded.len();
+        self.bc_records.encoded.push(BytecodeEncodedVector { flags, span, len, attrs });
+        BytecodeCells::record(&mut self.bc_operations, ((index as i64) << 3) | 7);
+        Ok(Value::Null)
+    }
+
+    fn read_bc(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
         let outer = std::mem::take(&mut self.bc_records);
-        let code = portable_bc_code(self.read_item()?)?;
+        let outer_operations = std::mem::take(&mut self.bc_operations);
+        self.bc_records.little_endian = self.format == Format::Binary;
+        let instructions = self.read_bc_instructions()?;
         // Most records describe the source corresponding to these instructions.
         // Reserve once instead of repeatedly reallocating the two streams.
-        self.bc_records.operations.reserve(code.len() * 4);
-        self.bc_records.items.reserve(code.len() * 2);
-        let consts = self.read_bc_consts(reps)?;
+        self.bc_operations.reserve((instructions.len() * 2).min(512));
+        // Ordinary leaves are mostly packed scalars; avoid a code-sized
+        // allocation for the few heap objects in the cell stream.
+        let expression = self.read_bc_consts(reps, shared)?;
+        let operations = std::mem::replace(&mut self.bc_operations, outer_operations);
+        self.bc_records.operations = self.save_bc_words(&operations);
+        self.bc_records.operation_len = operations.len();
         let cells = std::mem::replace(&mut self.bc_records, outer);
         Ok(Value::Bytecode(Rc::new(Bytecode {
             attrs: None,
-            code,
-            expression: consts.first().cloned().unwrap_or(Value::Null),
-            consts,
+            code: OnceCell::new(),
+            instructions,
+            expression,
+            consts: OnceCell::new(),
             reps: reps.len(),
-            cells,
+            cells: Rc::new(cells),
+            rep_values: shared.clone(),
         })))
     }
 
     fn bc_int(&mut self) -> RResult<i32> {
         let v = self.int()?;
-        self.bc_records.integer(v);
+        BytecodeCells::integer(&mut self.bc_operations, v);
         Ok(v)
     }
 
@@ -787,30 +889,277 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             _ => self.read_item_flags(flags)?,
         };
-        self.bc_records.item(&v, false);
+        self.bc_records.item(&mut self.bc_operations, &v, false);
         Ok(v)
     }
 
-    fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
+    fn read_bc_consts(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
         let n = self.bc_int()?;
-        let mut out = Vec::with_capacity(n.max(0) as usize);
-        for _ in 0..n.max(0) {
+        let mut expression = Value::Null;
+        for index in 0..n.max(0) {
             let ty = self.bc_int()? as u32;
             let c = match ty {
                 BCODESXP => {
-                    let v = self.read_bc(reps)?;
-                    self.bc_records.item(&v, true);
+                    let v = self.read_bc(reps, shared)?;
+                    self.bc_records.item(&mut self.bc_operations, &v, true);
                     v
                 }
-                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(ty, reps)?,
-                _ => self.bc_item()?,
+                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => {
+                    self.read_bc_lang(ty, reps, index == 0)?
+                }
+                _ => self.bc_item_maybe(index == 0)?,
             };
-            out.push(c);
+            if index == 0 {
+                expression = c;
+            }
         }
-        Ok(out)
+        Ok(expression)
     }
 
-    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>) -> RResult<Value> {
+    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, materialize: bool) -> RResult<Value> {
+        match ty {
+            BCREPREF => {
+                let i = self.bc_int()? as usize;
+                Ok(if materialize { reps.get(i).cloned().unwrap_or(Value::Null) } else { Value::Null })
+            }
+            BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
+                // R: serialize.c:ReadBCLang. The chain is walked cell by
+                // cell; collecting the spine first avoids rebuilding the
+                // suffix Value at every level (each rebuild cloned the
+                // tail's items again, and dropped the intermediate).
+                // A cell stored for a BCREPDEF (`reps`) spans from its own
+                // level to the end — a contiguous slice of the flat items.
+                let translate = |t: u32| match t {
+                    ATTRLANGSXP => (LANGSXP, true),
+                    ATTRLISTSXP => (LISTSXP, true),
+                    t => (t, false),
+                };
+                // Chains are short (a call's spine is its argument count);
+                // inline storage keeps the common case allocation-free,
+                // where a growing Vec paid realloc + copy per few cells.
+                let mut spine: smallvec::SmallVec<[BcLevel; 8]> = smallvec::SmallVec::new();
+                let mut pos = None;
+                let mut ty = ty;
+                if ty == BCREPDEF {
+                    pos = Some(self.bc_int()? as usize);
+                    ty = self.bc_int()? as u32;
+                }
+                let (mut ty, mut hasattr) = translate(ty);
+                let cdr;
+                let mut needed = materialize;
+                loop {
+                    needed |= pos.is_some();
+                    let attr = if hasattr { self.bc_item()? } else { Value::Null };
+                    let tag = self.bc_item()?;
+                    let t1 = self.bc_int()? as u32;
+                    let car = self.read_bc_lang(t1, reps, needed)?;
+                    let car = if needed { car } else { Value::Null };
+                    spine.push(BcLevel { pos, lang: ty == LANGSXP, attr, tag, car });
+                    let t2 = self.bc_int()? as u32;
+                    let mut npos = None;
+                    let mut nty = t2;
+                    if nty == BCREPDEF {
+                        npos = Some(self.bc_int()? as usize);
+                        nty = self.bc_int()? as u32;
+                    }
+                    let (nty, nhasattr) = translate(nty);
+                    if matches!(nty, LANGSXP | LISTSXP) {
+                        pos = npos;
+                        ty = nty;
+                        hasattr = nhasattr;
+                        continue;
+                    }
+                    // The chain's tail, as `read_bc_lang(t2)` reads it.
+                    cdr = match nty {
+                        BCREPREF => {
+                            let i = self.bc_int()? as usize;
+                            reps.get(i).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => self.bc_item()?,
+                    };
+                    break;
+                }
+                if !needed {
+                    return Ok(Value::Null);
+                }
+                // Every level's cell, then the tail's.
+                let tail_len = match &cdr {
+                    Value::Pairlist(p) => p.items.len(),
+                    Value::Lang(l) => l.args.len() + 1,
+                    _ => 0,
+                };
+                let mut items: Vec<Arg> = Vec::with_capacity(spine.len() + tail_len);
+                for l in &mut spine {
+                    items.push(Arg::new(l.tag.as_sym(), std::mem::replace(&mut l.car, Value::Null)));
+                }
+                match cdr {
+                    // A tail read fresh from the stream is uniquely
+                    // owned: its items can move instead of being cloned.
+                    Value::Pairlist(p) => match Rc::try_unwrap(p) {
+                        Ok(mut p) => items.append(&mut p.items),
+                        Err(p) => items.extend(p.items.iter().cloned()),
+                    },
+                    Value::Lang(l) => match Rc::try_unwrap(l) {
+                        Ok(mut l) => {
+                            items.push(Arg::new(l.fun_tag, l.fun));
+                            items.append(&mut l.args);
+                        }
+                        Err(l) => items.extend(l.items()),
+                    },
+                    _ => {}
+                }
+                // Cells referenced again (BCREPDEF) get their own Value for
+                // `reps`; the head carries the first level's attributes.
+                for (i, l) in spine.iter().enumerate().skip(1) {
+                    if let Some(p) = l.pos {
+                        if p < reps.len() {
+                            let mut v = if l.lang {
+                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                            } else {
+                                Value::pairlist(items[i..].to_vec())
+                            };
+                            set_attr_pairlist(&mut v, l.attr.clone());
+                            reps[p] = v;
+                        }
+                    }
+                }
+                if !materialize && spine[0].pos.is_none() {
+                    return Ok(Value::Null);
+                }
+                let mut v = if spine[0].lang {
+                    Value::Lang(Rc::new(Lang::from_items(items, None)))
+                } else {
+                    Value::pairlist(items)
+                };
+                set_attr_pairlist(&mut v, std::mem::replace(&mut spine[0].attr, Value::Null));
+                // R: serialize.c:ReadBCLang registers this very cell. Reusing
+                // the head avoids a second allocation and preserves identity.
+                if let Some(p) = spine[0].pos {
+                    if p < reps.len() {
+                        reps[p] = v.clone();
+                    }
+                }
+                Ok(v)
+            }
+            _ => self.bc_item_maybe(materialize),
+        }
+    }
+}
+
+fn vector_width(ty: u32) -> Option<usize> {
+    match ty {
+        INTSXP | LGLSXP => Some(4),
+        REALSXP => Some(8),
+        CPLXSXP => Some(16),
+        RAWSXP => Some(1),
+        _ => None,
+    }
+}
+fn code_word(bytes: &[u8], i: usize, little: bool) -> i32 {
+    let a = bytes[i * 4..i * 4 + 4].try_into().unwrap();
+    if little { i32::from_le_bytes(a) } else { i32::from_be_bytes(a) }
+}
+fn real_word(bytes: &[u8], i: usize, little: bool) -> f64 {
+    let a = bytes[i * 8..i * 8 + 8].try_into().unwrap();
+    f64::from_bits(if little { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) })
+}
+fn instruction_word(bytes: &[u8], i: usize, little: bool, version: i32, mismatch: bool) -> i32 {
+    if i == 0 {
+        version
+    } else if mismatch {
+        0
+    } else {
+        code_word(bytes, i, little)
+    }
+}
+pub(crate) fn materialize_bytecode_code(b: &Bytecode) -> Value {
+    match &b.instructions {
+        BytecodeInstructions::Decoded(value) => value.clone(),
+        BytecodeInstructions::Encoded { span, words, version, mismatch } => {
+            let arena = b.cells.bytes.as_ref().unwrap().borrow();
+            let bytes = &arena.chunks[span.chunk][span.offset..];
+            Value::ints(
+                (0..*words).map(|i| instruction_word(bytes, i, b.cells.little_endian, *version, *mismatch)).collect(),
+            )
+        }
+    }
+}
+fn materialize_encoded_vector(cells: &BytecodeCells, index: usize) -> Value {
+    let item = &cells.encoded[index];
+    let arena = cells.bytes.as_ref().unwrap().borrow();
+    let bytes = &arena.chunks[item.span.chunk][item.span.offset..];
+    let little = cells.little_endian;
+    let mut value = match item.flags & 255 {
+        INTSXP => Value::ints((0..item.len).map(|i| code_word(bytes, i, little)).collect()),
+        LGLSXP => Value::lgls((0..item.len).map(|i| code_word(bytes, i, little)).collect()),
+        REALSXP => Value::reals((0..item.len).map(|i| real_word(bytes, i, little)).collect()),
+        CPLXSXP => Value::cplxs(
+            (0..item.len)
+                .map(|i| Complex::new(real_word(bytes, i * 2, little), real_word(bytes, i * 2 + 1, little)))
+                .collect(),
+        ),
+        RAWSXP => Value::raws(bytes[..item.len].to_vec()),
+        _ => unreachable!(),
+    };
+    drop(arena);
+    set_attr_pairlist(&mut value, item.attrs.clone());
+    if (item.flags >> 12) & S4_OBJECT_MASK != 0 {
+        value.set_s4(true);
+    }
+    value
+}
+
+// R: serialize.c:ReadBCConsts / ReadBCLang, deferred until metadata inspection.
+// WriteBC replays cells directly and never forces this vector. The shared
+// repetition table preserves cross-nested-code identity without copying it.
+pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
+    let mut reader = ConstantReader { cells: &b.cells, pos: 0 };
+    let reps = b.rep_values.get().expect("completed bytecode repetition table");
+    let result = (|| -> RResult<Vec<Value>> {
+        let n = reader.bc_int()?;
+        let mut out = Vec::with_capacity(n.max(0) as usize);
+        for index in 0..n.max(0) {
+            let ty = reader.bc_int()? as u32;
+            let value = match ty {
+                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => reader.lang(ty, reps)?,
+                _ => reader.bc_item()?,
+            };
+            out.push(if index == 0 { b.expression.clone() } else { value });
+        }
+        Ok(out)
+    })();
+    result.unwrap_or_else(|_| panic!("invalid validated bytecode cells"))
+}
+
+struct ConstantReader<'a> {
+    cells: &'a BytecodeCells,
+    pos: usize,
+}
+impl ConstantReader<'_> {
+    fn record(&mut self) -> RResult<i64> {
+        self.cells.next_record(&mut self.pos).ok_or_else(corrupt)
+    }
+    fn bc_int(&mut self) -> RResult<i32> {
+        let r = self.record()?;
+        if r & 7 != 0 {
+            return Err(corrupt());
+        }
+        Ok((r >> 3) as i32)
+    }
+    fn bc_item(&mut self) -> RResult<Value> {
+        let r = self.record()?;
+        Ok(match r & 7 {
+            1 | 2 => self.cells.items.get((r >> 3) as usize).cloned().ok_or_else(corrupt)?,
+            7 if r == -1 => Value::real(f64::from_bits(self.record()? as u64)),
+            7 => materialize_encoded_vector(self.cells, (r >> 3) as usize),
+            3 => Value::Null,
+            4 => Value::Sym(Sym((r >> 3) as u32)),
+            5 => Value::int((r >> 3) as i32),
+            6 => Value::lgl_raw((r >> 3) as i32),
+            _ => return Err(corrupt()),
+        })
+    }
+    fn lang(&mut self, ty: u32, reps: &[Value]) -> RResult<Value> {
         match ty {
             BCREPREF => {
                 let i = self.bc_int()? as usize;
@@ -844,7 +1193,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let attr = if hasattr { self.bc_item()? } else { Value::Null };
                     let tag = self.bc_item()?;
                     let t1 = self.bc_int()? as u32;
-                    let car = self.read_bc_lang(t1, reps)?;
+                    let car = self.lang(t1, reps)?;
                     spine.push(BcLevel { pos, lang: ty == LANGSXP, attr, tag, car });
                     let t2 = self.bc_int()? as u32;
                     let mut npos = None;
@@ -896,21 +1245,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                     },
                     _ => {}
                 }
-                // Cells referenced again (BCREPDEF) get their own Value for
-                // `reps`; the head carries the first level's attributes.
-                for (i, l) in spine.iter().enumerate().skip(1) {
-                    if let Some(p) = l.pos {
-                        if p < reps.len() {
-                            let mut v = if l.lang {
-                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
-                            } else {
-                                Value::pairlist(items[i..].to_vec())
-                            };
-                            set_attr_pairlist(&mut v, l.attr.clone());
-                            reps[p] = v;
-                        }
-                    }
-                }
                 let mut v = if spine[0].lang {
                     Value::Lang(Rc::new(Lang::from_items(items, None)))
                 } else {
@@ -921,7 +1255,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // the head avoids a second allocation and preserves identity.
                 if let Some(p) = spine[0].pos {
                     if p < reps.len() {
-                        reps[p] = v.clone();
+                        return Ok(reps[p].clone());
                     }
                 }
                 Ok(v)
@@ -931,16 +1265,17 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 }
 
+const BC_ARGC: &[usize] = &[
+    0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 2, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 0, 1, 1, 1, 2, 1, 0, 0, 4, 0, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2,
+    2, 2, 1, 1, 2, 2, 1, 1, 1, 2, 0, 0, 1, 0, 0,
+];
+
 // R: eval.c:R_bcEncode / R_bcDecode. Opcode cells remain integer indices;
 // robigo never installs GNU R's threaded addresses. Normalize the version and
 // check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
 fn portable_bc_code(mut code: Value) -> RResult<Value> {
-    const ARGC: &[usize] = &[
-        0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0,
-        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2,
-        2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 0, 1, 1, 1, 2, 1, 0, 0, 4, 0, 2, 2, 1, 1, 1, 1, 2,
-        2, 2, 2, 2, 2, 1, 1, 2, 2, 1, 1, 1, 2, 0, 0, 1, 0, 0,
-    ];
     let Value::Int(v) = &mut code else { return Err(corrupt()) };
     let Some(&version) = v.data.first() else { return Ok(Value::Null) };
     if !(9..=12).contains(&version) {
@@ -949,7 +1284,7 @@ fn portable_bc_code(mut code: Value) -> RResult<Value> {
     let mut pc = 1;
     while pc < v.data.len() {
         let op = v.data[pc] as usize;
-        let Some(&argc) = ARGC.get(op) else { return Err(Flow::error("unknown instruction code")) };
+        let Some(&argc) = BC_ARGC.get(op) else { return Err(Flow::error("unknown instruction code")) };
         pc += argc + 1;
         if pc > v.data.len() {
             return Err(corrupt());
@@ -1161,8 +1496,18 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     }
     // 16 covers the reference count of a typical lazy-load entry without
     // the 4→8→16 reallocation chain; big entries still grow.
-    let mut r =
-        Reader { data, pos, format, refs: Vec::with_capacity(16), interp, hook, bc_records: BytecodeCells::default() };
+    let mut r = Reader {
+        data,
+        pos,
+        format,
+        refs: Vec::with_capacity(16),
+        interp,
+        hook,
+        bc_records: BytecodeCells::default(),
+        bc_operations: Vec::new(),
+        bc_bytes: None,
+        bc_words: None,
+    };
     let version = r.int()?;
     let writer = r.int()?;
     let min_reader = r.int()?;
@@ -1420,8 +1765,13 @@ impl Writer<'_> {
     // R: serialize.c:WriteBC1 / WriteBCLang. Replay cell definitions with
     // WriteItem so symbols and environments enter this stream's reference table.
     fn bytecode(&mut self, b: &Bytecode) {
-        self.item(&b.code);
-        for &record in &b.cells.operations {
+        if let Some(code) = b.code.get() {
+            self.item(code);
+        } else {
+            self.bytecode_instructions(b);
+        }
+        let mut pos = 0;
+        while let Some(record) = b.cells.next_record(&mut pos) {
             match record & 7 {
                 0 => self.int((record >> 3) as i32),
                 1 => self.item(&b.cells.items[(record >> 3) as usize]),
@@ -1436,8 +1786,51 @@ impl Writer<'_> {
                     self.length(1);
                     self.int((record >> 3) as i32);
                 }
+                7 if record == -1 => {
+                    self.flags(REALSXP, 0, false, false, false);
+                    self.length(1);
+                    let bits = b.cells.next_record(&mut pos).expect("validated scalar real");
+                    self.real(f64::from_bits(bits as u64));
+                }
+                7 => self.encoded_vector(&b.cells, (record >> 3) as usize),
                 _ => unreachable!("invalid bytecode cell record"),
             }
+        }
+    }
+
+    fn bytecode_instructions(&mut self, b: &Bytecode) {
+        match &b.instructions {
+            BytecodeInstructions::Decoded(value) => self.item(value),
+            BytecodeInstructions::Encoded { span, words, version, mismatch } => {
+                let arena = b.cells.bytes.as_ref().unwrap().borrow();
+                let bytes = &arena.chunks[span.chunk][span.offset..];
+                self.flags(INTSXP, 0, false, false, false);
+                self.length(*words);
+                for i in 0..*words {
+                    self.int(instruction_word(bytes, i, b.cells.little_endian, *version, *mismatch));
+                }
+            }
+        }
+    }
+
+    fn encoded_vector(&mut self, cells: &BytecodeCells, index: usize) {
+        let item = &cells.encoded[index];
+        self.int(item.flags as i32);
+        self.length(item.len);
+        let arena = cells.bytes.as_ref().unwrap().borrow();
+        let width = vector_width(item.flags & 255).unwrap();
+        let bytes = &arena.chunks[item.span.chunk][item.span.offset..item.span.offset + item.len * width];
+        if width == 1 || cells.little_endian == self.little_endian {
+            self.out.extend_from_slice(bytes);
+        } else {
+            let word = if width == 4 { 4 } else { 8 };
+            for part in bytes.chunks_exact(word) {
+                self.out.extend(part.iter().rev());
+            }
+        }
+        drop(arena);
+        if item.flags & HAS_ATTR_BIT != 0 {
+            self.item(&item.attrs);
         }
     }
 

@@ -1195,8 +1195,8 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
-        (Value::Bytecode(b), 0) => to_sexp(&b.code),
-        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.consts.clone())),
+        (Value::Bytecode(b), 0) => to_sexp(b.code()),
+        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value.borrow().clone() {
             Some(v) => to_sexp(&v),

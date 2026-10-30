@@ -44,3 +44,6 @@ e <- g()
 saveRDS(e, paste0(path, 'unforced-promise.rds'), compress = FALSE)
 force(e$x)
 saveRDS(e, paste0(path, 'forced-promise.rds'), compress = FALSE)
+# Scalar real bits include negative zero, R NA and IEEE NaN.
+b <- .Internal(mkCode(c(12L, 16L, 0L, 1L), list(42, -0, NA_real_, NaN, Inf, -Inf, 2.5, 1+2i)))
+saveRDS(b, 'tests/r/serialize/bytecode-fixtures/real-constants.rds', compress = FALSE)

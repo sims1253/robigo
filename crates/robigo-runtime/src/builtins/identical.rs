@@ -124,9 +124,9 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
         // R: identical.c:R_compute_identical, BCODESXP. The expression tag
         // is NULL for loaded bytecode; the source is constant zero.
         (Value::Bytecode(x), Value::Bytecode(y)) => {
-            identical_flags(&x.code, &y.code, f)
-                && x.consts.len() == y.consts.len()
-                && x.consts.iter().zip(&y.consts).all(|(x, y)| identical_flags(x, y, f))
+            identical_flags(x.code(), y.code(), f)
+                && x.constants().len() == y.constants().len()
+                && x.constants().iter().zip(y.constants()).all(|(x, y)| identical_flags(x, y, f))
         }
         (Value::Builtin(x), Value::Builtin(y)) => std::ptr::eq(*x, *y),
         (Value::Env(x), Value::Env(y)) => x.ptr_eq(y),
