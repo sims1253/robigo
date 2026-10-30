@@ -73,3 +73,35 @@
   host c_library_oracle/c_library_trig_oracle tests differ by one bit in
   complex sqrt/sin. Final follow-up excludes only these host-specific
   tests, without changing their source or CI selection.
+
+### Final corrected result
+
+- Full data filter: **8,411 -> 8,423/8,426**, exactly 12 gains and zero
+  lost baseline passes. The three remaining IDs are the two reproduced
+  GNU R crashes and order/add626733541c799. The order marker fails on both
+  host binaries; no marker or oracle output was removed or masked.
+- Default-build recorded scripts: **286/286 in each tier, 858/858** total.
+  The new oracle-recorded assignment script passes all three tiers after
+  regenerating its transcript with cat's explicit separator, avoiding
+  trailing whitespace. Adjacent character/numeric coercions hold 323/323.
+- Final local instruction screening, identical saved baseline/candidate
+  inputs and exact output comparisons against the pinned R oracle:
+  fib 889,086,614 -> 889,210,695 (+0.0140%);
+  assignment default 484,834,841 -> 484,801,342 (-0.0069%);
+  assignment interpreter 3,422,350,113 -> 3,425,897,176 (+0.1036%).
+  No slowdown above 0.5%; these small differences are not speedup claims.
+  CI's pinned-platform full paired performance gate remains authoritative.
+- cargo fmt --all -- --check, git diff --check and scripts/ratchet.py check
+  pass. Marker integrity covers 32,574 cases. Exactly 12 corpus markers
+  and one conformance-script marker were added.
+- Next: coordinator reviews and merges after CI. Corpus owner may define
+  a format policy for expected oracle crashes; line masking currently
+  cannot mask their -11 exit status. No remaining actionable case needs
+  a runtime change in this track.
+
+- Final runtime follow-up passes: 61 unit tests and all three integration
+  tests (default bytecode import plus two installed RDB probes). Only the
+  two documented host-libm comparisons are filtered locally. Command:
+  CARGO_BUILD_JOBS=2 R_HOME=/home/m0hawk/.local/opt/R-4.5.0 cargo test --release
+  -p robigo-runtime -- --skip c_library_oracle --skip c_library_trig_oracle.
+  The first unfiltered invocation above records their actual failures.
