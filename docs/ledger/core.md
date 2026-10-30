@@ -56,7 +56,11 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   (+0.027%), s4-valid -0.003%. CI's cache/natives gate is the judge.
 - Verification: both datetime script runs match; runtime lib 66 pass with
   only the two documented host-glibc complex oracles failing (unchanged);
-  `cargo fmt --check` clean.
+  full conformance 286/286 (stdout, stderr and status) in interpreter, VM
+  and JIT, including the new script and every existing ratchet;
+  `cargo fmt --check` clean. tests/r/basics/compiled-isvector-context.R
+  also passes on this base (it does so with the unpatched a32c5623 binary
+  too), but it belongs to another topic and was left unratcheted.
 
 ### Handoff to conformance-sweep-data
 
@@ -76,6 +80,14 @@ which is the point. getconst/growconst allocate fresh lists and stay as
 they are. Once putconst is in, add compiler::cmpfun constant-layout
 fixtures; the primitive itself is covered by value.rs's shared_list_tests
 and tests/r/datetime/shared_list_mutation.R.
+
+- Downstream confirmed (experiment only, not committed): a temporary
+  do_putconst in builtins/bytecode.rs (feature build) written exactly as
+  above, with `identical` standing in for flags 16, reproduced a GNU R
+  4.5.0 recording byte for byte: const dedup (`putconst(buf,1,42L)`
+  returns 0), a second binding seeing the new cell, getconst and
+  growconst. The temporary port was reverted and the default binary
+  rebuilt; bytecode.rs is byte-identical to main.
 
 Local setup (this machine): system R is 4.6.1, so the capi corpus's
 `R CMD SHLIB` build step runs GNU R 4.5.0 from the `robigo-oracle:4.5.0`

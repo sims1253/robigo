@@ -1617,7 +1617,8 @@ mod shared_list_tests {
 
     #[test]
     fn set_vector_elt_writes_through_every_alias() {
-        let x = Value::list(vec![Value::int(1), Value::int(2)]);
+        let mut x = Value::list(vec![Value::int(1), Value::int(2)]);
+        x.set_attr_raw(s::NAMES, Value::strs_from(["first", "second"]));
         let binding = x.clone();
         let env = Env::new(None);
         env.set_local(Sym::new("shared"), x.clone());
@@ -1631,7 +1632,8 @@ mod shared_list_tests {
         assert_eq!(int(&elt(&holder.get_attr(Sym::new("tag")).unwrap(), 0)), 42);
         // The untouched cells and the attributes stay as they were.
         assert_eq!(int(&elt(&binding, 1)), 2);
-        assert!(matches!(binding.get_attr(s::NAMES), None));
+        let Some(Value::Str(names)) = binding.get_attr(s::NAMES) else { panic!("names lost") };
+        assert_eq!(names.data, vec![Some(RString::from("first")), Some(RString::from("second"))]);
         assert_eq!(x.len(), 2);
     }
 
