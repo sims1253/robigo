@@ -94,7 +94,7 @@ fn hash_expr(mut h: u64, e: &Expr) -> u64 {
                 Const::Int(Some(i)) => h = h.wrapping_add(*i as u64),
                 Const::Dbl(x) => h = h.wrapping_add(x.to_bits()),
                 Const::Cplx(re, im) => h = h.wrapping_add(re.to_bits() ^ im.to_bits().rotate_left(17)),
-                Const::Str(Some(s)) => h = hash_bytes(h, s),
+                Const::Str(Some(s)) | Const::StrNative(s) => h = hash_bytes(h, s),
             }
         }
         Expr::Sym(name, _) => h = hash_bytes(h ^ 0x73, name.as_bytes()),

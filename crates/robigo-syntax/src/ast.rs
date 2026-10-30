@@ -43,6 +43,11 @@ pub enum Const<'a> {
     /// `\xNN`/`\NNN` escapes produce their single byte (a "bytes"-encoded
     /// CHARSXP in GNU R, whatever the locale).
     Str(Option<&'a [u8]>),
+    /// The same bytes from a literal containing an octal or hex escape.
+    /// gram.y passes `oct_or_hex` to mkString2, which then suppresses the
+    /// UTF-8 mark: such a literal is CE_NATIVE even when its bytes form
+    /// valid UTF-8 (`Encoding("\303\251")` is "unknown", `"é"` is UTF-8).
+    StrNative(&'a [u8]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,6 +221,7 @@ impl ErrorExpr {
     pub fn from_expr(e: &Expr<'_>) -> Self {
         match e {
             Expr::Const(Const::Str(s), _) => Self::String(s.map(|s| s.to_vec())),
+            Expr::Const(Const::StrNative(s), _) => Self::String(Some(s.to_vec())),
             Expr::Const(c, _) => Self::Atom(match *c {
                 Const::Null => Const::Null,
                 Const::Lgl(x) => Const::Lgl(x),
@@ -224,7 +230,7 @@ impl ErrorExpr {
                 Const::DblNa => Const::DblNa,
                 Const::Cplx(x, y) => Const::Cplx(x, y),
                 Const::CplxNa => Const::CplxNa,
-                Const::Str(_) => unreachable!(),
+                Const::Str(_) | Const::StrNative(_) => unreachable!(),
             }),
             Expr::Sym(s, _) => Self::Symbol(s.to_string()),
             Expr::Placeholder(_) => Self::String(Some(b"_".to_vec())),

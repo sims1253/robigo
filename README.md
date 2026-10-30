@@ -76,8 +76,8 @@ GNU R 4.5.0 is the oracle:
   with `scripts/regen-parse.sh`; run the big corpus (R's own sources) with
   `ROBIGO_PARSE_CORPUS=... ROBIGO_PARSE_DUMPS=... cargo test -p robigo-syntax -- --ignored`.
 - `tests/r/` — conformance scripts; stdout/stderr/exit status recorded from
-  `Rscript` with `scripts/regen-expected.sh`. `tests/r/passing.txt` is a
-  ratchet of scripts that must keep passing.
+  `Rscript` with `scripts/regen-expected.sh`. `tests/r/passing/` is a
+  ratchet (one marker file per script) of scripts that must keep passing.
 
 ```sh
 cargo test                                             # everything

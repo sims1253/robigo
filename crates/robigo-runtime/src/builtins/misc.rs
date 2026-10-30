@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::{arg, check_arity, internal, prim, special};
-use crate::coerce::{CoerceWarnings, as_integer};
+use crate::coerce::{CoerceWarnings, as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -421,8 +421,14 @@ fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 /// robigo does not track allocations by R's cell classes; report NA rather
 /// than invented numbers.
 fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // Implementation caches are weak in R: they must not retain otherwise
+    // unreachable environments through closure bodies or call-site memos.
     // the C API's heap collects and runs pending finalizers (docs/core.md §3)
     if let Some(b) = crate::native::bridge() {
+        if b.finalizers_active() {
+            i.fun_cache.clear();
+            crate::vm::clear_gc_caches();
+        }
         b.gc(i);
     }
     Ok(Value::reals(vec![NA_REAL; 14]))
@@ -432,15 +438,24 @@ fn do_gc_time(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
     Ok(Value::reals(vec![0.0; 5]))
 }
 
-fn do_reg_finalizer(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+// R: memory.c:do_regFinaliz
+fn do_reg_finalizer(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let e = arg(&args, 0);
-    if !matches!(e, Value::Env(_) | Value::ExtPtr(_)) {
+    if !matches!(e, Value::Env(_) | Value::ExtPtr(_))
+        || crate::native::bridge().is_some_and(|bridge| !bridge.is_finalizer_key(&e))
+    {
         return Err(Flow::error("first argument must be environment or external pointer"));
     }
-    if !arg(&args, 1).is_function() {
+    if !matches!(arg(&args, 1), Value::Closure(_)) {
         return Err(Flow::error("second argument must be a function"));
     }
-    // robigo has no garbage collector yet, so finalizers never run.
+    let onexit = as_logical(&arg(&args, 2));
+    if onexit == NA_LOGICAL {
+        return Err(Flow::error("third argument must be 'TRUE' or 'FALSE'"));
+    }
+    let bridge = crate::native::bridge()
+        .ok_or_else(|| Flow::error("robigo: environment finalizers require the native bridge"))?;
+    bridge.register_finalizer(i, &e, &arg(&args, 1), onexit != 0)?;
     Ok(Value::Null)
 }
 
@@ -483,6 +498,11 @@ fn do_internals_id(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let status = as_integer(&arg(&args, 1));
+    i.flush();
+    // R: unix/sys-std.c:R_CleanUp -- exit finalizers run before exit.
+    if let Some(b) = crate::native::bridge() {
+        b.run_exit_finalizers(i);
+    }
     i.flush();
     std::process::exit(if status == NA_INTEGER { 0 } else { status });
 }

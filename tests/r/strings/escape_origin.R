@@ -1,0 +1,27 @@
+show <- function(label, x) {
+    cat(label, ": ", Encoding(x), " | ", paste(charToRaw(x), collapse = ""), " | ",
+        nchar(x, "bytes"), "\n", sep = "")
+}
+show("plain", "abc")
+show("utf8", "é")
+show("octal-ascii", "\101\102\103")
+show("hex-ascii", "\x41\x42")
+show("octal-utf8", "\303\251")
+show("hex-utf8", "\xc3\xa9")
+show("octal-invalid", "\377")
+show("unicode", "\u00e9")
+show("newline", "a\nb")
+show("mixed", "a\101b")
+show("raw-utf8", r"(é)")
+cat("identical utf8:", identical("\303\251", "é"), "\n")
+cat("identical ascii:", identical("\101", "A"), "\n")
+f <- function() Encoding("\303\251")
+g <- function() Encoding("é")
+cat("compiled:", f(), "|", g(), "\n")
+p <- parse(text = '"\\303\\251"')
+cat("parsed:", Encoding(eval(p)), "\n")
+q <- quote("\303\251")
+cat("quoted:", Encoding(q), "\n")
+s <- "\303\251"
+cat("serialized:", Encoding(unserialize(serialize(s, NULL))), "\n")
+cat("utf8 equal:", identical(enc2utf8(s), "é"), "\n")

@@ -10,7 +10,7 @@
 //! object has a class attribute first) or the methods package's state.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
@@ -66,6 +66,9 @@ pub struct S4State {
     pub prim: HashMap<usize, PrimEntry>,
     /// `R_S4_extends_table`.
     pub extends_table: Option<Env>,
+    /// Last direct closure lookup, without keeping retired tables or methods
+    /// alive. Weak references preserve allocation identity against reuse.
+    pub(crate) method_lookup: Option<(Weak<crate::env::EnvData>, u32, Sym, Weak<Closure>)>,
 }
 
 impl Default for S4State {
@@ -77,6 +80,7 @@ impl Default for S4State {
             allow_prim: true,
             prim: HashMap::new(),
             extends_table: None,
+            method_lookup: None,
         }
     }
 }
@@ -808,7 +812,21 @@ impl Interp {
             return self.set_data_part(obj, value);
         }
         let value = if value.is_null() { Value::Sym(syms::pseudo_null()) } else { value };
-        if obj.attrs_slot_mut().is_none() && !matches!(obj, Value::Env(_) | Value::ExtPtr(_)) {
+        // Check support without triggering copy-on-modify. installAttrib's
+        // mutation below makes the one required copy after validation.
+        if !obj.is_atomic()
+            && !matches!(
+                obj,
+                Value::List(_)
+                    | Value::Expr(_)
+                    | Value::Pairlist(_)
+                    | Value::Lang(_)
+                    | Value::Closure(_)
+                    | Value::Obj(_)
+                    | Value::Env(_)
+                    | Value::ExtPtr(_)
+            )
+        {
             return Err(Flow::error(format!(
                 "robigo: slots on objects of type '{}' are not implemented yet",
                 obj.type_name()

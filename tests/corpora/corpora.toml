@@ -14,13 +14,13 @@
 #                     `record --mask-against-previous`, which keeps the case
 #                     scored with the machine-dependent lines masked
 
-# GNU R suites attach methods. FastR retains its existing defaults and records
-# until environment finalizers work (S4/TestR5/474b742f1785a587); no passing
-# case may be lost in the switch. cran-purer awaits separate re-recording.
+# GNU R suites attach methods. FastR defaults and records match GNU R.
+# cran-purer awaits separate re-recording.
 [fastr]
 description = "FastR's unit-test snippets (31k one-liners over builtins, S4, parser, ...), GPL-3"
 mode = "script"
-default_packages = "datasets,utils,grDevices,graphics,stats"
+default_packages = "datasets,utils,grDevices,graphics,stats,methods"
+expected_file = "expected-methods.jsonl.gz"
 timeout = 30
 commit = "f9d9199e51b371f076b19456933ee395d28360bf"
 path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutput.test"

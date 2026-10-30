@@ -670,7 +670,7 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
             e.clone()
         }
         Value::Lang(l) => {
-            let items = substitute_list(&l.items(), env)?;
+            let (items, lang_cells) = substitute_list(&l.items(), env)?;
             // Expanding dots at the head inserts LISTSXP nodes. It does
             // not turn the first dot argument into the function of a call.
             let dots_head = l.fun.as_sym() == Some(s::DOTS) && env.and_then(|e| e.get_local(s::DOTS)).is_some();
@@ -679,16 +679,26 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
             } else if dots_head {
                 Value::pairlist(items)
             } else {
-                Value::Lang(Rc::new(Lang::from_items(items, l.attrs.clone())))
+                let l = Rc::new(Lang::from_items(items, l.attrs.clone()));
+                if !lang_cells.is_empty() {
+                    crate::serialize::set_lang_cells(
+                        &l,
+                        lang_cells.into_iter().filter_map(|k| k.checked_sub(1)).collect(),
+                    );
+                }
+                Value::Lang(l)
             }
         }
         _ => e.clone(),
     })
 }
 
+/// The substituted items, and indices of exceptional LANGSXP cells: an
+/// unbound `...` becomes `LCONS(R_DotsSymbol, R_NilValue)` (no tag).
 // R: coerce.c:substituteList
-fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<Vec<Arg>> {
+fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<(Vec<Arg>, Vec<usize>)> {
     let mut out = Vec::with_capacity(items.len());
+    let mut lang_cells = Vec::new();
     for a in items {
         if a.value.as_sym() == Some(s::DOTS) {
             match env.and_then(|e| e.get_local(s::DOTS)) {
@@ -698,14 +708,17 @@ fn substitute_list(items: &[Arg], env: Option<&Env>) -> RResult<Vec<Arg>> {
                     }
                 }
                 Some(v) if v.is_missing_arg() || v.is_null() => {}
-                None => out.push(a.clone()),
+                None => {
+                    lang_cells.push(out.len());
+                    out.push(Arg::new(None, a.value.clone()));
+                }
                 _ => return Err(Flow::error("'...' used in an incorrect context")),
             }
         } else {
             out.push(Arg::new(a.tag, substitute(&a.value, env)?));
         }
     }
-    Ok(out)
+    Ok((out, lang_cells))
 }
 
 fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -745,7 +758,7 @@ fn do_substitute(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -
     let senv = senv.filter(|e| !e.ptr_eq(&interp.global));
     // R: coerce.c:do_substitute wraps expr in a pairlist before expanding
     // dots, then returns the first element (NULL for an empty dots list).
-    let items = substitute_list(&[Arg::pos(expr)], senv.as_ref())?;
+    let (items, _) = substitute_list(&[Arg::pos(expr)], senv.as_ref())?;
     Ok(items.into_iter().next().map(|a| a.value).unwrap_or(Value::Null))
 }
 

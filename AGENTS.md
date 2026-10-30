@@ -113,8 +113,11 @@ See `docs/verification.md` for everything; in short:
   base functions are available — no `head`, `str`, `median`, `setNames`).
 - Run a subset: `ROBIGO_CONF_FILTER=tests/r/strings ROBIGO_CONF_DIFF=1 cargo test
   -p robigo-cli --test conformance -- --nocapture`.
-- `tests/r/passing.txt` is a ratchet: listed scripts must keep passing.
-  Never remove entries to make a test pass.
+- Ratchets (`tests/r/passing/`, `tests/corpora/*/passing/`,
+  `tests/parse/passing/<corpus>/`) are one empty marker file per case,
+  `<case>.pass`, so adding cases never conflicts. Never remove markers to
+  make a test pass; `ROBIGO_CONF_UPDATE=1`, `scripts/corpus.py run ...
+  --update` and `scripts/parse-corpus.py check ... --update` create them.
 - `ROBIGO_BOOT_VERBOSE=1 robigo -e 1` lists base-library top-level expressions that
   still fail to evaluate — a good source of missing internals.
 - Keep test scripts small and focused: Rscript stops at the first error,

@@ -37,29 +37,52 @@ impl<'a> std::ops::Deref for SymStr<'a> {
 }
 
 /// String-literal bytes: the source between the quotes when no escape
-/// changed them, the unescaped bytes otherwise.
+/// changed them, the unescaped bytes otherwise. `byte_escape` records
+/// whether an octal or hex escape produced bytes: GNU R's gram.y keeps
+/// that `oct_or_hex` flag and mkString2 suppresses the UTF-8 mark for such
+/// literals, so `Encoding("\303\251")` stays native while `"é"` is UTF-8.
 #[derive(Clone, Debug, PartialEq)]
-pub enum StrTok<'a> {
+pub struct StrTok<'a> {
+    bytes: StrBytes<'a>,
+    byte_escape: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum StrBytes<'a> {
     Src(&'a [u8]),
     Own(Vec<u8>),
 }
 
 impl<'a> StrTok<'a> {
+    fn src(bytes: &'a [u8], byte_escape: bool) -> Self {
+        Self { bytes: StrBytes::Src(bytes), byte_escape }
+    }
+
+    fn own(bytes: Vec<u8>, byte_escape: bool) -> Self {
+        Self { bytes: StrBytes::Own(bytes), byte_escape }
+    }
+
     /// The source bytes, when the literal is verbatim from the source.
-    pub fn src(&self) -> Option<&'a [u8]> {
-        match self {
-            StrTok::Src(s) => Some(s),
-            StrTok::Own(_) => None,
+    pub fn src_bytes(&self) -> Option<&'a [u8]> {
+        match self.bytes {
+            StrBytes::Src(s) => Some(s),
+            StrBytes::Own(_) => None,
         }
+    }
+
+    /// Whether an octal or hex escape contributed bytes (gram.y's
+    /// `oct_or_hex`, passed to mkString2 as `escaped`).
+    pub fn byte_escape(&self) -> bool {
+        self.byte_escape
     }
 }
 
 impl<'a> std::ops::Deref for StrTok<'a> {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
-        match self {
-            StrTok::Src(s) => s,
-            StrTok::Own(s) => s,
+        match &self.bytes {
+            StrBytes::Src(s) => s,
+            StrBytes::Own(s) => s,
         }
     }
 }
@@ -386,7 +409,7 @@ impl<'a> Lexer<'a> {
                 if n == dashes && self.byte_at(j) == quote {
                     let body = &self.bytes[body_start..self.pos];
                     self.pos = j + 1;
-                    return Ok(StrTok::Src(body));
+                    return Ok(StrTok::src(body, false));
                 }
             }
             self.pos += 1;
@@ -650,7 +673,7 @@ impl<'a> Lexer<'a> {
             // (a raw newline inside is kept as-is, so it may lie within).
             if !escaped && out.is_empty() && end < self.bytes.len() && self.bytes[end] == quote as u8 {
                 self.pos = end + 1;
-                return Ok(StrTok::Src(&self.bytes[start + 1..end]));
+                return Ok(StrTok::src(&self.bytes[start + 1..end], false));
             }
             if run > 0 {
                 out.extend_from_slice(&self.bytes[self.pos..end]);
@@ -665,7 +688,7 @@ impl<'a> Lexer<'a> {
                     // Position: the closing quote, the last character read.
                     return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
-                return Ok(StrTok::Own(out));
+                return Ok(StrTok::own(out, byte_escape));
             }
             // A raw newline acts as an escaped newline: both are kept
             // (the Bravington fix in gram.y's StringValue).

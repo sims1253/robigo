@@ -1014,6 +1014,11 @@ impl Interp {
             self.visible = saved_visible;
         }
         let ctx = self.frames.pop().unwrap();
+        // The executor and this context own two references. Extra owners
+        // include escaped closures and unforced default-promise cycles.
+        if Rc::strong_count(&ctx.cloenv.0) > 2 {
+            ctx.cloenv.track_escape();
+        }
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;
         let mut promargs = ctx.promargs;

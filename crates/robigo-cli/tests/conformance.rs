@@ -5,9 +5,11 @@
 //! (`*.Rout`, `*.Rerr`, `*.Rstatus`, recorded by `scripts/regen-expected.sh`).
 //! A script passes when all three match.
 //!
-//! Ratchet: `tests/r/passing.txt` lists scripts that must pass. A listed
-//! script that fails fails the test; newly passing scripts are reported so
-//! they can be added (`ROBIGO_CONF_UPDATE=1` rewrites the file).
+//! Ratchet: `tests/r/passing/<script>.pass` marks a script that must pass
+//! (one empty marker file per script, so two branches that ratchet different
+//! scripts add different files and never conflict). A marked script that
+//! fails fails the test; newly passing scripts are reported so they can be
+//! marked (`ROBIGO_CONF_UPDATE=1` creates their markers).
 //!
 //! Environment:
 //!   ROBIGO_CONF_FILTER=substr   only run matching scripts
@@ -33,6 +35,69 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(p);
         }
     }
+}
+
+/// The ratchet: one empty marker file per script that must keep passing.
+/// A marker is named after the script it ratchets, relative to `tests/r`,
+/// plus `.pass`: `tests/r/passing/strings/escape_origin.R.pass`. Adding a
+/// case is adding a file, so parallel branches never edit the same path.
+const RATCHET_DIR: &str = "tests/r/passing";
+const RATCHET_PREFIX: &str = "tests/r";
+const RATCHET_SUFFIX: &str = ".pass";
+
+fn ratchet_markers(dir: &Path, rel: &Path, out: &mut BTreeSet<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read {}: {}", dir.display(), e))?;
+    for entry in entries {
+        let path = entry.map_err(|e| format!("read {}: {}", dir.display(), e))?.path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let rel = rel.join(&name);
+        if path.is_dir() {
+            ratchet_markers(&path, &rel, out)?;
+        } else {
+            let Some(script) = name.strip_suffix(RATCHET_SUFFIX) else {
+                return Err(format!(
+                    "{}: not a ratchet marker (markers are named <script>{})",
+                    path.display(),
+                    RATCHET_SUFFIX
+                ));
+            };
+            // Ids are repository-relative, as the old list's lines were.
+            out.insert(format!("{}/{}", RATCHET_PREFIX, rel.with_file_name(script).display()));
+        }
+    }
+    Ok(())
+}
+
+/// The scripts the ratchet requires, from the marker files. The single list
+/// this replaces (`tests/r/passing.txt`) is still read while branches
+/// migrate (`scripts/ratchet.py migrate`). A marker for a script that does
+/// not exist is an error: it used to be a line that silently required
+/// nothing.
+fn load_ratchet(root: &Path) -> Result<BTreeSet<String>, String> {
+    let mut ids = BTreeSet::new();
+    let dir = root.join(RATCHET_DIR);
+    if dir.is_dir() {
+        ratchet_markers(&dir, Path::new(""), &mut ids)?;
+    }
+    let legacy = root.join("tests/r/passing.txt");
+    match std::fs::read_to_string(&legacy) {
+        Ok(text) => {
+            ids.extend(text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && !l.starts_with('#')))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read {}: {}", legacy.display(), e)),
+    }
+    for id in &ids {
+        let script = root.join(id);
+        if !script.is_file() {
+            return Err(format!(
+                "ratchet entry {:?} names a script that does not exist ({}); remove the marker",
+                id,
+                script.display()
+            ));
+        }
+    }
+    Ok(ids)
 }
 
 struct Outcome {
@@ -191,13 +256,7 @@ fn conformance() {
     let mut results = results.into_inner().unwrap();
     results.sort_by(|a, b| a.rel.cmp(&b.rel));
 
-    let passing_file = root.join("tests/r/passing.txt");
-    let listed: BTreeSet<String> = std::fs::read_to_string(&passing_file)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect();
+    let listed = load_ratchet(&root).unwrap_or_else(|e| panic!("{}", e));
 
     let mut pass = BTreeSet::new();
     let mut regressions = Vec::new();
@@ -240,20 +299,29 @@ fn conformance() {
         n_status_ok
     );
     if !new_passes.is_empty() {
-        eprintln!("newly passing (not yet in tests/r/passing.txt):");
+        eprintln!("newly passing (not yet ratcheted):");
         for p in &new_passes {
             eprintln!("  {}", p);
         }
     }
-    if std::env::var_os("ROBIGO_CONF_UPDATE").is_some() && filter.is_none() {
-        let mut all: BTreeSet<String> = listed.clone();
-        all.extend(pass.iter().cloned());
-        let body: String = all.iter().map(|s| format!("{}\n", s)).collect();
-        std::fs::write(
-            &passing_file,
-            format!("# Conformance ratchet: scripts that must keep matching GNU R.\n{}", body),
-        )
-        .unwrap();
+    if std::env::var_os("ROBIGO_CONF_UPDATE").is_some() {
+        // Only add markers: no existing file is rewritten, so a filtered
+        // run can ratchet the cases it ran, and two branches never touch
+        // the same marker.
+        let mut added = 0;
+        for rel in &pass {
+            let rel = rel.strip_prefix("tests/r/").unwrap_or(rel);
+            let marker = root.join(RATCHET_DIR).join(format!("{}{}", rel, RATCHET_SUFFIX));
+            if marker.exists() {
+                continue;
+            }
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, "").unwrap();
+            added += 1;
+        }
+        if added > 0 {
+            eprintln!("\nratcheted {} new script(s) under {}", added, RATCHET_DIR);
+        }
     }
     if !regressions.is_empty() {
         let mut msg = format!("{} ratcheted script(s) regressed:\n", regressions.len());
@@ -317,4 +385,62 @@ fn vm_guards_hold() {
         .expect("spawn robigo");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("guard failed"), "compiled code fell back to the interpreter:\n{}", err);
+}
+
+/// A fixture tree with one script and an empty ratchet directory.
+fn ratchet_fixture(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("robigo-ratchet-{}-{}", name, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tests/r/passing")).unwrap();
+    std::fs::create_dir_all(dir.join("tests/r/basics")).unwrap();
+    std::fs::write(dir.join("tests/r/basics/arith.R"), "").unwrap();
+    dir
+}
+
+fn mark(root: &Path, script: &str) {
+    let marker = root.join(RATCHET_DIR).join(format!("{}{}", script, RATCHET_SUFFIX));
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(marker, "").unwrap();
+}
+
+#[test]
+fn ratchet_reads_markers() {
+    let root = ratchet_fixture("read");
+    mark(&root, "basics/arith.R");
+    let listed = load_ratchet(&root).unwrap();
+    assert_eq!(listed, ["tests/r/basics/arith.R".to_string()].into_iter().collect());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// The failure mode of the old single list: an entry naming no script did
+/// nothing, silently. A marker must fail loudly instead.
+#[test]
+fn ratchet_rejects_marker_for_missing_script() {
+    let root = ratchet_fixture("dangling");
+    mark(&root, "basics/ghost.R");
+    let err = load_ratchet(&root).expect_err("a dangling marker must be an error");
+    assert!(err.contains("does not exist") && err.contains("basics/ghost.R"), "{}", err);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn ratchet_rejects_stray_file() {
+    let root = ratchet_fixture("stray");
+    std::fs::write(root.join(RATCHET_DIR).join("notes.txt"), "not a marker").unwrap();
+    let err = load_ratchet(&root).expect_err("a stray file in the ratchet must be an error");
+    assert!(err.contains("not a ratchet marker"), "{}", err);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Branches based on the old layout still work: the single list is read too
+/// until `scripts/ratchet.py migrate` converts it.
+#[test]
+fn ratchet_reads_legacy_list() {
+    let root = ratchet_fixture("legacy");
+    mark(&root, "basics/arith.R");
+    std::fs::write(root.join("tests/r/passing.txt"), "# comment\n\ntests/r/basics/arith.R\n").unwrap();
+    assert_eq!(load_ratchet(&root).unwrap().len(), 1);
+    std::fs::write(root.join("tests/r/passing.txt"), "tests/r/basics/ghost.R\n").unwrap();
+    assert!(load_ratchet(&root).is_err(), "a dangling legacy entry must be an error");
+    std::fs::remove_dir_all(&root).unwrap();
 }
