@@ -13,7 +13,33 @@ conformance` (interpreter, VM and VM+JIT against each other).
   setters. Main matches **8/14** cases. Four compiled `[<-` cases lose
   the RHS expression; two `[[<-` cases expose an unresolved
   `<current-expression>` marker. The candidate resolves both in the
-  assignment helper before handlers run. Verification is in progress.
+  assignment helper before handlers run. Final oracle result: **14/14**.
+- Rejected intermediate: changing only the helper fixes 11/14 cases;
+  missing and effectful indices still fall back to interpreted assignment.
+  A general setter opcode fixes all 14, but compiling its RHS separately
+  regresses a 2,000-update matrix-row probe from 72,853,738 to 73,338,443
+  instructions (+0.665%). Delegate RHS evaluation and setter lookup to the
+  existing interpreter/helper instead. Final probe: **72,491,277**
+  instructions (-0.498%), identical output. Kept.
+- Paired seven-benchmark instruction geomean: **0.663447 -> 0.663464** GNU R,
+  all seven faster than GNU R, no slowdown above 0.5%. This focused set is
+  not the round 6 full-suite metric. Both binaries match GNU R 4.5.0 on
+  stdout, stderr and status for all seven programs. Artifacts: `.robigo/r7/`.
+- Conformance: **236 -> 237** oracle passes in every tier, zero differences
+  between AST, VM and JIT; the new setter-context fixture also checks the
+  error class after crossing the native threshold. Ratchet adds one line.
+  Focused FastR subset/matrix/assignment slice: **507/512 -> 507/512**,
+  zero regressions. Formatting and source whitespace checks pass.
+- Host runtime unit tests: 37/39 pass, including the new setter test and
+  all 9,440 VM arithmetic oracle cases. The two unchanged complex C-library
+  fixtures differ by one bit with host glibc 2.44. The final Debian trixie
+  runtime unit run passes **39/39**, including both C-library fixtures and
+  the setter oracle. No arithmetic code changed. The full conformance run also
+  replays the 6,144-case muladd payload fixture.
+- Shared changes: minimal diagnostic-source/current-expression handling
+  in builtins/lang.rs and one tests/r/passing.txt entry. General setters
+  resolve and dispatch their replacement function at runtime, so they do
+  not need the scalar fast path's replacement-function guard.
 - Reanalyzed the saved round 6 native CSV callgrind profile, total
   1,933,306,497 instructions. Inclusive totals (nested, do not add):
   writetable 1,043,869,788 (53.99%), Rconn_printf 713,041,782 (36.88%),
