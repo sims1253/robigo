@@ -9,8 +9,9 @@ Slice used throughout ("S4 slice"):
 
 ## 2026-10-30: round 8 — native write-back and VM slot handoff
 
-- Branch `track/methods-slot-bridge`, PR #101, base d2ce510. #97 and
-  #71 remain separate; no vm.rs, value.rs, or serialization edits.
+- Branch `track/methods-slot-bridge`, PR #101. Paired measurements
+  below use d2ce510; rebased onto 1b4670a after #94/#96/#97 landed.
+  #71 is untouched; no vm.rs, value.rs, or serialization edits.
 - Port basis: memory.c:SET_STRING_ELT/SET_VECTOR_ELT mutate the existing
   SEXP; attrib.c:installAttrib and R_do_slot_assign do likewise.
   duplicate.c:duplicate1 recursively copies children for deep duplication,
@@ -82,6 +83,29 @@ Slice used throughout ("S4 slice"):
   (slot read +0.479%, generic +0.034%, replacement +0.068%, new +0.045%,
   validation -0.045%). Rank remains slot read, new, validObject,
   replacement, generic. Slot fast path is a handoff, not a claimed win.
+
+- Full candidate Rcpp: **1,610 pass / 13 fail -> 1,620 pass / 3 fail**,
+  exactly ten FAIL->PASS records and no PASS->FAIL or missing records.
+  Sugar remains **493/493**, all files complete with exit 0 and no
+  stack-imbalance warnings. Fixes are the ten assertions classified above.
+- Corrected XPtr classification: both failures were child R processes
+  reporting "there is no package called 'Rcpp'". Exporting
+  `R_LIBS=/tmp/methods7/lib` makes XPtr **8/8 on baseline and candidate**.
+  Replacing those two harness failures gives **1,612/11 ->
+  1,622/1**; the sole remaining runtime failure is message sinking.
+  Also reran the S4 file freshly on the copied GNU R 4.5.0 executable:
+  **20/20**, matching the candidate; the old full-oracle S4 failures
+  are not reproducible in isolation and are not a spec to emulate.
+- Message-sink handoff: in builtins/io.rs, `conn_write` treats terminal
+  stderr directly, bypassing `Interp::write_err`'s error_con diversion.
+  Reproduce with `out <- character(); con <- textConnection("out", "w",
+  local=TRUE); sink(con, type="message"); message("direct");
+  sink(type="message"); close(con); print(out)`: out is empty on robigo,
+  `"direct"` on GNU R. Fix belongs to the connections owner.
+- Remaining bridge work beyond these assertions: immediate visibility of
+  C writes during C->R callbacks, `.External` write-back, and aliasing of
+  newly created nested C objects across returns. These need separate
+  fixtures; do not claim the transitional bridge is a shared object heap.
 
 ## 2026-10-30: round 7 Rcpp retest and S4 dispatch allocations
 
