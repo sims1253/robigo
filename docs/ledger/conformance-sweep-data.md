@@ -1,5 +1,20 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 9): final append-conflict rebase
+
+- Rebased onto 805e5fb after newer main ratchet entries caused an append
+  conflict in tests/r/passing.txt. Keep both sides. No source conflict in
+  the bytecode implementation; serialize.rs, value.rs and funs.rs are
+  byte-for-byte unchanged from the fully verified code batch.
+- Rebuilt the combined head and reran standard conformance, VM guards and
+  compiled_matches_interpreted: all three checks pass. Formatting and
+  source diff checks pass; the worktree is clean after this ledger update.
+- Latest exact-base startup: 44,167,789 -> 44,175,555 instructions
+  (+0.018%). Earlier base-specific numbers below remain experiment history.
+- Compiler construction/introspection internals and the perf-vm internal
+  call handoff remain the concrete next steps. No vm.rs/compile.rs edits.
+
+
 ## 2026-10-30 (round 9): delivery candidate
 
 - Keep direct special/reference-cell reads and immediate NULL, symbol,
