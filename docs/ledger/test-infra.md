@@ -73,11 +73,17 @@
   delete/modify, resolved by keeping the deletion and running
   `scripts/ratchet.py migrate` (which reads the file and creates the
   markers), or by keeping the file: the loaders read both.
-- **follow-ups:**
-  - `scripts/parse-corpus.py` still keeps `tests/parse/passing/<corpus>.txt`
-    (one sorted file per corpus, rewritten by `--update`). It is the same
-    conflict shape, but the parse corpus is ratcheted by one track; the
-    marker mechanism ports directly if that changes.
-  - The corpus ratchets' per-PR diffs now list files instead of lines;
-    `scripts/corpus.py absorb` creates a few hundred files for a big
-    fastr shard, which is the intended shape.
+- **follow-up (done on `track/test-infra-parse-ratchet`):** the parse
+  ratchet (`tests/parse/passing/<corpus>.txt`, 41,067 entries in 6 files,
+  rewritten sorted by `--update`) had the same conflict shape.
+  `scripts/parse-corpus.py` now uses `tests/parse/passing/<corpus>/<id>.pass`
+  with the same loader/add/migrate semantics (`check` reports a marker
+  that names no source as `RATCHET: marker names no source`, and
+  `migrate` converts a legacy list after proving no entry is lost).
+  Counts: rlib 834, rtests 95, fastr 31,374, gnur-tests 59,
+  gnur-examples 1,153, cran 7,552 — every set identical; `check`:
+  fastr 31,374/31,374, gnur-tests 59/59, gnur-examples 1,153/1,153,
+  rlib 834/834, rtests 95/95, 0 lost.
+- The corpus ratchets' per-PR diffs now list files instead of lines;
+  `scripts/corpus.py absorb` creates a few hundred files for a big
+  fastr shard, which is the intended shape.
