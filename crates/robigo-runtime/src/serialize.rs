@@ -1470,7 +1470,7 @@ const BC_ARGC: &[usize] = &[
 // robigo never installs GNU R's threaded addresses. Normalize the version and
 // check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
 #[cfg(feature = "bytecode-fidelity")]
-fn portable_bc_code(mut code: Value) -> RResult<Value> {
+pub(crate) fn portable_bc_code(mut code: Value) -> RResult<Value> {
     let Value::Int(v) = &mut code else { return Err(corrupt()) };
     let Some(&version) = v.data.first() else { return Ok(Value::Null) };
     if !(9..=12).contains(&version) {

@@ -21,6 +21,12 @@ cover standalone bytecode, attributes, equality and source evaluation. Version
 9 and 13 inputs change the portable instruction version word through GNU R's
 `writeBin()`. GNU R's `readRDS()` and `saveRDS()` produce their canonical outputs.
 
+Round 10 construction fixtures (`constructed*.rds`) are produced by
+`generate-constructed.r` under the same Debian oracle. They cover closures
+built with `bcClose`, shared language constants and nested code in versions
+2 and 3. `bytecode_construct.R` constructs them independently and compares
+both `serialize()` and `saveRDS()` with the recorded bytes.
+
 `real-constants.rds` covers the deferred scalar representation, including
 negative zero, R NA, IEEE NaN and infinities. The Rust metadata tests compare
 its IEEE bits and serialized bytes before and after inspection.

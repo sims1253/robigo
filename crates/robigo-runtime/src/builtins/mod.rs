@@ -15,6 +15,8 @@ mod arith_exact;
 pub mod array;
 pub mod attrib;
 pub mod bind;
+#[cfg(feature = "bytecode-fidelity")]
+pub mod bytecode;
 pub mod character;
 pub mod coerce;
 pub mod complex;
@@ -124,6 +126,8 @@ static TABLES: &[&[Builtin]] = &[
     arith::DEFS,
     attrib::DEFS,
     bind::DEFS,
+    #[cfg(feature = "bytecode-fidelity")]
+    bytecode::DEFS,
     coerce::DEFS,
     lang::DEFS,
     envir::DEFS,

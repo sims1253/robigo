@@ -71,6 +71,7 @@ pub static DEFS: &[Builtin] = &[
     internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
+    #[cfg(not(feature = "bytecode-fidelity"))]
     internal("is.builtin.internal", do_is_builtin_internal, 1),
     internal("setNumMathThreads", do_one, 1),
     internal("setMaxNumMathThreads", do_one, 1),
@@ -562,14 +563,6 @@ fn do_active_binding_function(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &
     }
 }
 
-fn do_is_builtin_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Sym(s) => s.name().to_string(),
-        _ => return Err(Flow::error("invalid symbol")),
-    };
-    Ok(Value::lgl(super::lookup_internal(&name).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
-}
-
 fn do_make_lazy(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let vars = arg(&args, 0);
     let vals = crate::coerce::to_list(&arg(&args, 1));
@@ -627,4 +620,13 @@ fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_identity(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(arg(&args, 0))
+}
+
+#[cfg(not(feature = "bytecode-fidelity"))]
+fn do_is_builtin_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let name = match arg(&args, 0) {
+        Value::Sym(s) => s.name().to_string(),
+        _ => return Err(Flow::error("invalid symbol")),
+    };
+    Ok(Value::lgl(super::lookup_internal(&name).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
 }
