@@ -95,6 +95,10 @@ pub trait NativeBridge: Sync {
     fn finalizers_active(&self) -> bool {
         false
     }
+    /// Whether a runtime wrapper contains an environment or external pointer.
+    fn is_finalizer_key(&self, key: &Value) -> bool {
+        matches!(key, Value::Env(_) | Value::ExtPtr(_))
+    }
     /// Register a runtime reference object in the native weakref queue.
     fn register_finalizer(&self, _interp: &mut Interp, _key: &Value, _fun: &Value, _onexit: bool) -> RResult<()> {
         Err(Flow::error("robigo: environment finalizers require the native bridge"))

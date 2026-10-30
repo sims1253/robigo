@@ -86,6 +86,31 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   cycle reclamation belongs to the live-heap GC work. Parser escape-origin
   metadata remains a separate topic: gram.y's oct_or_hex suppresses the
   UTF-8 mark; carry this through lexer constants and their interning keys.
+- Rebased #98 onto d81d29c after later main merges made the PR
+  unmergeable and prevented pull_request CI from starting. Source hunks
+  combined automatically; ledger and passing.txt conflicts preserve both
+  topics and every one of main's 250 ratchet entries. Combined tree has
+  254 recorded scripts; fresh release verification is running.
+- Pre-rebase graphics: 181/184 initially, 182/184 after hcl passed alone
+  (contention timeout). axis.POSIXct and plot.window both fail with the
+  base binary too. GC torture passes 21 collector tests and both pairs
+  of C API integration tests; doc tests then fail because another shared
+  target build removed runtime/numerics dependency files. A locked fresh
+  verification is running; no source/test workaround was added.
+- Additional native-boundary probe found a real abort: CoreRef wrappers
+  use runtime ExtPtr for native weak references too. reg.finalizer checked
+  only the wrapper variant, then NewWeakRef raised outside a C boundary.
+  GNU R instead reports the catchable first-argument validation error,
+  before checking fun/onexit. Added a bridge type predicate using the
+  underlying SEXP and an oracle-recorded four-case priority fixture.
+  Candidate verification is pending; #98 is temporarily draft so the
+  earlier head is not merged while this correction is verified.
+- Parser follow-up baseline: four of seven source-literal encoding marks
+  match. Octal UTF-8, hex UTF-8, and literal UTF-8 containing an ASCII
+  octal escape are wrongly marked UTF-8 instead of native/unknown; all
+  seven byte sequences already match. Closure constants reproduce the
+  same distinction (two of four marks match). Preserve the lexer’s existing
+  byte_escape flag through syntax literals and lang::const_to_value.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 

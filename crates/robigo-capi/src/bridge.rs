@@ -1854,6 +1854,11 @@ impl NativeBridge for Bridge {
         HOST_WEAK_REFS.with(|active| active.get())
     }
 
+    // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.
+    fn is_finalizer_key(&self, key: &Value) -> bool {
+        core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
+    }
+
     fn register_finalizer(&self, interp: &mut Interp, key: &Value, fun: &Value, onexit: bool) -> RResult<()> {
         enter(interp, |interp| unsafe {
             ensure_ready(interp);

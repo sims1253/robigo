@@ -442,7 +442,9 @@ fn do_gc_time(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
 // R: memory.c:do_regFinaliz
 fn do_reg_finalizer(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let e = arg(&args, 0);
-    if !matches!(e, Value::Env(_) | Value::ExtPtr(_)) {
+    if !matches!(e, Value::Env(_) | Value::ExtPtr(_))
+        || crate::native::bridge().is_some_and(|bridge| !bridge.is_finalizer_key(&e))
+    {
         return Err(Flow::error("first argument must be environment or external pointer"));
     }
     if !matches!(arg(&args, 1), Value::Closure(_)) {
