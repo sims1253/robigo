@@ -82,6 +82,8 @@ thread_local! {
     /// it is kept here rather than in every call. The weak reference keeps
     /// the address from being reused while the entry exists; entries of
     /// dropped calls are swept when the map has doubled.
+    /// R: duplicate.c:duplicate1 normalizes duplicated call tails to LISTSXP,
+    /// so metadata intentionally does not follow a cloned Lang.
     static LANG_CELLS: std::cell::RefCell<HashMap<usize, (std::rc::Weak<Lang>, Vec<usize>)>> =
         std::cell::RefCell::new(HashMap::new());
     static LANG_CELLS_SWEEP: std::cell::Cell<usize> = const { std::cell::Cell::new(64) };
