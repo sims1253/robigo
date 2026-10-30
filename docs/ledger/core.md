@@ -14,13 +14,17 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   datetime.c:valid_POSIXlt coerce its argument in place.
 - Spec read: memory.c `VECTOR_ELT`/`SET_VECTOR_ELT`/`SET_VECTOR_ELT_0`,
   `FIX_REFCNT`, `CHECK_OLD_TO_NEW`, duplicate.c `duplicate1`/`duplicate`
-  (deep) vs `shallow_duplicate`. The rule: the C cell store never
-  duplicates; the R-level replacement primitives are the ones that check
-  `MAYBE_REFERENCED` and duplicate first. `CHECK_OLD_TO_NEW` is a
-  generational barrier (no counterpart on the Rc heap) and `FIX_REFCNT` is
-  the retain/drop this already does. `VECTOR_ELT` reads without
-  duplicating and only ALTREP adds MARK_NOT_MUTABLE; runtime compact
-  sequences are atomic, so no list ALTREP exists here.
+  (deep) vs `shallow_duplicate`. 4.5.0's memory.c has no
+  `maybe_write_barrier`; the store sites call `CHECK_OLD_TO_NEW`, a
+  generational barrier with no counterpart on the Rc heap (and
+  `FIX_REFCNT` is the retain/drop this already does). The rule: the C
+  cell store never duplicates; the R-level replacement primitives are the
+  ones that check `MAYBE_REFERENCED` and duplicate first. `VECTOR_ELT`
+  reads without duplicating and only ALTREP adds MARK_NOT_MUTABLE; runtime
+  compact sequences are atomic, so no list ALTREP exists here.
+  `SET_STRING_ELT` is not exposed: every R-visible caller duplicates first
+  (util.c:do_setencoding) and CHARSXP elements are immutable, so no
+  runtime path stores one through an alias.
 - Implementation: `Value::set_vector_elt_through_alias(i, value)` for
   List (VECSXP) and Expr (EXPRSXP). The unique case writes the cell
   through `Rc::as_ptr` (the `Rc::get_mut` unique branch); the shared case
