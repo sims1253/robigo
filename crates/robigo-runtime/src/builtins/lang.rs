@@ -680,7 +680,10 @@ pub fn substitute(e: &Value, env: Option<&Env>) -> RResult<Value> {
                 Value::pairlist(items)
             } else {
                 let l = Rc::new(Lang::from_items(items, l.attrs.clone()));
-                crate::serialize::set_lang_cells(&l, lang_cells >> 1);
+                let lang_cells = lang_cells >> 1;
+                if lang_cells != 0 {
+                    crate::serialize::set_lang_cells(&l, lang_cells);
+                }
                 Value::Lang(l)
             }
         }

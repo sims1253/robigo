@@ -104,6 +104,10 @@ pub fn set_lang_cells(l: &Rc<Lang>, bits: u64) {
 
 /// The LANGSXP argument cells of `l` (see `set_lang_cells`).
 fn lang_cells(l: &Rc<Lang>) -> u64 {
+    // Every registry entry owns a Weak: ordinary calls need no TLS/map lookup.
+    if Rc::weak_count(l) == 0 {
+        return 0;
+    }
     LANG_CELLS.with(|m| {
         let m = m.borrow();
         if m.is_empty() {
@@ -118,8 +122,14 @@ struct PNode {
     attr: Value,
     tag: Value,
     car: Value,
-    ty: u32,
 }
+
+// Keep Vec<PNode> -> Vec<Arg> collection allocation-free: incompatible
+// element sizes make Vec's in-place collector shrink/reallocate the buffer.
+const _: () = assert!(
+    std::mem::align_of::<PNode>() == std::mem::align_of::<Arg>()
+        && std::mem::size_of::<PNode>() % std::mem::size_of::<Arg>() == 0
+);
 
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
@@ -586,6 +596,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     fn read_pairlist(&mut self, first_flags: u32) -> RResult<Value> {
         let head_type = first_flags & 255;
         let mut nodes: Vec<PNode> = Vec::new();
+        let mut lang_cells = 0u64;
         let mut flags = first_flags;
         let mut ty = head_type;
         let mut head_attr = Value::Null;
@@ -596,7 +607,14 @@ impl<'a, 'i> Reader<'a, 'i> {
             if nodes.is_empty() {
                 head_attr = attr.clone();
             }
-            nodes.push(PNode { attr, tag, car, ty });
+            // R: serialize.c:ReadItem preserves each cons cell's type.
+            // Record rare LANGSXP argument cells while walking the chain;
+            // ordinary calls keep the same reader-node layout as pairlists.
+            let k = nodes.len();
+            if ty == LANGSXP && k > 0 && k <= 64 {
+                lang_cells |= 1 << (k - 1);
+            }
+            nodes.push(PNode { attr, tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
                 // The CDR is the body / expression, read as a single item.
                 break;
@@ -653,13 +671,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 Ok(Value::Promise(Rc::new(p)))
             }
             _ => {
-                // LANGSXP cells after a call's first (see `set_lang_cells`)
-                let lang_cells = nodes
-                    .iter()
-                    .skip(1)
-                    .take(64)
-                    .enumerate()
-                    .fold(0u64, |m, (k, n)| if n.ty == LANGSXP { m | 1 << k } else { m });
                 let mut items: Vec<Arg> = nodes.into_iter().map(|n| Arg::new(n.tag.as_sym(), n.car)).collect();
                 // A non-NULL CDR at the end (dotted pair) is appended;
                 // read fresh here, so its items can move.
@@ -674,7 +685,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut v = match head_type {
                     LANGSXP => {
                         let l = Rc::new(Lang::from_items(items, None));
-                        set_lang_cells(&l, lang_cells);
+                        if lang_cells != 0 {
+                            set_lang_cells(&l, lang_cells);
+                        }
                         Value::Lang(l)
                     }
                     DOTSXP => Value::Dots(Rc::new(items)),

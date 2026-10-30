@@ -133,6 +133,54 @@ Slice used throughout ("S4 slice"):
 | replace | 39,126.714 | 38,692.237 | 1.011 |
 | new | 352,891.758 | 315,224.912 | 1.119 |
 | valid | 178,971.906 | 163,136.676 | 1.097 |
+## 2026-10-30: S4 perf ablation — reader node layout, not dispatch lookups
+
+- Pinned attribution to main f5dae40 and #71 ad37f09. Debian private
+  target `.robigo/perf-target`, Rust 1.99.0/release profile unchanged,
+  CI natives and flat cache exported in every measurement. Four compiled
+  runtime variants: main-only, label-only, serialization-only, full PR.
+  A fifth measurement disabled gc normalization in the Python driver
+  (the child binary stayed identical). No experimental removal is kept.
+- The first ablation accidentally read a newer origin/main lang.rs while
+  vm.rs was still at f5; compilation rejected its changed setter API.
+  Discarded that setup and pinned all source snapshots to f5 explicitly.
+- Percent instruction changes versus the locally compiled main runtime:
+
+| benchmark | label only | serialization only | full PR | fixed PR |
+|---|---:|---:|---:|---:|
+| robigo/s4-generic | +0.000% | +0.852% | +0.862% | +0.096% |
+| robigo/s4-new | -0.006% | +0.746% | +0.737% | +0.076% |
+| robigo/s4-slot-read | +0.063% | +1.064% | +1.054% | +0.137% |
+| robigo/s4-slot-write | +0.049% | +0.972% | +0.984% | +0.122% |
+| robigo/s4-valid | -0.009% | +0.748% | +0.746% | +0.085% |
+
+- gc-mask removal changed counts by -0.020% to +0.004%, measurement
+  variation; perf.py imports corpus.robigo_path, and normalization runs
+  outside the callgrind child. Label-only stays within 0.064%. The
+  serialization change accounts for the entire ~4M fixed startup cost.
+- d7855d4 introduced PNode.ty, retained by 29b07a2. It grows reader nodes
+  48 -> 56 bytes; Args are 24 bytes. Vec's in-place collection must shrink
+  an allocation whose byte capacity no longer fits an integral Arg
+  capacity. Startup profiles show +1.72M instructions in the conversion
+  and +0.81M in mimalloc realloc, plus node growth. This is startup/lazy
+  loading overhead, not a lookup in S4 dispatch: lang_cells is writer-only.
+  Rust documents the layout fixup at:
+  https://doc.rust-lang.org/src/alloc/vec/in_place_collect.rs.html
+- Fix: track rare LANGSXP cells in a stack bitmask while reading; remove
+  PNode.ty and its second-pass scan. A const layout check protects reuse.
+  Register metadata only when nonzero. Writer calls with no Weak reference
+  skip TLS and the map entirely. Lang's header is unchanged. Retained
+  correctness and all ratchet entries; no bundled fix needs splitting.
+- Exact class-generator serialize(version=2/3) matches fresh GNU R;
+  seven print/byte-window/iconv/substitute fixtures pass in all three
+  tiers (21/21). Full local gate on current main follows before push.
+- Recheck count reconciliation: the workflow exports ROBIGO_NATIVES and
+  ROBIGO_RDBFLAT only in Measure, not Compare. Reproduced generic at
+  499,316,980 configured vs 595,832,075 without both (CI 499,603,837 vs
+  596,128,961). Other second counts similarly include ~88M extra startup
+  instructions. recheck takes min(first, second), so the original slower
+  first count was retained: the regression was real. Keep rechecks in
+  the same configuration; do not change the threshold or baseline.
 
 ## 2026-10-30: round 7 Rcpp retest and S4 dispatch allocations
 
