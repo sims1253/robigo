@@ -1,5 +1,58 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 12): putconst follow-up & data filter audit
+
+- Track ledger update for round 12 on main `758efb7` / `a32c5623`.
+- `putconst` status: checked `docs/ledger/core.md`. Core round 7 (cycle
+  reclamation / finalizers) has not yet landed shared-list mutation
+  (`SET_VECTOR_ELT` through an alias) on `main`.
+- Implemented the parts that do not need shared-list mutation:
+  - Registered `putconst` in `builtins/bytecode.rs` under the
+    `bytecode-fidelity` feature with GNU R `eval.c:do_putconst` semantics:
+    arity validation via `check_arity`, buffer type check (`"constant buffer
+    must be a generic vector"`), count bounds check (`"bad constCount value"`),
+    and duplicate constant matching using `identical_flags` with
+    `ignore_env: false` (matching `R_compute_identical` flag 16: take closure
+    environments into account). Found constants return their 0-based index
+    without mutating the buffer. Uniquely-owned temporary buffers are mutated
+    in-place; aliased buffers cleanly fail with a precise error explaining the
+    blocker on core's shared-list mutation.
+  - Added fixture `cmpfun-simple.rds` generated with GNU R oracle
+    `robigo-oracle:4.5.0` (`compiler::cmpfun(function(x) x + 1L)`), and
+    updated `generate-constructed.r`.
+  - Extended `tests/r/serialize/bytecode_construct.R` with read-only
+    `compiler::cmpfun` layout comparisons (testing execution `cf(5L) == 6L`,
+    AST body, `typeof(.Internal(bodyCode(cf))) == "bytecode"`, and
+    `compiler::disassemble(cf)` disassembly / constants / expressionsIndex
+    layout match) and `putconst` read-only lookup and error validation.
+  - Regenerated oracle output with `robigo-oracle:4.5.0` and verified:
+    `ROBIGO_CONF_FILTER=tests/r/serialize/bytecode_ cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance`
+    passes in all 3 tiers (1 passed; exact stdout/stderr/status match).
+- Data filter audit (8,411/8,426 pass):
+  - Ran the FastR corpus data filter. Baseline is 8,411/8,426 (+1 pass from main:
+    `TestSimpleVectors/502b171d49be56da`).
+  - Audited all 15 remaining failures against all track ledgers (`cli.md`,
+    `conformance-sweep-lang.md`, `parser.md`, `core.md`, `methods.md`):
+    - `factor/{04c28b41, 35c890b3, 7ae303df, a4f51c38, b266f156, e210c097}` (6 cases):
+      traceback formatting (`Calls: <Anonymous>` vs `Calls: print`), owned by
+      `conformance-lang` / `core`.
+    - `cbind/44215c10fd2f517b` & `rbind/51a1b61da9fb8f12` (2 cases): deparsing
+      unused arguments in error calls (`(v)` vs `(1)`), owned by
+      `conformance-print` / `conformance-lang`.
+    - `cbind/61d7e05c8f316038` & `rbind/e2d15825d89e98c7` (2 cases): GNU R
+      oracle segfaults (status -11 in recorded oracle).
+    - `matcharg/{139373f1, 85380d0ca4}` (2 cases): `match.arg` implementation,
+      owned by `conformance-lang`.
+    - `TestSimpleVectors/{8745c2a5, 94cf5bf3}` (2 cases): complex assignment
+      evaluation order (`fast_replace` in `lang.rs`), owned by `conformance-lang`.
+    - `order/add626733541c799` (1 case): host UTF-8 collation mismatch against
+      C locale; passes on Debian CI.
+  - Conclusion: 0 unclaimed failures exist in the data filter for this track.
+- Wiring blocker note:
+  - Once core lands shared-list mutation and startup lands `savlolload.c`,
+    wire `putconst` + `cmpfile`/`loadcmp` and re-enable construction probes in
+    the `bytecode-fidelity` CI job.
+
 ## 2026-10-30 (round 10): compiler construction internals
 
 - Claim builtins/bytecode.rs and its registration, plus construction fixtures.
