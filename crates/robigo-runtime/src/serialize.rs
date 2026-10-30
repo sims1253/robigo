@@ -156,6 +156,7 @@ fn corrupt() -> Flow {
 }
 
 impl<'a, 'i> Reader<'a, 'i> {
+    #[inline]
     fn bytes(&mut self, n: usize) -> RResult<&'a [u8]> {
         if self.pos + n > self.data.len() {
             return Err(Flow::error("error reading from connection"));
@@ -179,8 +180,24 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn int(&mut self) -> RResult<i32> {
         match self.format {
-            Format::Xdr => Ok(i32::from_be_bytes(self.bytes(4)?.try_into().unwrap())),
-            Format::Binary => Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap())),
+            Format::Xdr => {
+                let pos = self.pos;
+                if pos + 4 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                self.pos = pos + 4;
+                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 4]) };
+                Ok(i32::from_be_bytes(b))
+            }
+            Format::Binary => {
+                let pos = self.pos;
+                if pos + 4 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                self.pos = pos + 4;
+                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 4]) };
+                Ok(i32::from_le_bytes(b))
+            }
             Format::Ascii => {
                 let w = self.word()?;
                 if w == "NA" {
@@ -196,14 +213,33 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn int2(&mut self) -> RResult<(i32, i32)> {
         match self.format {
-            Format::Xdr | Format::Binary => {
-                let b = self.bytes(8)?;
-                let (a, c): ([u8; 4], [u8; 4]) = (b[..4].try_into().unwrap(), b[4..].try_into().unwrap());
-                if self.format == Format::Xdr {
-                    Ok((i32::from_be_bytes(a), i32::from_be_bytes(c)))
-                } else {
-                    Ok((i32::from_le_bytes(a), i32::from_le_bytes(c)))
+            Format::Xdr => {
+                let pos = self.pos;
+                if pos + 8 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
                 }
+                self.pos = pos + 8;
+                let (a, c) = unsafe {
+                    let ptr = self.data.as_ptr().add(pos);
+                    let a = std::ptr::read_unaligned(ptr as *const [u8; 4]);
+                    let c = std::ptr::read_unaligned(ptr.add(4) as *const [u8; 4]);
+                    (i32::from_be_bytes(a), i32::from_be_bytes(c))
+                };
+                Ok((a, c))
+            }
+            Format::Binary => {
+                let pos = self.pos;
+                if pos + 8 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                self.pos = pos + 8;
+                let (a, c) = unsafe {
+                    let ptr = self.data.as_ptr().add(pos);
+                    let a = std::ptr::read_unaligned(ptr as *const [u8; 4]);
+                    let c = std::ptr::read_unaligned(ptr.add(4) as *const [u8; 4]);
+                    (i32::from_le_bytes(a), i32::from_le_bytes(c))
+                };
+                Ok((a, c))
             }
             Format::Ascii => Ok((self.int()?, self.int()?)),
         }
@@ -240,12 +276,22 @@ impl<'a, 'i> Reader<'a, 'i> {
     fn real(&mut self) -> RResult<f64> {
         match self.format {
             Format::Xdr => {
-                let b = self.bytes(8)?;
-                Ok(f64::from_be_bytes(b.try_into().unwrap()))
+                let pos = self.pos;
+                if pos + 8 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                self.pos = pos + 8;
+                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 8]) };
+                Ok(f64::from_be_bytes(b))
             }
             Format::Binary => {
-                let b = self.bytes(8)?;
-                Ok(f64::from_le_bytes(b.try_into().unwrap()))
+                let pos = self.pos;
+                if pos + 8 > self.data.len() {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                self.pos = pos + 8;
+                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 8]) };
+                Ok(f64::from_le_bytes(b))
             }
             Format::Ascii => {
                 let w = self.word()?;

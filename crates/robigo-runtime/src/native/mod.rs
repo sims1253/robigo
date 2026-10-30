@@ -301,19 +301,26 @@ impl Dll {
         let mut routines = Vec::new();
         let name: Rc<str> = Rc::from(name);
         for line in TABLE.lines() {
-            let f: Vec<&str> = line.split('\t').collect();
-            if f.len() != 4 || f[0] != &*name {
+            let mut parts = line.split('\t');
+            let Some(pkg) = parts.next() else { continue };
+            if pkg != &*name {
                 continue;
             }
-            if f[1] == "DLL" {
-                dynamic_lookup = f[2] == "TRUE";
-                force_symbols = f[3] == "TRUE";
-            } else if let Some(interface) = Interface::parse(f[1]) {
+            let Some(f1) = parts.next() else { continue };
+            let Some(f2) = parts.next() else { continue };
+            let Some(f3) = parts.next() else { continue };
+            if parts.next().is_some() {
+                continue;
+            }
+            if f1 == "DLL" {
+                dynamic_lookup = f2 == "TRUE";
+                force_symbols = f3 == "TRUE";
+            } else if let Some(interface) = Interface::parse(f1) {
                 routines.push(Rc::new(Routine {
                     package: name.clone(),
-                    name: Rc::from(f[2]),
+                    name: Rc::from(f2),
                     interface,
-                    nargs: f[3].parse().unwrap_or(-1),
+                    nargs: f3.parse().unwrap_or(-1),
                     addr: 0,
                 }));
             }

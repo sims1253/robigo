@@ -7,6 +7,34 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 14): connection write buffering and startup-perf profile
+
+Branch `track/startup-perf-r14-conn-buffering`.
+
+### 1. Connection Write Buffering (`builtins/io.rs`)
+- Added stdio-style write buffering (8KB `wbuf`) to `ConnKind::File`. Writes via `con_write_bytes` and `conn_write` accumulate in memory until `FILE_WBUF_SIZE` (8192) bytes or a flush point:
+  - Switching from write to read (`file_switch_to_read`) flushes `wbuf` and records the write position before seeking.
+  - Seeking (`con_seek`) flushes `wbuf` so file stream position matches logical position.
+  - Truncation (`do_truncate`) flushes `wbuf` prior to `f.set_len()`.
+  - Closing (`con_close_raw`) and explicit flush (`conn_flush`) flush `wbuf`.
+  - `Drop` on `Connection` flushes `wbuf` and underlying `File`.
+  - Large writes (>= 8KB) bypass buffering and write directly after flushing any pending bytes.
+  - Fifo connections (`fifo: true`) bypass buffering to preserve IPC semantics.
+- Fast-path inlined check for `last_was_write`: `file_fgetc` checks `*last_was_write` in-place, eliminating repeated enum matching and destructuring across millions of character reads.
+- **Coordination note for `perf-vm`**: `ConnKind::File` write buffering in `builtins/io.rs` is active; `con_write_bytes` batches unbuffered syscall writes into 8KB chunks.
+- Impact on `benchmarks/suite/csv.R` (50k rows read/write, caches off):
+  - Baseline (`c3bb38a`): 1,197,221,170 instructions
+  - Candidate: 1,172,915,510 instructions (**-24,305,660 instructions, -2.03%**)
+
+### 2. Startup & Deserialization Hotspots (`library(stats)`)
+- `serialize.rs`:
+  - `Reader::int`, `Reader::int2`, and `Reader::real`: replaced `self.bytes(4)?.try_into().unwrap()` slice-and-result machinery with direct bounds-checked unaligned loads (`std::ptr::read_unaligned`). Eliminated `TryFromSliceError` machinery, panic checking, and bounds checks on hot deserialization paths.
+- `native/mod.rs`:
+  - `Dll::new`: eliminated per-line heap allocation (`line.split('\t').collect::<Vec<&str>>()`) across the entire `TABLE` (`rlib/native-routines.tsv`). Replaced with zero-allocation iterator and early bail out when package prefix does not match `name`.
+- Impact on `library(stats)` (`R_DEFAULT_PACKAGES=NULL`, caches off: `ROBIGO_RDBFLAT="" ROBIGO_NATIVES=""`):
+  - Baseline (`c3bb38a`): 204,971,750 instructions
+  - Candidate: 203,261,242 instructions (**-1,710,508 instructions, -0.83%**)
+
 ## 2026-10-30 (round 13): compiled file persistence
 
 - Baseline `758efb72`: both new conformance scripts fail at the missing
