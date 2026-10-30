@@ -74,3 +74,32 @@ SEXP capi_convert(SEXP x) {
     UNPROTECT(5);
     return ans;
 }
+
+// Alias visibility: GNU R's SETCAR/SETCDR/SET_TAG mutate the caller's cells
+// in place (main/memory.c); they do not duplicate. Every binding of the
+// object sees the new cell, as the R helpers expect.
+SEXP capi_setcar_alias(SEXP x) {
+    SETCAR(x, ScalarInteger(99));
+    return x;
+}
+
+SEXP capi_setcar2_alias(SEXP x) {
+    SETCAR(CDR(x), ScalarInteger(98));
+    return x;
+}
+
+SEXP capi_setcdr_alias(SEXP x, SEXP tail) {
+    SETCDR(x, tail);
+    return x;
+}
+
+SEXP capi_settag_alias(SEXP x, SEXP tag) {
+    SET_TAG(x, tag);
+    return x;
+}
+
+SEXP capi_setfun_alias(SEXP x) {
+    SETCAR(x, install("*"));
+    SETCAR(CDR(x), ScalarInteger(6));
+    return x;
+}
