@@ -1,10 +1,13 @@
 //! LAPACK-based linear algebra internals (GNU R's modules/lapack/Lapack.c).
 //!
-//! The LAPACK and reference BLAS routines these need are ported from the
-//! Fortran sources R ships (`src/modules/lapack/dlapack.f`,
-//! `src/extra/blas/blas.f`), keeping their operation order so results
-//! agree with R linked against the reference libraries. Matrices are
-//! column-major slices with a leading dimension, as in Fortran.
+//! Real eigen/SVD, pivoted Cholesky and the complex eigen/SVD/solve paths
+//! bind the system LAPACK (liblapack.so.3) lazily on first use, exactly as
+//! GNU R does, so results match the oracle bit for bit. The remaining
+//! LAPACK and reference BLAS routines are ported from the Fortran sources
+//! R ships (`src/modules/lapack/dlapack.f`, `src/extra/blas/blas.f`),
+//! keeping their operation order so results agree with R linked against
+//! the reference libraries. Matrices are column-major slices with a
+//! leading dimension, as in Fortran.
 
 use super::{arg, internal};
 use crate::attrib::set_attrib;
@@ -18,8 +21,14 @@ use crate::value::*;
 use super::array::dtrsm_left;
 
 pub static DEFS: &[Builtin] = &[
+    internal("La_rs", do_la_rs, 2),
+    internal("La_rs_cmplx", do_la_rs_cmplx, 2),
+    internal("La_rg", do_la_rg, 2),
+    internal("La_rg_cmplx", do_la_rg_cmplx, 2),
+    internal("La_svd", do_la_svd, 5),
+    internal("La_svd_cmplx", do_la_svd_cmplx, 5),
     internal("La_solve", do_la_solve, 3),
-    internal("La_solve_cmplx", do_la_unimplemented, 2),
+    internal("La_solve_cmplx", do_la_solve_cmplx, 3),
     internal("det_ge_real", do_det_ge_real, 2),
     internal("La_chol", do_la_chol, 3),
     internal("La_chol2inv", do_la_chol2inv, 2),
@@ -639,6 +648,244 @@ fn dpotri_upper(a: &mut [f64], n: usize) -> usize {
 }
 
 // ----------------------------------------------------------------------
+// System LAPACK bridge
+//
+// GNU R's lapack module (src/modules/lapack) links the system LAPACK
+// (liblapack.so.3) and calls its Fortran ABI directly. robigo binds the
+// same shared library lazily on the first call, so eigen()/svd()/chol()
+// results — and La_library()/La_version() — match the oracle running on
+// the same machine bit for bit, and startup pays nothing until then.
+// Fortran string arguments carry hidden trailing length parameters
+// (FCONE) on this ABI. The handle is never closed: the resolved function
+// pointers stay valid for the process lifetime.
+
+type DsyevrFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const u8,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *const f64,
+    *const f64,
+    *const i32,
+    *const i32,
+    *const f64,
+    *mut i32,
+    *mut f64,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+    usize,
+);
+type DgeevFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+);
+type DgesddFn = unsafe extern "C" fn(
+    *const u8,
+    *const i32,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    *mut i32,
+    usize,
+);
+type DpstrfFn = unsafe extern "C" fn(
+    *const u8,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    *mut i32,
+    *const f64,
+    *mut f64,
+    *mut i32,
+    usize,
+);
+type IlaverFn = unsafe extern "C" fn(*mut i32, *mut i32, *mut i32);
+type ZheevFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut i32,
+    usize,
+    usize,
+);
+type ZgeevFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut i32,
+    usize,
+    usize,
+);
+type ZgesddFn = unsafe extern "C" fn(
+    *const u8,
+    *const i32,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut i32,
+    *mut i32,
+    usize,
+);
+type ZgesvFn = unsafe extern "C" fn(*const i32, *const i32, *mut Z, *const i32, *mut i32, *mut Z, *const i32, *mut i32);
+type ZgeconFn = unsafe extern "C" fn(
+    *const u8,
+    *const i32,
+    *const Z,
+    *const i32,
+    *const f64,
+    *mut f64,
+    *mut Z,
+    *mut f64,
+    *mut i32,
+    usize,
+);
+type ZlangeFn = unsafe extern "C" fn(*const u8, *const i32, *const i32, *const Z, *const i32, *mut Z, usize) -> f64;
+
+/// Rcomplex on the C side: two doubles in declaration order (r, i).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Z {
+    r: f64,
+    i: f64,
+}
+
+const _: () = assert!(std::mem::size_of::<Z>() == 16);
+
+struct SystemLapack {
+    dsyevr: DsyevrFn,
+    dgeev: DgeevFn,
+    dgesdd: DgesddFn,
+    dpstrf: DpstrfFn,
+    ilaver: IlaverFn,
+    zheev: ZheevFn,
+    zgeev: ZgeevFn,
+    zgesdd: ZgesddFn,
+    zgesv: ZgesvFn,
+    zgecon: ZgeconFn,
+    zlange: ZlangeFn,
+}
+
+/// The dlsym-resolved address of the bound library's ilaver entry point,
+/// for dladdr in La_library.
+static ILAVER_PTR: std::sync::OnceLock<SendPtr> = std::sync::OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct SendPtr(*mut libc::c_void);
+// SAFETY: an opaque dlsym address that is only read (via dladdr) after the
+// process-wide OnceLock initialization has completed.
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+
+/// dlopen the system LAPACK and resolve the routines R's lapack module
+/// uses. `RTLD_LAZY` keeps the first-call cost to the routines actually
+/// reached, mirroring how little of the library these paths touch.
+fn load_system_lapack() -> Result<SystemLapack, &'static str> {
+    const NAMES: [&[u8]; 3] = [b"liblapack.so.3\0", b"liblapack.so\0", b"libRlapack.so\0"];
+    let mut handle = std::ptr::null_mut();
+    for name in &NAMES {
+        // SAFETY: `name` is NUL-terminated; dlopen is thread-safe.
+        let h = unsafe { libc::dlopen(name.as_ptr().cast(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+        if !h.is_null() {
+            handle = h;
+            break;
+        }
+    }
+    if handle.is_null() {
+        return Err("robigo: system LAPACK library (liblapack.so.3) is unavailable");
+    }
+    // SAFETY: the symbol table is immutable once the library is loaded;
+    // the transmuted pointers are only ever called with matching signatures.
+    unsafe fn sym<T: Copy>(handle: *mut libc::c_void, name: &[u8]) -> Result<T, &'static str> {
+        let p = unsafe { libc::dlsym(handle, name.as_ptr().cast()) };
+        if p.is_null() {
+            return Err("robigo: system LAPACK is missing a required routine");
+        }
+        Ok(unsafe { std::mem::transmute_copy::<*mut libc::c_void, T>(&p) })
+    }
+    unsafe {
+        let ilaver: IlaverFn = sym(handle, b"ilaver_\0")?;
+        let ilaver_ptr: *mut libc::c_void = libc::dlsym(handle, b"ilaver_\0".as_ptr().cast());
+        let _ = ILAVER_PTR.set(SendPtr(ilaver_ptr));
+        let lib = SystemLapack {
+            dsyevr: sym(handle, b"dsyevr_\0")?,
+            dgeev: sym(handle, b"dgeev_\0")?,
+            dgesdd: sym(handle, b"dgesdd_\0")?,
+            dpstrf: sym(handle, b"dpstrf_\0")?,
+            ilaver,
+            zheev: sym(handle, b"zheev_\0")?,
+            zgeev: sym(handle, b"zgeev_\0")?,
+            zgesdd: sym(handle, b"zgesdd_\0")?,
+            zgesv: sym(handle, b"zgesv_\0")?,
+            zgecon: sym(handle, b"zgecon_\0")?,
+            zlange: sym(handle, b"zlange_\0")?,
+        };
+        Ok(lib)
+    }
+}
+
+fn system_lapack() -> RResult<&'static SystemLapack> {
+    static LIB: std::sync::OnceLock<Result<SystemLapack, &'static str>> = std::sync::OnceLock::new();
+    LIB.get_or_init(load_system_lapack).as_ref().map_err(|msg| Flow::error(*msg))
+}
+
+// ----------------------------------------------------------------------
 // The internals
 
 fn is_numeric_matrix(a: &Value) -> bool {
@@ -659,6 +906,19 @@ fn reals(v: &Value) -> Vec<f64> {
     }
 }
 
+/// The complex data of `v`, coerced to complex as Lapack.c's coerceVector
+/// does (quietly, keeping NA). Missing/empty becomes empty.
+fn cplx_data(v: &Value) -> Vec<Z> {
+    match coerce_quiet(v, VType::Cplx) {
+        Value::Cplx(c) => c.data.iter().map(|z| Z { r: z.re, i: z.im }).collect(),
+        _ => vec![],
+    }
+}
+
+fn z_to_value(z: Vec<Z>) -> Value {
+    Value::cplxs(z.into_iter().map(|z| Complex::new(z.r, z.i)).collect())
+}
+
 fn dimnames_elt(v: &Value, k: usize) -> Value {
     match v.get_attr(s::DIMNAMES) {
         Some(Value::List(l)) => l.data.get(k).cloned().unwrap_or(Value::Null),
@@ -675,6 +935,692 @@ fn fmt_g(x: f64) -> String {
         return if x > 0.0 { "inf".into() } else { "-inf".into() };
     }
     robigo_syntax::cfmt::fmt_g(x, 6, false, false)
+}
+
+/// dgesdd/zgesdd's own argument checks for LDU/LDVT, in its order:
+/// LDU < 1, or (A|S and LDU < M), or (O and M < N and LDU < M) → -8;
+/// LDVT < 1, or (A and LDVT < N), or (S and LDVT < MINMN), or
+/// (O and M >= N and LDVT < N) → -10.
+fn svd_ldu_info(job: u8, n: usize, p: usize, ldu: usize, ldvt: usize) -> i32 {
+    if ldu < 1 {
+        return -8;
+    }
+    match job {
+        b'A' | b'S' if ldu < n => -8,
+        b'O' if n < p && ldu < n => -8,
+        _ if ldvt < 1 => -10,
+        b'A' if ldvt < p => -10,
+        b'S' if ldvt < n.min(p) => -10,
+        b'O' if n >= p && ldvt < p => -10,
+        _ => 0,
+    }
+}
+
+/// Last element reached in each column-major output buffer, including
+/// padding between columns. R's public wrapper uses packed matrices, but
+/// direct .Internal callers can supply larger leading dimensions.
+fn svd_writes(job: u8, n: usize, p: usize, ldu: usize, ldvt: usize) -> (usize, usize) {
+    let extent = |rows: usize, cols: usize, ld: usize| {
+        if rows == 0 || cols == 0 { 0 } else { (cols - 1) * ld + rows }
+    };
+    let k = n.min(p);
+    match job {
+        b'A' => (extent(n, n, ldu), extent(p, p, ldvt)),
+        b'S' => (extent(n, k, ldu), extent(k, p, ldvt)),
+        b'O' if n >= p => (0, extent(p, p, ldvt)),
+        b'O' => (extent(n, n, ldu), 0),
+        _ => (0, 0),
+    }
+}
+
+/// R: Lapack.c:La_rs
+fn do_la_rs(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let x = arg(&args, 0);
+    let (n, n2) = dims2(&x);
+    if n != n2 {
+        return Err(Flow::error("'x' must be a square numeric matrix"));
+    }
+    let ov = as_logical(&arg(&args, 1));
+    if ov == NA_LOGICAL {
+        return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // dsyevr would reject LDA = 0 < max(1, N) (parameter 6); R
+        // reports it through libR's interposed xerbla, which robigo
+        // cannot interpose the same way (Debian's own xerbla STOPs).
+        return Err(Flow::error("BLAS/LAPACK routine 'DSYEVR' gave error code -6"));
+    }
+    let n_i = n as i32;
+    // LAPACK trashes its first argument, so hand it a copy as R does.
+    let mut rx = reals(&x);
+    let mut values = vec![0.0f64; n];
+    let mut z = vec![0.0f64; if ov == 0 { n * n } else { 0 }];
+    let mut isuppz = vec![0i32; 2 * n];
+    let jobv: u8 = if ov != 0 { b'N' } else { b'V' };
+    let zp: *mut f64 = if ov == 0 { z.as_mut_ptr() } else { std::ptr::null_mut() };
+    let f = system_lapack()?.dsyevr;
+    let mut m = 0i32;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    let mut itmp = 0i32;
+    // Workspace query (lwork = liwork = -1), then the real call.
+    // R: Lapack.c:La_rs leaves il/iu unset; RANGE='A' ignores them.
+    // SAFETY: every pointer refers to a live allocation of the documented
+    // size for the duration of the call.
+    unsafe {
+        f(
+            &jobv,
+            &b'A',
+            &b'L',
+            &n_i,
+            rx.as_mut_ptr(),
+            &n_i,
+            &0.0,
+            &0.0,
+            &0,
+            &0,
+            &0.0,
+            &mut m,
+            values.as_mut_ptr(),
+            zp,
+            &n_i,
+            isuppz.as_mut_ptr(),
+            &mut tmp,
+            &-1,
+            &mut itmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dsyevr'", info)));
+    }
+    let lwork = tmp as i32;
+    let liwork = itmp;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    let mut iwork = vec![0i32; liwork.max(1) as usize];
+    unsafe {
+        f(
+            &jobv,
+            &b'A',
+            &b'L',
+            &n_i,
+            rx.as_mut_ptr(),
+            &n_i,
+            &0.0,
+            &0.0,
+            &0,
+            &0,
+            &0.0,
+            &mut m,
+            values.as_mut_ptr(),
+            zp,
+            &n_i,
+            isuppz.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lwork,
+            iwork.as_mut_ptr(),
+            &liwork,
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dsyevr'", info)));
+    }
+    let mut result = vec![("values", Value::reals(values))];
+    if ov == 0 {
+        let mut vectors = Value::reals(z);
+        vectors.set_attr_raw(s::DIM, Value::ints(vec![n_i, n_i]));
+        result.push(("vectors", vectors));
+    }
+    Ok(Value::named_list(result))
+}
+
+/// R: Lapack.c:La_rs_cmplx (zheev)
+fn do_la_rs_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let xin = arg(&args, 0);
+    let (n, n2) = dims2(&xin);
+    if n != n2 {
+        return Err(Flow::error("'x' must be a square complex matrix"));
+    }
+    let ov = as_logical(&arg(&args, 1));
+    if ov == NA_LOGICAL {
+        return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // zheev would reject LDA = 0 < max(1, N) (parameter 5). R's own
+        // answer here reads an uninitialized workspace size and fails in
+        // R_alloc; this deterministic guard mirrors the xerbla report.
+        return Err(Flow::error("BLAS/LAPACK routine 'ZHEEV ' gave error code -5"));
+    }
+    let n_i = n as i32;
+    let mut rx = cplx_data(&xin); // zheev overwrites it with the vectors
+    let mut values = vec![0.0f64; n];
+    // R allocates max(3n-2, 1) doubles (guarding n < 1).
+    let rwork_len = if n >= 1 { 3 * n - 2 } else { 1 };
+    let mut rwork = vec![0.0f64; rwork_len];
+    let jobv: u8 = if ov != 0 { b'N' } else { b'V' };
+    let f = system_lapack()?.zheev;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: pointers refer to live allocations of the documented sizes.
+    unsafe {
+        f(
+            &jobv,
+            &b'L',
+            &n_i,
+            rx.as_mut_ptr(),
+            &n_i,
+            values.as_mut_ptr(),
+            &mut tmp,
+            &-1,
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zheev'", info)));
+    }
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    unsafe {
+        f(
+            &jobv,
+            &b'L',
+            &n_i,
+            rx.as_mut_ptr(),
+            &n_i,
+            values.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lwork,
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zheev'", info)));
+    }
+    let mut result = vec![("values", Value::reals(values))];
+    if ov == 0 {
+        let mut vectors = z_to_value(rx);
+        vectors.set_attr_raw(s::DIM, Value::ints(vec![n_i, n_i]));
+        result.push(("vectors", vectors));
+    }
+    Ok(Value::named_list(result))
+}
+
+/// R: Lapack.c:unscramble
+fn unscramble(imaginary: &[f64], n: usize, vecs: &[f64]) -> Value {
+    let mut s = vec![Complex::new(0.0, 0.0); n * n];
+    let mut j = 0;
+    while j < n {
+        if imaginary[j] != 0.0 {
+            let j1 = j + 1;
+            for i in 0..n {
+                s[i + n * j].re = vecs[i + j * n];
+                s[i + n * j1].re = vecs[i + j * n];
+                s[i + n * j].im = vecs[i + j1 * n];
+                s[i + n * j1].im = -vecs[i + j1 * n];
+            }
+            j = j1;
+        } else {
+            for i in 0..n {
+                s[i + n * j].re = vecs[i + j * n];
+                s[i + n * j].im = 0.0;
+            }
+        }
+        j += 1;
+    }
+    let mut v = Value::cplxs(s);
+    v.set_attr_raw(s::DIM, Value::ints(vec![n as i32, n as i32]));
+    v
+}
+
+/// R: Lapack.c:La_rg
+fn do_la_rg(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let x = arg(&args, 0);
+    let (n, n2) = dims2(&x);
+    if n != n2 {
+        return Err(Flow::error("'x' must be a square numeric matrix"));
+    }
+    let mut xvals = reals(&x);
+    let ov = as_logical(&arg(&args, 1));
+    if ov == NA_LOGICAL {
+        return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // dgeev would reject LDA = 0 < max(1, N) (parameter 5; %6s pads
+        // the name in R's interposed-xerbla report).
+        return Err(Flow::error("BLAS/LAPACK routine 'DGEEV ' gave error code -5"));
+    }
+    let vectors = ov == 0;
+    let jobvr: u8 = if vectors { b'V' } else { b'N' };
+    let n_i = n as i32;
+    let mut wr = vec![0.0f64; n];
+    let mut wi = vec![0.0f64; n];
+    let mut right = vec![0.0f64; if vectors { n * n } else { 0 }];
+    let rp: *mut f64 = if vectors { right.as_mut_ptr() } else { std::ptr::null_mut() };
+    let f = system_lapack()?.dgeev;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    // SAFETY: as in La_rs; VL is NULL because JOBVL = 'N'.
+    unsafe {
+        f(
+            &b'N',
+            &jobvr,
+            &n_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            wr.as_mut_ptr(),
+            wi.as_mut_ptr(),
+            std::ptr::null_mut(),
+            &n_i,
+            rp,
+            &n_i,
+            &mut tmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgeev'", info)));
+    }
+    let lwork = tmp as i32;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    unsafe {
+        f(
+            &b'N',
+            &jobvr,
+            &n_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            wr.as_mut_ptr(),
+            wi.as_mut_ptr(),
+            std::ptr::null_mut(),
+            &n_i,
+            rp,
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgeev'", info)));
+    }
+    // R_AccuracyInfo.eps is DBL_EPSILON.
+    let eps = f64::EPSILON;
+    let complex_values = (0..n).any(|i| wi[i].abs() > 10.0 * eps * wr[i].abs());
+    let values = if complex_values {
+        Value::cplxs((0..n).map(|i| Complex::new(wr[i], wi[i])).collect())
+    } else {
+        Value::reals(wr)
+    };
+    let vecs = if complex_values {
+        if vectors { unscramble(&wi, n, &right) } else { Value::Null }
+    } else if vectors {
+        let mut v = Value::reals(right);
+        v.set_attr_raw(s::DIM, Value::ints(vec![n_i, n_i]));
+        v
+    } else {
+        Value::Null
+    };
+    Ok(Value::named_list(vec![("values", values), ("vectors", vecs)]))
+}
+
+/// R: Lapack.c:La_rg_cmplx (zgeev)
+fn do_la_rg_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let x = arg(&args, 0);
+    let (n, n2) = dims2(&x);
+    if n != n2 {
+        return Err(Flow::error("'x' must be a square numeric matrix"));
+    }
+    let mut xvals = cplx_data(&x);
+    let ov = as_logical(&arg(&args, 1));
+    if ov == NA_LOGICAL {
+        return Err(Flow::error("invalid 'only.values' argument"));
+    }
+    if n == 0 {
+        // zgeev would reject LDA = 0 < max(1, N) (parameter 5).
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGEEV ' gave error code -5"));
+    }
+    let vectors = ov == 0;
+    let jobvr: u8 = if vectors { b'V' } else { b'N' };
+    let n_i = n as i32;
+    let mut values = vec![Z::default(); n];
+    let mut right = vec![Z::default(); if vectors { n * n } else { 0 }];
+    let rp: *mut Z = if vectors { right.as_mut_ptr() } else { std::ptr::null_mut() };
+    let mut rwork = vec![0.0f64; 2 * n];
+    let f = system_lapack()?.zgeev;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: as in La_rs; VL is NULL because JOBVL = 'N'.
+    unsafe {
+        f(
+            &b'N',
+            &jobvr,
+            &n_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            values.as_mut_ptr(),
+            std::ptr::null_mut(),
+            &n_i,
+            rp,
+            &n_i,
+            &mut tmp,
+            &-1,
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zgeev'", info)));
+    }
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    unsafe {
+        f(
+            &b'N',
+            &jobvr,
+            &n_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            values.as_mut_ptr(),
+            std::ptr::null_mut(),
+            &n_i,
+            rp,
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zgeev'", info)));
+    }
+    let vecs = if vectors {
+        let mut v = z_to_value(right);
+        v.set_attr_raw(s::DIM, Value::ints(vec![n_i, n_i]));
+        v
+    } else {
+        Value::Null
+    };
+    Ok(Value::named_list(vec![("values", z_to_value(values)), ("vectors", vecs)]))
+}
+
+/// R: Lapack.c:La_svd
+fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let ju = match arg(&args, 0) {
+        Value::Str(t) if !t.data.is_empty() => t.data[0].as_deref().unwrap_or("").to_string(),
+        _ => return Err(Flow::error("'jobu' must be a character string")),
+    };
+    let x = arg(&args, 1);
+    let (n, p) = dims2(&x);
+    let mut a = reals(&x);
+    let s = arg(&args, 2);
+    let u = arg(&args, 3);
+    let vt = arg(&args, 4);
+    if !matches!(u.get_attr(s::DIM), Some(Value::Int(_))) {
+        return Err(Flow::error("non-integer dim(u)"));
+    }
+    if !matches!(vt.get_attr(s::DIM), Some(Value::Int(_))) {
+        return Err(Flow::error("non-integer dim(vt)"));
+    }
+    let ldu = match u.get_attr(s::DIM) {
+        Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
+        _ => return Err(Flow::error("robigo: dim(u) is empty")),
+    };
+    let ldvt = match vt.get_attr(s::DIM) {
+        Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
+        _ => return Err(Flow::error("robigo: dim(vt) is empty")),
+    };
+    // dgesdd validates in this order: JOBZ (-1), then LDA = n (-5), then
+    // LDU (-8), then LDVT (-10). R surfaces each as its interposed-
+    // xerbla error; robigo pre-checks so Debian's xerbla (which STOPs
+    // the process) is never reached.
+    let job = ju.as_bytes().first().copied().unwrap_or(0).to_ascii_uppercase();
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -5"));
+    }
+    let info = svd_ldu_info(job, n, p, ldu, ldvt);
+    if info != 0 {
+        return Err(Flow::error(format!("BLAS/LAPACK routine 'DGESDD' gave error code {info}")));
+    }
+    if !matches!(s, Value::Real(_)) || !matches!(u, Value::Real(_)) || !matches!(vt, Value::Real(_)) {
+        return Err(Flow::error("robigo: non-real SVD output buffers are not supported"));
+    }
+    // Memory safety for direct .Internal calls: the R wrapper always
+    // allocates exactly these shapes.
+    let k = n.min(p);
+    let (ucols, vtcols) = svd_writes(job, n, p, ldu, ldvt);
+    if matches!(&s, Value::Real(r) if r.data.len() < k)
+        || matches!(&u, Value::Real(r) if r.data.len() < ucols)
+        || matches!(&vt, Value::Real(r) if r.data.len() < vtcols)
+    {
+        return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
+    }
+    let mut d = reals(&s);
+    let mut ud = reals(&u);
+    let mut vd = reals(&vt);
+    let mut iw = vec![0i32; 8 * k];
+    let n_i = n as i32;
+    let p_i = p as i32;
+    let ldu_i = ldu as i32;
+    let ldvt_i = ldvt as i32;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    let f = system_lapack()?.dgesdd;
+    // SAFETY: as in La_rs; the output buffers were validated above.
+    unsafe {
+        f(
+            &job,
+            &n_i,
+            &p_i,
+            a.as_mut_ptr(),
+            &n_i,
+            d.as_mut_ptr(),
+            ud.as_mut_ptr(),
+            &ldu_i,
+            vd.as_mut_ptr(),
+            &ldvt_i,
+            &mut tmp,
+            &-1,
+            iw.as_mut_ptr(),
+            &mut info,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgesdd'", info)));
+    }
+    let lwork = tmp as i32;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    unsafe {
+        f(
+            &job,
+            &n_i,
+            &p_i,
+            a.as_mut_ptr(),
+            &n_i,
+            d.as_mut_ptr(),
+            ud.as_mut_ptr(),
+            &ldu_i,
+            vd.as_mut_ptr(),
+            &ldvt_i,
+            work.as_mut_ptr(),
+            &lwork,
+            iw.as_mut_ptr(),
+            &mut info,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgesdd'", info)));
+    }
+    // The buffers are returned in place with their attributes, as R does.
+    let mut uout = u;
+    let mut vtout = vt;
+    if let Value::Real(v) = &mut uout {
+        std::rc::Rc::make_mut(v).data = ud;
+    }
+    if let Value::Real(v) = &mut vtout {
+        std::rc::Rc::make_mut(v).data = vd;
+    }
+    Ok(Value::named_list(vec![("d", Value::reals(d)), ("u", uout), ("vt", vtout)]))
+}
+
+/// R: Lapack.c:La_svd_cmplx (zgesdd)
+fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let jz = match arg(&args, 0) {
+        Value::Str(t) if !t.data.is_empty() => t.data[0].as_deref().unwrap_or("").to_string(),
+        _ => return Err(Flow::error("'jobu' must be a character string")),
+    };
+    let x = arg(&args, 1);
+    let (n, p) = dims2(&x);
+    // The underlying LAPACK, specifically ZLARF, does not work with long
+    // arrays.
+    if (n as f64) * (p as f64) > i32::MAX as f64 {
+        return Err(Flow::error("matrices of 2^31 or more elements are not supported"));
+    }
+    let s = arg(&args, 2);
+    let u = arg(&args, 3);
+    let v = arg(&args, 4);
+    let ldu = match u.get_attr(s::DIM) {
+        Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
+        _ => return Err(Flow::error("non-integer dims")),
+    };
+    let ldv = match v.get_attr(s::DIM) {
+        Some(Value::Int(d)) if !d.data.is_empty() => d.data[0] as usize,
+        _ => return Err(Flow::error("non-integer dims")),
+    };
+    // zgesdd validates JOBZ (-1), then LDA = n (-5), then LDU (-8), then
+    // LDVT (-10), like dgesdd.
+    let job = jz.as_bytes().first().copied().unwrap_or(0).to_ascii_uppercase();
+    if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -1"));
+    }
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -5"));
+    }
+    let info = svd_ldu_info(job, n, p, ldu, ldv);
+    if info != 0 {
+        return Err(Flow::error(format!("BLAS/LAPACK routine 'ZGESDD' gave error code {info}")));
+    }
+    if !matches!(s, Value::Real(_)) || !matches!(u, Value::Cplx(_)) || !matches!(v, Value::Cplx(_)) {
+        return Err(Flow::error("robigo: complex SVD needs the real/complex buffers R allocates"));
+    }
+    // Memory safety for direct .Internal calls, as in La_svd.
+    let k = n.min(p);
+    let (ucols, vcols) = svd_writes(job, n, p, ldu, ldv);
+    if matches!(&s, Value::Real(r) if r.data.len() < k)
+        || matches!(&u, Value::Cplx(c) if c.data.len() < ucols)
+        || matches!(&v, Value::Cplx(c) if c.data.len() < vcols)
+    {
+        return Err(Flow::error("robigo: undersized SVD output buffers are not supported"));
+    }
+    let mut xvals = cplx_data(&x);
+    let mut d = reals(&s);
+    let mut ud = cplx_data(&u);
+    let mut vd = cplx_data(&v);
+    let mut iw = vec![0i32; 8 * k];
+    let mn0 = k;
+    let mn1 = n.max(p);
+    let lrwork = if job != b'N' {
+        let f1 = 5 * mn1 + 7;
+        let f2 = 2 * mn1 + 2 * mn0 + 1;
+        // 7 replaces 5: bug 111 in netlib's LAPACK errata.
+        f1.max(f2) * mn0
+    } else {
+        7 * mn0
+    };
+    let mut rwork = vec![0.0f64; lrwork.max(1)];
+    let n_i = n as i32;
+    let p_i = p as i32;
+    let ldu_i = ldu as i32;
+    let ldv_i = ldv as i32;
+    let f = system_lapack()?.zgesdd;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: output buffers validated above; sizes as documented.
+    unsafe {
+        f(
+            &job,
+            &n_i,
+            &p_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            d.as_mut_ptr(),
+            ud.as_mut_ptr(),
+            &ldu_i,
+            vd.as_mut_ptr(),
+            &ldv_i,
+            &mut tmp,
+            &-1,
+            rwork.as_mut_ptr(),
+            iw.as_mut_ptr(),
+            &mut info,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zgesdd'", info)));
+    }
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    unsafe {
+        f(
+            &job,
+            &n_i,
+            &p_i,
+            xvals.as_mut_ptr(),
+            &n_i,
+            d.as_mut_ptr(),
+            ud.as_mut_ptr(),
+            &ldu_i,
+            vd.as_mut_ptr(),
+            &ldv_i,
+            work.as_mut_ptr(),
+            &lwork,
+            rwork.as_mut_ptr(),
+            iw.as_mut_ptr(),
+            &mut info,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zgesdd'", info)));
+    }
+    let mut uout = u;
+    let mut vout = v;
+    if let Value::Cplx(c) = &mut uout {
+        std::rc::Rc::make_mut(c).data = ud.into_iter().map(|z| Complex::new(z.r, z.i)).collect();
+    }
+    if let Value::Cplx(c) = &mut vout {
+        std::rc::Rc::make_mut(c).data = vd.into_iter().map(|z| Complex::new(z.r, z.i)).collect();
+    }
+    Ok(Value::named_list(vec![("d", Value::reals(d)), ("u", uout), ("vt", vout)]))
 }
 
 /// R: Lapack.c:La_solve
@@ -742,7 +1688,11 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     dgetrs(&avals, n, &ipiv, &mut b, p);
     let ok = avals.iter().all(|v| v.is_finite());
     if ok && tol > 0.0 {
-        let anorm = dlange_one(&aorig, n, n);
+        // Lapack.c:La_solve computes dlange on REAL(A): the original for
+        // real input (avals is a copy), but the FACTORED buffer when A was
+        // coerced (integer/logical), because the C factors A's own storage
+        // in place. Mirror the aliasing.
+        let anorm = if matches!(a, Value::Real(_)) { dlange_one(&aorig, n, n) } else { dlange_one(&avals, n, n) };
         let rcond = dgecon(true, n, &avals, anorm);
         if rcond < tol {
             return Err(Flow::error(format!(
@@ -761,8 +1711,128 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(out)
 }
 
-fn do_la_unimplemented(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error("robigo: complex linear algebra (La_solve_cmplx) is not implemented yet"))
+/// R: Lapack.c:La_solve_cmplx (zgesv, then zlange/zgecon for the
+/// reciprocal condition number)
+fn do_la_solve_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    let bin = arg(&args, 1);
+    let tolin = arg(&args, 2);
+    if !matches!(a.get_attr(s::DIM), Some(d) if d.len() == 2) {
+        return Err(Flow::error("'a' must be a complex matrix"));
+    }
+    let (n, n2) = dims2(&a);
+    if n == 0 {
+        return Err(Flow::error("'a' is 0-diml"));
+    }
+    if n2 != n {
+        return Err(Flow::error(format!("'a' ({} x {}) must be square", n, n2)));
+    }
+    let adn_present = a.get_attr(s::DIMNAMES).is_some();
+    let b_is_matrix = matches!(bin.get_attr(s::DIM), Some(d) if d.len() == 2);
+    let p: usize;
+    // Attributes of the result, set once the solution is computed.
+    let mut out_dimnames = Value::Null;
+    let mut out_names = Value::Null;
+    if b_is_matrix {
+        let (p2, pp) = dims2(&bin);
+        p = pp;
+        if p == 0 {
+            return Err(Flow::error("no right-hand side in 'b'"));
+        }
+        if p2 != n {
+            return Err(Flow::error(format!("'b' ({} x {}) must be compatible with 'a' ({} x {})", p2, p, n, n)));
+        }
+        let bindn_present = bin.get_attr(s::DIMNAMES).is_some();
+        if adn_present || bindn_present {
+            let r = if adn_present { dimnames_elt(&a, 1) } else { Value::Null };
+            let c = if bindn_present { dimnames_elt(&bin, 1) } else { Value::Null };
+            // The complex case sets dimnames only when both parts exist.
+            if !r.is_null() && !c.is_null() {
+                out_dimnames = Value::list(vec![r, c]);
+            }
+        }
+    } else {
+        p = 1;
+        if bin.len() != n {
+            return Err(Flow::error(format!(
+                "'b' ({} x {}) must be compatible with 'a' ({} x {})",
+                bin.len(),
+                p,
+                n,
+                n
+            )));
+        }
+        if adn_present {
+            out_names = dimnames_elt(&a, 1);
+        }
+    }
+    let bvals = cplx_data(&bin);
+    let mut b: Vec<Z> = bvals[..n * p].to_vec();
+    let aorig = cplx_data(&a);
+    let mut avals = aorig.clone();
+    let mut ipiv = vec![0i32; n];
+    let n_i = n as i32;
+    let p_i = p as i32;
+    let mut info = 0i32;
+    let f = system_lapack()?.zgesv;
+    // SAFETY: pointers refer to live allocations of the documented sizes.
+    unsafe {
+        f(&n_i, &p_i, avals.as_mut_ptr(), &n_i, ipiv.as_mut_ptr(), b.as_mut_ptr(), &n_i, &mut info);
+    }
+    if info < 0 {
+        return Err(Flow::error(format!("argument {} of Lapack routine {} had invalid value", -info, "zgesv")));
+    }
+    if info > 0 {
+        return Err(Flow::error(format!(
+            "Lapack routine {}: system is exactly singular: U[{},{}] = 0",
+            "zgesv", info, info
+        )));
+    }
+    let ok = avals.iter().all(|z| z.r.is_finite() && z.i.is_finite());
+    let tol = as_real(&tolin);
+    if ok && tol > 0.0 {
+        // Lapack.c:La_solve_cmplx computes zlange on COMPLEX(A): the
+        // original for complex input (avals is a copy), but the FACTORED
+        // buffer when A was coerced (a real a with complex b), exactly as
+        // the C's aliasing behaves.
+        let anorm_src: &[Z] = if matches!(a, Value::Cplx(_)) { &aorig } else { &avals };
+        let lib = system_lapack()?;
+        // SAFETY: zlange with NORM='1' does not reference WORK.
+        let anorm = unsafe { (lib.zlange)(&b'1', &n_i, &n_i, anorm_src.as_ptr(), &n_i, std::ptr::null_mut(), 1) };
+        let mut work = vec![Z::default(); 2 * n];
+        let mut rwork = vec![0.0f64; 2 * n];
+        let mut rcond = 0.0f64;
+        let mut cinfo = 0i32;
+        // SAFETY: as documented; A here is the LU factorization in avals.
+        unsafe {
+            (lib.zgecon)(
+                &b'1',
+                &n_i,
+                avals.as_ptr(),
+                &n_i,
+                &anorm,
+                &mut rcond,
+                work.as_mut_ptr(),
+                rwork.as_mut_ptr(),
+                &mut cinfo,
+                1,
+            );
+        }
+        if rcond < tol {
+            return Err(Flow::error(format!(
+                "system is computationally singular: reciprocal condition number = {}",
+                fmt_g(rcond)
+            )));
+        }
+    }
+    let mut out = z_to_value(b);
+    if b_is_matrix {
+        out.set_attr_raw(s::DIM, Value::ints(vec![n_i, p_i]));
+        out.set_attr_raw(s::DIMNAMES, out_dimnames);
+    } else {
+        out.set_attr_raw(s::NAMES, out_names);
+    }
+    Ok(out)
 }
 
 /// R: Lapack.c:det_ge_real
@@ -822,7 +1892,7 @@ fn do_det_ge_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 }
 
 /// R: Lapack.c:La_chol
-fn do_la_chol(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_la_chol(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let a = arg(&args, 0);
     if !matches!(a.get_attr(s::DIM), Some(d) if d.len() == 2) {
         return Err(Flow::error("'a' must be a numeric matrix"));
@@ -845,12 +1915,66 @@ fn do_la_chol(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     if piv != 0 && piv != 1 {
         return Err(Flow::error("invalid 'pivot' value"));
     }
-    if piv == 1 {
-        return Err(Flow::error("robigo: chol(pivot = TRUE) is not implemented yet"));
-    }
-    let info = dpotrf_upper(&mut data, n);
-    if info > 0 {
-        return Err(Flow::error(format!("the leading minor of order {} is not positive", info)));
+    if piv == 0 {
+        let info = dpotrf_upper(&mut data, n);
+        if info != 0 {
+            if info > 0 {
+                return Err(Flow::error(format!("the leading minor of order {} is not positive", info)));
+            }
+            return Err(Flow::error(format!(
+                "argument {} of Lapack routine {} had invalid value",
+                -(info as i64),
+                "dpotrf"
+            )));
+        }
+    } else {
+        // R: Lapack.c:La_chol's dpstrf branch.
+        let tol = as_real(&arg(&args, 2));
+        let mut piv = vec![0i32; n];
+        let mut work = vec![0.0; 2 * n];
+        let mut rank = 0i32;
+        let mut info = 0i32;
+        let f = system_lapack()?.dpstrf;
+        // SAFETY: pointers refer to live allocations of the documented sizes.
+        unsafe {
+            f(
+                &b'U',
+                &(n as i32),
+                data.as_mut_ptr(),
+                &(n as i32),
+                piv.as_mut_ptr(),
+                &mut rank,
+                &tol,
+                work.as_mut_ptr(),
+                &mut info,
+                1,
+            );
+        }
+        if info != 0 {
+            if info > 0 {
+                i.warning("the matrix is either rank-deficient or not positive definite")?;
+            } else {
+                return Err(Flow::error(format!(
+                    "argument {} of Lapack routine {} had invalid value",
+                    -info, "dpstrf"
+                )));
+            }
+        }
+        if let Value::Real(r) = &mut ans {
+            std::rc::Rc::make_mut(r).data = data;
+        }
+        ans.set_attr_raw(Sym::new("pivot"), Value::ints(piv.clone()));
+        ans.set_attr_raw(Sym::new("rank"), Value::int(rank));
+        // Pivot the column names when the result has any.
+        if let Some(Value::List(dn)) = ans.get_attr(s::DIMNAMES) {
+            if let Some(Value::Str(cn)) = dn.data.get(1) {
+                let permuted: Vec<RStr> = piv.iter().map(|&p| cn.data[(p - 1) as usize].clone()).collect();
+                let mut dn2 = dn.data.clone();
+                dn2[1] = Value::Str(std::rc::Rc::new(Vector::new(permuted)));
+                ans.set_attr_raw(s::DIMNAMES, Value::list(dn2));
+            }
+        }
+        return Ok(ans);
     }
     if let Value::Real(r) = &mut ans {
         std::rc::Rc::make_mut(r).data = data;
@@ -972,12 +2096,34 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 fn do_la_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    // The reference LAPACK version whose routines are ported here.
-    Ok(Value::str("3.12.0"))
+    // R: Lapack.c case 1000: ask the bound LAPACK's ilaver.
+    let f = system_lapack()?.ilaver;
+    let (mut major, mut minor, mut patch) = (0i32, 0i32, 0i32);
+    // SAFETY: three writable i32 locals.
+    unsafe { f(&mut major, &mut minor, &mut patch) };
+    Ok(Value::str(&format!("{}.{}.{}", major, minor, patch)))
 }
 
 fn do_la_library(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    // R returns "" when the LAPACK library is not known; robigo's routines are
-    // built in.
+    // R: Lapack.c case 1001: dladdr the ilaver we call, realpath its
+    // object. (R additionally reports the flexiblas backend when the
+    // library is flexiblas; no supported platform here uses it.)
+    let Some(f) = ILAVER_PTR.get() else {
+        // No bound library: R also answers "" when it cannot tell.
+        return Ok(Value::str(""));
+    };
+    // SAFETY: dladdr reads the pointer and writes `info`; realpath writes
+    // at most PATH_MAX+1 bytes into `buf`.
+    unsafe {
+        let mut info: libc::Dl_info = std::mem::zeroed();
+        if libc::dladdr(f.0, &mut info) != 0 {
+            let mut buf = [0i8; (libc::PATH_MAX as usize) + 1];
+            let res = libc::realpath(info.dli_fname, buf.as_mut_ptr());
+            if !res.is_null() {
+                let path = std::ffi::CStr::from_ptr(res).to_string_lossy().into_owned();
+                return Ok(Value::str(&path));
+            }
+        }
+    }
     Ok(Value::str(""))
 }
