@@ -1,5 +1,16 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
 tests/r/strings/escape_origin.R
+tests/r/capi/finalizer-key.R
+tests/r/env/finalizer_cycles.R
+tests/r/env/finalizer_errors.R
+tests/r/env/finalizer_order.R
+tests/r/s4/refclass_finalizer.R
+tests/r/env/finalizer_promise.R
+tests/r/env/finalizer_exit.R
+tests/r/env/finalizer_exit_error.R
+tests/r/env/finalizer_exit_quit.R
+tests/r/env/finalizer_args.R
+tests/r/env/finalizer_order2.R
 tests/r/basics/arith.R
 tests/r/basics/arith-vectors.R
 tests/r/basics/caller-forced-promises.R
@@ -249,6 +260,7 @@ tests/r/lang/closure_source_print.R
 tests/r/strings/closure_source_bytes.R
 tests/r/strings/iconv_byte_window.R
 tests/r/lang/parse_data.R
+
 tests/r/vec/print-max-index.R
 tests/r/basics/base-isvector-context.R
 tests/r/basics/compiled-isvector-missing.R

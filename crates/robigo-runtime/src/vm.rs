@@ -211,6 +211,13 @@ thread_local! {
     static NO_INLINE: bool = std::env::var_os("ROBIGO_NO_INLINE").is_some();
 }
 
+/// Discard implementation-only owners before testing weak-key reachability.
+pub fn clear_gc_caches() {
+    CACHE.with(|c| c.borrow_mut().clear());
+    DEFAULTS.with(|c| c.borrow_mut().clear());
+    rjit::clear_gc_caches();
+}
+
 pub fn enabled() -> bool {
     ENABLED.with(|e| *e)
 }

@@ -112,6 +112,12 @@ thread_local! {
         RefCell::new(HashMap::default());
 }
 
+pub(super) fn clear_gc_caches() {
+    SCORES.with(|c| c.borrow_mut().clear());
+    CACHE.with(|c| c.borrow_mut().clear());
+    LOCALS.with(|c| c.borrow_mut().clear());
+}
+
 // Classes of names (besides the index of a `FROZEN_FUNS` entry). Names are
 // classified by text and never interned here: a new symbol would shift the
 // ids, and so the frame masks (`env::sym_bit`), of all later symbols.

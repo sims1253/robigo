@@ -11,6 +11,254 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: onexit finalizers on every exit path (#98)
+
+- GNU R's R_CleanUp (unix/sys-std.c) calls R_RunExitFinalizers on normal
+  termination, the "Execution halted" error exit and q(), after .Last.
+  robigo ignored onexit=TRUE entirely: a probe script printed no finalizer
+  output on any of the three paths.
+- Ported R_RunExitFinalizers: it marks every FINALIZE_ON_EXIT reference
+  ready and sends it through RunFinalizers. The runner now moves them to
+  the finalizer queue in weak-reference list order (Core::
+  queue_exit_finalizers) instead of invoking them directly, so errors are
+  isolated, the caller's contexts and handler stacks are restored and the
+  weak reference leaves the list exactly as for a collected key.
+- The CLI exit hook (finish) runs them for script, echo, -e and stdin
+  exits; q() runs them before process::exit. The interactive repl's EOF
+  now takes the same finish path.
+- Six oracle-recorded scripts: onexit at normal exit (a still-live plain
+  key must not run), onexit at the error exit with status 1, q(status=3),
+  an unforced default-argument promise, an argument promise, three
+  finalizers on one key and three keys in reverse registration order,
+  a parent chain, and the reg.finalizer argument errors (character or NA
+  onexit, builtin second argument, non-environment key).
+- The gnur-examples case `base/reg.finalizer` (the help page's own
+  example) now passes and is added to that corpus's ratchet, as does the
+  capi case `envir` (19/21 pass, objects and strings remain unratcheted).
+- Verified: 262/262 conformance scripts match stdout, stderr and status
+  in all three tiers; collector 22 tests (one new: onexit queue order and
+  live keys staying in the weak list); runtime 47 unit plus two
+  integration tests (the two host-glibc complex oracles excluded); both
+  C API integration tests. The exit hook is the last thing a process does:
+  it cannot change any benchmark's measured work, only a few hundred
+  instructions after the final expression.
+- GNU R quirk left unimplemented: a finalizer registered *during* a
+  finalizer is prepended to R_weak_refs while RunFinalizers is walking the
+  old list; if a later ready entry is then unlinked, R sets R_weak_refs to
+  that entry's next and loses the new head. Standalone probes show such a
+  finalizer never running. robigo defers new queue entries and runs them
+  at the next safe point instead of losing them; probes where GNU R does
+  run them on the next collection (I1/I2, J1/J2 shapes) match.
+
+## 2026-10-30: cycle-aware environment finalizers (#98)
+
+- New topic branch track/core-environment-finalizers starts at merged
+  df3d535, independently of #95. Six GNU R oracle cases finalize plain,
+  self, mutual, closure and attribute cycles and an object released from
+  a shared list. Runtime baseline: 0/6 finalize; oracle: 6/6.
+- First component builds the runtime allocation graph iteratively. It
+  counts actual allocation owners, including shared frames, formals and
+  compiled-code caches, and excludes the bridge's own proxy references.
+  Outside references conservatively retain live evaluator temporaries
+  and opaque Rust payloads. No GC decisions have changed at this step.
+- Six graph tests pass: self/mutual parent cycles, live temporaries,
+  shared list allocation edges, aliased frames, closures/promises/attrs,
+  and a 10,000-environment parent walk without machine-stack recursion.
+- Local integration prototype: 0/6 -> 5/6 oracle cycle cases; the shared
+  key released after an earlier collection is still retained, and the
+  methods case still does not finalize. Advanced checks preserve live
+  lapply temporaries, finalize them after removal, and run resurrected
+  objects only once. Multiple finalizers of one key exposed a core bug:
+  eligibility was interleaved with marking queued keys. Ported the two
+  passes from RunGenCollect so every eligible reference is classified
+  before those keys are retained for finalization.
+- Registration now uses the native weakref queue. HOST tracing participates
+  in native-root and weak-reference fixed-point tracing, cached once per
+  collection. Weak HOST keys lose permanent preservation; explicit GC
+  removes bridge pins with the graph, and clears implementation caches.
+  Ordinary GC keeps its previous path until runtime weakrefs exist.
+- Added native-root/weak-fixed-point/manual-finalization core tests and
+  a weak call-site memo test. Constructor code may cache instance-bound
+  methods; those memo values must be cleared before snapshotting counts.
+  Diagnostic retention paths are temporary and will be removed.
+- Debug CLI linking fails on existing graphics helper symbols REAL0,
+  INTEGER0, Rf_reEnc3 and mbcsTruncateToValid. Rejected as a verification
+  route; use the required release build. Pending release build includes
+  queue classification, weak memo cleanup and retention diagnostics.
+- Retention diagnostics found incoming references from unreachable call
+  frames, outside the proxy graph. Shared case retained its former
+  caller frame (refs 2, known incoming 1); methods instance had refs 7,
+  known incoming 3, proxy 1. Added a weak inventory of explicit envs and
+  escaping/cyclic completed frames; weak upgrades are excluded from graph
+  snapshots. Inventory does not make those frames roots or change EnvData
+  allocation sizes. Native classification now includes these owners.
+- Shared target reused old core metadata despite new fields in this tree.
+  Forced owned-crate timestamps after taking the build lock for subsequent
+  builds. Source-current release verification is pending; no test/ratchet
+  was weakened. The interrupted four-test oracle recording completed.
+- Verified inventory candidate: six cycle oracle cases 0/6 -> 6/6;
+  methods reference-class probe prints fun followed by finalizer: 456,
+  exactly matching GNU R. Four oracle-recorded scripts now match, including
+  live temporaries, resurrection, nested GC ordering and error isolation.
+- Corrected initial verification report: the suite has 245 scripts, not
+  246 (#95's extra script is on its independent branch). The first run
+  matched 244/245; the reference-class fixture exposed an optional
+  codetools setup message that differed between host and oracle. Wrapped
+  class construction in suppressMessages, as existing reference-class
+  fixtures do, and re-recorded with Debian GNU R 4.5.0. Final conformance
+  is 245/245 across all three tiers, including stdout, stderr and status.
+- Source-current release tests pass: collector 21 tests, runtime 49 unit
+  plus two integration tests (two documented host-glibc numeric oracles
+  excluded), and C API tests. Added search/alias environment inventory
+  hooks and bounded finalizer batches to the entry queue length.
+- Final host instruction counts against df3d535 CI artifact with identical
+  natives and flat cache: strings 768,298,482 -> 769,110,955 (+0.106%);
+  fib 962,381,944 -> 962,045,393 (-0.035%); lm 684,848,459 ->
+  687,236,803 (+0.349%); binarytrees 1,261,671,034 -> 1,257,527,411
+  (-0.328%). No measured gate regression. Hershey remains 1/1.
+- Remaining: a probe registering another finalizer during a nested GC now
+  defers it beyond the outer batch, but runs it on the next explicit GC
+  where GNU R retains it longer. Port weak-list mutation/iteration and
+  native hidden roots before claiming matching nested-registration timing.
+  Runtime cycles are traced for eligibility but not physically reclaimed;
+  opaque/native Rust owners remain conservative roots. Full cross-heap
+  cycle reclamation belongs to the live-heap GC work. Parser escape-origin
+  metadata remains a separate topic: gram.y's oct_or_hex suppresses the
+  UTF-8 mark; carry this through lexer constants and their interning keys.
+- Rebased #98 onto d81d29c after later main merges made the PR
+  unmergeable and prevented pull_request CI from starting. Source hunks
+  combined automatically; ledger and passing.txt conflicts preserve both
+  topics and all 249 of main's ratcheted scripts (250 lines including the
+  header). Combined tree has
+  254 recorded scripts; fresh release verification is running.
+- Pre-rebase graphics: 181/184 initially, 182/184 after hcl passed alone
+  (contention timeout). axis.POSIXct and plot.window both fail with the
+  base binary too. GC torture passes 21 collector tests and both pairs
+  of C API integration tests; doc tests then fail because another shared
+  target build removed runtime/numerics dependency files. A locked fresh
+  verification is running; no source/test workaround was added.
+- Additional native-boundary probe found a real abort: CoreRef wrappers
+  use runtime ExtPtr for native weak references too. reg.finalizer checked
+  only the wrapper variant, then NewWeakRef raised outside a C boundary.
+  GNU R instead reports the catchable first-argument validation error,
+  before checking fun/onexit. Added a bridge type predicate using the
+  underlying SEXP and an oracle-recorded four-case priority fixture.
+  Candidate verification is pending; #98 is temporarily draft so the
+  earlier head is not merged while this correction is verified.
+- Parser follow-up baseline: four of seven source-literal encoding marks
+  match. Octal UTF-8, hex UTF-8, and literal UTF-8 containing an ASCII
+  octal escape are wrongly marked UTF-8 instead of native/unknown; all
+  seven byte sequences already match. Closure constants reproduce the
+  same distinction (two of four marks match). Preserve the lexer’s existing
+  byte_escape flag through syntax literals and lang::const_to_value.
+- Source-current d81d29c-based verification completed: 255/255 scripts
+  match stdout, stderr and status across all three tiers; VM guards pass.
+  Collector 21, runtime 52 unit plus two integration tests, and both pairs
+  of C API integration tests pass. Only the two documented host-glibc
+  numeric oracles were excluded locally; Debian CI's build passes.
+- Native-key correction: the four invalid-key cases now produce GNU R's
+  catchable first-argument error instead of aborting or checking later
+  arguments first. Added a positive native-pointer finalizer to the same
+  oracle recording; it runs once and matches GNU R. Five new scripts are
+  ratcheted. Six environment cases remain 0/6 -> 6/6 against d81d29c;
+  reference-class finalize prints finalizer: 456.
+- Final d81d29c host instruction counts, identical natives and flat cache:
+  strings 766,195,341 -> 767,035,906 (+0.110%); fib 960,563,763 ->
+  960,205,027 (-0.037%); lm 682,999,956 -> 684,406,309 (+0.206%);
+  binarytrees 1,259,683,646 -> 1,255,414,633 (-0.339%). All statuses 0;
+  compare reports zero slowdowns above 0.5%.
+- Complete graphics slice: 122/124 graphics/grDevices plus 60/60 grid =
+  182/184, zero ratchet regressions; Hershey 1/1. axis.POSIXct matches
+  stdout/status but warns about coercion; the base case times out after
+  120.3 seconds. plot.window still lacks .Internal(La_rs), as before.
+  CI build and every corpus shard pass for e5b0f97; full perf is pending.
+- Main advanced again to 805e5fb (#71 methods defaults and #99 rdx
+  indexing) while the d81 verification ran. Rebased; only passing.txt
+  conflicted, retaining the union. Moved this topic's five new entries
+  beside the header instead of the shared append point, with every main
+  entry retained. New combined verification is pending.
+- Final 805e5fb verification: runtime 52 unit plus two integration tests
+  pass (the two documented host-glibc oracles excluded); core/C API code
+  is unchanged from its passing 21 collector and four integration tests.
+  Source-current executable matches all 256 scripts' stdout/stderr/status,
+  across interpreter, VM and JIT; VM guards pass. The new printing fixture,
+  six cycle cases, reference class, native-key errors and native pointer
+  finalizer all match the GNU R recordings.
+- Final host counts versus 805e5fb, identical natives and flat cache:
+  strings 766,401,015 -> 767,173,629 (+0.101%); fib 960,732,363 ->
+  960,342,140 (-0.041%); lm 682,174,166 -> 684,592,149 (+0.354%);
+  binarytrees 1,259,821,156 -> 1,255,710,663 (-0.326%). All statuses 0;
+  compare reports no slowdown above 0.5%.
+- Graphics initially scores 181/184, like the new main CI artifact.
+  Investigation found its hcl oracle was a recorded GNU R timeout (-1),
+  while robigo completed successfully. Re-recorded only grDevices/hcl in
+  robigo-oracle:4.5.0, serially, twice, Docker capped at 4 GB. Both GNU R
+  runs complete with status 0 and identical output; no masks or unstable
+  marking. Logical comparison confirms every other oracle record unchanged.
+  Robigo matches this completed recording; hcl added to the ratchet.
+  Combined graphics score is 182/184, no lost passes; Hershey remains 1/1.
+  Shared oracle change is one hcl record, generated by corpus.py, never
+  hand-edited. Remaining graphics failures are the existing axis.POSIXct
+  warning/timeout and missing La_rs.
+- This substantial batch ends with environment finalizer eligibility and
+  native-key validation delivered. Next independent topic is parser
+  escape-origin metadata (baseline and exact GNU R rule above). Nested
+  registration timing, CLI exit invocation, and physical cycle reclamation
+  remain open; retain conservative opaque roots until their ownership is
+  represented explicitly.
+- Full cache-OFF CI gate for 691e359 failed: 14 targets exceed 0.5%,
+  including emptyWhile +0.53%, S4 new +0.80% and S4 valid +0.88%.
+  The four cache-enabled local targets did not expose the startup cost.
+  Local isolated, cache-OFF startup reproduces it: main 212,073,075
+  instructions, candidate 213,359,034 (+0.606%). Profiles attribute most
+  of the increase to inventory hash lookup/rehash in track_escape.
+- Next candidate replaces the inventory HashMap with Vec<Weak<EnvData>>
+  and a per-allocation recorded flag. The old environment size is 240
+  bytes; a unit assertion checks the flag fits existing padding. A second
+  test checks deduplication and that inventory ownership remains weak.
+  Verification pending; PR returned to draft. Further builds use this
+  worktree's private target to avoid shared metadata reuse and starvation.
+- Vector inventory candidate verified and kept: EnvData stays 240 bytes;
+  deduplication/weak-ownership tests pass. Runtime 54 unit plus two
+  integration tests, collector 22 tests, and both C API integration pairs
+  pass (only the two documented host-glibc numeric oracles excluded).
+  Coordinator's onexit commits 7620967/36175d9 were preserved by rebasing
+  the optimization onto them. Combined conformance is 262/262 in all
+  three tiers, including normal/error/q() exit finalizers. CLI exit
+  invocation is now delivered; the earlier remaining-item note is closed.
+- Cache-OFF startup: main 212,073,075; rejected HashMap inventory
+  213,359,034 (+0.606%); retained vector inventory 212,256,560 (+0.087%).
+  It removes 1,102,474 instructions of overhead without changing which
+  environments participate in reachability.
+- Re-measured every one of CI's 14 failing targets plus strings, using
+  isolated binaries with no adjacent cache and ROBIGO_RDBFLAT unset.
+  All 15 outputs/statuses match exact Debian GNU R 4.5.0. Compare reports
+  0 slower above 0.5%; the largest increase is S4 valid +0.151%.
+  Selected main -> candidate instruction counts: emptyWhile 254,540,585
+  -> 254,677,890 (+0.054%); S4 new 629,064,527 -> 629,736,512 (+0.107%);
+  S4 slot write 487,440,956 -> 487,905,766 (+0.095%); S4 valid 627,434,885
+  -> 628,382,041 (+0.151%); strings 765,838,542 -> 765,566,094 (-0.036%).
+  Profiles/results are under /tmp/core98-profile/failed15-{base,vector}.*.
+- Final vector-inventory graphics: 182/184, no regressions; Hershey 1/1.
+  Remaining work is parser escape-origin metadata, physical cycle
+  reclamation/conservative opaque owners, and GNU R's weak-list mutation
+  quirk that can lose a finalizer registered during another finalizer.
+- Coordinator rebased onto eb7a7ae and added reg.finalizer/envir ratchets;
+  preserved them, rebuilt, and rechecked. Runtime 54 unit + two integration
+  tests pass. All conformance ratchets pass in all three tiers; total
+  264/265 scripts match. The unratcheted compiled-isvector-context case
+  produces byte-identical stdout/stderr/status on eb7a7ae and this branch,
+  confirming the existing main failure rather than a finalizer regression.
+- Fresh cache-OFF comparison against eb7a7ae again passes all 15 targets,
+  with all outputs matching GNU R. Max increase S4 valid +0.152%; strings
+  765,980,785 -> 765,636,387 (-0.045%); emptyWhile 254,597,059 ->
+  254,785,486 (+0.074%); S4 new 629,434,543 -> 630,141,412 (+0.112%);
+  S4 slot write 487,767,851 -> 488,189,543 (+0.086%). Graphics 182/184 and
+  Hershey 1/1, no regressions. Results: /tmp/core98-profile/failed15-eb7-*.
+- Preserved the coordinator's subsequent main rebase (substitute/dots and
+  serialization work). Finalizer, inventory and collector sources are
+  byte-identical to the verified snapshot. Latest combined head is left
+  to full CI; further integration changes belong to their owning tracks.
 ## 2026-10-30: preserve octal/hex escape origin for string encoding
 
 - gram.y's StringValue tracks `oct_or_hex` and passes it to mkString2 as

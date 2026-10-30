@@ -1,0 +1,20 @@
+events <- character()
+add <- function(x) events <<- c(events,x)
+e <- new.env()
+reg.finalizer(e, function(e) add('old'))
+reg.finalizer(e, function(e) { add('new begin'); invisible(gc()); add('new end') })
+rm(e); invisible(gc()); cat('order:',paste(events,collapse=','),'\n')
+events <- character()
+local({ e <- new.env(); e$id <- 'captured'; reg.finalizer(e,function(x) add(e$id)) })
+invisible(gc()); cat('capture:',paste(events,collapse=','),'\n')
+events <- character()
+x <- lapply(1:2,function(i) {
+    if(i == 1) { e <- new.env(); reg.finalizer(e,function(e) add('temporary')); e }
+    else { invisible(gc()); NULL }
+})
+cat('temporary live:',length(events),'\n')
+rm(x); invisible(gc()); cat('temporary dead:',paste(events,collapse=','),'\n')
+events <- character()
+e <- new.env(); reg.finalizer(e,function(e) { add('once'); keeper <<- e })
+rm(e); invisible(gc()); invisible(gc()); cat('resurrect:',paste(events,collapse=','),'\n')
+rm(keeper); invisible(gc()); cat('resurrect dead:',paste(events,collapse=','),'\n')

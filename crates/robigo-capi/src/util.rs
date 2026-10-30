@@ -396,11 +396,36 @@ pub unsafe fn safe_point() {
     run_finalizers();
 }
 
-/// Run the queued finalizers, each protected while it runs.
+thread_local! {
+    static RUNNING_FINALIZERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// R: memory.c:RunFinalizers -- nested GC may queue more finalizers but
+/// never recursively enters the finalizer runner.
 pub unsafe fn run_finalizers() {
-    while let Some(w) = core().pop_finalizable() {
+    if RUNNING_FINALIZERS.with(|r| r.replace(true)) {
+        return;
+    }
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) {
+            RUNNING_FINALIZERS.with(|r| r.set(false));
+        }
+    }
+    let _running = Running;
+    // R: memory.c:RunFinalizers walks the references present at entry.
+    // References queued by a nested GC wait for a later safe point.
+    let count = core().pending_finalizer_count();
+    for _ in 0..count {
+        let Some(w) = core().pop_finalizable() else { break };
         Rf_protect(w);
+        // R: memory.c:RunFinalizers -- isolate errors from the caller and
+        // restore its contexts, condition stacks and visibility afterwards.
+        let visible = R_Visible;
+        crate::host::op("finalizerBegin\0", &[]);
         crate::extptr::run_finalizer(w);
+        crate::host::op("finalizerEnd\0", &[]);
+        R_Visible = visible;
         Rf_unprotect(1);
     }
 }

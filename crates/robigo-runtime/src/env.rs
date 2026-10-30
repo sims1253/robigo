@@ -9,6 +9,7 @@ use crate::sym::{Sym, s};
 use crate::value::{AttrBox, Value};
 
 mod table;
+mod trace;
 
 pub const BIND_LOCKED: u8 = 1;
 pub const BIND_ACTIVE: u8 = 2;
@@ -274,6 +275,8 @@ pub struct EnvData {
     /// `Frame::search` of this environment's frame, readable without
     /// borrowing it (set at creation and by `set_search`).
     search: Cell<bool>,
+    /// Already present in the weak environment inventory. Fits in padding.
+    trace_recorded: Cell<bool>,
 }
 
 impl EnvData {
@@ -295,7 +298,17 @@ thread_local! {
 
 impl Env {
     pub fn new(parent: Option<Env>) -> Env {
-        Env::with_capacity(parent, 0)
+        let env = Env::with_capacity(parent, 0);
+        env.track_escape();
+        env
+    }
+
+    pub(crate) fn track_escape(&self) {
+        trace::track(self);
+    }
+
+    pub(crate) fn visit_escaped(visitor: impl FnMut(&Env)) {
+        trace::visit(visitor);
     }
 
     /// A new environment with room for `n` bindings.
@@ -331,7 +344,16 @@ impl Env {
             id,
             fn_version: Cell::new(0),
             search: Cell::new(search),
+            trace_recorded: Cell::new(false),
         }))
+    }
+
+    /// Shared frames are separate owners in the GC edge graph.
+    pub(crate) fn shared_frame(&self) -> Option<&Rc<RefCell<Frame>>> {
+        match &self.0.frame {
+            FrameCell::Shared(frame) => Some(frame),
+            FrameCell::Own(_) => None,
+        }
     }
 
     /// A new environment sharing `other`'s bindings (the base namespace).
@@ -341,6 +363,7 @@ impl Env {
             panic!("Env::alias: the frame of {:?} is not shareable", other.special_name());
         };
         let e = Env::with_frame(parent, FrameCell::Shared(frame.clone()));
+        e.track_escape();
         *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
@@ -357,6 +380,7 @@ impl Env {
             hashed: false,
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
+        e.track_escape();
         *e.0.name.borrow_mut() = Some(crate::value::RString::from(name));
         e
     }
