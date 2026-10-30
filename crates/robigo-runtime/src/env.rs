@@ -334,6 +334,14 @@ impl Env {
         }))
     }
 
+    /// Shared frames are separate owners in the GC edge graph.
+    pub(crate) fn shared_frame(&self) -> Option<&Rc<RefCell<Frame>>> {
+        match &self.0.frame {
+            FrameCell::Shared(frame) => Some(frame),
+            FrameCell::Own(_) => None,
+        }
+    }
+
     /// A new environment sharing `other`'s bindings (the base namespace).
     /// `other` must be an environment on the search path.
     pub fn alias(other: &Env, parent: Option<Env>, name: &str) -> Env {

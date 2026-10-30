@@ -11,6 +11,26 @@ image through wrapper scripts (`~/.cache/robigo-core/bin/{R,Rscript}`:
 robigo-oracle:4.5.0 R "$@"`) put first on `PATH`; robigo itself runs on
 the host with `R_HOME=~/.local/opt/R-4.5.0`.
 
+## 2026-10-30: cycle-aware environment finalizers (in progress)
+
+- New topic branch track/core-environment-finalizers starts at merged
+  df3d535, independently of #95. Six GNU R oracle cases finalize plain,
+  self, mutual, closure and attribute cycles and an object released from
+  a shared list. Runtime baseline: 0/6 finalize; oracle: 6/6.
+- First component builds the runtime allocation graph iteratively. It
+  counts actual allocation owners, including shared frames, formals and
+  compiled-code caches, and excludes the bridge's own proxy references.
+  Outside references conservatively retain live evaluator temporaries
+  and opaque Rust payloads. No GC decisions have changed at this step.
+- Six graph tests pass: self/mutual parent cycles, live temporaries,
+  shared list allocation edges, aliased frames, closures/promises/attrs,
+  and a 10,000-environment parent walk without machine-stack recursion.
+- Next: native HOST tracing through this graph, remove the permanent
+  preserve of HOST weak keys, register runtime finalizers through the
+  existing native weakref queue, and release implementation-only VM
+  caches at explicit GC. Then run the six oracle cases and methods
+  TestR5/474b742f1785a587 before claiming the blocker fixed.
+
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
 - Rebased #95 onto merged byte-window main df3d535. The resulting source
