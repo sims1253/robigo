@@ -1,0 +1,8 @@
+x[[]] <- 42
+[1] "missing subscript"
+x[[NA]] <- 7
+[1] "attempt to select less than one element in integerOneIndex"
+b[i] <- 1
+[1] "object of type 'closure' is not subsettable"
+x[[2, 1]] <- 7
+[1] "[[ ]] subscript out of bounds"

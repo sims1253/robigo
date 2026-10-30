@@ -191,10 +191,18 @@ impl Interp {
             classes.push("simpleError");
         }
         classes.extend(["error", "condition"]);
+        // R: errors.c:R_vmakeErrorCondition / R_signalErrorConditionEx.
+        // The condition carries getCurrentCall(), but uncaught classed
+        // errors retain the original R_CurrentExpression sentinel.
+        let condition_call = if ecall.as_sym() == Some(crate::sym::Sym::new("<current-expression>")) {
+            self.context_call()
+        } else {
+            ecall.clone()
+        };
         let class_rcs: Vec<crate::value::RString> = classes.iter().map(|c| crate::value::RString::from(*c)).collect();
         while let Some((entry, rest)) = self.find_handler(&class_rcs) {
             self.handlers = rest;
-            let cond = make_condition(&e.message, ecall.clone(), &classes);
+            let cond = make_condition(&e.message, condition_call.clone(), &classes);
             if entry.calling {
                 if let Some(h) = rust_handler(&entry.handler) {
                     match h(self, &cond) {

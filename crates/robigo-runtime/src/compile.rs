@@ -243,6 +243,13 @@ pub enum Op {
         two: bool,
         k: u32,
     },
+    /// A setter with arbitrary or missing indices. Delegate evaluation to
+    /// the interpreter while retaining the compiled diagnostic source.
+    SetComplex {
+        val: Reg,
+        slot: Slot,
+        k: u32,
+    },
     /// `x[i, j]` / `x[[i, j]]` for a variable `x`: an element of a plain
     /// atomic matrix by in-range scalar indices is read directly; anything
     /// else evaluates the call `consts[k]`.
@@ -1214,6 +1221,24 @@ impl Compiler {
                 let end = self.here();
                 self.patch(g, end);
                 self.patch(g2, end);
+            }
+            "<-" | "="
+                if l.args.len() == 2
+                    && l.args[0].tag.is_none()
+                    && matches!(&l.args[0].value, Value::Lang(lhs)
+                        if matches!(head(lhs).map(|s| s.name()).as_deref(), Some("[" | "[[" | "$"))
+                        && lhs.args.first().and_then(|a| a.value.as_sym()).is_some_and(is_var)) =>
+            {
+                let Value::Lang(lhs) = &l.args[0].value else { unreachable!() };
+                let target = lhs.args[0].value.as_sym().unwrap();
+                let g = self.guard(h, whole, dst);
+                // The helper resolves and dispatches the setter at runtime.
+                let slot = self.slot(target);
+                let k = self.konst(whole.clone());
+                self.emit(Op::SetComplex { val: dst, slot, k });
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
             }
             "[" | "[[" if index2_form(whole).is_some() => {
                 let (x, two, i, j) = index2_form(whole).unwrap();

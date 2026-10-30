@@ -1,0 +1,14 @@
+ast	m[2, ] <- m[1, ]	`[<-`(`*tmp*`, 2, , value = 0)	subscript out of bounds
+vm	m[2, ] <- m[1, ]	`[<-`(`*tmp*`, 2, , value = m[1, ])	subscript out of bounds
+ast	m[2, ] <- 7	`[<-`(`*tmp*`, 2, , value = 7)	subscript out of bounds
+vm	m[2, ] <- 7	`[<-`(`*tmp*`, 2, , value = 7)	subscript out of bounds
+ast	m[(n <- n + 1L) + 1L, 1] <- m[1, 1]	`[<-`(`*tmp*`, (n <- n + 1L) + 1L, 1, value = 0)	subscript out of bounds
+vm	m[(n <- n + 1L) + 1L, 1] <- m[1, 1]	`[<-`(`*tmp*`, (n <- n + 1L) + 1L, 1, value = m[1, 1])	subscript out of bounds
+ast	m[NA_real_] <- 1:2	m[NA_real_] <- 1:2	NAs are not allowed in subscripted assignments
+vm	m[NA_real_] <- 1:2	m[NA_real_] <- 1:2	NAs are not allowed in subscripted assignments
+ast	m[2, 1] <- m[1, 1]	`[<-`(`*tmp*`, 2, 1, value = 0)	subscript out of bounds
+vm	m[2, 1] <- m[1, 1]	`[<-`(`*tmp*`, 2, 1, value = m[1, 1])	subscript out of bounds
+ast	m[[2, 1]] <- m[1, 1]	m[[2, 1]] <- m[1, 1]	[[ ]] subscript out of bounds
+vm	m[[2, 1]] <- m[1, 1]	m[[2, 1]] <- m[1, 1]	[[ ]] subscript out of bounds
+ast	m[2, ] <- { n <- n + 1L; m[1, ] }	`[<-`(`*tmp*`, 2, , value = 0)	subscript out of bounds
+vm	m[2, ] <- { n <- n + 1L; m[1, ] }	`[<-`(`*tmp*`, 2, , value = {     n <- n + 1L     m[1, ] })	subscript out of bounds

@@ -1,0 +1,2 @@
+`[[<-`(`*tmp*`, i, value = 10)	attempt to select more than one element in vectorIndex
+`[[<-`(`*tmp*`, i, value = v)	attempt to select more than one element in vectorIndex

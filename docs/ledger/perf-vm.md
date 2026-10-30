@@ -6,6 +6,167 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: setter fix rebased onto the byte window
+
+- Rebased #94 onto **df3d535** (#84). The conditions.rs conflict keeps
+  main's RString class representation and the condition/default-call split.
+  Verified every main conformance entry remains, with five additions.
+- Post-rebase TestSimpleVectors: **1934/1937**, **zero regressions**.
+  All 27 reported failures pass again; the other 1910 classifications
+  match the original failing #94 snapshot. New main alone is 1932/1937.
+- All **246/246** conformance scripts match GNU R in AST, VM and JIT.
+  Debian runtime tests: **45/45**, including the unchanged 14-case setter
+  oracle, the JIT transition, and all 9440 arithmetic comparisons. The
+  6144-case payload fixture passes in the full conformance replay.
+- Matched private Debian builds of df3d535 and the rebased candidate:
+  seven-benchmark instruction geomean **0.661500 -> 0.661468** GNU R;
+  paired gate: zero slower above 0.5%, zero broken. Host runs use the
+  supplied R_HOME. Formatting and source whitespace checks pass.
+- The four old-base local shard runs were stopped after #84 merged;
+  they are not verification of the rebased tree. Full shards and the
+  complete performance gate must run in real CI after the rebased push.
+- Artifacts: `.robigo/r7-fix/`, including immutable matched binaries,
+  vector classifications, conformance results, and instruction profiles.
+
+## 2026-10-30: round 7 follow-up, condition calls versus default errors
+
+- Reproduced all **27** #94 TestSimpleVectors regressions: **1907/1937**,
+  zero status differences. Read every affected recorded stderr; messages
+  are unchanged. Twenty-two failures need the sentinel in default output;
+  five need the evaluated RHS on a small closure's first invocation.
+- R: errors.c:R_vmakeErrorCondition resolves R_CurrentExpression through
+  getCurrentCall() for the condition. R_signalErrorConditionEx instead
+  passes the original marker to errorcall_dflt for uncaught output. Direct
+  assignments and closures exhibit this distinction too; it is not limited
+  to anonymous eval/parse. Resolve only the condition's call while the
+  assignment context is active, retaining the raw call for default output.
+- R: eval.c:R_CheckJIT also distinguishes eager robigo VM execution from
+  GNU R compilation. Use the existing closure JitState at the cold setter
+  boundary: small first-call setters show the RHS value; compiled setters
+  show its expression. A new GNU R oracle records first and second calls.
+- Kept: **1934/1937**, all 27 restored, the other **1910** classifications
+  unchanged. All **241** conformance scripts match in all three tiers,
+  including new direct/eval default-output and handler fixtures. The original
+  **14/14** oracle data is unchanged; its unit test now observes condition
+  calls through a handler and independently asserts the uncaught marker.
+- Debian runtime tests: **40/40**, including the JIT transition and 9,440
+  arithmetic comparisons. The 6,144-case payload conformance fixture passes.
+  Paired seven-benchmark gate against saved main: zero slowdowns above 0.5%,
+  zero broken cases. Formatting/source whitespace checks pass.
+- Four full FastR shards were started, then stopped when #84 merged and
+  required a new base. See the post-rebase verification above. No oracle
+  recording or existing ratchet was weakened; four entries were added.
+
+## 2026-10-30: round 7, setter baseline and native CSV split
+
+- Baseline: main f668f60, saved binary `.robigo/r7/main`. A new Debian
+  GNU R 4.5.0-3 oracle explicitly compares interpreted and compiled
+  setters. Main matches **8/14** cases. Four compiled `[<-` cases lose
+  the RHS expression; two `[[<-` cases expose an unresolved
+  `<current-expression>` marker. The candidate resolves both in the
+  assignment helper before handlers run. Final oracle result: **14/14**.
+- Rejected intermediate: changing only the helper fixes 11/14 cases;
+  missing and effectful indices still fall back to interpreted assignment.
+  A general setter opcode fixes all 14, but compiling its RHS separately
+  regresses a 2,000-update matrix-row probe from 72,853,738 to 73,338,443
+  instructions (+0.665%). Delegate RHS evaluation and setter lookup to the
+  existing interpreter/helper instead. Final probe: **72,491,277**
+  instructions (-0.498%), identical output. Kept.
+- Paired seven-benchmark instruction geomean: **0.663447 -> 0.663464** GNU R,
+  all seven faster than GNU R, no slowdown above 0.5%. This focused set is
+  not the round 6 full-suite metric. Both binaries match GNU R 4.5.0 on
+  stdout, stderr and status for all seven programs. Artifacts: `.robigo/r7/`.
+- Conformance: **236 -> 237** oracle passes in every tier, zero differences
+  between AST, VM and JIT; the new setter-context fixture also checks the
+  error class after crossing the native threshold. Ratchet adds one line.
+  Focused FastR subset/matrix/assignment slice: **507/512 -> 507/512**,
+  zero regressions. Formatting and source whitespace checks pass.
+- Host runtime unit tests: 37/39 pass, including the new setter test and
+  all 9,440 VM arithmetic oracle cases. The two unchanged complex C-library
+  fixtures differ by one bit with host glibc 2.44. The final Debian trixie
+  runtime unit run passes **39/39**, including both C-library fixtures and
+  the setter oracle. No arithmetic code changed. The full conformance run also
+  replays the 6,144-case muladd payload fixture.
+- Shared changes: minimal diagnostic-source/current-expression handling
+  in builtins/lang.rs and one tests/r/passing.txt entry. General setters
+  resolve and dispatch their replacement function at runtime, so they do
+  not need the scalar fast path's replacement-function guard.
+- Reanalyzed the saved round 6 native CSV callgrind profile, total
+  1,933,306,497 instructions. Inclusive totals (nested, do not add):
+  writetable 1,043,869,788 (53.99%), Rconn_printf 713,041,782 (36.88%),
+  m_vfprintf 697,441,782 (36.08%), EncodeElement2 307,843,439 (15.92%),
+  Rf_EncodeElement0 283,673,719 (14.67%), typeconvert 66,451,525 (3.44%).
+  utils io.c:writetable emits each cell, separator and newline through
+  Rconn_printf("%s", ...). capi connections.rs:m_vfprintf calls vasprintf,
+  copies to a Vec, frees the allocation, and forwards the bytes.
+  Next experiment for core/startup: a literal-%s/%s%s bridge path that
+  avoids formatting and allocation, verified against connection and CSV
+  corpora. No edits to their files in this batch.
+- Unboxed promises still require shared Value/Promise storage changes:
+  both environment bindings and Context.promargs retain the promise.
+  A VM-only shortcut cannot remove the scalar allocation while preserving
+  escaping promises, parent.frame mutation, substitute/missing and the
+  methods context hooks. Agree on storage with core before implementation.
+- Rejected oracle launch: the host R wrapper ignores R_HOME, and the
+  copied R 4.5 executable loads the host 4.6 libR without its Debian
+  dependencies. Discarded those GNU R counts. Use robigo-oracle:4.5.0
+  for GNU R measurements; host robigo still uses the supplied R_HOME.
+
+## 2026-10-30: native CSV cost and complete benchmark stream checks
+
+- Controlled CSV probe with the saved #60 CI binary and its flat cache:
+  matching CI native libraries cost **1,933,306,497 instructions**;
+  selecting existing Rust ports with an empty native directory costs
+  **912,341,802**. Benchmark stdout matches byte for byte. This reproduces
+  CI's 1,933,679,323 count within 0.02%. Do not attribute the CI/local CSV
+  gap to VM code generation without matching native/cache configuration.
+- The native CSV profile attributes 18,029,457 self instructions (0.933%)
+  to VM source, 285,637,878 (14.775%) to scan/io, 99,477,531 (5.145%) to
+  C API source and 151,517,896 (7.837%) to core source. These are exclusive
+  costs, not an attribution of the entire native/port difference.
+  Native utils io.c:writetable/typeconvert and C API formatting are
+  concrete places to split the next profile. Coordinate with startup/core;
+  compare a verified Rust override or reduce bridge/formatting costs only
+  after complete formatting and CSV conformance, rather than disabling
+  native code globally.
+- Rejected profiling setup: mixing the local CLI-only binary with CI's
+  native utils fails to load utils.so (undefined symbol lzma_crc64).
+  The matching CI binary/native artifacts load correctly. Use matching
+  artifacts; this failed setup does not measure CSV performance.
+- #90 CI run 40966972376 is also green on code head 2884282. Against
+  its own main base dbf6754, the official stdout/status geomean is
+  0.456983 -> 0.454530 GNU R; the 76-case complete-stream subset is
+  **0.452108 -> 0.449655**, 73 -> 74 faster. All stream-match flags are
+  identical to main/#60. Gate after excluding the known false FIXED flag:
+  6 faster, 0 slower above 0.5%, 0 broken, 0 fixed.
+- Actual CI artifacts compared with GNU R across all benchmark streams:
+  main e25e6cc and #60 both match stdout/status on 77/78, but all three
+  streams on **76/78**. spectralnorm_math is the known mismatch;
+  flexclust_no_s4 returns status 1 in both GNU R and robigo but its error
+  call differs. The discrepancy is unchanged by #60 and is present in
+  robigo's AST and VM. perf.py discards stderr, so its official "correct"
+  count includes that case. Do not claim 77 fully byte-identical programs.
+- On the 76 common fully matching cases, CI instruction geomean is
+  **0.452063 -> 0.449943** GNU R, 73 -> 74 faster. The broader official
+  stdout/status metric is recorded in the recovery section below.
+- Reduced error-call probe:
+
+```r
+f <- function(m) { for (i in 1:2) m[2, ] <- m[1, ]; m }
+f(matrix(0, 1, 1))
+```
+
+  GNU R with R_ENABLE_JIT=3 reports value = m[1, ]; GNU R with JIT=0 and
+  robigo's AST/VM report value = 0. A top-level assignment reports 0 in
+  both implementations and is not a reproduction. Next: port compiled
+  setter-call source preservation from eval.c, with a focused fixture,
+  while preserving interpreted calls. Coordinate shared interpreter changes.
+  CLI's performance runner should also retain/compare stderr; keep this
+  existing difference explicit in performance reports.
+- Artifacts: .robigo/r6/ci-csv*, ci-ports-csv*, ci-{main-,}outputs*,
+  flex-warning*, flex-ast*, replacement-call-check*. No runtime change is
+  kept from these investigations; this is the next-track handoff.
+
 ## 2026-10-29: inline closure buffers skip reservation calls
 
 - Baseline: recovered #60, df9b0dc, current thin-LTO profile.
@@ -26,7 +187,11 @@ conformance` (interpreter, VM and VM+JIT against each other).
 - cargo test --release -p robigo-runtime -p robigo-cli passes: 38 runtime
   (including all 9,440 arithmetic oracle cases), 7 CLI, two integration
   tests and conformance in all three tiers. Formatting/source diff checks
-  pass. CI checks are attached to PR #90, stacked on the green #60.
+  pass. CI run 40966972376 on 2884282 passes build, all ten corpus shards
+  and performance. PR #90 is open for review, stacked on the green #60.
+  Main advanced to dbf6754 during verification; CI waited for that main
+  run's perf baseline before comparing the test merge, rather than using
+  stale numbers.
   Artifacts: .robigo/r6/inline-reserve*, inline-calls-{base,after}.txt.
 
 ## 2026-10-29: round 6 follow-up, recursive argument allocations
@@ -97,7 +262,7 @@ conformance` (interpreter, VM and VM+JIT against each other).
   ASCII to +0.343%, noout to +0.351%; naive ASCII remains -29.099%.
   All 6,144 vector payload and 99 complex scalar comparisons pass.
 - Final local full-suite result: **0.489543 -> 0.487338** GNU R;
-  **76/77 -> 77/77** correct programs faster. Naive ASCII
+  **76/77 -> 77/77** stdout/status-matching programs faster. Naive ASCII
   **1,210,079,365 -> 857,964,515** instructions (-29.098%). Vector ASCII
   +0.348%, noout +0.351%. Gate: 2 faster, 0 slower above 0.5%, 0 broken.
 - Final `cargo test --release -p robigo-runtime -p robigo-cli` passes:
