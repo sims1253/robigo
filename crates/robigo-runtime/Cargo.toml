@@ -4,7 +4,15 @@ description = "Values, environments and evaluator for the robigo R runtime."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+# Not on crates.io yet: build.rs embeds the vendored R sources from
+# ../../rlib, which live outside this package and would not ship in the
+# .crate. Publishable once the sources move into this crate (or are
+# fetched at build time); until then use a git dependency or a nightly
+# binary (docs/distribution.md).
+publish = false
 
 [dependencies]
 robigo-syntax.workspace = true

@@ -4,6 +4,10 @@ description = "Lexer and parser for the R language, producing R-shaped syntax tr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+keywords = ["r", "parser", "language", "statistics"]
+categories = ["parser-implementations", "science"]
 
 [dependencies]

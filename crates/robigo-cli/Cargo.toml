@@ -4,7 +4,13 @@ description = "Command-line interface for robigo."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+# Not on crates.io yet: depends on robigo-runtime, which is not
+# publishable yet (see its manifest). Install the binary from a nightly
+# release or with `cargo install --git ...` (docs/distribution.md).
+publish = false
 
 [[bin]]
 name = "robigo"

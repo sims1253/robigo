@@ -4,7 +4,12 @@ description = "libR.so: GNU R 4.5's C API over robigo-core (G2, docs/core.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+# Not on crates.io yet: depends on robigo-runtime, which is not
+# publishable yet (see its manifest). Follows automatically once it is.
+publish = false
 
 [lib]
 # The cdylib is libR.so (DT_SONAME libR.so, build.rs); the rlib serves tests.

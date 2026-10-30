@@ -4,7 +4,11 @@ description = "robigo's object model and memory manager: header'd SEXPs on a mar
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+keywords = ["r", "garbage-collection", "runtime"]
+categories = ["memory-management", "science"]
 
 [dependencies]
 libc = "0.2"
