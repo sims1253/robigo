@@ -2,6 +2,8 @@
 tests/r/basics/arith.R
 tests/r/basics/arith-vectors.R
 tests/r/basics/caller-forced-promises.R
+tests/r/basics/compiled-wrappers-base.R
+tests/r/basics/compiled-wrappers-user.R
 tests/r/basics/control.R
 tests/r/basics/for-seq-length.R
 tests/r/basics/functions.R

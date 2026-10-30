@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use crate::builtins::arith::{ArithOp, RelOp, int_to_real, myfmod, r_pow, real_op};
 use crate::compile::{
-    Builtin1, CallSite, Code, GuardMemo, InlineArg, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot, compile_body,
-    compile_loop,
+    Builtin1, CallSite, Code, GuardMemo, InlineArg, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, SiArg, SiInline, Slot,
+    compile_body, compile_loop,
 };
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -1782,6 +1782,320 @@ fn inline_site_call(
     })
 }
 
+/// R: compiler/R/cmp.R:safeBaseInternals, cmpSimpleInternal,
+/// inlineSimpleInternalCall, cmpBuiltinArgs. Installed base bytecode
+/// inlines these simple `.Internal` wrappers as direct internal calls:
+/// guard-free in locked namespaces, `BASEGUARD`-checked in user code.
+/// The definition is resolved once per call site (GNU R compiles once);
+/// the call's actuals substitute the formals in the inner call and are
+/// evaluated eagerly in formal order (R: MAKEPROM on a builtin frame).
+///
+/// Kept out of line and cold: only candidate call sites call it.
+#[cold]
+#[inline(never)]
+pub fn snapshot_simple_internals(interp: &mut Interp) {
+    // Snapshot the shipped definitions at the end of base loading (R:
+    // the bytecode is fixed at install). Namespace callers inline these
+    // unconditionally; `None` entries (or no snapshot on paths that skip
+    // base loading) fall back to the generic call.
+    for (i, name) in crate::compile::SIMPLE_INTERNALS.iter().enumerate() {
+        let Some(sym) = Sym::lookup(name) else { continue };
+        if let Some(Value::Closure(c)) = interp.base_binding(sym) {
+            if simple_internal_shape(&c).is_some() {
+                interp.si_snaps[i] = Some(c);
+            }
+        }
+    }
+}
+
+/// The caller of a call that may inline: top-level calls are never
+/// compiled in GNU R and stay generic. Otherwise the caller closure,
+/// whether it is namespace-scoped (R: getInlineInfo finds a locked
+/// namespace above it, so the call inlines without a guard), and whether
+/// it runs as compiled code (R: R_CheckJIT timing; first calls of small
+/// closures stay interpreted and generic).
+#[cold]
+#[inline(never)]
+fn simple_caller(interp: &Interp) -> Option<(usize, bool, bool)> {
+    let frame = interp.current_frame()?;
+    let Value::Closure(caller) = &interp.frames[frame].function else { return None };
+    let ns = !caller.env.is_search() && locked_to_search(&caller.env);
+    Some((Rc::as_ptr(caller) as usize, ns, caller.jit.is_bytecode()))
+}
+
+/// R: compiler/R/cmp.R:is.simpleInternal. The definition is a closure
+/// with simple formals (no `...`, constant defaults) whose body is
+/// `.Internal(ifun(...))` for a builtin internal with formal-symbol or
+/// constant arguments. Returns the internal name with the formals and
+/// the inner template.
+#[cold]
+#[inline(never)]
+fn simple_internal_shape(clo: &Closure) -> Option<(Sym, &[Arg], &[Arg])> {
+    if clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
+        return None;
+    }
+    for f in clo.formals.iter() {
+        if !f.value.is_missing_arg() {
+            match &f.value {
+                Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => return None,
+                _ => {}
+            }
+        }
+    }
+    // The body, unwrapping `{`.
+    let mut b = &clo.body;
+    if let Value::Lang(l) = b {
+        if l.fun_sym() == Some(s::BRACE) && l.args.len() == 1 && l.args[0].tag.is_none() {
+            b = &l.args[0].value;
+        }
+    }
+    let Value::Lang(l) = b else { return None };
+    if l.fun_sym() != Some(s::DOT_INTERNAL) || l.args.len() != 1 || l.args[0].tag.is_some() {
+        return None;
+    }
+    let Value::Lang(icall) = &l.args[0].value else { return None };
+    let fsym = icall.fun_sym()?;
+    // R: is.builtin.internal.
+    crate::builtins::lookup_internal(&fsym.name())?;
+    // R: simpleArgs (tags never appear in the shipped templates).
+    for a in &icall.args {
+        if a.tag.is_some() || a.value.is_missing_arg() {
+            return None;
+        }
+        match &a.value {
+            Value::Sym(sym) => {
+                if !clo.formals.iter().any(|f| f.tag == Some(*sym)) {
+                    return None;
+                }
+            }
+            Value::Lang(_) | Value::Promise(_) => return None,
+            _ => {}
+        }
+    }
+    Some((fsym, &clo.formals, &icall.args))
+}
+
+/// Align this call's actuals to the wrapper formals (R: match.call) and
+/// substitute them into the inner template (R: inlineSimpleInternalCall).
+/// `None` is the generic call (R: cmpBuiltin bails on substituted
+/// missing, and checkCall fails where match_args does). Marker values
+/// recover each formal's actual index; match failures reproduce their
+/// error on the generic path.
+#[cold]
+#[inline(never)]
+fn simple_arg_map(
+    interp: &mut Interp,
+    formals: &[Arg],
+    template: &[Arg],
+    args: &[Arg],
+    call: &Value,
+) -> Option<Vec<SiArg>> {
+    // R: dots.or.missing on the outer call.
+    for a in args {
+        if a.value.is_missing_arg() || a.value.as_sym() == Some(s::DOTS) {
+            return None;
+        }
+    }
+    let skeleton: Vec<Arg> = args.iter().enumerate().map(|(j, a)| Arg::new(a.tag, Value::int(j as i32))).collect();
+    let actuals = interp.match_args(formals, &skeleton, call).ok()?;
+    let mut map = Vec::with_capacity(template.len());
+    for t in template {
+        let Value::Sym(sym) = &t.value else {
+            map.push(SiArg::Const(t.value.clone()));
+            continue;
+        };
+        let fi = formals.iter().position(|f| f.tag == Some(*sym))?;
+        match &actuals[fi] {
+            Some(Value::Int(m)) if m.data.len() == 1 => map.push(SiArg::Actual(m.data[0] as usize)),
+            Some(_) => return None,
+            None => {
+                let d = &formals[fi].value;
+                if d.is_missing_arg() {
+                    return None;
+                }
+                map.push(SiArg::Const(d.clone()));
+            }
+        }
+    }
+    Some(map)
+}
+
+/// Run the substituted inner call: actuals evaluate eagerly in formal
+/// order (R: cmpBuiltinArgs; evalList does the same for interpreted
+/// calls), then the internal runs with the user's call as its error
+/// context (R: getCurrentCall over the bytecode expressionsIndex).
+/// Out of line (so callers stay lean) but normally optimized: this runs
+/// once per inlined call.
+#[inline(never)]
+fn run_simple_internal(
+    interp: &mut Interp,
+    fsym: Sym,
+    map: &[SiArg],
+    args: &[Arg],
+    call: &Value,
+    env: &Env,
+) -> RResult<Value> {
+    // The inner call keeps the actuals' expressions: error calls deparse
+    // them, as in GNU R's `rep.int(v, -1)`.
+    let mut cargs = Vec::with_capacity(map.len());
+    for m in map {
+        match m {
+            SiArg::Actual(j) => cargs.push(args[*j].clone()),
+            SiArg::Const(v) => cargs.push(Arg::pos(v.clone())),
+        }
+    }
+    let argv = match interp.eval_args(&cargs, env, call) {
+        Ok(argv) => argv,
+        Err(e) => return signal(interp, Err(e)),
+    };
+    let inner = Value::lang(Value::Sym(fsym), cargs);
+    let Some(b) = crate::builtins::lookup_internal(&fsym.name()) else {
+        return Err(Flow::error(format!("robigo: no .Internal function '{fsym}'")));
+    };
+    // R: names.c:do_internal evaluates the arguments, then runs the
+    // primitive with the inner call.
+    interp.visible = true;
+    let argv = match b.kind {
+        BuiltinKind::Special => {
+            let Value::Lang(l) = &inner else { unreachable!() };
+            l.args.clone()
+        }
+        BuiltinKind::Builtin => argv,
+    };
+    // R: eval.c:getCurrentCall via the bytecode expressionsIndex: plain
+    // errors and warnings from the inlined internal report the user's
+    // call, as the wrapper frame does when interpreted.
+    interp.ccode_calls.push((interp.frames.len(), call.clone()));
+    let r = interp.invoke_builtin(b, &inner, argv, env);
+    let r = signal(interp, r);
+    interp.ccode_calls.pop();
+    r
+}
+
+/// Resolve a `si` call site for this caller (R: compiling the call).
+/// `None` is the generic call. The resolution is write-once per caller:
+/// the definition and argument map, or never-inline.
+#[cold]
+#[inline(never)]
+fn resolve_simple_site(
+    interp: &mut Interp,
+    si: usize,
+    ns: bool,
+    l: &crate::value::Lang,
+    call: &Value,
+    env: &Env,
+) -> Option<(Sym, Rc<Closure>, Vec<SiArg>)> {
+    let head = l.fun_sym()?;
+    let def = if ns {
+        // Installed code: the shipped definition, used unconditionally
+        // (R: no guard in namespaces). The live lookup must still reach
+        // base, else the generic call reports the lookup failure.
+        if !interp.resolves_to_base(head, env) {
+            return None;
+        }
+        interp.si_snaps[si].clone()?
+    } else {
+        // User code: the current base definition (R: BASEGUARD compares
+        // against the base namespace; the recorded definition is what
+        // the call was compiled against).
+        let Value::Closure(d) = interp.base_binding(head)? else { return None };
+        d
+    };
+    let (fsym, formals, template) = simple_internal_shape(&def)?;
+    let map = simple_arg_map(interp, formals, template, &l.args, call)?;
+    Some((fsym, def, map))
+}
+
+/// A `si` call site taking the inlined path: the memoized definition
+/// and argument map, guarded for user callers (R: DO_BASEGUARD compares
+/// the visible binding with the base namespace). `None` is the generic
+/// call.
+#[cold]
+#[inline(never)]
+fn try_inline_site(
+    interp: &mut Interp,
+    site: &CallSite,
+    l: &crate::value::Lang,
+    call: &Value,
+    env: &Env,
+) -> Option<RResult<RVal>> {
+    let si = site.si? as usize;
+    if site.force != 0 {
+        return None;
+    }
+    let head = l.fun_sym()?;
+    let (caller, ns, compiled) = simple_caller(interp)?;
+    // User code inlines only once compiled (R_CheckJIT timing); first
+    // calls stay interpreted and generic.
+    if !ns && !compiled {
+        return None;
+    }
+    // The memoized resolution, if it was resolved for this caller. The
+    // borrow ends here: running the call may re-enter this site through
+    // a handler.
+    let hit = {
+        let memo = site.si_memo.borrow();
+        match memo.as_ref() {
+            Some((c, n, r)) if *c == caller && *n == ns => Some(r.clone()),
+            _ => None,
+        }
+    };
+    match hit {
+        Some(inline) => {
+            let Some(inline) = inline else { return None };
+            if !ns && !interp.resolves_to_base(head, env) {
+                return None;
+            }
+            let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
+            Some(r.map(RVal::V))
+        }
+        None => {
+            let (fsym, def, map) = resolve_simple_site(interp, si, ns, l, call, env)?;
+            let inline = SiInline { def, fun: fsym, args: map };
+            let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
+            *site.si_memo.borrow_mut() = Some((caller, ns, Some(inline)));
+            Some(r.map(RVal::V))
+        }
+    }
+}
+
+/// An interpreted call taking the inlined path (see [`try_inline_site`]).
+/// Interpreted callers outside locked namespaces stay generic: only
+/// installed code observes the inline. There is no memo: interpreted
+/// callers of installed wrappers are `Eval` fragments and cold.
+#[cold]
+#[inline(never)]
+pub(crate) fn try_inline_expr(
+    interp: &mut Interp,
+    si: u8,
+    l: &Rc<crate::value::Lang>,
+    call: &Value,
+    env: &Env,
+) -> Option<RResult<Value>> {
+    let (caller, ns, compiled) = simple_caller(interp)?;
+    if !ns && !compiled {
+        return None;
+    }
+    // Record-first per caller, as for compiled call sites (GNU R
+    // compiles once): the definition and argument map, or never-inline.
+    let key = (caller, Rc::as_ptr(l) as usize);
+    if let Some(hit) = interp.si_expr_memo.get(&key).cloned() {
+        let inline = hit?;
+        if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
+            return None;
+        }
+        return Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env));
+    }
+    let resolved = resolve_simple_site(interp, si as usize, ns, l, call, env).map(|(fsym, def, map)| SiInline {
+        def,
+        fun: fsym,
+        args: map,
+    });
+    interp.si_expr_memo.insert(key, resolved.clone());
+    let inline = resolved?;
+    Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
+}
+
 /// `Op::Call` of the closure `clo` (call site `site`, call `l`): promised
 /// arguments (some forced by the caller, see [`caller_promargs`]), then
 /// the call, whose compiled body may leave a scalar result unboxed.
@@ -1795,6 +2109,11 @@ fn closure_call(
     vars: &mut Vars<'_>,
     regs: &[RVal],
 ) -> RResult<RVal> {
+    if site.si.is_some()
+        && let Some(r) = try_inline_site(interp, site, l, &site.call, env)
+    {
+        return r;
+    }
     let promargs = if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
         caller_promargs(interp, site, clo, l, env, vars, regs)
     } else {

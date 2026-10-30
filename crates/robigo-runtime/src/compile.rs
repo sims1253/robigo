@@ -469,6 +469,58 @@ pub struct GuardMemo {
     pub outer_version: u32,
 }
 
+/// R: compiler/R/cmp.R:safeBaseInternals. Base closures that installed
+/// bytecode inlines as direct `.Internal` calls (guard-free in locked
+/// namespaces, `BASEGUARD`-checked in user code). The index is the
+/// [`CallSite::si`] value and the position in the startup snapshot.
+pub const SIMPLE_INTERNALS: [&str; 20] = [
+    "atan2",
+    "besselY",
+    "beta",
+    "choose",
+    "drop",
+    "inherits",
+    "is.vector",
+    "lbeta",
+    "lchoose",
+    "nchar",
+    "polyroot",
+    "typeof",
+    "vector",
+    "which.max",
+    "which.min",
+    "is.loaded",
+    "identical",
+    "match",
+    "rep.int",
+    "rep_len",
+];
+
+/// One substituted argument of an inlined `.Internal` call (R:
+/// compiler/R/cmp.R:inlineSimpleInternalCall): an actual argument of the
+/// call, or a constant formal default (`simpleFormals` allows only
+/// constants and missing, and missing falls back to the generic call).
+#[derive(Clone)]
+pub enum SiArg {
+    Actual(usize),
+    Const(Value),
+}
+
+/// The inlined form of a [`CallSite::si`] call site for one caller
+/// closure: the definition it was resolved against, the internal name,
+/// and the argument map.
+#[derive(Clone)]
+pub struct SiInline {
+    pub def: Rc<Closure>,
+    pub fun: Sym,
+    pub args: Vec<SiArg>,
+}
+
+/// The write-once resolution of a [`CallSite::si`] call site: the caller
+/// closure it was resolved for, whether that caller is
+/// namespace-scoped, and the inline (`None`: never inline here).
+pub type SiMemo = Option<(usize, bool, Option<SiInline>)>;
+
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
     pub call: Value,
@@ -477,6 +529,10 @@ pub struct CallSite {
     /// The function found from the first search-path environment: (search
     /// epoch, that environment's id, function).
     pub memo: std::cell::RefCell<Option<(u64, usize, Value)>>,
+    /// Index into [`SIMPLE_INTERNALS`] when the call head names one.
+    pub si: Option<u8>,
+    /// The resolution of [`CallSite::si`] (see [`SiMemo`]).
+    pub si_memo: std::cell::RefCell<SiMemo>,
     /// The arguments, when all are positional constants or variables (for
     /// running pure closures inline).
     pub leaf_args: Option<Vec<Leaf>>,
@@ -1021,6 +1077,8 @@ impl Compiler {
                 .collect::<Option<Vec<_>>>()
         });
         self.call_sites.push(CallSite {
+            si: f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8)),
+            si_memo: std::cell::RefCell::new(None),
             call: whole.clone(),
             codes,
             memo: Default::default(),

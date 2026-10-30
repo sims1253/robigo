@@ -6987,6 +6987,7 @@ builtins/TestBuiltin_lapply/131a9f9129bcf296
 builtins/TestBuiltin_lapply/1c7aa612d32a05c6
 builtins/TestBuiltin_lapply/235cd6806df9a1fa
 builtins/TestBuiltin_lapply/23de78a354e6fb76
+builtins/TestBuiltin_lapply/245e62b143e432a3
 builtins/TestBuiltin_lapply/25fbb9e2ce14f5bc
 builtins/TestBuiltin_lapply/2998be650b7170c1
 builtins/TestBuiltin_lapply/2c077844607b33c4
