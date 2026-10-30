@@ -8,7 +8,6 @@ Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
 ## 2026-10-30 (round 12 continuation): finish PR #106
-
 - Took over #106 in a separate local continuation branch, preserving the
   three original commits and their authorship. Rebased onto 532be45;
   the sole conflict was passing.txt, resolved by retaining every entry.
@@ -57,6 +56,86 @@ lands; the natives work is PR #78 below.
   ran in the foreground. No build directory was shared with another
   track. #109 remains a separate reference implementation; this work
   updates #106 only and leaves merge/close decisions to the coordinator.
+
+## 2026-10-30 (round 12): library(stats) baseline, profile, first chunk
+
+Job 2 on the same branch. Baseline re-measured in robigo-oracle:4.5.0
+(valgrind 3.24, R 4.5.0-3, cache rebuilt there from the container's own
+library tree — a host-built cache does not serve in the container: the
+flat claim keys are the container rdb paths, and mismatched guards
+silently fall back to the inflate path, costing +34M):
+
+| runtime | instructions | ratio |
+|---|---:|---|
+| GNU R `Rscript -e 'library(stats)'` (trace-children) | 259,518,726 | 1.000x |
+| robigo 73b7ec6 (LAPACK head, flat cache) | 172,984,336 / 172,997,624 | 0.6665x |
+| robigo + reader skip (this round) | 171,727,177 / 171,737,729 | **0.6618x** |
+
+The LAPACK commits cost the scenario nothing (lazy dlopen), as designed.
+
+**Host trap (burned an hour)**: there is no working host-side R 4.5.0.
+`~/.local/opt/R-4.5.0/bin/Rscript` and even `bin/exec/R` resolve the
+host's libR.so (CachyOS R **4.6.1** at /usr/lib64/R) — the "4.5.0 copy"
+only supplies R *code*. Any host Rscript measurement or oracle diff is
+poisoned (the chimeric engine measured library(stats) at 630M). GNU R
+numbers must come from the container; robigo host runs with
+R_HOME pointing at the copy are fine (robigo reads only its R code).
+My earlier host "battery vs Rscript" diffs were therefore R 4.6.1
+comparisons — harmless here (the container checks are authoritative
+and passed), but do not repeat this.
+
+**Where the 173M goes** (callgrind, container): unserialize via
+do_lazy_load_db_fetch 36.0M inclusive (246 fetches: base 216, utils 16,
+grDevices 9, stats 3, graphics 2 — Reader::int 5.1M self,
+read_item_flags0 4.4M, read_bc_lang 3.1M, read_charsxp 0.9M,
+17,485 charsxp items); regex-automata compile ~4.3M self under
+gsub_impl (12.4M inclusive, 38 gsub calls — grep.rs, conformance-strings
+own it; lazy engine builds remain the known ~10M); mimalloc ~11M self;
+Value drops/clones ~7M; memcpy 4.9M; VM run_with 7.9M self (perf-vm).
+GNU R pays ~172M for the same library(stats) delta (inflate 18.6M it
+skips via cache, xdr_int 14M, mkCharLenCE 7.6M, cons writers 19.7M).
+
+**Change kept**: `serialize.rs` read_bc no longer materializes the
+serialized instruction words. GNU R writes them as one WriteItem of
+R_bcDecode's integer vector (serialize.c:ReadBC1) and keeps them in the
+BCODESXP; robigo recompiles closures lazily and dropped the value, so
+the fixed-width binary form now just advances the stream
+(`skip_discarded_item`; non-INTSXP/LGLSXP or Ascii shapes fall back to
+the full read, attributes are still consumed; vectors never enter the
+reader's refs table so no REFSXP index can shift). BCREPDEF's
+consecutive (position, type) pairs read through one bounds check
+(`int2`). **-1.26M (-0.73%)** on library(stats), interleaved A/B in the
+container (deltas above; run-to-run spread ~13k). Re-verified after
+#106 merged (main a142ca65, where the scenario's base is 173.78M):
+base 173,778,224/173,795,565/173,776,734 vs candidate
+172,543,956/172,522,754/172,539,104 — the same -1.25M (-0.72%),
+ratio 0.6699x -> 0.6651x of GNU R's 259,518,726. (An earlier A/B on
+main that showed no win was invalid: the repo mount was read-only, so
+the in-container `git checkout` failed and both sides built the
+candidate. Build A/B sides from separate read-only source trees.)
+
+Verification: runtime unit tests green in a private target dir (only
+the documented host-glibc 1-ULP complex oracles fail; note the shared
+~/.cache/cargo-target raced with another worktree's in-flight syntax
+enum — StrNative — use a private CARGO_TARGET_DIR for local cargo
+test); conformance ratchet 258/258; fastr serialize 320/326 (the one
+non-pass is the known oversized-realseq serialization allocation flake,
+reproduces on the unmodified baseline; CI judges), unserialize 155/157,
+TestBuiltin_La 13/14 unchanged; linalg battery + eigen/svd/chol
+recordings byte-identical in the container. The fastr 'library' slice's
+TestSplineFunctions "regressions" are local-only: those `.Call(stats:::
+...)` cases need ROBIGO_NATIVES, absent in this worktree (baseline
+fails them identically).
+
+**Findings for other tracks**:
+- rnorm under set.seed differs from R 4.5.0 in the last 1-3 ulps on
+  this host (robigo vs container R 4.5.0, literal-matrix inputs
+  excluded) — robigo-numerics' normal generator, not linalg: the LAPACK
+  bridge is bit-exact given identical inputs.
+- The structural endgame for the remaining ~20M (mimalloc + drops +
+  clones in unserialize) is arena/region allocation for entry graphs —
+  value.rs, needs core coordination. Reader item paths are squeezed
+  dry; regex engines (grep.rs) are the largest remaining single block.
 
 ## 2026-10-30 (round 12): the LAPACK bridge, wired and proven
 

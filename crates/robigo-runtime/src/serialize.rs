@@ -157,6 +157,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(String::from_utf8_lossy(&self.data[start..self.pos]).into_owned())
     }
 
+    #[inline]
     fn int(&mut self) -> RResult<i32> {
         match self.format {
             Format::Xdr => Ok(i32::from_be_bytes(self.bytes(4)?.try_into().unwrap())),
@@ -171,6 +172,52 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
     }
 
+    /// Two consecutive integers in one bounds check; bytecode headers
+    /// read such pairs (BCREPDEF's position and type).
+    #[inline]
+    fn int2(&mut self) -> RResult<(i32, i32)> {
+        match self.format {
+            Format::Xdr | Format::Binary => {
+                let b = self.bytes(8)?;
+                let (a, c): ([u8; 4], [u8; 4]) = (b[..4].try_into().unwrap(), b[4..].try_into().unwrap());
+                if self.format == Format::Xdr {
+                    Ok((i32::from_be_bytes(a), i32::from_be_bytes(c)))
+                } else {
+                    Ok((i32::from_le_bytes(a), i32::from_le_bytes(c)))
+                }
+            }
+            Format::Ascii => Ok((self.int()?, self.int()?)),
+        }
+    }
+
+    /// Skip the serialized instruction words of a bytecode object: GNU R
+    /// writes them as one `WriteItem` of `R_bcDecode`'s integer vector
+    /// (R: serialize.c:ReadBC1 reads it into the BCODESXP). robigo
+    /// recompiles closures on first call and drops this value, so the
+    /// fixed-width binary form only advances the stream position; any
+    /// other shape (Ascii, other types, attributes) falls back to a full
+    /// read that is discarded. Vectors never enter the reader's ref
+    /// table, so skipping cannot shift later REFSXP indices.
+    fn skip_discarded_item(&mut self, flags: u32) -> RResult<()> {
+        let ty = flags & 255;
+        if matches!(ty, LGLSXP | INTSXP) && !matches!(self.format, Format::Ascii) {
+            let n = self.length()?;
+            match n.checked_mul(4) {
+                Some(bytes) => {
+                    self.bytes(bytes)?;
+                }
+                None => return Err(corrupt()),
+            }
+            if flags & HAS_ATTR_BIT != 0 {
+                let _ = self.read_item()?;
+            }
+            return Ok(());
+        }
+        let _ = self.read_item_flags(flags)?;
+        Ok(())
+    }
+
+    #[inline]
     fn real(&mut self) -> RResult<f64> {
         match self.format {
             Format::Xdr => {
@@ -229,6 +276,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             .collect())
     }
 
+    #[inline]
     fn length(&mut self) -> RResult<usize> {
         let len = self.int()?;
         if len < -1 {
@@ -722,7 +770,10 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
-        let _code = self.read_item()?;
+        // R: serialize.c:ReadBC1 — the code item GNU R keeps in the
+        // BCODESXP is skipped: robigo recompiles closures lazily.
+        let flags = self.int()? as u32;
+        self.skip_discarded_item(flags)?;
         let consts = self.read_bc_consts(reps)?;
         // The first constant is the expression the code was compiled from.
         Ok(consts.into_iter().next().unwrap_or(Value::Null))
@@ -775,8 +826,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = Some(self.int()? as usize);
-                    ty = self.int()? as u32;
+                    let (p, t) = self.int2()?;
+                    pos = Some(p as usize);
+                    ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
                 let cdr;
@@ -790,8 +842,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = Some(self.int()? as usize);
-                        nty = self.int()? as u32;
+                        let (p, t) = self.int2()?;
+                        npos = Some(p as usize);
+                        nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
                     if matches!(nty, LANGSXP | LISTSXP) {
