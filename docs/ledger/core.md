@@ -42,10 +42,12 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   `bindings: integer integer`, GNU R prints `double double`; the same for
   the environment and attribute aliases. After: stdout, stderr and status
   match the Debian GNU R 4.5.0 recording exactly in interpreter, VM and
-  JIT; the script is ratcheted. Five value.rs tests pin: every alias sees
-  the write, Expr and unique vectors work, non-vectors/out-of-range are
-  rejected, the replaced element is dropped once, and R-level CoW still
-  copies.
+  JIT; the script is ratcheted. It also covers the duplicate-first
+  callers and unCfillPOSIXlt (balancePOSIXlt fill.only), and the partial
+  write kept before a validation error. Five value.rs tests pin: every
+  alias sees the write, Expr and unique vectors work, non-vectors or an
+  out-of-range index are rejected, the replaced element is dropped once,
+  attributes survive, and R-level CoW still copies.
 - Perf: paired harness with both exact binaries (main a32c5623 and this
   branch), cache off, Rust ports (no natives locally), 2 repeats:
   0 faster / 0 slower above 0.5% / 0 broken. Stored instruction counts

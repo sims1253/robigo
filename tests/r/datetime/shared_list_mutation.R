@@ -48,6 +48,13 @@ bad[[10]] <- 1L
 invisible(tryCatch(balancePOSIXlt(bad), error = function(e) cat("error:", conditionMessage(e), "\n")))
 cat("partial:", typeof(unclass(bad)[[1]]), typeof(unclass(bad)[[2]]), "\n")
 
+## unCfillPOSIXlt is balancePOSIXlt(fill.only = TRUE, classed = FALSE): it
+## coerces the argument in place too.
+u <- mk()
+held <- u
+invisible(unCfillPOSIXlt(u))
+cat("unCfillPOSIXlt:", typeof(unclass(u)[[1]]), typeof(unclass(held)[[1]]), "\n")
+
 ## R-level replacement copies a shared list instead.
 a <- list(1L)
 b <- a
