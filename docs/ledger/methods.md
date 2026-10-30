@@ -21,7 +21,28 @@ Slice used throughout ("S4 slice"):
   deferred-default entries continue through the live lookup.
 - The expanded oracle script matches the weak-cache binary byte for byte.
   Saved main also matches; the strong cache fails exactly the finalizer line.
-  Measurements and remaining checks of this correction follow.
+  Final paired instruction counts follow; generic dispatch improves 2.10%,
+  and all other deltas are below 0.11%.
+
+  | workload | baseline | weak cache | GNU R | final/R |
+  | --- | ---: | ---: | ---: | ---: |
+  | generic | 10,920.312 | 10,691.096 | 12,193.287 | 0.877 |
+  | slot | 1,376.734 | 1,377.548 | 656.122 | 2.100 |
+  | replace | 39,429.751 | 39,426.173 | 38,692.235 | 1.019 |
+  | new | 354,252.890 | 353,887.682 | 315,063.616 | 1.123 |
+  | valid | 180,072.314 | 180,112.061 | 163,070.796 | 1.105 |
+  | portfolio | 676,582.090 | 676,781.820 | 615,098.430 | 1.100 |
+
+- Final S4 corpus: 644/662, zero regressions. With base natives, methods/stats4
+  examples: 48/50, zero regressions. Rcpp sugar: 493/493, identical assertion
+  sequence to saved main. All 17 S4 oracle scripts pass in AST, VM and JIT,
+  including the retired-table finalizer regression.
+- Final seven-program performance comparison passes: no slowdown above
+  0.5%, no wrong outputs. Kept the weak cache and slot/label changes.
+- Final crate checks: full conformance 7/7, including all-tier equivalence
+  and VM guards; runtime unit tests 55 pass, only the same two documented
+  host-glibc complex oracle failures. cargo fmt --check, git diff --check
+  and ratchet validation pass. No original marker was removed.
 - Running the host-built unit executable in Debian was rejected as a check:
   it requires GLIBC_2.44. Do not use that route to judge the two known
   host numeric oracle differences; Debian-built CI tests remain authoritative.
