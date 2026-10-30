@@ -157,6 +157,7 @@ fn only_stored(v: &Value) -> bool {
     match v {
         Value::Env(e) => Rc::strong_count(&e.0) == 1,
         Value::Closure(x) => Rc::strong_count(x) == 1,
+        Value::Bytecode(x) => Rc::strong_count(x) == 1,
         Value::Promise(x) => Rc::strong_count(x) == 1,
         Value::ExtPtr(x) => Rc::strong_count(x) == 1,
         // builtins are static: their proxies stay
@@ -218,6 +219,7 @@ fn identity(v: &Value) -> Option<(usize, u8)> {
     Some(match v {
         Value::Env(e) => (Rc::as_ptr(&e.0) as *const u8 as usize, ENVSXP),
         Value::Closure(c) => (Rc::as_ptr(c) as *const u8 as usize, CLOSXP),
+        Value::Bytecode(b) => (Rc::as_ptr(b) as *const u8 as usize, BCODESXP),
         Value::Promise(p) => (Rc::as_ptr(p) as *const u8 as usize, PROMSXP),
         Value::Builtin(b) => (
             *b as *const Builtin as usize,
@@ -274,6 +276,7 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
             let held = match v {
                 Value::Env(e) => Rc::strong_count(&e.0) > 1,
                 Value::Closure(f) => Rc::strong_count(f) > 1,
+                Value::Bytecode(b) => Rc::strong_count(b) > 1,
                 Value::ExtPtr(p) => Rc::strong_count(p) > 1,
                 _ => false,
             };
@@ -491,7 +494,12 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return args_list(d, DOTSXP);
         }
         Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
-        Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
+        Value::Env(_)
+        | Value::Closure(_)
+        | Value::Bytecode(_)
+        | Value::Promise(_)
+        | Value::Builtin(_)
+        | Value::ExtPtr(_) => {
             return proxy(v);
         }
     };
@@ -1050,6 +1058,8 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
+        (Value::Bytecode(b), 0) => to_sexp(&b.code),
+        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.consts.clone())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value.borrow().clone() {
             Some(v) => to_sexp(&v),

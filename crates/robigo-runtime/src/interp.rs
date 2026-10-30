@@ -253,6 +253,7 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
+            Value::Bytecode(b) => self.eval(&b.expression, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
             _ => Ok(e.clone()),

@@ -14,8 +14,21 @@
   evaluator/lang; match.arg list coercion to values; raw-address tracemem
   cases need oracle-owner investigation; order/add626 is host collation.
   No additional unclaimed data-filter fix was identified in the ledgers.
-- BCODESXP baseline and candidate measurements pending the shared build
-  queue. Oracle fixtures generated in robigo-oracle:4.5.0 retain source
+- Rebased onto main f5dae40 after #96 and #97 merged, keeping both
+  ledger histories and all incoming ratchet entries.
+- Exact d2ce510 CI artifact baseline: three-tier oracle checks 726/729;
+  the new bytecode fixture fails in all tiers. serialize/unserialize
+  slice 320/326, with the existing long-vector 6260e145 host timeout.
+  Startup is 44,364,038 callgrind instructions. Broad data run pending.
+- Candidate retains portable code, all constants and repeated-cell records;
+  exposes BCODESXP/bodyCode and preserves the executable source body.
+  R_bcEncode/R_bcDecode normalization uses R 4.5.0 opcode argument counts.
+  ASCII input also needed InString's zero-length guard. ASCII output
+  remains an existing unimplemented feature, outside this change.
+- Shared edits: closure constructors, Value/SEXPTYPE exhaustive matches,
+  bytecode printing/deparsing/evaluation, and C API bytecode proxies.
+  No vm.rs or execution-bytecode changes. Candidate checks pending the
+  shared build queue. Oracle fixtures generated in robigo-oracle:4.5.0 retain source
   references, nested bytecode and versions 2 and 3.
 
 

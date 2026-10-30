@@ -264,6 +264,7 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
         return Ok(match &x {
             Value::Closure(_) | Value::Builtin(_) => x,
             _ => Value::Closure(Rc::new(Closure {
+                gnu_bytecode: None,
                 formals: Vec::new().into(),
                 body: x.clone(),
                 env: i.global.clone(),
@@ -810,6 +811,7 @@ fn do_asfunction(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         return Err(Flow::error("invalid formal argument list for \"as.function\""));
     }
     Ok(Value::Closure(Rc::new(Closure {
+        gnu_bytecode: None,
         formals: formals.into(),
         body: items[n - 1].clone(),
         env: envir,

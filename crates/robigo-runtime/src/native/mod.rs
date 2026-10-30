@@ -562,6 +562,7 @@ pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, holder: Valu
     let cell = crate::env::Env::new(Some(env.clone()));
     cell.set_local(crate::sym::Sym::new(".x"), holder);
     let f = Value::Closure(std::rc::Rc::new(crate::value::Closure {
+        gnu_bytecode: None,
         formals: std::rc::Rc::from(vec![Arg { tag: Some(v), value: Value::missing_arg() }]),
         body: Value::lang(Value::Builtin(&C_OWNED), vec![Arg::pos(Value::Sym(v))]),
         env: cell,
