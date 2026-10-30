@@ -1,5 +1,25 @@
 # conformance-sweep-data
 
+## 2026-10-30 (round 8): syntax reduction records
+
+- Baseline 4754027. Requested branch name was already attached to another
+  worktree; use track/conformance-sweep-data-8-records in this checkout.
+- Parser corpus baseline: 17/28, all eleven parse-data cases fail. New
+  oracle-recorded runtime fixture: 0/3 across interpreter, VM and JIT.
+- Port gram.y:YYLLOC_DEFAULT, token_, record_, recordParents,
+  modif_token and finalizeData through an optional syntax-side LR recorder.
+  Tables are extracted from GNU R 4.5.0's generated gram.c; the generator
+  is committed alongside them. The ordinary AST parser remains unchanged.
+- Initial raw-matrix differential check: all 47 Debian oracle programs
+  match exact row order, numeric token codes, IDs, parent links, text and
+  locations. Include assignment direction, nested grammar-only reductions,
+  formals, calls, missing arguments, comments, tabs, UTF-8 and pipe rewrites.
+  Two line-directive probes were added after that check. Runtime integration
+  attaches the matrix to the source environment for base getParseData.
+- Verification is in progress. Bytecode and VM handoffs follow below once
+  the parser slice and the existing passing entries are verified.
+
+
 ## 2026-10-30 (round 7): closure source metadata and ownership audit
 
 - Baseline main 29cac51, branch track/conformance-sweep-data-7.

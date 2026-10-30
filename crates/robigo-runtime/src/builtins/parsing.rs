@@ -187,6 +187,36 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let values = exprs.iter().map(|e| refs.convert(e)).collect();
     let mut result = Value::expr_vec(values);
     refs.attach(&mut result, exprs.iter().map(|e| refs.make(e.span())).collect(), parser.consumed_end());
+    // R: gram.y:finalizeData. Base utils::getParseData consumes this matrix.
+    if crate::coerce::as_logical(&i.get_option("keep.parse.data").unwrap_or(Value::Null)) == 1 {
+        let records =
+            robigo_syntax::parse_data::record_parse_data(&src[..parser.consumed_end()]).map_err(Flow::error)?;
+        let mut data = Vec::with_capacity(records.len() * 8);
+        let mut tokens = Vec::with_capacity(records.len());
+        let mut text = Vec::with_capacity(records.len());
+        for record in &records {
+            data.extend([
+                record.line1 as i32,
+                record.col1 as i32,
+                record.line2 as i32,
+                record.col2 as i32,
+                i32::from(record.terminal()),
+                record.token as i32,
+                record.id as i32,
+                record.parent,
+            ]);
+            tokens.push(rstr(record.token_name()));
+            text.push(rstr(&record.text));
+        }
+        let mut data = Value::ints(data);
+        data.set_attr_raw(s::DIM, Value::ints(vec![8, records.len() as i32]));
+        data.set_attr_raw(Sym::new("tokens"), Value::strs(tokens));
+        data.set_attr_raw(Sym::new("text"), Value::strs(text));
+        data.set_attr_raw(s::CLASS, Value::str("parseData"));
+        if let Value::Env(source) = &source {
+            source.set_local(Sym::new("parseData"), data);
+        }
+    }
     Ok(result)
 }
 
