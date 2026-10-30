@@ -58,13 +58,13 @@ jobs:
           scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
           echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
       # The flat lazy-load cache (rdbflat.rs): startup stops inflating a
-      # zlib stream per lazyLoadDBfetch. Built by a battery that forces
-      # every lazy binding of every base package (complete coverage).
+      # zlib stream per lazyLoadDBfetch. Enumerate the actual .rdx keys.
       - name: Flat lazy-load cache
         run: |
           mkdir -p .robigo/bin
           cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" .robigo/bin/robigo
           scripts/build-rdbflat.sh
+          python3 scripts/test-rdbflat.py
       - name: Unit tests, parser oracle, conformance (all tiers)
         run: cargo test --release --workspace
       - name: Core and C API under gctorture (collect on every allocation)

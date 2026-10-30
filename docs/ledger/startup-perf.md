@@ -23,6 +23,57 @@ lands; the natives work is PR #78 below.
   it: apparent 100 -> 80 becomes cache-off 100 -> 110 and fails at 10%.
   Failed oracle measurements also fail. cargo fmt --check and diff
   whitespace checks pass. No runtime source or ratchet changes.
+## 2026-10-30 (round 8): enumerate the real lazy-load indices
+
+- Based on #92 head d002511, whose reader changes are still awaiting
+  merge. Replace the recorded forcing battery with readRDS enumeration
+  of every installed .rdx, including references and nested eagerKey /
+  lazyKeys entries (R: lazyload.R:lazyLoadDBexec). Enumeration errors
+  abort the builder instead of producing a partial recording.
+- Pinned Debian oracle library: 5,894 keys in 16 databases from the old
+  battery -> 10,057 keys in 30 databases from the indices. The added
+  databases include help databases; every enumerated key is checked
+  against the resulting flat index. No runtime fallback was removed.
+- Integration verification: GNU R and robigo emit byte-identical key
+  logs. All 27 stdout/stderr/status comparisons pass: NULL, utils+stats,
+  default packages, each with AST/VM/JIT and full/absent/malformed
+  caches. Out-of-bounds builder input fails without publishing a cache.
+  CI now runs this check after building its cache.
+- Builder rejects inconsistent compression flags, truncated/out-of-range
+  entries, decoded-length mismatches and source metadata changes during
+  its reads. Unknown compression remains an explicit build failure.
+  Missing/stale/malformed runtime caches retain the original fetch path.
+- Same #92 host-built binary, both cache versions, natives disabled,
+  pinned oracle library, C.UTF-8/UTC, VM default. Callgrind instructions:
+
+  | scenario | battery cache | enumerated cache | GNU R |
+  |---|---:|---:|---:|
+  | NULL, -e 1 | 38,090,360 | 38,220,237 | 87,667,059 |
+  | NULL, library(stats) | 174,694,415 | 174,859,390 | 259,410,755 |
+  | default, -e 1 | 391,057,625 | 391,198,488 | 660,611,163 |
+
+  Full coverage costs 0.34%, 0.09%, and 0.04% respectively. Current
+  library(stats) ratio is 0.674x; default-package startup is 0.592x.
+  Host-built binaries require GLIBC_2.44, so these run in the oracle
+  container via the mounted host loader/libraries. GNU R uses its
+  container libraries. Both robigo sides have exactly the same loader,
+  environment and package bytes. Do not compare to older container-built
+  binary counts as a paired speedup.
+
+La_rs follow-up: GNU R src/main/names.c registers La_rs with opcode 1,
+internal/evaluated, arity 2. src/main/lapack.c dispatches through the
+LAPACK module; src/modules/lapack/Lapack.c:La_rs calls dsyevr_ with
+JOBZ=N/V, RANGE=A, UPLO=L, ABSTOL=0 and queries LWORK/LIWORK first.
+Missing: the runtime DEFS registration and SEXP wrapper, plus a callable
+native dsyevr_ binding. R_ext/Lapack.h already declares the function
+with three trailing Fortran character-length arguments (size_t).
+The stats native library only pulls the LAPACK archive members its
+sources reference; it does not expose this libR LAPACK-module wrapper.
+Next: build GNU R's LAPACK module against robigo's C API or add a
+runtime wrapper over native reference-LAPACK dsyevr_ with both workspace
+queries. Keep errors from Lapack.c verbatim; test values/vectors,
+only.values=NA, zero-size, and nonsquare matrices against the oracle.
+
 
 ## 2026-10-30 (round 7): resume #92 and repair perf validation
 

@@ -6,9 +6,9 @@
 //! Huffman table builds per stream, adler32 over the output, ...). GNU R
 //! pays the same per fetch.
 //!
-//! `scripts/build-rdbflat.sh` records a battery of robigo runs
-//! (`scripts/build-rdbflat.py`) and writes, per `.rdb`, a flat file with
-//! every fetched entry pre-inflated:
+//! `scripts/build-rdbflat.sh` enumerates object and reference keys through
+//! `readRDS` and writes, per `.rdb`, a flat file with every indexed entry
+//! pre-inflated (`scripts/build-rdbflat.py`):
 //!
 //! ```text
 //! "RFLAT01\n"                      8 bytes
@@ -30,8 +30,7 @@
 //! package's database does not keep the whole pre-inflated file
 //! resident (reading them whole cost 35 MB of RSS on a default
 //! startup). A missing or stale cache falls back to the per-fetch path,
-//! so behaviour is byte-identical either way (entries the battery did
-//! not record take that path too).
+//! so behaviour is byte-identical either way.
 //! The same format caches a lazy-load database's `.rdx` index — a gzip
 //! file `lazyload.R`'s `readRDS` inflates whole at every open — as a
 //! single `(0, 0)` entry claimed on the `.rdx` itself; `builtins/io.rs`
