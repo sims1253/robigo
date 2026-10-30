@@ -264,9 +264,4 @@ tests/r/vec/print-max-index.R
 tests/r/basics/base-isvector-context.R
 tests/r/basics/compiled-isvector-missing.R
 tests/r/lang/substitute-dots-cell.R
-tests/r/env/finalizer_cycles.R
-tests/r/env/finalizer_order.R
-tests/r/env/finalizer_errors.R
-tests/r/s4/refclass_finalizer.R
-tests/r/capi/finalizer-key.R
 

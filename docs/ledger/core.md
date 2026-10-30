@@ -218,6 +218,31 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   test checks deduplication and that inventory ownership remains weak.
   Verification pending; PR returned to draft. Further builds use this
   worktree's private target to avoid shared metadata reuse and starvation.
+- Vector inventory candidate verified and kept: EnvData stays 240 bytes;
+  deduplication/weak-ownership tests pass. Runtime 54 unit plus two
+  integration tests, collector 22 tests, and both C API integration pairs
+  pass (only the two documented host-glibc numeric oracles excluded).
+  Coordinator's onexit commits 7620967/36175d9 were preserved by rebasing
+  the optimization onto them. Combined conformance is 262/262 in all
+  three tiers, including normal/error/q() exit finalizers. CLI exit
+  invocation is now delivered; the earlier remaining-item note is closed.
+- Cache-OFF startup: main 212,073,075; rejected HashMap inventory
+  213,359,034 (+0.606%); retained vector inventory 212,256,560 (+0.087%).
+  It removes 1,102,474 instructions of overhead without changing which
+  environments participate in reachability.
+- Re-measured every one of CI's 14 failing targets plus strings, using
+  isolated binaries with no adjacent cache and ROBIGO_RDBFLAT unset.
+  All 15 outputs/statuses match exact Debian GNU R 4.5.0. Compare reports
+  0 slower above 0.5%; the largest increase is S4 valid +0.151%.
+  Selected main -> candidate instruction counts: emptyWhile 254,540,585
+  -> 254,677,890 (+0.054%); S4 new 629,064,527 -> 629,736,512 (+0.107%);
+  S4 slot write 487,440,956 -> 487,905,766 (+0.095%); S4 valid 627,434,885
+  -> 628,382,041 (+0.151%); strings 765,838,542 -> 765,566,094 (-0.036%).
+  Profiles/results are under /tmp/core98-profile/failed15-{base,vector}.*.
+- Final vector-inventory graphics: 182/184, no regressions; Hershey 1/1.
+  Remaining work is parser escape-origin metadata, physical cycle
+  reclamation/conservative opaque owners, and GNU R's weak-list mutation
+  quirk that can lose a finalizer registered during another finalizer.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 
