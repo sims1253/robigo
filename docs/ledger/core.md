@@ -133,6 +133,11 @@ the host with `R_HOME=~/.local/opt/R-4.5.0`.
   stdout/status but warns about coercion; the base case times out after
   120.3 seconds. plot.window still lacks .Internal(La_rs), as before.
   CI build and every corpus shard pass for e5b0f97; full perf is pending.
+- Main advanced again to 805e5fb (#71 methods defaults and #99 rdx
+  indexing) while the d81 verification ran. Rebased; only passing.txt
+  conflicted, retaining the union. Moved this topic's five new entries
+  beside the header instead of the shared append point, with every main
+  entry retained. New combined verification is pending.
 
 ## 2026-10-30: iconv consumes preserved bytes (follow-up)
 

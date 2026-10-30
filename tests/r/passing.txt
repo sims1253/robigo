@@ -1,4 +1,9 @@
 # Conformance ratchet: scripts that must keep matching GNU R.
+tests/r/capi/finalizer-key.R
+tests/r/env/finalizer_cycles.R
+tests/r/env/finalizer_errors.R
+tests/r/env/finalizer_order.R
+tests/r/s4/refclass_finalizer.R
 tests/r/basics/arith.R
 tests/r/basics/arith-vectors.R
 tests/r/basics/caller-forced-promises.R
