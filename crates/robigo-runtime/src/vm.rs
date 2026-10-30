@@ -935,6 +935,19 @@ fn dollar_fast(x: &Value, input: &RStr) -> Option<Value> {
     (!partial).then_some(Value::Null)
 }
 
+/// The fast case of `@` for an S4 object with an existing slot (other than `.Data`).
+#[inline]
+fn slot_read_fast(x: &Value, name: Sym) -> Option<Value> {
+    if name == crate::s4::syms::data() || !x.is_s4() {
+        return None;
+    }
+    match x.get_attr(name) {
+        Some(Value::Sym(p)) if p == crate::s4::syms::pseudo_null() => Some(Value::Null),
+        Some(v) => Some(v),
+        None => None,
+    }
+}
+
 /// The offset of element `[i, j]` (0-based) of a matrix that is not an
 /// object, if in range.
 fn matrix_offset(x: &Value, i: usize, j: usize) -> Option<usize> {
@@ -3316,6 +3329,36 @@ fn run_with(
                         let b = crate::builtins::lookup_primitive("$").expect("$ builtin");
                         let r = interp.invoke_builtin(b, call, args, env);
                         RVal::V(tryop!(signal(interp, r)))
+                    }
+                };
+            }
+            Op::SlotRead { dst, object, name, call } => {
+                interp.visible = true;
+                let fast = if interp.methods_dispatch_on() {
+                    match &regs[*object as usize] {
+                        RVal::V(xv) => slot_read_fast(xv, *name),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let call = &code.consts[*call as usize];
+                regs[*dst as usize] = match fast {
+                    Some(v) => unbox(v),
+                    None => {
+                        flush!();
+                        let xv = std::mem::replace(&mut regs[*object as usize], RVal::I(0)).into_value();
+                        let Value::Lang(l) = call else { unreachable!() };
+                        let args = vec![
+                            Arg::new(
+                                l.args[0].tag,
+                                Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv))),
+                            ),
+                            l.args[1].clone(),
+                        ];
+                        let b = crate::builtins::lookup_primitive("@").expect("@ builtin");
+                        let r = interp.invoke_builtin(b, call, args, env);
+                        unbox(tryop!(signal(interp, r)))
                     }
                 };
             }

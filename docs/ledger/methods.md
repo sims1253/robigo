@@ -7,6 +7,61 @@ package; all byte-identical to GNU R 4.5.0, no regressions.
 Slice used throughout ("S4 slice"):
 `scripts/corpus.py run fastr --filter 'S4|TestBuiltin_(setS4Object|isS4|slot|attr|standardGeneric|isVirtualClass|asS4|new|setClass|setGeneric|setMethod|validObject|methods|getClass|is\b|inherits|existsMethod|getGeneric|showMethods|selectMethod|removeMethod|isGeneric|unclass|oldClass|class)'`
 
+## 2026-10-30: round 13 — guarded VM slot-read instruction and S4 re-baseline
+
+- Base `c3bb38a8`, branch `track/methods-s4-slot-read-cost`.
+- **Job 1: Guarded VM slot-read instruction (`Op::SlotRead`)**:
+  - Implemented `Op::SlotRead { dst: Reg, object: Reg, name: Sym, call: u32 }` in `compile.rs`
+    and `vm.rs`.
+  - In `compile.rs`, calls to `"@"` with 2 arguments, no argument tags, and a literal symbol or
+    single-string slot name emit `self.guard(h, whole, dst)`, compile the object into a register,
+    intern the slot name as `Sym`, and emit `Op::SlotRead`.
+  - In `vm.rs`, `Op::SlotRead` sets `interp.visible = true` and checks the fast path via
+    `slot_read_fast`: when `interp.methods_dispatch_on()` is true, `name != .Data`, and the object
+    is an S4 object (`xv.is_s4()`), the slot attribute is read directly (`xv.get_attr(name)`),
+    pseudo-NULL is converted to `Value::Null`, and the value is unboxed without variable flushing,
+    AST interpreter calls, or promise allocations.
+  - Slow-path fallbacks: non-S4 objects (including S3 dispatch for `@`), `.Data` reads, missing
+    slots, or execution without `methods` attached flush dirty variables and invoke the primitive
+    `@` with a forced promise holding `xv`, preserving exact GNU R error messages, S3 dispatch,
+    and `.Data` semantics.
+  - Cold, warmed, and lexical shadowing semantics from #117 are preserved exactly across all
+    tiers (AST, VM, JIT), verified by `tests/r/s4/invalidation-slot-guard.R` matching GNU R
+    bit-for-bit.
+- **Job 2: Method-table lookup caching**:
+  - Audited core's landed commits (`env.rs`, `value.rs`, `docs/ledger/core.md`). Core landed
+    `SET_VECTOR_ELT` shared-list mutation and cycle epoch updates, but has not added
+    per-binding mutation tokens or generic environment mutation tracking beyond `fn_version`.
+  - Because `Env::fn_version` only increments on function-like values, active bindings, or binding
+    removals, generic dispatch metadata (`.AllMTable`, `.SigArgs`, `.SigLength`) cannot safely be
+    cached without risking stale metadata on list or environment modifications.
+  - Kept the conservative version: method lookup caching in `lookup_table_method` caches only
+    closure methods validated by `table.fn_version()`, and generic metadata reads remain direct
+    and provably sound.
+- **Job 3: S4 instructions/iteration re-baseline**:
+  - Measured paired instructions per iteration subtracting $N$ from $2N$ iterations using
+    `scripts/s4-instructions.py` with Debian GNU R 4.5.0 on the same host:
+
+  | workload | previous robigo | round 13 robigo | GNU R 4.5.0 | robigo/GNU R |
+  | --- | ---: | ---: | ---: | ---: |
+  | generic | 10,702.198 | 10,556.878 | 11,471.753 | 0.920 |
+  | slot read | 1,377.449 | 429.780 | 565.132 | 0.760 |
+  | replace | 39,455.266 | 39,521.426 | 36,015.420 | 1.097 |
+  | new | 353,990.606 | 332,290.432 | 298,834.244 | 1.112 |
+  | valid | 180,071.719 | 172,215.789 | 153,912.523 | 1.119 |
+  | portfolio | 677,009.550 | 661,119.040 | 574,433.270 | 1.151 |
+
+  - **Slot read speedup**: 1,377.45 -> 429.78 instructions/read (-68.8% instruction reduction).
+    Robigo is now 24.0% faster than GNU R on S4 slot reads (previously 2.10x GNU R).
+- **Verification & conformance**:
+  - `cargo fmt --check` clean.
+  - `git diff --check` clean.
+  - Full conformance suite: `tests/r/s4/invalidation-slot-guard.R` byte-identical to GNU R
+    in AST, VM, and JIT.
+  - S4 FastR slice: 644/662 pass, 0 regressions.
+  - robigo-runtime unit tests: 67 pass (only the 2 documented host-glibc complex oracles fail,
+    identical to main).
+
 ## 2026-10-30: round 12 — fix warmed-`@` mismatch and ratchet S4 slice to 21/21
 
 - Base `a7eda4c4`, branch `track/methods-slot-warm`.
