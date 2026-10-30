@@ -956,20 +956,19 @@ fn svd_ldu_info(job: u8, n: usize, p: usize, ldu: usize, ldvt: usize) -> i32 {
     }
 }
 
-/// The elements dgesdd/zgesdd write into U and VT for this job
-/// (0 = untouched).
-fn svd_writes(job: u8, n: usize, p: usize) -> (usize, usize) {
+/// Last element reached in each column-major output buffer, including
+/// padding between columns. R's public wrapper uses packed matrices, but
+/// direct .Internal callers can supply larger leading dimensions.
+fn svd_writes(job: u8, n: usize, p: usize, ldu: usize, ldvt: usize) -> (usize, usize) {
+    let extent = |rows: usize, cols: usize, ld: usize| {
+        if rows == 0 || cols == 0 { 0 } else { (cols - 1) * ld + rows }
+    };
     let k = n.min(p);
     match job {
-        b'A' => (n * n, p * p),
-        b'S' => (n * k, k * p),
-        b'O' => {
-            if n >= p {
-                (0, p * p)
-            } else {
-                (n * k, 0)
-            }
-        }
+        b'A' => (extent(n, n, ldu), extent(p, p, ldvt)),
+        b'S' => (extent(n, k, ldu), extent(k, p, ldvt)),
+        b'O' if n >= p => (0, extent(p, p, ldvt)),
+        b'O' => (extent(n, n, ldu), 0),
         _ => (0, 0),
     }
 }
@@ -1398,7 +1397,7 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     // LDU (-8), then LDVT (-10). R surfaces each as its interposed-
     // xerbla error; robigo pre-checks so Debian's xerbla (which STOPs
     // the process) is never reached.
-    let job = ju.as_bytes().first().copied().unwrap_or(0);
+    let job = ju.as_bytes().first().copied().unwrap_or(0).to_ascii_uppercase();
     if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
         return Err(Flow::error("BLAS/LAPACK routine 'DGESDD' gave error code -1"));
     }
@@ -1415,7 +1414,7 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     // Memory safety for direct .Internal calls: the R wrapper always
     // allocates exactly these shapes.
     let k = n.min(p);
-    let (ucols, vtcols) = svd_writes(job, n, p);
+    let (ucols, vtcols) = svd_writes(job, n, p, ldu, ldvt);
     if matches!(&s, Value::Real(r) if r.data.len() < k)
         || matches!(&u, Value::Real(r) if r.data.len() < ucols)
         || matches!(&vt, Value::Real(r) if r.data.len() < vtcols)
@@ -1518,7 +1517,7 @@ fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     };
     // zgesdd validates JOBZ (-1), then LDA = n (-5), then LDU (-8), then
     // LDVT (-10), like dgesdd.
-    let job = jz.as_bytes().first().copied().unwrap_or(0);
+    let job = jz.as_bytes().first().copied().unwrap_or(0).to_ascii_uppercase();
     if job != b'A' && job != b'S' && job != b'N' && job != b'O' {
         return Err(Flow::error("BLAS/LAPACK routine 'ZGESDD' gave error code -1"));
     }
@@ -1534,7 +1533,7 @@ fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     // Memory safety for direct .Internal calls, as in La_svd.
     let k = n.min(p);
-    let (ucols, vcols) = svd_writes(job, n, p);
+    let (ucols, vcols) = svd_writes(job, n, p, ldu, ldv);
     if matches!(&s, Value::Real(r) if r.data.len() < k)
         || matches!(&u, Value::Cplx(c) if c.data.len() < ucols)
         || matches!(&v, Value::Cplx(c) if c.data.len() < vcols)

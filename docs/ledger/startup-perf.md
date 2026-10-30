@@ -7,6 +7,31 @@ medians under load and indicative only; instructions are the gate.
 Earlier history (the lazy-base work, PR #36) is in its branch until it
 lands; the natives work is PR #78 below.
 
+## 2026-10-30 (round 12 continuation): finish PR #106
+
+- Took over #106 in a separate local continuation branch, preserving the
+  three original commits and their authorship. Rebased onto 532be45;
+  the sole conflict was passing.txt, resolved by retaining every entry.
+  #99 is merged and its build, corpus and perf checks succeeded.
+- Review found that the SVD guards rejected lowercase job codes, although
+  DGESDD/ZGESDD accept them through LSAME. Eight real/complex calls failed
+  before the fix. Normalize the code before validation and workspace
+  sizing. The new svd-direct fixture covers uppercase and lowercase jobs
+  with padded output matrices; it is recorded with Debian R 4.5.0-3.
+  The release binary matches its complete output after the fix.
+- The output buffer guard counted packed elements despite accepting
+  larger leading dimensions. Count the last accessed element using the
+  actual stride so a short direct-.Internal buffer cannot be overwritten.
+- Regenerated all seven inherited linalg recordings in the pinned oracle
+  container: no recorded bytes changed. No oracle or existing test was
+  weakened. Added fixtures and final container verification follow below.
+- Reprofiled the inherited container executable with an enumerated cache,
+  NULL packages and natives off: library(stats) takes 172,935,824
+  instructions. Reader::int costs 5,081,622 self instructions,
+  read_item_flags0 4,442,153 and read_bc_lang 3,140,109. This is a
+  refreshed measurement, not a startup speedup. Next measure inlining
+  Reader::int against this scenario before changing reader allocations.
+
 ## 2026-10-30 (round 12): the LAPACK bridge, wired and proven
 
 Branch `track/startup-perf-r12-lapack`. Three r12 attempts shared this
