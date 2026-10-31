@@ -493,10 +493,14 @@ struct CoreRef(Sexp);
 
 impl Drop for CoreRef {
     fn drop(&mut self) {
+        // A runtime value kept in one of this module's thread-locals can
+        // outlive `WRAPPED` (and the isolate): TLS destructors run in
+        // reverse registration order at process exit. Reaching either with
+        // `with` would panic in a destructor, which std turns into an abort.
         if !crate::state::isolate().is_null() {
             core().release(self.0);
         }
-        WRAPPED.with(|m| {
+        let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
         });
     }
@@ -2059,5 +2063,66 @@ impl NativeBridge for Bridge {
         // robigo_gc): the weak-reference round is over, so what only dead
         // cycles reach can be reclaimed.
         unsafe { reclaim_host_cycles() };
+    }
+}
+
+/// Process exit destroys thread-locals in reverse registration order. A
+/// runtime value held only by one of the bridge's caches is dropped after
+/// some of the thread-locals its destructor needs (`WRAPPED`, the isolate,
+/// the search epoch) are gone. Rust aborts the process when a TLS access
+/// during destruction panics, so those destructors use `try_with`.
+#[cfg(test)]
+mod tls_drop_tests {
+    use super::*;
+    use robigo_runtime::env::Env;
+    use robigo_runtime::value::{Promise, Value};
+
+    const CHILD: &str = "ROBIGO_TLS_DROP_CHILD";
+
+    /// Child process: fill caches registered after the thread-locals their
+    /// values' destructors touch, then let thread exit destroy them.
+    #[test]
+    fn caches_hold_values_at_tls_destruction() {
+        if std::env::var_os(CHILD).is_none() {
+            return;
+        }
+        unsafe {
+            // Registration order decides destruction order (reverse): each
+            // state below must be registered *before* PROXIED so that it is
+            // destroyed *after* the values PROXIED drops.
+            core();
+            robigo_runtime::env::search_epoch();
+            PROXIED.with(|_| {});
+            let x = core().alloc_vector(INTSXP, 1);
+            let extptr = wrap_core(x);
+            // A search-path frame with a function-like binding: dropping it
+            // bumps the search epoch (Frame::drop). The promise gets its own
+            // environment so the frame is not kept alive by a cycle and is
+            // really dropped when PROXIED is destroyed.
+            let search = Env::new_search(None, "test");
+            let holder = Env::new(None);
+            search.set_local(
+                robigo_runtime::sym::Sym::new("f"),
+                Value::Promise(std::rc::Rc::new(Promise::new(Value::Null, holder))),
+            );
+            PROXIED.with(|m| {
+                let mut m = m.borrow_mut();
+                m.insert(1, (x.addr(), extptr));
+                m.insert(2, (0, Value::Env(search)));
+            });
+        }
+    }
+
+    #[test]
+    fn values_dropped_at_tls_destruction_do_not_abort() {
+        if std::env::var_os(CHILD).is_some() {
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "bridge::tls_drop_tests::caches_hold_values_at_tls_destruction", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run child test");
+        assert!(out.status.success(), "child aborted ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr));
     }
 }

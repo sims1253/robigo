@@ -1274,6 +1274,33 @@ impl Interp {
         true
     }
 
+    /// R: main.c:R_dot_Last -- run `.Last` from the global environment,
+    /// then `.Last.sys` from the base namespace, each called with no
+    /// arguments in the global environment. Returns false if one raised an
+    /// error (reported at top level, as R's does).
+    pub fn run_dot_last(&mut self) -> bool {
+        // R: main.c:R_dot_Last sets the global/top-level/session contexts
+        // to R_Toplevel: .Last runs with no caller above it.
+        self.frames.clear();
+        self.handlers = self.global_handlers.clone();
+        self.restarts = None;
+        self.depth = 0;
+        self.ccode_calls.clear();
+        let global = self.global.clone();
+        let base = self.base_ns.clone();
+        for (name, from) in [(".Last", &global), (".Last.sys", &base)] {
+            let Some(Value::Closure(_)) = from.get_local(Sym::new(name)) else {
+                continue;
+            };
+            let call = Value::lang(Value::sym(name), Vec::new());
+            if let Err(f) = self.eval(&call, &global) {
+                self.report_toplevel(f);
+                return false;
+            }
+        }
+        true
+    }
+
     /// Evaluate one top-level expression and print it if visible.
     /// Returns the value (`None` if evaluation failed), which the
     /// console REPL stores in `.Last.value`.

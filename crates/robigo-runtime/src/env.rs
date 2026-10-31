@@ -132,7 +132,10 @@ pub fn search_epoch() -> u64 {
 }
 
 fn bump_search_epoch() {
-    SEARCH_EPOCH.with(|e| e.set(e.get() + 1));
+    // Frame::drop calls this, and frames held by other thread-locals are
+    // dropped during TLS destruction at process exit. A destroyed TLS must
+    // not abort the process; no lookup can be cached then anyway.
+    let _ = SEARCH_EPOCH.try_with(|e| e.set(e.get() + 1));
 }
 
 /// Could this value act as (or evaluate to) a function?
