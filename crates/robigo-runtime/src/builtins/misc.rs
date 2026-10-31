@@ -352,44 +352,185 @@ fn do_pack_bits(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     })
 }
 
-fn bitwise2(args: &[Arg], f: fn(i32, i32) -> Option<i32>) -> RResult<Value> {
-    let a = arg(args, 0);
-    let b = arg(args, 1);
+/// Coerce an atomic operand to INTSXP with `coerceVector`'s warnings. This
+/// stays on `to_int` rather than `coerce_vector`: `bitwAnd` is hot in the
+/// `awf/Storage` benchmark's RNG and must not allocate a `Value` per call.
+fn bitwise_int(i: &mut Interp, v: &Value) -> RResult<Vec<i32>> {
     let mut w = CoerceWarnings::default();
-    let x = crate::coerce::to_int(&a, &mut w);
-    let y = crate::coerce::to_int(&b, &mut w);
-    if !(a.is_numeric_type() || matches!(a, Value::Raw(_))) || !(b.is_numeric_type() || matches!(b, Value::Raw(_))) {
+    let out = crate::coerce::to_int(v, &mut w);
+    w.emit(i)?;
+    Ok(out)
+}
+
+/// `coerceVector(b, INTSXP)` for a shift count, including the list,
+/// pairlist and symbol paths. Returns the values; an empty result from a
+/// symbol is NULL, which the caller's type check rejects.
+fn bitwise_shift_count(i: &mut Interp, v: &Value) -> RResult<Vec<i32>> {
+    match v {
+        // R: coerce.c:coerceSymbol -- a warning and NULL.
+        Value::Sym(_) => {
+            i.warning("'symbol' object cannot be coerced to type 'integer'")?;
+            Ok(Vec::new())
+        }
+        // R: coerce.c:coerceVectorList/coercePairList -- isVectorizable is
+        // checked once, then each element goes through asInteger, which
+        // warns per element.
+        Value::List(l) => bitwise_int_elements(i, v, l.data.clone()),
+        Value::Pairlist(p) => bitwise_int_elements(i, v, p.items.iter().map(|a| a.value.clone()).collect()),
+        Value::Lang(l) => bitwise_int_elements(i, v, l.items().into_iter().map(|a| a.value).collect()),
+        _ => bitwise_int(i, v),
+    }
+}
+
+fn bitwise_int_elements(i: &mut Interp, v: &Value, items: Vec<Value>) -> RResult<Vec<i32>> {
+    // The gate first, with coerceVector's own error text (the warning set
+    // it would produce is discarded: the per-element pass below emits
+    // them in traversal order).
+    let mut ignored = CoerceWarnings::default();
+    crate::coerce::coerce_vector(v, VType::Int, &mut ignored)?;
+    let mut out = Vec::with_capacity(items.len());
+    for e in &items {
+        let mut w = CoerceWarnings::default();
+        // R: coerce.c:asInteger -- only an atomic element with at least one
+        // element converts (and may warn); anything else, including a
+        // nested list or expression, is NA silently.
+        let v = if e.is_atomic() && !e.is_empty() {
+            crate::coerce::to_int(e, &mut w).first().copied().unwrap_or(NA_INTEGER)
+        } else {
+            NA_INTEGER
+        };
+        w.emit(i)?;
+        out.push(v);
+    }
+    Ok(out)
+}
+
+// R: relop.c:BIT and bitwiseShiftL/bitwiseShiftR. Only REAL operands are
+// coerced to INTSXP by the BIT macro; a shift count is coerced whenever it
+// is not already integer. The two operands must then have the same type,
+// and anything but integer is an unimplemented type.
+fn bitwise2(i: &mut Interp, args: &[Arg], shift: bool, name: &str, f: fn(i32, i32) -> Option<i32>) -> RResult<Value> {
+    let a0 = arg(args, 0);
+    let b0 = arg(args, 1);
+    // Fast path: both operands integer or double. A REAL becomes integer,
+    // so this is the ordinary call; keep it out of the list/symbol/type
+    // machinery below (`bitwAnd` is hot in awf/Storage's RNG).
+    if matches!(a0, Value::Int(_) | Value::Real(_)) && matches!(b0, Value::Int(_) | Value::Real(_)) {
+        let mut wa = CoerceWarnings::default();
+        let av;
+        let x: &[i32] = match &a0 {
+            Value::Int(v) => &v.data,
+            _ => {
+                av = crate::coerce::to_int(&a0, &mut wa);
+                &av
+            }
+        };
+        let mut wb = CoerceWarnings::default();
+        let bv;
+        let y: &[i32] = match &b0 {
+            Value::Int(v) => &v.data,
+            _ => {
+                bv = crate::coerce::to_int(&b0, &mut wb);
+                &bv
+            }
+        };
+        wa.emit(i)?;
+        wb.emit(i)?;
+        return Ok(Value::ints(bitwise_apply(x, y, f)));
+    }
+    // The general path. The types after R's coercion: BIT turns REAL into
+    // integer; a shift count turns any non-integer into integer except a
+    // symbol, which becomes NULL.
+    let a_type = if matches!(a0, Value::Real(_)) { "integer" } else { a0.type_name() };
+    let b_type = if shift {
+        match &b0 {
+            Value::Sym(_) => "NULL",
+            _ => "integer",
+        }
+    } else if matches!(b0, Value::Real(_)) {
+        "integer"
+    } else {
+        b0.type_name()
+    };
+    // coerceVector's warnings come before the type check.
+    let a_vals = if matches!(a0, Value::Real(_)) { Some(bitwise_int(i, &a0)?) } else { None };
+    let b_vals = if shift {
+        Some(bitwise_shift_count(i, &b0)?)
+    } else if matches!(b0, Value::Real(_)) {
+        Some(bitwise_int(i, &b0)?)
+    } else {
+        None
+    };
+    if a_type != b_type {
         return Err(Flow::error("'a' and 'b' must have the same type"));
     }
+    if a_type != "integer" {
+        return Err(Flow::error(format!("unimplemented type '{}' in '{}'\n", a_type, name)));
+    }
+    let x: &[i32] = match &a0 {
+        Value::Int(v) => &v.data,
+        _ => a_vals.as_deref().unwrap_or(&[]),
+    };
+    let y: &[i32] = match &b0 {
+        Value::Int(v) => &v.data,
+        _ => b_vals.as_deref().unwrap_or(&[]),
+    };
+    Ok(Value::ints(bitwise_apply(x, y, f)))
+}
+
+fn bitwise_apply(x: &[i32], y: &[i32], f: fn(i32, i32) -> Option<i32>) -> Vec<i32> {
     let n = if x.is_empty() || y.is_empty() { 0 } else { x.len().max(y.len()) };
-    let out: Vec<i32> = (0..n)
+    (0..n)
         .map(|k| {
             let (p, q) = (x[k % x.len()], y[k % y.len()]);
             if p == NA_INTEGER || q == NA_INTEGER { NA_INTEGER } else { f(p, q).unwrap_or(NA_INTEGER) }
         })
-        .collect();
-    Ok(Value::ints(out))
+        .collect()
 }
 
-fn do_bitwise_and(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    bitwise2(&args, |a, b| Some(a & b))
+fn do_bitwise_and(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    bitwise2(i, &args, false, "bitwAnd", |a, b| Some(a & b))
 }
-fn do_bitwise_or(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    bitwise2(&args, |a, b| Some(a | b))
+fn do_bitwise_or(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    bitwise2(i, &args, false, "bitwOr", |a, b| Some(a | b))
 }
-fn do_bitwise_xor(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    bitwise2(&args, |a, b| Some(a ^ b))
+fn do_bitwise_xor(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    bitwise2(i, &args, false, "bitwXor", |a, b| Some(a ^ b))
 }
-fn do_bitwise_shiftl(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    bitwise2(&args, |a, b| if b > 31 { None } else { Some(((a as u32) << b) as i32) })
+fn do_bitwise_shiftl(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    bitwise2(
+        i,
+        &args,
+        true,
+        "bitShiftL",
+        |a, b| {
+            if !(0..=31).contains(&b) { None } else { Some(((a as u32) << b) as i32) }
+        },
+    )
 }
-fn do_bitwise_shiftr(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    bitwise2(&args, |a, b| if b > 31 { None } else { Some(((a as u32) >> b) as i32) })
+fn do_bitwise_shiftr(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    bitwise2(
+        i,
+        &args,
+        true,
+        "bitShiftR",
+        |a, b| {
+            if !(0..=31).contains(&b) { None } else { Some(((a as u32) >> b) as i32) }
+        },
+    )
 }
-fn do_bitwise_not(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut w = CoerceWarnings::default();
-    let x = crate::coerce::to_int(&arg(&args, 0), &mut w);
-    Ok(Value::ints(x.into_iter().map(|v| if v == NA_INTEGER { v } else { !v }).collect()))
+fn do_bitwise_not(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let x = arg(&args, 0);
+    let real = matches!(x, Value::Real(_));
+    let vals = if real { Some(bitwise_int(i, &x)?) } else { None };
+    if real {
+        let data = vals.as_deref().unwrap_or(&[]);
+        return Ok(Value::ints(data.iter().map(|&v| if v == NA_INTEGER { v } else { !v }).collect()));
+    }
+    let Value::Int(v) = &x else {
+        return Err(Flow::error(format!("unimplemented type '{}' in 'bitwNot'\n", x.type_name())));
+    };
+    Ok(Value::ints(v.data.iter().map(|&v| if v == NA_INTEGER { v } else { !v }).collect()))
 }
 
 // ----------------------------------------------------------------------

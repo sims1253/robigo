@@ -589,10 +589,12 @@ fn do_length(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
 /// `xlengthgets`: truncate or pad with NA (NULL for lists).
 pub fn length_gets(x: &Value, n: usize) -> RResult<Value> {
     if !x.is_vector() && !x.is_null() && !matches!(x, Value::Pairlist(_)) {
-        return Err(Flow::error("invalid argument"));
+        return Err(Flow::error("cannot set length of non-(vector or list)"));
     }
-    if x.is_null() && n > 0 {
-        return Ok(Value::lgls(vec![NA_LOGICAL; n]));
+    // R: builtin.c:xlengthgets -- an unchanged length returns the object
+    // itself, so its attributes (class excluded, others kept) survive.
+    if x.len() == n {
+        return Ok(x.clone());
     }
     let names = names_of(x);
     let mut out = match x {
@@ -633,17 +635,28 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     }
     let x = &args[0].value;
     let v = &args[1].value;
+    // R: builtin.c:do_lengthgets and xlengthgets -- these all use error(),
+    // which reports the replacement call `length(x) <- value`.
     if v.len() != 1 {
-        return Err(Flow::error_call(call.clone(), "wrong length for 'value' argument"));
+        return Err(Flow::error("wrong length for 'value' argument"));
     }
-    let n = crate::coerce::as_real(v);
-    if n.is_nan() || n < 0.0 {
-        return Err(Flow::error_call(call.clone(), "invalid value"));
+    // asVecSize runs before xlengthgets, so its errors win over the
+    // non-vector check.
+    let n = crate::builtins::io::as_vec_size(v)?;
+    if !x.is_vector() && !x.is_null() && !matches!(x, Value::Pairlist(_)) {
+        return Err(Flow::error("cannot set length of non-(vector or list)"));
     }
-    if !x.is_vector() && !x.is_null() {
-        return Err(Flow::error_call(call.clone(), "invalid argument"));
+    if n < 0 {
+        return Err(Flow::error("invalid value"));
     }
-    length_gets(x, n as usize)
+    let n = n as usize;
+    if x.is_null() {
+        if n > 0 {
+            i.warning("length of NULL cannot be changed")?;
+        }
+        return Ok(Value::Null);
+    }
+    length_gets(x, n)
 }
 
 fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

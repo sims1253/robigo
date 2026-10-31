@@ -493,9 +493,9 @@ fn all_names_rec(e: &Value, functions: bool, unique: bool, max: i64, out: &mut V
             out.push(n);
         }
         Value::Lang(l) => {
+            // R: list.c:namewalk drops the function position entirely when
+            // functions=FALSE (`s = CDR(s)`), whatever the head looks like.
             if functions {
-                all_names_rec(&l.fun, functions, unique, max, out);
-            } else if !matches!(l.fun, Value::Sym(_)) {
                 all_names_rec(&l.fun, functions, unique, max, out);
             }
             for a in &l.args {
@@ -514,9 +514,15 @@ fn all_names_rec(e: &Value, functions: bool, unique: bool, max: i64, out: &mut V
 fn do_allnames(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let expr = arg(&args, 0);
     let functions = crate::coerce::as_logical(&arg(&args, 1)) == TRUE;
-    let max = crate::coerce::as_integer(&arg(&args, 2));
-    let max = if max == NA_INTEGER { -1 } else { max as i64 };
-    let unique = crate::coerce::as_logical(&arg(&args, 3)) == TRUE;
+    // R: list.c:do_allnames -- -1 is unlimited, every other negative value
+    // (including NA) means no names at all.
+    let max = match crate::coerce::as_integer(&arg(&args, 2)) {
+        -1 => i64::MAX,
+        m if m < 0 => 0,
+        m => m as i64,
+    };
+    // NA counts as TRUE (`if(UniqueNames == NA_LOGICAL) UniqueNames = 1`).
+    let unique = crate::coerce::as_logical(&arg(&args, 3)) != FALSE;
     let mut out = Vec::new();
     all_names_rec(&expr, functions, unique, max, &mut out);
     Ok(Value::strs(out.into_iter().map(Some).collect()))
