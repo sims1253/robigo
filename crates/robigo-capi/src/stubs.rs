@@ -8,8 +8,6 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "R_mkClosure",
-    "R_PromiseExpr",
     "IS_SCALAR",
     "LOGICAL_NO_NA",
     "R_Busy",
@@ -56,16 +54,6 @@ pub static STUBS: &[&str] = &[
     "getPRIMNAME",
     "utf8Valid",
 ];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_mkClosure() {
-    not_implemented("R_mkClosure")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_PromiseExpr() {
-    not_implemented("R_PromiseExpr")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn IS_SCALAR() {

@@ -808,7 +808,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 Value::Expr(Rc::new(Vector::new(items)))
             }
         }
-        CHARSXP => Value::Str(Rc::new(Vector::new(vec![rstr_of(x)]))),
+        CHARSXP => wrap_core(x),
         LISTSXP | DOTSXP => {
             let items = items_of(x);
             return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_from(x) }));
@@ -1012,6 +1012,10 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             to_sexp(&v)
         }
         "field" => field(a[0], int_arg(a[1]))?,
+        "set_field" => {
+            set_field(a[0], int_arg(a[1]), a[2])?;
+            R_NilValue
+        }
         "connectionNumber" => {
             crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)
         }
@@ -1312,6 +1316,76 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
     })
 }
 
+unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
+    let v = proxied(x).unwrap_or(Value::Null);
+    match (&v, k) {
+        (Value::Closure(c), 0) => {
+            let items = match from_sexp(y) {
+                Value::Pairlist(p) => p.items.clone(),
+                _ => Vec::new(),
+            };
+            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
+            (*p).formals = items.into();
+            (*p).code.take();
+            (*p).inline.take();
+            (*p).defaults.take();
+        }
+        (Value::Closure(c), 1) => {
+            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
+            #[cfg(feature = "bytecode-fidelity")]
+            match from_sexp(y) {
+                Value::Bytecode(b) => {
+                    (*p).body = b.expression.clone();
+                    (*p).gnu_bytecode = Some(b);
+                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
+                }
+                val => {
+                    (*p).body = val;
+                    (*p).gnu_bytecode = None;
+                    (*p).jit = Default::default();
+                }
+            }
+            #[cfg(not(feature = "bytecode-fidelity"))]
+            {
+                (*p).body = from_sexp(y);
+                (*p).jit = Default::default();
+            }
+            (*p).code.take();
+            (*p).inline.take();
+            (*p).defaults.take();
+        }
+        (Value::Closure(c), 2) => {
+            if let Value::Env(e) = from_sexp(y) {
+                let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
+                (*p).env = e;
+            }
+        }
+        (Value::Promise(pr), 0) => {
+            if y == R_UnboundValue {
+                *pr.value.borrow_mut() = robigo_runtime::value::PromiseVal::Unforced;
+            } else {
+                pr.set_value(from_sexp(y));
+            }
+        }
+        (Value::Promise(pr), 1) => {
+            let p = Rc::as_ptr(pr) as *mut robigo_runtime::value::Promise;
+            (*p).expr = from_sexp(y);
+            (*p).code = None;
+        }
+        (Value::Promise(pr), 2) => {
+            *pr.env.borrow_mut() = if y == R_NilValue {
+                None
+            } else if let Value::Env(e) = from_sexp(y) {
+                Some(e)
+            } else {
+                None
+            };
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 unsafe extern "C" fn h_op(name: *const c_char, args: *const Sexp, n: c_int, out: *mut Sexp) -> usize {
     guarded(|| unsafe {
         let name = CStr::from_ptr(name).to_string_lossy().into_owned();
@@ -1523,18 +1597,20 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             }
         }
     }
-    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
+    unsafe fn box_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
         let s4 = x.gp() & gp::S4 != 0;
-        let value = match attrs_converted(x, originals) {
+        match attrs_converted(x, originals) {
             Some(mut a) => {
                 a.1 = s4;
                 Some(a)
             }
             None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
             None => None,
-        };
+        }
+    }
+    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
         let p = Rc::as_ptr(rc) as *mut Vector<T>;
-        (*p).attrs = value;
+        (*p).attrs = box_attrs(x, originals);
     }
     match v {
         Value::Str(rc) => {
@@ -1590,6 +1666,21 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Cplx(rc) => attrs(rc, x, originals),
         Value::Str(rc) => attrs(rc, x, originals),
         Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
+        Value::Closure(rc) => {
+            let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Closure;
+            (*p).attrs = box_attrs(x, originals);
+        }
+        #[cfg(feature = "bytecode-fidelity")]
+        Value::Bytecode(rc) => {
+            let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Bytecode;
+            (*p).attrs = box_attrs(x, originals);
+        }
+        Value::Env(e) => {
+            *e.0.attrs.borrow_mut() = box_attrs(x, originals);
+        }
+        Value::ExtPtr(p) => {
+            *p.attrs.borrow_mut() = box_attrs(x, originals);
+        }
         _ => {}
     }
 }
@@ -1747,6 +1838,17 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
             let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
             let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
             for (x, value) in &seen {
+                if !xs.contains(x) {
+                    write_back(value, *x, &mut originals);
+                }
+            }
+            let proxies: Vec<_> = PROXIED.with(|m| {
+                PINNED.with(|p| {
+                    let p = p.borrow();
+                    m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
+                })
+            });
+            for (x, value) in &proxies {
                 if !xs.contains(x) {
                     write_back(value, *x, &mut originals);
                 }
@@ -2015,6 +2117,29 @@ impl NativeBridge for Bridge {
     fn is_finalizer_key(&self, key: &Value) -> bool {
         matches!(key, Value::Env(_) | Value::ExtPtr(_))
             && core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
+    }
+
+    fn core_type_name(&self, v: &Value) -> Option<&'static str> {
+        let x = core_ref_of(v)?;
+        Some(unsafe { crate::util::type_to_char(x) })
+    }
+
+    fn format_core(&self, v: &Value) -> Option<String> {
+        let x = core_ref_of(v)?;
+        unsafe {
+            match x.typ() {
+                CHARSXP => {
+                    // R: print.c:PrintValueRec (CHARSXP): <CHARSXP: ...>
+                    let inner = match rstr_of(x) {
+                        Some(s) => robigo_runtime::format::escape_rstring(&s, Some('"')),
+                        None => "NA".to_string(),
+                    };
+                    Some(format!("<CHARSXP: {inner}>"))
+                }
+                WEAKREFSXP => Some("<weak reference>".to_string()),
+                _ => None,
+            }
+        }
     }
 
     fn register_finalizer(&self, interp: &mut Interp, key: &Value, fun: &Value, onexit: bool) -> RResult<()> {

@@ -99,6 +99,14 @@ pub trait NativeBridge: Sync {
     fn is_finalizer_key(&self, key: &Value) -> bool {
         matches!(key, Value::Env(_) | Value::ExtPtr(_))
     }
+    /// `typeof(x)` for a wrapped core object (`ExtPtr` holding `CoreRef`).
+    fn core_type_name(&self, _v: &Value) -> Option<&'static str> {
+        None
+    }
+    /// Print representation of a non-EXTPTRSXP wrapped core object (e.g. `<CHARSXP: "abc">`).
+    fn format_core(&self, _v: &Value) -> Option<String> {
+        None
+    }
     /// Register a runtime reference object in the native weakref queue.
     fn register_finalizer(&self, _interp: &mut Interp, _key: &Value, _fun: &Value, _onexit: bool) -> RResult<()> {
         Err(Flow::error("robigo: environment finalizers require the native bridge"))

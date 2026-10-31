@@ -1428,7 +1428,7 @@ impl Value {
             Value::Env(_) => "environment",
             Value::Promise(_) => "promise",
             Value::Dots(_) => "...",
-            Value::ExtPtr(_) => "externalptr",
+            Value::ExtPtr(_) => crate::native::bridge().and_then(|b| b.core_type_name(self)).unwrap_or("externalptr"),
             Value::Obj(o) => {
                 if o.attrs.as_ref().is_some_and(|a| a.1) {
                     "S4"
