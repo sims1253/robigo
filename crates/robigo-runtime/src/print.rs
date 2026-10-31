@@ -32,7 +32,9 @@ impl Interp {
             ..PrintParams::default()
         };
         if let Some(Value::Str(v)) = self.get_option("OutDec") {
-            let _ = v;
+            if let Some(Some(s)) = v.data.first() {
+                pp.out_dec = s.to_string();
+            }
         }
         pp.max = self.option_int("max.print", 99999).max(0) as usize;
         pp
@@ -329,7 +331,11 @@ impl Printer {
             }
             Value::Real(x) => {
                 let (w, d, e) = format_real(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
-                (x.data[..n_pr].iter().map(|&e2| encode_real0(e2, w, d, e, &pp.na_string)).collect(), w + pp.gap, false)
+                (
+                    x.data[..n_pr].iter().map(|&e2| encode_real_dec(e2, w, d, e, &pp.na_string, &pp.out_dec)).collect(),
+                    w + pp.gap,
+                    false,
+                )
             }
             Value::Cplx(x) => {
                 let (r, i) = format_complex(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
@@ -338,9 +344,9 @@ impl Printer {
                     .iter()
                     .map(|z| {
                         if is_na_real(z.re) || is_na_real(z.im) {
-                            encode_real0(NA_REAL, w + pp.gap, 0, 0, &pp.na_string)
+                            encode_real_dec(NA_REAL, w + pp.gap, 0, 0, &pp.na_string, &pp.out_dec)
                         } else {
-                            encode_complex(*z, (r.0 + pp.gap, r.1, r.2), i, &pp.na_string)
+                            encode_complex_dec(*z, (r.0 + pp.gap, r.1, r.2), i, &pp.na_string, &pp.out_dec)
                         }
                     })
                     .collect();
@@ -415,12 +421,12 @@ impl Printer {
             }
             Value::Real(x) => {
                 let (w, d, e) = format_real(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
-                (x.data[..n_pr].iter().map(|&e2| encode_real0(e2, w, d, e, &pp.na_string)).collect(), w)
+                (x.data[..n_pr].iter().map(|&e2| encode_real_dec(e2, w, d, e, &pp.na_string, &pp.out_dec)).collect(), w)
             }
             Value::Cplx(x) => {
                 let (r, i) = format_complex(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
                 let w = r.0 + i.0 + 2;
-                (x.data[..n_pr].iter().map(|z| encode_complex(*z, r, i, &pp.na_string)).collect(), w)
+                (x.data[..n_pr].iter().map(|z| encode_complex_dec(*z, r, i, &pp.na_string, &pp.out_dec)).collect(), w)
             }
             Value::Str(x) => {
                 let quote = if pp.quote { Some('"') } else { None };
@@ -706,15 +712,15 @@ impl Printer {
                         Value::Int(x) => encode_integer(x.data[k], w[j], &pp.na_string),
                         Value::Real(x) => {
                             let (_, d, e) = real_fmt[j];
-                            encode_real0(x.data[k], w[j], d, e, &pp.na_string)
+                            encode_real_dec(x.data[k], w[j], d, e, &pp.na_string, &pp.out_dec)
                         }
                         Value::Cplx(x) => {
                             let z = x.data[k];
                             if is_na_real(z.re) || is_na_real(z.im) {
-                                encode_real0(NA_REAL, w[j], 0, 0, &pp.na_string)
+                                encode_real_dec(NA_REAL, w[j], 0, 0, &pp.na_string, &pp.out_dec)
                             } else {
                                 let (rf, imf) = cplx_fmt[j];
-                                encode_complex(z, (w[j] - imf.0 - 2, rf.1, rf.2), imf, &pp.na_string)
+                                encode_complex_dec(z, (w[j] - imf.0 - 2, rf.1, rf.2), imf, &pp.na_string, &pp.out_dec)
                             }
                         }
                         Value::Str(x) => {
@@ -867,7 +873,7 @@ impl Printer {
                     .iter()
                     .map(|x| match object_summary(interp, x, &self.env) {
                         Some(s) => Some(crate::value::RString::from(s.as_str())),
-                        None => rstr(&list_elt_summary(x)),
+                        None => rstr(&list_elt_summary(x, &self.pp)),
                     })
                     .collect();
                 let mut tv = Value::strs(t);
@@ -1054,7 +1060,7 @@ fn object_summary(interp: &mut Interp, x: &Value, env: &Env) -> Option<String> {
     Some(format!("{},{}", class_name, x.len()))
 }
 
-fn list_elt_summary(x: &Value) -> String {
+fn list_elt_summary(x: &Value, pp: &PrintParams) -> String {
     match x {
         Value::Null => "NULL".into(),
         Value::Lgl(v) if v.data.len() == 1 => encode_logical(v.data[0], 0, "NA"),
@@ -1069,7 +1075,7 @@ fn list_elt_summary(x: &Value) -> String {
         }
         Value::Real(v) if v.data.len() == 1 => {
             let (w, d, e) = format_real(&v.data, 7, 0, 0, 2);
-            encode_real0(v.data[0], w, d, e, "NA")
+            encode_real_dec(v.data[0], w, d, e, "NA", &pp.out_dec)
         }
         Value::Real(v) => format!("numeric,{}", v.data.len()),
         // R: print.c PrintGenericVector: a length-one complex is printed like
@@ -1077,10 +1083,10 @@ fn list_elt_summary(x: &Value) -> String {
         Value::Cplx(v) if v.data.len() == 1 => {
             let z = v.data[0];
             if is_na_real(z.re) || is_na_real(z.im) {
-                encode_real0(NA_REAL, 2, 0, 0, "NA")
+                encode_real_dec(NA_REAL, 2, 0, 0, "NA", &pp.out_dec)
             } else {
                 let (r, i) = format_complex(&v.data, 7, 0, 0, 2);
-                encode_complex(z, r, i, "NA")
+                encode_complex_dec(z, r, i, "NA", &pp.out_dec)
             }
         }
         Value::Cplx(v) => format!("complex,{}", v.data.len()),
