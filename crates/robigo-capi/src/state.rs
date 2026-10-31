@@ -22,15 +22,17 @@ thread_local! {
     static ISOLATE: std::cell::Cell<*mut State> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
-/// This thread's isolate, or null.
-///
-/// Runtime values held in other thread-locals can be dropped while this
-/// one is already destroyed (process exit runs the destructors in reverse
-/// registration order). A destructor that reaches here must see "no
-/// isolate", not abort the process on a TLS access error.
+/// This thread's isolate, or null if it has not been initialized.
 #[inline(always)]
 pub fn isolate() -> *mut State {
-    ISOLATE.try_with(|c| c.get()).unwrap_or(std::ptr::null_mut())
+    ISOLATE.with(|c| c.get())
+}
+
+/// The initialized isolate, if its TLS is still accessible.
+/// Used by destructors that can run after TLS teardown.
+#[inline(always)]
+pub fn try_isolate() -> Option<*mut State> {
+    ISOLATE.try_with(|c| c.get()).ok().filter(|p| !p.is_null())
 }
 
 #[inline(always)]

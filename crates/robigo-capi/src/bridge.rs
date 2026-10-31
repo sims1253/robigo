@@ -497,7 +497,7 @@ impl Drop for CoreRef {
         // outlive `WRAPPED` (and the isolate): TLS destructors run in
         // reverse registration order at process exit. Reaching either with
         // `with` would panic in a destructor, which std turns into an abort.
-        if !crate::state::isolate().is_null() {
+        if crate::state::try_isolate().is_some() {
             core().release(self.0);
         }
         let _ = WRAPPED.try_with(|m| {
@@ -2124,5 +2124,6 @@ mod tls_drop_tests {
             .output()
             .expect("run child test");
         assert!(out.status.success(), "child aborted ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "child test did not run");
     }
 }
