@@ -126,3 +126,120 @@ and status against the recorded GNU R (first differing stream):
   bytes — no panics, transcripts differ).
 
 
+
+## 2026-10-31: shutdown order and TLS destruction (issue #145)
+
+- why: `library(mirai)` printed a spurious `getClasses`/`substring` error at
+  exit, and `library(mirai); m <- mirai(1+1)` aborted with
+  `cannot access a Thread Local Storage value during or after destruction`.
+- actual causes (verified against the R 4.5.0 sources and GNU R):
+  1. robigo runs the installed GNU R's base library; this machine has R
+     4.6.1, whose `substring`/`substring<-` pass `NULL` for an omitted
+     `last` (4.5 used `1000000L`). `character.c:do_substr` rejected the
+     `NULL` stop, so loading `cli` (mirai's `.onLoad` dependency) failed.
+     `cli`'s `.onLoad` has already registered an exit finalizer; the failed
+     load left it queued, and at exit it re-reported the failure.
+  2. Rust destroys thread-locals in reverse registration order. The C API
+     bridge's `PROXIED`/`STORED`/`SEEN` caches hold runtime values whose
+     `Drop` touched `WRAPPED`, the isolate (`ISOLATE`) or the search epoch
+     (`SEARCH_EPOCH`); at process exit those were already destroyed, and
+     std aborts on a TLS `AccessError` in a destructor.
+  3. `Rstd_CleanUp` runs `.Last`, then `R_RunExitFinalizers`, then
+     `PrintWarnings`; robigo skipped `.Last`, printed "Execution halted"
+     after the finalizers, and dropped warnings raised by either.
+- what: `substr`/`substr<-` read a `NULL` stop as "to the end" (matching
+  R 4.6's base code); the bridge's destructors use `try_with` (`CoreRef`,
+  `isolate`, `Frame::drop`'s epoch bump, the finalizer-runner guard);
+  `Interp::run_dot_last` ports `R_dot_Last`; `finish` and `do_quit` run
+  `.Last` (honouring `runLast`), report "Execution halted" before the
+  finalizers, and print warnings afterwards.
+- oracle: `Rscript --vanilla` shows `.Last` -> finalizers -> warnings;
+  an error in `.Last` is reported, finalizers still run, status 1; a
+  script error skips `.Last` but runs the finalizers; `q("no", 3, FALSE)`
+  skips `.Last` and exits 3.
+- result: `library(mirai); cat("ok\n")` exits 0 with no extra error;
+  `mirai(1+1)` no longer aborts (it still exits 1 on nanonext's separate
+  `use of NULL environment is defunct` native-call failure). Six new
+  `tests/r/cli/exit-*.R` / `unload-methods.R` scripts and
+  `tests/r/strings/substring-default-last.R` pass; strings 25/25 and cli
+  17/17 conformance. `cargo test -p robigo-capi --lib` covers the TLS
+  destructor with a subprocess (it aborts without the fix).
+
+### 2026-10-31 (follow-up): interactive `.Last` errors return to the REPL
+
+- finding: the first fix reported `.Last` errors as `Execution halted` and
+  exited from the interactive `repl()` and `q()` paths. GNU R 4.5's
+  `main.c:R_dot_Last` lets the error kick back to the REPL instead.
+- oracle (controlled PTY, `robigo-oracle:4.5.0`): in an interactive
+  session, `.Last <- function() stop("last failed")` then `q()` prints
+  `Error in .Last() : last failed`, stays at the prompt, runs no exit
+  finalizer and does not print `Execution halted`; the rest of the input
+  line is dropped. The same happens at EOF (the prompt returns and the
+  session stays alive). `q(runLast = FALSE)` afterwards runs the
+  finalizers and exits with the requested status. A conditional nested
+  `q()` inside `.Last` runs `.Last` twice, so no re-entry guard is added.
+- what: `Interp.interactive` (`R_Interactive`, also what `interactive()`
+  now reports) distinguishes the REPL. `run_dot_last` returns its error
+  unreported and restores the caller's frames; `do_quit` returns that
+  error interactively (top-level reports it and drops the line) and keeps
+  the `Execution halted`/status-1 path non-interactively. Interactive EOF
+  calls `finish_interactive`, which returns to the prompt on a `.Last`
+  error and otherwise runs the exit finalizers.
+- tests: `crates/robigo-cli/tests/interactive.rs` covers `q()` returning
+  to the REPL, no finalizer on the aborted quit, `interactive()` true,
+  and EOF running `.Last` then finalizers. The EOF-error PTY transcript
+  above is the manual proof; the existing non-interactive
+  `tests/r/cli/exit-last-error.R` still passes.
+
+### 2026-10-31 (review follow-up): TLS branch coverage and vectorized substr
+
+- TLS test: `PROXIED` is registered before `WRAPPED`, so `WRAPPED` (a
+  `RefCell<HashMap>`, the only destructor-bearing thread-local in this
+  path) is already destroyed when `PROXIED` drops its values. Reverting
+  `WRAPPED.try_with` to `with` makes the subprocess abort (SIGABRT), which
+  is the branch the test guards. Reverting `try_isolate` or the
+  `SEARCH_EPOCH` `try_with` does not abort: both are plain `Cell`s, which
+  register no TLS destructor; those guards are defensive, and the test
+  cannot reach a destroyed state for them. The test still drops a
+  search-path frame, so `Frame::drop` runs during TLS teardown.
+- substr: `substr`/`substr<-` with a `NULL` stop now have unit tests for
+  vectorized `start` and recycled `start`/`value` (R 4.6.1 oracle:
+  `substr(c("abcdef","ghijkl","mnopqr"), c(2,3,1), NULL)`, etc.).
+  `tests/r/strings/substring-default-last.R` adds vectorized/recycled
+  omitted-`last` cases; its output matches GNU R 4.5.0 byte-for-byte and
+  the conformance case passes.
+
+### 2026-10-31 (Sol review round 2): top-level abort and startup `interactive()`
+
+- S1: restoring the caller's frames let `on.exit(return(invisible(NULL)))`
+  swallow the interactive `.Last` error, so the rest of the line ran.
+  GNU R's `R_dot_Last` error runs under the top-level contexts and skips
+  the caller's `on.exit`. Added `Interp::abort_to_toplevel`: `do_quit`
+  sets it on an interactive `.Last` error, `end_context` skips the
+  caller's `on.exit` while unwinding, and `eval_toplevel` clears it. The
+  regression (`.Last <- stop(...); f <- function() { on.exit(return());
+  q() }; f(); cat("AFTER")`) now drops the line; it printed `AFTER`
+  without the flag.
+- S2: `interactive()` in `.First`/profiles was false because the flag was
+  set after startup. R_Interactive is known from the tty before
+  base/profile startup; `Interp.interactive` is now set there. A profile
+  `.First <- function() cat(interactive())` prints TRUE, matching GNU R
+  4.5.
+- `crates/robigo-cli/tests/interactive.rs` now has five cases, including
+  the `on.exit` swallow regression and `.First`; all pass. cli
+  conformance 17/17.
+
+### 2026-10-31 (Sol review round 3): interactive startup errors reach the REPL
+
+- S2: `real_main` called `finish(false)` whenever `startup::run` failed, so
+  an interactive `.First`/profile error printed "Execution halted" and
+  exited 1. GNU R 4.5 reports the error and reaches the prompt (PTY:
+  `.First <- function() q("no")` with an erroring `.Last` prints the
+  `.Last` error and shows `> `). Interactive startup failures now fall
+  through to the REPL; the non-interactive console keeps `finish(false)`.
+- regression: `interactive_startup_last_error_reaches_prompt` uses an
+  `R_PROFILE_USER` with `.Last <- stop(...)` and `.First <- q("no")`;
+  it exits 7 on the following `q(runLast = FALSE)` with no
+  "Execution halted". Without the fix it printed "Execution halted" and
+  exited 1. `interactive.rs` now has 6 passing cases; cli conformance
+  17/17.

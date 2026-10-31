@@ -1476,8 +1476,8 @@ fn do_nargs(interp: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<V
     Ok(Value::int(n as i32))
 }
 
-fn do_interactive(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::lgl(false))
+fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    Ok(Value::lgl(i.interactive))
 }
 
 fn do_invisible(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {

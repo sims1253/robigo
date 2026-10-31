@@ -498,7 +498,13 @@ fn real_main() -> ExitCode {
 
     #[cfg(feature = "profile")]
     let _profiler = Profiler::start();
+    // R_Interactive is known before base/profile/`.First` startup code runs
+    // (R: system.c's R_isatty(0) test), and `interactive()`/`q()` in those
+    // hooks must see it.
+    let tty = std::io::stdin().is_terminal();
+    let has_console_input = !cl.exprs.is_empty() || cl.script.is_some() || cl.file.is_some();
     let mut interp = Interp::new();
+    interp.interactive = !has_console_input && (cl.force_interactive || tty);
     // Keep a margin for builtins that recurse in Rust and for error handling.
     interp.set_stack_limit(STACK_SIZE - (32 << 20));
     interp.cli_args = Some(cl.command_args.clone());
@@ -508,7 +514,12 @@ fn real_main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         if !robigo_runtime::startup::run(&mut interp, cl.startup) {
-            return finish(&mut interp, false);
+            // R: a profile or .First error in an interactive session is
+            // reported and the session still reaches the REPL; only the
+            // non-interactive console halts.
+            if !interp.interactive {
+                return finish(&mut interp, false);
+            }
         }
     }
 
@@ -556,7 +567,6 @@ fn real_main() -> ExitCode {
     // No file and no `-e`: interactive when the terminal is one or
     // `--interactive` was given, otherwise stdin is read as a
     // non-interactive console (R: system.c's `R_isatty(0)` test).
-    let tty = std::io::stdin().is_terminal();
     if !cl.force_interactive && !tty {
         if cl.save != SaveAction::Save && cl.save != SaveAction::NoSave {
             // R: system.c — `R_Suicide` once the console is set up, so
@@ -637,19 +647,46 @@ fn line_profile(report: &pprof::Report) -> String {
 }
 
 fn finish(interp: &mut Interp, ok: bool) -> ExitCode {
-    // R: unix/sys-std.c:R_CleanUp -- R_RunExitFinalizers runs on every exit
-    // path after .Last, including the "Execution halted" error exit.
+    // R: unix/sys-std.c:Rstd_CleanUp -- .Last runs on a normal exit, then
+    // R_RunExitFinalizers runs on every exit path. The top-level handler
+    // prints "Execution halted" before the finalizers, including when
+    // .Last itself fails.
+    let mut ok = ok;
+    if ok {
+        if let Err(f) = interp.run_dot_last() {
+            interp.report_toplevel(f);
+            ok = false;
+        }
+    }
+    if !ok {
+        interp.write_err("Execution halted\n");
+    }
+    cleanup(interp);
+    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// The tail of `Rstd_CleanUp`: exit finalizers, then warnings raised by
+/// them (or by `.Last`).
+fn cleanup(interp: &mut Interp) {
     if let Some(bridge) = robigo_runtime::native::bridge() {
         bridge.run_exit_finalizers(interp);
     }
+    // R: unix/sys-std.c:Rstd_CleanUp -- PrintWarnings after the finalizers
+    // (device close and, if run, .Last).
+    interp.print_warnings();
     interp.flush();
-    if ok {
-        ExitCode::SUCCESS
-    } else {
-        interp.write_err("Execution halted\n");
-        interp.flush();
-        ExitCode::FAILURE
+}
+
+/// Interactive EOF. R: main.c:R_dot_Last -- an error in `.Last` kicks the
+/// session back to the REPL, before the exit finalizers; otherwise the
+/// session leaves. `None` means the REPL keeps running.
+fn finish_interactive(interp: &mut Interp) -> Option<ExitCode> {
+    if let Err(f) = interp.run_dot_last() {
+        interp.report_toplevel(f);
+        return None;
     }
+    cleanup(interp);
+    Some(ExitCode::SUCCESS)
 }
 
 fn repl(interp: &mut Interp) -> ExitCode {
@@ -662,7 +699,12 @@ fn repl(interp: &mut Interp) -> ExitCode {
         match stdin.lock().read_line(&mut line) {
             Ok(0) => {
                 println!();
-                return finish(interp, true);
+                match finish_interactive(interp) {
+                    Some(code) => return code,
+                    // .Last failed: it was reported, and R is back at the
+                    // prompt with the quit cancelled.
+                    None => continue,
+                }
             }
             Ok(_) => {}
             Err(_) => return ExitCode::FAILURE,
