@@ -2087,12 +2087,15 @@ mod tls_drop_tests {
             return;
         }
         unsafe {
-            // Registration order decides destruction order (reverse): each
-            // state below must be registered *before* PROXIED so that it is
-            // destroyed *after* the values PROXIED drops.
-            core();
-            robigo_runtime::env::search_epoch();
+            // Registration order decides destruction order (reverse):
+            // PROXIED is registered first, so WRAPPED (the destructor-bearing
+            // RefCell<HashMap> here) is already gone when PROXIED drops its
+            // values. ISOLATE and SEARCH_EPOCH are plain Cells without
+            // destructors, so their try_with is defensive; the search frame
+            // still runs Frame::drop, which bumps the search epoch.
             PROXIED.with(|_| {});
+            robigo_runtime::env::search_epoch();
+            core();
             let x = core().alloc_vector(INTSXP, 1);
             let extptr = wrap_core(x);
             // A search-path frame with a function-like binding: dropping it

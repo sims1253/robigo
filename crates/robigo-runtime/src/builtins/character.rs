@@ -1852,4 +1852,63 @@ mod tests {
         let Value::Str(s) = &v else { panic!("substrgets did not return a string") };
         assert_eq!(s.data[0].as_deref(), Some("aXYdef"));
     }
+
+    fn strings(v: &Value) -> Vec<Option<String>> {
+        let Value::Str(s) = v else { panic!("expected a string vector") };
+        s.data.iter().map(|x| x.as_ref().map(|x| x.to_string())).collect()
+    }
+
+    // GNU R 4.6.1 oracle: start recycles over x, and substr<- recycles start
+    // and value; NULL stop runs to the end of each element.
+    #[test]
+    fn substr_null_stop_recycles_start() {
+        let mut i = Interp::new();
+        let env = i.global.clone();
+        let call = Value::Null;
+        let run = |i: &mut Interp, x: Value, start: Value| {
+            do_substr(i, &call, vec![Arg::pos(x), Arg::pos(start), Arg::pos(Value::Null)], &env)
+                .unwrap_or_else(|_| panic!("substr failed"))
+        };
+        assert_eq!(
+            strings(&run(&mut i, Value::strs_from(["abcdef", "ghijkl", "mnopqr"]), Value::ints(vec![2, 3, 1]))),
+            vec![Some("bcdef".into()), Some("ijkl".into()), Some("mnopqr".into())]
+        );
+        assert_eq!(strings(&run(&mut i, Value::str("abcdef"), Value::ints(vec![2, 4]))), vec![Some("bcdef".into())]);
+        let with_na = Value::strs(vec![Some(RString::from("abc")), None, Some(RString::from("def"))]);
+        assert_eq!(strings(&run(&mut i, with_na, Value::int(2))), vec![Some("bc".into()), None, Some("ef".into())]);
+        assert_eq!(strings(&run(&mut i, Value::strs(vec![]), Value::int(1))), Vec::<Option<String>>::new());
+    }
+
+    #[test]
+    fn substrgets_null_stop_recycles_start_and_value() {
+        let mut i = Interp::new();
+        let env = i.global.clone();
+        let call = Value::Null;
+        let run = |i: &mut Interp, x: Value, start: Value, value: Value| {
+            do_substrgets(i, &call, vec![Arg::pos(x), Arg::pos(start), Arg::pos(Value::Null), Arg::pos(value)], &env)
+                .unwrap_or_else(|_| panic!("substrgets failed"))
+        };
+        assert_eq!(
+            strings(&run(
+                &mut i,
+                Value::strs_from(["abcdef", "ghijkl", "mnopqr"]),
+                Value::ints(vec![2, 3]),
+                Value::strs_from(["X", "Y"])
+            )),
+            vec![Some("aXcdef".into()), Some("ghYjkl".into()), Some("mXopqr".into())]
+        );
+        assert_eq!(
+            strings(&run(&mut i, Value::str("abcdef"), Value::ints(vec![2, 4]), Value::str("X"))),
+            vec![Some("aXcdef".into())]
+        );
+        assert_eq!(
+            strings(&run(
+                &mut i,
+                Value::strs_from(["abcdef", "ghijkl", "mnopqr"]),
+                Value::ints(vec![2, 3]),
+                Value::str("Z")
+            )),
+            vec![Some("aZcdef".into()), Some("ghZjkl".into()), Some("mZopqr".into())]
+        );
+    }
 }
