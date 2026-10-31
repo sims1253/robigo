@@ -4,6 +4,10 @@ description = "GNU R's numerical library (nmath) and long double arithmetic, por
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 authors.workspace = true
+keywords = ["r", "statistics", "numerics", "special-functions"]
+categories = ["science", "mathematics"]
 
 [dependencies]

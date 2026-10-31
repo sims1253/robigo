@@ -1,0 +1,42 @@
+# Publish robigo's crates.io-ready crates. The full runtime, C API and
+# CLI are `publish = false` until their build stops reading ../../rlib
+# (see their manifests); until then the binary ships via nightly.yml and
+# `cargo install --git`. See docs/distribution.md.
+name: publish
+
+on:
+  push:
+    tags: ["crates-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Verify the packages without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          args=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args="--dry-run"; fi
+          # No dependencies between these; keep leaf-first anyway.
+          for crate in robigo-syntax robigo-numerics robigo-core; do
+            cargo publish -p "$crate" $args
+          done

@@ -55,6 +55,21 @@ over time is on the [progress page](https://sims1253.github.io/robigo/).
   <img alt="Share of each test corpus that matches GNU R 4.5.0 over time" src="https://sims1253.github.io/robigo/compat.svg">
 </picture></a>
 
+## Install
+
+Nightly binaries for Linux (x86_64, aarch64) and macOS (aarch64,
+x86_64) are on the [rolling nightly
+release](https://github.com/sims1253/robigo/releases/tag/nightly)
+(with `SHA256SUMS.txt`). Or install from git (Rust 1.99+, a C
+compiler; on Linux also `zlib1g-dev libbz2-dev`):
+
+```sh
+cargo install --git https://github.com/sims1253/robigo robigo-cli
+```
+
+Platforms, checksums, and the GNU R interplay are in
+[docs/distribution.md](docs/distribution.md).
+
 ## Try it
 
 ```sh
@@ -67,6 +82,29 @@ target/release/robigo parse file.R    # parse tree in the oracle dump format
 
 (The workspace may build into `~/.cache/cargo-target` if your cargo config
 sets a shared target directory.)
+
+## Use in your project
+
+Parse with `robigo-syntax` and compute with `robigo-numerics` from
+crates.io; embed the full runtime (a git dependency until it is
+publishable):
+
+```sh
+cargo add robigo-syntax robigo-numerics
+cargo add robigo-runtime --git https://github.com/sims1253/robigo
+```
+
+```rust
+let arena = robigo_syntax::Arena::new();
+let exprs = robigo_syntax::parse_program(&arena, "1 + 1").unwrap();
+
+let mut interp = robigo_runtime::Interp::new();
+robigo_runtime::bootstrap::load_base(&mut interp).unwrap();
+interp.run_source("x <- 1 + 1\n", true);
+```
+
+Details — library entry points, the crates.io table, and how releases
+are cut — are in [docs/distribution.md](docs/distribution.md).
 
 ## How correctness is checked
 
@@ -88,10 +126,13 @@ ROBIGO_CONF_FILTER=tests/r/basics ROBIGO_CONF_DIFF=1 \
 ## Layout
 
 - `crates/robigo-syntax` — lexer and parser
+- `crates/robigo-numerics` — nmath and long double arithmetic
 - `crates/robigo-runtime` — object model, evaluator, builtins, printing
+- `crates/robigo-core` — object model and memory manager (G2)
+- `crates/robigo-capi` — `libR.so`, GNU R 4.5's C API (G2)
 - `crates/robigo-cli` — the `robigo` binary and conformance runner
 - `rlib/` — vendored GNU R base-package R sources (GPL-2+)
-- `docs/` — design notes
+- `docs/` — design notes (`distribution.md` for installs and releases)
 
 ## License
 

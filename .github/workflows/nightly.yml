@@ -1,0 +1,145 @@
+# Daily nightly binaries, one per platform, but only when main moved since
+# the last one. A rolling `nightly` release always points at the newest
+# nightly; dated `nightly-YYYY-MM-DD` tags keep the history.
+# See docs/distribution.md.
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # daily 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if main has not moved since the last nightly
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  LANGUAGE: en
+  LC_ALL: C.UTF-8
+  TZ: UTC
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      sha: ${{ steps.decide.outputs.sha }}
+      date: ${{ steps.decide.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+      - id: decide
+        run: |
+          sha=$(git rev-parse origin/main)
+          date=$(date -u +%F)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          last=""
+          if git rev-parse --verify -q nightly >/dev/null; then
+            last=$(git rev-list -n 1 nightly)
+          fi
+          force="${{ inputs.force }}"
+          if [ "$force" = "true" ] || [ "$sha" != "$last" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "main $sha moved since last nightly $last (or forced); building"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "main $sha already has a nightly; skipping"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zlib1g-dev libbz2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          ROBIGO_RELEASE: nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.sha }}
+        run: cargo build --release --locked -p robigo-cli --target ${{ matrix.target }}
+      - name: "Smoke test (no GNU R installed: vendored base only)"
+        run: |
+          bin="target/${{ matrix.target }}/release/robigo"
+          "$bin" --version
+          out=$(env -u R_HOME "$bin" --vanilla -e 'cat(1+1, "\n")' 2>/dev/null)
+          [ "$out" = "2" ] || { echo "smoke test failed: got '$out'"; exit 1; }
+      - name: Package
+        run: |
+          bin="target/${{ matrix.target }}/release/robigo"
+          staging="dist/robigo-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "$bin" README.md LICENSE "$staging/"
+          tar -czf "dist/robigo-${{ matrix.target }}.tar.gz" -C dist "robigo-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.target }}
+          path: dist/*.tar.gz
+          retention-days: 3
+
+  release:
+    needs: [check, build]
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-*
+          merge-multiple: true
+          path: dist
+      - run: cd dist && sha256sum robigo-*.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Publish the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="${{ needs.check.outputs.sha }}"
+          date="${{ needs.check.outputs.date }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Dated tag for the history (a re-run that day keeps the first tag).
+          git tag "nightly-$date" "$sha" 2>/dev/null && git push origin "nightly-$date" || true
+          # Rolling tag + release with the binaries.
+          git tag -f nightly "$sha"
+          git push -f origin nightly
+          gh release delete nightly --yes || true
+          notes="Nightly build of \`main\` @ \`${sha:0:12}\` ($date).
+          Built with \`cargo build --release -p robigo-cli\` (\`robigo --version\` reports \`nightly-$date-${sha:0:7}\`).
+          Runs on its own with the vendored base library; with GNU R 4.5 installed it also loads the rest of the library (see docs/distribution.md)."
+          gh release create nightly --prerelease \
+            --title "Nightly ($date)" --notes "$notes" \
+            dist/robigo-*.tar.gz dist/SHA256SUMS.txt

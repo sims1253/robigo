@@ -77,6 +77,7 @@ usage: robigo [options] [FILE]
 options:
   --no-base          do not load the base R library
   --vanilla          accepted for compatibility with Rscript
+  --version          print the version and build id
 ";
 
 /// Rust stack of the interpreter thread. R code may nest calls up to
@@ -281,8 +282,8 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
 /// `robigo CMD command args`: GNU R's `R CMD` (its `bin/R` script runs
 /// `bin/Rcmd`, whose tools run `bin/R` again) in robigo's home, where
 /// that `R` is robigo (`scripts/robigo-home.sh`, docs/core.md §8).
+/// Unix-only: it replaces the process with the R front end.
 fn r_cmd(args: &[String]) -> ExitCode {
-    use std::os::unix::process::CommandExt;
     let me = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     let is_ours = |home: &str| {
         let r = std::path::Path::new(home).join("bin/exec/R");
@@ -293,8 +294,17 @@ fn r_cmd(args: &[String]) -> ExitCode {
         eprintln!("robigo: 'CMD' needs robigo's R_HOME (scripts/robigo-home.sh)");
         return ExitCode::FAILURE;
     };
-    let err = std::process::Command::new(format!("{home}/bin/R")).arg("CMD").args(args).exec();
-    eprintln!("robigo: cannot run {home}/bin/R: {err}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(format!("{home}/bin/R")).arg("CMD").args(args).exec();
+        eprintln!("robigo: cannot run {home}/bin/R: {err}");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = args;
+        eprintln!("robigo: 'CMD' is only supported on Unix (needs {home}/bin/R)");
+    }
     ExitCode::FAILURE
 }
 
@@ -436,6 +446,10 @@ fn real_main() -> ExitCode {
     // robigo's own help (R has none; the options end at the first
     // positional argument, like Rscript's).
     let opts_end = args.iter().position(|a| !(a.starts_with('-') && a.len() > 1)).unwrap_or(args.len());
+    if args[..opts_end].iter().any(|a| a == "--version") {
+        println!("robigo {} ({})", env!("CARGO_PKG_VERSION"), env!("ROBIGO_BUILD_ID"));
+        return ExitCode::SUCCESS;
+    }
     if args[..opts_end].iter().any(|a| a == "-h" || a == "--help") {
         print!("{}", USAGE);
         return ExitCode::SUCCESS;

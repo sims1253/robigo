@@ -1,0 +1,180 @@
+# OpenCodeReview LLM review bot (https://open-codereview.ai). Trusted
+# same-repo PRs get an automatic review. A maintainer comment starting with
+# /open-code-review or @open-code-review reviews any PR, including forks.
+# Settings: secrets OCR_LLM_URL and OCR_LLM_AUTH_TOKEN, OCR_LLM_MODEL as a
+# variable or secret, and variable OCR_LLM_USE_ANTHROPIC ('true' for Anthropic).
+
+name: OpenCodeReview PR Review
+
+# Concurrency is evaluated before the job `if`, so this repeats the job's
+# trust predicate. Other events get a unique group and cannot cancel a review.
+concurrency:
+  group: >-
+    ${{
+      (
+        (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (
+            github.event.pull_request.author_association == 'MEMBER'
+            || github.event.pull_request.author_association == 'OWNER'
+            || github.event.pull_request.author_association == 'COLLABORATOR'
+          )
+        )
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.comment.user.type != 'Bot'
+          && (
+            github.event.comment.author_association == 'MEMBER'
+            || github.event.comment.author_association == 'OWNER'
+            || github.event.comment.author_association == 'COLLABORATOR'
+          )
+          && (
+            startsWith(github.event.comment.body, '/open-code-review')
+            || startsWith(github.event.comment.body, '@open-code-review')
+          )
+        )
+      )
+      && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
+      || format('noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+on:
+  # Plain pull_request gives fork runs no secrets, even if the job `if` regresses.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Keep in sync with the concurrency group. Bot comments are excluded
+    # because a PAT or App token, unlike GITHUB_TOKEN, would trigger runs.
+    if: |
+      (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && (
+          github.event.pull_request.author_association == 'MEMBER'
+          || github.event.pull_request.author_association == 'OWNER'
+          || github.event.pull_request.author_association == 'COLLABORATOR'
+        )
+      )
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
+        && (
+          github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+        )
+        && (
+          startsWith(github.event.comment.body, '/open-code-review')
+          || startsWith(github.event.comment.body, '@open-code-review')
+        )
+      )
+    steps:
+      - name: Check OCR model is configured
+        run: |
+          if [ -z "${{ vars.OCR_LLM_MODEL || secrets.OCR_LLM_MODEL }}" ]; then
+            echo "::error::OCR_LLM_MODEL is not configured (set a repository variable or secret)"
+            exit 1
+          fi
+
+      - name: Get PR context
+        id: pr-context
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // issue_comment payloads carry no pull_request fields.
+            const prNumber = context.issue.number;
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            core.setOutput('base_ref', pullRequest.base.ref);
+            core.setOutput('head_sha', pullRequest.head.sha);
+            core.setOutput('title', pullRequest.title);
+
+      # The action's global npm install of the CLI breaks intermittently
+      # (#540). continue-on-error leaves the job status to the retry below.
+      - name: Run OpenCodeReview
+        id: ocr
+        continue-on-error: true
+        uses: alibaba/open-code-review@55450a95e5999dfd00ec2d582c23d76e269922fb # v1.13.2
+        # Keep in sync with the retry step's inputs.
+        with:
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL || secrets.OCR_LLM_MODEL }}
+          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
+          effort: high
+          # 'high', not 'max': this provider answers 'max' with 400 code
+          # 1210 on some calls ("please use low, high, or max").
+          llm_reasoning_effort: high
+          # Drop the action's default {"thinking": {"type": "disabled"}}:
+          # glm-5.3-flash mandates thinking (400 code 1210 otherwise) and the
+          # provider asks for a reasoning_effort level instead. An explicit
+          # reasoning_effort key here wins over llm_reasoning_effort; both
+          # say high.
+          llm_extra_body: '{"reasoning_effort": "high"}'
+          stream_progress: 'true'
+          background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
+          # Set only for issue_comment. The action reads pull_request events.
+          base_ref: ${{ steps.pr-context.outputs.base_ref }}
+          head_sha: ${{ steps.pr-context.outputs.head_sha }}
+          # Pins the CLI. Dependabot bumps only the action version.
+          ocr_version: '1.12.6'
+
+      # A second run reinstalls the CLI. success() skips it when an earlier
+      # step failed.
+      - name: Run OpenCodeReview (retry)
+        id: ocr-retry
+        if: success() && steps.ocr.outcome == 'failure'
+        uses: alibaba/open-code-review@55450a95e5999dfd00ec2d582c23d76e269922fb # v1.13.2
+        with:
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL || secrets.OCR_LLM_MODEL }}
+          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
+          effort: high
+          # 'high', not 'max': this provider answers 'max' with 400 code
+          # 1210 on some calls ("please use low, high, or max").
+          llm_reasoning_effort: high
+          # Drop the action's default {"thinking": {"type": "disabled"}}:
+          # glm-5.3-flash mandates thinking (400 code 1210 otherwise) and the
+          # provider asks for a reasoning_effort level instead. An explicit
+          # reasoning_effort key here wins over llm_reasoning_effort; both
+          # say high.
+          llm_extra_body: '{"reasoning_effort": "high"}'
+          stream_progress: 'true'
+          background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
+          # Set only for issue_comment. The action reads pull_request events.
+          base_ref: ${{ steps.pr-context.outputs.base_ref }}
+          head_sha: ${{ steps.pr-context.outputs.head_sha }}
+          # Pins the CLI. Dependabot bumps only the action version.
+          ocr_version: '1.12.6'
+          # The first attempt already claimed the run-scoped artifact name.
+          upload_artifacts: 'false'
+
+      # Tell the #540 flake (broken or missing ocr bin) from a review error.
+      - name: Triage OCR failure
+        if: failure() && steps.ocr-retry.outcome == 'failure'
+        shell: bash
+        run: |
+          if ! command -v ocr >/dev/null 2>&1 || ! ocr version >/dev/null 2>&1; then
+            echo "::error title=OCR infra flake::the ocr CLI is broken or absent on the runner after two attempts (known npm bin instability, #540) — not a review finding; the first attempt's ocr-review-result artifact holds the failure-time stderr; rerun the failed jobs or fall back to the #539 substitution protocol (CodeRabbit + pullfrog + Greptile coverage)"
+          else
+            echo "::error title=OCR review failure::ocr itself ran; the failure above is a genuine review error, not the #540 infra flake — read the review step's log and the uploaded artifacts"
+          fi
