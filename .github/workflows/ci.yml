@@ -201,23 +201,11 @@ jobs:
           path: dist
       - run: chmod +x dist/robigo
       - run: python3 scripts/perf.py fetch
-      - name: Measure robigo (and GNU R on main)
-        run: |
-          export ROBIGO_NATIVES="$PWD/dist/natives"
-          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
-          export VALGRIND=valgrind
-          # Compare outputs in this run too. Copying only GNU R's counts
-          # from the baseline cannot establish correctness of a PR run.
-          python3 scripts/perf.py run --metric instr --runtime both --robigo dist/robigo \
-            --jobs "$(nproc)" --out perf.json --quiet
-      - name: Compare with main
+      - name: Fetch baseline from main
         if: github.ref != 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Rechecks must use the same cache and natives as the first run.
-          export ROBIGO_NATIVES="$PWD/dist/natives"
-          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           # The PR's merge commit is built on main's commit HEAD^1 (its first
           # parent, read from the commit object, which the shallow checkout
           # has): compare with that commit's numbers, not with whichever main
@@ -225,15 +213,43 @@ jobs:
           # run may still be going: perf-baseline.py waits for it).
           base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
           python3 scripts/perf-baseline.py "$base" base --binary | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Measure robigo (and GNU R on main)
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
+          export VALGRIND=valgrind
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            python3 scripts/perf.py run --metric instr --runtime both --robigo dist/robigo \
+              --jobs "$(nproc)" --out perf.json --quiet
+          else
+            oracle_flag=""
+            runtime="robigo"
+            if [ -f base/perf.json ]; then
+              oracle_flag="--oracle base/perf.json"
+            else
+              runtime="both"
+            fi
+            python3 scripts/perf.py run --metric instr --runtime "$runtime" $oracle_flag --robigo dist/robigo \
+              --jobs "$(nproc)" --out perf.json --quiet
+          fi
+      - name: Compare with main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          # Rechecks must use the same cache and natives as the first run.
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
-          # GNU R's counts come from main's run on the same runner image.
+          # Ensure GNU R's counts and outputs come from baseline if not already attached.
           b = json.load(open("base/perf.json")); n = json.load(open("perf.json"))
+          updated = False
           for k, v in n["results"].items():
-              if "gnur" in b["results"].get(k, {}):
+              if "gnur" not in v and "gnur" in b["results"].get(k, {}):
                   v["gnur"] = b["results"][k]["gnur"]
-          json.dump(n, open("perf.json", "w"))
+                  updated = True
+          if updated:
+              json.dump(n, open("perf.json", "w"), indent=1, sort_keys=True)
           PY
           python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
           # Compare every successful case with both exact executables and the

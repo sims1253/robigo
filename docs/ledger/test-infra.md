@@ -1,5 +1,28 @@
 # test infrastructure ledger
 
+## 2026-10-31: cache GNU R oracle output in perf-main to measure robigo only in PRs
+
+- **why:** `perf` job in CI took ~28m22s (e.g. run 41153399779: measure robigo
+  & GNU R 8m00s, compare with main 19m18s). PR runs were executing `--runtime both`,
+  measuring GNU R under callgrind across all 84 benchmarks just to establish
+  that robigo printed the identical answer to GNU R.
+- **metric:** PR `perf` step duration: eliminating GNU R callgrind measurement
+  in PR runs cuts ~8m of unnecessary callgrind execution without weakening the gate.
+- **fix:**
+  1. `scripts/perf.py` keeps GNU R's `out` (and status) in `perf.json`,
+     popping only `robigo`'s `out`. Main's `perf-main` artifact becomes a
+     complete oracle record.
+  2. `scripts/perf.py run` accepts `--oracle FILE`: loads baseline's GNU R counts,
+     status, and stdout, and checks robigo's stdout/status against it. A differing
+     output is marked `wrong: true`.
+  3. `scripts/perf.py compare` recomputes `wrong` if candidate robigo output is
+     present against baseline's recorded GNU R output/status.
+  4. `.github/workflows/ci.yml` reorders the steps: fetches baseline from main
+     before measuring, then measures robigo with `--oracle base/perf.json`
+     (falling back to `--runtime both` if baseline is missing), then compares.
+- **verification:** 19 unit tests in `scripts/test-perf-paired.py` verify oracle
+  loading, output comparison, wrong marking on mismatch, and compare recomputation.
+
 ## 2026-10-30: conflict-free ratchets (one marker file per case)
 
 - **why:** `tests/r/passing.txt` and `tests/corpora/*/passing.txt` were

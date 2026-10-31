@@ -172,6 +172,21 @@ def cmd_run(a):
             if not a.quiet:
                 show = r.get("error") or " ".join(f"{k}={r[k]}" for k in ("instr", "secs") if k in r)
                 print(f"{name:40} {rt:7} {show}", file=sys.stderr, flush=True)
+    if getattr(a, "oracle", None):
+        with open(a.oracle) as f:
+            oracle_results = json.load(f).get("results", {})
+        missing_out = [p for p in progs if p[0] in oracle_results and "gnur" in oracle_results[p[0]] and "out" not in oracle_results[p[0]]["gnur"]]
+        if missing_out:
+            print(f"Recording missing GNU R outputs for {len(missing_out)} baseline benchmark(s)...", file=sys.stderr)
+            for p in missing_out:
+                r = run_one(p, "gnur", robigo, "time", 1, valgrind, a.timeout)
+                oracle_results[p[0]]["gnur"]["out"] = r.get("out")
+                oracle_results[p[0]]["gnur"]["status"] = r.get("status")
+                oracle_results[p[0]]["gnur"]["_fallback"] = True
+        for name in results:
+            if "gnur" not in results[name] and name in oracle_results and "gnur" in oracle_results[name]:
+                results[name]["gnur"] = oracle_results[name]["gnur"]
+
     for name, r in results.items():
         gn = r.get("gnur", {})
         oracle_failed = "gnur" in r and ("error" in gn or gn.get("status") != 0)
@@ -179,10 +194,20 @@ def cmd_run(a):
             r["oracle_warning"] = "GNU R measurement failed; ratio unavailable"
             print(f"WARNING {name}: {r['oracle_warning']} ({gn})", file=sys.stderr)
         if "robigo" in r and "gnur" in r and not oracle_failed and "error" not in r["robigo"]:
-            r["wrong"] = (r["robigo"]["out"], r["robigo"]["status"]) != (r["gnur"]["out"], r["gnur"]["status"])
-        for rt in r.values():
-            if isinstance(rt, dict):
-                rt.pop("out", None)
+            wrong = (r["robigo"]["out"], r["robigo"]["status"]) != (gn.get("out"), gn.get("status"))
+            if wrong and gn.get("_fallback") and a.metric != "time":
+                prog = next((p for p in progs if p[0] == name), None)
+                if prog:
+                    r_gn = run_one(prog, "gnur", robigo, a.metric, 1, valgrind, a.timeout)
+                    gn["out"] = r_gn.get("out")
+                    gn["status"] = r_gn.get("status")
+                    wrong = (r["robigo"]["out"], r["robigo"]["status"]) != (gn.get("out"), gn.get("status"))
+            r["wrong"] = wrong
+        if "gnur" in r and isinstance(r["gnur"], dict):
+            r["gnur"].pop("_fallback", None)
+        if "robigo" in r and isinstance(r["robigo"], dict):
+            if "gnur" in r:
+                r["robigo"].pop("out", None)
     out = a.out or os.path.join(STATE, "perf", "latest.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     doc = {"metric": a.metric, "robigo": robigo, "results": results}
@@ -243,7 +268,27 @@ def cmd_compare(a):
     with open(a.base) as f:
         base = json.load(f)["results"]
     with open(a.new) as f:
-        new = json.load(f)["results"]
+        new_doc = json.load(f)
+    new = new_doc.get("results", {})
+    updated = False
+    for name, r in new.items():
+        b = base.get(name, {})
+        gn = b.get("gnur", {})
+        ro = r.get("robigo", {})
+        if "out" in ro:
+            oracle_failed = "error" in gn or gn.get("status", 0) != 0
+            if "out" in gn and not oracle_failed and "error" not in ro:
+                r["wrong"] = (ro["out"], ro.get("status", 0)) != (gn["out"], gn.get("status", 0))
+            if "gnur" not in r and "gnur" in b:
+                r["gnur"] = gn
+            ro.pop("out", None)
+            updated = True
+        elif "gnur" in b and "gnur" not in r:
+            r["gnur"] = gn
+            updated = True
+    if updated:
+        with open(a.new, "w") as f:
+            json.dump(new_doc, f, indent=1, sort_keys=True)
     worse, better, broke, fixed = [], [], [], []
     for name in sorted(base.keys() - new.keys()):
         print(f"REMOVED {name} (absent from candidate; no regression comparison)")
@@ -338,6 +383,7 @@ def main():
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--timeout", type=int, default=120, help="seconds per run (x60 under callgrind)")
     p.add_argument("--robigo")
+    p.add_argument("--oracle", help="path to baseline perf.json providing GNU R oracle outputs and counts")
     p.add_argument("--out")
     p.add_argument("--merge", action="store_true", help="keep results of other runtimes from --out")
     p.add_argument("--quiet", action="store_true")
