@@ -144,19 +144,21 @@ fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, wh
                 )
             }
         }
-        Value::Lgl(_) | Value::Int(_) | Value::Real(_) => {
+        // R: complex.c:do_cmathfuns -- numeric input is coerced to double,
+        // so Re()/Conj() of an integer or logical is a double vector.
+        _ if matches!(x, Value::Lgl(_) | Value::Int(_) | Value::Real(_)) => {
             let mut w = CoerceWarnings::default();
             let r = crate::coerce::to_real(x, &mut w);
             match which {
-                5 => {
-                    let mut v = x.clone();
-                    if matches!(v, Value::Lgl(_)) {
-                        v = crate::coerce::coerce_quiet(&v, VType::Int);
+                1 | 5 => {
+                    if matches!(x, Value::Real(_)) {
+                        x.clone()
+                    } else {
+                        Value::reals(r)
                     }
-                    return Ok(v);
                 }
-                1 => Value::reals(r),
-                2 => Value::reals(r.iter().map(|d| if d.is_nan() { *d } else { 0.0 }).collect()),
+                // Im() of a real number is zero, including for NA and NaN.
+                2 => Value::reals(vec![0.0; r.len()]),
                 3 => Value::reals(r.iter().map(|d| d.abs()).collect()),
                 _ => Value::reals(
                     r.iter()
@@ -175,12 +177,9 @@ fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, wh
         }
         _ => return Err(Flow::error_call(call.clone(), "non-numeric argument to function")),
     };
-    // Keep names, dims and dimnames.
-    for a in [s::NAMES, s::DIM, s::DIMNAMES] {
-        if let Some(v) = x.get_attr(a) {
-            out.set_attr_raw(a, v);
-        }
-    }
+    // R copies every attribute (SHALLOW_DUPLICATE_ATTRIB), not just names,
+    // dim and dimnames.
+    crate::builtins::character::copy_all_attrs(x, &mut out);
     Ok(out)
 }
 
@@ -200,8 +199,44 @@ fn do_conj(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
     cmath(i, c, a, e, "Conj", 5)
 }
 
-fn do_polyroot(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error("robigo: 'polyroot' is not implemented yet"))
+// R: complex.c:do_polyroot
+fn do_polyroot(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "polyroot", call)?;
+    let z = match &args[0].value {
+        Value::Cplx(_) => args[0].value.clone(),
+        Value::Lgl(_) | Value::Int(_) | Value::Real(_) => i.coerce(&args[0].value, VType::Cplx)?,
+        other => {
+            return Err(Flow::error(format!("unimplemented type '{}' in 'polyroot'\n", other.type_name())));
+        }
+    };
+    let Value::Cplx(v) = &z else { unreachable!() };
+    let mut degree = 0;
+    for (k, c) in v.data.iter().enumerate() {
+        if c.re != 0.0 || c.im != 0.0 {
+            degree = k;
+        }
+    }
+    let n = degree + 1; // omit trailing zeroes
+    if degree < 1 {
+        return Ok(Value::cplxs(Vec::new()));
+    }
+    // Coefficients in order of decreasing powers, as R_cpolyroot expects.
+    let mut opr = vec![0.0; n];
+    let mut opi = vec![0.0; n];
+    for k in 0..n {
+        let c = &v.data[k];
+        if !c.re.is_finite() || !c.im.is_finite() {
+            return Err(Flow::error("invalid polynomial coefficient"));
+        }
+        opr[degree - k] = c.re;
+        opi[degree - k] = c.im;
+    }
+    let mut zeror = vec![0.0; n];
+    let mut zeroi = vec![0.0; n];
+    if crate::cpoly::cpolyroot(&opr, &opi, degree, &mut zeror, &mut zeroi) {
+        return Err(Flow::error("root finding code failed"));
+    }
+    Ok(Value::cplxs((0..degree).map(|k| Complex::new(zeror[k], zeroi[k])).collect()))
 }
 
 // ----------------------------------------------------------------------
