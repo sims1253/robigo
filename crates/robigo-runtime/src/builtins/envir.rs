@@ -269,7 +269,7 @@ fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
             }
             Ok(e.parent().map(Value::Env).unwrap_or(Value::Null))
         }
-        _ => Err(Flow::error_call(call.clone(), "argument is not an environment")),
+        _ => Err(Flow::error("argument is not an environment")),
     }
 }
 
@@ -989,10 +989,22 @@ fn do_make_active_binding(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env)
     Ok(Value::Null)
 }
 
-fn do_lock_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let env = env_arg(i, &arg(&args, 0), call, "env")?;
-    let bindings = lgl_arg(&arg(&args, 1), "bindings")?;
-    env.lock(bindings);
+fn do_lock_environment(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:do_lockEnv -- asRbool(bindings) runs before the
+    // environment check; its errors are errorcall(call) on the internal's
+    // own call.
+    let b = arg(&args, 1);
+    if b.is_atomic() && b.len() > 1 {
+        return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", b.len())));
+    }
+    // R: asLogical2 -- a list or empty vector is NA, not a converted
+    // element.
+    let bindings = crate::coerce::as_logical(&b);
+    if bindings == NA_LOGICAL {
+        return Err(Flow::error_call(call.clone(), "NA in coercion to boolean"));
+    }
+    let Value::Env(env) = arg(&args, 0) else { return Err(Flow::error("not an environment")) };
+    env.lock(bindings != 0);
     Ok(Value::Null)
 }
 

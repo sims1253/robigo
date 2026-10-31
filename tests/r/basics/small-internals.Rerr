@@ -1,0 +1,12 @@
+Warning message:
+In ngettext(1 + (0+1i), "a", "b") : imaginary parts discarded in coercion
+Warning message:
+In system("sleep 2", timeout = 1) : command 'sleep 2' timed out after 1s
+Warning message:
+In system("printf ok; sleep 2", intern = TRUE, timeout = 1) :
+  command 'printf ok; sleep 2' timed out after 1s
+Warning message:
+In system("(sleep 1; echo survived)", timeout = 1) :
+  command '(sleep 1; echo survived)' timed out after 1s
+Warning message:
+In formals(fun) : argument is not a function

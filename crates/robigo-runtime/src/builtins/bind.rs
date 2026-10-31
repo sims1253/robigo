@@ -659,9 +659,14 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     length_gets(x, n)
 }
 
-fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_lengths(i: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
-    let use_names = crate::coerce::as_logical(&arg(&args, 1)) != 0;
+    // R: array.c:do_lengths -- asLogical(use.names), NA is an error.
+    let use_names = crate::coerce::as_logical(&arg(&args, 1));
+    if use_names == NA_LOGICAL {
+        return Err(Flow::error("invalid 'use.names' value"));
+    }
+    let use_names = use_names != 0;
     let lens: Vec<i32> = match &x {
         Value::List(l) | Value::Expr(l) => {
             let mut out = Vec::with_capacity(l.data.len());
@@ -678,7 +683,7 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         }
         Value::Null => vec![],
         x if x.is_atomic() => vec![1; x.len()],
-        _ => return Err(Flow::error_call(call.clone(), "'x' must be a list or atomic vector")),
+        _ => return Err(Flow::error("'x' must be a list or atomic vector")),
     };
     let mut v = Value::ints(lens);
     if use_names {
