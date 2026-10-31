@@ -15,23 +15,14 @@ conformance` (interpreter, VM and VM+JIT against each other).
   - In `Promise` representation, `PromiseVal` enum lookup overhead was eliminated:
     - Optimized `force_promise` to use shared `borrow()` instead of `borrow_mut()` when reading forced/scalar values.
     - Added unboxed scalar handling in `plain_value`, avoiding fallback to full AST eval and `r_epoch` bumping for variable promises bound to scalars.
+    - Traversed unforced variable-forwarding symbol promises in `plain_value`, forcing them in-place to avoid recursive `eval_sym` and epoch invalidation on chained argument promises (`profiler-shared`).
     - Preserved unboxed scalar passing in `caller_promargs` and `eager_args`.
-- Benchmark results against base `ff759036` (clean, caches off):
-  - `robigo/fib`: 960,889,820 -> 933,587,169 (-2.84%, 27.3M instructions saved).
-  - `robigo/binarytrees`: 1,256,413,823 -> 1,243,959,513 (-0.99%, 12.5M instructions saved).
-  - All 12 failing CI benchmarks recovered to within normal noise floor (0 slower > 0.5% across all 21 `robigo/*` benchmarks):
-    - `robigo/s4-portfolio`: +0.15% (was +1.01% in red CI)
-    - `robigo/s4-new`: +0.15% (was +0.95% in red CI)
-    - `robigo/mandelbrot`: +0.12% (was +0.93% in red CI)
-    - `robigo/s4-slot-write`: +0.12% (was +0.91% in red CI)
-    - `robigo/s4-valid`: +0.16% (was +0.90% in red CI)
-    - `robigo/queens`: +0.01% (was +0.88% in red CI)
-    - `robigo/spectralnorm`: +0.13% (was +0.86% in red CI)
-    - `robigo/s4-generic`: +0.15% (was +0.85% in red CI)
-    - `robigo/s4-slot-read`: +0.10% (was +0.80% in red CI)
-    - `robigo/apply`: +0.10% (was +0.75% in red CI)
-    - `robigo/nbody`: +0.07% (was +0.63% in red CI)
-    - `robigo/strings`: +0.03% (was +0.55% in red CI)
+- Benchmark results against base `ff759036` (clean, caches off, full 84-program suite):
+  - `3 faster, 0 slower (> 0.5%), 0 broken, 0 fixed`
+  - `rbench/simple/profiler-shared`: 5,784,443,391 -> 5,575,928,255 (-3.60%, 208.5M instructions saved, recovered from +0.86% regression)
+  - `robigo/fib`: 960,889,820 -> 932,989,919 (-2.90%, 27.9M instructions saved)
+  - `robigo/binarytrees`: 1,256,413,823 -> 1,243,347,141 (-1.04%, 13.1M instructions saved)
+  - All other 81 benchmarks neutral (< 0.5% diff), 0 slower across entire suite.
 - Conformance: 9/9 tests pass (`cargo test --release -p robigo-cli --test conformance`).
 
 ## 2026-10-30: round 12, Rconn_printf skips the vfprintf round-trip

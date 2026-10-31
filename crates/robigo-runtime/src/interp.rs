@@ -120,13 +120,31 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                     return None;
                 }
                 return match &b.value {
-                    Value::Promise(q) => match &*q.value.borrow() {
-                        crate::value::PromiseVal::Boxed(v) => Some(v.clone()),
-                        crate::value::PromiseVal::ScalarInt(i) => Some(Value::int(*i)),
-                        crate::value::PromiseVal::ScalarReal(d) => Some(Value::real(*d)),
-                        crate::value::PromiseVal::ScalarLgl(l) => Some(Value::lgl_raw(*l)),
-                        crate::value::PromiseVal::Unforced => None,
-                    },
+                    Value::Promise(q) => {
+                        let is_unforced = match &*q.value.borrow() {
+                            crate::value::PromiseVal::Boxed(v) => return Some(v.clone()),
+                            crate::value::PromiseVal::ScalarInt(i) => return Some(Value::int(*i)),
+                            crate::value::PromiseVal::ScalarReal(d) => return Some(Value::real(*d)),
+                            crate::value::PromiseVal::ScalarLgl(l) => return Some(Value::lgl_raw(*l)),
+                            crate::value::PromiseVal::Unforced => true,
+                        };
+                        if is_unforced && q.code.is_none() && !q.forcing.get() {
+                            if let Value::Sym(next_sym) = q.expr {
+                                let next_env = q.env.borrow().clone();
+                                if let Some(next_env) = next_env {
+                                    q.forcing.set(true);
+                                    let res = plain_value(&next_env, next_sym);
+                                    q.forcing.set(false);
+                                    if let Some(ref v) = res {
+                                        q.set_value(v.clone());
+                                        *q.env.borrow_mut() = None;
+                                    }
+                                    return res;
+                                }
+                            }
+                        }
+                        None
+                    }
                     v if v.is_missing_arg() => None,
                     v => Some(v.clone()),
                 };
