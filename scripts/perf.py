@@ -182,6 +182,7 @@ def cmd_run(a):
                 r = run_one(p, "gnur", robigo, "time", 1, valgrind, a.timeout)
                 oracle_results[p[0]]["gnur"]["out"] = r.get("out")
                 oracle_results[p[0]]["gnur"]["status"] = r.get("status")
+                oracle_results[p[0]]["gnur"]["_fallback"] = True
         for name in results:
             if "gnur" not in results[name] and name in oracle_results and "gnur" in oracle_results[name]:
                 results[name]["gnur"] = oracle_results[name]["gnur"]
@@ -193,7 +194,17 @@ def cmd_run(a):
             r["oracle_warning"] = "GNU R measurement failed; ratio unavailable"
             print(f"WARNING {name}: {r['oracle_warning']} ({gn})", file=sys.stderr)
         if "robigo" in r and "gnur" in r and not oracle_failed and "error" not in r["robigo"]:
-            r["wrong"] = (r["robigo"]["out"], r["robigo"]["status"]) != (gn.get("out"), gn.get("status"))
+            wrong = (r["robigo"]["out"], r["robigo"]["status"]) != (gn.get("out"), gn.get("status"))
+            if wrong and gn.get("_fallback") and a.metric != "time":
+                prog = next((p for p in progs if p[0] == name), None)
+                if prog:
+                    r_gn = run_one(prog, "gnur", robigo, a.metric, 1, valgrind, a.timeout)
+                    gn["out"] = r_gn.get("out")
+                    gn["status"] = r_gn.get("status")
+                    wrong = (r["robigo"]["out"], r["robigo"]["status"]) != (gn.get("out"), gn.get("status"))
+            r["wrong"] = wrong
+        if "gnur" in r and isinstance(r["gnur"], dict):
+            r["gnur"].pop("_fallback", None)
         if "robigo" in r and isinstance(r["robigo"], dict):
             if "gnur" in r:
                 r["robigo"].pop("out", None)

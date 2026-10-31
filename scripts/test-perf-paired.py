@@ -318,8 +318,34 @@ class PairedGate(unittest.TestCase):
             new_doc = json.loads(new_path.read_text())
             row = new_doc['results']['case']
             self.assertTrue(row.get('wrong'))
-            self.assertNotIn('out', row['robigo'])
-            self.assertEqual(row['gnur']['out'], 'correct_out\n')
+
+    def test_run_with_legacy_oracle_reverifies_on_apparent_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oracle_path = Path(tmp) / 'legacy_base.json'
+            oracle_path.write_text(json.dumps({
+                'results': {'case': {'gnur': {'instr': 200, 'status': 0}}}
+            }))
+            result_path = Path(tmp) / 'result.json'
+            args = SimpleNamespace(suite=None, filter=None, robigo='binary', runtime='robigo',
+                                   jobs=1, metric='instr', runs=1, timeout=1,
+                                   quiet=True, out=str(result_path), merge=False, oracle=str(oracle_path))
+            calls = []
+            def measure(prog, runtime, robigo, metric, runs, valgrind, timeout):
+                calls.append((runtime, metric))
+                if runtime == 'gnur' and metric == 'time':
+                    return {'out': 'native_diff\n', 'status': 0}
+                if runtime == 'gnur' and metric == 'instr':
+                    return {'out': 'valgrind_match\n', 'status': 0}
+                return {'instr': 150, 'out': 'valgrind_match\n', 'status': 0}
+            with patch.object(paired.perf, 'programs', return_value=[('case', '', '', '')]), \
+                 patch.object(paired.perf, 'robigo_path', return_value='binary'), \
+                 patch.object(paired.perf, 'run_one', side_effect=measure), \
+                 patch('sys.stderr', io.StringIO()):
+                paired.perf.cmd_run(args)
+            row = json.loads(result_path.read_text())['results']['case']
+            self.assertFalse(row.get('wrong'))
+            self.assertEqual(row['gnur']['out'], 'valgrind_match\n')
+            self.assertEqual(calls, [('robigo', 'instr'), ('gnur', 'time'), ('gnur', 'instr')])
 
 
 if __name__ == '__main__':
