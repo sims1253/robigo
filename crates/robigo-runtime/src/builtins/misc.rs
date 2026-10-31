@@ -677,13 +677,38 @@ fn do_internals_id(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let status = as_integer(&arg(&args, 1));
+    let mut code = if status == NA_INTEGER { 0 } else { status };
+    let run_last = if args.len() > 2 { as_logical(&arg(&args, 2)) } else { 1 };
     i.flush();
-    // R: unix/sys-std.c:R_CleanUp -- exit finalizers run before exit.
+    // R: unix/sys-std.c:Rstd_CleanUp -- .Last (unless runLast = FALSE),
+    // then the exit finalizers. In the non-interactive console an error in
+    // .Last makes the session fail with status 1 even when q() named
+    // another status; interactively it goes back to the REPL instead.
+    if run_last != 0 && run_last != NA_LOGICAL {
+        if let Err(f) = i.run_dot_last() {
+            // R: main.c:R_dot_Last -- in an interactive session an error in
+            // `.Last` kicks back to the REPL: the quit is cancelled, the
+            // rest of the input line is dropped, nothing else is cleaned
+            // up, and the requested status is not used.
+            if i.interactive {
+                // R_dot_Last runs under the top-level contexts: unwind past
+                // the caller's on.exit code (which could swallow the error)
+                // and let the REPL drop the rest of the input line.
+                i.abort_to_toplevel = true;
+                return Err(f);
+            }
+            i.report_toplevel(f);
+            i.write_err("Execution halted\n");
+            code = 1;
+        }
+    }
     if let Some(b) = crate::native::bridge() {
         b.run_exit_finalizers(i);
     }
+    // R: unix/sys-std.c:Rstd_CleanUp -- PrintWarnings after the finalizers.
+    i.print_warnings();
     i.flush();
-    std::process::exit(if status == NA_INTEGER { 0 } else { status });
+    std::process::exit(code);
 }
 
 // ----------------------------------------------------------------------

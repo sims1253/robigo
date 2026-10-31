@@ -39,6 +39,10 @@ pub struct Interp {
     pub empty: Env,
     pub frames: Vec<Context>,
     pub visible: bool,
+    /// `R_Interactive`: the session reads from an interactive console.
+    /// `q()` reports a `.Last` error back to the REPL only there; the
+    /// non-interactive console prints "Execution halted" and exits.
+    pub interactive: bool,
     /// `R_ExitContext`: the return value of the frame whose `on.exit` code
     /// is running, `None` while no exit code runs or when the frame is
     /// unwinding after an error (R stores `NULL`, "undefined", then).
@@ -69,6 +73,10 @@ pub struct Interp {
     pub stack_limit: usize,
     pub depth: usize,
     pub in_error: bool,
+    /// An interactive `q()` error in `.Last` is unwinding to the top
+    /// level. R_dot_Last sets the top-level contexts, so the caller's
+    /// `on.exit` handlers are skipped and cannot swallow the error.
+    pub abort_to_toplevel: bool,
     pub start_time: std::time::Instant,
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
@@ -196,6 +204,7 @@ impl Interp {
             empty,
             frames: Vec::new(),
             visible: true,
+            interactive: false,
             exit_value: None,
             handlers: None,
             global_handlers: None,
@@ -212,6 +221,7 @@ impl Interp {
             stack_base: 0,
             stack_limit: 0,
             in_error: false,
+            abort_to_toplevel: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
             si_snaps: std::array::from_fn(|_| None),
@@ -1082,7 +1092,10 @@ impl Interp {
         let saved_visible = self.visible;
         let on_exit = std::mem::take(&mut self.frames.last_mut().unwrap().on_exit);
         let mut result = r;
-        if !on_exit.is_empty() {
+        // R: main.c:R_dot_Last -- an interactive .Last error runs under the
+        // top-level context, so it bypasses the caller's on.exit code
+        // instead of letting a `return()` there swallow it.
+        if !self.abort_to_toplevel && !on_exit.is_empty() {
             let env = self.frames.last().unwrap().cloenv.clone();
             // R: context.c:endcontext makes this frame the exit context
             // (R_ExitContext) while its on.exit code runs, with the pending
@@ -1274,6 +1287,42 @@ impl Interp {
         true
     }
 
+    /// R: main.c:R_dot_Last -- run `.Last` from the global environment,
+    /// then `.Last.sys` from the base namespace, each called with no
+    /// arguments in the global environment. Returns the first error
+    /// unreported: the caller decides whether it halts the session or,
+    /// interactively, goes back to the REPL.
+    pub fn run_dot_last(&mut self) -> RResult<()> {
+        // R: main.c:R_dot_Last sets the global/top-level/session contexts
+        // to R_Toplevel: .Last runs with no caller above it. Keep the
+        // caller's frames so an interactive q() error can still unwind
+        // through them after .Last returns it.
+        let saved_frames = std::mem::take(&mut self.frames);
+        let saved_handlers = std::mem::replace(&mut self.handlers, self.global_handlers.clone());
+        let saved_restarts = std::mem::replace(&mut self.restarts, None);
+        let saved_depth = std::mem::replace(&mut self.depth, 0);
+        let saved_ccode = std::mem::take(&mut self.ccode_calls);
+        let global = self.global.clone();
+        let base = self.base_ns.clone();
+        let mut result = Ok(());
+        for (name, from) in [(".Last", &global), (".Last.sys", &base)] {
+            let Some((Value::Closure(_), _)) = from.lookup(Sym::new(name)) else {
+                continue;
+            };
+            let call = Value::lang(Value::sym(name), Vec::new());
+            if let Err(f) = self.eval(&call, &global) {
+                result = Err(f);
+                break;
+            }
+        }
+        self.frames = saved_frames;
+        self.handlers = saved_handlers;
+        self.restarts = saved_restarts;
+        self.depth = saved_depth;
+        self.ccode_calls = saved_ccode;
+        result
+    }
+
     /// Evaluate one top-level expression and print it if visible.
     /// Returns the value (`None` if evaluation failed), which the
     /// console REPL stores in `.Last.value`.
@@ -1283,7 +1332,11 @@ impl Interp {
         self.restarts = None;
         self.depth = 0;
         self.ccode_calls.clear();
+        self.abort_to_toplevel = false;
         let r = self.eval(e, env);
+        // The abort (if any) reached the top level; the next expression
+        // starts with normal on.exit handling again.
+        self.abort_to_toplevel = false;
         let ok = match r {
             Ok(v) => {
                 if self.visible {
