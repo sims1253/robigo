@@ -700,17 +700,29 @@ fn do_lengths(i: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     Ok(v)
 }
 
-fn do_vector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mode = match arg(&args, 0) {
-        Value::Str(m) if m.data.len() == 1 => m.data[0].clone().unwrap_or_else(|| crate::value::RString::from("NA")),
-        _ => return Err(Flow::error_call(call.clone(), "vector: cannot make a vector of mode 'NA'.")),
-    };
-    let n = crate::coerce::as_real(&arg(&args, 1));
-    if n.is_nan() || n < 0.0 {
-        return Err(Flow::error_call(call.clone(), "vector: cannot make a vector of negative length"));
+fn do_vector(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let len_arg = arg(&args, 1);
+    if len_arg.len() != 1 {
+        return Err(Flow::error("invalid 'length' argument"));
     }
-    let n = n as usize;
-    Ok(match &*mode {
+    let len = crate::builtins::io::as_vec_size(&len_arg)?;
+    if len < 0 {
+        return Err(Flow::error("invalid 'length' argument"));
+    }
+    let mode_val = i.coerce(&arg(&args, 0), VType::Str)?;
+    if mode_val.len() != 1 {
+        return Err(Flow::error("invalid 'mode' argument"));
+    }
+    let mode_str = match &mode_val {
+        Value::Str(s) => &s.data[0],
+        _ => unreachable!(),
+    };
+    let mode = match mode_str {
+        Some(s) => s.as_ref(),
+        None => return Err(Flow::error("vector: cannot make a vector of mode 'NA'.")),
+    };
+    let n = len as usize;
+    Ok(match mode {
         "logical" => Value::lgls(vec![FALSE; n]),
         "integer" => Value::ints(vec![0; n]),
         "numeric" | "double" => Value::reals(vec![0.0; n]),
@@ -719,10 +731,14 @@ fn do_vector(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         "raw" => Value::raws(vec![0; n]),
         "list" => Value::list(vec![Value::Null; n]),
         "expression" => Value::expr_vec(vec![Value::Null; n]),
-        "pairlist" => Value::pairlist(vec![Arg::pos(Value::Null); n]),
-        "any" => Value::lgls(vec![FALSE; n]),
+        "pairlist" => {
+            if len > i32::MAX as i64 {
+                return Err(Flow::error("too long for a pairlist"));
+            }
+            Value::pairlist(vec![Arg::pos(Value::Null); n])
+        }
         other => {
-            return Err(Flow::error_call(call.clone(), format!("vector: cannot make a vector of mode '{}'.", other)));
+            return Err(Flow::error(format!("vector: cannot make a vector of mode '{other}'.")));
         }
     })
 }
