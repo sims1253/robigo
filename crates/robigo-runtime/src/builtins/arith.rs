@@ -198,12 +198,15 @@ struct BinAttrs {
 }
 
 fn binary_attrs(x: &Value, y: &Value, call: &Value) -> RResult<BinAttrs> {
-    let nx = x.len();
-    let ny = y.len();
     let xattr = x.has_attrs();
     let yattr = y.has_attrs();
-    let xarray = x.get_attr(s::DIM).is_some();
-    let yarray = y.get_attr(s::DIM).is_some();
+    if !xattr && !yattr {
+        return Ok(BinAttrs { dims: None, xnames: None, ynames: None, any_attr: false });
+    }
+    let nx = x.len();
+    let ny = y.len();
+    let xarray = x.attrs().and_then(|a| a.get(s::DIM)).is_some();
+    let yarray = y.attrs().and_then(|a| a.get(s::DIM)).is_some();
     let mut dims = None;
     let (xnames, ynames);
     if xarray || yarray {
@@ -223,7 +226,7 @@ fn binary_attrs(x: &Value, y: &Value, call: &Value) -> RResult<BinAttrs> {
         xnames = if xattr { Some(get_attrib(x, s::NAMES)).filter(|v| !v.is_null()) } else { None };
         ynames = if yattr { Some(get_attrib(y, s::NAMES)).filter(|v| !v.is_null()) } else { None };
     }
-    Ok(BinAttrs { dims, xnames, ynames, any_attr: xattr || yattr })
+    Ok(BinAttrs { dims, xnames, ynames, any_attr: true })
 }
 
 fn apply_bin_attrs(val: &mut Value, a: BinAttrs) -> RResult<()> {
@@ -339,30 +342,34 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
     let mut x = fixup(x, call)?;
     let mut y = fixup(y, call)?;
     let (nx, ny) = (x.len(), y.len());
-    let xarray = x.get_attr(s::DIM).is_some();
-    let yarray = y.get_attr(s::DIM).is_some();
-    if xarray != yarray {
-        if xarray && nx == 1 && ny != 1 {
-            if ny != 0 {
-                interp.warningcall(
-                    call,
-                    "Recycling array of length 1 in array-vector arithmetic is deprecated.\n  Use c() or as.vector() instead.",
-                )?;
+    let xattr = x.has_attrs();
+    let yattr = y.has_attrs();
+    if xattr || yattr {
+        let xarray = x.attrs().and_then(|a| a.get(s::DIM)).is_some();
+        let yarray = y.attrs().and_then(|a| a.get(s::DIM)).is_some();
+        if xarray != yarray {
+            if xarray && nx == 1 && ny != 1 {
+                if ny != 0 {
+                    interp.warningcall(
+                        call,
+                        "Recycling array of length 1 in array-vector arithmetic is deprecated.\n  Use c() or as.vector() instead.",
+                    )?;
+                }
+                x.set_attr_raw(s::DIM, Value::Null);
             }
-            x.set_attr_raw(s::DIM, Value::Null);
-        }
-        if yarray && ny == 1 && nx != 1 {
-            if nx != 0 {
-                interp.warningcall(
-                    call,
-                    "Recycling array of length 1 in vector-array arithmetic is deprecated.\n  Use c() or as.vector() instead.",
-                )?;
+            if yarray && ny == 1 && nx != 1 {
+                if nx != 0 {
+                    interp.warningcall(
+                        call,
+                        "Recycling array of length 1 in vector-array arithmetic is deprecated.\n  Use c() or as.vector() instead.",
+                    )?;
+                }
+                y.set_attr_raw(s::DIM, Value::Null);
             }
-            y.set_attr_raw(s::DIM, Value::Null);
         }
     }
     let attrs = binary_attrs(&x, &y, call)?;
-    let ts = ts_operand(&x, &y, call)?;
+    let ts = if xattr || yattr { ts_operand(&x, &y, call)? } else { None };
     check_recycling(interp, call, nx, ny)?;
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
     let mut val = match (&x, &y) {

@@ -47,24 +47,30 @@ pub(crate) fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -
         Some(i) => (s::DOTS, Some(i)),
         None => (sym, None),
     };
-    let binding = env.0.frame().borrow().get(lookup).map(|b| (b.value.clone(), b.flags));
-    let Some((mut v, flags)) = binding else { return false };
-    if let Some(i) = ddv {
-        match &v {
-            Value::Dots(d) if d.len() >= i => v = d[i - 1].value.clone(),
+    let frame = env.0.frame().borrow();
+    let Some(b) = frame.get(lookup) else { return false };
+    let val_ref = if let Some(i) = ddv {
+        match &b.value {
+            Value::Dots(d) if d.len() >= i => {
+                if d[i - 1].value.is_missing_arg() {
+                    return true;
+                }
+                &d[i - 1].value
+            }
             _ => return true,
         }
-    }
-    if v.is_missing_arg() {
+    } else {
+        &b.value
+    };
+    if val_ref.is_missing_arg() {
         return true;
     }
-    if flags & BIND_ACTIVE != 0 {
+    if b.flags & BIND_ACTIVE != 0 {
         return false;
     }
-    if let Value::Promise(p) = &v {
-        let mut p = p.clone();
+    if let Value::Promise(p) = val_ref {
+        let mut p = p;
         while let Value::Promise(q) = &p.expr {
-            let q = q.clone();
             p = q;
         }
         if p.value().is_none() {
@@ -101,6 +107,7 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
                 _ => return Err(Flow::error("'...' used in an incorrect context")),
             },
             v if v.is_missing_arg() => out.push(Arg::new(a.tag, Value::missing_arg())),
+            Value::Sym(sym) if sym.is_empty() => out.push(Arg::new(a.tag, Value::missing_arg())),
             Value::Sym(sym) if r_is_missing(interp, *sym, env, 0) => out.push(Arg::new(a.tag, Value::missing_arg())),
             v => {
                 let r = interp.eval(v, env)?;
@@ -440,15 +447,46 @@ fn mask_subset(x: &Value, m: &[i32]) -> Option<Value> {
 }
 
 fn dim_names_attr(x: &Value) -> Option<Value> {
-    x.get_attr(s::DIM).and_then(|d| d.get_attr(s::NAMES))
+    x.attrs().and_then(|a| a.get(s::DIM)).and_then(|d| d.get_attr(s::NAMES))
 }
 
 /// R's `MatrixSubset`.
 // R: subset.c:MatrixSubset
 fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &Value, drop: bool) -> RResult<Value> {
-    let dim = dim_of(x).unwrap_or_default();
+    let dim = dim_view(x).unwrap_or(DimView::Owned(Vec::new()));
+    if dim.len() < 2 {
+        return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
+    }
     let nr = dim[0] as i64;
     let nc = dim[1] as i64;
+    let s0_missing = is_missing_or_empty(s0);
+    if s0_missing {
+        if let Some(jj) = as_scalar_index(s1) {
+            if jj >= 1 && jj <= nc {
+                if !x.is_vector() {
+                    return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
+                }
+                let dimnames = get_attrib(x, s::DIMNAMES);
+                let has_dimnames = !dimnames.is_null();
+                let nru = nr as usize;
+                let start = (jj - 1) as usize * nru;
+                let end = start + nru;
+                if drop && !has_dimnames {
+                    return Ok(match x {
+                        Value::Lgl(v) => Value::lgls(v.data[start..end].to_vec()),
+                        Value::Int(v) => Value::ints(v.data[start..end].to_vec()),
+                        Value::Real(v) => Value::reals(v.data[start..end].to_vec()),
+                        Value::Cplx(v) => Value::cplxs(v.data[start..end].to_vec()),
+                        Value::Str(v) => Value::strs(v.data[start..end].to_vec()),
+                        Value::Raw(v) => Value::raws(v.data[start..end].to_vec()),
+                        Value::List(v) => Value::list(v.data[start..end].to_vec()),
+                        Value::Expr(v) => Value::expr_vec(v.data[start..end].to_vec()),
+                        _ => return Err(not_subsettable(x, Some(call))),
+                    });
+                }
+            }
+        }
+    }
     let sr = array_subscript(interp, 0, s0, &dim, x, Some(call))?;
     let sc = array_subscript(interp, 1, s1, &dim, x, Some(call))?;
     // R checks each column index, and for each column every row index.
@@ -469,33 +507,44 @@ fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &
         extract_subset(x, &flat, Some(call))?
     } else {
         // In-range positions: gather column by column.
-        fn gather2<T: Clone>(src: &[T], nr: usize, sr: &[i64], sc: &[i64]) -> Vec<T> {
+        fn gather2<T: Clone>(src: &[T], nr: usize, sr: &[i64], sc: &[i64], sr_is_all: bool) -> Vec<T> {
             let mut out = Vec::with_capacity(sr.len() * sc.len());
             for &jj in sc {
-                let col = &src[(jj - 1) as usize * nr..];
-                out.extend(sr.iter().map(|&ii| col[(ii - 1) as usize].clone()));
+                let start = (jj - 1) as usize * nr;
+                if sr_is_all {
+                    out.extend_from_slice(&src[start..start + nr]);
+                } else {
+                    let col = &src[start..];
+                    out.extend(sr.iter().map(|&ii| col[(ii - 1) as usize].clone()));
+                }
             }
             out
         }
-        let nr = nr as usize;
+        let nru = nr as usize;
         match x {
-            Value::Lgl(v) => Value::lgls(gather2(&v.data, nr, &sr, &sc)),
-            Value::Int(v) => Value::ints(gather2(&v.data, nr, &sr, &sc)),
-            Value::Real(v) => Value::reals(gather2(&v.data, nr, &sr, &sc)),
-            Value::Cplx(v) => Value::cplxs(gather2(&v.data, nr, &sr, &sc)),
-            Value::Str(v) => Value::strs(gather2(&v.data, nr, &sr, &sc)),
-            Value::Raw(v) => Value::raws(gather2(&v.data, nr, &sr, &sc)),
-            Value::List(v) => Value::list(gather2(&v.data, nr, &sr, &sc)),
-            Value::Expr(v) => Value::expr_vec(gather2(&v.data, nr, &sr, &sc)),
+            Value::Lgl(v) => Value::lgls(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Int(v) => Value::ints(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Real(v) => Value::reals(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Cplx(v) => Value::cplxs(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Str(v) => Value::strs(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Raw(v) => Value::raws(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::List(v) => Value::list(gather2(&v.data, nru, &sr, &sc, s0_missing)),
+            Value::Expr(v) => Value::expr_vec(gather2(&v.data, nru, &sr, &sc, s0_missing)),
             _ => return Err(not_subsettable(x, Some(call))),
         }
     };
-    let mut d = Value::ints(vec![sr.len() as i32, sc.len() as i32]);
+    let nrs = sr.len();
+    let ncs = sc.len();
+    let n_non_one = (if nrs != 1 { 1 } else { 0 }) + (if ncs != 1 { 1 } else { 0 });
+    let dimnames = get_attrib(x, s::DIMNAMES);
+    if drop && n_non_one <= 1 && dimnames.is_null() {
+        return Ok(result);
+    }
+    let mut d = Value::ints(vec![nrs as i32, ncs as i32]);
     if let Some(n) = dim_names_attr(x) {
         d.set_attr_raw(s::NAMES, n);
     }
     result.set_attr_raw(s::DIM, d);
-    let dimnames = get_attrib(x, s::DIMNAMES);
     if !dimnames.is_null() {
         let mut nd = Value::list(vec![
             extract_subset(&generic_elt(&dimnames, 0), &sr, Some(call))?,
@@ -694,12 +743,12 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     } else {
         return Err(not_subsettable(&x, Some(call)));
     };
+    let ndim = ndim_of(ax);
     let mut ans = if nsubs < 2 {
-        let dim = x.get_attr(s::DIM);
-        let ndim = dim.as_ref().map(|d| d.len()).unwrap_or(0);
         let missing = Value::missing_arg();
         let mut ans = vector_subset(ax, if nsubs == 1 { &subs[0] } else { &missing }, call)?;
         if ndim == 1 {
+            let dim = ax.attrs().and_then(|a| a.get(s::DIM));
             let len = ans.len();
             if !drop || len > 1 {
                 let nm = get_attrib(&ans, s::NAMES);
@@ -719,7 +768,6 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
         }
         ans
     } else {
-        let ndim = x.get_attr(s::DIM).map(|d| d.len()).unwrap_or(0);
         if nsubs != ndim {
             return Err(Flow::error_call(call.clone(), "incorrect number of dimensions"));
         }
