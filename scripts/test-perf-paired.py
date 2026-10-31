@@ -184,6 +184,143 @@ class PairedGate(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'measurement failed'):
             self.run_pair(119, base_status=1)
 
+    def test_run_preserves_gnur_out_and_strips_robigo_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / 'perf.json'
+            args = SimpleNamespace(suite=None, filter=None, robigo='binary', runtime='both',
+                                   jobs=1, metric='instr', runs=1, timeout=1,
+                                   quiet=True, out=str(result_path), merge=False, oracle=None)
+            def measure(program, runtime, *args):
+                return {'instr': 100, 'out': 'expected_out\n', 'status': 0}
+            with patch.object(paired.perf, 'programs', return_value=[('case', '', '', '')]), \
+                 patch.object(paired.perf, 'robigo_path', return_value='binary'), \
+                 patch.object(paired.perf, 'run_one', side_effect=measure), \
+                 patch('sys.stderr', io.StringIO()):
+                paired.perf.cmd_run(args)
+            row = json.loads(result_path.read_text())['results']['case']
+            self.assertFalse(row.get('wrong'))
+            self.assertNotIn('out', row['robigo'])
+            self.assertEqual(row['gnur'].get('out'), 'expected_out\n')
+            self.assertEqual(row['gnur'].get('status'), 0)
+
+    def test_run_with_oracle_marks_wrong_on_mismatched_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oracle_path = Path(tmp) / 'base.json'
+            oracle_doc = {
+                'results': {
+                    'case': {
+                        'gnur': {'instr': 200, 'status': 0, 'out': 'oracle_out\n'}
+                    }
+                }
+            }
+            oracle_path.write_text(json.dumps(oracle_doc))
+            result_path = Path(tmp) / 'perf.json'
+            args = SimpleNamespace(suite=None, filter=None, robigo='binary', runtime='robigo',
+                                   jobs=1, metric='instr', runs=1, timeout=1,
+                                   quiet=True, out=str(result_path), merge=False, oracle=str(oracle_path))
+            def measure(program, runtime, *args):
+                self.assertEqual(runtime, 'robigo')
+                return {'instr': 150, 'out': 'different_out\n', 'status': 0}
+            with patch.object(paired.perf, 'programs', return_value=[('case', '', '', '')]), \
+                 patch.object(paired.perf, 'robigo_path', return_value='binary'), \
+                 patch.object(paired.perf, 'run_one', side_effect=measure), \
+                 patch('sys.stderr', io.StringIO()):
+                paired.perf.cmd_run(args)
+            row = json.loads(result_path.read_text())['results']['case']
+            self.assertTrue(row.get('wrong'))
+            self.assertNotIn('out', row['robigo'])
+            self.assertEqual(row['gnur']['instr'], 200)
+            self.assertEqual(row['gnur']['out'], 'oracle_out\n')
+
+    def test_run_with_oracle_matches_output_not_wrong(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oracle_path = Path(tmp) / 'base.json'
+            oracle_doc = {
+                'results': {
+                    'case': {
+                        'gnur': {'instr': 200, 'status': 0, 'out': 'matching_out\n'}
+                    }
+                }
+            }
+            oracle_path.write_text(json.dumps(oracle_doc))
+            result_path = Path(tmp) / 'perf.json'
+            args = SimpleNamespace(suite=None, filter=None, robigo='binary', runtime='robigo',
+                                   jobs=1, metric='instr', runs=1, timeout=1,
+                                   quiet=True, out=str(result_path), merge=False, oracle=str(oracle_path))
+            def measure(program, runtime, *args):
+                self.assertEqual(runtime, 'robigo')
+                return {'instr': 150, 'out': 'matching_out\n', 'status': 0}
+            with patch.object(paired.perf, 'programs', return_value=[('case', '', '', '')]), \
+                 patch.object(paired.perf, 'robigo_path', return_value='binary'), \
+                 patch.object(paired.perf, 'run_one', side_effect=measure), \
+                 patch('sys.stderr', io.StringIO()):
+                paired.perf.cmd_run(args)
+            row = json.loads(result_path.read_text())['results']['case']
+            self.assertFalse(row.get('wrong'))
+            self.assertNotIn('out', row['robigo'])
+            self.assertEqual(row['gnur']['instr'], 200)
+
+    def test_run_with_legacy_oracle_missing_out_records_gnur_natively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oracle_path = Path(tmp) / 'base.json'
+            oracle_doc = {
+                'results': {
+                    'case': {
+                        'gnur': {'instr': 200, 'status': 0}
+                    }
+                }
+            }
+            oracle_path.write_text(json.dumps(oracle_doc))
+            result_path = Path(tmp) / 'perf.json'
+            args = SimpleNamespace(suite=None, filter=None, robigo='binary', runtime='robigo',
+                                   jobs=1, metric='instr', runs=1, timeout=1,
+                                   quiet=True, out=str(result_path), merge=False, oracle=str(oracle_path))
+            calls = []
+            def measure(program, runtime, robigo, metric, runs, valgrind, timeout):
+                calls.append((runtime, metric))
+                if runtime == 'gnur':
+                    self.assertEqual(metric, 'time')
+                    return {'out': 'native_gnur_out\n', 'status': 0}
+                return {'instr': 150, 'out': 'native_gnur_out\n', 'status': 0}
+            with patch.object(paired.perf, 'programs', return_value=[('case', '', '', '')]), \
+                 patch.object(paired.perf, 'robigo_path', return_value='binary'), \
+                 patch.object(paired.perf, 'run_one', side_effect=measure), \
+                 patch('sys.stderr', io.StringIO()):
+                paired.perf.cmd_run(args)
+            row = json.loads(result_path.read_text())['results']['case']
+            self.assertFalse(row.get('wrong'))
+            self.assertEqual(row['gnur']['out'], 'native_gnur_out\n')
+            self.assertEqual(row['gnur']['instr'], 200)
+            self.assertEqual(calls, [('robigo', 'instr'), ('gnur', 'time')])
+
+    def test_compare_recomputes_wrong_from_baseline_gnur(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_path = Path(tmp) / 'base.json'
+            base_path.write_text(json.dumps({
+                'results': {
+                    'case': {
+                        'robigo': {'instr': 100, 'status': 0},
+                        'gnur': {'instr': 200, 'status': 0, 'out': 'correct_out\n'}
+                    }
+                }
+            }))
+            new_path = Path(tmp) / 'new.json'
+            new_path.write_text(json.dumps({
+                'results': {
+                    'case': {
+                        'robigo': {'instr': 100, 'status': 0, 'out': 'wrong_out\n'}
+                    }
+                }
+            }))
+            args = SimpleNamespace(base=str(base_path), new=str(new_path), threshold=0.5)
+            ret = paired.perf.cmd_compare(args)
+            self.assertEqual(ret, 1)  # BROKEN
+            new_doc = json.loads(new_path.read_text())
+            row = new_doc['results']['case']
+            self.assertTrue(row.get('wrong'))
+            self.assertNotIn('out', row['robigo'])
+            self.assertEqual(row['gnur']['out'], 'correct_out\n')
+
 
 if __name__ == '__main__':
     unittest.main()
