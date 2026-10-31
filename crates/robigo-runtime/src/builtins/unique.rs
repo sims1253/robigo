@@ -1205,9 +1205,26 @@ fn int_add(acc: i32, x: i32) -> i32 {
 }
 
 // R: unique.c:rowsum
+/// R: unique.c:HashTableSetup -- the types the hashing machinery accepts;
+/// anything else is `unimplemented type '<type>' in 'HashTableSetup'`.
+fn hash_table_setup_check(v: &Value) -> RResult<()> {
+    match v {
+        Value::Lgl(_)
+        | Value::Int(_)
+        | Value::Real(_)
+        | Value::Cplx(_)
+        | Value::Str(_)
+        | Value::Raw(_)
+        | Value::Expr(_)
+        | Value::List(_) => Ok(()),
+        other => Err(Flow::error(format!("unimplemented type '{}' in 'HashTableSetup'\n", other.type_name()))),
+    }
+}
+
 fn do_rowsum_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity_internal(&args, 5, "rowsum_matrix", call)?;
     let (x, g, ug, snarm, rn) = (&args[0].value, &args[1].value, &args[2].value, &args[3].value, &args[4].value);
+    hash_table_setup_check(ug)?;
     let n = g.len();
     let ng = ug.len();
     let narm = crate::coerce::as_logical(snarm);

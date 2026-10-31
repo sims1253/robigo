@@ -1,0 +1,65 @@
+[1] "3 arguments passed to .Internal(unlink) which requires 4"
+[1] "3 arguments passed to .Internal(unlink) which requires 4"
+[1] 0
+[1] "unimplemented type 'NULL' in 'HashTableSetup'\n"
+[1] "unimplemented type 'closure' in 'HashTableSetup'\n"
+NULL
+character(0)
+[1] "abc"
+[1] "/tmp/translations"
+[1] TRUE
+[1] "invalid 'domain' value"
+[1] "invalid 'dirname' value"
+[1] "a"
+[1] "many"
+[1] "invalid 'n' argument"
+[1] "invalid 'n' argument"
+[1] "'x' must be a list or atomic vector"
+[1] "invalid 'use.names' value"
+[1] 1 1 1
+[1] 1 2
+[1] "one"
+[1] "invalid 'n' argument"
+[1] 3 3
+[1] 1 3
+[1] 1 1 3
+[1] 124
+[1] TRUE
+[1] 0
+[1] 3
+[1] "ok"
+attr(,"status")
+[1] 124
+[1] 124
+[1] 124
+[1] 20000
+[1] 0
+[1] 0
+[1] 0
+[1] 0
+character(0)
+attr(,"status")
+[1] 124
+[1] 124
+NULL
+NULL
+NULL
+[1] "NA in coercion to boolean"
+[1] "not an environment"
+[1] "'length = 2' in coercion to 'logical(1)'"
+[1] "NA in coercion to boolean"
+[1] "not an environment"
+[1] "NA in coercion to boolean"
+[1] "not an environment"
+NULL
+[1] TRUE
+[1] "argument is not an environment"
+[1] "argument is not an environment"
+[1] TRUE
+NULL
+$a
+
+
+$b
+[1] 2
+
