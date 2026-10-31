@@ -6,6 +6,7 @@ pub mod builtins;
 pub mod coerce;
 pub mod compile;
 pub mod conditions;
+pub mod cpoly;
 pub mod deparse;
 pub mod dispatch;
 pub mod env;

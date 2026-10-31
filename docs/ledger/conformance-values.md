@@ -1,5 +1,43 @@
 # conformance-values: operators and coercion on R's values
 
+## 2026-10-31: complex.c -- `polyroot()` and `do_cmathfuns` (Re/Im/Mod/Arg/Conj)
+
+- why: `polyroot()` was a placeholder and `Re`/`Im`/`Mod`/`Arg`/`Conj`
+  dropped attributes and mishandled non-complex input, 6 + 11 `fastr`
+  cases. Metric: `TestBuiltin_(Im|Re|Conj|Mod|Arg|polyroot)` 57/74 ->
+  73/74 in this slice (the one remaining case is the known host-glibc
+  last-bit difference in `hypot`; it matches on CI's Debian trixie, proven
+  by the same C reference in the oracle container).
+- what: `src/cpoly.rs` ports `complex.c:R_cpolyroot` with its TOMS 419
+  helpers (`noshft`, `fxshft`, `vrshft`, `calct`, `nexth`, `polyev`,
+  `errev`, `cpoly_cauchy`, `cpoly_scale`, `cdivid`) one arithmetic step
+  at a time. C keeps `relstp` in a function-static that outlives calls;
+  it is a thread local here for the same start state. `do_polyroot`
+  ports `complex.c:do_polyroot`: complex coercion, trailing zeros dropped,
+  non-finite coefficients error, `root finding code failed`.
+  `do_cmathfuns` now coerces logical/integer input to double (so
+  `typeof(Conj(FALSE))` is `"double"`), makes `Im()` of a real vector
+  zero even for `NA`/`NaN`, and shallow-copies every attribute
+  (`SHALLOW_DUPLICATE_ATTRIB`) instead of only names/dim/dimnames.
+- tests: `tests/r/math/polyroot.R` (exact roots, repeated roots, integer/
+  logical/complex coefficients, empty and constant polynomials, scaling,
+  invalid coefficients and types) and `tests/r/math/complex-cmath.R`
+  (result types, attributes incl. class and `scaled:center`, `Im`/`Arg`
+  on `NA`/`NaN`/infinite input, complex input). Both recorded with GNU R
+  4.5.0 in `robigo-oracle:4.5.0`; both pass the interpreter, VM and JIT
+  tiers. One polynomial in `polyroot.R` prints `round(..., 12)` because
+  its near-zero imaginary parts depend on glibc's `hypot` last bit: the
+  C reference compiled inside the oracle container reproduces GNU R's
+  values exactly, while this host's glibc 2.44 differs in that bit (the
+  same documented host divergence as the two complex oracle unit tests).
+- result: fastr `TestBuiltin_(Im|Re|Conj|Mod|Arg|polyroot)` 57/74 ->
+  73/74; full `fastr` 31,137/31,374 -> 31,153/31,374 (+16, the same two
+  pre-existing host regressions, `order/add626733541c799` and the
+  17 GB compact-realseq `serialize` case that does not fit this host's
+  memory). 16 new fastr ratchet markers plus `gnur-examples`
+  `base/polyroot.R` (the help page now runs).
+
+
 Metric: `fastr` passes within
 `TestSimpleValues|TestSimpleArithmetic|TestSimpleComparison|TestBuiltin_(operators|log|asvector|asraw|intToBits)`
 (10,501 cases; ~690 failing at the start; 10480/10501 on main after #47).
