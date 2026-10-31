@@ -30,6 +30,13 @@
 - Result: 31,210 of 31,374 pass (+4 cases, 0 regressions). All 28/28 cases in `builtins/TestBuiltin_vector` now pass.
 - Status: PR #158 (merged).
 
+## 2026-10-31: round 2 - builtins/TestBuiltin_parentenvassign
+
+- Topic: `builtins/TestBuiltin_parentenvassign`
+- Changes: `crates/robigo-runtime/src/builtins/envir.rs`: align `do_parent_env` and `do_set_parent_env` with GNU R `do_parentenv` (`src/main/builtin.c:370-431`). Report errors using `Flow::error` without call attribution so errors from replacement assignment `` parent.env(e) <- p `` display correctly to the user. Validate NULL environment checks (`"use of NULL environment is defunct"`), emptyenv checks (`"can not set parent of the empty environment"`), and locked namespace/imports environment checks.
+- Result: 31,213 of 31,374 pass (+3 cases, 0 regressions). All 10/10 cases in `builtins/TestBuiltin_parentenvassign` now pass.
+- Status: PR #159.
+
 ## 2026-10-31: round 3 - builtins/TestBuiltin_inherits
 
 - Topic: `builtins/TestBuiltin_inherits`

@@ -261,11 +261,11 @@ fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     Ok(Value::Env(Env::new_hashed(Some(parent), size)))
 }
 
-fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     match s4_as_env(i, arg(&args, 0))? {
         Value::Env(e) => {
             if e.ptr_eq(&i.empty) {
-                return Err(Flow::error_call(call.clone(), "the empty environment has no parent"));
+                return Err(Flow::error("the empty environment has no parent"));
             }
             Ok(e.parent().map(Value::Env).unwrap_or(Value::Null))
         }
@@ -273,15 +273,38 @@ fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     }
 }
 
-fn do_set_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match (s4_as_env(i, arg(&args, 0))?, s4_as_env(i, arg(&args, 1))?) {
-        (Value::Env(e), Value::Env(p)) => {
-            e.set_parent(Some(p));
-            Ok(arg(&args, 0))
-        }
-        (Value::Env(_), _) => Err(Flow::error_call(call.clone(), "'parent' is not an environment")),
-        _ => Err(Flow::error_call(call.clone(), "argument is not an environment")),
+fn do_set_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let raw_env = arg(&args, 0);
+    if raw_env.is_null() {
+        return Err(Flow::error("use of NULL environment is defunct"));
     }
+    let env = match s4_as_env(i, raw_env)? {
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("argument is not an environment")),
+    };
+    if env.ptr_eq(&i.empty) {
+        return Err(Flow::error("can not set parent of the empty environment"));
+    }
+    if env.0.locked.get() {
+        if env.ptr_eq(&i.base_ns) || env.namespace_name().is_some() {
+            return Err(Flow::error("can not set the parent environment of a namespace"));
+        }
+        if env.parent_ref().as_ref().is_some_and(|p| p.ptr_eq(&i.base_ns))
+            && env.special_name().is_some_and(|n| n.starts_with("imports:"))
+        {
+            return Err(Flow::error("can not set the parent environment of package imports"));
+        }
+    }
+    let raw_parent = arg(&args, 1);
+    if raw_parent.is_null() {
+        return Err(Flow::error("use of NULL environment is defunct"));
+    }
+    let parent = match s4_as_env(i, raw_parent)? {
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("'parent' is not an environment")),
+    };
+    env.set_parent(Some(parent));
+    Ok(arg(&args, 0))
 }
 
 fn do_environment_name(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
