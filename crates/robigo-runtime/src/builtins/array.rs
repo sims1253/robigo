@@ -1832,11 +1832,7 @@ fn cbind(
             srcs.push(cu);
         }
     }
-    let mut result = if mode == VType::Null {
-        Value::lgls(vec![])
-    } else {
-        fill_cbind(mode, &srcs, rows, cols)
-    };
+    let mut result = if mode == VType::Null { Value::lgls(vec![]) } else { fill_cbind(mode, &srcs, rows, cols) };
     result.set_attr_raw(s::DIM, Value::ints(vec![rows as i32, cols as i32]));
     if have_cnames || have_rnames {
         let mut rn = Value::Null;
@@ -2142,11 +2138,7 @@ fn rbind(
             srcs.push(cu);
         }
     }
-    let mut result = if mode == VType::Null {
-        Value::lgls(vec![])
-    } else {
-        fill_rbind(mode, &srcs, rows, cols)
-    };
+    let mut result = if mode == VType::Null { Value::lgls(vec![]) } else { fill_rbind(mode, &srcs, rows, cols) };
     result.set_attr_raw(s::DIM, Value::ints(vec![rows as i32, cols as i32]));
     if have_rnames || have_cnames {
         let mut cn = Value::Null;
