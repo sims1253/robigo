@@ -39,6 +39,13 @@ pub struct Interp {
     pub empty: Env,
     pub frames: Vec<Context>,
     pub visible: bool,
+    /// `R_ExitContext`: the return value of the frame whose `on.exit` code
+    /// is running, `None` while no exit code runs or when the frame is
+    /// unwinding after an error (R stores `NULL`, "undefined", then).
+    /// [`Context`] keeps no slot of its own: the value is live only while
+    /// the frame's exit code runs, and nested calls read the outer frame's
+    /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
+    pub exit_value: Option<Value>,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -189,6 +196,7 @@ impl Interp {
             empty,
             frames: Vec::new(),
             visible: true,
+            exit_value: None,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -1076,6 +1084,10 @@ impl Interp {
         let mut result = r;
         if !on_exit.is_empty() {
             let env = self.frames.last().unwrap().cloenv.clone();
+            // R: context.c:endcontext makes this frame the exit context
+            // (R_ExitContext) while its on.exit code runs, with the pending
+            // return value; after an error unwind the value is undefined.
+            let saved_exit_value = std::mem::replace(&mut self.exit_value, result.as_ref().ok().cloned());
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
@@ -1088,6 +1100,7 @@ impl Interp {
                     }
                 }
             }
+            self.exit_value = saved_exit_value;
             self.visible = saved_visible;
         }
         let ctx = self.frames.pop().unwrap();
