@@ -123,6 +123,12 @@ jobs:
           # 'high', not 'max': this provider answers 'max' with 400 code
           # 1210 on some calls ("please use low, high, or max").
           llm_reasoning_effort: high
+          # Drop the action's default {"thinking": {"type": "disabled"}}:
+          # glm-5.3-flash mandates thinking (400 code 1210 otherwise) and the
+          # provider asks for a reasoning_effort level instead. An explicit
+          # reasoning_effort key here wins over llm_reasoning_effort; both
+          # say high.
+          llm_extra_body: '{"reasoning_effort": "high"}'
           stream_progress: 'true'
           background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
           # Set only for issue_comment. The action reads pull_request events.
@@ -146,6 +152,12 @@ jobs:
           # 'high', not 'max': this provider answers 'max' with 400 code
           # 1210 on some calls ("please use low, high, or max").
           llm_reasoning_effort: high
+          # Drop the action's default {"thinking": {"type": "disabled"}}:
+          # glm-5.3-flash mandates thinking (400 code 1210 otherwise) and the
+          # provider asks for a reasoning_effort level instead. An explicit
+          # reasoning_effort key here wins over llm_reasoning_effort; both
+          # say high.
+          llm_extra_body: '{"reasoning_effort": "high"}'
           stream_progress: 'true'
           background: ${{ steps.pr-context.outputs.title || github.event.pull_request.title }}
           # Set only for issue_comment. The action reads pull_request events.
