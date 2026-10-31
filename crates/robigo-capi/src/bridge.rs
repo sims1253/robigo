@@ -813,6 +813,25 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             let items = items_of(x);
             return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_from(x) }));
         }
+        PROMSXP => {
+            // A promise assembled in C (Rf_allocSExp(PROMSXP) + SET_PR*:
+            // CAR=PRVALUE, CDR=PRCODE, TAG=PRENV), rlang's env_clone of a
+            // namespace being the case that matters: its rebuilt lazy
+            // promises must force like the originals. An unforced promise
+            // with no environment cannot be represented (robigo forces it
+            // to NULL, as force_promise does for a lost environment).
+            let expr = from_sexp(x.cdr());
+            let v = x.car();
+            let p = if v != R_UnboundValue {
+                robigo_runtime::value::Promise::forced(expr, from_sexp(v))
+            } else {
+                match from_sexp(x.tag()) {
+                    Value::Env(e) => robigo_runtime::value::Promise::new(expr, e),
+                    _ => robigo_runtime::value::Promise::forced(expr, Value::Null),
+                }
+            };
+            return Value::Promise(Rc::new(p));
+        }
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
