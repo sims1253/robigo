@@ -23,6 +23,12 @@ runs:
     - if: inputs.rust == 'true'
       shell: bash
       run: |
+        # rustup refuses to run when $HOME differs from the euid's passwd home.
+        # GitHub's container exports HOME=/github/home while root's home is
+        # /root, so pin HOME to the euid's home for the whole job: rustup,
+        # cargo and the registry cache then agree on one location.
+        export HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+        echo "HOME=$HOME" >> "$GITHUB_ENV"
         curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         "$HOME/.cargo/bin/rustup" show active-toolchain || "$HOME/.cargo/bin/rustup" toolchain install
