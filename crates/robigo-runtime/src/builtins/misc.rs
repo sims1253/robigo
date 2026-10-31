@@ -37,7 +37,7 @@ pub static DEFS: &[Builtin] = &[
     internal("bitwiseShiftR", do_bitwise_shiftr, 2),
     internal("gettext", do_gettext, 3),
     internal("ngettext", do_ngettext, 4),
-    internal("bindtextdomain", do_null, 2),
+    internal("bindtextdomain", do_bindtextdomain, 2),
     internal("traceback", do_null1, 1),
     internal("debug", do_debug, 3).invisible(),
     internal("undebug", do_undebug, 1).invisible(),
@@ -536,19 +536,62 @@ fn do_bitwise_not(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 // ----------------------------------------------------------------------
 // messages (no translations: the C locale)
 
+// R: errors.c:do_gettext -- a NULL or empty `string` is returned as is.
 fn do_gettext(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let msg = arg(&args, 1);
     Ok(match msg {
-        Value::Str(_) => msg,
-        Value::Null => Value::strs(vec![]),
+        Value::Str(_) | Value::Null => msg,
         _ => return Err(Flow::error("invalid 'string' value")),
     })
 }
 
-fn do_ngettext(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let n = as_integer(&arg(&args, 0));
+// R: errors.c:bindtextdomain -- NULL and NULL report TRUE; otherwise the
+// directory argument is returned (robigo has no NLS catalogues).
+fn do_bindtextdomain(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let domain = arg(&args, 0);
+    let dir = arg(&args, 1);
+    if domain.is_null() && dir.is_null() {
+        return Ok(Value::lgl(true));
+    }
+    if !matches!(domain, Value::Str(_)) {
+        return Err(Flow::error("invalid 'domain' value"));
+    }
+    if dir.is_null() {
+        return Ok(Value::Null);
+    }
+    if !matches!(dir, Value::Str(_)) {
+        return Err(Flow::error("invalid 'dirname' value"));
+    }
+    Ok(dir)
+}
+
+/// R: coerce.c:asInteger -- only the first atomic element is converted
+/// (warnings included); anything else, lists included, is NA silently.
+fn as_integer_scalar(i: &mut Interp, v: &Value) -> RResult<i32> {
+    if !v.is_atomic() || v.is_empty() {
+        return Ok(NA_INTEGER);
+    }
+    let one = match v {
+        Value::Lgl(x) => Value::lgl_raw(x.data[0]),
+        Value::Int(x) => Value::int(x.data[0]),
+        Value::Real(x) => Value::real(x.data[0]),
+        Value::Cplx(x) => Value::cplx(x.data[0]),
+        Value::Str(x) => Value::strs(vec![x.data[0].clone()]),
+        Value::Raw(x) => Value::raws(vec![x.data[0]]),
+        _ => return Ok(NA_INTEGER),
+    };
+    let mut w = CoerceWarnings::default();
+    let n = crate::coerce::to_int(&one, &mut w).first().copied().unwrap_or(NA_INTEGER);
+    w.emit(i)?;
+    Ok(n)
+}
+
+fn do_ngettext(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: errors.c:do_ngettext -- asInteger(CAR(args)), so a complex `n`
+    // warns about its imaginary part before the range check.
+    let n = as_integer_scalar(i, &arg(&args, 0))?;
     if n == NA_INTEGER || n < 0 {
-        return Err(Flow::error("invalid 'n'"));
+        return Err(Flow::error("invalid 'n' argument"));
     }
     let (m1, m2) = (arg(&args, 1), arg(&args, 2));
     for (v, w) in [(&m1, "msg1"), (&m2, "msg2")] {
