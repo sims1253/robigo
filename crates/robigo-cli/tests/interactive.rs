@@ -77,14 +77,13 @@ fn interactive_q_last_error_skips_caller_on_exit() {
     assert!(!stdout.contains("AFTER"), "stdout:\n{stdout}");
 }
 
-#[test]
-fn interactive_is_set_before_first() {
-    let profile = std::env::temp_dir().join(format!("robigo-first-{}.Rprofile", std::process::id()));
-    std::fs::write(&profile, ".First <- function() cat(\"first\", interactive(), \"\\n\")\n").unwrap();
+fn run_profile(tag: &str, profile: &str, input: &str) -> std::process::Output {
+    let path = std::env::temp_dir().join(format!("robigo-{tag}-{}.Rprofile", std::process::id()));
+    std::fs::write(&path, profile).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_robigo"))
         .args(["--quiet", "--interactive"])
         .env("R_DEFAULT_PACKAGES", "NULL")
-        .env("R_PROFILE_USER", &profile)
+        .env("R_PROFILE_USER", &path)
         .env("LANGUAGE", "en")
         .env("LC_ALL", "C.UTF-8")
         .env("TZ", "UTC")
@@ -93,10 +92,31 @@ fn interactive_is_set_before_first() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn robigo");
-    child.stdin.take().unwrap().write_all(b"q(\"no\", 0, FALSE)\n").unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     let out = child.wait_with_output().unwrap();
-    let _ = std::fs::remove_file(&profile);
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
+#[test]
+fn interactive_is_set_before_first() {
+    let out =
+        run_profile("first", ".First <- function() cat(\"first\", interactive(), \"\\n\")\n", "q(\"no\", 0, FALSE)\n");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
     assert!(stdout.contains("first TRUE"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn interactive_startup_last_error_reaches_prompt() {
+    let out = run_profile(
+        "startup-last",
+        ".Last <- function() stop(\"last failed\")\n.First <- function() q(\"no\")\n",
+        "q(\"no\", 7, FALSE)\n",
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(stderr.contains("Error in .Last() : last failed"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("Execution halted"), "stderr:\n{stderr}");
 }

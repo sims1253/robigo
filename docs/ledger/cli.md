@@ -228,3 +228,18 @@ and status against the recorded GNU R (first differing stream):
 - `crates/robigo-cli/tests/interactive.rs` now has five cases, including
   the `on.exit` swallow regression and `.First`; all pass. cli
   conformance 17/17.
+
+### 2026-10-31 (Sol review round 3): interactive startup errors reach the REPL
+
+- S2: `real_main` called `finish(false)` whenever `startup::run` failed, so
+  an interactive `.First`/profile error printed "Execution halted" and
+  exited 1. GNU R 4.5 reports the error and reaches the prompt (PTY:
+  `.First <- function() q("no")` with an erroring `.Last` prints the
+  `.Last` error and shows `> `). Interactive startup failures now fall
+  through to the REPL; the non-interactive console keeps `finish(false)`.
+- regression: `interactive_startup_last_error_reaches_prompt` uses an
+  `R_PROFILE_USER` with `.Last <- stop(...)` and `.First <- q("no")`;
+  it exits 7 on the following `q(runLast = FALSE)` with no
+  "Execution halted". Without the fix it printed "Execution halted" and
+  exited 1. `interactive.rs` now has 6 passing cases; cli conformance
+  17/17.
