@@ -716,8 +716,13 @@ fn do_declare(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
     Ok(Value::Null)
 }
 
-fn do_return_value(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(arg(&args, 0))
+/// `returnValue(default)`: the value the frame whose exit code is running
+/// is about to return, else `default` (R: eval.c:do_returnValue).
+fn do_return_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    match &i.exit_value {
+        Some(v) => Ok(v.clone()),
+        None => Ok(arg(&args, 0)),
+    }
 }
 
 fn do_as_character_factor(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

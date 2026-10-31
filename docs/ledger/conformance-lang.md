@@ -1,5 +1,14 @@
 # conformance-lang
 
+## 2026-10-31: returnValue() reports the pending return value in exit code
+
+- why: issue #139. `do_return_value` returned its argument unconditionally, so `returnValue()` was its default inside `on.exit` and `trace(exit=)` code; GNU R reads the returned value of the frame whose exit code runs.
+- ports: `eval.c:do_returnValue` and `context.c:endcontext` such that `R_ExitContext->returnValue`. `Interp::exit_value` is the live exit context: `end_context` saves it, installs the frame's pending value (`Some` only for a successful result; `None`, R's undefined slot, when an error unwinds), runs the existing `on.exit` loop, then restores it. Nested calls from exit code keep reading the outer frame, as `R_ExitContext` does. Frames without `on.exit` still skip the block and allocate nothing.
+- metric: `tests/r/debug/returnvalue.R` (recorded with GNU R 4.5.0 in `robigo-oracle:4.5.0`) went from 7 differing stdout lines to 0, covering implicit and explicit returns, `withVisible`, nested exit code, error unwinding, top level and a `trace(exit=)` tracer. Full conformance 292/292, zero regressions; `compiled_matches_interpreted` passes (VM and VM+JIT identical); all 3 tiers match the oracle.
+- perf: callgrind instructions on closure-heavy benchmarks, before -> after: `robigo/apply` 818,634,675 -> 818,714,739 (+0.010%), `robigo/binarytrees` 1,250,734,439 -> 1,251,281,894 (+0.044%), `robigo/fib` 936,648,361 -> 937,159,852 (+0.055%); `perf.py compare` reports 0 slower at the 0.5% gate.
+- tests: `cargo test -p robigo-runtime` is 77 passed; the two failures are the documented host-only one-ULP `complex` C-library oracles. `cargo fmt --check` clean.
+- shared files: `interp.rs` (new field, `end_context`) and `builtins/misc.rs` (`do_return_value`); test, oracle and ratchet marker are new files.
+
 ## 2026-10-28: preserve EnsureLocal errors and expose compiler constants
 
 - Ports: `eval.c:EnsureLocal` now evaluates the base symbol without discarding its signaled lexical error; `eval.c:do_getconst` exposes the existing constant-buffer slice operation; `envir.c:defineVar` supplies the exact locked-environment message.
