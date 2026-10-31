@@ -500,7 +500,12 @@ fn real_main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         if !robigo_runtime::startup::run(&mut interp, cl.startup) {
-            return finish(&mut interp, false);
+            // R: a profile or .First error in an interactive session is
+            // reported and the session still reaches the REPL; only the
+            // non-interactive console halts.
+            if !interp.interactive {
+                return finish(&mut interp, false);
+            }
         }
     }
 
