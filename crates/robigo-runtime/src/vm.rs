@@ -50,7 +50,7 @@ pub enum RVal {
 }
 
 impl RVal {
-    fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> Value {
         match self {
             RVal::V(v) => v,
             RVal::D(x) => Value::real(x),
@@ -61,7 +61,7 @@ impl RVal {
         }
     }
 
-    fn to_value(&self) -> Value {
+    pub(crate) fn to_value(&self) -> Value {
         self.clone().into_value()
     }
 }
@@ -415,12 +415,21 @@ fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
     }
 }
 
-fn unbox(v: Value) -> RVal {
+pub(crate) fn unbox(v: Value) -> RVal {
     match &v {
         Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
         Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
         Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
         _ => RVal::V(v),
+    }
+}
+
+pub(crate) fn unbox_ref(v: &Value) -> RVal {
+    match v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
+        _ => RVal::V(v.clone()),
     }
 }
 
@@ -2479,17 +2488,16 @@ pub(crate) fn inlinable(clo: &Closure) -> bool {
     enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
 
-/// Call an inlinable closure (see [`inlinable`]) with argument values,
-/// without the call machinery; `None` where its body gives up (then make
-/// the real call).
-pub(crate) fn call_inline(interp: &mut Interp, clo: &Closure, args: &[Value]) -> Option<Value> {
+/// Call an inlinable closure with pre-unboxed or fast `RVal` argument values,
+/// returning the unboxed `RVal` result directly.
+pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]) -> Option<RVal> {
     let info = clo.inline.get()?.as_ref()?;
     if args.len() != info.formal_slots.len() || clo.jit.unsettled() {
         return None;
     }
-    let v = run_inline_with(interp, info, &clo.env, |_, k| Some(unbox(args[k].clone())))?;
+    let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()))?;
     interp.visible = true;
-    Some(v.into_value())
+    Some(v)
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run

@@ -79,7 +79,7 @@ fn check_arity_internal(args: &[Arg], n: usize, name: &str) -> RResult<()> {
 /// A closure and pre-evaluated arguments that can be executed inline per element.
 struct FastClosure {
     clo: Rc<Closure>,
-    args: Vec<Value>,
+    args: Vec<crate::vm::RVal>,
     x_slot: usize,
 }
 
@@ -137,7 +137,7 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
                 return Ok(None);
             }
             x_slot = Some(idx);
-            args.push(Value::Null);
+            args.push(crate::vm::RVal::V(Value::Null));
         } else {
             let val = match actual {
                 Value::Promise(p) => i.force_promise(&p)?,
@@ -146,21 +146,22 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
             if val.is_missing_arg() {
                 return Ok(None);
             }
-            args.push(val);
+            args.push(crate::vm::unbox(val));
         }
     }
     let Some(x_slot) = x_slot else { return Ok(None) };
     Ok(Some(FastApply::Multi(FastClosure { clo: c, args, x_slot })))
 }
 
-/// `xx[[k + 1]]` of a plain vector or list (see [`inline_fun`]).
-fn element2(xx: &Value, k: usize) -> Value {
+/// `xx[[k + 1]]` of a plain vector or list as an `RVal` (see [`inline_fun`]).
+#[inline]
+fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
     match xx {
-        Value::Real(v) => Value::real(v.data[k]),
-        Value::Int(v) => Value::int(v.data[k]),
-        Value::Lgl(v) => Value::lgl_raw(v.data[k]),
-        Value::Str(v) => Value::strs(vec![v.data[k].clone()]),
-        Value::List(v) => v.data[k].clone(),
+        Value::Real(v) => crate::vm::RVal::D(v.data[k]),
+        Value::Int(v) => crate::vm::RVal::I(v.data[k]),
+        Value::Lgl(v) => crate::vm::RVal::L(v.data[k]),
+        Value::Str(v) => crate::vm::RVal::V(Value::strs(vec![v.data[k].clone()])),
+        Value::List(v) => crate::vm::unbox_ref(&v.data[k]),
         _ => unreachable!(),
     }
 }
@@ -178,14 +179,15 @@ fn call_fun(
 ) -> RResult<Value> {
     match fast {
         Some(FastApply::One(c)) => {
-            if let Some(v) = crate::vm::call_inline(i, c, &[element2(xx, k)]) {
-                return Ok(v);
+            let rk = element_rval(xx, k);
+            if let Some(v) = crate::vm::call_inline_rval(i, c, &[rk]) {
+                return Ok(v.into_value());
             }
         }
         Some(FastApply::Multi(fc)) => {
-            fc.args[fc.x_slot] = element2(xx, k);
-            if let Some(v) = crate::vm::call_inline(i, &fc.clo, &fc.args) {
-                return Ok(v);
+            fc.args[fc.x_slot] = element_rval(xx, k);
+            if let Some(v) = crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
+                return Ok(v.into_value());
             }
         }
         None => {}
@@ -215,8 +217,9 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     match fast {
         Some(FastApply::One(c)) => {
             for k in 0..n {
-                if let Some(v) = crate::vm::call_inline(i, &c, &[element2(&xx, k)]) {
-                    out.push(v);
+                let rk = element_rval(&xx, k);
+                if let Some(v) = crate::vm::call_inline_rval(i, &c, &[rk]) {
+                    out.push(v.into_value());
                 } else {
                     rho.set_local(isym, Value::int(k as i32 + 1));
                     out.push(force_and_call(i, &fcall, 1, rho)?);
@@ -225,9 +228,9 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         }
         Some(FastApply::Multi(mut fc)) => {
             for k in 0..n {
-                fc.args[fc.x_slot] = element2(&xx, k);
-                if let Some(v) = crate::vm::call_inline(i, &fc.clo, &fc.args) {
-                    out.push(v);
+                fc.args[fc.x_slot] = element_rval(&xx, k);
+                if let Some(v) = crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
+                    out.push(v.into_value());
                 } else {
                     rho.set_local(isym, Value::int(k as i32 + 1));
                     out.push(force_and_call(i, &fcall, 1, rho)?);
@@ -296,7 +299,103 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let isym = Sym::new("i");
     let mut parts: Vec<Value> = Vec::with_capacity(n);
     let mut fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
-    for k in 0..n {
+
+    if common_len == 1 && !array_value {
+        match fast {
+            Some(FastApply::One(ref c)) => {
+                if common_type == VType::Real {
+                    let mut out_data = Vec::with_capacity(n);
+                    for k in 0..n {
+                        let rk = element_rval(&xx, k);
+                        match crate::vm::call_inline_rval(i, c, &[rk]) {
+                            Some(crate::vm::RVal::D(d)) => out_data.push(d),
+                            Some(crate::vm::RVal::I(v)) => out_data.push(v as f64),
+                            Some(crate::vm::RVal::L(l)) if l != NA_LOGICAL => out_data.push(l as f64),
+                            _ => break,
+                        }
+                    }
+                    if out_data.len() == n {
+                        let mut ans = Value::reals(out_data);
+                        if use_names && !names.is_null() {
+                            ans = set_attrib(ans, s::NAMES, names)?;
+                        }
+                        return Ok(ans);
+                    }
+                    for v in out_data {
+                        parts.push(Value::real(v));
+                    }
+                } else if common_type == VType::Int {
+                    let mut out_data = Vec::with_capacity(n);
+                    for k in 0..n {
+                        let rk = element_rval(&xx, k);
+                        match crate::vm::call_inline_rval(i, c, &[rk]) {
+                            Some(crate::vm::RVal::I(v)) => out_data.push(v),
+                            Some(crate::vm::RVal::L(l)) => out_data.push(l),
+                            _ => break,
+                        }
+                    }
+                    if out_data.len() == n {
+                        let mut ans = Value::ints(out_data);
+                        if use_names && !names.is_null() {
+                            ans = set_attrib(ans, s::NAMES, names)?;
+                        }
+                        return Ok(ans);
+                    }
+                    for v in out_data {
+                        parts.push(Value::int(v));
+                    }
+                }
+            }
+            Some(FastApply::Multi(ref mut fc)) => {
+                if common_type == VType::Real {
+                    let mut out_data = Vec::with_capacity(n);
+                    for k in 0..n {
+                        fc.args[fc.x_slot] = element_rval(&xx, k);
+                        match crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
+                            Some(crate::vm::RVal::D(d)) => out_data.push(d),
+                            Some(crate::vm::RVal::I(v)) => out_data.push(v as f64),
+                            Some(crate::vm::RVal::L(l)) if l != NA_LOGICAL => out_data.push(l as f64),
+                            _ => break,
+                        }
+                    }
+                    if out_data.len() == n {
+                        let mut ans = Value::reals(out_data);
+                        if use_names && !names.is_null() {
+                            ans = set_attrib(ans, s::NAMES, names)?;
+                        }
+                        return Ok(ans);
+                    }
+                    for v in out_data {
+                        parts.push(Value::real(v));
+                    }
+                } else if common_type == VType::Int {
+                    let mut out_data = Vec::with_capacity(n);
+                    for k in 0..n {
+                        fc.args[fc.x_slot] = element_rval(&xx, k);
+                        match crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
+                            Some(crate::vm::RVal::I(v)) => out_data.push(v),
+                            Some(crate::vm::RVal::L(l)) => out_data.push(l),
+                            _ => break,
+                        }
+                    }
+                    if out_data.len() == n {
+                        let mut ans = Value::ints(out_data);
+                        if use_names && !names.is_null() {
+                            ans = set_attrib(ans, s::NAMES, names)?;
+                        }
+                        return Ok(ans);
+                    }
+                    for v in out_data {
+                        parts.push(Value::int(v));
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    let start_k = parts.len();
+    for k in start_k..n {
         let mut val = call_fun(i, &mut fast, &xx, k, &fcall, isym, rho)?;
         if val.len() != common_len {
             return Err(Flow::error(format!(
