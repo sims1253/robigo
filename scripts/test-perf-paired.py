@@ -51,26 +51,42 @@ class PairedGate(unittest.TestCase):
         baseline, candidate = self.run_pair(130)
         self.assertGreater(100 * (candidate / baseline - 1), 0.5)
 
-    def test_stored_cache_win_cannot_hide_slowdown(self):
-        # Candidate's cached count looks faster than the historical base.
-        # Cache-OFF measurements must still expose the actual slowdown.
+    def test_unflagged_cases_keep_direct_comparison(self):
         base = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}}}}
         new = {'results': {'case': {'robigo': {'instr': 90, 'status': 0}}}}
-        def measure(program, side, repeat):
-            return {'instr': {'base': 120, 'candidate': 130, 'gnur': 200}[side],
-                    'out': 'correct', 'status': 0}
+        def measure(*args):
+            self.fail('unflagged cases must not be measured')
         b, n = paired.confirm(base, new, {'case': 'case'}, measure, 0.5)
-        self.assertGreater(n['results']['case']['robigo']['instr'],
-                           b['results']['case']['robigo']['instr'] * 1.005)
+        self.assertEqual(n['results']['case']['robigo']['instr'], 90)
+        self.assertEqual(b['results']['case']['robigo']['instr'], 100)
+
+    def test_unflagged_suite_skips_paired_measurement(self):
+        base = {'results': {
+            'clean': {'robigo': {'instr': 100, 'status': 0}},
+            'faster': {'robigo': {'instr': 100, 'status': 0}},
+            'tolerated': {'robigo': {'instr': 1000, 'status': 0}},
+        }}
+        new = {'results': {
+            'clean': {'robigo': {'instr': 100, 'status': 0}},
+            'faster': {'robigo': {'instr': 90, 'status': 0}},
+            'tolerated': {'robigo': {'instr': 1005, 'status': 0}},  # exactly +0.5%
+        }}
+        def measure(*args):
+            self.fail('unflagged cases must not be measured')
+        b, n = paired.confirm(base, new, {}, measure, 0.5)
+        self.assertEqual(self.verdict(b, n), 0)
+        self.assertIn('3 benchmark(s) unflagged; keeping direct comparison', self.output.getvalue())
+        self.assertEqual(n['results']['faster']['robigo']['instr'], 90)
 
     def oracle_failure(self, count=120, output='correct'):
-        doc = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}}}}
+        base = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}}}}
+        new = {'results': {'case': {'robigo': {'instr': 130, 'status': 0}}}}
         def measure(program, side, repeat):
             if side == 'gnur':
                 return {'instr': 200, 'status': 1, 'out': ''}
             return {'instr': count if side == 'candidate' else 120, 'status': 0,
                     'out': output if side == 'candidate' else 'correct'}
-        return paired.confirm(doc, doc, {'case': 'case'}, measure, 0.5)
+        return paired.confirm(base, new, {'case': 'case'}, measure, 0.5)
 
     def test_failed_oracle_warns_and_clean_robigo_passes(self):
         b, n = self.oracle_failure()
@@ -127,11 +143,31 @@ class PairedGate(unittest.TestCase):
             self.assertIn('ratio unavailable', row['oracle_warning'])
 
     def test_failed_candidate_measurement_fails(self):
-        doc = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}}}}
+        base = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}}}}
+        new = {'results': {'case': {'robigo': {'instr': 100, 'status': 1}}}}
         def measure(program, side, repeat):
             return {'instr': 100, 'out': 'correct', 'status': 1 if side == 'candidate' else 0}
         with self.assertRaisesRegex(RuntimeError, 'candidate measurement failed'):
-            paired.confirm(doc, doc, {'case': 'case'}, measure, 0.5)
+            paired.confirm(base, new, {'case': 'case'}, measure, 0.5)
+
+    def test_flagged_wrong_output_is_paired_and_fails(self):
+        base = {'results': {'case': {'robigo': {'instr': 100, 'status': 0},
+                                     'gnur': {'out': 'expected\n', 'status': 0}}}}
+        new = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}, 'wrong': True}}}
+        def measure(program, side, repeat):
+            return {'instr': 100, 'out': 'wrong\n' if side == 'candidate' else 'expected\n', 'status': 0}
+        with self.assertRaisesRegex(RuntimeError, 'candidate output differs from GNU R'):
+            paired.confirm(base, new, {'case': 'case'}, measure, 0.5)
+
+    def test_flagged_wrong_output_recovers_if_clean_in_paired_runs(self):
+        base = {'results': {'case': {'robigo': {'instr': 100, 'status': 0},
+                                     'gnur': {'out': 'expected\n', 'status': 0}}}}
+        new = {'results': {'case': {'robigo': {'instr': 100, 'status': 0}, 'wrong': True}}}
+        def measure(program, side, repeat):
+            return {'instr': 100, 'out': 'expected\n', 'status': 0}
+        b, n = paired.confirm(base, new, {'case': 'case'}, measure, 0.5)
+        self.assertFalse(n['results']['case'].get('wrong', False))
+        self.assertEqual(self.verdict(b, n), 0)
 
     def test_cache_feature_cannot_credit_candidate(self):
         self.cache_feature(oracle_status=0)
@@ -139,9 +175,30 @@ class PairedGate(unittest.TestCase):
     def test_diagnostic_oracle_failure_does_not_abort_comparison(self):
         self.cache_feature(oracle_status=1)
 
+    def test_diagnostic_only_mode(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            root = Path(tmp)
+            binary = root / 'robigo'
+            binary.write_text('fake binary')
+            rdbflat = root / 'rdbflat'
+            rdbflat.mkdir()
+            calls = []
+            def measure(program, runtime, executable, *args, **kwargs):
+                cached = 'ROBIGO_RDBFLAT' in os.environ
+                calls.append((runtime, cached))
+                return {'instr': 80 if cached else 100, 'out': 'correct', 'status': 0}
+            argv = ['paired', '--diagnostic-only', '--robigo', str(binary),
+                    '--rdbflat', str(rdbflat), '--profiles', str(root / 'profiles')]
+            with patch('sys.argv', argv), patch.object(paired.perf, 'programs',
+                    return_value=[('suite/nbody_2', '', '', '')]), patch.object(
+                    paired.perf, 'run_one', side_effect=measure):
+                self.assertEqual(paired.main(), 0)
+            self.assertIn('rdbflat diagnostic ONLY (excluded from gate)', self.output.getvalue())
+            self.assertIn('candidate saves 20 instructions', self.output.getvalue())
+
     def cache_feature(self, oracle_status):
         # Simulate an old binary that ignores the cache, and a candidate
-        # whose cached run is faster despite a 10% cache-OFF regression.
+        # whose candidate run has a 10% regression under cache OFF.
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
             root = Path(tmp)
             artifact = root / 'artifact'
@@ -150,9 +207,10 @@ class PairedGate(unittest.TestCase):
             binary.write_text('fake binary')
             (root / 'rdbflat').mkdir()  # Would be discovered without isolation.
             os.environ['ROBIGO_RDBFLAT'] = str(root / 'rdbflat')
-            doc = {'results': {'suite/nbody_2': {'robigo': {'instr': 100}}}}
-            for side in ['base', 'new']:
-                (root / side).write_text(json.dumps(doc))
+            doc_base = {'results': {'suite/nbody_2': {'robigo': {'instr': 100}}}}
+            doc_new = {'results': {'suite/nbody_2': {'robigo': {'instr': 110}}}}
+            (root / 'base').write_text(json.dumps(doc_base))
+            (root / 'new').write_text(json.dumps(doc_new))
             calls = []
             def measure(program, runtime, executable, *args, **kwargs):
                 cached = 'ROBIGO_RDBFLAT' in os.environ

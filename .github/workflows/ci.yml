@@ -216,7 +216,7 @@ jobs:
       - name: Measure robigo (and GNU R on main)
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
-          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
+          export ROBIGO_RDBFLAT=""
           export VALGRIND=valgrind
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             python3 scripts/perf.py run --metric instr --runtime both --robigo dist/robigo \
@@ -232,12 +232,17 @@ jobs:
             python3 scripts/perf.py run --metric instr --runtime "$runtime" $oracle_flag --robigo dist/robigo \
               --jobs "$(nproc)" --out perf.json --quiet
           fi
+      - name: Diagnostic: rdbflat win
+        if: github.ref == 'refs/heads/main'
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          export VALGRIND=valgrind
+          python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
         if: github.ref != 'refs/heads/main'
         run: |
-          # Rechecks must use the same cache and natives as the first run.
           export ROBIGO_NATIVES="$PWD/dist/natives"
-          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
+          export ROBIGO_RDBFLAT=""
           if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
@@ -252,12 +257,13 @@ jobs:
               json.dump(n, open("perf.json", "w"), indent=1, sort_keys=True)
           PY
           python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-          # Compare every successful case with both exact executables and the
+          # Compare flagged regressions with both exact executables and the
           # cache disabled. Cache wins are diagnostic only. Preserve original
           # measurements and profiles; the 0.5% threshold is unchanged.
           python3 scripts/test-perf-paired.py
           python3 scripts/perf-paired.py base/perf.json perf.json \
-            --base-robigo base/binary/robigo --robigo dist/robigo | tee -a "$GITHUB_STEP_SUMMARY"
+            --base-robigo base/binary/robigo --robigo dist/robigo \
+            --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
         run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
