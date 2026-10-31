@@ -23,9 +23,14 @@ thread_local! {
 }
 
 /// This thread's isolate, or null.
+///
+/// Runtime values held in other thread-locals can be dropped while this
+/// one is already destroyed (process exit runs the destructors in reverse
+/// registration order). A destructor that reaches here must see "no
+/// isolate", not abort the process on a TLS access error.
 #[inline(always)]
 pub fn isolate() -> *mut State {
-    ISOLATE.with(|c| c.get())
+    ISOLATE.try_with(|c| c.get()).unwrap_or(std::ptr::null_mut())
 }
 
 #[inline(always)]

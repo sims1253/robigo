@@ -637,19 +637,25 @@ fn line_profile(report: &pprof::Report) -> String {
 }
 
 fn finish(interp: &mut Interp, ok: bool) -> ExitCode {
-    // R: unix/sys-std.c:R_CleanUp -- R_RunExitFinalizers runs on every exit
-    // path after .Last, including the "Execution halted" error exit.
+    // R: unix/sys-std.c:Rstd_CleanUp -- .Last runs on a normal exit, then
+    // R_RunExitFinalizers runs on every exit path. The top-level handler
+    // prints "Execution halted" before the finalizers, including when
+    // .Last itself fails.
+    let mut ok = ok;
+    if ok {
+        ok = interp.run_dot_last();
+    }
+    if !ok {
+        interp.write_err("Execution halted\n");
+    }
     if let Some(bridge) = robigo_runtime::native::bridge() {
         bridge.run_exit_finalizers(interp);
     }
+    // R: unix/sys-std.c:Rstd_CleanUp -- PrintWarnings after the finalizers
+    // (device close and, if run, .Last).
+    interp.print_warnings();
     interp.flush();
-    if ok {
-        ExitCode::SUCCESS
-    } else {
-        interp.write_err("Execution halted\n");
-        interp.flush();
-        ExitCode::FAILURE
-    }
+    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
 fn repl(interp: &mut Interp) -> ExitCode {

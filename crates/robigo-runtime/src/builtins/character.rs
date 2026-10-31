@@ -367,15 +367,33 @@ fn do_substr(_: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     };
     let mut out = Vec::with_capacity(xv.data.len());
     if !xv.data.is_empty() {
-        let (Some(sa), Some(so)) = (int_data(&args[1].value), int_data(&args[2].value)) else {
+        let Some(sa) = int_data(&args[1].value) else {
             return Err(Flow::error("invalid substring arguments"));
         };
-        if sa.is_empty() || so.is_empty() {
+        if sa.is_empty() {
             return Err(Flow::error("invalid substring arguments"));
         }
+        // R 4.6's base `substring` passes NULL when `last` is omitted (its
+        // default changed from 1000000L); NULL means "to the end". robigo
+        // runs the installed base code, so accept it (4.5 never passes it).
+        let so = match &args[2].value {
+            Value::Null => None,
+            v => {
+                let Some(so) = int_data(v) else {
+                    return Err(Flow::error("invalid substring arguments"));
+                };
+                if so.is_empty() {
+                    return Err(Flow::error("invalid substring arguments"));
+                }
+                Some(so)
+            }
+        };
         for (i, el) in xv.data.iter().enumerate() {
             let mut start = sa[i % sa.len()];
-            let stop = so[i % so.len()];
+            let stop = match &so {
+                Some(so) => so[i % so.len()],
+                None => i32::MAX,
+            };
             let Some(el) = el else {
                 out.push(None);
                 continue;
@@ -417,12 +435,26 @@ fn do_substrgets(_: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &Env) -> 
     let len = xv.data.len();
     let mut out = Vec::with_capacity(len);
     if len > 0 {
-        let (Some(sa), Some(so)) = (int_data(&args[1].value), int_data(&args[2].value)) else {
+        let Some(sa) = int_data(&args[1].value) else {
             return Err(Flow::error("invalid substring arguments"));
         };
-        if sa.is_empty() || so.is_empty() {
+        if sa.is_empty() {
             return Err(Flow::error("invalid substring arguments"));
         }
+        // As do_substr: R 4.6's `substring<-` default `last = NULL` means
+        // "to the end" (4.5's default was 1000000L).
+        let so = match &args[2].value {
+            Value::Null => None,
+            v => {
+                let Some(so) = int_data(v) else {
+                    return Err(Flow::error("invalid substring arguments"));
+                };
+                if so.is_empty() {
+                    return Err(Flow::error("invalid substring arguments"));
+                }
+                Some(so)
+            }
+        };
         let value = match &args[3].value {
             Value::Str(v) if !v.data.is_empty() => v.data.clone(),
             _ => return Err(Flow::error("invalid value")),
@@ -431,7 +463,10 @@ fn do_substrgets(_: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &Env) -> 
             let el = &xv.data[i];
             let v_el = &value[i % value.len()];
             let mut start = sa[i % sa.len()];
-            let mut stop = so[i % so.len()];
+            let mut stop = match &so {
+                Some(so) => so[i % so.len()],
+                None => i32::MAX,
+            };
             let (Some(el), Some(v_el)) = (el, v_el) else {
                 out.push(None);
                 continue;
@@ -1776,5 +1811,45 @@ mod tests {
     fn abbrev() {
         assert_eq!(stripchars("International", 4, true, false), "Intr");
         assert_eq!(stripchars("New Zealand", 4, true, false), "NwZl");
+    }
+
+    // R 4.6's base `substring`/`substring<-` pass NULL for an omitted
+    // `last` (the default changed from 1000000L); robigo runs the
+    // installed base code, so `substr` must read NULL as "to the end".
+    #[test]
+    fn substr_null_stop_is_to_the_end() {
+        let mut i = Interp::new();
+        let env = i.global.clone();
+        let call = Value::Null;
+        let v = do_substr(
+            &mut i,
+            &call,
+            vec![Arg::pos(Value::str("abcdef")), Arg::pos(Value::int(2)), Arg::pos(Value::Null)],
+            &env,
+        )
+        .unwrap_or_else(|_| panic!("substr failed"));
+        let Value::Str(s) = &v else { panic!("substr did not return a string") };
+        assert_eq!(s.data[0].as_deref(), Some("bcdef"));
+    }
+
+    #[test]
+    fn substrgets_null_stop_is_to_the_end() {
+        let mut i = Interp::new();
+        let env = i.global.clone();
+        let call = Value::Null;
+        let v = do_substrgets(
+            &mut i,
+            &call,
+            vec![
+                Arg::pos(Value::str("abcdef")),
+                Arg::pos(Value::int(2)),
+                Arg::pos(Value::Null),
+                Arg::pos(Value::str("XY")),
+            ],
+            &env,
+        )
+        .unwrap_or_else(|_| panic!("substrgets failed"));
+        let Value::Str(s) = &v else { panic!("substrgets did not return a string") };
+        assert_eq!(s.data[0].as_deref(), Some("aXYdef"));
     }
 }

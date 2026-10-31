@@ -126,3 +126,41 @@ and status against the recorded GNU R (first differing stream):
   bytes — no panics, transcripts differ).
 
 
+
+## 2026-10-31: shutdown order and TLS destruction (issue #145)
+
+- why: `library(mirai)` printed a spurious `getClasses`/`substring` error at
+  exit, and `library(mirai); m <- mirai(1+1)` aborted with
+  `cannot access a Thread Local Storage value during or after destruction`.
+- actual causes (verified against the R 4.5.0 sources and GNU R):
+  1. robigo runs the installed GNU R's base library; this machine has R
+     4.6.1, whose `substring`/`substring<-` pass `NULL` for an omitted
+     `last` (4.5 used `1000000L`). `character.c:do_substr` rejected the
+     `NULL` stop, so loading `cli` (mirai's `.onLoad` dependency) failed.
+     `cli`'s `.onLoad` has already registered an exit finalizer; the failed
+     load left it queued, and at exit it re-reported the failure.
+  2. Rust destroys thread-locals in reverse registration order. The C API
+     bridge's `PROXIED`/`STORED`/`SEEN` caches hold runtime values whose
+     `Drop` touched `WRAPPED`, the isolate (`ISOLATE`) or the search epoch
+     (`SEARCH_EPOCH`); at process exit those were already destroyed, and
+     std aborts on a TLS `AccessError` in a destructor.
+  3. `Rstd_CleanUp` runs `.Last`, then `R_RunExitFinalizers`, then
+     `PrintWarnings`; robigo skipped `.Last`, printed "Execution halted"
+     after the finalizers, and dropped warnings raised by either.
+- what: `substr`/`substr<-` read a `NULL` stop as "to the end" (matching
+  R 4.6's base code); the bridge's destructors use `try_with` (`CoreRef`,
+  `isolate`, `Frame::drop`'s epoch bump, the finalizer-runner guard);
+  `Interp::run_dot_last` ports `R_dot_Last`; `finish` and `do_quit` run
+  `.Last` (honouring `runLast`), report "Execution halted" before the
+  finalizers, and print warnings afterwards.
+- oracle: `Rscript --vanilla` shows `.Last` -> finalizers -> warnings;
+  an error in `.Last` is reported, finalizers still run, status 1; a
+  script error skips `.Last` but runs the finalizers; `q("no", 3, FALSE)`
+  skips `.Last` and exits 3.
+- result: `library(mirai); cat("ok\n")` exits 0 with no extra error;
+  `mirai(1+1)` no longer aborts (it still exits 1 on nanonext's separate
+  `use of NULL environment is defunct` native-call failure). Six new
+  `tests/r/cli/exit-*.R` / `unload-methods.R` scripts and
+  `tests/r/strings/substring-default-last.R` pass; strings 25/25 and cli
+  17/17 conformance. `cargo test -p robigo-capi --lib` covers the TLS
+  destructor with a subprocess (it aborts without the fix).
