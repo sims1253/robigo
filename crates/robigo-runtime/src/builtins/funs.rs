@@ -17,10 +17,16 @@ pub static DEFS: &[Builtin] = &[
     internal("bodyCode", do_body_code, 1),
 ];
 
-fn do_formals(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+// R: builtin.c:do_formals -- a non-function warns, as body() does.
+fn do_formals(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(match arg(&args, 0) {
         Value::Closure(c) => Value::pairlist(c.formals.to_vec()),
-        _ => Value::Null,
+        v => {
+            if !v.is_function() {
+                i.warningcall(call, "argument is not a function")?;
+            }
+            Value::Null
+        }
     })
 }
 

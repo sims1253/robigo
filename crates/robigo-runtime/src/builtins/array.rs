@@ -1450,13 +1450,14 @@ fn do_backsolve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 /// R: appl/maxcol.c:R_max_col
-fn do_maxcol(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_maxcol(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let m = arg(&args, 0);
     let method = as_integer(&arg(&args, 1));
     let (nr, nc) = (nrows(&m), ncols(&m));
     let mat = reals_of(&m);
     let mut maxes = Vec::with_capacity(nr);
     let do_rand = method == 1;
+    let mut used_random = false;
     for r in 0..nr {
         let mut large: f64 = 0.0;
         let mut isna = true;
@@ -1483,15 +1484,23 @@ fn do_maxcol(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         let mut a = mat[r];
         if do_rand {
             let tol = 1e-5 * large;
+            let mut ntie = 1;
             for c in 1..nc {
                 let b = mat[r + c * nr];
                 if b > a + tol {
                     a = b;
                     m_ = c;
+                    ntie = 1;
                 } else if b >= a - tol {
-                    return Err(Flow::error(
-                        "robigo: max.col(ties.method = \"random\") with tied values needs the random number generator, which is not implemented yet",
-                    ));
+                    ntie += 1;
+                    if !used_random {
+                        crate::builtins::random::get_rng_state(i)?;
+                        used_random = true;
+                    }
+                    // Reservoir sampling, as R: `ntie * unif_rand() < 1`.
+                    if ntie as f64 * i.rng.unif_rand() < 1.0 {
+                        m_ = c;
+                    }
                 }
             }
         } else if method == 2 {
@@ -1514,6 +1523,9 @@ fn do_maxcol(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
             return Err(Flow::error("invalid 'ties_meth' {should not happen}"));
         }
         maxes.push(m_ as i32 + 1);
+    }
+    if used_random {
+        crate::builtins::random::put_rng_state(i)?;
     }
     Ok(Value::ints(maxes))
 }
