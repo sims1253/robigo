@@ -120,7 +120,31 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                     return None;
                 }
                 return match &b.value {
-                    Value::Promise(q) => q.value.borrow().clone(),
+                    Value::Promise(q) => {
+                        let is_unforced = match &*q.value.borrow() {
+                            crate::value::PromiseVal::Boxed(v) => return Some(v.clone()),
+                            crate::value::PromiseVal::ScalarInt(i) => return Some(Value::int(*i)),
+                            crate::value::PromiseVal::ScalarReal(d) => return Some(Value::real(*d)),
+                            crate::value::PromiseVal::ScalarLgl(l) => return Some(Value::lgl_raw(*l)),
+                            crate::value::PromiseVal::Unforced => true,
+                        };
+                        if is_unforced && q.code.is_none() && !q.forcing.get() {
+                            if let Value::Sym(next_sym) = q.expr {
+                                let next_env = q.env.borrow().clone();
+                                if let Some(next_env) = next_env {
+                                    q.forcing.set(true);
+                                    let res = plain_value(&next_env, next_sym);
+                                    q.forcing.set(false);
+                                    if let Some(ref v) = res {
+                                        q.set_value(v.clone());
+                                        *q.env.borrow_mut() = None;
+                                    }
+                                    return res;
+                                }
+                            }
+                        }
+                        None
+                    }
                     v if v.is_missing_arg() => None,
                     v => Some(v.clone()),
                 };
@@ -357,8 +381,12 @@ impl Interp {
     }
 
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
-        if let Some(v) = p.value() {
-            return Ok(v);
+        match &*p.value.borrow() {
+            crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
+            crate::value::PromiseVal::ScalarInt(i) => return Ok(Value::int(*i)),
+            crate::value::PromiseVal::ScalarReal(d) => return Ok(Value::real(*d)),
+            crate::value::PromiseVal::ScalarLgl(l) => return Ok(Value::lgl_raw(*l)),
+            crate::value::PromiseVal::Unforced => {}
         }
         if p.forcing.get() {
             return Err(Flow::error(
@@ -370,7 +398,7 @@ impl Interp {
         // A variable with a plain value: read it (no R code runs).
         if let (Value::Sym(sym), None) = (&p.expr, &p.code) {
             if let Some(v) = plain_value(&env, *sym) {
-                *p.value.borrow_mut() = Some(v.clone());
+                p.set_value(v.clone());
                 *p.env.borrow_mut() = None;
                 self.visible = true;
                 return Ok(v);
@@ -390,7 +418,7 @@ impl Interp {
         };
         p.forcing.set(false);
         let v = r?;
-        *p.value.borrow_mut() = Some(v.clone());
+        p.set_value(v.clone());
         *p.env.borrow_mut() = None;
         Ok(v)
     }
@@ -448,7 +476,7 @@ impl Interp {
     /// consult a cache of search-path lookups valid for the current
     /// [`crate::env::search_epoch`]. Returns `None` when the slow path is
     /// needed (promises or active bindings on the way).
-    fn find_fun_cached(&mut self, sym: Sym, env: &Env) -> Option<Value> {
+    pub(crate) fn find_fun_cached(&mut self, sym: Sym, env: &Env) -> Option<Value> {
         let mut cur = env.clone();
         loop {
             if cur.is_search() {
@@ -500,7 +528,10 @@ impl Interp {
                     // a forced promise (lazily loaded base) is its value,
                     // as findFun takes PRVALUE
                     Value::Promise(p) => {
-                        let f = p.value.borrow().clone();
+                        let f = match &*p.value.borrow() {
+                            crate::value::PromiseVal::Boxed(v) => Some(v.clone()),
+                            _ => None,
+                        };
                         return match f {
                             Some(f @ (Value::Closure(_) | Value::Builtin(_))) => {
                                 self.fun_cache.insert(key, f.clone());
@@ -524,7 +555,10 @@ impl Interp {
             Some(v) => match self.base.0.frame().borrow().get(sym) {
                 // a lazily loaded base binding is a (forced) promise
                 Some(b) => match &b.value {
-                    Value::Promise(p) => p.value.borrow().as_ref().is_some_and(|f| f.ptr_eq(&v)),
+                    Value::Promise(p) => match &*p.value.borrow() {
+                        crate::value::PromiseVal::Boxed(f) => f.ptr_eq(&v),
+                        _ => false,
+                    },
                     f => f.ptr_eq(&v),
                 },
                 None => false,

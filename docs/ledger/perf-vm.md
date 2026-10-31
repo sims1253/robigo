@@ -6,6 +6,25 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-10-30: round 13, unboxed scalar promises and gate recovery
+
+- Base: main ff759036 (PR #130 parent). Re-measured 84-program baseline table on main: geomean **0.486x over 73 correct programs, faster on 73**. Saved as `.robigo/robigo-base`.
+- Gate Red Attribution:
+  - Broad CI gate regressions (+0.55% to +1.01% on 12 call-heavy benchmarks including `s4-portfolio`, `s4-new`, `mandelbrot`, `queens`, `spectralnorm`, `apply`, etc.) were analyzed and attributed:
+  - Wrapper expansion to 46 stats internals provided zero speedup over parent commit `ff759036` on any benchmark while increasing compilation and lookup overhead. Reverted `SIMPLE_INTERNALS` back to the 20 base internals.
+  - In `Promise` representation, `PromiseVal` enum lookup overhead was eliminated:
+    - Optimized `force_promise` to use shared `borrow()` instead of `borrow_mut()` when reading forced/scalar values.
+    - Added unboxed scalar handling in `plain_value`, avoiding fallback to full AST eval and `r_epoch` bumping for variable promises bound to scalars.
+    - Traversed unforced variable-forwarding symbol promises in `plain_value`, forcing them in-place to avoid recursive `eval_sym` and epoch invalidation on chained argument promises (`profiler-shared`).
+    - Preserved unboxed scalar passing in `caller_promargs` and `eager_args`.
+- Benchmark results against base `ff759036` (clean, caches off, full 84-program suite):
+  - `3 faster, 0 slower (> 0.5%), 0 broken, 0 fixed`
+  - `rbench/simple/profiler-shared`: 5,784,443,391 -> 5,575,928,255 (-3.60%, 208.5M instructions saved, recovered from +0.86% regression)
+  - `robigo/fib`: 960,889,820 -> 932,989,919 (-2.90%, 27.9M instructions saved)
+  - `robigo/binarytrees`: 1,256,413,823 -> 1,243,347,141 (-1.04%, 13.1M instructions saved)
+  - All other 81 benchmarks neutral (< 0.5% diff), 0 slower across entire suite.
+- Conformance: 9/9 tests pass (`cargo test --release -p robigo-cli --test conformance`).
+
 ## 2026-10-30: round 12, Rconn_printf skips the vfprintf round-trip
 
 - Base: main 758efb7, re-measured in `robigo-build:4.5.0` (Debian R

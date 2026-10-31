@@ -275,7 +275,7 @@ impl ObjectGraph {
                             if let Some(env) = &*v.env.borrow() {
                                 self.env(&mut edges, env);
                             }
-                            if let Some(value) = &*v.value.borrow() {
+                            if let crate::value::PromiseVal::Boxed(value) = &*v.value.borrow() {
                                 self.edge(&mut edges, value);
                             }
                             if let Some(code) = &v.code {

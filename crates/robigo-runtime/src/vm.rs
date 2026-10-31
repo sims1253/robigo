@@ -393,7 +393,13 @@ fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
             return Some(None);
         }
         Some(match &b.value {
-            Value::Promise(p) => p.value.borrow().as_ref().and_then(read),
+            Value::Promise(p) => match &*p.value.borrow() {
+                crate::value::PromiseVal::Boxed(v) => read(v),
+                crate::value::PromiseVal::ScalarInt(x) => Some(RVal::I(*x)),
+                crate::value::PromiseVal::ScalarReal(x) => Some(RVal::D(*x)),
+                crate::value::PromiseVal::ScalarLgl(x) => Some(RVal::L(*x)),
+                crate::value::PromiseVal::Unforced => None,
+            },
             v => read(v),
         })
     }
@@ -543,7 +549,7 @@ fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
     if b.flags != 0 {
         return None;
     }
-    if p.value.borrow().is_some() {
+    if !matches!(*p.value.borrow(), crate::value::PromiseVal::Unforced) {
         return Some(false);
     }
     match &p.expr {
@@ -561,7 +567,7 @@ fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
                 None => Some(true),
                 Some(b2) if b2.flags != 0 || b2.value.is_missing_arg() => None,
                 Some(b2) => match &b2.value {
-                    Value::Promise(q) if q.value.borrow().is_none() => None,
+                    Value::Promise(q) if matches!(*q.value.borrow(), crate::value::PromiseVal::Unforced) => None,
                     _ => Some(true),
                 },
             }
@@ -2254,7 +2260,18 @@ fn caller_promargs(
         let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
             out.push(match (v, &a.value) {
-                (Some(v), _) => Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))),
+                (Some(RVal::I(i)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i))))
+                }
+                (Some(RVal::D(d)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_real(a.value.clone(), d))))
+                }
+                (Some(RVal::L(l)), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_lgl(a.value.clone(), l))))
+                }
+                (Some(v), _) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value()))))
+                }
                 (None, Value::Sym(_) | Value::Lang(_)) => Arg::new(
                     a.tag,
                     Value::Promise(Rc::new(Promise::with_code(a.value.clone(), env.clone(), c.clone()))),
@@ -2275,7 +2292,7 @@ fn eager_args(
     env: &Env,
     vars: &mut Vars<'_>,
     regs: &[RVal],
-) -> Option<[Option<Value>; 4]> {
+) -> Option<[Option<RVal>; 4]> {
     let args = site.inline_args.as_ref()?;
     let code = clo.code.get()?.as_ref()?;
     // Reasons that depend on the call site and the closure's definition
@@ -2309,7 +2326,7 @@ fn eager_args(
             return None;
         }
     }
-    let mut out: [Option<Value>; 4] = [None, None, None, None];
+    let mut out: [Option<RVal>; 4] = [None, None, None, None];
     let mut any = false;
     for sym in &code.strict {
         // (In order: stop at the first read that would need the callee.)
@@ -2320,7 +2337,7 @@ fn eager_args(
         let v = match &args[k] {
             InlineArg::Leaf(Leaf::D(_) | Leaf::I(_)) => continue,
             InlineArg::Leaf(Leaf::Var(s, slot)) => match read_var(vars, env, *s, *slot) {
-                Some(v) => v.to_value(),
+                Some(v) => v.clone(),
                 None => break,
             },
             InlineArg::Leaf(Leaf::R(_)) => break,
@@ -2330,7 +2347,7 @@ fn eager_args(
                 }
                 let (Some(x), Some(y)) = (leaf_num(vars, env, regs, a), leaf_num(vars, env, regs, b)) else { break };
                 match arith_fast(*op, x, y) {
-                    Some(v) => v.into_value(),
+                    Some(v) => v,
                     None => break,
                 }
             }
@@ -2399,7 +2416,7 @@ fn frame_dies(interp: &Interp, env: &Env) -> bool {
 /// Whether `sym` is bound in `env`'s own frame to a promise not yet forced.
 fn unforced_promise(env: &Env, sym: Sym) -> bool {
     let frame = env.0.frame().borrow();
-    matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if p.value.borrow().is_none()))
+    matches!(frame.get(sym), Some(b) if b.flags == 0 && matches!(&b.value, Value::Promise(p) if matches!(*p.value.borrow(), crate::value::PromiseVal::Unforced)))
 }
 
 /// An active loop: break and next targets, its `LoopEnter` index and how
@@ -2761,8 +2778,10 @@ fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env)
             match &b.value {
                 Value::Closure(_) | Value::Builtin(_) => return Some(b.value.clone()),
                 Value::Promise(p) => match &*p.value.borrow() {
-                    Some(v @ (Value::Closure(_) | Value::Builtin(_))) => return Some(v.clone()),
-                    Some(v) if !v.is_missing_arg() => {}
+                    crate::value::PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => {
+                        return Some(v.clone());
+                    }
+                    crate::value::PromiseVal::Boxed(v) if !v.is_missing_arg() => {}
                     _ => return None,
                 },
                 _ => return None,

@@ -533,10 +533,19 @@ pub struct Closure {
     pub jit: crate::vm::JitState,
 }
 
+#[derive(Clone)]
+pub enum PromiseVal {
+    Unforced,
+    ScalarInt(i32),
+    ScalarReal(f64),
+    ScalarLgl(Lgl),
+    Boxed(Value),
+}
+
 pub struct Promise {
     pub expr: Value,
     pub env: RefCell<Option<Env>>,
-    pub value: RefCell<Option<Value>>,
+    pub value: RefCell<PromiseVal>,
     pub forcing: Cell<bool>,
     /// Bytecode for `expr`, when the promise was created by compiled code.
     pub code: Option<Rc<crate::compile::Code>>,
@@ -548,21 +557,89 @@ impl Promise {
     }
 
     pub fn with_code(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
-        Promise { expr, env: RefCell::new(Some(env)), value: RefCell::new(None), forcing: Cell::new(false), code }
+        Promise {
+            expr,
+            env: RefCell::new(Some(env)),
+            value: RefCell::new(PromiseVal::Unforced),
+            forcing: Cell::new(false),
+            code,
+        }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
         Promise {
             expr,
             env: RefCell::new(None),
-            value: RefCell::new(Some(value)),
+            value: RefCell::new(PromiseVal::Boxed(value)),
             forcing: Cell::new(false),
             code: None,
         }
     }
 
+    #[inline(always)]
+    pub fn forced_int(expr: Value, x: i32) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarInt(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn forced_real(expr: Value, x: f64) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarReal(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn forced_lgl(expr: Value, x: Lgl) -> Self {
+        Promise {
+            expr,
+            env: RefCell::new(None),
+            value: RefCell::new(PromiseVal::ScalarLgl(x)),
+            forcing: Cell::new(false),
+            code: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_value(&self, value: Value) {
+        *self.value.borrow_mut() = PromiseVal::Boxed(value);
+    }
+
     pub fn value(&self) -> Option<Value> {
-        self.value.borrow().clone()
+        match &*self.value.borrow() {
+            PromiseVal::Boxed(v) => return Some(v.clone()),
+            PromiseVal::Unforced => return None,
+            _ => {}
+        }
+        let mut b = self.value.borrow_mut();
+        match &*b {
+            PromiseVal::Boxed(v) => Some(v.clone()),
+            PromiseVal::ScalarInt(i) => {
+                let v = Value::int(*i);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::ScalarReal(d) => {
+                let v = Value::real(*d);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::ScalarLgl(l) => {
+                let v = Value::lgl_raw(*l);
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
+            PromiseVal::Unforced => None,
+        }
     }
 }
 
