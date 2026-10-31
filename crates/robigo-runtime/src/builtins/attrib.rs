@@ -437,21 +437,21 @@ fn do_unclass(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
     }
 }
 
-fn do_inherits(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_inherits(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let what = match arg(&args, 1) {
         Value::Str(w) => w.data.clone(),
         _ => {
-            return Err(Flow::error_call(
-                call.clone(),
-                "'what' must be a character vector or an object with a nameOfClass() method",
-            ));
+            return Err(Flow::error("'what' must be a character vector or an object with a nameOfClass() method"));
         }
     };
-    let which = crate::coerce::as_logical(&arg(&args, 2));
-    if which == NA_LOGICAL {
-        return Err(Flow::error_call(call.clone(), "'which' must be a length 1 logical vector"));
-    }
+    let which = match arg(&args, 2) {
+        Value::Lgl(w) if w.data.len() == 1 => match w.data[0] {
+            NA_LOGICAL => return Err(Flow::error("NA in coercion to boolean")),
+            val => val != 0,
+        },
+        _ => return Err(Flow::error("'which' must be a length 1 logical vector")),
+    };
     // R: objects.c:inherits3
     let klass: Vec<crate::value::RString> = if x.is_s4() {
         i.data_class2(&x)?
@@ -461,7 +461,7 @@ fn do_inherits(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
             .map(|c| c.unwrap_or_else(|| crate::value::RString::from("NA")))
             .collect()
     };
-    if which != 0 {
+    if which {
         let out: Vec<i32> = what
             .iter()
             .map(|w| klass.iter().position(|k| Some(k) == w.as_ref()).map(|p| p as i32 + 1).unwrap_or(0))
