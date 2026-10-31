@@ -954,7 +954,7 @@ impl Printer {
         let is_array = v.get_attr(s::DIM).is_some();
         let is_factor = v.inherits("factor");
         let is_df = v.inherits("data.frame");
-        for (tag, val) in &attrs.0 {
+        for (tag, _) in &attrs.0 {
             if use_slots && *tag == s::CLASS {
                 continue;
             }
@@ -981,7 +981,9 @@ impl Printer {
             let tb = self.tagbuf.clone();
             self.p(&tb);
             self.p("\n");
-            self.dispatch(interp, val)?;
+            // R prints attributes through getAttrib (attrib.c:getAttrib),
+            // so a compact c(NA, n) row.names attribute prints expanded.
+            self.dispatch(interp, &crate::attrib::get_attrib(v, *tag))?;
             self.tagbuf.truncate(base_len);
         }
         self.tagbuf = save;

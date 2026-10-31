@@ -1,0 +1,38 @@
+Warning message:
+In bitwShiftL(c(1, 2, 3, 4), c("a")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(c(3, 2, 4), c(3 + (0+3i))) :
+  imaginary parts discarded in coercion
+Warning message:
+In bitwShiftR(c(1, 2, 3, 4), c("Hello")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(1L, list("a")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(1L, quote(a)) :
+  'symbol' object cannot be coerced to type 'integer'
+Warning message:
+In bitwShiftL(1L, as.name("x")) :
+  'symbol' object cannot be coerced to type 'integer'
+Warning messages:
+1: In bitwShiftL(1L, list("a", "b")) : NAs introduced by coercion
+2: In bitwShiftL(1L, list("a", "b")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(1L, list(1L, "a", 2L)) : NAs introduced by coercion
+Warning messages:
+1: In bitwShiftL(1L, pairlist("a", "b")) : NAs introduced by coercion
+2: In bitwShiftL(1L, pairlist("a", "b")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(c(1, 2, 3, 4), c("a")) : NAs introduced by coercion
+Warning message:
+In bitwShiftL(c(3, 2, 4), c(3 + (0+3i))) :
+  imaginary parts discarded in coercion
+Warning messages:
+1: In bitwAnd(Inf, Inf) : NAs introduced by coercion to integer range
+2: In bitwAnd(Inf, Inf) : NAs introduced by coercion to integer range
+Warning messages:
+1: In bitwShiftL(c(Inf, 1), c(1, Inf)) :
+  NAs introduced by coercion to integer range
+2: In bitwShiftL(c(Inf, 1), c(1, Inf)) :
+  NAs introduced by coercion to integer range
+Warning message:
+In length(e) <- 2 : length of NULL cannot be changed

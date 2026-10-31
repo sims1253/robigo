@@ -1200,6 +1200,9 @@ pub fn as_vec_size(v: &Value) -> RResult<i64> {
                 if !d.is_finite() {
                     return Err(Flow::error("vector size cannot be infinite"));
                 }
+                if d > 4503599627370496.0 {
+                    return Err(Flow::error("vector size specified is too large"));
+                }
                 return Ok(d as i64);
             }
             _ => {}
