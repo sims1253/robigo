@@ -1,5 +1,33 @@
 # test infrastructure ledger
 
+## 2026-10-31: kill 19-minute paired confirmation by measuring like-for-like at source and re-pairing only flagged regressions
+
+- **why:** In CI, `Compare with main` running `perf-paired.py` took ~19m18s because
+  it re-measured *all* 84 benchmarks for *both* binaries with cache off (336 callgrind runs).
+  The historical root cause was that `perf-main` on main was measured with `rdbflat`
+  cache ON while PRs ran with cache OFF (to avoid phantom +2.69% deltas on `nbody_2`),
+  so candidate and baseline were not comparable at source.
+- **metric:** `Compare with main` step duration: 19m18s -> ~3 seconds on clean runs.
+  Total `perf` job duration: ~25m30s -> ~2m15s.
+- **fix:**
+  1. Main's perf run measures with the same cache state as PR runs (`export ROBIGO_RDBFLAT=""`),
+     making `perf-main` and PR measurements directly comparable at source.
+  2. The `rdbflat` win on `nbody_2` is reported on main in a separate diagnostic step
+     (`--diagnostic-only`), never polluting the gate's numbers.
+  3. `perf-paired.py` restricts paired confirmation to flagged regressions only:
+     cases where candidate-vs-baseline delta exceeds 0.5%, candidate has wrong output,
+     or candidate measurement failed. Unflagged cases keep the direct comparison.
+  4. Flagged cases retain identical strictness: measured with exact binaries in isolated
+     tempdirs with cache off (min 2 runs) against GNU R oracle or baseline output,
+     failing the gate if the regression persists.
+- **verification:**
+  - 24 unit tests in `scripts/test-perf-paired.py` pass.
+  - End-to-end proof: a deliberate +0.6% regression on `shootout/nbody_2` is flagged,
+    re-paired, and fails the gate (`SLOWER shootout/nbody_2 +0.60%`, exit 1).
+  - End-to-end proof: a candidate with wrong output is flagged, re-paired, and fails
+    with `RuntimeError: candidate output differs from GNU R`.
+  - End-to-end proof: previously red case verdict (`UNSUPPORTED`) is unchanged.
+
 ## 2026-10-31: cache GNU R oracle output in perf-main to measure robigo only in PRs
 
 - **why:** `perf` job in CI took ~28m22s (e.g. run 41153399779: measure robigo
