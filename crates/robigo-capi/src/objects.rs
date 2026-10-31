@@ -301,3 +301,58 @@ pub unsafe extern "C" fn R_ClosureEnv(x: Sexp) -> Sexp {
     let c = closure_of(x, "R_ClosureEnv");
     crate::bridge::to_sexp(&robigo_runtime::value::Value::Env(c.env.clone()))
 }
+
+// R: dstruct.c:mkCLOSXP, eval.c:CheckFormals, R_mkClosure
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_mkClosure(formals: Sexp, body: Sexp, rho: Sexp) -> Sexp {
+    let mut s = formals;
+    if s != R_NilValue && s.typ() != LISTSXP {
+        error_str("invalid formal argument list for \"R_mkClosure\"");
+    }
+    while s != R_NilValue {
+        if s.tag().typ() != SYMSXP {
+            error_str("invalid formal argument list for \"R_mkClosure\"");
+        }
+        s = s.cdr();
+    }
+    let env = match crate::bridge::from_sexp(rho) {
+        robigo_runtime::value::Value::Env(e) => e,
+        _ => error_str("invalid environment"),
+    };
+    if matches!(body.typ(), CLOSXP | BUILTINSXP | SPECIALSXP | DOTSXP | ANYSXP) {
+        error_str("invalid body argument for 'function'");
+    }
+    let formals_vec = match crate::bridge::from_sexp(formals) {
+        robigo_runtime::value::Value::Pairlist(p) => p.items.clone(),
+        _ => Vec::new(),
+    };
+    #[cfg(feature = "bytecode-fidelity")]
+    let (body_val, gnu_bytecode, jit) = match crate::bridge::from_sexp(body) {
+        robigo_runtime::value::Value::Bytecode(b) => {
+            (b.expression.clone(), Some(b), robigo_runtime::vm::JitState::from_bytecode())
+        }
+        v => (v, None, Default::default()),
+    };
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    let (body_val, jit) = (crate::bridge::from_sexp(body), Default::default());
+    let clo = robigo_runtime::value::Closure {
+        #[cfg(feature = "bytecode-fidelity")]
+        gnu_bytecode,
+        formals: formals_vec.into(),
+        body: body_val,
+        env,
+        attrs: None,
+        code: Default::default(),
+        inline: Default::default(),
+        defaults: Default::default(),
+        jit,
+    };
+    crate::bridge::to_sexp(&robigo_runtime::value::Value::Closure(std::rc::Rc::new(clo)))
+}
+
+// R: eval.c:R_PromiseExpr (the promise expression without its bytecode;
+// robigo's promise expressions are always the expression)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_PromiseExpr(p: Sexp) -> Sexp {
+    crate::memory::PRCODE(p)
+}

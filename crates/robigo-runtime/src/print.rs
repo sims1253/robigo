@@ -197,7 +197,14 @@ impl Printer {
             }
             Value::Promise(_) => self.p("<promise: 0x0>\n"),
             Value::Dots(_) => self.p("<...>\n"),
-            Value::ExtPtr(_) => self.p("<pointer: 0x0>\n"),
+            Value::ExtPtr(_) => {
+                if let Some(s) = crate::native::bridge().and_then(|b| b.format_core(v)) {
+                    self.p(&s);
+                    self.p("\n");
+                } else {
+                    self.p("<pointer: 0x0>\n");
+                }
+            }
             // R: print.c:PrintValueRec (OBJSXP)
             #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => self.p(&format!("<bytecode: {:p}>\n", Rc::as_ptr(b))),

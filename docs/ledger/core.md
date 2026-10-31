@@ -4,6 +4,49 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-10-31: `capi` corpus `objects` and `strings` (22/22 pass)
+
+- Why: the `objects` and `strings` cases in `tests/corpora/capi` were the
+  last two unratcheted scripts in the `capi` corpus (20/22 passing).
+- Root causes and fixes:
+  - `R_mkClosure` and `R_PromiseExpr` were still stubbed in `stubs.rs`.
+    Implemented `R_mkClosure(formals, body, rho)` (`dstruct.c:mkCLOSXP`,
+    `eval.c:CheckFormals`, `eval.c:R_mkClosure`) and `R_PromiseExpr(p)`
+    (`eval.c:R_PromiseExpr`) in `crates/robigo-capi/src/objects.rs`,
+    regenerating `stubs.rs` (`773/831` symbols implemented, `5281/5339` =
+    `98.9%` weighted coverage, 45 function stubs).
+  - `SETCAR`/`SETCDR`/`SET_TAG` on `HOST` proxies (`SET_FORMALS`,
+    `SET_BODY`, `SET_CLOENV`, `SET_PRVALUE`, `SET_PRCODE`, `SET_PRENV`)
+    wrote only to the proxy header instead of mutating the underlying
+    runtime `Closure` or `Promise`. Forwarded `SETCAR`/`SETCDR`/`SET_TAG`
+    on `HOST` proxies (`memory.rs`) to a `"set_field"` host operation in
+    `bridge.rs`, and extended `write_back` in `bridge.rs` to sync
+    attributes/S4 bit on `Closure`, `Bytecode`, `Env` and `ExtPtr`
+    proxies on `.Call` exit.
+  - `from_sexp(CHARSXP)` converted a raw `CHARSXP` returned from C (or
+    placed in a `VECSXP` element) into a length-1 `STRSXP` (`Value::Str`)
+    instead of keeping it as a `CHARSXP`. Wrapped `CHARSXP` via
+    `wrap_core(x)` in `bridge.rs` and implemented `core_type_name`
+    (`"char"`) and `format_core` (`<CHARSXP: "...">` / `<CHARSXP: NA>`) on
+    `NativeBridge` (`value.rs`, `print.rs`, `bridge.rs`) matching GNU R's
+    `PrintValueRec`.
+  - `Rf_ucstoutf8` in `strings.rs` returned `*mut c_char` instead of GNU
+    R's `size_t` byte count (`sysutils.c:ucstoutf8`, `R_ext/GraphicsDevice.h`)
+    and did not validate surrogate/out-of-range codepoints. Fixed its ABI
+    to return `usize` (`size_t`) and raise `invalid Unicode point %u` on
+    invalid codepoints.
+  - `R_nchar(..., Width, ...)` in `strings.rs` called an unimplemented
+    `"strwidth"` host op; wired it directly to
+    `robigo_runtime::format::str_width`.
+  - `capi_alloc_more` in `tests/corpora/capi/support/alloc.c` left
+    `REAL(v3)[1]` uninitialized (`allocVector3(REALSXP, 2, NULL)` does not
+    zero-fill); initialized `REAL(v3)[1] = 0.0` matching the recorded
+    GNU R output (as `674d2bcc` did for `capi_optim`).
+- Verification: `scripts/corpus.py run capi` now passes `22/22` cases
+  (stdout 22, stderr 22, status 22 match; `objects.pass` and `strings.pass`
+  ratcheted); `robigo-core` (25 tests), `robigo-capi` (4 tests), and
+  `robigo-cli` conformance all pass.
+
 ## 2026-10-30: SETCAR/SETCDR/SET_TAG shared cons-cell mutation
 
 - Why: round 7 left the pairlist/language half of the C cell-write rule

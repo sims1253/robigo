@@ -258,17 +258,21 @@ pub unsafe extern "C" fn Rf_reEnc(x: *const c_char, ce_in: c_int, ce_out: c_int,
     }
 }
 
-// R: util.c:ucstoutf8
+// R: sysutils.c:ucstoutf8
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_ucstoutf8(s: *mut c_char, c: c_uint) -> *mut c_char {
-    let mut buf = [0u8; 4];
-    let n = match char::from_u32(c) {
-        Some(ch) => ch.encode_utf8(&mut buf).len(),
-        None => 0,
+pub unsafe extern "C" fn Rf_ucstoutf8(s: *mut c_char, c: c_uint) -> usize {
+    if c == 0 {
+        *s = 0;
+        return 1;
+    }
+    let Some(ch) = char::from_u32(c) else {
+        crate::errors::error_str_owned(format!("invalid Unicode point {c}"));
     };
+    let mut buf = [0u8; 4];
+    let n = ch.encode_utf8(&mut buf).len();
     std::ptr::copy_nonoverlapping(buf.as_ptr(), s as *mut u8, n);
     *s.add(n) = 0;
-    s
+    n
 }
 
 fn utf8_valid(b: &[u8]) -> bool {
@@ -316,16 +320,7 @@ pub unsafe extern "C" fn R_nchar(
                 return i32::MIN;
             }
             let s = std::str::from_utf8_unchecked(b);
-            if type_ == 1 {
-                s.chars().count() as c_int
-            } else {
-                let mut out = Sexp::NULL;
-                let t = crate::host::try_op("strwidth\0", &[string], &mut out);
-                if t != 0 {
-                    crate::errors::jump_host(t)
-                }
-                *(out.std_data() as *const i32)
-            }
+            if type_ == 1 { s.chars().count() as c_int } else { robigo_runtime::format::str_width(s) as c_int }
         }
     }
 }

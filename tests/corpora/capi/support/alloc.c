@@ -92,6 +92,7 @@ SEXP capi_alloc_more(void) {
     for (int i = 0; i < 6; i++) INTEGER(m)[i] = i;
     SEXP v3 = PROTECT(allocVector3(REALSXP, 2, NULL));  // custom allocator: none
     REAL(v3)[0] = 1.5;
+    REAL(v3)[1] = 0.0;
     SEXP cell = PROTECT(allocSExp(LISTSXP));  // a bare cons cell
     SETCAR(cell, ScalarInteger(5));
     SEXP s4 = PROTECT(allocS4Object());

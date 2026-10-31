@@ -1110,10 +1110,20 @@ unsafe fn chkcons(x: Sexp) {
     }
 }
 
+unsafe fn set_field(x: Sexp, k: c_int, y: Sexp) {
+    let ks = c().alloc_vector(INTSXP, 1);
+    *(ks.std_data() as *mut i32) = k;
+    crate::host::op("set_field\0", &[x, ks, y]);
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SETCAR(x: Sexp, y: Sexp) -> Sexp {
     if x == R_NilValue || x.is_null() {
         error_str("bad value")
+    }
+    if x.has_flag(flags::HOST) {
+        set_field(x, 0, y);
+        return y;
     }
     fix_refcnt(x, x.car(), y);
     x.set_car_raw(y);
@@ -1125,6 +1135,10 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
     if x == R_NilValue || x.is_null() {
         error_str("bad value")
     }
+    if x.has_flag(flags::HOST) {
+        set_field(x, 1, y);
+        return y;
+    }
     fix_refcnt(x, x.cdr(), y);
     x.set_cdr_raw(y);
     y
@@ -1133,6 +1147,10 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_TAG(x: Sexp, y: Sexp) {
     chkcons(x);
+    if x.has_flag(flags::HOST) {
+        set_field(x, 2, y);
+        return;
+    }
     fix_refcnt(x, x.tag(), y);
     x.set_tag_raw(y);
 }
