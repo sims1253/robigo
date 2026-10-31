@@ -232,7 +232,7 @@ jobs:
             python3 scripts/perf.py run --metric instr --runtime "$runtime" $oracle_flag --robigo dist/robigo \
               --jobs "$(nproc)" --out perf.json --quiet
           fi
-      - name: Diagnostic: rdbflat win
+      - name: "Diagnostic: rdbflat win"
         if: github.ref == 'refs/heads/main'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
