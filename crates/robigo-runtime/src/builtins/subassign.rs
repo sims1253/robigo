@@ -601,35 +601,34 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
     let ny = y.len();
     if is_missing_or_empty(s0) {
         if let Some(jj) = as_scalar_index(s1) {
-            if jj < 1 || jj > nc {
-                return Err(out_of_bounds(Some(call), None));
-            }
-            if ny == 0 {
-                if y.is_null() {
+            if jj >= 1 && jj <= nc {
+                if ny == 0 {
+                    if y.is_null() {
+                        return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
+                    }
+                    return Err(Flow::error("replacement has length zero"));
+                }
+                let nru = nr as usize;
+                if nru > 0 && nru % ny != 0 {
                     return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
                 }
-                return Err(Flow::error("replacement has length zero"));
-            }
-            let nru = nr as usize;
-            if nru > 0 && nru % ny != 0 {
-                return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
-            }
-            let start = (jj - 1) as usize * nru;
-            let end = start + nru;
-            match (&mut *x, &y) {
-                (Value::Real(a), Value::Real(b)) if ny == nru => {
-                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
-                    return Ok(());
+                let start = (jj - 1) as usize * nru;
+                let end = start + nru;
+                match (&mut *x, &y) {
+                    (Value::Real(a), Value::Real(b)) if ny == nru => {
+                        Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                        return Ok(());
+                    }
+                    (Value::Int(a), Value::Int(b)) if ny == nru => {
+                        Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                        return Ok(());
+                    }
+                    (Value::Lgl(a), Value::Lgl(b)) if ny == nru => {
+                        Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
+                        return Ok(());
+                    }
+                    _ => {}
                 }
-                (Value::Int(a), Value::Int(b)) if ny == nru => {
-                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
-                    return Ok(());
-                }
-                (Value::Lgl(a), Value::Lgl(b)) if ny == nru => {
-                    Rc::make_mut(a).data[start..end].copy_from_slice(&b.data);
-                    return Ok(());
-                }
-                _ => {}
             }
         }
     }

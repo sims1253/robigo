@@ -462,29 +462,28 @@ fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &
     let s0_missing = is_missing_or_empty(s0);
     if s0_missing {
         if let Some(jj) = as_scalar_index(s1) {
-            if jj < 1 || jj > nc {
-                return Err(out_of_bounds(Some(call), None));
-            }
-            if !x.is_vector() {
-                return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
-            }
-            let dimnames = get_attrib(x, s::DIMNAMES);
-            let has_dimnames = !dimnames.is_null();
-            let nru = nr as usize;
-            let start = (jj - 1) as usize * nru;
-            let end = start + nru;
-            if drop && !has_dimnames {
-                return Ok(match x {
-                    Value::Lgl(v) => Value::lgls(v.data[start..end].to_vec()),
-                    Value::Int(v) => Value::ints(v.data[start..end].to_vec()),
-                    Value::Real(v) => Value::reals(v.data[start..end].to_vec()),
-                    Value::Cplx(v) => Value::cplxs(v.data[start..end].to_vec()),
-                    Value::Str(v) => Value::strs(v.data[start..end].to_vec()),
-                    Value::Raw(v) => Value::raws(v.data[start..end].to_vec()),
-                    Value::List(v) => Value::list(v.data[start..end].to_vec()),
-                    Value::Expr(v) => Value::expr_vec(v.data[start..end].to_vec()),
-                    _ => return Err(not_subsettable(x, Some(call))),
-                });
+            if jj >= 1 && jj <= nc {
+                if !x.is_vector() {
+                    return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
+                }
+                let dimnames = get_attrib(x, s::DIMNAMES);
+                let has_dimnames = !dimnames.is_null();
+                let nru = nr as usize;
+                let start = (jj - 1) as usize * nru;
+                let end = start + nru;
+                if drop && !has_dimnames {
+                    return Ok(match x {
+                        Value::Lgl(v) => Value::lgls(v.data[start..end].to_vec()),
+                        Value::Int(v) => Value::ints(v.data[start..end].to_vec()),
+                        Value::Real(v) => Value::reals(v.data[start..end].to_vec()),
+                        Value::Cplx(v) => Value::cplxs(v.data[start..end].to_vec()),
+                        Value::Str(v) => Value::strs(v.data[start..end].to_vec()),
+                        Value::Raw(v) => Value::raws(v.data[start..end].to_vec()),
+                        Value::List(v) => Value::list(v.data[start..end].to_vec()),
+                        Value::Expr(v) => Value::expr_vec(v.data[start..end].to_vec()),
+                        _ => return Err(not_subsettable(x, Some(call))),
+                    });
+                }
             }
         }
     }
