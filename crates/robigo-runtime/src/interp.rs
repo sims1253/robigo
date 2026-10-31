@@ -1306,7 +1306,7 @@ impl Interp {
         let base = self.base_ns.clone();
         let mut result = Ok(());
         for (name, from) in [(".Last", &global), (".Last.sys", &base)] {
-            let Some(Value::Closure(_)) = from.get_local(Sym::new(name)) else {
+            let Some((Value::Closure(_), _)) = from.lookup(Sym::new(name)) else {
                 continue;
             };
             let call = Value::lang(Value::sym(name), Vec::new());
