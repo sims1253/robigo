@@ -28,3 +28,15 @@ print(.Call("capi_symbols"))
 ns <- .Call("capi_namespace")
 print(ns[[1]])
 print(length(ns[[2]]) > 100)
+
+# R_IsPackageEnv: package environments only, no error elsewhere.
+print(.Call("capi_is_package_env", as.environment("package:base"),
+           new.env(), globalenv(), environment()))
+# R_EnvironmentIsLocked: locked/unlocked, and its error paths.
+ne <- new.env()
+lockEnvironment(ne)
+print(.Call("capi_env_locked", ne))
+print(.Call("capi_env_locked", globalenv()))
+print(.Call("capi_env_locked", as.environment("package:base")))
+print(tryCatch(.Call("capi_env_locked", NULL), error = conditionMessage))
+print(tryCatch(.Call("capi_env_locked", 1), error = conditionMessage))
