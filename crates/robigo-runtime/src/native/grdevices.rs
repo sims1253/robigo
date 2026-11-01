@@ -7,7 +7,7 @@ use crate::sym::s;
 use crate::value::*;
 
 pub static PORTS: &[(&str, NativeFn)] =
-    &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb), ("gray", gray)];
+    &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb), ("gray", gray), ("hcl", hcl)];
 
 /// Whether cairo (1) or pango-cairo (2) support was built in: robigo has no
 /// cairo graphics devices.
@@ -958,4 +958,126 @@ fn gray(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &crate::env::Env) -> RResu
             Ok(Value::strs_from(out))
         }
     }
+}
+
+/// grDevices' `WHITE_Y` (the D65 white point's Y).
+const WHITE_Y: f64 = 100.000;
+
+// R: grDevices/src/colors.c:gtrans — sRGB inverse gamma
+fn gtrans(u: f64) -> f64 {
+    if u > 0.00304 { 1.055 * u.powf(1.0 / 2.4) - 0.055 } else { 12.92 * u }
+}
+
+// R: grDevices/src/colors.c:FixupColor — clamp to 0..255, report a fix
+fn fixup_color(r: &mut i32, g: &mut i32, b: &mut i32) -> bool {
+    let clamp = |x: &mut i32| {
+        if *x < 0 {
+            *x = 0;
+            true
+        } else if *x > 255 {
+            *x = 255;
+            true
+        } else {
+            false
+        }
+    };
+    clamp(r) | clamp(g) | clamp(b)
+}
+
+// R: grDevices/src/colors.c:hcl2rgb — HCL -> CIE-LUV -> CIE-XYZ -> sRGB
+fn hcl2rgb(h: f64, c: f64, l: f64) -> (f64, f64, f64) {
+    if l <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    const WHITE_U: f64 = 0.1978398;
+    const WHITE_V: f64 = 0.4683363;
+    let rad = h * (std::f64::consts::PI / 180.0);
+    let (u_, v_) = (c * rad.cos(), c * rad.sin());
+    let (x, y, z);
+    if l <= 0.0 && u_ == 0.0 && v_ == 0.0 {
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
+    } else {
+        y = WHITE_Y * if l > 7.999592 { ((l + 16.0) / 116.0).powi(3) } else { l / 903.3 };
+        let u = u_ / (13.0 * l) + WHITE_U;
+        let v = v_ / (13.0 * l) + WHITE_V;
+        x = 9.0 * y * u / (4.0 * v);
+        z = -x / 3.0 - 5.0 * y + 3.0 * y / v;
+    }
+    (
+        gtrans((3.240479 * x - 1.537150 * y - 0.498535 * z) / WHITE_Y),
+        gtrans((-0.969256 * x + 1.875992 * y + 0.041556 * z) / WHITE_Y),
+        gtrans((0.055648 * x - 0.204043 * y + 1.057311 * z) / WHITE_Y),
+    )
+}
+
+// R: grDevices/src/colors.c:hcl — HCL colors as "#RRGGBB" (or
+// "#RRGGBBAA") strings, recycled over the longest of h, c, l, alpha.
+fn hcl(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let real = |i: &mut Interp, v: &Value| -> RResult<Vec<f64>> {
+        Ok(crate::coerce::to_real(&i.coerce(v, crate::value::VType::Real)?, &mut Default::default()))
+    };
+    let h = real(i, &args[0].value)?;
+    let c = real(i, &args[1].value)?;
+    let l = real(i, &args[2].value)?;
+    let a = match &args[3].value {
+        Value::Null => None,
+        v => Some(real(i, v)?),
+    };
+    // asLogical: NA (nonzero, like NA_LOGICAL) counts as TRUE here, as
+    // GNU R's `!fixup` test makes it behave
+    let fixup = crate::coerce::as_logical(&args[4].value) != 0;
+    let (nh, nc, nl) = (h.len(), c.len(), l.len());
+    let na = a.as_ref().map_or(1, Vec::len);
+    if nh == 0 || nc == 0 || nl == 0 || na == 0 {
+        return Ok(Value::strs_from(Vec::<String>::new()));
+    }
+    let max = nh.max(nc).max(nl).max(na);
+    let mut out = Vec::with_capacity(max);
+    for k in 0..max {
+        let (hh, cc, ll) = (h[k % nh], c[k % nc], l[k % nl]);
+        match a.as_ref() {
+            None => {
+                if !(hh.is_finite() && cc.is_finite() && ll.is_finite()) {
+                    out.push(None);
+                    continue;
+                }
+                if ll < 0.0 || ll > WHITE_Y || cc < 0.0 {
+                    return Err(Flow::error("invalid hcl color"));
+                }
+                let (r, g, b) = hcl2rgb(hh, cc, ll);
+                let (mut ir, mut ig, mut ib) =
+                    ((255.0 * r + 0.5) as i32, (255.0 * g + 0.5) as i32, (255.0 * b + 0.5) as i32);
+                if fixup_color(&mut ir, &mut ig, &mut ib) && !fixup {
+                    out.push(None);
+                } else {
+                    out.push(crate::value::rstr(&format!("#{ir:02X}{ig:02X}{ib:02X}")));
+                }
+            }
+            Some(a) => {
+                let mut aa = a[k % na];
+                if !aa.is_finite() {
+                    aa = 1.0;
+                }
+                if !(hh.is_finite() && cc.is_finite() && ll.is_finite()) {
+                    out.push(None);
+                    continue;
+                }
+                if ll < 0.0 || ll > WHITE_Y || cc < 0.0 || aa < 0.0 || aa > 1.0 {
+                    return Err(Flow::error("invalid hcl color"));
+                }
+                let (r, g, b) = hcl2rgb(hh, cc, ll);
+                let (mut ir, mut ig, mut ib) =
+                    ((255.0 * r + 0.5) as i32, (255.0 * g + 0.5) as i32, (255.0 * b + 0.5) as i32);
+                let alpha = scale_alpha(aa)?;
+                if fixup_color(&mut ir, &mut ig, &mut ib) && !fixup {
+                    out.push(None);
+                } else {
+                    out.push(crate::value::rstr(&format!("#{ir:02X}{ig:02X}{ib:02X}{alpha:02X}")));
+                }
+            }
+        }
+    }
+    Ok(Value::Str(std::rc::Rc::new(Vector::new(out))))
 }

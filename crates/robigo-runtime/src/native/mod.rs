@@ -20,6 +20,7 @@ static TABLE: &str = include_str!("../../../../rlib/native-routines.tsv");
 
 mod base;
 mod grdevices;
+mod grid;
 mod hashtab;
 pub mod linpack;
 pub mod methods;
@@ -453,6 +454,7 @@ pub type NativeFn = fn(&mut Interp, &Value, Vec<Arg>, &crate::env::Env) -> RResu
 static PORTS: &[(&str, &[(&str, NativeFn)])] = &[
     ("base", base::PORTS),
     ("grDevices", grdevices::PORTS),
+    ("grid", grid::PORTS),
     ("methods", methods::PORTS),
     ("parallel", parallel::PORTS),
     ("stats", stats::PORTS),
