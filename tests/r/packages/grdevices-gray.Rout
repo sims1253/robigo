@@ -1,0 +1,21 @@
+[1] "#000000" "#202020" "#404040" "#606060" "#808080" "#9F9F9F" "#BFBFBF"
+[8] "#DFDFDF" "#FFFFFF"
+[1] "#80808080"
+[1] "#000000FF" "#FFFFFF40"
+character(0)
+[1] "invalid gray level, must be in [0,1]."
+[1] "invalid gray level, must be in [0,1]."
+[1] "alpha level 2, not in [0,1]"
+[1] "alpha level NA, not in [0,1]"
+[1] "numerical color values must be positive"
+      [,1] [,2] [,3] [,4] [,5]
+red    223  223   97  245  223
+green   83   83  208  199   83
+blue   107  107   79   16  107
+        a   b
+red   255 223
+green   0  83
+blue    0 107
+[1] "invalid color specification \"1L\""
+[1] "invalid color specification \"0x\""
+[1] "invalid color specification \"1e\""
