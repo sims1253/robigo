@@ -624,7 +624,7 @@ fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         Value::Cplx(v) => v.data.iter().map(|z| (z.re.is_nan() || z.im.is_nan()) as Lgl).collect(),
         Value::Str(v) => v.data.iter().map(|e| e.is_none() as Lgl).collect(),
         Value::Raw(v) => vec![FALSE; v.data.len()],
-        Value::List(l) | Value::Expr(l) => l
+        Value::List(l) => l
             .data
             .iter()
             .map(|e| {
@@ -642,7 +642,7 @@ fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         Value::Null => vec![],
         other => {
             i.warningcall(call, format!("is.na() applied to non-(list or vector) of type '{}'", other.type_name()))?;
-            vec![FALSE]
+            vec![FALSE; other.len()]
         }
     };
     let mut r = Value::lgls(out);
