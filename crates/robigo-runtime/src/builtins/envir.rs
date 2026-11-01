@@ -1073,7 +1073,12 @@ fn do_topenv(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
         Value::Env(e) => e,
         _ => env.clone(),
     };
-    Ok(Value::Env(i.topenv(&e)))
+    // R: envir.c:do_topenv — a non-environment matchThisEnv means NULL.
+    let target = match arg(&args, 1) {
+        Value::Env(t) => Some(t),
+        _ => None,
+    };
+    Ok(Value::Env(i.topenv_from(&e, target.as_ref())))
 }
 
 fn do_is_namespace_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
