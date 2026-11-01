@@ -813,6 +813,25 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             let items = items_of(x);
             return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_from(x) }));
         }
+        PROMSXP => {
+            // A promise assembled in C (Rf_allocSExp(PROMSXP) + SET_PR*:
+            // CAR=PRVALUE, CDR=PRCODE, TAG=PRENV), rlang's env_clone of a
+            // namespace being the case that matters: its rebuilt lazy
+            // promises must force like the originals. An unforced promise
+            // with no environment cannot be represented (robigo forces it
+            // to NULL, as force_promise does for a lost environment).
+            let expr = from_sexp(x.cdr());
+            let v = x.car();
+            let p = if v != R_UnboundValue {
+                robigo_runtime::value::Promise::forced(expr, from_sexp(v))
+            } else {
+                match from_sexp(x.tag()) {
+                    Value::Env(e) => robigo_runtime::value::Promise::new(expr, e),
+                    _ => robigo_runtime::value::Promise::forced(expr, Value::Null),
+                }
+            };
+            return Value::Promise(Rc::new(p));
+        }
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
@@ -1132,7 +1151,15 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
             // C keeps its object for what it binds in an environment it
             // created and may change it in place (R: envir.c:defineVar).
-            if a[1] != R_NilValue && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+            // Promises and closures are exempt: they are values to R
+            // (rlang's env_clone binds rebuilt promises, which must force
+            // on lookup — the active-binding read would not), not objects
+            // C writes through.
+            if a[1] != R_NilValue
+                && !env.0.locked.get()
+                && crate::owned::is_c_env(&env)
+                && !matches!(a[1].typ(), PROMSXP | CLOSXP)
+            {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
                 remember_stored(a[1], &val);
