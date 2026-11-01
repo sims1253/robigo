@@ -121,9 +121,23 @@ impl Interp {
     /// environment, or one that defines `.packageName`.
     // R: envir.c:topenv
     pub fn topenv(&self, env: &Env) -> Env {
+        self.topenv_from(env, None)
+    }
+
+    /// `topenv(envir, matchThisEnv)`: the search also stops at
+    /// `matchThisEnv` (the `topLevelEnvironment` option, which `sys.source`
+    /// sets to its `envir`).
+    // R: envir.c:topenv
+    pub fn topenv_from(&self, env: &Env, target: Option<&Env>) -> Env {
         let mut cur = Some(env.clone());
         while let Some(e) = cur {
-            if e.ptr_eq(&self.global)
+            // R's loop condition: R_EmptyEnv is never matched against
+            // `target`, even when target is the empty environment.
+            if e.ptr_eq(&self.empty) {
+                break;
+            }
+            if target.is_some_and(|t| e.ptr_eq(t))
+                || e.ptr_eq(&self.global)
                 || e.ptr_eq(&self.base)
                 || e.ptr_eq(&self.base_ns)
                 || e.package_env_name().is_some()
@@ -131,9 +145,6 @@ impl Interp {
                 || e.has_local(crate::sym::s::DOT_PACKAGE_NAME)
             {
                 return e;
-            }
-            if e.ptr_eq(&self.empty) {
-                break;
             }
             cur = e.parent();
         }

@@ -90,3 +90,23 @@ Metrics, in order:
 - Tests: `tests/r/serialize/lazy-load-promise.R` builds a database with
   `tools:::makeLazyLoadDB` and forces a promise after `lazyLoad()`;
   full `tests/r` conformance 310/310 on the combined WIP.
+## 2026-11-01: topenv honors matchThisEnv
+
+- Took over WIP b2098e9b from the previous agent and finished it.
+  `.Internal(topenv)` dropped its second argument: `envir.c:do_topenv`
+  passes `CADR(args)` (matchThisEnv, the `topLevelEnvironment` option
+  that `sys.source` sets to its `envir`) into `envir.c:topenv`, where
+  the walk also stops at it. Code sourced with `sys.source` that calls
+  `topenv(parent.frame())` — `methods`'s `setClass(where = ...)` shape —
+  must define in the sourcing environment, not the namespace behind it.
+- Port: `do_topenv` reads the second argument (anything but an
+  environment means NULL, as R's `target != R_NilValue &&
+  TYPEOF(target) != ENVSXP` check), and `topenv_from` adds the target to
+  the stop set. R's loop tests `env != R_EmptyEnv` *before* `env ==
+  target`, so the empty environment is never returned even when it is
+  the target; mirrored by testing for the empty env first.
+- Tests: `tests/r/lang/topenv-match-this-env.R` (recorded with GNU R
+  4.5.0, pins the empty-env edge); full `tests/r` conformance 310/310
+  on the combined WIP; `cargo test -p robigo-runtime` unchanged (two
+  `builtins::complex` libm-oracle tests fail on this machine with and
+  without the change).
