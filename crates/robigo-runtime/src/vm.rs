@@ -224,6 +224,13 @@ pub fn enabled() -> bool {
 
 /// Compiled code for a closure body or loop, compiled on first use.
 pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
+    if !matches!(e, Value::Lang(_)) {
+        // Constant and symbol bodies (`function() 1`, `function(x) x`,
+        // `function() NULL`) compile to a single op, making the call
+        // inlinable or at least direct. Compiled per closure (`clo.code`
+        // caches it); there is no shared body object to key the cache on.
+        return Some(Rc::new(if body { compile_body(e) } else { compile_loop(e)? }));
+    }
     let Value::Lang(l) = e else { return None };
     let key = Rc::as_ptr(l) as usize;
     if let Some(c) = CACHE.with(|c| c.borrow().get(&key).map(|(_, code)| code.clone())) {
@@ -920,6 +927,10 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
 fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
     for a in promargs.iter().take(n as usize) {
         if let Value::Promise(p) = &a.value {
+            // Already forced: forcing again only re-boxes the scalar.
+            if !matches!(&*p.value.borrow(), crate::value::PromiseVal::Unforced) {
+                continue;
+            }
             interp.force_promise(p)?;
         }
     }
@@ -1569,20 +1580,28 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
     // Closures created by one `function` expression (the same body, so the
     // same bytecode) share the analysis, which depends on the formals only
     // through their names (it requires them to have no defaults).
+    // (Constant and symbol bodies get a fresh `Code` per closure instance,
+    // so the shared cache cannot key on it; `clo.inline` memoizes those.)
     let key = Rc::as_ptr(&code) as usize;
+    let shared = matches!(&clo.body, Value::Lang(_));
     let same_formals = |f: &[Arg]| {
         f.len() == clo.formals.len()
             && f.iter()
                 .zip(clo.formals.iter())
                 .all(|(a, b)| a.tag == b.tag && a.value.is_missing_arg() == b.value.is_missing_arg())
     };
-    if let Some(r) = INLINES.with(|c| c.borrow().get(&key).filter(|(f, _)| same_formals(f)).map(|(_, i)| i.clone())) {
-        return r;
+    if shared {
+        if let Some(r) = INLINES.with(|c| c.borrow().get(&key).filter(|(f, _)| same_formals(f)).map(|(_, i)| i.clone()))
+        {
+            return r;
+        }
     }
     let r = inline_analysis(clo, code.clone());
-    // (The code is kept alive by the bytecode cache, so its address is not
-    // reused.)
-    INLINES.with(|c| c.borrow_mut().insert(key, (clo.formals.clone(), r.clone())));
+    if shared {
+        // (The code is kept alive by the bytecode cache, so its address is
+        // not reused.)
+        INLINES.with(|c| c.borrow_mut().insert(key, (clo.formals.clone(), r.clone())));
+    }
     r
 }
 
