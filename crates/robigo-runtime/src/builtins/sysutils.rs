@@ -23,6 +23,7 @@ pub static DEFS: &[Builtin] = &[
     internal("Sys.time", do_systime, 0),
     internal("Sys.sleep", do_syssleep, 1).invisible(),
     internal("Sys.getpid", do_sysgetpid, 0),
+    internal("Sys.umask", do_sysumask, 1).custom_vis(),
     internal("Sys.info", do_sysinfo, 0),
     internal("Sys.getlocale", do_getlocale, 1),
     internal("Sys.setlocale", do_setlocale, 2),
@@ -2198,6 +2199,26 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         out.push(ok as i32);
     }
     Ok(Value::lgls(out))
+}
+
+// R: platform.c:do_sysumask — query (mode NA, visible) or set the
+// process umask. The answer carries class "octmode".
+fn do_sysumask(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_internal_arity(&args, 1, "Sys.umask")?;
+    let mode = as_integer(&arg(&args, 0));
+    let res = unsafe {
+        if mode == NA_INTEGER {
+            let res = umask(0);
+            umask(res);
+            i.visible = true;
+            res
+        } else {
+            i.visible = false;
+            umask(mode as u32)
+        }
+    };
+    let ans = Value::int(res as i32);
+    crate::attrib::set_attrib(ans, s::CLASS, Value::str("octmode"))
 }
 
 // R: platform.c:do_readlink

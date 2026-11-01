@@ -100,7 +100,7 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(get_attrib(&x, tag.unwrap()))
 }
 
-fn do_attrgets(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut m = match_args(args, &["x", "which", "value"], call)?;
     let x = m.or_null(0);
     let name = match m.get(1) {
@@ -108,6 +108,10 @@ fn do_attrgets(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         _ => return Err(Flow::error("'name' must be non-null character string")),
     };
     let val = m.or_null(2);
+    // R: attrib.c:do_attrgets — will become an error in R 4.6.0.
+    if !val.is_null() && matches!(x, Value::Builtin(_)) {
+        i.warning("Setting attributes on primitive functions is deprecated and will be disabled")?;
+    }
     set_attrib(x, Sym::new(&name), val)
 }
 
@@ -116,10 +120,19 @@ fn do_attributes(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     Ok(attributes_list(&args[0].value))
 }
 
-fn do_attributesgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "attributes<-", call)?;
     let mut object = take(&mut args, 0);
     let attrs = take(&mut args, 1);
+    // R: attrib.c:do_attributesgets — check before duplication; will become
+    // an error in R 4.6.0.
+    let nattrs = match &attrs {
+        Value::List(l) => l.data.len(),
+        _ => 0,
+    };
+    if nattrs > 0 && matches!(object, Value::Builtin(_)) {
+        i.warning("Setting attributes on primitive functions is deprecated and will be disabled")?;
+    }
     let (vals, names): (Vec<Value>, Vec<RStr>) = match &attrs {
         Value::Null => (vec![], vec![]),
         Value::List(l) => {
