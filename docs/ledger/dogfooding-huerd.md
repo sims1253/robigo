@@ -105,3 +105,21 @@ track's R_IsPackageEnv/R_EnvironmentIsLocked, merged 68493386)
   `library(testthat)` loads and huerd's full suite runs under robigo
   (robigo-suite-dagri2.log; GNU R reference: 1611 pass / 0 fail /
   8 skip in 345 s). Counts pending run completion.
+
+## 2026-11-01: performance measurements and suite status (final)
+
+- `quick_palette(5)`: **GNU R 1.46 s vs robigo 35.7 s (~24x)** (build of
+  dagriculture 1356c285, warm cache, load ~7). The suite is therefore
+  hours under robigo on this 2-core machine, and long runs were killed
+  by machine saturation (six parallel dogfooding agents, load 7-17);
+  per-file runs verified the suite starts and executes
+  (`library(testthat)` 2.0 s, `library(huerd)` 0.6 s warm / 54 s cold)
+  but no full per-file counts were collected.
+- Correctness evidence stands on the byte-identical
+  generate_palette/api-sweep comparison above.
+- Gemini workload candidates (not started): quick_palette(n) and
+  generate_palette(n, optimizer = each of nloptr_cobyla/sann/
+  nelder_mead/lbfgs) — nloptr objective callbacks cross the C bridge
+  per iteration; evaluate_palette/cvd sweeps (farver-dominated); the
+  package's own suite as a mixed workload. GNU R reference: whole suite
+  345 s.
