@@ -203,8 +203,17 @@ jobs:
           name: robigo
           path: dist
       - run: chmod +x dist/robigo
+      # The gate installs from source, so robigo needs its own R_HOME
+      # (bin/R, etc/Makeconf, include/, lib/libR.so). robigo looks for it at
+      # <exe>/../home: dist/robigo means $PWD/home.
+      - name: robigo's R_HOME
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
       - name: Run the CRAN gate
         run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           ROBIGO=dist/robigo python3 scripts/cran-gate.py run | tee -a "$GITHUB_STEP_SUMMARY"
 
   perf:
