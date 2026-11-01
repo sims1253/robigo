@@ -999,6 +999,16 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let v = from_sexp(a[0]);
             match vtype_of(t) {
                 Some(vt) => to_sexp(&with_interp(|i| i.coerce(&v, vt))?),
+                // R: coerce.c:coerceVector1 -- a pairlist target is not one
+                // of the runtime's vector types; `as_vector`'s `pairlist`
+                // arm is the port (NULL/pairlist return unchanged, scalars
+                // and lists convert elementwise; rlang's dots machinery
+                // coerces vectors to pairlists here).
+                None if t as u8 == LISTSXP => to_sexp(
+                    &with_interp(|i| {
+                        robigo_runtime::builtins::coerce::as_vector(i, v, "pairlist", &Value::Null)
+                    })?,
+                ),
                 None => {
                     return Err(Flow::error(format!(
                         "robigo: coerceVector to type {} is not implemented yet",
