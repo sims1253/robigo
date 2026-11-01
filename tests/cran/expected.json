@@ -1,0 +1,16 @@
+{
+ "digest": {
+  "version": "0.6.39",
+  "tests": "inst/tinytest",
+  "passed": 325,
+  "failed": 0,
+  "failures": []
+ },
+ "fastmap": {
+  "version": "1.2.0",
+  "tests": "tests/testthat",
+  "passed": 341,
+  "failed": 0,
+  "failures": []
+ }
+}

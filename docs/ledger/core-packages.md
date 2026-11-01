@@ -6,14 +6,15 @@ run their examples/tests with GNU R's output as the target.
 
 Metrics, in order:
 
-1. `capi` corpus (`scripts/corpus.py run capi`, 22 cases on main at
-   `674f277f`, all passing after #161).
+1. `capi` corpus (`scripts/corpus.py run capi`, 23 cases on main after
+   #171, all passing).
 2. Weighted census coverage of libR's exports
    (`crates/robigo-capi/coverage.py`, from `tests/capi/symbols.tsv`).
 3. The gate: `fastmap` then `digest` install from source inside robigo
    (`docs/core.md`, exit gate G2).
 4. Popular CRAN packages with compiled code that install and whose
-   examples/tests give GNU R's output.
+   examples/tests give GNU R's output — `scripts/cran-gate.py`, the
+   manifest `tests/cran/packages.tsv` is the ratchet.
 
 ## 2026-11-01: baseline and the last census symbols
 
@@ -52,3 +53,22 @@ Metrics, in order:
   uncovered). The unit test in `crates/robigo-capi/tests/capi.rs` pins the
   stream consumption with a hand-written XDR stream, which is the part
   that can silently break.
+
+## 2026-11-01: the CRAN gate harness (metric 4)
+
+- Both gate packages pass on current main: fastmap 1.2.0
+  (tests/testthat, 341 expectations) and digest 0.6.39 (inst/tinytest,
+  325 expectations) install with `robigo CMD INSTALL` from source and
+  match GNU R 4.5.0 exactly.
+- Shipped the metric-4 harness so this stays true: `scripts/cran-gate.py`
+  (run/try/install/test/record/list), the manifest
+  `tests/cran/packages.tsv` + GNU R's recorded `tests/cran/expected.json`
+  (written only by `record`, which runs GNU R in `robigo-oracle:4.5.0`,
+  never robigo), and `crates/robigo-capi/gate/shim.R` — a base-R-only
+  tinytest/testthat shim that counts expectations, identical under both
+  implementations. Wired as the `cran` CI job.
+- Proof: fresh-cache `run` (fetch → install → test → compare) 2/2 match;
+  tampering expected.json (341 → 999) makes `run` fail with exit 1.
+- Next: `try` the popular set (rlang, vctrs, cli, glue, jsonlite, Rcpp,
+  data.table, magrittr, R6, stringi), fix the most-unlocking blocker,
+  add each package to the manifest as it passes.
