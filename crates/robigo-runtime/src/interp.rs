@@ -1087,7 +1087,8 @@ impl Interp {
         crate::env::bump_r_epoch();
         // R: context.c:begincontext saves the srcref active at the call;
         // eval.c:R_execClosure then switches it to the closure's own.
-        let srcref = self.srcref.clone();
+        // A move: the entry below overwrites it anyway.
+        let srcref = std::mem::replace(&mut self.srcref, Value::Null);
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Closure(clo.clone()),
@@ -1104,7 +1105,6 @@ impl Interp {
         // R: eval.c:R_execClosure -- R_Srcref = getAttrib(op, R_SrcrefSymbol)
         self.srcref = clo.attrs.as_ref().and_then(|a| a.get(s::SRCREF)).cloned().unwrap_or(Value::Null);
     }
-
     /// Pop the current context, running `on.exit` code.
     pub fn end_context(&mut self, r: RResult<Value>) -> RResult<Value> {
         if crate::typeprof::enabled() {
