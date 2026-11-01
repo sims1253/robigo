@@ -14,7 +14,9 @@ use super::{arg, internal};
 use crate::coerce::{as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
-use crate::format::{encode_integer, encode_logical, encode_real0, format_real};
+use crate::format::{
+    PrintParams, encode_complex_dec, encode_integer, encode_logical, encode_real_dec, format_complex, format_real,
+};
 use crate::interp::Interp;
 use crate::sym::{Sym, s};
 use crate::value::*;
@@ -2921,19 +2923,18 @@ pub fn write_connection(i: &mut Interp, con: i32, text: &str) -> RResult<()> {
 }
 
 /// `EncodeElement0(x, i, quote = 0)` as used by cat.
-pub fn encode_element_cat(i: &Interp, v: &Value, k: usize) -> String {
-    let pp = i.print_params();
+pub fn encode_element_cat(pp: &PrintParams, v: &Value, k: usize) -> String {
     match v {
         Value::Lgl(x) => encode_logical(x.data[k], 0, "NA"),
         Value::Int(x) => encode_integer(x.data[k], 0, "NA"),
         Value::Real(x) => {
             let (w, d, e) = format_real(&x.data[k..k + 1], pp.digits, pp.scipen, 0, pp.na_width);
-            encode_real0(x.data[k], w, d, e, "NA")
+            encode_real_dec(x.data[k], w, d, e, "NA", &pp.out_dec)
         }
         Value::Cplx(x) => {
             let z = x.data[k];
-            let (r, im) = crate::format::format_complex(&[z], pp.digits, pp.scipen, 0, pp.na_width);
-            crate::format::encode_complex(z, r, im, "NA")
+            let (r, im) = format_complex(&[z], pp.digits, pp.scipen, 0, pp.na_width);
+            encode_complex_dec(z, r, im, "NA", &pp.out_dec)
         }
         Value::Str(x) => x.data[k].as_deref().unwrap_or("NA").to_string(),
         Value::Raw(x) => format!("{:02x}", x.data[k]),
@@ -3054,6 +3055,9 @@ fn cat_body(
             *width += crate::format::str_width(l) + 1;
         }
     };
+    // One PrintParams for the whole call: `encode_element_cat` used to build
+    // it per element, costing five option lookups per cat() element.
+    let pp = i.print_params();
     for (iobj, s0) in objs.iter().enumerate() {
         if iobj != 0 && !s0.is_null() {
             out.push_str(sep_at(ntot));
@@ -3073,7 +3077,7 @@ fn cat_body(
         let elem = |k: usize| -> RResult<String> {
             match s0 {
                 Value::Sym(sy) => Ok(sy.name().to_string()),
-                v if v.is_atomic() => Ok(encode_element_cat(i, v, k)),
+                v if v.is_atomic() => Ok(encode_element_cat(&pp, v, k)),
                 v => Err(Flow::error(format!(
                     "argument {} (type '{}') cannot be handled by 'cat'",
                     iobj + 1,
