@@ -160,3 +160,20 @@ SEXP capi_symbols(void) {
     UNPROTECT(1);
     return ans;
 }
+
+// R_IsPackageEnv: attached package environments are, everything else is
+// not (no error for non-environments).
+SEXP capi_is_package_env(SEXP a, SEXP b, SEXP c, SEXP d) {
+    SEXP ans = PROTECT(allocVector(LGLSXP, 4));
+    LOGICAL(ans)[0] = R_IsPackageEnv(a);
+    LOGICAL(ans)[1] = R_IsPackageEnv(b);
+    LOGICAL(ans)[2] = R_IsPackageEnv(c);
+    LOGICAL(ans)[3] = R_IsPackageEnv(d);
+    UNPROTECT(1);
+    return ans;
+}
+
+// R_EnvironmentIsLocked: locked and unlocked environments.
+SEXP capi_env_locked(SEXP e) {
+    return ScalarLogical(R_EnvironmentIsLocked(e));
+}
