@@ -322,6 +322,23 @@ pub unsafe extern "C" fn R_FlushConsole() {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ProcessEvents() {}
 
+// R: unix/system.c:R_Busy — call the busy handler the front end
+// installed (unix's Rstd_Busy is a no-op; NULL is robigo's unset).
+pub type BusyHandler = Option<unsafe extern "C" fn(c_int)>;
+
+/// The front end's busy handler (`Rinterface.h`: `void (*ptr_R_Busy)(int)`).
+/// SAFETY: the C front end sets this once, on the single interpreter
+/// thread, before R code runs; robigo only reads it from that thread.
+#[unsafe(no_mangle)]
+pub static mut ptr_R_Busy: BusyHandler = None;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_Busy(which: c_int) {
+    if let Some(handler) = ptr_R_Busy {
+        handler(which);
+    }
+}
+
 // R: errors.c:R_CheckUserInterrupt — robigo has no asynchronous
 // interrupts yet; the flag is honoured if a package sets it.
 #[unsafe(no_mangle)]
