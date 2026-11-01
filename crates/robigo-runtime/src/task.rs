@@ -28,9 +28,13 @@ impl Interp {
     /// `succeeded` is TRUE from both of R's callers (the REPL iterations),
     /// so it is TRUE here too. A handler returning FALSE is removed; a
     /// handler that removed itself is skipped where it stood.
-    pub fn call_toplevel_handlers(&mut self, expr: &Value, value: &Value, visible: bool) {
+    /// `options(warn = 2)` turns the non-logical-result warning into an
+    /// error, which in GNU R longjmps out of `Rf_callToplevelHandlers`
+    /// (the remaining handlers are not called) to the top level: that
+    /// flow is returned for the caller to report.
+    pub fn call_toplevel_handlers(&mut self, expr: &Value, value: &Value, visible: bool) -> Option<Flow> {
         if self.running_task_callbacks || self.task_callbacks.is_empty() {
-            return;
+            return None;
         }
         self.running_task_callbacks = true;
         let mut i = 0;
@@ -39,7 +43,15 @@ impl Interp {
                 let e = &self.task_callbacks[i];
                 (e.id, e.name.clone(), e.f.clone(), e.data.clone(), e.use_data)
             };
-            let again = self.run_task_callback(&f, expr, value, visible, &data, use_data);
+            let again = match self.run_task_callback(&f, expr, value, visible, &data, use_data) {
+                Ok(again) => again,
+                Err(f) => {
+                    // R's warning() -> Rf_error: the jump leaves the
+                    // handler registered and skips the ones after it.
+                    self.running_task_callbacks = false;
+                    return Some(f);
+                }
+            };
             if !self.warnings.is_empty() {
                 // REprintf(_("warning messages from top-level task
                 // callback '%s'\n"), h->name); PrintWarnings();
@@ -58,13 +70,15 @@ impl Interp {
             }
         }
         self.running_task_callbacks = false;
+        None
     }
 
     /// R: main.c:R_taskCallbackRoutine -- call
     /// `f(expr, value, succeeded, visible[, data])` in a fresh environment
-    /// over the global one. An error is swallowed (`R_tryEval`) and means
-    /// the handler is not called again; a non-logical result warns and
-    /// `asLogical()` of NA (like the C cast) keeps the handler.
+    /// over the global one. An error is reported by `R_tryEval` (the
+    /// message reaches the console, `R_tryEvalSilent` is not used) and
+    /// means the handler is not called again; a non-logical result warns
+    /// and `asLogical()` of NA (like the C cast) keeps the handler.
     fn run_task_callback(
         &mut self,
         f: &Value,
@@ -73,7 +87,7 @@ impl Interp {
         visible: bool,
         data: &Value,
         use_data: bool,
-    ) -> bool {
+    ) -> RResult<bool> {
         let rho = Env::new(Some(self.global.clone()));
         rho.set_local(Sym::new("cb"), f.clone());
         rho.set_local(Sym::new("expr"), expr.clone());
@@ -109,11 +123,18 @@ impl Interp {
         match r {
             Ok(val) => {
                 if !matches!(val, Value::Lgl(_)) {
-                    let _ = self.warning("top-level task callback did not return a logical value");
+                    // R: main.c:R_taskCallbackRoutine — with
+                    // options(warn = 2) this errors out to the top level.
+                    self.warning("top-level task callback did not return a logical value")?;
                 }
-                as_logical(&val) != 0
+                Ok(as_logical(&val) != 0)
             }
-            Err(_) => false,
+            Err(f) => {
+                // R_tryEval (unlike R_tryEvalSilent) prints the message;
+                // only the unwinding is suppressed.
+                self.report_toplevel(f);
+                Ok(false)
+            }
         }
     }
 }

@@ -321,7 +321,13 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 if let Some(val) = &value {
                     if !interp.task_callbacks.is_empty() {
                         let visible = interp.toplevel_visible;
-                        interp.call_toplevel_handlers(&v, val, visible);
+                        // A warning converted to an error (options(warn = 2))
+                        // longjmps out of Rf_callToplevelHandlers to the top
+                        // level, like an evaluation error.
+                        if let Some(f) = interp.call_toplevel_handlers(&v, val, visible) {
+                            interp.report_toplevel(f);
+                            return false;
+                        }
                     }
                 }
                 iob.clear();
