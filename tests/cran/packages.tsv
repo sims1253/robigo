@@ -1,0 +1,12 @@
+# CRAN packages with compiled code that must install from source on robigo
+# and whose own tests must give GNU R's result (scripts/cran-gate.py).
+# One per line: name, version, tests directory inside the tarball.
+#
+# Record GNU R 4.5.0's result for these with
+#   scripts/cran-gate.py record
+# and check robigo against it with
+#   scripts/cran-gate.py run
+#
+# The sources are downloaded into ~/.cache/robigo-cran, never committed.
+fastmap	1.2.0	tests/testthat
+digest	0.6.39	inst/tinytest

@@ -185,6 +185,28 @@ jobs:
           path: .robigo/results/
           retention-days: 14
 
+  # CRAN packages with compiled code (tests/cran/packages.tsv), installed
+  # from source with robigo's own R_HOME and compared with GNU R 4.5.0's
+  # recorded result (scripts/cran-gate.py; docs/verification.md).
+  cran:
+    needs: build
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: actions/download-artifact@v4
+        with:
+          name: robigo
+          path: dist
+      - run: chmod +x dist/robigo
+      - name: Run the CRAN gate
+        run: |
+          ROBIGO=dist/robigo python3 scripts/cran-gate.py run | tee -a "$GITHUB_STEP_SUMMARY"
+
   perf:
     needs: build
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}

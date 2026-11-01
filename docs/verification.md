@@ -73,6 +73,35 @@ Run `scripts/corpus.py record NAME` (needs GNU R 4.5.0) after adding or
 changing cases; `scripts/corpus.py import NAME` re-imports a corpus from
 upstream.
 
+### CRAN packages with compiled code
+
+`scripts/cran-gate.py` installs real CRAN packages from source into
+robigo — `robigo CMD INSTALL`, robigo's `R_HOME`, headers and
+`libR.so` — and runs their own test files (`docs/core.md` §8). The
+manifest `tests/cran/packages.tsv` is the ratchet: one line per package
+(name, version, its tests directory), and `tests/cran/expected.json`
+holds GNU R 4.5.0's result for each, recorded in the oracle image.
+
+```sh
+scripts/cran-gate.py run                     # install + test, compare
+scripts/cran-gate.py run fastmap --diff      # one package, differing expectations
+scripts/cran-gate.py try glue@1.8.1          # explore where a package stops
+scripts/cran-gate.py record                  # GNU R in robigo-oracle:4.5.0
+```
+
+The tests run through `crates/robigo-capi/gate/shim.R`, a base-R-only
+reimplementation of the tinytest/testthat API that counts expectations
+and prints `PKG VERSION: N expectations passed, M failed`. It must
+behave the same under both implementations — it is plain R, so it runs
+unchanged in the oracle image; `record` is its only writer of
+`expected.json` and it runs GNU R, never robigo. A package passes when
+the counts (and, when anything fails, the failing expectations) match
+GNU R byte for byte.
+
+Package sources are downloaded into `~/.cache/robigo-cran` (`src/`,
+`build/`, `lib/` for robigo, `lib-oracle/` for GNU R) and are never
+committed.
+
 ## Performance
 
 `scripts/perf.py` runs the benchmark suites in `benchmarks/benchmarks.toml`
@@ -126,10 +155,13 @@ scripts/perf.py compare before.json after.json          # the gate
    (unit, parser oracle, conformance in all tiers).
 2. **corpora:** each corpus (FastR in four shards) against its ratchet.
    Results are artifacts; the summary shows pass counts.
-3. **perf:** instruction counts of every benchmark; on pull requests
+3. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
+   compiled code — installed from source with robigo and compared with
+   GNU R's recorded result (§ CRAN packages with compiled code).
+4. **perf:** instruction counts of every benchmark; on pull requests
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
-4. **progress** (main only): appends the commit's numbers (instruction
+5. **progress** (main only): appends the commit's numbers (instruction
    counts of every benchmark, passing cases of every corpus, builtins
    implemented) as one line to `history.jsonl` on the orphan branch
    `progress-data`, then publishes the charts, badges and a page with
