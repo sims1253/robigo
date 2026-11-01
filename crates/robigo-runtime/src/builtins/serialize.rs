@@ -453,12 +453,10 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
     // a missing or stale cache falls through to the per-fetch path
     if let Some(v) = crate::rdbflat::with_entry(&file, off, len, |data| {
         crate::serialize::unserialize(i, data, hook.clone()).and_then(|v| match v {
-            // R: serialize.c do_lazyLoadDBfetch — eval(val, R_GlobalEnv)
-            Value::Promise(p) => {
-                let expr = p.expr.clone();
-                let g = i.global.clone();
-                i.eval(&expr, &g)
-            }
+            // R: serialize.c do_lazyLoadDBfetch — eval(val, R_GlobalEnv);
+            // eval.c forces a PROMSXP in its own PRENV, which for a
+            // package's lazy-load database is the namespace.
+            Value::Promise(p) => i.force_promise(&p),
             v => Ok(v),
         })
     }) {
@@ -479,14 +477,11 @@ fn do_lazy_load_db_fetch(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> 
             Flow::error(format!("robigo: {} lazy-load databases are not implemented yet", what))
         }
     })?;
-    // R: serialize.c do_lazyLoadDBfetch — eval(val, R_GlobalEnv)
+    // R: serialize.c do_lazyLoadDBfetch — eval(val, R_GlobalEnv); a
+    // PROMSXP is forced in its own environment (eval.c).
     let v = crate::serialize::unserialize(i, &data, hook)?;
     match v {
-        Value::Promise(p) => {
-            let expr = p.expr.clone();
-            let g = i.global.clone();
-            i.eval(&expr, &g)
-        }
+        Value::Promise(p) => i.force_promise(&p),
         v => Ok(v),
     }
 }
