@@ -6,6 +6,22 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-01: round 14, unboxed inline apply and zero-allocation scalar accumulation
+
+- Base: main 0b486770.
+- Optimization:
+  - Eliminated per-element heap `VectorData` allocations in `do_lapply`, `do_vapply`, and `FastApply` by introducing `element_rval` to extract unboxed primitive scalars (`RVal::D`, `RVal::I`, `RVal::L`, or borrowed list values) directly from source vectors without allocation.
+  - Added `vm::call_inline_rval` to execute inlinable pure closures directly over unboxed `&[RVal]` arguments, avoiding intermediate `Value` boxing/unboxing churn and redundant clones.
+  - Stored pre-evaluated invariant arguments in `FastClosure` as `RVal` instead of `Value`, unboxing invariant constants once ahead of the loop.
+  - Added direct vector accumulation fast paths in `do_vapply` for scalar return types (`VType::Real`, `VType::Int`, `VType::Lgl`), collecting directly into `Vec<f64>` / `Vec<i32>` buffers and bypassing `parts: Vec<Value>` heap boxing and the subsequent `concat_values` copy.
+- Benchmark results against baseline:
+  - `3 faster, 0 slower (> 0.5%), 0 broken, 0 fixed`
+  - `rbench/simple/lapply`: 298,660,914 -> 277,971,856 (-6.93%, ratio down from 0.40x to 0.37x)
+  - `rbench/simple/lapplyDots`: 296,412,508 -> 278,714,865 (-5.97%, ratio down from 0.39x to 0.37x)
+  - `robigo/apply`: 810,771,309 -> 770,443,109 (-4.97%, ratio down from 0.42x to 0.40x)
+  - Geometric mean robigo/GNU R improved from 0.403x to 0.379x.
+- Conformance: 9/9 tests pass (`cargo test --release -p robigo-cli --test conformance`), including `compiled_matches_interpreted` (interpreter, VM, and VM+JIT agree).
+
 ## 2026-10-30: round 13, unboxed scalar promises and gate recovery
 
 - Base: main ff759036 (PR #130 parent). Re-measured 84-program baseline table on main: geomean **0.486x over 73 correct programs, faster on 73**. Saved as `.robigo/robigo-base`.
