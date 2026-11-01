@@ -143,3 +143,79 @@ numericDeriv(quote(g^2), "g", e2)   # value 9, gradient 0 (should be 6)
   `c_owned_binding`/holder machinery in native/mod.rs exists for exactly
   this), so in-place C mutations are visible to subsequent evals; and
   guard `dqrsl`'s ju==0 branch against empty inputs.
+
+## 2026-11-01: rounds 4-6 (numericDeriv, La_qr, Sys.umask) — shipped
+
+- **numericDeriv / SS* family** (PR #177, merged): `defineVar` from C into
+  a C-created env binds the C-owned vector through `c_owned_binding`, so
+  stats' `numeric_deriv` perturbation is visible to the next eval;
+  `dqrsl`'s empty-input path guarded. SS*/nls cases pass (12-16 cases).
+- **La_qr / qr_coef_real / qr_qy_real** (PR #179, open): dlsym'd system
+  LAPACK (`dgeqp3`/`dormqr`/`dtrtrs`), pivoted dimnames like Lapack.c;
+  `base/qr` passes. CI: gnur-tests job failed once — local diagnosis
+  below.
+- **Sys.umask + attribute-of-primitive warning** (PR #182, merged):
+  `platform.c:do_sysumask` (NA queries, visible; set returns previous
+  mask invisibly, class "octmode") and `attrib.c`'s deprecation warning
+  on `attr<-`/`attributes<-` of primitives. `base/octmode`, `base/attr`
+  pass. Metric after #182: gnur-examples 1,067 marked on main.
+
+## 2026-11-01: diagnosis — PR #179's gnur-tests CI failure
+
+The gnur-tests CI job (46-minute step timeout) failed on the laqr branch.
+Local reproduction with per-case scopes (`MemoryMax`, `oom.group` kills a
+whole scope, so one scope per case) found three cases:
+
+- `reg-large` and `utf8`: the corpus invocation itself was killed — a
+  robigo process ate ~2 GB+ in seconds (two in parallel at --jobs 2).
+- `reg-packages`: regression — the R CMD build flow produced no
+  `myTst_1.0.tar.gz`; the branch base predates #172-#178, so this is
+  suspected stale-base, not the lapack code.
+
+Next: rebase #179 on main, rebuild, rerun the three cases. If the
+explosions persist on the rebased branch, they are real (qr/La_qr is the
+only diff) and need a fix before merge; `reg-packages` should resolve.
+
+## 2026-11-01: round 7 — C-assembled closures (PR #185)
+
+- **why**: `stats/deriv` printed `<pointer: 0x0>` for
+  `deriv(..., function.arg=...)` and died there; `stats/selfStart`
+  aborted at the same place. stats' `deriv` builds its gradient function
+  in C (`deriv.c`: `allocSExp(CLOSXP)` + `SET_FORMALS`/`SET_BODY`/
+  `SET_CLOENV`), and the C bridge's `from_sexp` had no CLOSXP arm — the
+  node came back as a wrapped external pointer.
+- **what**: `from_sexp` reads CAR=FORMALS, CDR=BODY, TAG=CLOENV into a
+  runtime closure (same shape as the C-assembled promises of PR #174);
+  a non-pairlist formals or missing CLOENV keeps the node opaque.
+- **tests**: new capi corpus case `closure` (C closure with missing-arg
+  formal and default, printed/called/inspected), oracle-recorded in
+  `robigo-oracle:4.5.0`; capi 24/24. gnur-examples +2 (stats/deriv,
+  stats/selfStart); full-corpus sweep: 0 real regressions (21 local
+  failures are host-env: library paths, pager, NEWS/AUTHORS contents —
+  all marked and green in CI); cran-purer 37/41; `cargo test -p
+  robigo-capi` green.
+- **result**: gnur-examples 1,065 → 1,067 marked on this branch
+  (1,067 on main after #182 + this PR's 2).
+
+## 2026-11-01: PR #179 rebased and verified — CI failure was stale-base
+
+Rebased #179 onto c2db7c84 (post-#182 main; local head c5e0ce0d), rebuilt and
+re-examined the three locally-suspect cases:
+
+- `reg-large` / `utf8` OOM under a 3G per-case scope on any build: they are
+  memory hogs by design (utf8 makes 1.1M single-char strings and sapplys a
+  tryCatch over them). Main's CI artifact (PR #182 run 41314633803) shows
+  reg-large 197s / utf8 29s on a 16G runner, both already failing as
+  *unmarked* cases — not laqr's doing (neither script mentions qr/LAPACK).
+  The 46-minute gnur-tests job death on the old head (no failed step, no
+  artifact: job-level timeout) matches the old base 6c894831 (#165, before
+  the perf/conformance merges #166-#182), not the lapack code.
+- `reg-packages` still fails locally on the rebased branch, but it failed
+  identically with the pre-laqr cclosure binary: `build.pkg("myTst")`
+  produces no tarball on this laptop (R CMD build subprocess flow, host
+  env). It passes in CI on main (3.0s) — CI arbitrates.
+- Local sweep with the rebased binary: all 32 marked gnur-tests cases
+  runnable here pass (lapack, lm-tests, reg-BLAS included), `base/qr`
+  passes in gnur-examples, cran-purer 37/41 with 0 regressions.
+
+Conclusion: pushed the rebase (force-with-lease) and let CI confirm.
