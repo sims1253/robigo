@@ -29,10 +29,23 @@ how it is measured, and the protocol every agent follows. Read
 7. **Never** remove ratchet entries, weaken a test or the oracle, edit
    `rlib/`, or hand-edit recorded GNU R output (re-record with
    `scripts/corpus.py record` / `scripts/regen-expected.sh`).
-8. **The machine has 2 cores.** One build at a time (`scripts/build.sh`
+8. **Track every gap you find.** Something robigo does not support or
+   gets wrong (a missing internal or C API entry point, a wrong message
+   or output, a crash) that you do not fix in this pull request becomes
+   a small, focused conformance script `tests/r/<area>/<name>.R` (or a
+   capi corpus case) with GNU R's output recorded by
+   `scripts/regen-expected.sh`, and no ratchet marker until it passes.
+   CI runs it without failing on it, and the progress page
+   (https://sims1253.github.io/robigo/) lists it under the open gaps.
+   It must behave the same in the interpreter, the VM and the JIT
+   (`compiled_matches_interpreted` runs every script). A slow path gets a
+   benchmark. A CRAN package that does not work is reduced to such a
+   case: `tests/cran/packages.tsv` is a gate and lists only packages that
+   match GNU R. Log each gap in your ledger with the test's path.
+9. **The machine has 2 cores.** One build at a time (`scripts/build.sh`
    waits for the lock). Run corpora with `--filter`; CI runs them whole.
    Leave no background processes behind.
-9. **Report** at the end: PR links, metric before and after, what is
+10. **Report** at the end: PR links, metric before and after, what is
    still open.
 
 ## Tracks

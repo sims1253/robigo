@@ -162,8 +162,10 @@ scripts/perf.py compare before.json after.json          # the gate
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
 5. **progress** (main only): appends the commit's numbers (instruction
-   counts of every benchmark, passing cases of every corpus, builtins
-   implemented) as one line to `history.jsonl` on the orphan branch
+   counts of every benchmark, passing cases of every corpus and of the
+   `tests/r` conformance scripts, the failing case ids of every corpus
+   with at most a few hundred — the open gaps —, builtins implemented)
+   as one line to `history.jsonl` on the orphan branch
    `progress-data`, then publishes the charts, badges and a page with
    every benchmark and corpus on GitHub Pages
    (https://sims1253.github.io/robigo/); the README embeds them. Nothing

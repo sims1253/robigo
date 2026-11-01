@@ -98,7 +98,18 @@ jobs:
           scripts/build-rdbflat.sh
           python3 scripts/test-rdbflat.py
       - name: Unit tests, parser oracle, conformance (all tiers)
+        # The conformance results go to the progress page with the corpora
+        # (scripts/history.py records the open gaps from them).
+        env:
+          ROBIGO_CONF_RESULTS: ${{ github.workspace }}/.robigo/conformance-results/conformance.json
         run: cargo test --release --workspace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-conformance-1of1
+          path: .robigo/conformance-results/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Ratchet markers
         run: python3 scripts/ratchet.py check | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Core and C API under gctorture (collect on every allocation)
