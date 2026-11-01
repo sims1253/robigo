@@ -72,3 +72,21 @@ Metrics, in order:
 - Next: `try` the popular set (rlang, vctrs, cli, glue, jsonlite, Rcpp,
   data.table, magrittr, R6, stringi), fix the most-unlocking blocker,
   add each package to the manifest as it passes.
+
+## 2026-11-01: lazy-load promises force in their own environment
+
+- The other half of WIP b2098e9b. `do_lazy_load_db_fetch` evaluated a
+  PROMSXP's code in the global environment; R's
+  `serialize.c:do_lazyLoadDBfetch` calls `eval(val, R_GlobalEnv)`, and
+  `eval.c`'s PROMSXP case (`ENSURE_PROMISE_IS_EVALUATED`) forces a
+  promise in its own PRENV — the `R_GlobalEnv` argument never reaches
+  the promise. A database built from an environment whose promises were
+  created with `delayedAssign(..., eval.env = e)` therefore forced its
+  code in `e`; the old port looked up symbols in the global
+  environment and failed.
+- Both fetch paths (the flat-db cache and the per-file read) now route
+  through `force_promise`, the port of eval.c's forcing (eval in PRENV,
+  cache the value, clear PRENV).
+- Tests: `tests/r/serialize/lazy-load-promise.R` builds a database with
+  `tools:::makeLazyLoadDB` and forces a promise after `lazyLoad()`;
+  full `tests/r` conformance 310/310 on the combined WIP.
