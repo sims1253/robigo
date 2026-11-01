@@ -3811,6 +3811,12 @@ fn run_with(
                     return Ok(body_result(interp, r, vars.unboxed));
                 }
                 let v = r.into_value();
+                // R: context.c:findcontext — a `return` with no target
+                // context is a catchable error at the jump site.
+                if !interp.has_return_target(&env) {
+                    flush!();
+                    return Err(Flow::error("no function to return from, jumping to top level"));
+                }
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {

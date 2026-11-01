@@ -207,6 +207,11 @@ fn do_return(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
         1 => interp.eval(&args[0].value, env)?,
         _ => return Err(Flow::error_call(call.clone(), "multi-argument returns are not permitted")),
     };
+    // R: context.c:findcontext — the catchable error is raised here, at
+    // the jump site, so enclosing handlers see it before unwinding.
+    if !interp.has_return_target(env) {
+        return Err(Flow::error("no function to return from, jumping to top level"));
+    }
     Err(Flow::Return(v, env.clone()))
 }
 

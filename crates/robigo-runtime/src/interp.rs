@@ -1065,6 +1065,15 @@ impl Interp {
         self.end_context(r)
     }
 
+    /// R: context.c:findcontext — a `return` needs a FUNCTION/BROWSER/
+    /// RETURN context whose `cloenv` is the frame it is executed in
+    /// (closure frames, and `do_eval`'s context for its `envir`).
+    /// Without one, `return` is a catchable error raised at the jump
+    /// site, before handlers unwind.
+    pub fn has_return_target(&self, env: &Env) -> bool {
+        self.frames.iter().rev().any(|ctx| !ctx.builtin && ctx.cloenv.ptr_eq(env))
+    }
+
     /// Push the context of a call of `clo` (R: begincontext in
     /// R_execClosure); [`Self::end_context`] pops it.
     #[inline]

@@ -139,3 +139,39 @@ Metrics, in order:
   needs #196's `topenv` matchThisEnv fix: without it `where` walks
   past the sourcing environment into a locked namespace
   ("cannot add bindings to a locked environment").
+## 2026-11-01: return raises the catchable no-target error at the jump site
+
+- magrittr 2.0.5 crashed the CRAN-gate shim: `1 %>% { return(.) }`
+  evaluates the block from magrittr's C code via `Rf_eval`, and the
+  unconsumed `Flow::Return` reached top level uncatchably ("Error: no
+  function to return from ... Execution halted"). GNU R raises that as
+  an ordinary *catchable* error — `context.c:findcontext` calls
+  `error()` at the jump site, inside whatever handlers are active.
+- First attempt (rejected): converting the flow in the bridge's
+  `h_eval`. Sol review showed both failure modes: `tryCatch(1 %>%
+  {stop("boom")}, error=conditionMessage)` lost "boom" (the conversion
+  intercepted valid handler-result returns crossing C), and
+  `1 %>% {tryCatch(return(.), error=function(e) 42)}` gave the outer
+  error instead of 42 (the conversion happened after the inner
+  handler's frame was gone).
+- Kept fix: port findcontext where R has it — `do_return` checks
+  `frames` (rev) for a non-builtin context whose `cloenv` is the
+  return's frame (closure frames push one; `do_eval` pushes one with
+  `cloenv = envir`, matching R's CTXT_RETURN context), and raises
+  `Flow::error("no function to return from, jumping to top level")`
+  when none matches. The VM's non-body `Op::Return` does the same
+  check (`compile.rs` compiles `return()` calls in closure bodies to
+  the consumed `is_body` path, so only eval'd units reach it).
+  Break/next keep bubbling: R's loop contexts (CTXT_LOOP) are not
+  modelled yet, so `{ break }` from C still reaches top level.
+- Measured: Sol's two cases match GNU R (42, "boom"); magrittr's shim
+  12 passed / 13 failed (GNU R 53/0); full tests/r conformance
+  310/310; capi corpus 24/24, 0 regressions; robigo-runtime unit
+  tests unchanged (the two libm-oracle complex failures are
+  machine-specific, identical on the base commit).
+- Still open for magrittr (next blockers, in order): promises leak
+  from rlang's `r_env_bind_lazy` lazy bindings ("object of type
+  'promise' is not subsettable", "invalid 'envir' argument of type
+  'promise'", "Can't splice an object of type <promise>"), and
+  `1 %>% identity() %>% return()` returns an external pointer instead
+  of 1 (the trailing bare-`return` rhs in pipe.c's masking path).
