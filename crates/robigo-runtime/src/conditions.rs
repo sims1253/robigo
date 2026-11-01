@@ -221,7 +221,34 @@ impl Interp {
         self.default_error(&ecall, &e.message)
     }
 
+    /// R: errors.c:R_SignalCStackOverflow -- calling handlers might
+    /// overflow the C stack themselves, so they count as failed and are
+    /// skipped. An exiting handler runs after the unwind, in robigo as in R.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn signal_c_stack_overflow(&mut self, usage: usize) -> Flow {
+        let msg = format!("C stack usage  {usage} is too close to the limit");
+        let classes = ["CStackOverflowError", "stackOverflowError", "error", "condition"];
+        let class_rcs: Vec<crate::value::RString> = classes.iter().map(|c| crate::value::RString::from(*c)).collect();
+        while let Some((entry, rest)) = self.find_handler(&class_rcs) {
+            self.handlers = rest;
+            if !entry.calling {
+                let mut cond = Vector::new(vec![Value::str(&msg), Value::Null, Value::real(usage as f64)]);
+                cond.attrs = Some(Box::new(Attrs(
+                    vec![
+                        (s::NAMES, Value::strs_from(["message", "call", "usage"])),
+                        (s::CLASS, Value::strs_from(classes)),
+                    ],
+                    false,
+                )));
+                return self.goto_exiting_handler(Value::List(Rc::new(cond)), Value::Null, &entry);
+            }
+        }
+        self.default_error(&Value::Null, &msg)
+    }
+
     pub fn goto_exiting_handler(&mut self, cond: Value, call: Value, entry: &HandlerEntry) -> Flow {
+        self.restore_expressions();
         let result = Value::list(vec![cond, call, entry.handler.clone(), Value::Null]);
         match &entry.target {
             Some(t) => Flow::Return(result, t.clone()),
@@ -283,6 +310,8 @@ impl Interp {
                 self.print_warnings();
             }
         }
+        // R: errors.c:restore_inError
+        self.restore_expressions();
         Flow::Error(Box::new(RError {
             message: msg.to_string(),
             call: Some(call.clone()),

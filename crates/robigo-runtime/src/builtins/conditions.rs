@@ -237,6 +237,7 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
                 cur = node.next.clone();
                 if matches {
                     i.restarts = cur;
+                    i.restore_expressions();
                     return Err(Flow::Return(arglist, e));
                 }
             }

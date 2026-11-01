@@ -122,9 +122,12 @@ pub struct Interp {
     pub conns: crate::builtins::io::ConnState,
     /// S4 dispatch state (methods package hooks, primitive methods).
     pub s4: crate::s4::S4State,
+    /// The evaluation depth limit in force (R_Expressions): above the
+    /// option while a handler or on.exit code runs after an overflow.
+    expressions: usize,
+    /// `options(expressions=)` (R_Expressions_keep).
+    expressions_keep: usize,
 }
-
-const MAX_DEPTH: usize = 5000;
 
 /// The value of variable `sym` from `env` if reading it runs no code: a
 /// plain binding or a forced promise (not `...`, `..n`, an active binding
@@ -245,6 +248,8 @@ impl Interp {
             cli_args: None,
             conns: Default::default(),
             s4: Default::default(),
+            expressions: 5000,
+            expressions_keep: 5000,
         };
         interp.ns_registry.set_parent(Some(interp.empty.clone()));
         interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));
@@ -265,16 +270,41 @@ impl Interp {
         if self.stack_limit != 0 {
             let used = self.stack_base.saturating_sub(stack_address());
             if used > self.stack_limit {
-                let err = Box::new(crate::error::RError {
-                    message: format!("C stack usage  {} is too close to the limit", used),
-                    call: Some(Value::Null),
-                    signaled: false,
-                    classes: vec![],
-                });
-                return Err(self.signal_error(err));
+                return Err(self.signal_c_stack_overflow(used));
             }
         }
         Ok(())
+    }
+
+    /// R: options.c:do_options, for `expressions`.
+    pub(crate) fn set_expressions(&mut self, limit: usize) {
+        self.expressions = limit;
+        self.expressions_keep = limit;
+    }
+
+    /// R: context.c:R_restore_globals: a jump ends the handling of an
+    /// overflow. Done where the jump starts, for jumps that are `longjmp`s
+    /// in GNU R whichever way the code runs: a `return()` is one only in
+    /// R's AST interpreter, and base R runs compiled.
+    pub(crate) fn restore_expressions(&mut self) {
+        self.expressions = self.expressions_keep;
+    }
+
+    /// R: eval.c:handle_eval_depth_overflow, and INCREMENT_EVAL_DEPTH's
+    /// depth, which the caller has counted and not yet undone.
+    #[cold]
+    #[inline(never)]
+    fn eval_depth_overflow(&mut self) -> Flow {
+        self.expressions = self.expressions_keep + 500;
+        let err = Box::new(crate::error::RError {
+            message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
+            call: Some(Value::Null),
+            signaled: false,
+            classes: vec!["expressionStackOverflowError", "stackOverflowError"],
+        });
+        let flow = self.signal_error(err);
+        self.depth -= 1;
+        flow
     }
 
     // ------------------------------------------------------------------
@@ -286,15 +316,8 @@ impl Interp {
         crate::env::bump_r_epoch();
         self.check_stack()?;
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            self.depth -= 1;
-            let err = Box::new(crate::error::RError {
-                message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
-                call: Some(Value::Null),
-                signaled: false,
-                classes: vec![],
-            });
-            return Err(self.signal_error(err));
+        if self.depth > self.expressions {
+            return Err(self.eval_depth_overflow());
         }
         let r = f(self);
         self.depth -= 1;
@@ -640,15 +663,8 @@ impl Interp {
         self.visible = true;
         self.check_stack()?;
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            self.depth -= 1;
-            let err = Box::new(crate::error::RError {
-                message: "evaluation nested too deeply: infinite recursion / options(expressions=)?".into(),
-                call: Some(Value::Null),
-                signaled: false,
-                classes: vec![],
-            });
-            return Err(self.signal_error(err));
+        if self.depth > self.expressions {
+            return Err(self.eval_depth_overflow());
         }
         Ok(())
     }
@@ -1120,6 +1136,12 @@ impl Interp {
             // (R_ExitContext) while its on.exit code runs, with the pending
             // return value; after an error unwind the value is undefined.
             let saved_exit_value = std::mem::replace(&mut self.exit_value, result.as_ref().ok().cloned());
+            // R: context.c:R_run_onexits -- the on.exit code of a jump runs
+            // with room, in case the jump is from handling an overflow.
+            let raise = result.is_err() && self.expressions == self.expressions_keep;
+            if raise {
+                self.expressions = self.expressions_keep + 500;
+            }
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
@@ -1131,6 +1153,9 @@ impl Interp {
                         break;
                     }
                 }
+            }
+            if raise {
+                self.restore_expressions();
             }
             self.exit_value = saved_exit_value;
             self.visible = saved_visible;
@@ -1360,6 +1385,7 @@ impl Interp {
         self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
+        self.restore_expressions();
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;
         let r = self.eval(e, env);

@@ -308,6 +308,7 @@ fn validate(i: &mut Interp, name: &str, argi: Value) -> RResult<Value> {
                     name, R_MIN_EXPRESSIONS_OPT, R_MAX_EXPRESSIONS_OPT
                 )));
             }
+            i.set_expressions(k as usize);
             ok_int(k)
         }
         "keep.source" | "check.bounds" | "echo" | "verbose" => {
