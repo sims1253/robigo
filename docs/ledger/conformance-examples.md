@@ -219,3 +219,47 @@ re-examined the three locally-suspect cases:
   passes in gnur-examples, cran-purer 37/41 with 0 regressions.
 
 Conclusion: pushed the rebase (force-with-lease) and let CI confirm.
+
+## 2026-11-01: rounds 4-7 summary (numericDeriv, La_qr, Sys.umask, C closures)
+
+- **numericDeriv / SS* family** (PR #177, merged): `defineVar` from C into
+  a C-created env binds the C-owned vector through `c_owned_binding`, so
+  stats' `numeric_deriv` perturbation is visible to the next eval;
+  `dqrsl`'s empty-input path guarded. SS*/nls cases pass.
+- **La_qr / qr_coef_real / qr_qy_real** (PR #179, open): dlsym'd system
+  LAPACK (`dgeqp3`/`dormqr`/`dtrtrs`), pivoted dimnames like Lapack.c;
+  `base/qr` passes. CI: the gnur-tests job timed out at 46 min once.
+- **Sys.umask + attribute-of-primitive warning** (PR #182, merged):
+  `platform.c:do_sysumask` (NA queries, visible; set returns previous
+  mask invisibly, class "octmode") and `attrib.c`'s deprecation warning
+  on `attr<-`/`attributes<-` of primitives. `base/octmode`, `base/attr`
+  pass. Metric after #182: gnur-examples 1,067 marked on main.
+- **C-assembled closures** (PR #185, open): `from_sexp` CLOSXP arm —
+  stats' `deriv` builds its gradient function in C (deriv.c:
+  allocSExp(CLOSXP) + SET_FORMALS/SET_BODY/SET_CLOENV); the bridge
+  wrapped it as `<pointer: 0x0>`. Now reads CAR/CDR/TAG back into a
+  runtime closure (same shape as PR #174's promises). New capi corpus
+  case `closure`, oracle-recorded; capi 24/24; gnur-examples +2
+  (stats/deriv, stats/selfStart); cran-purer 37/41 unchanged.
+
+## 2026-11-01: diagnosis — PR #179's gnur-tests CI failure
+
+The gnur-tests CI job timed out at its 46-minute step limit. Local
+reproduction with one scope per case (the runner's scope uses
+`memory.oom.group`, so a blown case kills the whole scope) found three
+cases: `reg-large` and `utf8` eat ~2 GB in seconds (robigo OOM-killed;
+`reg-large` dies at `encodeString(strrep("test me:", 53687091))` —
+`memory allocation of 536870912 bytes failed`, then a Rust abort where
+GNU R throws "cannot allocate vector of size ... Mb" and continues), and
+`reg-packages` regresses (no `myTst_1.0.tar.gz` built). None of the
+three touches La_qr — qr() with LAPACK=FALSE (the default) does not
+route through it — and the same cases still fail after rebasing #179 on
+current main, so the CI timeout is not explained by the lapack port
+alone; suspects: the allocation-abort path under CI runner memory
+pressure, and an flaky/overloaded runner. Rebased #179 onto main and
+pushed for a fresh CI run.
+
+Worktree note: an unattributed `attributes<-` NA-names diff and a
+`/tmp/build-attrib.log` build appeared in this worktree
+(t3-4696fc33) around 16:15 — some other process is using this path.
+Their diff is preserved as a stash ("foreign attrib NA-names diff ...").
