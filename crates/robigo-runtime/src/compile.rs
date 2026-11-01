@@ -447,6 +447,14 @@ pub enum Op {
     Visible {
         on: bool,
     },
+    /// R: eval.c:do_begin — the srcref of the `{` statement about to run
+    /// (`consts[k]`, Null for none), kept in `interp.srcref` (R's global
+    /// `R_Srcref`) so frames pushed by the statement report it. The AST
+    /// path is `do_begin`; regions without calls (JIT, inlined bodies)
+    /// skip it: no frame can observe it there.
+    SetSrcref {
+        k: u32,
+    },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
     LoopEnter {
         brk: u32,
@@ -580,7 +588,8 @@ fn strict_prefix(ops: &[Op]) -> Vec<Sym> {
             | Op::ConstI { .. }
             | Op::ConstL { .. }
             | Op::Null { .. }
-            | Op::Visible { .. } => {}
+            | Op::Visible { .. }
+            | Op::SetSrcref { .. } => {}
             Op::GetVar { sym, .. } => out.push(*sym),
             Op::ArithL { a, b, .. } | Op::RelL { a, b, .. } => {
                 for l in [a, b] {
@@ -756,6 +765,8 @@ struct Loop {
 struct Compiler {
     ops: Vec<Op>,
     consts: Vec<Value>,
+    /// Constants index of `NULL`, cached for `SetSrcref`.
+    null_k: Option<u32>,
     /// Registers needed (the most live at once).
     nregs: usize,
     /// The next free register: registers are allocated as a stack, and a
@@ -1041,6 +1052,18 @@ impl Compiler {
         (self.consts.len() - 1) as u32
     }
 
+    /// The constants index of `NULL`, allocated once per compilation
+    /// (`SetSrcref` of blocks parsed without source references).
+    fn null_k(&mut self) -> u32 {
+        if let Some(k) = self.null_k {
+            return k;
+        }
+        self.consts.push(Value::Null);
+        let k = (self.consts.len() - 1) as u32;
+        self.null_k = Some(k);
+        k
+    }
+
     fn emit(&mut self, op: Op) -> usize {
         self.ops.push(op);
         self.ops.len() - 1
@@ -1180,9 +1203,23 @@ impl Compiler {
                     self.emit(Op::Null { dst });
                     self.vis(w, true);
                 }
+                // R: eval.c:do_begin -- each statement runs under its own
+                // srcref (the block's list starts with the block itself,
+                // hence the offset), and the block leaves none active.
+                let srcrefs = whole.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
+                let srcref_k = |c: &mut Self, srcrefs: &Option<Value>, j: usize| match srcrefs {
+                    Some(_) => c.konst(crate::builtins::envir::statement_srcref(srcrefs, j)),
+                    None => c.null_k(),
+                };
                 let n = l.args.len();
                 for (i, a) in l.args.iter().enumerate() {
+                    let k = srcref_k(self, &srcrefs, i + 1);
+                    self.emit(Op::SetSrcref { k });
                     self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
+                }
+                if n > 0 {
+                    let k = self.null_k();
+                    self.emit(Op::SetSrcref { k });
                 }
                 let end = self.here();
                 self.patch(g, end);

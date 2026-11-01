@@ -695,6 +695,35 @@ fn nth_frame(i: &Interp, n: i32, cptr: Option<usize>) -> RResult<Option<usize>> 
     Err(Flow::error("not that many frames on the stack"))
 }
 
+/// R: eval.c:getSrcref -- one validated element of a `srcref` attribute
+/// list (getBlockSrcrefs only accepts a list); a malformed or absent
+/// entry reads as "no srcref". `ind` is the element index, so an
+/// expression vector passes its statement number and a `{` block passes
+/// one more (its list starts with the block's own srcref).
+pub(crate) fn statement_srcref(srcrefs: &Option<Value>, ind: usize) -> Value {
+    srcrefs
+        .as_ref()
+        .and_then(|refs| match refs {
+            Value::List(l) => l.data.get(ind),
+            _ => None,
+        })
+        .filter(|r| matches!(r, Value::Int(v) if v.data.len() >= 6))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// R: context.c:getCallWithSrcref -- `sys.call()`/`sys.calls()` attach the
+/// frame's saved srcref to a copy of its call.
+fn call_with_srcref(i: &Interp, k: usize) -> Value {
+    let ctx = &i.frames[k];
+    if ctx.srcref.is_null() {
+        return ctx.call.clone();
+    }
+    let mut call = ctx.call.clone();
+    call.set_attr_raw(s::SRCREF, ctx.srcref.clone());
+    call
+}
+
 fn do_sys_call(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let n = as_integer(&arg(&args, 0));
     if n == NA_INTEGER {
@@ -702,7 +731,7 @@ fn do_sys_call(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     }
     let cptr = lexical_context(i);
     Ok(match nth_frame(i, n, cptr)? {
-        Some(k) => i.frames[k].call.clone(),
+        Some(k) => call_with_srcref(i, k),
         None => Value::Null,
     })
 }
@@ -745,7 +774,7 @@ fn do_sys_calls(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
     let mut out = Vec::new();
     for k in 1..=nframe {
         if let Some(f) = nth_frame(i, k, cptr)? {
-            out.push(Arg::pos(i.frames[f].call.clone()));
+            out.push(Arg::pos(call_with_srcref(i, f)));
         }
     }
     Ok(Value::pairlist(out))
@@ -922,6 +951,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         cloenv: env.clone(),
         sysparent,
         promargs: vec![],
+        srcref: i.srcref.clone(),
         on_exit: vec![],
         handlers: i.handlers.clone(),
         restarts: i.restarts.clone(),
@@ -932,7 +962,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         match &expr {
             Value::Expr(ev) => {
                 let mut v = Value::Null;
-                for e in ev.data.iter() {
+                // R: eval.c:do_eval -- each statement of an expression
+                // vector runs under its own srcref (R_Srcref), so calls
+                // made by it report their source location.
+                let srcrefs = expr.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
+                for (ind, e) in ev.data.iter().enumerate() {
+                    i.srcref = statement_srcref(&srcrefs, ind);
                     v = i.eval(e, &env)?;
                 }
                 Ok(v)
