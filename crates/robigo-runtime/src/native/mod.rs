@@ -23,7 +23,9 @@ mod grdevices;
 mod hashtab;
 pub mod linpack;
 pub mod methods;
+mod parallel;
 mod stats;
+mod tools;
 mod utils;
 
 /// The interface a routine is registered for.
@@ -452,7 +454,9 @@ static PORTS: &[(&str, &[(&str, NativeFn)])] = &[
     ("base", base::PORTS),
     ("grDevices", grdevices::PORTS),
     ("methods", methods::PORTS),
+    ("parallel", parallel::PORTS),
     ("stats", stats::PORTS),
+    ("tools", tools::PORTS),
     ("utils", utils::PORTS),
 ];
 
