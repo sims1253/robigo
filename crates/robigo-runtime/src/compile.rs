@@ -767,6 +767,13 @@ struct Compiler {
     nguards: usize,
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
+    /// A promise thunk (an argument or default expression). GNU R never
+    /// compiles promise expressions: forcing evaluates the AST, so a
+    /// call runs the callee's closure — an inlined simple `.Internal`
+    /// wrapper here would drop the closure's frame from error
+    /// `Calls:` traces and `sys.call()` where GNU R shows it (issue
+    /// #157). Inlining stays for calls in direct position.
+    thunk: bool,
 }
 
 fn head(l: &Lang) -> Option<Sym> {
@@ -1086,7 +1093,15 @@ impl Compiler {
                 .collect::<Option<Vec<_>>>()
         });
         self.call_sites.push(CallSite {
-            si: f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8)),
+            si: if self.thunk {
+                // Load-bearing: try_inline_site decides on `site.si` alone
+                // (it has no env check), so a thunk whose head names a
+                // simple internal must carry None — restoring Some here
+                // regresses issue #157 through the compiled path.
+                None
+            } else {
+                f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8))
+            },
             si_memo: std::cell::RefCell::new(None),
             call: whole.clone(),
             codes,
@@ -1840,7 +1855,7 @@ pub fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
     if !matches!(e, Value::Lang(_)) {
         return None;
     }
-    let mut c = Compiler::default();
+    let mut c = Compiler { thunk: true, ..Compiler::default() };
     let r = c.reg();
     c.expr(e, r, Want::All);
     let useful = c.ops.iter().any(|o| !matches!(o, Op::Eval { .. } | Op::Guard { .. } | Op::Visible { .. }));
