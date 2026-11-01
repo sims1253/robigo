@@ -27,6 +27,7 @@ pub struct PrintParams {
     pub na_string_noquote: String,
     pub na_width: usize,
     pub na_width_noquote: usize,
+    pub out_dec: String,
 }
 
 impl Default for PrintParams {
@@ -43,6 +44,7 @@ impl Default for PrintParams {
             na_string_noquote: "<NA>".into(),
             na_width: 2,
             na_width_noquote: 4,
+            out_dec: ".".into(),
         }
     }
 }
@@ -222,8 +224,12 @@ fn pad_left(s: &str, w: usize) -> String {
 
 /// `EncodeReal0`.
 pub fn encode_real0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
+    encode_real_dec(x, w, d, e, na, ".")
+}
+
+pub fn encode_real_dec(x: f64, w: usize, d: usize, e: usize, na: &str, dec: &str) -> String {
     let x = if x == 0.0 { 0.0 } else { x };
-    let s = if !x.is_finite() {
+    let mut s = if !x.is_finite() {
         if is_na_real(x) {
             na.to_string()
         } else if x.is_nan() {
@@ -245,6 +251,9 @@ pub fn encode_real0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
     } else {
         fmt_f(x, d)
     };
+    if dec != "." && !dec.is_empty() {
+        s = s.replace('.', dec);
+    }
     pad_left(&s, w)
 }
 
@@ -380,17 +389,27 @@ pub fn format_complex(
 }
 
 pub fn encode_complex(z: Complex, wr: (usize, usize, usize), wi: (usize, usize, usize), na: &str) -> String {
+    encode_complex_dec(z, wr, wi, na, ".")
+}
+
+pub fn encode_complex_dec(
+    z: Complex,
+    wr: (usize, usize, usize),
+    wi: (usize, usize, usize),
+    na: &str,
+    dec: &str,
+) -> String {
     if is_na_real(z.re) || is_na_real(z.im) {
         return pad_left(na, wr.0 + wi.0 + 2);
     }
     let re = if z.re == 0.0 { 0.0 } else { z.re };
     let mut imv = if z.im == 0.0 { 0.0 } else { z.im };
-    let re_s = encode_real0(re, wr.0, wr.1, wr.2, na);
+    let re_s = encode_real_dec(re, wr.0, wr.1, wr.2, na, dec);
     let mut neg = imv < 0.0;
     if neg {
         imv = -imv;
     }
-    let im_s = encode_real0(imv, wi.0, wi.1, wi.2, na);
+    let im_s = encode_real_dec(imv, wi.0, wi.1, wi.2, na, dec);
     if im_s == "0" {
         neg = false;
     }
@@ -611,6 +630,8 @@ mod tests {
         assert_eq!(fmt1(1234567.0), "1234567");
         assert_eq!(fmt1(0.0001), "1e-04");
         assert_eq!(fmt1(0.001), "0.001");
+        let (w, d, e) = format_real(&[1.5], 7, 0, 0, 2);
+        assert_eq!(encode_real_dec(1.5, w, d, e, "NA", ","), "1,5");
     }
 
     #[test]

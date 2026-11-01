@@ -56,6 +56,7 @@ pub static DEFS: &[Builtin] = &[
     internal("grepRaw", do_grepraw, 8),
     internal("agrep", do_agrep, 8),
     internal("agrepl", do_agrepl, 8),
+    internal("pcre_config", do_pcre_config, 0),
 ];
 
 // ======================================================================
@@ -2685,6 +2686,18 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
         out.push(v);
     }
     Ok(Value::list(out))
+}
+
+fn do_pcre_config(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let mut v = Value::lgls(vec![1, 1, 1, 0]);
+    let names = Value::strs(vec![
+        Some("UTF-8".into()),
+        Some("Unicode properties".into()),
+        Some("JIT".into()),
+        Some("stack".into()),
+    ]);
+    v.set_attr_raw(s::NAMES, names);
+    Ok(v)
 }
 
 #[cfg(test)]

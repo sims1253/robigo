@@ -1472,8 +1472,8 @@ fn do_primitive(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
 }
 
 fn do_nargs(interp: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let n = interp.frame_of_env(env).map(|i| interp.frames[i].promargs.len()).unwrap_or(0);
-    Ok(Value::int(n as i32))
+    let n = interp.frame_of_env(env).map(|i| interp.frames[i].promargs.len() as i32).unwrap_or(i32::MIN);
+    Ok(Value::int(n))
 }
 
 fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
