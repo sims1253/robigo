@@ -1,0 +1,17 @@
+library(grid)
+
+u1 <- unit(1, "npc")
+print(u1)
+print(class(u1))
+print(attr(u1, "unit"))
+print(unit(1:3, "cm"))
+print(unit(c(1, 2.5), "pt"))
+print(unit(2, "in"))
+print(unit(1, "strwidth", "hello"))
+print(unit(c(0.5, 1), c("npc", "grobwidth"), data = list(NULL, "axis")))
+print(tryCatch(unit(1, "bogus"), error = function(e) conditionMessage(e)))
+print(tryCatch(unit(1, "npc", data = list(5)),
+              error = function(e) conditionMessage(e)))
+print(tryCatch(unit(1, "strwidth"), error = function(e) conditionMessage(e)))
+print(is.unit(unit(1, "mm")))
+print(sum(unit.c(unit(1, "npc"), unit(2, "cm"))))
