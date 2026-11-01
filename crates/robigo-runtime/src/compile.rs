@@ -637,6 +637,13 @@ pub struct Code {
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
+    /// R: eval.c:do_begin/do_eval — the srcrefs of the statements the
+    /// call sites were compiled in, parallel to [`Code::call_sites`]
+    /// (`None` where no `{` block encloses the call, so the ambient value
+    /// of the closure entry applies). Present only when the code has any
+    /// statement srcrefs: `Op::Call` installs the entry as the current
+    /// srcref, so the frames a call pushes report it.
+    pub call_srcrefs: Option<Box<[Option<Value>]>>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
@@ -714,6 +721,15 @@ impl Code {
             vars: c.vars,
             arglists: c.arglists,
             call_sites: c.call_sites,
+            // Only code with a real statement srcref carries the table:
+            // a closure without one leaves no ambient value either (its
+            // entry srcref is NULL), so NULL entries there would store
+            // what already holds and only cost call instructions.
+            call_srcrefs: c
+                .site_srcrefs
+                .iter()
+                .any(|s| s.as_ref().is_some_and(|v| !v.is_null()))
+                .then(|| std::mem::take(&mut c.site_srcrefs).into_boxed_slice()),
             nguards: c.nguards,
             guard_syms,
             simple,
@@ -756,6 +772,10 @@ struct Loop {
 struct Compiler {
     ops: Vec<Op>,
     consts: Vec<Value>,
+    /// The srcref of the `{` statement being compiled, for its call sites
+    /// (`Some(NULL)` inside a block parsed without source references,
+    /// `None` with no enclosing block: the ambient value applies).
+    cur_srcref: Option<Value>,
     /// Registers needed (the most live at once).
     nregs: usize,
     /// The next free register: registers are allocated as a stack, and a
@@ -764,6 +784,11 @@ struct Compiler {
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     call_sites: Vec<CallSite>,
+    /// R: eval.c:do_begin/do_eval — per call site, the srcref of the
+    /// `{` statement it was compiled in (`Some(NULL)` for a block parsed
+    /// without source references); collected into
+    /// [`Code::call_srcrefs`], which exists only when the code has any.
+    site_srcrefs: Vec<Option<Value>>,
     nguards: usize,
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
@@ -1101,6 +1126,7 @@ impl Compiler {
             force,
         });
         let site = (self.call_sites.len() - 1) as u32;
+        self.site_srcrefs.push(self.cur_srcref.clone());
         self.emit(Op::Call { dst, f, site });
     }
 
@@ -1180,10 +1206,20 @@ impl Compiler {
                     self.emit(Op::Null { dst });
                     self.vis(w, true);
                 }
+                // R: eval.c:do_begin -- each statement runs under its own
+                // srcref (the block's list starts with the block itself),
+                // and the block leaves none active. Recorded per call site
+                // at compile time (`CallSite::srcref`); `Some(NULL)` for a
+                // block parsed without source references, `None` when no
+                // block encloses the call (the ambient value of the
+                // enclosing closure entry applies, as in GNU R).
+                let srcrefs = whole.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
                 let n = l.args.len();
                 for (i, a) in l.args.iter().enumerate() {
+                    self.cur_srcref = Some(crate::builtins::envir::statement_srcref(&srcrefs, i + 1));
                     self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
                 }
+                self.cur_srcref = Some(Value::Null);
                 let end = self.here();
                 self.patch(g, end);
             }

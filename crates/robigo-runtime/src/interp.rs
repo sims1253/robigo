@@ -19,6 +19,9 @@ pub struct Context {
     pub cloenv: Env,
     pub sysparent: Env,
     pub promargs: Vec<Arg>,
+    /// The srcref active when the frame was entered (R: `cptr->srcref`,
+    /// set by `begincontext`); `sys.call()` attaches it to the call.
+    pub srcref: Value,
     pub on_exit: Vec<Value>,
     pub handlers: HandlerStack,
     pub restarts: RestartStack,
@@ -38,6 +41,10 @@ pub struct Interp {
     pub base_ns: Env,
     pub empty: Env,
     pub frames: Vec<Context>,
+    /// The srcref of the statement being evaluated (R: the global
+    /// `R_Srcref`): set per statement by `eval`'s expression-vector loop
+    /// (eval.c:do_eval) and on closure entry (eval.c:R_execClosure).
+    pub srcref: Value,
     pub visible: bool,
     /// `R_Interactive`: the session reads from an interactive console.
     /// `q()` reports a `.Last` error back to the REPL only there; the
@@ -210,6 +217,7 @@ impl Interp {
             base_ns,
             empty,
             frames: Vec::new(),
+            srcref: Value::Null,
             visible: true,
             interactive: false,
             exit_value: None,
@@ -1077,20 +1085,26 @@ impl Interp {
         sysparent: Env,
     ) {
         crate::env::bump_r_epoch();
+        // R: context.c:begincontext saves the srcref active at the call;
+        // eval.c:R_execClosure then switches it to the closure's own.
+        // A move: the entry below overwrites it anyway.
+        let srcref = std::mem::replace(&mut self.srcref, Value::Null);
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Closure(clo.clone()),
             cloenv: newenv.clone(),
             sysparent,
             promargs,
+            srcref,
             on_exit: Vec::new(),
             handlers: self.handlers.clone(),
             restarts: self.restarts.clone(),
             generic: false,
             builtin: false,
         });
+        // R: eval.c:R_execClosure -- R_Srcref = getAttrib(op, R_SrcrefSymbol)
+        self.srcref = clo.attrs.as_ref().and_then(|a| a.get(s::SRCREF)).cloned().unwrap_or(Value::Null);
     }
-
     /// Pop the current context, running `on.exit` code.
     pub fn end_context(&mut self, r: RResult<Value>) -> RResult<Value> {
         if crate::typeprof::enabled() {
@@ -1127,6 +1141,8 @@ impl Interp {
             self.visible = saved_visible;
         }
         let ctx = self.frames.pop().unwrap();
+        // R: eval.c:R_execClosure restores the srcref saved at the call.
+        self.srcref = ctx.srcref;
         // The executor and this context own two references. Extra owners
         // include escaped closures and unforced default-promise cycles.
         if Rc::strong_count(&ctx.cloenv.0) > 2 {

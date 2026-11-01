@@ -3697,8 +3697,16 @@ fn run_with(
                     }
                 };
             }
-            Op::Call { dst, f, site } => {
-                let site = &code.call_sites[*site as usize];
+            Op::Call { dst, f, site: si } => {
+                let site = &code.call_sites[*si as usize];
+                // R: eval.c:do_begin/do_eval keep the statement's srcref in
+                // the global R_Srcref; install the compiled-in value so the
+                // frames this call pushes report it (also for closures the
+                // callee calls back into through builtins). Code without
+                // statement srcrefs has no table and pays one check.
+                if let Some(sr) = code.call_srcrefs.as_ref().and_then(|s| s[*si as usize].as_ref()) {
+                    interp.srcref = sr.clone();
+                }
                 // Look the function up before flushing when that cannot run
                 // code and no pending assignment to its name is outstanding.
                 let pending_f = site.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_)));

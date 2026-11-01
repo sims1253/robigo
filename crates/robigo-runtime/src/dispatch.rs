@@ -395,6 +395,7 @@ impl Interp {
             cloenv: rho1.clone(),
             sysparent: env.clone(),
             promargs: pargs.clone(),
+            srcref: self.srcref.clone(),
             on_exit: vec![],
             handlers: self.handlers.clone(),
             restarts: self.restarts.clone(),

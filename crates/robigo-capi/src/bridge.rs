@@ -1838,6 +1838,7 @@ unsafe fn call_routine_ctx(
         cloenv: env.clone(),
         sysparent: env.clone(),
         promargs: vec![],
+        srcref: interp.srcref.clone(),
         on_exit: vec![],
         handlers: interp.handlers.clone(),
         restarts: interp.restarts.clone(),

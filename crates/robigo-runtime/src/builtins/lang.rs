@@ -264,11 +264,20 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     Ok(Value::Closure(Rc::new(clo)))
 }
 
-fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let mut v = Value::Null;
     interp.visible = true;
-    for a in &args {
-        v = interp.eval(&a.value, env)?;
+    // R: eval.c:do_begin -- each statement of a `{` block runs under its
+    // own srcref from the block's `srcref` attribute (whose first entry is
+    // the block itself, hence the offset), and the block leaves no srcref
+    // active afterwards (R_Srcref = R_NilValue).
+    if !args.is_empty() {
+        let srcrefs = call.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
+        for (j, a) in args.iter().enumerate() {
+            interp.srcref = super::envir::statement_srcref(&srcrefs, j + 1);
+            v = interp.eval(&a.value, env)?;
+        }
+        interp.srcref = Value::Null;
     }
     Ok(v)
 }
