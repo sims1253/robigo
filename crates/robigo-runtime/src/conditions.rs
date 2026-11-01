@@ -272,10 +272,16 @@ impl Interp {
                 text.push_str(&format!("Calls: {}\n", tb));
             }
         }
-        self.write_err(&text);
-        if !self.warnings.is_empty() {
-            self.write_err("In addition: ");
-            self.print_warnings();
+        // R: errors.c:verrorcall_dflt -- R_ShowErrorMessages (the
+        // `show.error.messages` option) gates the printing, not the
+        // unwinding; rlang's signal_abort stops() with it off to avoid
+        // printing its styled error twice.
+        if self.option_lgl("show.error.messages", true) {
+            self.write_err(&text);
+            if !self.warnings.is_empty() {
+                self.write_err("In addition: ");
+                self.print_warnings();
+            }
         }
         Flow::Error(Box::new(RError {
             message: msg.to_string(),

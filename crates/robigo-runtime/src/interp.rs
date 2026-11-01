@@ -1264,6 +1264,16 @@ impl Interp {
         }
     }
 
+    /// A logical option, NA falling back to the default.
+    pub fn option_lgl(&self, name: &str, default: bool) -> bool {
+        match self.get_option(name) {
+            Some(Value::Lgl(v)) if !v.data.is_empty() && v.data[0] != NA_LOGICAL => v.data[0] != 0,
+            Some(Value::Int(v)) if !v.data.is_empty() && v.data[0] != NA_INTEGER => v.data[0] != 0,
+            Some(Value::Real(v)) if !v.data.is_empty() && !v.data[0].is_nan() => v.data[0] != 0.0,
+            _ => default,
+        }
+    }
+
     // ------------------------------------------------------------------
     // top level
 
