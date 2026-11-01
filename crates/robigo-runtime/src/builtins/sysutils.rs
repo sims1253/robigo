@@ -44,6 +44,8 @@ pub static DEFS: &[Builtin] = &[
     internal("file.rename", do_filerename, 2),
     internal("file.create", do_filecreate, 2),
     internal("file.append", do_fileappend, 2),
+    internal("file.show", do_fileshow, 5).invisible(),
+    internal("file.symlink", do_filesymlink, 2),
     internal("unlink", do_unlink, 4).invisible(),
     internal("setSessionTimeLimit", do_set_session_time_limit, 2).invisible(),
     internal("dir.exists", do_direxists, 1),
@@ -1077,6 +1079,136 @@ fn do_fileappend(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
             _ => false,
         };
         out.push(ok as Lgl);
+    }
+    Ok(Value::lgls(out))
+}
+
+/// R: platform.c:do_fileshow / sys-std.c:Rstd_ShowFiles
+fn do_fileshow(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let fn_v = arg(&args, 0);
+    let hd_v = arg(&args, 1);
+    let tl_v = arg(&args, 2);
+    // R reads `delete.file` with asBool2 before checking the string arguments.
+    let delete_file = super::character::as_bool2(&arg(&args, 3), call)?;
+    let pg_v = arg(&args, 4);
+
+    let fn_arg = match &fn_v {
+        Value::Str(s) if !s.data.is_empty() => s,
+        _ => return Err(Flow::error("invalid filename specification")),
+    };
+    let n = fn_arg.data.len();
+    let hd_arg = match &hd_v {
+        Value::Str(s) if s.data.len() == n => s,
+        _ => return Err(Flow::error("invalid 'headers' argument")),
+    };
+    if !matches!(&tl_v, Value::Str(_)) {
+        return Err(Flow::error("invalid 'title' argument"));
+    }
+    if !matches!(&pg_v, Value::Str(_)) {
+        return Err(Flow::error("invalid 'pager' argument"));
+    }
+
+    let mut files = Vec::with_capacity(n);
+    let mut headers = Vec::with_capacity(n);
+    for k in 0..n {
+        let f = match &fn_arg.data[k] {
+            Some(f) => &**f,
+            None => return Err(Flow::error("invalid filename specification")),
+        };
+        let h = match &hd_arg.data[k] {
+            Some(h) => &**h,
+            None => return Err(Flow::error("invalid 'headers' argument")),
+        };
+        files.push(f.to_string());
+        headers.push(h.to_string());
+    }
+    // R: platform.c:do_fileshow uses isValidStringF on `pager`: a zero-length
+    // vector or an NA or empty first element all leave it "", which
+    // Rstd_ShowFiles replaces with "more".
+    let pager = match &pg_v {
+        Value::Str(s) => match s.data.first() {
+            Some(Some(p)) if !p.is_empty() => p.to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+
+    // R: sys-std.c:Rstd_ShowFiles -- concatenate the files into a temporary
+    // file and run the pager on it.
+    if n > 0 {
+        let pager = if pager.is_empty() { "more".to_string() } else { pager };
+        let tmp_file = tempfile_name(&session_tempdir()?, "", "");
+        if let Ok(mut tfp) = std::fs::File::create(&tmp_file) {
+            use std::io::Write;
+            for k in 0..n {
+                if !headers[k].is_empty() {
+                    let _ = writeln!(tfp, "{}\n", headers[k]);
+                }
+                let exp_path = expand_file_name(&files[k]);
+                match std::fs::read(&exp_path) {
+                    Ok(content) => {
+                        let _ = tfp.write_all(&content);
+                        let _ = writeln!(tfp);
+                        if delete_file {
+                            let _ = std::fs::remove_file(&exp_path);
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(tfp, "Cannot open file '{}': {}\n", files[k], os_error_message(&e));
+                    }
+                }
+            }
+        }
+        i.flush();
+        let buf = format!("'{}' < '{}'", pager, tmp_file);
+        // R: sysutils.c:R_system
+        let res = match std::process::Command::new("/bin/sh").arg("-c").arg(&buf).status() {
+            Ok(st) => exit_status(&st),
+            Err(_) => 127,
+        };
+        let _ = std::fs::remove_file(&tmp_file);
+        if res == 127 {
+            i.warningcall(&Value::Null, "error in running command")?;
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// R: platform.c:do_filesymlink
+fn do_filesymlink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let f1 = match arg(&args, 0) {
+        Value::Str(s) => s,
+        _ => return Err(Flow::error("invalid first filename")),
+    };
+    let f2 = match arg(&args, 1) {
+        Value::Str(s) => s,
+        _ => return Err(Flow::error("invalid second filename")),
+    };
+    let n1 = f1.data.len();
+    let n2 = f2.data.len();
+    if n1 < 1 {
+        return Err(Flow::error("nothing to link"));
+    }
+    if n2 < 1 {
+        return Ok(Value::lgls(Vec::<Lgl>::new()));
+    }
+    let n = n1.max(n2);
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        match (&f1.data[k % n1], &f2.data[k % n2]) {
+            (Some(from), Some(to)) => {
+                let from = expand_file_name(from);
+                let to = expand_file_name(to);
+                if std::os::unix::fs::symlink(&from, &to).is_ok() {
+                    out.push(1);
+                } else {
+                    let e = std::io::Error::last_os_error();
+                    i.warning(format!("cannot symlink '{}' to '{}', reason '{}'", from, to, os_error_message(&e)))?;
+                    out.push(0);
+                }
+            }
+            _ => out.push(0),
+        }
     }
     Ok(Value::lgls(out))
 }
