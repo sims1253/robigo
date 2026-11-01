@@ -1216,6 +1216,7 @@
   rexit_;
   rexitc_;
   robigo_capi_init;
+  robigo_connection_string_arg;
   robigo_dll_close;
   robigo_dll_find;
   robigo_dll_flags;

@@ -200,7 +200,7 @@ pub unsafe extern "C" fn R_do_new_object(class_def: Sexp) -> Sexp {
 
 /// `R_getS4DataSlot(obj, ANYSXP)`.
 // R: attrib.c:R_getS4DataSlot
-unsafe fn get_s4_data_slot_any(obj: Sexp) -> Sexp {
+pub(crate) unsafe fn get_s4_data_slot_any(obj: Sexp) -> Sexp {
     let obj = Rf_protect(obj);
     let mut value;
     if obj.typ() != OBJSXP {

@@ -204,6 +204,47 @@ pub unsafe extern "C" fn R_IsNamespaceEnv(rho: Sexp) -> c_int {
     (*LOGICAL(internal("isNamespaceEnv", &[rho])) == 1) as c_int
 }
 
+// R: envir.c:R_IsPackageEnv — an attached package environment, named
+// "package:foo". TYPEOF gates before anything else (O(1), as in R;
+// `from_sexp` would materialize a non-environment's payload).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_IsPackageEnv(rho: Sexp) -> c_int {
+    if rho.typ() != ENVSXP {
+        return 0;
+    }
+    match crate::bridge::from_sexp(rho) {
+        robigo_runtime::value::Value::Env(e) => e.package_env_name().is_some() as c_int,
+        _ => 0,
+    }
+}
+
+// R: envir.c:R_EnvironmentIsLocked (simple_as_environment: an S4
+// object's environment data slot counts as the environment)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_EnvironmentIsLocked(env: Sexp) -> c_int {
+    // R checks NILSXP before anything else.
+    if env == R_NilValue || env.is_null() {
+        crate::errors::error_str("use of NULL environment is defunct");
+    }
+    // simple_as_environment is a type question first (O(1)); converting
+    // a non-environment's payload before rejecting it would copy it.
+    let e = match env.typ() {
+        ENVSXP => match crate::bridge::from_sexp(env) {
+            robigo_runtime::value::Value::Env(e) => e,
+            _ => crate::errors::error_str("not an environment"),
+        },
+        OBJSXP if env.gp() & robigo_core::gp::S4 != 0 => {
+            let slot = crate::objects::get_s4_data_slot_any(env);
+            match crate::bridge::from_sexp(slot) {
+                robigo_runtime::value::Value::Env(e) => e,
+                _ => crate::errors::error_str("not an environment"),
+            }
+        }
+        _ => crate::errors::error_str("not an environment"),
+    };
+    e.0.locked.get() as c_int
+}
+
 // R: envir.c:R_FindNamespace — calls getNamespace(info) in base
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_FindNamespace(info: Sexp) -> Sexp {

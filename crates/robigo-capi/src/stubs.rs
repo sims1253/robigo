@@ -12,10 +12,8 @@ pub static STUBS: &[&str] = &[
     "LOGICAL_NO_NA",
     "R_Busy",
     "R_EditFiles",
-    "R_EnvironmentIsLocked",
     "R_GetVarLocMISSING",
     "R_InitInPStream",
-    "R_IsPackageEnv",
     "R_PackageEnvName",
     "R_ShowMessage",
     "R_Unserialize",
@@ -79,11 +77,6 @@ pub unsafe extern "C" fn R_EditFiles() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_EnvironmentIsLocked() {
-    not_implemented("R_EnvironmentIsLocked")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_GUIType: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
@@ -94,11 +87,6 @@ pub unsafe extern "C" fn R_GetVarLocMISSING() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_InitInPStream() {
     not_implemented("R_InitInPStream")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_IsPackageEnv() {
-    not_implemented("R_IsPackageEnv")
 }
 
 #[unsafe(no_mangle)]
