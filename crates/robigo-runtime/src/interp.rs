@@ -55,6 +55,13 @@ pub struct Interp {
     pub global_handlers: HandlerStack,
     pub restarts: RestartStack,
     pub warnings: Vec<(Value, String)>,
+    /// Registered top-level task callbacks (main.c's R_ToplevelTaskHandlers)
+    /// and the flag that keeps them from running recursively.
+    pub task_callbacks: Vec<crate::task::TaskCallback>,
+    pub running_task_callbacks: bool,
+    /// Whether the last top-level expression's value was displayed
+    /// (main.c's `wasDisplayed`), captured before printing it.
+    pub toplevel_visible: bool,
     pub options: Vec<(String, Value)>,
     pub out: Box<dyn Write>,
     pub err: Box<dyn Write>,
@@ -210,6 +217,9 @@ impl Interp {
             global_handlers: None,
             restarts: None,
             warnings: Vec::new(),
+            task_callbacks: Vec::new(),
+            running_task_callbacks: false,
+            toplevel_visible: false,
             options: Vec::new(),
             out,
             err,
@@ -1334,6 +1344,8 @@ impl Interp {
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;
         let r = self.eval(e, env);
+        // wasDisplayed = R_Visible, read before PrintValueEnv can change it.
+        self.toplevel_visible = self.visible;
         // The abort (if any) reached the top level; the next expression
         // starts with normal on.exit handling again.
         self.abort_to_toplevel = false;

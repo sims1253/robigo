@@ -15,6 +15,9 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("dqrqy", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Qy)),
     ("dqrrsd", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Rsd)),
     ("dqrxb", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Xb)),
+    ("R_addTaskCallback", crate::task::add_task_callback),
+    ("R_removeTaskCallback", crate::task::remove_task_callback),
+    ("R_getTaskCallbackNames", crate::task::get_task_callback_names),
 ];
 
 /// `.Fortran(.F_dqrdc2, qr = x, n, n, p, tol, rank, qraux, pivot, work)`

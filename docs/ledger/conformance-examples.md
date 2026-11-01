@@ -45,7 +45,9 @@ Baseline on main (`f523d79a`):
     checking in C's order (`asBool2(delete.file)` first, then the string
     checks), `isValidStringF` semantics for `pager` (NA or empty first
     element ⇒ `""`, not an error), temp file via `R_tmpnam(NULL, ...)` (empty
-    prefix), per-file `\n\n` headers, `Cannot open file '%s': %s` message,
+    prefix), per-file `
+
+` headers, `Cannot open file '%s': %s` message,
     then `R_system("'pager' < 'tmp'")`; status 127 warns
     `warningcall(R_NilValue, "error in running command")` (robigo:
     `warningcall(&Value::Null, ..)`). Visible vs invisible per `names.c`:
@@ -86,3 +88,58 @@ Conductor rule after an OOM incident: every corpus/test command now runs
 under `systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=0`,
 corpus runs with `--jobs 2`. Applied from the first full-corpus run in this
 round onward.
+
+---
+
+## 2026-11-01: round 3 — top-level task callbacks (main.c)
+
+- **why**: `base/taskCallback{,Manager,Names}` abort on the missing base
+  native `.C_R_addTaskCallback` ("native routine 'R_addTaskCallback' of
+  package 'base' is not implemented yet").
+- **what**: `runtime/src/task.rs` (new) ports main.c's task-callback
+  machinery: `R_addTaskCallback` / `R_removeTaskCallback` /
+  `R_getTaskCallbackNames` as base native ports; `Rf_callToplevelHandlers`
+  + `R_taskCallbackRoutine` as `Interp::call_toplevel_handlers`; the hook
+  in `Rf_ReplIteration`'s PARSE_OK branch (echo.rs) fires after the value
+  is printed, only on successful evaluation. Self-removal (PR#18508) is
+  postponed via an id check; callback errors are swallowed (R_tryEval,
+  frame/handler save-restore like `run_dot_last`); warnings from a
+  callback print with the REprintf prefix. Cost when unused: one empty-Vec
+  check per top-level expression.
+- **tests**: 3/3 taskCallback cases pass and are ratcheted; slice of
+  echo-path cases + `cran-purer` 36/41, 0 regressions; runtime unit tests
+  unchanged (81 pass, 2 pre-existing complex libm-oracle failures).
+- **result**: `gnur-examples` 1,060 → 1,063 marked. Branch
+  `track/conformance-examples-taskcallbacks` (single commit on origin/main).
+
+## 2026-11-01: diagnosis — SS*/nls family diverges via numericDeriv (NOT yet fixed)
+
+~12 cases (`stats/{SSasymp,SSasympOff,SSfpl,SSgompertz,SSmicmen,SSweibull,
+NLSstAsymptotic,getInitial,numericDeriv,predict.nls,power,stepfun}` + 4
+nlsModel cases): `getInitial` returns wrong values. Bisected to a 4-line
+repro (fails in robigo, gradient is all zeros; GNU R gives 6):
+
+```r
+e2 <- new.env(); e2$g <- 3
+numericDeriv(quote(g^2), "g", e2)   # value 9, gradient 0 (should be 6)
+```
+
+- Root cause: stats' C `numeric_deriv` (nls.c) does `R_NewEnv(rho)`,
+  `defineVar(name, duplicate(par), rho1)` and then perturbs the parameter
+  **in place through the C REALSXP pointer** between `eval(expr, rho1)`
+  calls. Robigo's bridge marshals robigo values to C by copy, so the
+  in-place perturbation is invisible to the next eval: every forward
+  difference is 0, the QR is rank 0, plinear nls "converges" at once
+  (criterion 0.00e+00, stays at start), and `getInitial` returns garbage.
+- Works when `rho` is a closure frame (bindings re-read live), fails for
+  fresh `new.env()`s; also reproduces deep inside `nlsModel` — exactly the
+  SS* path. A second, related bug surfaced while instrumenting:
+  `native/linpack.rs:250` `dqrsl` panics (`index out of bounds: len 0`)
+  on a rank-0/0-column QR call via `qr.coef` (GNU R's dqrsl.f has the same
+  y(1) indexing but is reached only with n>=1; robigo reaches it with
+  empty vectors) — panics are always robigo bugs.
+- Fix direction (next round, C-API layer, my charter): make
+  `defineVar`-from-C into a C-created env bind the C-owned vector (the
+  `c_owned_binding`/holder machinery in native/mod.rs exists for exactly
+  this), so in-place C mutations are visible to subsequent evals; and
+  guard `dqrsl`'s ju==0 branch against empty inputs.
