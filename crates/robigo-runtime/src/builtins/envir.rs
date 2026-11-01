@@ -294,13 +294,7 @@ fn do_set_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         // "imports:". R-level code creates those with `new.env()` plus
         // `attr(impenv, "name") <- ...` (rlib/base/R/namespace.R), so the
         // name is an attribute, not a special name.
-        let imports_name = match Value::Env(env.clone()).get_attr(s::NAME) {
-            Some(Value::Str(n)) => n.data.first().cloned().flatten(),
-            _ => None,
-        };
-        if env.parent_ref().as_ref().is_some_and(|p| p.ptr_eq(&i.base_ns))
-            && imports_name.is_some_and(|n| n.starts_with("imports:"))
-        {
+        if env.is_imports_env(&i.base_ns) {
             return Err(Flow::error("can not set the parent environment of package imports"));
         }
     }
@@ -312,6 +306,10 @@ fn do_set_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         Value::Env(e) => e,
         _ => return Err(Flow::error("'parent' is not an environment")),
     };
+    // R: memory.c:SET_ENCLOS — reject a parent chain that closes a cycle.
+    if env.parent_cycle(Some(&parent)) {
+        return Err(Flow::error("cycles in parent chains are not allowed"));
+    }
     env.set_parent(Some(parent));
     Ok(arg(&args, 0))
 }
