@@ -6,6 +6,82 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-01: round 15, mapply/Map direct elements and inline FUN
+
+- Base: main 6c894831, saved binary `.robigo/perf/base-main2` (clean
+  origin/main; candidate built in the same tree right after it, so the
+  pair shares build configuration). Artifact warning: the previous
+  session's `.robigo/perf/base-clean2` predates #162's merge and is
+  5-7% slower than main on `lapply`/`lapplyDots`/`robigo/apply`; the
+  "mapply SIMPLIFY regression" in the handoff came from comparing
+  against it. Against the correct base nothing regresses. Also:
+  `perf.py` resolves `R RHOME` through PATH — on this host the 4.5.0
+  `bin/exec/R` cannot load (libicuuc.so.76), so robigo-only runs need
+  the answer-script `.robigo/perf/rbin/R` first in PATH (recorded
+  because the system R is 4.6.1 and its R_HOME degrades base loading).
+- Change (`builtins/apply.rs` `do_mapply` only, extending round 14's
+  inline machinery to mapply):
+  - Where no varying argument is an object (so `[[` cannot dispatch),
+    each element is read directly (`element_rval`) and passed as an
+    already-forced promise carrying the same `dots[[j]][[k]]`
+    expression (what `substitute` in `FUN` sees), instead of
+    evaluating that call per element through the general path.
+  - An inlinable pure `FUN` runs per element without a call at all:
+    `mapply_inline` matches `FUN(dots[[1]][[k]], ..., MoreArgs)` once
+    — `match_args` over the `dots[[j]]` inner calls as placeholders
+    recognized back by `Rc::ptr_eq`, so tags, partial matching,
+    duplicates and `...` keep exact R semantics and errors fall back
+    to the real call; a formal that would take its default, a missing
+    `MoreArgs` value or an unmatched slot gives up the fast path. Each
+    element then fills the varying slots and calls
+    `vm::call_inline_rval` (as `do_lapply` does), falling back per
+    element to the promise path when the inline run declines.
+  - `names(dots)` tags are interned once before the loop, not per
+    element. Complex varying arguments stay on the general path
+    (`element_rval` has no complex scalar; the intermediate state that
+    included `Cplx` hit `unreachable!()` — fixed by excluding it).
+- Idioms (`scripts/idiom-vs-r.py`, robigo base vs candidate, 20000
+  elements, instructions per body execution):
+
+  | idiom | base | candidate | |
+  |---|---|---|---|
+  | `Map(function(x,y) x+y, a, b)` | 240,782,094 | 17,637,077 | -92.7% |
+  | `mapply(f, a, b)` (SIMPLIFY=T) | 250,519,737 | 27,371,746 | -89.1% |
+  | `mapply(f, 1:20000, 20000:1)` | 254,606,707 | 26,768,921 | -89.5% |
+  | `mapply(f, x=1:20000, y=1:2)` | 272,854,769 | 26,684,560 | -90.2% |
+  | `mapply(f, ..., MoreArgs=list(z=1))` | 286,633,152 | 31,346,530 | -89.1% |
+  | `mapply(paste0-f, 1:20000, 20000:1)` (non-inlinable FUN) | 417,988,542 | 264,789,699 | -36.7% |
+  | `Map(f3, 1:20000, 20000:1, 3)` | 350,752,348 | 22,750,782 | -93.5% |
+  | `Vectorize(f)(1:20000, 20000:1)` | 275,264,440 | 26,901,571 | -90.2% |
+
+  Wall clock: 30x `mapply(f, 1:20000, 20000:1)` including startup
+  1.10s -> 0.22s. Against GNU R 4.5.0 (previous session's counts) Map2
+  is now ~0.10x.
+- Gate (full 84-program suite, robigo-only, paired against
+  `.robigo/perf/base-main2`): **1 faster, 0 slower (> 0.5%), 0 broken,
+  0 fixed**; `robigo/apply` -1.49% (its `Map` over 1000 elements). The
+  11 both-sides-failing programs (flexclust, volcano, knucleotide*,
+  regexdna, reversecomplement*) are environmental on this host, not
+  affected by the change.
+- Verified: new ratcheted fixture `tests/r/vectors/mapply-fast.R`
+  (positional/named/swapped/partial matching, MoreArgs named and
+  positional, defaults, `...`, logical/integer/string/list/raw/complex
+  args, matrices, named-vector USE.NAMES, recycle warning, zero
+  length, Vectorize, a compiled loop, S3 `[[` dispatch, duplicate-tag
+  and missing-argument errors), recorded with GNU R 4.5.0 — passes
+  byte-for-byte, as do `vectors/apply`, `vectors/apply-inline`,
+  `io/apply` and `lang/compiled-forceandcall`. Full conformance and
+  runtime tests: see the PR.
+- Known infidelity (pre-existing, unchanged by this round): GNU R's
+  `do_mapply` builds one fcall and mutates shared index cells, so
+  expressions captured by `substitute` alias the final counter
+  (`mapply(function(x) substitute(x), 1:3)` prints
+  `dots[[1L]][[3L]]` three times in GNU R; robigo, before and after,
+  prints `[[1L]]`, `[[2L]]`, `[[3L]]`). Matching needs
+  identity-preserving mutation of a shared `Lang` argument (a Value
+  model change, core's call); `deparse(substitute(x))` inside `FUN`
+  matches and is pinned in the fixture.
+
 ## 2026-11-01: round 14, unboxed inline apply and zero-allocation scalar accumulation
 
 - Base: main 0b486770.
