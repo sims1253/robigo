@@ -1,0 +1,10 @@
+dyn.load("closure.so")
+
+f <- .Call("capi_cclosure")
+print(f)
+print(f(3))
+print(f(3, 4))
+print(typeof(f) == "closure")
+print(names(formals(f)))
+print(formals(f)$y)
+print(identical(environment(f), globalenv()))
