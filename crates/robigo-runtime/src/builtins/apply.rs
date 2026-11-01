@@ -626,6 +626,67 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     Ok(ans)
 }
 
+/// An inlinable pure `FUN` for mapply with the argument slots matched
+/// once (see [`inline_fun`]): `vary[j]` is the formal slot fed from
+/// varying argument `j`; every other slot holds its invariant `MoreArgs`
+/// value.
+struct MFastClosure {
+    clo: Rc<Closure>,
+    args: Vec<crate::vm::RVal>,
+    vary: Vec<usize>,
+}
+
+/// Match `FUN(dots[[1]][[k]], ..., <MoreArgs>)` once so each element can
+/// run `FUN` inline (`vm::call_inline_rval`). The `inner[j]` calls stand
+/// in for the varying arguments during matching and are recognized by
+/// pointer, so no `MoreArgs` value can collide with them; a formal that
+/// would take its default gives up the fast path.
+fn mapply_inline(
+    i: &mut Interp,
+    f: &Value,
+    inner: &[Value],
+    tags: &[Option<Sym>],
+    more: &[Arg],
+) -> RResult<Option<MFastClosure>> {
+    let Value::Closure(c) = f else { return Ok(None) };
+    if !crate::vm::inlinable(c) {
+        return Ok(None);
+    }
+    let m = inner.len();
+    let mut supplied: Vec<Arg> = Vec::with_capacity(m + more.len());
+    for (j, e) in inner.iter().enumerate() {
+        supplied.push(Arg::new(tags[j], e.clone()));
+    }
+    supplied.extend(more.iter().cloned());
+    let dummy = Value::lang(f.clone(), vec![]);
+    let Ok(matched) = i.match_args(&c.formals, &supplied, &dummy) else {
+        return Ok(None);
+    };
+    if matched.len() != c.formals.len() {
+        return Ok(None);
+    }
+    let mut args: Vec<crate::vm::RVal> = Vec::with_capacity(matched.len());
+    let mut vary = vec![usize::MAX; m];
+    for v in matched.into_iter() {
+        let Some(v) = v else { return Ok(None) };
+        if v.is_missing_arg() {
+            return Ok(None);
+        }
+        let j = inner.iter().position(|e| matches!((e, &v), (Value::Lang(a), Value::Lang(b)) if Rc::ptr_eq(a, b)));
+        match j {
+            Some(j) => {
+                vary[j] = args.len();
+                args.push(crate::vm::RVal::V(Value::Null));
+            }
+            None => args.push(crate::vm::unbox(v)),
+        }
+    }
+    if vary.iter().any(|&s| s == usize::MAX) {
+        return Ok(None);
+    }
+    Ok(Some(MFastClosure { clo: c.clone(), args, vary }))
+}
+
 /// R: mapply.c:do_mapply
 fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
     check_arity_internal(&args, 3, "mapply")?;
@@ -684,21 +745,62 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         _ => return Err(Flow::error("argument 'MoreArgs' of 'mapply' is not a list or pairlist")),
     };
     let dots = Value::sym("dots");
+    // R: mapply.c:do_mapply builds `f(dots[[1]][[k1]], ...)` once and
+    // mutates the index cells per iteration. Where no varying element is
+    // an object (so `[[` cannot dispatch), the element is read directly
+    // and passed as an already-forced promise carrying the same
+    // `dots[[j]][[k]]` expression (what `substitute` in `FUN` sees), and
+    // an inlinable pure `FUN` runs without a call at all (see
+    // [`inline_fun`]).
+    let direct = vitems.iter().all(|x| {
+        matches!(x, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_)) && !x.is_object()
+    });
+    let tags: Vec<Option<Sym>> =
+        (0..m).map(|j| vnames.as_ref().and_then(|n| n[j].as_deref().filter(|s| !s.is_empty()).map(Sym::new))).collect();
+    let inner: Vec<Value> = (0..m)
+        .map(|j| Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]))
+        .collect();
+    let mut mfast = if direct && longest > 0 { mapply_inline(i, &f, &inner, &tags, &more)? } else { None };
     let mut counters = vec![0usize; m];
     let mut out = Vec::with_capacity(longest);
     for _ in 0..longest {
-        let mut fargs = Vec::with_capacity(m + more.len());
         for j in 0..m {
             counters[j] += 1;
             if counters[j] > lengths[j] {
                 counters[j] = 1;
             }
-            let inner =
-                Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]);
-            let outer =
-                Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(inner), Arg::pos(Value::int(counters[j] as i32))]);
-            let tag = vnames.as_ref().and_then(|n| n[j].as_deref().filter(|s| !s.is_empty()).map(Sym::new));
-            fargs.push(Arg::new(tag, outer));
+        }
+        if let Some(mf) = &mut mfast {
+            for j in 0..m {
+                mf.args[mf.vary[j]] = element_rval(&vitems[j], counters[j] - 1);
+            }
+            if let Some(v) = crate::vm::call_inline_rval(i, &mf.clo, &mf.args) {
+                out.push(v.into_value());
+                continue;
+            }
+        }
+        let mut fargs = Vec::with_capacity(m + more.len());
+        for j in 0..m {
+            if direct {
+                let k = counters[j] - 1;
+                let expr = Value::lang(
+                    Value::Sym(s::BRACKET2),
+                    vec![Arg::pos(inner[j].clone()), Arg::pos(Value::int(counters[j] as i32))],
+                );
+                let p = match &vitems[j] {
+                    Value::Real(v) => Promise::forced_real(expr, v.data[k]),
+                    Value::Int(v) => Promise::forced_int(expr, v.data[k]),
+                    Value::Lgl(v) => Promise::forced_lgl(expr, v.data[k]),
+                    x => Promise::forced(expr, element_rval(x, k).into_value()),
+                };
+                fargs.push(Arg::new(tags[j], Value::Promise(Rc::new(p))));
+            } else {
+                let outer = Value::lang(
+                    Value::Sym(s::BRACKET2),
+                    vec![Arg::pos(inner[j].clone()), Arg::pos(Value::int(counters[j] as i32))],
+                );
+                fargs.push(Arg::new(tags[j], outer));
+            }
         }
         fargs.extend(more.iter().cloned());
         let fcall = Value::lang(f.clone(), fargs);
