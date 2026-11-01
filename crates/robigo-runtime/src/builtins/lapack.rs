@@ -29,6 +29,9 @@ pub static DEFS: &[Builtin] = &[
     internal("La_svd_cmplx", do_la_svd_cmplx, 5),
     internal("La_solve", do_la_solve, 3),
     internal("La_solve_cmplx", do_la_solve_cmplx, 3),
+    internal("La_qr", do_la_qr, 1),
+    internal("qr_coef_real", do_qr_coef_real, 2),
+    internal("qr_qy_real", do_qr_qy_real, 3),
     internal("det_ge_real", do_det_ge_real, 2),
     internal("La_chol", do_la_chol, 3),
     internal("La_chol2inv", do_la_chol2inv, 2),
@@ -797,6 +800,49 @@ type ZgeconFn = unsafe extern "C" fn(
     usize,
 );
 type ZlangeFn = unsafe extern "C" fn(*const u8, *const i32, *const i32, *const Z, *const i32, *mut Z, usize) -> f64;
+type Dgeqp3Fn = unsafe extern "C" fn(
+    *const i32,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    *mut f64,
+    *mut f64,
+    *const i32,
+    *mut i32,
+);
+type DormqrFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const i32,
+    *const i32,
+    *const i32,
+    *const f64,
+    *const i32,
+    *const f64,
+    *mut f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+);
+type DtrtrsFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const u8,
+    *const i32,
+    *const i32,
+    *const f64,
+    *const i32,
+    *mut f64,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+    usize,
+);
 
 /// Rcomplex on the C side: two doubles in declaration order (r, i).
 #[repr(C)]
@@ -820,6 +866,9 @@ struct SystemLapack {
     zgesv: ZgesvFn,
     zgecon: ZgeconFn,
     zlange: ZlangeFn,
+    dgeqp3: Dgeqp3Fn,
+    dormqr: DormqrFn,
+    dtrtrs: DtrtrsFn,
 }
 
 /// The dlsym-resolved address of the bound library's ilaver entry point,
@@ -875,6 +924,9 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
             zgesv: sym(handle, b"zgesv_\0")?,
             zgecon: sym(handle, b"zgecon_\0")?,
             zlange: sym(handle, b"zlange_\0")?,
+            dgeqp3: sym(handle, b"dgeqp3_\0")?,
+            dormqr: sym(handle, b"dormqr_\0")?,
+            dtrtrs: sym(handle, b"dtrtrs_\0")?,
         };
         Ok(lib)
     }
@@ -2093,6 +2145,271 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         return Ok(Value::real(0.0));
     }
     Ok(Value::real(dgecon(onenrm, n, &lu, anorm)))
+}
+
+/// The `i`th element of a list (R's `VECTOR_ELT`); NULL for anything else.
+fn list_elt(v: &Value, i: usize) -> Value {
+    match v {
+        Value::List(l) => l.data.get(i).cloned().unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+/// R: Lapack.c:La_qr — pivoted QR via dgeqp3, returning the list
+/// `qr`, `rank`, `qraux`, `pivot` (the pivoted column names go into the
+/// factor's dimnames).
+fn do_la_qr(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_numeric_matrix(&a) {
+        return Err(Flow::error("'a' must be a numeric matrix"));
+    }
+    let (m, n) = dims2(&a);
+    let (m_i, n_i) = (m as i32, n as i32);
+    // R copies a real input into a fresh matrix and coerces otherwise;
+    // either way the factor is a new buffer.
+    let mut avals = reals(&a);
+    let mut jpvt = vec![0i32; n];
+    let k = m.min(n);
+    let mut tau = vec![0.0f64; k];
+    let f = system_lapack()?.dgeqp3;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    // SAFETY: avals has m*n elements, jpvt n, tau min(m,n); the workspace
+    // query writes one double to tmp.
+    unsafe {
+        f(&m_i, &n_i, avals.as_mut_ptr(), &m_i, jpvt.as_mut_ptr(), tau.as_mut_ptr(), &mut tmp, &-1, &mut info);
+    }
+    if info < 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgeqp3'", info)));
+    }
+    let lwork = tmp as i32;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    unsafe {
+        f(
+            &m_i,
+            &n_i,
+            avals.as_mut_ptr(),
+            &m_i,
+            jpvt.as_mut_ptr(),
+            tau.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+        );
+    }
+    if info < 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgeqp3'", info)));
+    }
+    let mut qr = Value::reals(avals);
+    qr.set_attr_raw(s::DIM, Value::ints(vec![m_i, n_i]));
+    // Fix up dimnames(A): pivot the column names like R does.
+    if a.get_attr(s::DIMNAMES).is_some() {
+        let rn = dimnames_elt(&a, 0);
+        let cn = match dimnames_elt(&a, 1) {
+            Value::Str(c) => {
+                let mut v = Vec::with_capacity(n);
+                for j in 0..n {
+                    let src = (jpvt[j] - 1) as usize;
+                    v.push(c.data.get(src).cloned().unwrap_or(None));
+                }
+                Value::strs(v)
+            }
+            other => other,
+        };
+        qr.set_attr_raw(s::DIMNAMES, Value::list(vec![rn, cn]));
+    }
+    Ok(Value::named_list(vec![
+        ("qr", qr),
+        ("rank", Value::int(k as i32)),
+        ("qraux", Value::reals(tau)),
+        ("pivot", Value::ints(jpvt)),
+    ]))
+}
+
+/// R: Lapack.c:qr_coef_real — `Q' B` (dormqr) then a triangular solve
+/// (dtrtrs) with the LAPACK factor, returning B in place.
+fn do_qr_coef_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let q = arg(&args, 0);
+    let bin = arg(&args, 1);
+    if !matches!(bin.get_attr(s::DIM), Some(d) if d.len() == 2) {
+        return Err(Flow::error("'b' must be a numeric matrix"));
+    }
+    let qr = list_elt(&q, 0);
+    let tau = list_elt(&q, 2);
+    let (n, _) = dims2(&qr);
+    let k = tau.len();
+    let (brows, nrhs) = dims2(&bin);
+    if brows != n {
+        return Err(Flow::error(format!("right-hand side should have {} not {} rows", n, brows)));
+    }
+    let qrv = reals(&qr);
+    let tauv = reals(&tau);
+    let mut out = coerce_quiet(&bin, VType::Real);
+    let mut b = match &out {
+        Value::Real(r) => r.data.clone(),
+        _ => return Err(Flow::error("robigo: 'b' could not be coerced to double")),
+    };
+    let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
+    let f = system_lapack()?.dormqr;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    // SAFETY: qrv holds the n x n factor, tauv k reflectors, b n*nrhs.
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            b"T".as_ptr(),
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            &mut tmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dormqr [tmp]'", info)));
+    }
+    let lwork = tmp as i32;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            b"T".as_ptr(),
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dormqr [work]'", info)));
+    }
+    let g = system_lapack()?.dtrtrs;
+    unsafe {
+        g(
+            b"U".as_ptr(),
+            b"N".as_ptr(),
+            b"N".as_ptr(),
+            &k_i,
+            &nrhs_i,
+            qrv.as_ptr(),
+            &n_i,
+            b.as_mut_ptr(),
+            &n_i,
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dtrtrs'", info)));
+    }
+    if let Value::Real(r) = &mut out {
+        std::rc::Rc::make_mut(r).data = b;
+    }
+    Ok(out)
+}
+
+/// R: Lapack.c:qr_qy_real — `Q B` or `Q' B` (dormqr) with the LAPACK
+/// factor, returning B in place.
+fn do_qr_qy_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let q = arg(&args, 0);
+    let bin = arg(&args, 1);
+    let tr = as_logical(&arg(&args, 2));
+    if tr == NA_LOGICAL {
+        return Err(Flow::error("invalid 'trans' argument"));
+    }
+    if !matches!(bin.get_attr(s::DIM), Some(d) if d.len() == 2) {
+        return Err(Flow::error("'b' must be a numeric matrix"));
+    }
+    let qr = list_elt(&q, 0);
+    let tau = list_elt(&q, 2);
+    let (n, _) = dims2(&qr);
+    let k = tau.len();
+    let (brows, nrhs) = dims2(&bin);
+    if brows != n {
+        return Err(Flow::error(format!("right-hand side should have {} not {} rows", n, brows)));
+    }
+    let qrv = reals(&qr);
+    let tauv = reals(&tau);
+    let mut out = coerce_quiet(&bin, VType::Real);
+    let mut b = match &out {
+        Value::Real(r) => r.data.clone(),
+        _ => return Err(Flow::error("robigo: 'b' could not be coerced to double")),
+    };
+    let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
+    let f = system_lapack()?.dormqr;
+    let mut info = 0i32;
+    let mut tmp = 0.0f64;
+    let trans: *const u8 = if tr == 1 { b"T".as_ptr() } else { b"N".as_ptr() };
+    // SAFETY: qrv holds the n x n factor, tauv k reflectors, b n*nrhs.
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            trans,
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            &mut tmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dormqr'", info)));
+    }
+    let lwork = tmp as i32;
+    let mut work = vec![0.0f64; lwork.max(1) as usize];
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            trans,
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dormqr'", info)));
+    }
+    if let Value::Real(r) = &mut out {
+        std::rc::Rc::make_mut(r).data = b;
+    }
+    Ok(out)
 }
 
 fn do_la_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
