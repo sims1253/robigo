@@ -3697,13 +3697,14 @@ fn run_with(
                     }
                 };
             }
-            Op::Call { dst, f, site } => {
-                let site = &code.call_sites[*site as usize];
+            Op::Call { dst, f, site: si } => {
+                let site = &code.call_sites[*si as usize];
                 // R: eval.c:do_begin/do_eval keep the statement's srcref in
                 // the global R_Srcref; install the compiled-in value so the
                 // frames this call pushes report it (also for closures the
-                // callee calls back into through builtins).
-                if let Some(sr) = &site.srcref {
+                // callee calls back into through builtins). Code without
+                // statement srcrefs has no table and pays one check.
+                if let Some(sr) = code.call_srcrefs.as_ref().and_then(|s| s[*si as usize].as_ref()) {
                     interp.srcref = sr.clone();
                 }
                 // Look the function up before flushing when that cannot run

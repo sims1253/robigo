@@ -533,12 +533,6 @@ pub type SiMemo = Option<(Rc<Closure>, bool, Option<SiInline>)>;
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
     pub call: Value,
-    /// R: eval.c:do_begin/do_eval — the srcref of the statement this call
-    /// was compiled in (`Some(NULL)` for a `{` block parsed without source
-    /// references, `None` with no enclosing block, where the ambient value
-    /// of the closure entry applies); `Op::Call` installs it as the
-    /// interpreter's current srcref, so frames the call pushes report it.
-    pub srcref: Option<Value>,
     /// Bytecode for each argument's promise (`None`: use the interpreter).
     pub codes: Vec<Option<Rc<Code>>>,
     /// The function found from the first search-path environment: (search
@@ -643,6 +637,13 @@ pub struct Code {
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
+    /// R: eval.c:do_begin/do_eval — the srcrefs of the statements the
+    /// call sites were compiled in, parallel to [`Code::call_sites`]
+    /// (`None` where no `{` block encloses the call, so the ambient value
+    /// of the closure entry applies). Present only when the code has any
+    /// statement srcrefs: `Op::Call` installs the entry as the current
+    /// srcref, so the frames a call pushes report it.
+    pub call_srcrefs: Option<Box<[Option<Value>]>>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
@@ -720,6 +721,15 @@ impl Code {
             vars: c.vars,
             arglists: c.arglists,
             call_sites: c.call_sites,
+            // Only code with a real statement srcref carries the table:
+            // a closure without one leaves no ambient value either (its
+            // entry srcref is NULL), so NULL entries there would store
+            // what already holds and only cost call instructions.
+            call_srcrefs: c
+                .site_srcrefs
+                .iter()
+                .any(|s| s.as_ref().is_some_and(|v| !v.is_null()))
+                .then(|| std::mem::take(&mut c.site_srcrefs).into_boxed_slice()),
             nguards: c.nguards,
             guard_syms,
             simple,
@@ -774,6 +784,11 @@ struct Compiler {
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     call_sites: Vec<CallSite>,
+    /// R: eval.c:do_begin/do_eval — per call site, the srcref of the
+    /// `{` statement it was compiled in (`Some(NULL)` for a block parsed
+    /// without source references); collected into
+    /// [`Code::call_srcrefs`], which exists only when the code has any.
+    site_srcrefs: Vec<Option<Value>>,
     nguards: usize,
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
@@ -1099,7 +1114,6 @@ impl Compiler {
             si: f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8)),
             si_memo: std::cell::RefCell::new(None),
             call: whole.clone(),
-            srcref: self.cur_srcref.clone(),
             codes,
             memo: Default::default(),
             leaf_args,
@@ -1112,6 +1126,7 @@ impl Compiler {
             force,
         });
         let site = (self.call_sites.len() - 1) as u32;
+        self.site_srcrefs.push(self.cur_srcref.clone());
         self.emit(Op::Call { dst, f, site });
     }
 
