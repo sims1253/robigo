@@ -775,16 +775,10 @@ fn strtod_index(s: &str) -> Option<f64> {
         if int_part.is_empty() && frac_part.is_empty() {
             return None;
         }
-        if !int_part.bytes().all(|c| c.is_ascii_hexdigit())
-            || !frac_part.bytes().all(|c| c.is_ascii_hexdigit())
-        {
+        if !int_part.bytes().all(|c| c.is_ascii_hexdigit()) || !frac_part.bytes().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
-        let mut v = if int_part.is_empty() {
-            0.0
-        } else {
-            u64::from_str_radix(int_part, 16).ok()? as f64
-        };
+        let mut v = if int_part.is_empty() { 0.0 } else { u64::from_str_radix(int_part, 16).ok()? as f64 };
         let mut scale = 1.0 / 16.0;
         for c in frac_part.bytes() {
             v += (c as char).to_digit(16).unwrap() as f64 * scale;
