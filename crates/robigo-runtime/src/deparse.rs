@@ -1093,6 +1093,10 @@ impl D {
                             encode_element_for_deparse(v, i)
                         }
                     }
+                    // R: deparse.c:vector2buff -- a non-finite part cannot be written as `a+bi`.
+                    Value::Cplx(cv) if cv.data[i].re.is_nan() || !cv.data[i].im.is_finite() => {
+                        crate::format::encode_nonfinite_complex(cv.data[i])
+                    }
                     Value::Str(sv) if all_na && sv.data[i].is_none() => "NA_character_".into(),
                     Value::Raw(rv) => format!("0x{:02x}", rv.data[i]),
                     // R: deparse.c:vector2buff -- hexNumeric and digits17.

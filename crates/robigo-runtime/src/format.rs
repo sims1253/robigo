@@ -584,6 +584,16 @@ pub fn encode_digits17_signed(x: f64) -> String {
     if s.starts_with('-') { s } else { format!("+{s}") }
 }
 
+/// `deparse.c:EncodeNonFiniteComplexElement`: a complex literal whose real
+/// part is NaN or whose imaginary part is not finite cannot be written as
+/// `a+bi`, so deparse spells it out as `complex(real=..., imaginary=...)`.
+pub fn encode_nonfinite_complex(z: Complex) -> String {
+    let (r, im) = format_complex(&[z], 15, 0, 0, 2);
+    let re = encode_real0(z.re, r.0, r.1, r.2, "NA");
+    let imag = encode_real0(z.im, im.0, im.1, im.2, "NA");
+    format!("complex(real={re}, imaginary={imag})")
+}
+
 pub fn encode_element_for_deparse(v: &Value, i: usize) -> String {
     match v {
         Value::Lgl(x) => encode_logical(x.data[i], 0, "NA"),
@@ -632,6 +642,13 @@ mod tests {
         assert_eq!(fmt1(0.001), "0.001");
         let (w, d, e) = format_real(&[1.5], 7, 0, 0, 2);
         assert_eq!(encode_real_dec(1.5, w, d, e, "NA", ","), "1,5");
+    }
+
+    #[test]
+    fn nonfinite_complex() {
+        assert_eq!(encode_nonfinite_complex(Complex::new(f64::NAN, 0.0)), "complex(real=NaN, imaginary=0)");
+        assert_eq!(encode_nonfinite_complex(Complex::new(f64::INFINITY, 4.0)), "complex(real=Inf, imaginary=4)");
+        assert_eq!(encode_nonfinite_complex(Complex::new(3.0, f64::NEG_INFINITY)), "complex(real=3, imaginary=-Inf)");
     }
 
     #[test]

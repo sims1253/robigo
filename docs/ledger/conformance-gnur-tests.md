@@ -59,3 +59,26 @@ Baseline on `main` (`f523d79a`):
 - probes: minimal `read.table` warning+error under `try()`; `gnur-tests/reg-IO2`;
   fastr `TestBuiltin_(try|tryCatch|warning|stop|...)` slice 15/15.
 - result: `gnur-tests/reg-IO2` passes and is ratcheted. Kept.
+## 2026-11-01: deparse of non-finite complex elements (`complex`)
+
+- why: `gnur-tests/complex` diverged on one line. `dput(as.complex("NaN"))` gave
+  `NaN+0i` where GNU R gives `complex(real=NaN, imaginary=0)`.
+- what:
+  - R: `src/main/deparse.c:vector2buff` handles `CPLXSXP` elements with
+    `ISNAN(Re) || !R_FINITE(Im)` before the generic `EncodeElement` path, and
+    emits `EncodeNonFiniteComplexElement` (`complex(real=%s, imaginary=%s)`),
+    because `1+Infi` / `3+NaNi` are not valid complex literals. That function
+    formats the single element with `formatComplex(&x, 1, ...)` (deparse sets
+    `R_print.digits = DBL_DIG`, scipen/na_width from `PrintDefaults()`) and
+    `EncodeReal0` for each part.
+  - robigo's `deparse.rs` had no such branch, so it fell through to
+    `encode_element_for_deparse`, which writes `a+bi` unconditionally.
+  - Added `format::encode_nonfinite_complex` (port of
+    `deparse.c:EncodeNonFiniteComplexElement`) and the `vector2buff` branch; it
+    sits after the both-NA (`NA_complex_`) case, matching R's order.
+- probes: `dput` of `NaN+0i`, `c(1+2i, NaN+0i)`, `Inf+1i`, `1+Inf*1i`,
+  `0+NaNi`, `NA+I`, `NA_complex_`; compared against the docker oracle.
+- result: `gnur-tests/complex` passes and is ratcheted. The 33-case ratchet
+  (all markers + `arith`) is 32/33 with only the environmental `reg-packages`
+  failure; `fastr` `TestBuiltin_(format|deparse|print|dput|cat|complex)`
+  slice is 453/453. Kept.
