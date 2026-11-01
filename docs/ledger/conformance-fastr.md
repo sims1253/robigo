@@ -44,3 +44,12 @@
 - Changes: `crates/robigo-cli/src/echo.rs`: `parse_error_message` dispatches on `ParseError::style` (`Grammar` keeps the context lines, `Condition` uses `condition_message(buf, "<input>")`, `RError` is the bare message).
 - Result: 31,224 of 31,374 pass on this branch (+14 cases, 0 regressions): 9 of 10 `parser/TestParser`, 4 `TestSimpleAssignment`, `TestSimpleParsing` octal and `TestSimpleVectors` cases.
 - Status: kept.
+
+## 2026-11-01: round 6 - parse-error call attribution and the console source name
+
+- Topic: `functions/TestFunctions` (`f(a,a)`, `f(''=123)`), `parser/TestParser`
+- Changes:
+  - `crates/robigo-cli/src/echo.rs`: `parse_error_line` prints the whole `Error...` line and uses `conditions::format_error_message` when a `Condition` parse error carries a call, so `1 |> f(_)` reports `Error in f("_") : \n  pipe placeholder can only be used as a named argument (<input>:1:6)` like `verrorcall_dflt` (R: errors.c). Unit tests cover the `Condition`, `RError` and call-attribution branches.
+  - `crates/robigo-syntax/src/lib.rs`: `CONSOLE_SRCNAME = "<input>"`, used by `dump.rs`, `builtins/parsing.rs` and the REPL instead of three literals.
+- Result: 31,231 of 31,374 pass on this branch (+2 cases, 0 regressions). `library/utils/TestUtils/{7e10,868c}` fail only locally: they need the prebuilt native routines CI ships via `ROBIGO_NATIVES`.
+- Status: kept.

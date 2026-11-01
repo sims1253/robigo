@@ -21,7 +21,7 @@ pub fn dump(e: &Expr) -> Vec<u8> {
 pub fn dump_error(src: &str, e: &ParseError) -> Vec<u8> {
     let (line, col) = error_line_col(src, e);
     let msg = match e.style {
-        ErrorStyle::Condition => crate::condition_message(src, "<input>", e),
+        ErrorStyle::Condition => crate::condition_message(src, crate::CONSOLE_SRCNAME, e),
         _ => e.message.clone(),
     };
     format!("ERROR {} {} {}", line, col, msg).into_bytes()

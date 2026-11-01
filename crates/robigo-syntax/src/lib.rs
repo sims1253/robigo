@@ -55,6 +55,10 @@ pub fn error_line_col(src: &str, e: &ParseError) -> (usize, usize) {
 /// last this many bytes read.
 pub const PARSE_CONTEXT_SIZE: usize = 256;
 
+/// The source name a parse condition reports when there is no file (R:
+/// gram.y's `R_ParseErrorSrcfile` default, `"<input>"`).
+pub const CONSOLE_SRCNAME: &str = "<input>";
+
 /// `tabExpand`'s per-line cap (R: main/source.c).
 const TAB_EXPAND_MAX: usize = 192;
 

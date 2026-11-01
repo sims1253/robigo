@@ -50,7 +50,7 @@ fn parse_error_flow(src: &str, srcname: &str, condition_srcname: &str, e: robigo
     }
 }
 
-fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
+pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
     use crate::lang::const_to_value;
     use robigo_syntax::{Const, ErrorExpr};
     match e {
@@ -93,7 +93,7 @@ pub fn parse_text(src: &str, srcname: &str) -> RResult<Vec<Value>> {
     let arena = robigo_syntax::Arena::new();
     match robigo_syntax::parse_program(&arena, src) {
         Ok(exprs) => Ok(exprs.iter().map(expr_to_value).collect()),
-        Err(e) => Err(parse_error_flow(src, srcname, "<input>", e)),
+        Err(e) => Err(parse_error_flow(src, srcname, robigo_syntax::CONSOLE_SRCNAME, e)),
     }
 }
 
@@ -138,8 +138,11 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let source = arg(&args, 4);
     let srcfile = parse_filename(&source);
     // R: gram.y:getFilename uses only environment srcfiles.
-    let condition_srcfile =
-        if matches!(source, Value::Env(_)) && !srcfile.is_empty() { srcfile.as_str() } else { "<input>" };
+    let condition_srcfile = if matches!(source, Value::Env(_)) && !srcfile.is_empty() {
+        srcfile.as_str()
+    } else {
+        robigo_syntax::CONSOLE_SRCNAME
+    };
     let src = match text_of(&text) {
         Some(src) => src,
         None if text.is_null() => {

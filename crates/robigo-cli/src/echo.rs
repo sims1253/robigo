@@ -217,7 +217,7 @@ fn parse_context(buf: &str, end: usize) -> Vec<String> {
 fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
     match e.style {
-        ErrorStyle::Condition => robigo_syntax::condition_message(buf, "<input>", e),
+        ErrorStyle::Condition => robigo_syntax::condition_message(buf, robigo_syntax::CONSOLE_SRCNAME, e),
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
             let lines = parse_context(buf, e.end);
@@ -227,6 +227,20 @@ fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
                 _ => format!("{} in:\n\"{}\n{}\"", e.message, lines[lines.len() - 2], lines[lines.len() - 1]),
             }
         }
+    }
+}
+
+/// The whole `Error...` line the REPL prints. A condition raised through
+/// `errorcall(call, ...)` keeps its call attribution even in the REPL
+/// (R: errors.c:verrorcall_dflt; gram.y:R_Parse1 passes `R_CurrentExpr`
+/// for the pipe checks), so `1 |> f(_)` reports `Error in f("_") : ...`.
+fn parse_error_line(buf: &str, e: &robigo_syntax::ParseError) -> String {
+    match (&e.style, &e.call) {
+        (robigo_syntax::ErrorStyle::Condition, Some(call)) => robigo_runtime::conditions::format_error_message(
+            &robigo_runtime::builtins::parsing::error_expr_value(call),
+            &parse_error_message(buf, e),
+        ),
+        _ => format!("Error: {}\n", parse_error_message(buf, e)),
     }
 }
 
@@ -296,8 +310,7 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
             }
             Status::Incomplete => prompt_type = 2,
             Status::Error(ref e) => {
-                let msg = parse_error_message(&iob, e);
-                interp.write_err(&format!("Error: {}\n", msg));
+                interp.write_err(&parse_error_line(&iob, e));
                 return false;
             }
             Status::Ok(ref exprs) => {
@@ -369,6 +382,26 @@ mod tests {
         assert_eq!(parse_error_message("else 2", &e2), "unexpected 'else' in \"else\"");
         let e3 = robigo_syntax::ParseError::new("unexpected ')'", 14, 15);
         assert_eq!(parse_error_message("if (TRUE) {\n1\n)\n", &e3), "unexpected ')' in:\n\"1\n)\"");
+        // A condition from `raiseParseError` keeps its position suffix.
+        let e4 = robigo_syntax::ParseError::condition("repeated formal argument 'x'", 5, 6, None);
+        assert_eq!(parse_error_message("f(x, x)", &e4), "repeated formal argument 'x' (<input>:1:6)");
+        // `error()` from a parser action has neither position nor context.
+        let e5 = robigo_syntax::ParseError::r_error("attempt to use zero-length variable name");
+        assert_eq!(parse_error_message("a[]", &e5), "attempt to use zero-length variable name");
+    }
+
+    /// A condition raised through `errorcall(call, ...)` keeps its call in
+    /// the REPL (R: errors.c:verrorcall_dflt).
+    #[test]
+    fn parse_error_call_attribution() {
+        let arena = robigo_syntax::Arena::new();
+        let robigo_syntax::ConsoleStatus::Error(e) = robigo_syntax::parse_console(&arena, "1 |> f(_)\n") else {
+            panic!("expected a parse error");
+        };
+        assert_eq!(
+            parse_error_line("1 |> f(_)\n", &e),
+            "Error in f(\"_\") : \n  pipe placeholder can only be used as a named argument (<input>:1:6)\n"
+        );
     }
 
     #[test]
