@@ -6,6 +6,55 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-02: round 17, sorted-input fast paths in the radix sort
+
+- Base: track/perf-vm-round16 (main 675cc1c6 + #206), binaries
+  `.robigo/perf/{cand-r16b,cand-sort4}` built sequentially in this tree.
+- Why: idiom measurement (`scripts/idiom-vs-r.py`, n=1000, vs GNU R 4.5.0
+  with the corrected oracle env) had `order()` at **1.36x** and `sort()`
+  at 1.25x GNU R — but only for *sorted or reversed* input; random input
+  and large n were already faster (n=1e6: 0.75-0.89x). GNU R's
+  radixsort.c runs `isorted`/`dsorted` first: a sorted column short-
+  circuits to the identity order (with the group runs collected during
+  the scan) and a strictly reversed one to a single `reverse`, before any
+  counting or radix pass; robigo always sorted.
+- Change (`builtins/sort.rs` only):
+  - Ports of `radixsort.c:isorted` and `dsorted` in `radix_group`: for
+    integer/logical and real columns, one scan of the elements in the
+    current order — already sorted (ties allowed) keeps `o` and returns
+    the run lengths (also for `nalast == 0` all-NA groups, as R's -2);
+    strictly reversed reverses `o` (all runs 1); anything else falls
+    through. Ties are equal keys, exactly the radix path's grouping.
+  - The counting branch of `radix_sort_keys` moved to a dedicated
+    `counting_runs` (R's `icount` structure): the run lengths are
+    collected during the cumulate instead of a second pass over the
+    sorted keys, no `sorted` keys vector is built, and the first
+    column's scatter reads the identity directly instead of copying
+    `o`. Dispatch now also requires `range <= n`, as R's `isort` does
+    (a range larger than the vector goes to the radix path), and the
+    min/max scan of the keys is shared with the radix path (it was paid
+    twice in the first cut, +1.75% on `robigo/vecops`, now -0.4%).
+- Result:
+  - Idioms (robigo per iteration, n=1000, vs GNU R): `order(1000:1)`
+    217,965 -> **153,926 (-29%, 1.36x -> 1.17x)**; `order(1:1000,
+    decreasing=TRUE)` 218,110 -> 154,014; `sort(1000:1)` 374,059 ->
+    317,703 (-15%); `order(sample(1000))` 220,025 -> 206,397 (-6%).
+  - New suite benchmark `robigo/sortorder` (sorted, reversed, random,
+    tied, multi-key and factor ordering; output matches GNU R):
+    **-13.45%** paired against the same-tree base.
+  - Full-suite gate paired against `cand-r16b`: **0 faster, 0 slower
+    (> 0.5%), 0 broken** (worst +0.03%, `robigo/vecops` -0.41%).
+- Verified: fixture `tests/r/basics/radix-sorted-input.R` (sorted,
+  reversed, near-sorted, ties, grouping `ends`/`maxgrpn` attributes,
+  NA last/first/dropped, all-NA, NaN, rounded-double ties, multi-key
+  with mixed `decreasing`, rank, sort.list, factors, logicals),
+  recorded with GNU R 4.5.0 — passes byte-for-byte; conformance 9/9 on
+  the branch.
+- Known remaining gap (wrapper, not sort): `order()`/`sort()` of sorted
+  materialized input still trail GNU R ~1.2x because the R-level
+  wrappers (`match.arg`, `list(...)`, `lengths`, ~20 small calls) cost
+  about twice GNU R's per call — the fib-class call-overhead track.
+
 ## 2026-11-01: round 16, constant and symbol closure bodies compile and inline
 
 - Base: main fb002dc0, saved binary `.robigo/perf/base-r16`, fresh full

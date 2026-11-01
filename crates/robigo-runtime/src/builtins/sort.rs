@@ -1110,34 +1110,70 @@ fn str_cmp2(x: &RStr, y: &RStr, order: i32, nalast: i32) -> i32 {
     }
 }
 
+/// The `(min, max)` of the keys (order is unchanged by shifting them).
+fn key_span(keys: &[u64]) -> (u64, u64) {
+    keys.iter().fold((u64::MAX, 0), |(lo, hi), &k| (lo.min(k), hi.max(k)))
+}
+
+/// R: radixsort.c:icount — counting sort of `o` by the parallel `keys`
+/// for a small value range, with the run lengths of equal keys collected
+/// during the cumulate (no pass over the sorted keys). `None` when the
+/// range is too large or the vector too short to be worth it (the LSD
+/// radix path then sorts). `identity`: `o` is `0..n`, so the scatter
+/// needs no copy of the previous order.
+fn counting_runs(o: &mut [usize], keys: &[u64], span: (u64, u64), identity: bool) -> Option<Vec<usize>> {
+    let n = o.len();
+    if n < 256 || n > u32::MAX as usize {
+        return None;
+    }
+    let (kmin, kmax) = span;
+    let kmin = kmin.min(kmax);
+    let range = kmax - kmin;
+    // R: radixsort.c:isort — icount when the range is small relative to
+    // the length too (a range larger than n is cheaper to radix).
+    if range >= 100_000 || range > n as u64 {
+        return None;
+    }
+    let mut count = vec![0u32; range as usize + 1];
+    for &k in keys {
+        count[(k - kmin) as usize] += 1;
+    }
+    let mut runs = Vec::new();
+    let mut sum = 0u32;
+    for c in count.iter_mut() {
+        if *c != 0 {
+            runs.push(*c as usize);
+        }
+        sum += *c;
+        *c = sum;
+    }
+    if identity {
+        for i in (0..n).rev() {
+            let c = &mut count[(keys[i] - kmin) as usize];
+            *c -= 1;
+            o[*c as usize] = i;
+        }
+    } else {
+        let src: Vec<usize> = o.to_vec();
+        for i in (0..n).rev() {
+            let c = &mut count[(keys[i] - kmin) as usize];
+            *c -= 1;
+            o[*c as usize] = src[i];
+        }
+    }
+    Some(runs)
+}
+
 /// Stable sort of `o` by the parallel `keys` (LSD radix, 11-bit digits,
 /// skipping digits all keys share). Returns the keys in sorted order.
-fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>) -> Vec<u64> {
+fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>, span: (u64, u64)) -> Vec<u64> {
     let n = o.len();
     // Keys relative to the smallest (order is unchanged): only the digits
     // of the range need sorting, and a small range is counted directly,
     // as R's radixsort.c does.
-    let (kmin, kmax) = keys.iter().fold((u64::MAX, 0), |(lo, hi), &k| (lo.min(k), hi.max(k)));
+    let (kmin, kmax) = span;
     let kmin = kmin.min(kmax);
     let range = kmax - kmin;
-    if n >= 256 && n <= u32::MAX as usize && range < 100_000 {
-        let mut count = vec![0u32; range as usize + 2];
-        for &k in &keys {
-            count[(k - kmin) as usize + 1] += 1;
-        }
-        for d in 1..count.len() {
-            count[d] += count[d - 1];
-        }
-        let src: Vec<usize> = o.to_vec();
-        let mut sorted = vec![0u64; n];
-        for (&k, &i) in keys.iter().zip(&src) {
-            let pos = &mut count[(k - kmin) as usize];
-            o[*pos as usize] = i;
-            sorted[*pos as usize] = k;
-            *pos += 1;
-        }
-        return sorted;
-    }
     let mut src: Vec<(u64, usize)> = keys.into_iter().map(|k| k - kmin).zip(o.iter().copied()).collect();
     if n < 256 || n > u32::MAX as usize {
         src.sort_by_key(|p| p.0);
@@ -1181,6 +1217,111 @@ fn radix_sort_keys(o: &mut [usize], keys: Vec<u64>) -> Vec<u64> {
     src.into_iter().map(|(k, _)| k + kmin).collect()
 }
 
+/// R: radixsort.c:isorted. `Some(runs)` when the elements of `x` in the
+/// current order `o` are already sorted (ties allowed, `o` unchanged,
+/// run lengths of equal values returned), or strictly reversed (`o`
+/// reversed, all runs 1); `None` when they must be sorted. With
+/// `nalast == 0`, all-NA input counts as sorted (the NA rows are dropped
+/// by the caller) and any NA input as unsorted.
+fn isorted(x: &[i32], o: &mut [usize], order: i32, nalast: i32) -> Option<Vec<usize>> {
+    let n = o.len();
+    if nalast == 0 {
+        if o.iter().any(|&k| x[k] == NA_INTEGER) {
+            return if o.iter().all(|&k| x[k] == NA_INTEGER) { Some(vec![n]) } else { None };
+        }
+    }
+    if n <= 1 {
+        return Some(vec![n]);
+    }
+    let key = |k: usize| icheck(x[k], order, nalast);
+    if key(o[1]) < key(o[0]) {
+        let mut prev = key(o[1]);
+        let mut i = 2;
+        while i < n {
+            let t = key(o[i]);
+            if t >= prev {
+                break;
+            }
+            prev = t;
+            i += 1;
+        }
+        if i == n {
+            o.reverse();
+            return Some(vec![1; n]);
+        }
+        return None;
+    }
+    let mut prev = key(o[0]);
+    let mut runs = Vec::new();
+    let mut tt = 1usize;
+    for j in 1..n {
+        let t = key(o[j]);
+        if t < prev {
+            return None;
+        }
+        // Ties are equal keys, exactly the radix path's grouping.
+        if t == prev {
+            tt += 1;
+        } else {
+            runs.push(tt);
+            tt = 1;
+        }
+        prev = t;
+    }
+    runs.push(tt);
+    Some(runs)
+}
+
+/// R: radixsort.c:dsorted, as [`isorted`] for doubles: keys are the
+/// twiddled values (rounded as for grouping) and ties are equal keys.
+fn dsorted(x: &[f64], o: &mut [usize], order: i32, nalast: i32, dround: u32) -> Option<Vec<usize>> {
+    let n = o.len();
+    if nalast == 0 {
+        if o.iter().any(|&k| x[k].is_nan()) {
+            return if o.iter().all(|&k| x[k].is_nan()) { Some(vec![n]) } else { None };
+        }
+    }
+    if n <= 1 {
+        return Some(vec![n]);
+    }
+    let key = |k: usize| dtwiddle(x[k], order, nalast, dround);
+    if key(o[1]) < key(o[0]) {
+        let mut prev = key(o[1]);
+        let mut i = 2;
+        while i < n {
+            let t = key(o[i]);
+            if t >= prev {
+                break;
+            }
+            prev = t;
+            i += 1;
+        }
+        if i == n {
+            o.reverse();
+            return Some(vec![1; n]);
+        }
+        return None;
+    }
+    let mut prev = key(o[0]);
+    let mut runs = Vec::new();
+    let mut tt = 1usize;
+    for j in 1..n {
+        let t = key(o[j]);
+        if t < prev {
+            return None;
+        }
+        if t == prev {
+            tt += 1;
+        } else {
+            runs.push(tt);
+            tt = 1;
+        }
+        prev = t;
+    }
+    runs.push(tt);
+    Some(runs)
+}
+
 /// Lengths of the runs of equal adjacent keys.
 fn key_runs(keys: &[u64]) -> Vec<usize> {
     let mut runs = Vec::new();
@@ -1200,8 +1341,17 @@ fn key_runs(keys: &[u64]) -> Vec<usize> {
 }
 
 /// Sort `o[s..e]` (row indices) stably by column `x`, returning the run
-/// lengths of equal keys.
-fn radix_group(x: &Value, o: &mut [usize], order: i32, nalast: i32, retgrp: bool, sort_str: bool) -> Vec<usize> {
+/// lengths of equal keys. `identity`: `o` holds `0..n` (the first
+/// column), so a counting scatter needs no copy of the previous order.
+fn radix_group(
+    x: &Value,
+    o: &mut [usize],
+    order: i32,
+    nalast: i32,
+    retgrp: bool,
+    sort_str: bool,
+    identity: bool,
+) -> Vec<usize> {
     let n = o.len();
     let runs_by = |o: &[usize], eq: &dyn Fn(usize, usize) -> bool| -> Vec<usize> {
         let mut runs = Vec::new();
@@ -1221,13 +1371,27 @@ fn radix_group(x: &Value, o: &mut [usize], order: i32, nalast: i32, retgrp: bool
     };
     match x {
         Value::Int(v) | Value::Lgl(v) => {
-            let keys = o.iter().map(|&k| (icheck(v.data[k], order, nalast) as u64) ^ (1 << 63)).collect();
-            key_runs(&radix_sort_keys(o, keys))
+            if let Some(runs) = isorted(&v.data, o, order, nalast) {
+                return runs;
+            }
+            let keys: Vec<u64> = o.iter().map(|&k| (icheck(v.data[k], order, nalast) as u64) ^ (1 << 63)).collect();
+            let span = key_span(&keys);
+            if let Some(runs) = counting_runs(o, &keys, span, identity) {
+                return runs;
+            }
+            key_runs(&radix_sort_keys(o, keys, span))
         }
         Value::Real(v) => {
             let dround = if retgrp { 2 } else { 0 };
-            let keys = o.iter().map(|&k| dtwiddle(v.data[k], order, nalast, dround)).collect();
-            key_runs(&radix_sort_keys(o, keys))
+            if let Some(runs) = dsorted(&v.data, o, order, nalast, dround) {
+                return runs;
+            }
+            let keys: Vec<u64> = o.iter().map(|&k| dtwiddle(v.data[k], order, nalast, dround)).collect();
+            let span = key_span(&keys);
+            if let Some(runs) = counting_runs(o, &keys, span, identity) {
+                return runs;
+            }
+            key_runs(&radix_sort_keys(o, keys, span))
         }
         Value::Str(v) => {
             if sort_str {
@@ -1327,7 +1491,7 @@ fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
             if g == 1 {
                 new_groups.push(1);
             } else {
-                new_groups.extend(radix_group(x, &mut o[start..start + g], order, nalast, retgrp, sort_str));
+                new_groups.extend(radix_group(x, &mut o[start..start + g], order, nalast, retgrp, sort_str, col == 0));
             }
             start += g;
         }
