@@ -23,3 +23,17 @@ Baseline on `main` (`f523d79a`):
 - probes / tests:
   - `python3 scripts/corpus.py run gnur-demos --filter '^base/is\.things$'`
 - result: `gnur-demos/base/is.things` passes; `gnur-demos` passing count moves from 14/16 to 15/16. Kept.
+
+## 2026-11-01: handover + `arith` and `reg-packages` after the `is.na` fix
+
+- Full local run (`--filter '^(?!reg-large$)'`): **32/58** pass, 1 new (`arith`),
+  1 regression (`reg-packages`).
+- `arith` newly passes because `is.na(expression(...))` is now a warning with an
+  `xlength`-sized result, exactly as `coerce.c:do_isna`'s `default:` branch.
+  Ratcheted.
+- `reg-packages` regression is environmental, not code: the case shells out to
+  `R CMD build` via `R.home("bin")`. Our local `$R_HOME` is built against
+  ICU 76, the machine now only has ICU 78, so the child GNU R dies with
+  `libicuuc.so.76: cannot open shared object file`. Nothing in robigo changed;
+  the marker stays (CI/oracle image has the right libraries). Verified by
+  re-running the case twice (same failure) and by `ldd libR.so`.
