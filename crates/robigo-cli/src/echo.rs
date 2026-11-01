@@ -208,15 +208,25 @@ fn parse_context(buf: &str, end: usize) -> Vec<String> {
     lines
 }
 
-/// A parse error as `parseError(R_NilValue, 0)` reports it (R:
-/// main/source.c): plain, with one line of context, or with the last
-/// two lines.
+/// A parse error as the REPL reports it. Only grammar errors (`yyerror`)
+/// reach `parseError(R_NilValue, 0)` (R: main/source.c), which appends the
+/// last lines of the parse context; conditions raised by `raiseParseError`
+/// and `raiseLexError` carry their own `(<input>:<line>:<col>)` suffix,
+/// and a plain `error()` from a parser action (`names.c:install`) has no
+/// position or context at all.
 fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
-    let lines = parse_context(buf, e.end);
-    match lines.len() {
-        0 => e.message.clone(),
-        1 => format!("{} in \"{}\"", e.message, lines[0]),
-        _ => format!("{} in:\n\"{}\n{}\"", e.message, lines[lines.len() - 2], lines[lines.len() - 1]),
+    use robigo_syntax::ErrorStyle;
+    match e.style {
+        ErrorStyle::Condition => robigo_syntax::condition_message(buf, "<input>", e),
+        ErrorStyle::RError => e.message.clone(),
+        ErrorStyle::Grammar => {
+            let lines = parse_context(buf, e.end);
+            match lines.len() {
+                0 => e.message.clone(),
+                1 => format!("{} in \"{}\"", e.message, lines[0]),
+                _ => format!("{} in:\n\"{}\n{}\"", e.message, lines[lines.len() - 2], lines[lines.len() - 1]),
+            }
+        }
     }
 }
 

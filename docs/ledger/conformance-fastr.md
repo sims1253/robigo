@@ -36,3 +36,11 @@
 - Changes: `crates/robigo-runtime/src/builtins/attrib.rs`: align `do_inherits` with GNU R `src/main/objects.c:1014-1035` (`inherits3`) and `src/main/coerce.c:1812` (`asRbool`). Strictly check `which` is a length 1 logical vector, erroring with `Flow::error("'which' must be a length 1 logical vector")`, check `NA_LOGICAL` in `asRbool` coercion erroring with `Flow::error("NA in coercion to boolean")`, and error on invalid `what` with `Flow::error("'what' must be a character vector or an object with a nameOfClass() method")` without call attribution.
 - Result: 31,215 of 31,374 pass (+2 cases, 0 regressions). All 58/58 cases in `builtins/TestBuiltin_inherits` now pass.
 - Status: kept.
+
+## 2026-11-01: round 2 - REPL parse-error reporting
+
+- Topic: `parser/TestParser`, `library/base` (parse errors in echo mode)
+- Diagnosis: the echo runner printed every parse error as `parseError(R_NilValue, 0)` (`msg in "<context>"`). GNU R only takes that path for grammar errors (`yyerror`); conditions from `raiseParseError`/`raiseLexError` carry their own `(<input>:<line>:<col>)` suffix, and a plain `error()` from a parser action (`names.c:install`) has neither position nor context.
+- Changes: `crates/robigo-cli/src/echo.rs`: `parse_error_message` dispatches on `ParseError::style` (`Grammar` keeps the context lines, `Condition` uses `condition_message(buf, "<input>")`, `RError` is the bare message).
+- Result: 31,224 of 31,374 pass on this branch (+14 cases, 0 regressions): 9 of 10 `parser/TestParser`, 4 `TestSimpleAssignment`, `TestSimpleParsing` octal and `TestSimpleVectors` cases.
+- Status: kept.
