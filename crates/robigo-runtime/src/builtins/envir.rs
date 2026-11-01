@@ -455,6 +455,42 @@ fn lookup_args(i: &mut Interp, args: &[Arg]) -> RResult<(Sym, Env, crate::value:
 }
 
 /// Look up a variable with a mode filter (R's `findVar1mode`).
+/// R: envir.c:str2mode — str2type's names plus "function" and "S4"; any
+/// other string errors with the mode spelled out.
+fn check_mode(mode: &str) -> RResult<()> {
+    const MODES: &[&str] = &[
+        "NULL",
+        "symbol",
+        "pairlist",
+        "closure",
+        "environment",
+        "promise",
+        "language",
+        "special",
+        "builtin",
+        "char",
+        "logical",
+        "integer",
+        "double",
+        "complex",
+        "character",
+        "...",
+        "any",
+        "expression",
+        "list",
+        "externalptr",
+        "bytecode",
+        "weakref",
+        "raw",
+        "S4",
+        "object",
+        "numeric",
+        "name",
+        "function",
+    ];
+    if MODES.contains(&mode) { Ok(()) } else { Err(Flow::error(format!("invalid 'mode' argument '{}'", mode))) }
+}
+
 fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool) -> RResult<Option<Value>> {
     let mut cur = Some(env.clone());
     while let Some(e) = cur {
@@ -516,32 +552,68 @@ fn do_get0(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     }
 }
 
-fn do_mget(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_mget(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
+    // R: envir.c:do_mget
     let names = match arg(&args, 0) {
         Value::Str(s) => s.data.clone(),
-        _ => return Err(Flow::error_call(call.clone(), "invalid first argument")),
+        _ => return Err(Flow::error("invalid first argument")),
     };
-    if let Value::Obj(_) = arg(&args, 1) {
-        return Err(Flow::error("second argument must be an environment"));
+    let nvals = names.len();
+    // R tests element 0 for emptiness in every iteration (envir.c:do_mget).
+    // The `isNull(STRING_ELT(x, i))` arm never fires: a STRSXP element is
+    // never NULL (NA_STRING is a CHARSXP), and an NA name is looked up as
+    // "NA".
+    let empty_first = names.first().and_then(|n| n.clone()).is_some_and(|n| n.is_empty());
+    if empty_first {
+        return Err(Flow::error("invalid name in position 1"));
     }
-    let env = env_arg(i, &arg(&args, 1), call, "envir")?;
-    let mode = str_arg(&arg(&args, 2), "mode")?;
-    let ifnotfound = arg(&args, 3);
+    // Unlike get/exists, mget does not run simple_as_environment here.
+    let env = match arg(&args, 1) {
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("second argument must be an environment")),
+    };
+    let mode = match arg(&args, 2) {
+        Value::Str(s) => s.data.clone(),
+        _ => return Err(Flow::error("invalid 'mode' argument")),
+    };
+    let nmode = mode.len();
+    if nmode != nvals && nmode != 1 {
+        return Err(Flow::error("wrong length for 'mode' argument"));
+    }
+    // R: coerceVector(CADDDR(args), VECSXP) — environments, closures and
+    // other non-vectorizable types fail to coerce.
+    let mut w = crate::coerce::CoerceWarnings::default();
+    let forced = crate::coerce::coerce_vector(&arg(&args, 3), crate::value::VType::List, &mut w)?;
+    let ifnotfound = crate::coerce::to_list(&forced);
+    let nif = ifnotfound.len();
+    if nif != nvals && nif != 1 {
+        return Err(Flow::error("wrong length for 'ifnotfound' argument"));
+    }
     let inherits = lgl_arg(&arg(&args, 4), "inherits")?;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(nvals);
     for (k, n) in names.iter().enumerate() {
-        let n = n.clone().unwrap_or_else(|| crate::value::RString::from("NA"));
-        match find_var_mode(i, Sym::new(&n), &env, &mode, inherits)? {
+        let name = n.clone().unwrap_or_else(|| crate::value::RString::from("NA"));
+        // R: CHAR(STRING_ELT(mode, i)) — an NA mode is the string "NA".
+        let m = mode.get(k % nmode.max(1)).and_then(|m| m.clone()).unwrap_or_else(|| crate::value::RString::from("NA"));
+        // R: envir.c:str2mode runs before gfind, so an unknown mode wins over
+        // a zero-length name, and it only errors when an element reaches it
+        // (mget(character(0), mode = "bogus") is a named empty list).
+        check_mode(&m)?;
+        // R: envir.c:gfind installs the name; install("") errors
+        // (src/main/names.c), which is why `mget(c("a", ""))` fails inside
+        // the loop while an empty *first* name fails the earlier check.
+        if name.is_empty() {
+            return Err(Flow::error("attempt to use zero-length variable name"));
+        }
+        match find_var_mode(i, Sym::new(&name), &env, &m, inherits)? {
             Some(v) => out.push(v),
             None => {
-                let items = crate::coerce::to_list(&ifnotfound);
-                if items.is_empty() {
-                    return Err(Flow::error_call(call.clone(), format!("value for '{}' not found", n)));
-                }
-                let d = items[k % items.len()].clone();
+                // R: envir.c:gfind — a function `ifnotfound` is called
+                // with the name, in the caller's environment.
+                let d = ifnotfound[k % nif.max(1)].clone();
                 if d.is_function() {
-                    let r = i.call_value(&d, vec![Arg::pos(Value::str(&n))], &env)?;
-                    out.push(r);
+                    out.push(i.call_value(&d, vec![Arg::pos(Value::str(&name))], rho)?);
                 } else {
                     out.push(d);
                 }
