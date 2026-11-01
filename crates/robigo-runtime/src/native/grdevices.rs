@@ -757,9 +757,41 @@ fn name2col(nm: &str) -> RResult<u32> {
     Err(Flow::error(format!("invalid color name '{nm}'")))
 }
 
-/// `strtod` with C's whole-string check, for palette indices.
+/// `strtod` with C's whole-string check, for palette indices: decimal
+/// or (C99) hexadecimal floats like `0x2` and `0x1p3`.
 fn strtod_index(s: &str) -> Option<f64> {
     let t = s.trim_start();
+    let b = t.as_bytes();
+    if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
+        let h = &t[2..];
+        let (mant, exp) = match h.find(|c| c == 'p' || c == 'P') {
+            Some(p) => (&h[..p], h[p + 1..].parse::<i32>().ok()?),
+            None => (h, 0),
+        };
+        let (int_part, frac_part) = match mant.find('.') {
+            Some(d) => (&mant[..d], &mant[d + 1..]),
+            None => (mant, ""),
+        };
+        if int_part.is_empty() && frac_part.is_empty() {
+            return None;
+        }
+        if !int_part.bytes().all(|c| c.is_ascii_hexdigit())
+            || !frac_part.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let mut v = if int_part.is_empty() {
+            0.0
+        } else {
+            u64::from_str_radix(int_part, 16).ok()? as f64
+        };
+        let mut scale = 1.0 / 16.0;
+        for c in frac_part.bytes() {
+            v += (c as char).to_digit(16).unwrap() as f64 * scale;
+            scale /= 16.0;
+        }
+        return Some(v * (2f64).powi(exp));
+    }
     let digits_end =
         t.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))).unwrap_or(t.len());
     let (head, rest) = t.split_at(digits_end);
@@ -793,10 +825,10 @@ fn str2col(s: &str, bg: u32) -> RResult<u32> {
 /// `col2rgb(colors, alpha)`: the color table, names, hex strings and
 /// palette indices as a red/green/blue[/alpha] integer matrix.
 // R: grDevices/src/colors.c:col2rgb
-fn col2rgb(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+fn col2rgb(i: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
     let alpha = crate::coerce::as_logical(&args.pop().unwrap().value);
     if alpha == NA_LOGICAL {
-        return Err(Flow::error_call(call.clone(), "invalid 'alpha' value"));
+        return Err(Flow::error("invalid 'alpha' value"));
     }
     let alph = alpha == 1;
     let colors = args.pop().unwrap().value;
