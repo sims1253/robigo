@@ -559,11 +559,23 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
     }
     match port_of(r) {
         Some(f) => f(interp, call, args, env),
-        None => Err(Flow::error_call(
-            call.clone(),
-            format!("robigo: native routine '{}' of package '{}' is not implemented yet", r.name, r.package),
-        )),
+        None => Err(Flow::error_call(call.clone(), unimplemented_routine_message(&r.package, &r.name))),
     }
+}
+
+/// The error for a routine with no port, no bridge and no native build.
+/// A package listed in `rlib/native-routines.tsv` whose native build is
+/// missing (`.robigo/natives/<pkg>/<pkg>.so`) reads as a robigo gap; say
+/// what to run instead.
+fn unimplemented_routine_message(package: &str, name: &str) -> String {
+    let mut msg = format!("robigo: native routine '{}' of package '{}' is not implemented yet", name, package);
+    if has_table(package) && robigo_native(package).is_none() {
+        msg.push_str(&format!(
+            " (package '{}' has native code; build it with scripts/build-natives.sh {})",
+            package, package
+        ));
+    }
+    msg
 }
 
 /// The Rust port of a routine.
@@ -671,5 +683,26 @@ mod tests {
         std::fs::write(&path, &elf).unwrap();
         assert!(!super::is_robigo_build(path.to_str().unwrap()));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn unimplemented_routine_message_names_the_missing_native_build() {
+        // `grid` is in rlib/native-routines.tsv; without its native build
+        // the error says how to get one. A serial lock keeps the env var
+        // invisible to any other test that reads it.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+        let empty = std::env::temp_dir().join(format!("robigo-no-natives-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        // safety: no other test holds the lock while this is set
+        unsafe { std::env::set_var("ROBIGO_NATIVES", &empty) };
+        let msg = super::unimplemented_routine_message("grid", "initGrid");
+        unsafe { std::env::remove_var("ROBIGO_NATIVES") };
+        assert!(msg.starts_with("robigo: native routine 'initGrid' of package 'grid' is not implemented yet"));
+        assert!(msg.contains("scripts/build-natives.sh grid"), "message was: {msg}");
+
+        // a package without native code keeps the plain message
+        let msg = super::unimplemented_routine_message("notAPackage", "thing");
+        assert_eq!(msg, "robigo: native routine 'thing' of package 'notAPackage' is not implemented yet");
     }
 }
