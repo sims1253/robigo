@@ -61,7 +61,7 @@ impl RVal {
         }
     }
 
-    pub(crate) fn to_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         self.clone().into_value()
     }
 }

@@ -309,6 +309,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                         let rk = element_rval(&xx, k);
                         match crate::vm::call_inline_rval(i, c, &[rk]) {
                             Some(crate::vm::RVal::D(d)) => out_data.push(d),
+                            Some(crate::vm::RVal::I(crate::value::NA_INTEGER)) => out_data.push(crate::value::NA_REAL),
                             Some(crate::vm::RVal::I(v)) => out_data.push(v as f64),
                             Some(crate::vm::RVal::L(l)) if l != NA_LOGICAL => out_data.push(l as f64),
                             _ => break,
@@ -353,6 +354,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                         fc.args[fc.x_slot] = element_rval(&xx, k);
                         match crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
                             Some(crate::vm::RVal::D(d)) => out_data.push(d),
+                            Some(crate::vm::RVal::I(crate::value::NA_INTEGER)) => out_data.push(crate::value::NA_REAL),
                             Some(crate::vm::RVal::I(v)) => out_data.push(v as f64),
                             Some(crate::vm::RVal::L(l)) if l != NA_LOGICAL => out_data.push(l as f64),
                             _ => break,
