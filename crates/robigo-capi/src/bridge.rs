@@ -1086,12 +1086,20 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "newEnv" => {
             let parent = env_of(a[0])?;
-            to_sexp(&Value::Env(Env::new(Some(parent))))
+            let env = Env::new(Some(parent));
+            crate::owned::note_c_env(&env);
+            to_sexp(&Value::Env(env))
         }
         "defineVar" => {
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
-            remember_stored(a[1], &val);
-            with_interp(|i| i.define(sym, val, &env))?;
+            // C keeps its object for what it binds in an environment it
+            // created and may change it in place (R: envir.c:defineVar).
+            if a[1] != R_NilValue && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+                robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
+            } else {
+                remember_stored(a[1], &val);
+                with_interp(|i| i.define(sym, val, &env))?;
+            }
             R_NilValue
         }
         "setVar" => {

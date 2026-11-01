@@ -24,6 +24,25 @@ pub static mut ORIGINS: usize = 0;
 thread_local! {
     /// Lists C looked up in this native call: where they are bound.
     static ORIGIN: RefCell<HashMap<usize, (Env, Sym)>> = RefCell::new(HashMap::new());
+    /// Environments C created (`R_NewEnv`). C code keeps a pointer to a
+    /// value it defines in one and changes it in place (`stats`'
+    /// `numeric_deriv` perturbs a parameter through `REAL()` after
+    /// `defineVar`), so such bindings keep C's object too.
+    static C_ENVS: RefCell<Vec<std::rc::Weak<robigo_runtime::env::EnvData>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `R_NewEnv` created `env`.
+pub unsafe fn note_c_env(env: &Env) {
+    C_ENVS.with(|v| v.borrow_mut().push(std::rc::Rc::downgrade(&env.0)));
+}
+
+/// Was `env` created by C (`R_NewEnv`)?
+pub unsafe fn is_c_env(env: &Env) -> bool {
+    C_ENVS.with(|v| {
+        let mut v = v.borrow_mut();
+        v.retain(|w| w.strong_count() != 0);
+        v.iter().any(|w| w.upgrade().is_some_and(|d| std::rc::Rc::ptr_eq(&d, &env.0)))
+    })
 }
 
 /// `findVar` found the list `x` bound to `sym` in `env`.
