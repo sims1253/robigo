@@ -289,8 +289,17 @@ fn do_set_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         if env.ptr_eq(&i.base_ns) || env.namespace_name().is_some() {
             return Err(Flow::error("can not set the parent environment of a namespace"));
         }
+        // R: builtin.c:R_IsImportsEnv — a locked environment whose parent is
+        // the base namespace and whose "name" attribute starts with
+        // "imports:". R-level code creates those with `new.env()` plus
+        // `attr(impenv, "name") <- ...` (rlib/base/R/namespace.R), so the
+        // name is an attribute, not a special name.
+        let imports_name = match Value::Env(env.clone()).get_attr(s::NAME) {
+            Some(Value::Str(n)) => n.data.first().cloned().flatten(),
+            _ => None,
+        };
         if env.parent_ref().as_ref().is_some_and(|p| p.ptr_eq(&i.base_ns))
-            && env.special_name().is_some_and(|n| n.starts_with("imports:"))
+            && imports_name.is_some_and(|n| n.starts_with("imports:"))
         {
             return Err(Flow::error("can not set the parent environment of package imports"));
         }
