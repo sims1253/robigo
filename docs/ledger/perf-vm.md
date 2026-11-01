@@ -6,6 +6,78 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-01: round 16, constant and symbol closure bodies compile and inline
+
+- Base: main fb002dc0, saved binary `.robigo/perf/base-r16`, fresh full
+  both-runtime table `.robigo/perf/full-base-r16.json`: geomean **0.4595
+  over 73 correct programs, faster on 73**. Rebased onto main 675cc1c6
+  (serialize/envir changes landed mid-round) and re-verified with a
+  sequential same-tree pair `.robigo/perf/{base,cand}-r16b`: gate
+  unchanged, `robigo/closures` -23.94%.
+- Oracle correction (method): on this host `~/.local/opt/R-4.5.0/bin/exec/R`
+  silently loads the **system libR (4.6.1)** through the loader cache
+  (`ldconfig -p`: `/usr/lib/R/lib/libR.so`) unless
+  `LD_LIBRARY_PATH=.robigo/oracle-libs:$R_HOME/lib` is set (oracle-libs has
+  ICU 76). Any host-side GNU R measurement without it — perf.py's gnur
+  runtime, idiom-vs-r.py — measures 4.6.1. Round 12's warning ("cannot
+  load libicuuc.so.76") describes a different failure mode (R_HOME unset
+  or partial env); both are wrong oracles. All GNU R numbers this round
+  were taken with the LD_LIBRARY_PATH fix and verify `R.version.string`.
+- Why: the two closest benchmarks, `robigo/binarytrees` (0.894) and
+  `robigo/fib` (0.855), are pure call overhead, so the per-call tax was
+  measured directly with `scripts/idiom-vs-r.py`: `f <- function() 1` in
+  a compiled loop cost **1614 instructions per call (GNU R 1347, 1.20x)**
+  and `f <- function(x) x` cost **2584 (GNU R 2707)** — because
+  `vm::code_for` only compiled `Lang` bodies. A closure whose body is a
+  constant, a symbol or NULL had no bytecode: every call ran the general
+  `apply_closure_ex` path (argument matching, context, frames), and it
+  was not inlinable either (`inline_analysis` needs `clo.code`).
+- Change (`vm.rs` only):
+  - `code_for` compiles any body, not only calls: a constant or symbol
+    body becomes one op (`ConstD/I/L`, `Const`, `GetVar`), compiled per
+    closure (`clo.code` caches it; there is no shared body object to key
+    the bytecode cache on for non-`Lang` values).
+  - `inline_info` uses the shared `INLINES` cache only for `Lang` bodies:
+    per-instance `Code` pointers would grow it unboundedly for closures
+    created in loops and could collide with freed addresses;
+    `clo.inline` memoizes those instead.
+  - `force_args` skips promises that are already forced: forcing them
+    again only re-boxed a scalar into a fresh `Value::int/real/lgl`
+    allocation that was dropped immediately (eager args from
+    `caller_promargs` hit this per call).
+- Result (idiom, robigo per iteration, N=20000):
+  - `function() 1` called: 1614 -> **9** (GNU R 1347): the JIT inlines
+    the call into native loop code, as it already did for `x + 1` bodies.
+  - `function(x) x`: 2584 -> **8** (GNU R 2707).
+  - `function(x, y) x`: 8 (GNU R 4142).
+  - `function() NULL` / `function() "a"`: -> ~682-688 (GNU R 1360): the
+    body now compiles and the call runs through `inline_site_call`
+    without a frame, but the JIT rejects non-scalar constants, so the
+    loop stays in the VM (a JIT follow-up: constant `Value` results, or
+    skipping pure calls with dead results).
+  - New suite benchmark `robigo/closures` (tiny closures called in a
+    loop): robigo 1,204,339,556 -> **915,644,011 (-24.0%)**, GNU R
+    1,260,678,542; ratio 0.955 -> 0.726.
+- Gate (full suite, paired against `.robigo/perf/base-r16`, and re-run
+  paired against `base-r16b` after the rebase): **robigo/closures -23.9%;
+  otherwise 0 faster, 0 slower (> 0.5%), 0 broken, 0 fixed**; worst
+  +0.15% (`robigo/lm`), +0.11% (`spectralnorm_math`), +0.10% (`fib`) —
+  reproducible layout noise, far under the gate; the pre-existing 84
+  programs barely call tiny closures directly (the apply family already
+  had its own inlining from rounds 14-15), which is why the new benchmark
+  was added (per the track's recipe: cover the idiom, then keep it fast).
+- Verified: new ratcheted fixture `tests/r/basics/tiny-closures.R`
+  (constant/identity/NULL bodies, named and missing arguments, lazy
+  arguments the body never reads, defaults, enclosure reassignment seen
+  by symbol bodies, substitute/deparse, lapply/vapply/mapply/Map/Filter,
+  visibility, sys.call inside calls made from tiny closures, a compiled
+  loop), recorded with GNU R 4.5.0 — robigo passes byte-for-byte before
+  and after; full conformance 9/9 (also on the rebased tree); `cargo
+  test --release -p robigo-runtime` green except
+  `complex::tests::{c_library_oracle,c_library_trig_oracle}`, which fail
+  identically on clean main fb002dc0/675cc1c6 on this host (1-ulp libm
+  drift; CI's Debian container passes them); `cargo fmt` clean.
+
 ## 2026-11-01: round 15, mapply/Map direct elements and inline FUN
 
 - Base: main 6c894831, saved binary `.robigo/perf/base-main2` (clean
