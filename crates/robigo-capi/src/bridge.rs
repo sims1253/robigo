@@ -1151,7 +1151,15 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
             // C keeps its object for what it binds in an environment it
             // created and may change it in place (R: envir.c:defineVar).
-            if a[1] != R_NilValue && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+            // Promises and closures are exempt: they are values to R
+            // (rlang's env_clone binds rebuilt promises, which must force
+            // on lookup — the active-binding read would not), not objects
+            // C writes through.
+            if a[1] != R_NilValue
+                && !env.0.locked.get()
+                && crate::owned::is_c_env(&env)
+                && !matches!(a[1].typ(), PROMSXP | CLOSXP)
+            {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
                 remember_stored(a[1], &val);
