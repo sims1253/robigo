@@ -22,12 +22,18 @@ writer of expected.json and it runs GNU R, never robigo.
 Package sources are downloaded into `$ROBIGO_CRAN_CACHE` (default
 `~/.cache/robigo-cran`, never committed): `src/` the tarballs, `build/`
 the unpacked trees, `lib/` robigo's installs, `lib-oracle/` GNU R's.
+
+A C API bug can show up as a hang, not a failure, so each robigo step has a
+time limit (`$ROBIGO_CRAN_INSTALL_TIMEOUT`, `$ROBIGO_CRAN_TEST_TIMEOUT`, in
+seconds). A step over its limit has its whole process group killed and the
+package's outcome is `timeout`.
 """
 import argparse
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -46,6 +52,13 @@ ROBIGO = os.environ.get("ROBIGO", os.path.join(ROOT, ".robigo", "bin", "robigo")
 ENV = dict(os.environ, LANGUAGE="en", LC_ALL="C.UTF-8", TZ="UTC")
 ENV.pop("R_HOME", None)
 ENV.pop("R_PROFILE_USER", None)
+# On CI the whole gate, compiling included, takes about a minute for two
+# packages: at least ten times that for one step, more for installs because
+# the popular set has bigger C++ than fastmap and digest.
+INSTALL_TIMEOUT = int(os.environ.get("ROBIGO_CRAN_INSTALL_TIMEOUT", 900))
+TEST_TIMEOUT = int(os.environ.get("ROBIGO_CRAN_TEST_TIMEOUT", 600))
+# How long a timed-out step gets to stop on SIGTERM before SIGKILL.
+KILL_GRACE = 5
 
 
 def die(msg):
@@ -64,13 +77,43 @@ def memory_cap(cmd):
             "-p", "MemorySwapMax=0"] + cmd
 
 
-def run(cmd, cwd=None, quiet=False, check=True):
-    p = subprocess.run(memory_cap(cmd), cwd=cwd, env=ENV,
-                       capture_output=quiet, text=True)
-    if check and p.returncode != 0:
-        out = (p.stdout or "") + (p.stderr or "")
-        die(f"{' '.join(cmd[:3])} failed:\n{out}")
-    return p
+class StepTimeout(Exception):
+    """A step went over its time limit: the outcome `timeout`."""
+
+    def __init__(self, step, limit, output):
+        super().__init__(f"{step} timed out after {limit}s")
+        self.step, self.limit, self.output = step, limit, output
+
+
+def run_step(step, cmd, limit, env=ENV):
+    """Run `cmd` in its own process group, killed whole after `limit` seconds.
+
+    R CMD INSTALL spawns compilers and test processes, so killing only the
+    direct child would leave them running. `systemd-run --scope` execs the
+    command, so it is the group's leader under the memory cap too.
+    """
+    p = subprocess.Popen(memory_cap(cmd), env=env, start_new_session=True, text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out, err = p.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGTERM)
+        try:
+            p.wait(KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        # The leader exiting says nothing about the rest of its group.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            out, err = p.communicate(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            # A process that left the group still holds the pipes.
+            out, err = "", ""
+        raise StepTimeout(step, limit, out + err) from None
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
 def manifest():
@@ -126,8 +169,8 @@ def fetch(name, version):
 def robigo_install(src, lib):
     os.makedirs(lib, exist_ok=True)
     env = dict(ENV, MAKEFLAGS=os.environ.get("MAKEFLAGS", "-j2"))
-    p = subprocess.run(memory_cap([ROBIGO, "CMD", "INSTALL", f"--library={lib}", src]),
-                       env=env, capture_output=True, text=True)
+    p = run_step("install", [ROBIGO, "CMD", "INSTALL", f"--library={lib}", src],
+                 INSTALL_TIMEOUT, env=env)
     if p.returncode != 0:
         tail = "\n".join((p.stdout + p.stderr).strip().splitlines()[-25:])
         die(f"robigo CMD INSTALL {os.path.basename(src)} failed:\n{tail}")
@@ -175,8 +218,8 @@ def robigo_test(name, version, tests, quiet=False):
     tdir = os.path.join(tree, tests)
     if not os.path.isdir(tdir):
         die(f"{name}: no tests directory {tests} in {tree}")
-    p = run(shim_cmd(name, tdir, lib), quiet=True, check=False)
-    out = (p.stdout or "") + (p.stderr or "")
+    p = run_step("test", shim_cmd(name, tdir, lib), TEST_TIMEOUT)
+    out = p.stdout + p.stderr
     (_, got_version, passed, failed), fails = report(out)
     return got_version, passed, failed, fails, lib, src, tree
 
@@ -290,6 +333,13 @@ def cmd_run(a):
         want = exp.get(name)
         try:
             got_version, passed, failed, fails, *_ = robigo_test(name, version, tests)
+        except StepTimeout as ex:
+            outcome = f"{ex.step} after {ex.limit}s"
+            bad.append((name, f"timeout ({outcome})"))
+            print(f"{name} {version}: TIMEOUT ({outcome})")
+            if a.diff:
+                print(ex.output)
+            continue
         except SystemExit as ex:
             bad.append((name, "install failed"))
             print(f"{name} {version}: FAIL (install)")
@@ -342,7 +392,10 @@ def main():
     q.add_argument("--tests"); q.add_argument("--diff", action="store_true")
     q.set_defaults(fn=cmd_run)
     a = p.parse_args()
-    a.fn(a)
+    try:
+        a.fn(a)
+    except StepTimeout as ex:
+        die(str(ex))
 
 
 if __name__ == "__main__":

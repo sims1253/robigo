@@ -98,6 +98,13 @@ unchanged in the oracle image; `record` is its only writer of
 the counts (and, when anything fails, the failing expectations) match
 GNU R byte for byte.
 
+A C API bug can show up as a hang, so each install and test step has a time
+limit (`ROBIGO_CRAN_INSTALL_TIMEOUT`, default 900 s;
+`ROBIGO_CRAN_TEST_TIMEOUT`, default 600 s). A step over its limit has its
+whole process group killed; the package's outcome is `timeout`, distinct
+from a mismatch or a crash, and the run goes on to the next package.
+`scripts/test-cran-gate.py` checks this.
+
 Package sources are downloaded into `~/.cache/robigo-cran` (`src/`,
 `build/`, `lib/` for robigo, `lib-oracle/` for GNU R) and are never
 committed.
