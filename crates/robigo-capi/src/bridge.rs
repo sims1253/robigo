@@ -819,6 +819,36 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag }));
         }
+        CLOSXP => {
+            // A closure assembled in C (Rf_allocSExp(CLOSXP) + SET_FORMALS/
+            // SET_BODY/SET_CLOENV: CAR=FORMALS, CDR=BODY, TAG=CLOENV),
+            // stats' deriv being the case that matters: C_deriv builds the
+            // differentiated function around the caller's formals. Without
+            // a usable formals list or environment there is no calling it:
+            // keep the node opaque rather than guess.
+            let env = match from_sexp(x.tag()) {
+                Value::Env(e) => e,
+                _ => return wrap_core(x),
+            };
+            let formals: Rc<[Arg]> = match from_sexp(x.car()) {
+                Value::Pairlist(p) => p.items.iter().cloned().collect(),
+                Value::Null => Rc::from(Vec::new()),
+                _ => return wrap_core(x),
+            };
+            let clo = Closure {
+                #[cfg(feature = "bytecode-fidelity")]
+                gnu_bytecode: None,
+                formals,
+                body: from_sexp(x.cdr()),
+                env,
+                attrs: attrs_from(x),
+                code: Default::default(),
+                inline: Default::default(),
+                defaults: Default::default(),
+                jit: Default::default(),
+            };
+            return Value::Closure(Rc::new(clo));
+        }
         OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
         _ => return wrap_core(x),
     };
