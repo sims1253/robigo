@@ -24,6 +24,7 @@ pub mod s4;
 pub mod serialize;
 pub mod startup;
 pub mod sym;
+pub mod task;
 pub mod typeprof;
 pub mod value;
 pub mod vm;

@@ -315,6 +315,15 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                     // the base environment, not the global one
                     interp.base.clone().force_set(Sym::new(".Last.value"), v.clone());
                 }
+                // Rf_ReplIteration's PARSE_OK branch ends with
+                // Rf_callToplevelHandlers(lastExpr, value, TRUE, wasDisplayed);
+                // an evaluation error longjmps past it.
+                if let Some(val) = &value {
+                    if !interp.task_callbacks.is_empty() {
+                        let visible = interp.toplevel_visible;
+                        interp.call_toplevel_handlers(&v, val, visible);
+                    }
+                }
                 iob.clear();
                 prompt_type = 1;
                 if value.is_none() && catches_script_errors(interp) {
