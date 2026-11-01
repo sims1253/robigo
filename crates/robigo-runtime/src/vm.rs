@@ -1605,7 +1605,6 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
             | Op::ConstI { .. }
             | Op::ConstL { .. }
             | Op::Null { .. }
-            | Op::SetSrcref { .. }
             | Op::GetVar { .. }
             | Op::Arith { .. }
             | Op::Rel { .. }
@@ -1769,9 +1768,6 @@ fn run_inline_with(
                 }
             }
             Op::Jump { target } => pc = *target as usize,
-            // (No call inside an inlined body: nothing can observe the
-            // srcref, and the caller's statements set their own.)
-            Op::SetSrcref { .. } => {}
             Op::Visible { .. } => {}
             Op::Return { src } => return Some(std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null))),
             _ => return None,
@@ -3158,9 +3154,6 @@ fn run_with(
             Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
             Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
             Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
-            // R: eval.c:do_begin keeps the statement's srcref in R_Srcref;
-            // frames pushed by the statement's calls report it.
-            Op::SetSrcref { k } => interp.srcref = code.consts[*k as usize].clone(),
             Op::Visible { on } => interp.visible = *on,
             Op::GetVar { dst, sym, slot } => {
                 // R: eval() sets R_Visible before the lookup, so forcing a
@@ -3706,6 +3699,13 @@ fn run_with(
             }
             Op::Call { dst, f, site } => {
                 let site = &code.call_sites[*site as usize];
+                // R: eval.c:do_begin/do_eval keep the statement's srcref in
+                // the global R_Srcref; install the compiled-in value so the
+                // frames this call pushes report it (also for closures the
+                // callee calls back into through builtins).
+                if let Some(sr) = &site.srcref {
+                    interp.srcref = sr.clone();
+                }
                 // Look the function up before flushing when that cannot run
                 // code and no pending assignment to its name is outstanding.
                 let pending_f = site.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_)));

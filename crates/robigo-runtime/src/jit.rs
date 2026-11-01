@@ -213,8 +213,6 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             | Op::Math1 { .. }
             | Op::Jump { .. }
             | Op::Visible { .. }
-            // (JIT regions make no calls: no frame observes the srcref.)
-            | Op::SetSrcref { .. }
             | Op::Guard { .. } => {}
             Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => {
                 if st[*cond as usize] != Some(JType::L) {
@@ -527,7 +525,6 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::AndOr { .. }
         | Op::ForInit { .. }
         | Op::Visible { .. }
-        | Op::SetSrcref { .. }
         | Op::LoopExit
         | Op::Index { .. }
         | Op::Index2 { .. }
@@ -1613,7 +1610,7 @@ impl Gen<'_, '_> {
                 falls = false;
             }
             // Checked at entry, or no effect in native code.
-            Op::Guard { .. } | Op::Visible { .. } | Op::SetSrcref { .. } | Op::LoopEnter { .. } | Op::LoopExit => {}
+            Op::Guard { .. } | Op::Visible { .. } | Op::LoopEnter { .. } | Op::LoopExit => {}
             _ => unreachable!("unsupported op in native loop: {:?}", op),
         }
         if falls {

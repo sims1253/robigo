@@ -447,14 +447,6 @@ pub enum Op {
     Visible {
         on: bool,
     },
-    /// R: eval.c:do_begin — the srcref of the `{` statement about to run
-    /// (`consts[k]`, Null for none), kept in `interp.srcref` (R's global
-    /// `R_Srcref`) so frames pushed by the statement report it. The AST
-    /// path is `do_begin`; regions without calls (JIT, inlined bodies)
-    /// skip it: no frame can observe it there.
-    SetSrcref {
-        k: u32,
-    },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
     LoopEnter {
         brk: u32,
@@ -541,6 +533,12 @@ pub type SiMemo = Option<(Rc<Closure>, bool, Option<SiInline>)>;
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
     pub call: Value,
+    /// R: eval.c:do_begin/do_eval — the srcref of the statement this call
+    /// was compiled in (`Some(NULL)` for a `{` block parsed without source
+    /// references, `None` with no enclosing block, where the ambient value
+    /// of the closure entry applies); `Op::Call` installs it as the
+    /// interpreter's current srcref, so frames the call pushes report it.
+    pub srcref: Option<Value>,
     /// Bytecode for each argument's promise (`None`: use the interpreter).
     pub codes: Vec<Option<Rc<Code>>>,
     /// The function found from the first search-path environment: (search
@@ -588,8 +586,7 @@ fn strict_prefix(ops: &[Op]) -> Vec<Sym> {
             | Op::ConstI { .. }
             | Op::ConstL { .. }
             | Op::Null { .. }
-            | Op::Visible { .. }
-            | Op::SetSrcref { .. } => {}
+            | Op::Visible { .. } => {}
             Op::GetVar { sym, .. } => out.push(*sym),
             Op::ArithL { a, b, .. } | Op::RelL { a, b, .. } => {
                 for l in [a, b] {
@@ -765,8 +762,10 @@ struct Loop {
 struct Compiler {
     ops: Vec<Op>,
     consts: Vec<Value>,
-    /// Constants index of `NULL`, cached for `SetSrcref`.
-    null_k: Option<u32>,
+    /// The srcref of the `{` statement being compiled, for its call sites
+    /// (`Some(NULL)` inside a block parsed without source references,
+    /// `None` with no enclosing block: the ambient value applies).
+    cur_srcref: Option<Value>,
     /// Registers needed (the most live at once).
     nregs: usize,
     /// The next free register: registers are allocated as a stack, and a
@@ -1052,18 +1051,6 @@ impl Compiler {
         (self.consts.len() - 1) as u32
     }
 
-    /// The constants index of `NULL`, allocated once per compilation
-    /// (`SetSrcref` of blocks parsed without source references).
-    fn null_k(&mut self) -> u32 {
-        if let Some(k) = self.null_k {
-            return k;
-        }
-        self.consts.push(Value::Null);
-        let k = (self.consts.len() - 1) as u32;
-        self.null_k = Some(k);
-        k
-    }
-
     fn emit(&mut self, op: Op) -> usize {
         self.ops.push(op);
         self.ops.len() - 1
@@ -1112,6 +1099,7 @@ impl Compiler {
             si: f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8)),
             si_memo: std::cell::RefCell::new(None),
             call: whole.clone(),
+            srcref: self.cur_srcref.clone(),
             codes,
             memo: Default::default(),
             leaf_args,
@@ -1204,23 +1192,19 @@ impl Compiler {
                     self.vis(w, true);
                 }
                 // R: eval.c:do_begin -- each statement runs under its own
-                // srcref (the block's list starts with the block itself,
-                // hence the offset), and the block leaves none active.
+                // srcref (the block's list starts with the block itself),
+                // and the block leaves none active. Recorded per call site
+                // at compile time (`CallSite::srcref`); `Some(NULL)` for a
+                // block parsed without source references, `None` when no
+                // block encloses the call (the ambient value of the
+                // enclosing closure entry applies, as in GNU R).
                 let srcrefs = whole.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
-                let srcref_k = |c: &mut Self, srcrefs: &Option<Value>, j: usize| match srcrefs {
-                    Some(_) => c.konst(crate::builtins::envir::statement_srcref(srcrefs, j)),
-                    None => c.null_k(),
-                };
                 let n = l.args.len();
                 for (i, a) in l.args.iter().enumerate() {
-                    let k = srcref_k(self, &srcrefs, i + 1);
-                    self.emit(Op::SetSrcref { k });
+                    self.cur_srcref = Some(crate::builtins::envir::statement_srcref(&srcrefs, i + 1));
                     self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
                 }
-                if n > 0 {
-                    let k = self.null_k();
-                    self.emit(Op::SetSrcref { k });
-                }
+                self.cur_srcref = Some(Value::Null);
                 let end = self.here();
                 self.patch(g, end);
             }
