@@ -256,7 +256,12 @@ fn do_seterrmessage(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
 }
 
 fn do_print_deferred_warnings(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    i.print_warnings();
+    // R: errors.c:R_PrintDeferredWarnings -- `try()` prints the error itself,
+    // then the warnings collected so far under an "In addition: " prefix.
+    if !i.warnings.is_empty() {
+        i.write_err("In addition: ");
+        i.print_warnings();
+    }
     Ok(Value::Null)
 }
 

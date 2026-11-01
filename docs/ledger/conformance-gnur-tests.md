@@ -37,3 +37,25 @@ Baseline on `main` (`f523d79a`):
   `libicuuc.so.76: cannot open shared object file`. Nothing in robigo changed;
   the marker stays (CI/oracle image has the right libraries). Verified by
   re-running the case twice (same failure) and by `ldd libR.so`.
+
+## 2026-11-01: `printDeferredWarnings` prefix (`reg-IO2`)
+
+- why: `gnur-tests/reg-IO2` differed on one stderr line. Inside `try()`, GNU R
+  prints
+  ```
+  Error in scan(...) : line 1 did not have 4 elements
+  In addition: Warning message:
+  In read.table("foo3", header = TRUE, col.names = letters[1:4]) : ...
+  ```
+  while robigo printed the warning block without the `In addition: ` prefix.
+- what:
+  - `try()` (base `New-Internal.R`) prints the error itself with `cat()` and
+    then calls `.Internal(printDeferredWarnings())`, whose C implementation
+    `errors.c:R_PrintDeferredWarnings` does
+    `if (R_ShowErrorMessages && R_CollectWarnings) { REprintf("In addition: "); PrintWarnings(); }`.
+  - robigo's `do_print_deferred_warnings` called `print_warnings()` directly,
+    dropping the prefix (the uncaught-error path in `default_error` already
+    had it, which is why only `try()` transcripts diverged).
+- probes: minimal `read.table` warning+error under `try()`; `gnur-tests/reg-IO2`;
+  fastr `TestBuiltin_(try|tryCatch|warning|stop|...)` slice 15/15.
+- result: `gnur-tests/reg-IO2` passes and is ratcheted. Kept.
