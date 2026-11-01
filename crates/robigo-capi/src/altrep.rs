@@ -438,3 +438,13 @@ pub unsafe extern "C" fn STRING_IS_SORTED(x: Sexp) -> c_int {
 pub unsafe extern "C" fn STRING_NO_NA(x: Sexp) -> c_int {
     INTEGER_NO_NA(x)
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn LOGICAL_IS_SORTED(x: Sexp) -> c_int {
+    INTEGER_IS_SORTED(x)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn LOGICAL_NO_NA(x: Sexp) -> c_int {
+    INTEGER_NO_NA(x)
+}

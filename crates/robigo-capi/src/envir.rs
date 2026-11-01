@@ -29,16 +29,20 @@ pub unsafe extern "C" fn Rf_eval(e: Sexp, rho: Sexp) -> Sexp {
     out
 }
 
-/// R_tryEval: evaluate at top level (outer handlers hidden, errors
-/// reported by the default handler), never jump.
-unsafe fn try_eval(e: Sexp, env: Sexp, err: *mut c_int) -> Sexp {
+/// R_tryEval / R_tryEvalSilent: evaluate at top level (outer handlers hidden,
+/// errors reported by the default handler unless `silent`), never jump.
+unsafe fn try_eval(e: Sexp, env: Sexp, err: *mut c_int, silent: bool) -> Sexp {
     let mut tmp = Sexp::NULL;
     try_op("toplevelBegin\0", &[], &mut tmp);
     let mut out = Sexp::NULL;
     let t = (crate::host::host().eval)(e, env, &mut out);
     try_op("toplevelEnd\0", &[], &mut tmp);
     if t != 0 {
-        (crate::host::host().report)(t);
+        if silent {
+            (crate::host::host().discard)(t);
+        } else {
+            (crate::host::host().report)(t);
+        }
         if !err.is_null() {
             *err = 1;
         }
@@ -53,7 +57,13 @@ unsafe fn try_eval(e: Sexp, env: Sexp, err: *mut c_int) -> Sexp {
 // R: context.c:R_tryEval
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_tryEval(e: Sexp, env: Sexp, err: *mut c_int) -> Sexp {
-    try_eval(e, env, err)
+    try_eval(e, env, err, false)
+}
+
+// R: context.c:R_tryEvalSilent
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_tryEvalSilent(e: Sexp, env: Sexp, err: *mut c_int) -> Sexp {
+    try_eval(e, env, err, true)
 }
 
 // R: eval.c:R_forceAndCall — the host evaluates calls with forced
@@ -199,6 +209,24 @@ pub unsafe extern "C" fn R_unLockBinding(sym: Sexp, env: Sexp) {
     internal("unlockBinding", &[sym, env]);
 }
 
+// R: envir.c:R_LockEnvironment
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_LockEnvironment(env: Sexp, bindings: c_int) {
+    internal("lockEnvironment", &[env, lgl(bindings != 0)]);
+}
+
+// R: envir.c:R_PackageEnvName
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_PackageEnvName(rho: Sexp) -> Sexp {
+    if !rho.is_null() && rho.typ() == ENVSXP {
+        let name = crate::attrib::Rf_getAttrib(rho, R_NameSymbol);
+        if name.typ() == STRSXP && LENGTH(name) > 0 && STRING_ELT(name, 0).char_bytes().starts_with(b"package:") {
+            return name;
+        }
+    }
+    R_NilValue
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_IsNamespaceEnv(rho: Sexp) -> c_int {
     (*LOGICAL(internal("isNamespaceEnv", &[rho])) == 1) as c_int
@@ -243,6 +271,86 @@ pub unsafe extern "C" fn R_EnvironmentIsLocked(env: Sexp) -> c_int {
         _ => crate::errors::error_str("not an environment"),
     };
     e.0.locked.get() as c_int
+}
+
+// R: coerce.c:substituteList
+unsafe fn substitute_list(mut el: Sexp, rho: Sexp) -> Sexp {
+    if el == R_NilValue {
+        return el;
+    }
+    let mut res = R_NilValue;
+    let mut p = R_NilValue;
+    while el != R_NilValue {
+        let mut h = if CAR(el) == R_DotsSymbol {
+            let d = if rho == R_NilValue { R_UnboundValue } else { Rf_findVarInFrame(rho, CAR(el)) };
+            if d == R_UnboundValue {
+                Rf_lcons(R_DotsSymbol, R_NilValue)
+            } else if d == R_NilValue || d == R_MissingArg {
+                R_NilValue
+            } else if d.typ() == DOTSXP {
+                Rf_protect(d);
+                let sub = substitute_list(d, R_NilValue);
+                Rf_unprotect(1);
+                sub
+            } else {
+                crate::errors::error_str("'...' used in an incorrect context")
+            }
+        } else {
+            let sub = Rf_protect(Rf_substitute(CAR(el), rho));
+            MARK_NOT_MUTABLE(sub);
+            let node =
+                if crate::util::Rf_isLanguage(el) != 0 { Rf_lcons(sub, R_NilValue) } else { Rf_cons(sub, R_NilValue) };
+            Rf_unprotect(1);
+            SET_TAG(node, TAG(el));
+            node
+        };
+        if h != R_NilValue {
+            if res == R_NilValue {
+                res = Rf_protect(h);
+            } else {
+                SETCDR(p, h);
+            }
+            while CDR(h) != R_NilValue {
+                h = CDR(h);
+            }
+            p = h;
+        }
+        el = CDR(el);
+    }
+    if res != R_NilValue {
+        Rf_unprotect(1);
+    }
+    res
+}
+
+// R: coerce.c:substitute
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_substitute(lang: Sexp, rho: Sexp) -> Sexp {
+    match lang.typ() {
+        PROMSXP => Rf_substitute(PRCODE(lang), rho),
+        SYMSXP => {
+            if rho != R_NilValue {
+                let mut t = Rf_findVarInFrame(rho, lang);
+                if t != R_UnboundValue {
+                    if t.typ() == PROMSXP {
+                        while t.typ() == PROMSXP {
+                            t = PRCODE(t);
+                        }
+                        MARK_NOT_MUTABLE(t);
+                        return t;
+                    } else if t.typ() == DOTSXP {
+                        crate::errors::error_str("'...' used in an incorrect context")
+                    }
+                    if rho != R_GlobalEnv {
+                        return t;
+                    }
+                }
+            }
+            lang
+        }
+        LANGSXP => substitute_list(lang, rho),
+        _ => lang,
+    }
 }
 
 // R: envir.c:R_FindNamespace — calls getNamespace(info) in base

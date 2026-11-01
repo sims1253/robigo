@@ -343,6 +343,21 @@ pub unsafe extern "C" fn Rf_envxlength(rho: Sexp) -> isize {
     *(r.std_data() as *const i32) as isize
 }
 
+// R: memory.c:IS_SCALAR
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn IS_SCALAR(x: Sexp, ty: c_int) -> c_int {
+    if x.is_null() {
+        return 0;
+    }
+    (x.typ() as c_int == ty && XLENGTH(x) == 1) as c_int
+}
+
+// R: Rinlinedfuns.h:XTRUELENGTH
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn XTRUELENGTH(x: Sexp) -> isize {
+    TRUELENGTH(x)
+}
+
 // ---- ALTREP dispatch (altrep.c) ----------------------------------------------
 
 pub unsafe fn altrep_length(x: Sexp) -> isize {

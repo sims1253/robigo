@@ -8,15 +8,10 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "IS_SCALAR",
-    "LOGICAL_NO_NA",
     "R_Busy",
     "R_EditFiles",
     "R_GetVarLocMISSING",
-    "R_InitInPStream",
-    "R_PackageEnvName",
     "R_ShowMessage",
-    "R_Unserialize",
     "R_cairoCdynload",
     "R_checkActivity",
     "R_check_class_etc",
@@ -28,21 +23,15 @@ pub static STUBS: &[&str] = &[
     "R_new_custom_connection",
     "R_primitive_generic",
     "R_primitive_methods",
-    "R_qsort_I",
-    "R_qsort_int",
-    "R_qsort_int_I",
     "R_runHandlers",
     "R_set_prim_method",
     "R_set_quick_method_check",
     "R_set_standardGeneric_ptr",
     "R_subassign3_dflt",
     "R_tryCatchError",
-    "R_tryEvalSilent",
     "R_withCallingErrorHandler",
     "Rf_memtrace_report",
-    "Rf_substitute",
     "Rf_utf8Toutf8NoPUA",
-    "XTRUELENGTH",
     "do_Rprof",
     "do_Rprofmem",
     "do_edit",
@@ -52,16 +41,6 @@ pub static STUBS: &[&str] = &[
     "getPRIMNAME",
     "utf8Valid",
 ];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn IS_SCALAR() {
-    not_implemented("IS_SCALAR")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn LOGICAL_NO_NA() {
-    not_implemented("LOGICAL_NO_NA")
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_Busy() {
@@ -85,29 +64,14 @@ pub unsafe extern "C" fn R_GetVarLocMISSING() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_InitInPStream() {
-    not_implemented("R_InitInPStream")
-}
-
-#[unsafe(no_mangle)]
 pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut R_Outputfile: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_PackageEnvName() {
-    not_implemented("R_PackageEnvName")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
     not_implemented("R_ShowMessage")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_Unserialize() {
-    not_implemented("R_Unserialize")
 }
 
 #[unsafe(no_mangle)]
@@ -169,21 +133,6 @@ pub unsafe extern "C" fn R_primitive_methods() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_qsort_I() {
-    not_implemented("R_qsort_I")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_qsort_int() {
-    not_implemented("R_qsort_int")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_qsort_int_I() {
-    not_implemented("R_qsort_int_I")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_runHandlers() {
     not_implemented("R_runHandlers")
 }
@@ -214,11 +163,6 @@ pub unsafe extern "C" fn R_tryCatchError() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_tryEvalSilent() {
-    not_implemented("R_tryEvalSilent")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_withCallingErrorHandler() {
     not_implemented("R_withCallingErrorHandler")
 }
@@ -229,18 +173,8 @@ pub unsafe extern "C" fn Rf_memtrace_report() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_substitute() {
-    not_implemented("Rf_substitute")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_utf8Toutf8NoPUA() {
     not_implemented("Rf_utf8Toutf8NoPUA")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn XTRUELENGTH() {
-    not_implemented("XTRUELENGTH")
 }
 
 #[unsafe(no_mangle)]
