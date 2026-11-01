@@ -134,7 +134,17 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     if num == 0 {
         return Ok(Value::expr_vec(Vec::new()));
     }
-    let text = arg(&args, 2);
+    // R: source.c:do_parse — coerceVector(CAR(args), STRSXP): 'text' is
+    // coerced to character (an expression or call deparses into text);
+    // the error fires only when the argument had length but the coercion
+    // produced none.
+    let text_arg = arg(&args, 2);
+    let was_str = matches!(text_arg, Value::Str(_));
+    let text_len = text_arg.len();
+    let text = i.coerce(&text_arg, VType::Str)?;
+    if text_len > 0 && text.len() == 0 {
+        return Err(Flow::error("coercion of 'text' to character was unsuccessful"));
+    }
     let source = arg(&args, 4);
     let srcfile = parse_filename(&source);
     // R: gram.y:getFilename uses only environment srcfiles.
@@ -143,37 +153,35 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     } else {
         robigo_syntax::CONSOLE_SRCNAME
     };
-    let src = match text_of(&text) {
-        Some(src) => src,
-        None if text.is_null() => {
-            // R: source.c:do_parse, reading the whole connection
-            use super::io;
-            let con = io::connection_number(&arg(&args, 0))?;
-            if con < 3 {
-                return Err(Flow::error("robigo: parse() from the console is not implemented yet"));
-            }
-            let (wasopen, ..) = io::conn_state(i, con)?;
-            if !wasopen && !io::open_in_mode(i, con, "r")? {
-                return Err(Flow::error("cannot open the connection"));
-            }
-            let r = (|| {
-                if !io::conn_state(i, con)?.1 {
-                    return Err(Flow::error("cannot read from this connection"));
-                }
-                io::con_read_all(i, con)
-            })();
-            if !wasopen {
-                io::close_conn(i, con)?;
-            }
-            let mut src = String::from_utf8_lossy(&r?).into_owned();
-            // `con_getc` supplies a final newline for an incomplete last
-            // line (R: gram.c:con_getc).
-            if !src.is_empty() && !src.ends_with('\n') {
-                src.push('\n');
-            }
-            src
+    let src = if was_str || text.len() > 0 {
+        text_of(&text).unwrap_or_default()
+    } else {
+        // R: source.c:do_parse, reading the whole connection
+        use super::io;
+        let con = io::connection_number(&arg(&args, 0))?;
+        if con < 3 {
+            return Err(Flow::error("robigo: parse() from the console is not implemented yet"));
         }
-        None => return Err(Flow::error("coercion of 'text' to character was unsuccessful")),
+        let (wasopen, ..) = io::conn_state(i, con)?;
+        if !wasopen && !io::open_in_mode(i, con, "r")? {
+            return Err(Flow::error("cannot open the connection"));
+        }
+        let r = (|| {
+            if !io::conn_state(i, con)?.1 {
+                return Err(Flow::error("cannot read from this connection"));
+            }
+            io::con_read_all(i, con)
+        })();
+        if !wasopen {
+            io::close_conn(i, con)?;
+        }
+        let mut src = String::from_utf8_lossy(&r?).into_owned();
+        // `con_getc` supplies a final newline for an incomplete last
+        // line (R: gram.c:con_getc).
+        if !src.is_empty() && !src.ends_with('\n') {
+            src.push('\n');
+        }
+        src
     };
     let num = if num == NA_INTEGER { -1 } else { num };
     let arena = robigo_syntax::Arena::new();

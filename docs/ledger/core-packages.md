@@ -110,3 +110,32 @@ Metrics, in order:
   on the combined WIP; `cargo test -p robigo-runtime` unchanged (two
   `builtins::complex` libm-oracle tests fail on this machine with and
   without the change).
+## 2026-11-01: metric (d) baseline; parse(text=) coercion
+
+- Baseline (cran-gate after #175, GNU R 4.5.0 oracle vs robigo, shim
+  counts): fastmap 341/0 and digest 325/0 both match (the gate is
+  green). First metric-(d) probes: jsonlite 1527/11 vs GNU R 1555/6;
+  R6 562/17 vs 567/12; glue 124/114 vs 106/116 (needs dep parity in
+  the oracle lib before the numbers mean anything); magrittr crashes
+  the shim; cli fails to install (`robigo: bzip2 compressed file
+  connections are not implemented yet` building its sysdata DB);
+  vctrs installs, suite slow, still unmeasured; rlang known-hard
+  (#174's author).
+- jsonlite's two S4 failures: `parse(text = <expression>)` — R's
+  `source.c:do_parse` runs `coerceVector(CAR(args), STRSXP)` first
+  (an expression or call deparses into text) and errors only when the
+  argument had length but the coercion produced none. The port
+  demanded an already-character `text`. Fixed in `do_parse`; pinned
+  by `tests/r/lang/parse-text-coerce.R` (GNU R's own answers,
+  including `parse(text = quote(a + b))` → `expression(+a, b)`).
+- R6's five extra failures are all `reg.finalizer` timing: after
+  `local(obj <- BC$new())`, robigo's `gc(full = TRUE)` still sees the
+  object reachable (the finalizer fires at a later gc, after
+  `capture.output` closed); GNU R collects it there. The minimal
+  `reg.finalizer` cases all match, so this is the frame-retention
+  problem the core track's ledger already tracks — left to them.
+- jsonlite's remaining gap is `url()` connections (7 tests). The
+  R6/S4 work above also showed `methods::setClass` under `sys.source`
+  needs #196's `topenv` matchThisEnv fix: without it `where` walks
+  past the sourcing environment into a locked namespace
+  ("cannot add bindings to a locked environment").
