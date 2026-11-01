@@ -146,6 +146,7 @@
   LOGICAL;
   LOGICAL_ELT;
   LOGICAL_GET_REGION;
+  LOGICAL_IS_SORTED;
   LOGICAL_NO_NA;
   LOGICAL_OR_NULL;
   LOGICAL_RO;
@@ -323,6 +324,7 @@
   R_LastvalueSymbol;
   R_LevelsSymbol;
   R_LockBinding;
+  R_LockEnvironment;
   R_LogicalNAValue;
   R_MB_CUR_MAX;
   R_MakeActiveBinding;
@@ -529,6 +531,7 @@
   R_primitive_generic;
   R_primitive_methods;
   R_print;
+  R_qsort;
   R_qsort_I;
   R_qsort_int;
   R_qsort_int_I;
@@ -693,6 +696,7 @@
   Rf_bessel_k;
   Rf_bessel_y;
   Rf_beta;
+  Rf_cPsort;
   Rf_charIsASCII;
   Rf_charIsLatin1;
   Rf_charIsUTF8;
