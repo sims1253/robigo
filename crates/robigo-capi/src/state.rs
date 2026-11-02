@@ -41,26 +41,38 @@ pub fn try_isolate() -> Option<*mut State> {
     ISOLATE.try_with(|c| c.get()).ok().filter(|p| !p.is_null())
 }
 
+/// This thread's isolate, initialized on first use.
+///
+/// # Safety
+/// The caller is on the R thread, and no other reference into the state is
+/// used while this one is: the API re-enters itself through callbacks, so
+/// the `'static` here is the caller's promise, not the compiler's.
 #[inline(always)]
-pub fn st() -> &'static mut State {
-    unsafe {
-        let p = isolate();
-        if p.is_null() {
-            init_state();
-            return &mut *isolate();
-        }
-        &mut *p
+pub unsafe fn st() -> &'static mut State {
+    let p = isolate();
+    if p.is_null() {
+        init_state();
+        return &mut *isolate();
     }
+    &mut *p
 }
 
+/// The heap.
+///
+/// # Safety
+/// As for [`st`].
 #[inline(always)]
-pub fn core() -> &'static mut Core {
+pub unsafe fn core() -> &'static mut Core {
     &mut st().core
 }
 
+/// `R_NilValue`.
+///
+/// # Safety
+/// The API is initialized and the caller is on the R thread.
 #[inline(always)]
-pub fn nil() -> Sexp {
-    unsafe { R_NilValue }
+pub unsafe fn nil() -> Sexp {
+    R_NilValue
 }
 
 // ---- exported data (Rinternals.h, R_ext/*.h) -------------------------------

@@ -17,7 +17,7 @@ use robigo_core::types::*;
 use robigo_core::{Sexp, gp};
 use std::ffi::{CStr, c_char, c_int};
 
-fn sym(name: &str) -> Sexp {
+unsafe fn sym(name: &str) -> Sexp {
     core().install(name.as_bytes())
 }
 

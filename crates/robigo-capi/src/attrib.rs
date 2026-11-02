@@ -9,7 +9,7 @@ use robigo_core::types::*;
 use robigo_core::{Sexp, flags};
 use std::ffi::{c_char, c_int};
 
-fn sym(name: &str) -> Sexp {
+unsafe fn sym(name: &str) -> Sexp {
     core().install(name.as_bytes())
 }
 

@@ -129,10 +129,14 @@ fn publish(interp: &mut Interp) {
 }
 
 /// Run `f` with the interpreter that is currently calling into C.
-pub fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
+///
+/// # Safety
+/// The interpreter's frames above the C code are suspended in a call, so
+/// they do not touch it while `f` runs; `f` must not hold on to it.
+pub unsafe fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     let p = INTERP.with(|c| c.get());
     assert!(!p.is_null(), "robigo: the C API was called outside an R evaluation");
-    f(unsafe { &mut *p })
+    f(&mut *p)
 }
 
 /// Make `interp` current while `f` runs (re-entrant). The outermost
@@ -145,10 +149,13 @@ fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     let marker = 0usize;
     let here = std::hint::black_box(&marker) as *const usize as usize;
     let outer = prev.is_null();
-    let old = if outer { core().set_scan_top(here) } else { 0 };
+    // SAFETY: the runtime calls the bridge on the R thread, and the heap
+    // reference ends with the call.
+    let old = if outer { unsafe { core().set_scan_top(here) } } else { 0 };
     let r = f(interp);
     if outer {
-        core().set_scan_top(old);
+        // SAFETY: as above.
+        unsafe { core().set_scan_top(old) };
     }
     INTERP.with(|c| c.set(prev));
     r
@@ -555,11 +562,11 @@ pub unsafe fn trace_proxy_end() {
     TRACE_GRAPH.with(|g| g.borrow_mut().take());
 }
 
-fn proxied(x: Sexp) -> Option<Value> {
-    if !unsafe { x.has_flag(flags::HOST) } {
+unsafe fn proxied(x: Sexp) -> Option<Value> {
+    if !x.has_flag(flags::HOST) {
         return None;
     }
-    let h = unsafe { robigo_core::Core::host_handle(x) };
+    let h = robigo_core::Core::host_handle(x);
     PROXIED.with(|m| m.borrow().get(&h).map(|e| e.1.clone()))
 }
 
@@ -573,7 +580,9 @@ impl Drop for CoreRef {
         // reverse registration order at process exit. Reaching either with
         // `with` would panic in a destructor, which std turns into an abort.
         if crate::state::try_isolate().is_some() {
-            core().release(self.0);
+            // SAFETY: the isolate is alive on this thread, the only one
+            // that holds runtime values.
+            unsafe { core().release(self.0) };
         }
         let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
@@ -602,9 +611,9 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
 
 // ---- Value -> SEXP ---------------------------------------------------------
 
-fn sym_sexp(s: Sym) -> Sexp {
+unsafe fn sym_sexp(s: Sym) -> Sexp {
     if s == s::EMPTY {
-        return unsafe { R_MissingArg };
+        return R_MissingArg;
     }
     s.with_name(|n| core().install(n.as_bytes()))
 }
@@ -1028,7 +1037,7 @@ unsafe fn sym_arg(x: Sexp) -> RResult<Sym> {
 
 /// The value bound to `sym` in this frame, as findVarInFrame sees it:
 /// promises unforced, active bindings called.
-fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
+unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     let Some(flags) = env.binding_flags(sym) else { return Ok(None) };
     let v = env.get_local(sym).unwrap_or(Value::Null);
     if flags & robigo_runtime::env::BIND_ACTIVE != 0 {
@@ -1072,7 +1081,7 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 /// connections.c:R_WriteConnection, for native callers handing over each
 /// cell, separator and newline). Returns 0, or the flow token on failure;
 /// the caller jumps, as `host::op` does.
-pub(crate) fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
+pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
     guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
         Ok(()) => 0,
         Err(f) => store_flow(f),
@@ -2185,20 +2194,26 @@ impl NativeBridge for Bridge {
     }
 
     fn flags(&self, handle: usize) -> (bool, bool) {
-        let f = unsafe { crate::rdynload::robigo_dll_flags(handle as *mut crate::rdynload::DllInfo) };
+        let Some(info) = crate::rdynload::loaded(handle) else { return (false, false) };
+        // SAFETY: `loaded` found the DllInfo in the table of open libraries.
+        let f = unsafe { crate::rdynload::robigo_dll_flags(info) };
         (f & 1 != 0, f & 2 != 0)
     }
 
     fn routines(&self, handle: usize) -> Vec<(Interface, String, usize, i32)> {
-        let info = handle as *mut crate::rdynload::DllInfo;
+        let Some(info) = crate::rdynload::loaded(handle) else { return Vec::new() };
         let mut out = Vec::new();
         for k in 1..=4 {
+            // SAFETY: `loaded` found the DllInfo; k is an interface 1..=4.
             let n = unsafe { crate::rdynload::robigo_dll_routine_count(info, k) };
             for i in 0..n {
                 let mut name: *const c_char = std::ptr::null();
                 let mut fun: *const c_void = std::ptr::null();
                 let mut nargs = 0;
+                // SAFETY: i is below the count just read, and the outputs
+                // are locals.
                 unsafe { crate::rdynload::robigo_dll_routine(info, k, i, &mut name, &mut fun, &mut nargs) };
+                // SAFETY: routine names are CStrings the DllInfo owns.
                 let nm = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
                 out.push((iface_of(k), nm, fun as usize, nargs));
             }
@@ -2207,19 +2222,15 @@ impl NativeBridge for Bridge {
     }
 
     fn lookup(&self, handle: usize, name: &str, interface: Option<Interface>) -> Option<(usize, i32, Interface)> {
+        let info = crate::rdynload::loaded(handle)?;
         let n = CString::new(name).ok()?;
         let mut fun: *const c_void = std::ptr::null();
         let mut nargs = -1;
         let mut found = 0;
+        // SAFETY: `loaded` found the DllInfo, the name is NUL-terminated and
+        // the outputs are locals.
         let ok = unsafe {
-            crate::rdynload::robigo_dll_find(
-                handle as *mut crate::rdynload::DllInfo,
-                n.as_ptr(),
-                iface_code(interface),
-                &mut fun,
-                &mut nargs,
-                &mut found,
-            )
+            crate::rdynload::robigo_dll_find(info, n.as_ptr(), iface_code(interface), &mut fun, &mut nargs, &mut found)
         };
         if ok == 0 {
             return None;

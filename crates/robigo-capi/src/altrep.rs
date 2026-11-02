@@ -45,8 +45,8 @@ pub struct ClassT {
     pub ptr: Sexp,
 }
 
-unsafe fn methods(class: Sexp) -> &'static mut Methods {
-    &mut *(class.std_data() as *mut Methods)
+unsafe fn methods(class: Sexp) -> *mut Methods {
+    class.std_data() as *mut Methods
 }
 
 #[inline]
@@ -54,7 +54,9 @@ pub unsafe fn class_of(x: Sexp) -> Sexp {
     x.tag()
 }
 
-unsafe fn mt(x: Sexp) -> &'static Methods {
+/// The method table of an ALTREP object.
+#[inline]
+unsafe fn mt(x: Sexp) -> *const Methods {
     methods(class_of(x))
 }
 
@@ -116,7 +118,7 @@ macro_rules! setters {
         $(
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $name(cls: ClassT, f: usize) {
-                methods(cls.ptr).$field = f;
+                (*methods(cls.ptr)).$field = f;
             }
         )*
     };
@@ -217,21 +219,21 @@ pub unsafe extern "C" fn R_set_altrep_data2(x: Sexp, v: Sexp) {
 // ---- dispatch (the API functions call these for ALTREP objects) -----------
 
 pub unsafe fn length(x: Sexp) -> isize {
-    match mt(x).length {
+    match (*mt(x)).length {
         0 => error_in_class("no ALTREP Length method defined", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> isize>(f)(x),
     }
 }
 
 pub unsafe fn dataptr(x: Sexp, writable: bool) -> *mut u8 {
-    match mt(x).dataptr {
+    match (*mt(x)).dataptr {
         0 => error_in_class("cannot access data pointer for this ALTVEC object", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> *mut u8>(f)(x, writable as c_int),
     }
 }
 
 pub unsafe fn dataptr_or_null(x: Sexp) -> *mut u8 {
-    match mt(x).dataptr_or_null {
+    match (*mt(x)).dataptr_or_null {
         0 => std::ptr::null_mut(),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> *mut u8>(f)(x),
     }
@@ -240,7 +242,7 @@ pub unsafe fn dataptr_or_null(x: Sexp) -> *mut u8 {
 macro_rules! elt_fn {
     ($name:ident, $t:ty, $ptr:ident) => {
         pub unsafe fn $name(x: Sexp, i: isize) -> $t {
-            match mt(x).elt {
+            match (*mt(x)).elt {
                 0 => *($ptr(x) as *const $t).offset(i),
                 f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> $t>(f)(x, i),
             }
@@ -255,28 +257,28 @@ elt_fn!(raw_elt, u8, RAW);
 elt_fn!(complex_elt, Rcomplex, COMPLEX);
 
 pub unsafe fn string_elt(x: Sexp, i: isize) -> Sexp {
-    match mt(x).elt {
+    match (*mt(x)).elt {
         0 => error_in_class("No Elt method found for ALTSTRING class", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> Sexp>(f)(x, i),
     }
 }
 
 pub unsafe fn string_set_elt(x: Sexp, i: isize, v: Sexp) {
-    match mt(x).set_elt {
+    match (*mt(x)).set_elt {
         0 => error_in_class("No Set_elt found for ALTSTRING class", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize, Sexp)>(f)(x, i, v),
     }
 }
 
 pub unsafe fn list_elt(x: Sexp, i: isize) -> Sexp {
-    match mt(x).elt {
+    match (*mt(x)).elt {
         0 => error_in_class("ALTLIST classes must provide an Elt method", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> Sexp>(f)(x, i),
     }
 }
 
 pub unsafe fn list_set_elt(x: Sexp, i: isize, v: Sexp) {
-    match mt(x).set_elt {
+    match (*mt(x)).set_elt {
         0 => error_in_class("ALTLIST classes must provide a Set_elt method", x),
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize, Sexp)>(f)(x, i, v),
     }
@@ -307,8 +309,7 @@ unsafe fn materialize(x: Sexp) -> Sexp {
 
 // R: altrep.c:altrep_DuplicateEX_default, then duplicate.c's fallback
 pub unsafe fn duplicate(x: Sexp, deep: bool) -> Sexp {
-    let m = mt(x);
-    let ans = match m.duplicate {
+    let ans = match (*mt(x)).duplicate {
         0 => Sexp::NULL,
         f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(f)(x, deep as c_int),
     };
@@ -395,16 +396,16 @@ pub unsafe extern "C" fn ALTCOMPLEX_ELT(x: Sexp, i: isize) -> Rcomplex {
 /// is NA_INTEGER).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn INTEGER_IS_SORTED(x: Sexp) -> c_int {
-    if x.is_altrep() && mt(x).is_sorted != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>(mt(x).is_sorted)(x);
+    if x.is_altrep() && (*mt(x)).is_sorted != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>((*mt(x)).is_sorted)(x);
     }
     i32::MIN
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn INTEGER_NO_NA(x: Sexp) -> c_int {
-    if x.is_altrep() && mt(x).no_na != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>(mt(x).no_na)(x);
+    if x.is_altrep() && (*mt(x)).no_na != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>((*mt(x)).no_na)(x);
     }
     0
 }
@@ -412,16 +413,16 @@ pub unsafe extern "C" fn INTEGER_NO_NA(x: Sexp) -> c_int {
 // R: altrep.c:ALTINTEGER_MIN/MAX (the default method gives NULL)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTINTEGER_MIN(x: Sexp, narm: c_int) -> Sexp {
-    if mt(x).min != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(mt(x).min)(x, narm);
+    if (*mt(x)).min != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>((*mt(x)).min)(x, narm);
     }
     crate::state::R_NilValue
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTINTEGER_MAX(x: Sexp, narm: c_int) -> Sexp {
-    if mt(x).max != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(mt(x).max)(x, narm);
+    if (*mt(x)).max != 0 {
+        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>((*mt(x)).max)(x, narm);
     }
     crate::state::R_NilValue
 }

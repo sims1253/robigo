@@ -63,6 +63,11 @@ thread_local! {
     static CCALLABLES: RefCell<HashMap<(Vec<u8>, Vec<u8>), DlFunc>> = RefCell::new(HashMap::new());
 }
 
+/// The DllInfo a host handle stands for, if that library is still open.
+pub fn loaded(handle: usize) -> Option<*mut DllInfo> {
+    DLLS.with(|l| l.borrow().iter().copied().find(|&d| d as usize == handle))
+}
+
 unsafe fn add_routines<T>(
     info: &mut DllInfo,
     k: usize,

@@ -9,7 +9,7 @@ use robigo_core::{Rcomplex, Sexp, flags, gp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 #[inline(always)]
-fn c() -> &'static mut robigo_core::Core {
+unsafe fn c() -> &'static mut robigo_core::Core {
     core()
 }
 
