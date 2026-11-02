@@ -201,7 +201,7 @@ under a null are unspecified, and R would read them as data.
 
 The `mm-gc` prototype becomes `robigo_core::heap`, unchanged in policy:
 64 KiB blocks in 1 MiB chunks, 44 size classes up to 2 KiB, a dedicated
-chunk per larger object, free lists rebuilt by the sweeper, fully empty
+chunk per larger object, free lists extended by the sweeper, fully empty
 blocks pooled, dead chunks returned to the OS, a 2 MiB collection floor,
 growth to 1.5x the live bytes, alternating mark colors and skip-clean
 sweeps with per-block immortal counts. Every slot is carved at its size
