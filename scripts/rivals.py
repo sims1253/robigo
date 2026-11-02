@@ -27,10 +27,10 @@ counted, not silently ranked.
 import argparse
 import concurrent.futures
 import json
-import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,9 +115,10 @@ def cmd_setup(_):
         ):
             p = os.path.join(d, name)
             if not os.path.exists(p):
-                subprocess.run(["curl", "-sSfL", "-o", p, url], check=True)
+                subprocess.run(["curl", "-sSfL", "-o", p + ".part", url], check=True)
+                os.replace(p + ".part", p)
         with tempfile.TemporaryDirectory() as ctx:
-            os.link(os.path.join(d, "graalvm.tgz"), os.path.join(ctx, "graalvm.tgz"))
+            shutil.copy(os.path.join(d, "graalvm.tgz"), ctx)
             with open(os.path.join(ctx, "Dockerfile"), "w") as f:
                 f.write("FROM ubuntu:22.04\n"
                         "RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc g++ gfortran "
@@ -170,7 +171,9 @@ class Runner:
                 cmd += ["-e", f"{k}={v}"]
             cmd += [self.names[impl], "bash", "-c"]
         clock = 'S=$(date +%s.%N); "$@"; C=$?; E=$(date +%s.%N); echo "$S $E $C" >&3'
-        tfile = tempfile.mktemp(dir=self.shared, suffix=".time")
+        fd, tfile = tempfile.mkstemp(dir=self.shared, suffix=".time")
+        os.close(fd)
+        os.chmod(tfile, 0o666)  # (containers may run as another user)
         inner = [*IMAGES[impl][1], "--vanilla", file] if impl != "robigo" else cmd
         # The limit runs where the program does: killing a `docker exec` client
         # would leave the benchmark running beside the next measurement.
@@ -223,7 +226,7 @@ def programs(c, rx):
 
 
 def measure(runner, impl, prog, a, robigo):
-    name, shot, body, pk = prog
+    _, shot, body, pk = prog
     res = {}
     with tempfile.TemporaryDirectory(dir=runner.shared) as tmp:
         file = os.path.join(tmp, "shot.R")
@@ -309,7 +312,7 @@ def report(doc, markdown):
             have = {i: v for i, v in vals.items() if v}
             if "robigo" not in have and "gnur" not in have:
                 continue
-            rows.append((name, vals, min(have, key=have.get) if have else ""))
+            rows.append((name, vals, min(have, key=have.get)))
         print(f"\n## {key}: {title} (seconds; blank: failed or a different answer)\n")
         if markdown:
             print("| benchmark | " + " | ".join(impls) + " | fastest |")
