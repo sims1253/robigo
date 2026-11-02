@@ -5,6 +5,7 @@ use crate::host::Host;
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp};
 use std::ffi::c_int;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct State {
     pub core: Box<Core>,
@@ -21,6 +22,11 @@ pub struct State {
 thread_local! {
     static ISOLATE: std::cell::Cell<*mut State> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
+
+/// The thread that initialized the API owns it: the exported data below
+/// is process-wide, so a second initialization would overwrite the
+/// `R_NilValue` every object of the first refers to (`docs/core.md` §10).
+static OWNER: AtomicPtr<State> = AtomicPtr::new(std::ptr::null_mut());
 
 /// This thread's isolate, or null if it has not been initialized.
 #[inline(always)]
@@ -298,6 +304,13 @@ pub unsafe fn init_state() {
     if !isolate().is_null() {
         return;
     }
+    // a claim until the record exists: the data below must not be touched
+    // once another thread got here
+    let claim = std::ptr::NonNull::dangling().as_ptr();
+    if OWNER.compare_exchange(std::ptr::null_mut(), claim, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        eprintln!("robigo: the R heap was used from a thread other than the R thread");
+        std::process::abort();
+    }
     let mut heap = Core::new();
     R_NilValue = heap.nil;
     R_UnboundValue = heap.unbound;
@@ -310,6 +323,7 @@ pub unsafe fn init_state() {
     let nil = heap.nil;
     let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
     ISOLATE.with(|c| c.set(state));
+    OWNER.store(state, Ordering::Release);
     let stack = vec![Sexp::NULL; PPSSIZE as usize + 1000].into_boxed_slice();
     R_PPStack = Box::into_raw(stack) as *mut Sexp;
     R_PPStackSize = PPSSIZE;

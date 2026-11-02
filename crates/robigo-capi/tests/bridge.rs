@@ -9,14 +9,11 @@ use capi::Sexp;
 use capi::bridge::BRIDGE;
 use capi::state::*;
 use robigo_core::types::*;
-use robigo_runtime::env::Env;
 use robigo_runtime::error::{Flow, RResult};
 use robigo_runtime::interp::Interp;
 use robigo_runtime::native::{Interface, NativeBridge, Routine};
 use robigo_runtime::value::{Arg, Value};
 use std::cell::Cell;
-use std::ffi::{c_char, c_int, c_void};
-use std::rc::Rc;
 
 fn routine(interface: Interface, addr: usize) -> Routine {
     Routine { package: "test".into(), name: "test".into(), interface, nargs: -1, addr }
@@ -170,5 +167,35 @@ fn the_bridge() {
     raising_altrep_conversions(i);
 }
 
-#[allow(dead_code)]
-fn _unused(_: &Env, _: *const c_char, _: c_int, _: *mut c_void, _: Rc<()>) {}
+const OTHER_THREAD_CHILD: &str = "ROBIGO_OTHER_THREAD_CHILD";
+
+/// Child process: the API's exported data is process-wide, so a second
+/// thread must not initialize it again.
+#[test]
+fn other_thread_child() {
+    if std::env::var_os(OTHER_THREAD_CHILD).is_none() {
+        return;
+    }
+    let nil = unsafe {
+        init_state();
+        R_NilValue
+    };
+    let _ = std::thread::spawn(|| unsafe { core() as *mut robigo_core::Core as usize }).join();
+    assert!(nil == unsafe { R_NilValue }, "R_NilValue was overwritten");
+    eprintln!("the other thread got through");
+}
+
+#[test]
+fn the_api_stays_on_its_thread() {
+    if std::env::var_os(OTHER_THREAD_CHILD).is_some() {
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "other_thread_child", "--nocapture"])
+        .env(OTHER_THREAD_CHILD, "1")
+        .output()
+        .expect("run child test");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("robigo: the R heap was used from a thread other than the R thread"), "{err}");
+    assert!(!out.status.success(), "{err}");
+}
