@@ -1,0 +1,99 @@
+     a      b      c      d      e      f 
+"cafe" "EUR5"   "+-"     NA  "abc"   "ss" 
+     a      b      c      d      e      f 
+"cafe" "EUR5"   "+-"     NA  "abc"   "ss" 
+     a      b      c      d      e      f 
+"cafe" "EUR5"   "+-"     NA  "abc"   "ss" 
+    a     b     c     d     e     f 
+   NA    NA    NA    NA "abc"    NA 
+    a     b     c     d     e     f 
+"caf"   "5"    ""    NA "abc"    "" 
+        a         b         c         d         e         f 
+"caf\xe9"    "EUR5"      "+-"        NA     "abc"    "\xdf" 
+[1] "unknown"
+[1] "ą"
+[1] "UTF-8"
+[1] "€"
+[[1]]
+[1] b1
+
+[[1]]
+[1] 61 00 62 00
+
+[1] "ab" NA  
+[[1]]
+[1] 61
+
+[[2]]
+NULL
+
+[1] "ab"
+[1] NA
+[[1]]
+NULL
+
+[1] "a<U+20AC><U+1F600>b"
+[1] "a\\u20ac\\U0001f600b"
+[1] "a<e2><82><ac><f0><9f><98><80>b"
+[1] "a<?><?><?><?><?><?><?>b"
+[1] "ab"
+[1] "a<U+20AC><U+1F600>b"
+[1] "Unicode"
+[1] "??a"
+[1] "<ac><20><00><00>a"
+[1] "<ac><20>a"
+[1] NA
+[1] "a<ff>b"
+[1] "a??"
+[1] 10000
+[1] 15000
+[1] 4000
+[1] NA
+character(0)
+[1] "unsupported conversion from 'UTF-8' to 'no-such-encoding'"
+[1] "unsupported conversion from 'no-such-encoding' to 'UTF-8'"
+[1] "unsupported conversion from 'UTF-8' to 'no-such-encoding'"
+[1] "unsupported conversion from 'latin1' to 'no-such-encoding'"
+[1] "unsupported conversion from 'latin1' to 'no-such-encoding'"
+[1] "'x' must be a character vector or a list of NULL or raw vectors"
+   MBCS   UTF-8 Latin-1 codeset 
+ "TRUE"  "TRUE" "FALSE" "UTF-8" 
+            MBCS            UTF-8          Latin-1          codeset 
+         "FALSE"          "FALSE"          "FALSE" "ANSI_X3.4-1968" 
+[1] "caf?" "EUR" 
+[1] "a<ff>"
+   MBCS   UTF-8 Latin-1 codeset 
+ "TRUE"  "TRUE" "FALSE" "UTF-8" 
+[1] "<U+20AC>"
+[1] "\\u20ac"
+[1] "UnicodeUnicodeUnicode"
+[1] "unsupported conversion from 'UTF-8' to 'no-such-encoding'"
+[1] "unsupported conversion from 'no-such-encoding' to 'UTF-8'"
+[1] "latin1"
+[1] "unknown"
+[[1]]
+[1] 80
+
+[1] "UTF-8"
+[1] "UTF-8"
+[1] "unknown"
+[1] "UnicodeUnicode"
+[1] "c99c99"
+[[1]]
+[1] 1b 24 42 24 22
+
+[[2]]
+[1] 1b 28 42 61
+
+[[1]]
+[1] 1b 24 42 24 22
+
+[[2]]
+[1] 1b 28 42 1b 24 42 24 22
+
+[[1]]
+[1] ff fe 61 00
+
+[[2]]
+[1] ff fe 62 00
+
