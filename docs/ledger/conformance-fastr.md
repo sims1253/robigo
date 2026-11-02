@@ -85,3 +85,15 @@
   - `crates/robigo-runtime/src/native/methods.rs`: `R_getClassFromCache` rejects `""` the same way, and `R_set_method_dispatch` uses `asBool` (`coerce.c:1837`: `asLogical2(x, 1, NULL)` — an atomic vector longer than one errors with `'length = N' in coercion to 'logical(1)'`, then NA errors with `NA in coercion to boolean`; `NULL` is NA). `tests/r/s4/set-dispatch.R` pins all three errors (no fastr case covers the length arm).
 - Result: 31,240 of 31,374 pass on this branch (+9 cases, 0 regressions). `library/tools/TestExternal_tabExpand` and `library/utils/TestUtils` cases only fail locally: they need the prebuilt native routines CI ships via `ROBIGO_NATIVES`.
 - Status: kept (PR pending).
+
+## 2026-11-02: round 8 - file() opens gzipped files through its gz connection
+
+- Topic: `builtins/TestBuiltin_zzfile` (2 of 6 cases)
+- Diagnosis: `do_file` rejected every compressed file in read mode. GNU R's `do_file` (`src/main/connections.c:6076-6095`) runs `comp_type_from_file` and, for `open` empty/`r`/`rt`, builds the `gzfile`/`bzfile`/`xzfile`/`zstdfile` connection instead — only the class attribute stays `file`, and an empty `open` becomes `"rt"` (`newgzfile(url, strlen(open) ? open : "rt", 0)`).
+- Changes:
+  - `crates/robigo-runtime/src/builtins/io.rs`: `compressed_file_type` ports `comp_type_from_memory` with `with_zlib = FALSE` (what `comp_type_from_file` passes), including the ten-byte bzip2 check (`BZh` + block size + the BCD pi / sqrt(pi) block magic, R's PR#18768), the LZMA and `]\0\0\200\0` xz variants, lzop's `\x89LZO` and zstd. `do_file` opens a detected gzip file as a `ConnKind::Gz` connection with class `"file"`, mode `"rt"` when `open` is empty, otherwise the caller's mode; lzop reports R's own unsupported message rather than a robigo stub.
+  - `canseek` stays FALSE for the gz connection (robigo's `gzfile` cannot seek; R's can, a pre-existing divergence, not widened here).
+  - `tests/r/io/compressed-gzip.R` pins the class, the lazy open, `file(f, "rt")` and the `raw = TRUE` / `"rb"` passthrough paths.
+  - `tests/r/io/compressed-bzip2-xz.R` is the gap test for the bzip2/xz branches (GNU R 4.5.0 output recorded, no marker): robigo still errors there, because `bzfile`/`xzfile` would need new compression crates.
+- Result: 31,242 of 31,374 pass on this branch (+2 cases, 0 regressions); the remaining four `TestBuiltin_zzfile` cases are the bzip2/xz pair, tracked by the gap test.
+- Status: kept.
