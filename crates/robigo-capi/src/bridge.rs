@@ -1655,19 +1655,52 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         }
     }
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
-        let p = Rc::as_ptr(rc) as *mut Vector<T>;
-        (*p).attrs = box_attrs(x, originals);
+        let new = box_attrs(x, originals);
+        if !same_attrs(&rc.attrs, &new) {
+            let p = Rc::as_ptr(rc) as *mut Vector<T>;
+            (*p).attrs = new;
+        }
     }
+    // Only what the routine changed is stored, in the buffer the object
+    // has: this runs on every argument of every call, and the running R
+    // code can be the object itself (`eval(ex)` walks `ex` while `h(ex)`
+    // calls a routine on it), so replacing a buffer here frees memory the
+    // evaluator is reading.
     match v {
         Value::Str(rc) => {
-            let data = (0..xlength(x)).map(|j| rstr_of(STRING_ELT(x, j))).collect();
-            let p = Rc::as_ptr(rc) as *mut Vector<RStr>;
-            (*p).data = data;
+            let same = |a: &RStr, b: &RStr| match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a == b && a.encoding() == b.encoding(),
+                _ => false,
+            };
+            let n = xlength(x);
+            if n as usize == rc.data.len() {
+                for j in 0..n {
+                    let new = rstr_of(STRING_ELT(x, j));
+                    if !same(&rc.data[j as usize], &new) {
+                        v.set_string_elt_through_alias(j as usize, new);
+                    }
+                }
+            } else {
+                let data = (0..n).map(|j| rstr_of(STRING_ELT(x, j))).collect();
+                let p = Rc::as_ptr(rc) as *mut Vector<RStr>;
+                (*p).data = data;
+            }
         }
         Value::List(rc) | Value::Expr(rc) => {
-            let data = (0..xlength(x)).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
-            let p = Rc::as_ptr(rc) as *mut Vector<Value>;
-            (*p).data = data;
+            let n = xlength(x);
+            if n as usize == rc.data.len() {
+                for j in 0..n {
+                    let new = converted(VECTOR_ELT(x, j), originals);
+                    if !rc.data[j as usize].same_object(&new) {
+                        v.set_vector_elt_through_alias(j as usize, new);
+                    }
+                }
+            } else {
+                let data = (0..n).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
+                let p = Rc::as_ptr(rc) as *mut Vector<Value>;
+                (*p).data = data;
+            }
         }
         // R: memory.c:SETCAR/SETCDR/SET_TAG on a LISTSXP/LANGSXP chain.
         // The routine mutated the caller's own cells, so the runtime spine
@@ -1713,13 +1746,19 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Str(rc) => attrs(rc, x, originals),
         Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
         Value::Closure(rc) => {
-            let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Closure;
-            (*p).attrs = box_attrs(x, originals);
+            let new = box_attrs(x, originals);
+            if !same_attrs(&rc.attrs, &new) {
+                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Closure;
+                (*p).attrs = new;
+            }
         }
         #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) => {
-            let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Bytecode;
-            (*p).attrs = box_attrs(x, originals);
+            let new = box_attrs(x, originals);
+            if !same_attrs(&rc.attrs, &new) {
+                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Bytecode;
+                (*p).attrs = new;
+            }
         }
         Value::Env(e) => {
             *e.0.attrs.borrow_mut() = box_attrs(x, originals);

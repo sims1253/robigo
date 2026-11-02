@@ -297,6 +297,8 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
     y: *const f64,
     c: *const f64,
 ) {
+    use crate::builtins::complex::sse::{self, packed};
+    // R: arithmetic.c:real_binary, with the destination chosen by each shape.
     // Match the packed arithmetic builtin's throughput while keeping each
     // multiplication rounded before addition. No hardware FMA is used.
     let end = n / 8 * 8;
@@ -307,24 +309,24 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
                 let a = if SX { [*x; 2] } else { [*x.add(i), *x.add(i + 1)] };
                 let b = if SY { [*y; 2] } else { [*y.add(i), *y.add(i + 1)] };
                 let z = if SC { [*c; 2] } else { [*c.add(i), *c.add(i + 1)] };
-                let m = if SX && !SY { packed::<2>(b, a) } else { packed::<2>(a, b) };
+                let m = if SX && !SY { packed::<{ sse::MUL }>(b, a) } else { packed::<{ sse::MUL }>(a, b) };
                 let r = match K {
                     MA_ADD => {
                         if SX && SY && !SC {
-                            packed::<0>(z, m)
+                            packed::<{ sse::ADD }>(z, m)
                         } else {
-                            packed::<0>(m, z)
+                            packed::<{ sse::ADD }>(m, z)
                         }
                     }
-                    MA_SUB => packed::<1>(m, z),
+                    MA_SUB => packed::<{ sse::SUB }>(m, z),
                     MA_RADD => {
                         if SC && !(SX && SY) {
-                            packed::<0>(m, z)
+                            packed::<{ sse::ADD }>(m, z)
                         } else {
-                            packed::<0>(z, m)
+                            packed::<{ sse::ADD }>(z, m)
                         }
                     }
-                    _ => packed::<1>(z, m),
+                    _ => packed::<{ sse::SUB }>(z, m),
                 };
                 *out.add(i) = r[0];
                 *out.add(i + 1) = r[1];
@@ -338,7 +340,6 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
             let z = if SC { *c } else { *c.add(i) };
             // R: arithmetic.c:real_binary. For doubles the scalar-left
             // loop keeps y's payload; equal lengths and scalar-right keep x's.
-            use crate::builtins::complex::sse;
             let m = if SX && !SY { sse::mul(b, a) } else { sse::mul(a, b) };
             *out.add(i) = match K {
                 MA_ADD => {
@@ -359,40 +360,6 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
                 _ => sse::sub(z, m),
             };
         }
-    }
-}
-
-// R: arithmetic.c:real_binary, with the destination chosen by each shape.
-#[inline(always)]
-fn packed<const OP: u8>(d: [f64; 2], s: [f64; 2]) -> [f64; 2] {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use core::arch::x86_64::__m128d;
-        // SAFETY: the arrays and SSE2 registers have the same layout.
-        let mut d = core::mem::transmute::<[f64; 2], __m128d>(d);
-        let s = core::mem::transmute::<[f64; 2], __m128d>(s);
-        match OP {
-            0 => {
-                core::arch::asm!("addpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
-            }
-            1 => {
-                core::arch::asm!("subpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
-            }
-            _ => {
-                core::arch::asm!("mulpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
-            }
-        }
-        core::mem::transmute::<__m128d, [f64; 2]>(d)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        use crate::builtins::complex::sse;
-        let op = match OP {
-            0 => sse::add,
-            1 => sse::sub,
-            _ => sse::mul,
-        };
-        [op(d[0], s[0]), op(d[1], s[1])]
     }
 }
 

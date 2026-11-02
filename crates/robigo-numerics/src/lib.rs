@@ -129,12 +129,12 @@ mod c23 {
 
 mod libm {
     unsafe extern "C" {
-        pub fn lgamma_r(x: f64, sign: *mut i32) -> f64;
-        pub fn logb(x: f64) -> f64;
-        pub fn ldexp(x: f64, e: i32) -> f64;
-        pub fn nearbyint(x: f64) -> f64;
-        pub fn expm1(x: f64) -> f64;
-        pub fn log1p(x: f64) -> f64;
+        pub safe fn lgamma_r(x: f64, sign: &mut i32) -> f64;
+        pub safe fn logb(x: f64) -> f64;
+        pub safe fn ldexp(x: f64, e: i32) -> f64;
+        pub safe fn nearbyint(x: f64) -> f64;
+        pub safe fn expm1(x: f64) -> f64;
+        pub safe fn log1p(x: f64) -> f64;
     }
 }
 
@@ -261,33 +261,33 @@ pub fn r_tanpi(x: f64) -> f64 {
 #[inline]
 pub fn c_lgamma(x: f64) -> f64 {
     let mut s = 0i32;
-    unsafe { libm::lgamma_r(x, &mut s) }
+    libm::lgamma_r(x, &mut s)
 }
 
 #[inline]
 pub fn logb(x: f64) -> f64 {
-    unsafe { libm::logb(x) }
+    libm::logb(x)
 }
 
 #[inline]
 pub fn ldexp(x: f64, e: i32) -> f64 {
-    unsafe { libm::ldexp(x, e) }
+    libm::ldexp(x, e)
 }
 
 /// C `nearbyint` in the default rounding mode (ties to even).
 #[inline]
 pub fn nearbyint(x: f64) -> f64 {
-    unsafe { libm::nearbyint(x) }
+    libm::nearbyint(x)
 }
 
 #[inline]
 pub fn expm1(x: f64) -> f64 {
-    unsafe { libm::expm1(x) }
+    libm::expm1(x)
 }
 
 #[inline]
 pub fn log1p(x: f64) -> f64 {
-    unsafe { libm::log1p(x) }
+    libm::log1p(x)
 }
 
 /// C `round`: half away from zero.

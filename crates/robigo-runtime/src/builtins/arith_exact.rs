@@ -13,31 +13,12 @@
 /// as LLVM does not unroll loops around inline assembly. `-` and `/`
 /// cannot be commuted and stay plain Rust.
 pub(super) mod exact {
+    use super::super::complex::sse;
+
     /// `d op s` on two lanes at once, `d` the destination.
     #[inline(always)]
     fn pair(mul: bool, d: [f64; 2], s: [f64; 2]) -> [f64; 2] {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use core::arch::x86_64::__m128d;
-            // SAFETY: [f64; 2] and __m128d are the same 16 bytes; SSE2 is
-            // part of x86-64.
-            unsafe {
-                let mut vd = core::mem::transmute::<[f64; 2], __m128d>(d);
-                let vs = core::mem::transmute::<[f64; 2], __m128d>(s);
-                if mul {
-                    core::arch::asm!("mulpd {d}, {s}", d = inout(xmm_reg) vd, s = in(xmm_reg) vs,
-                                     options(pure, nomem, nostack, preserves_flags));
-                } else {
-                    core::arch::asm!("addpd {d}, {s}", d = inout(xmm_reg) vd, s = in(xmm_reg) vs,
-                                     options(pure, nomem, nostack, preserves_flags));
-                }
-                core::mem::transmute::<__m128d, [f64; 2]>(vd)
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            [one(mul, d[0], s[0]), one(mul, d[1], s[1])]
-        }
+        if mul { sse::packed::<{ sse::MUL }>(d, s) } else { sse::packed::<{ sse::ADD }>(d, s) }
     }
 
     /// `d op s`, `d` the destination.

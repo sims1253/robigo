@@ -166,6 +166,21 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(b)
     }
 
+    /// The next `N` bytes, for the fixed-width readers. These run once per
+    /// item of every lazy-load entry: a slice cursor or a second bounds
+    /// check costs ~13% of `int`, which shows at startup.
+    #[inline(always)]
+    fn array<const N: usize>(&mut self) -> RResult<[u8; N]> {
+        let pos = self.pos;
+        if pos + N > self.data.len() {
+            return Err(Flow::error("error reading from connection"));
+        }
+        self.pos = pos + N;
+        // SAFETY: pos + N is within `data`, just checked; [u8; N] has
+        // alignment 1.
+        Ok(unsafe { self.data.as_ptr().add(pos).cast::<[u8; N]>().read_unaligned() })
+    }
+
     fn word(&mut self) -> RResult<String> {
         while self.pos < self.data.len() && self.data[self.pos].is_ascii_whitespace() {
             self.pos += 1;
@@ -180,24 +195,8 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn int(&mut self) -> RResult<i32> {
         match self.format {
-            Format::Xdr => {
-                let pos = self.pos;
-                if pos + 4 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 4;
-                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 4]) };
-                Ok(i32::from_be_bytes(b))
-            }
-            Format::Binary => {
-                let pos = self.pos;
-                if pos + 4 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 4;
-                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 4]) };
-                Ok(i32::from_le_bytes(b))
-            }
+            Format::Xdr => Ok(i32::from_be_bytes(self.array()?)),
+            Format::Binary => Ok(i32::from_le_bytes(self.array()?)),
             Format::Ascii => {
                 let w = self.word()?;
                 if w == "NA" {
@@ -214,32 +213,12 @@ impl<'a, 'i> Reader<'a, 'i> {
     fn int2(&mut self) -> RResult<(i32, i32)> {
         match self.format {
             Format::Xdr => {
-                let pos = self.pos;
-                if pos + 8 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 8;
-                let (a, c) = unsafe {
-                    let ptr = self.data.as_ptr().add(pos);
-                    let a = std::ptr::read_unaligned(ptr as *const [u8; 4]);
-                    let c = std::ptr::read_unaligned(ptr.add(4) as *const [u8; 4]);
-                    (i32::from_be_bytes(a), i32::from_be_bytes(c))
-                };
-                Ok((a, c))
+                let [a, b, c, d, e, f, g, h] = self.array()?;
+                Ok((i32::from_be_bytes([a, b, c, d]), i32::from_be_bytes([e, f, g, h])))
             }
             Format::Binary => {
-                let pos = self.pos;
-                if pos + 8 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 8;
-                let (a, c) = unsafe {
-                    let ptr = self.data.as_ptr().add(pos);
-                    let a = std::ptr::read_unaligned(ptr as *const [u8; 4]);
-                    let c = std::ptr::read_unaligned(ptr.add(4) as *const [u8; 4]);
-                    (i32::from_le_bytes(a), i32::from_le_bytes(c))
-                };
-                Ok((a, c))
+                let [a, b, c, d, e, f, g, h] = self.array()?;
+                Ok((i32::from_le_bytes([a, b, c, d]), i32::from_le_bytes([e, f, g, h])))
             }
             Format::Ascii => Ok((self.int()?, self.int()?)),
         }
@@ -275,24 +254,8 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn real(&mut self) -> RResult<f64> {
         match self.format {
-            Format::Xdr => {
-                let pos = self.pos;
-                if pos + 8 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 8;
-                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 8]) };
-                Ok(f64::from_be_bytes(b))
-            }
-            Format::Binary => {
-                let pos = self.pos;
-                if pos + 8 > self.data.len() {
-                    return Err(Flow::error("error reading from connection"));
-                }
-                self.pos = pos + 8;
-                let b = unsafe { std::ptr::read_unaligned(self.data.as_ptr().add(pos) as *const [u8; 8]) };
-                Ok(f64::from_le_bytes(b))
-            }
+            Format::Xdr => Ok(f64::from_be_bytes(self.array()?)),
+            Format::Binary => Ok(f64::from_le_bytes(self.array()?)),
             Format::Ascii => {
                 let w = self.word()?;
                 Ok(match w.as_str() {

@@ -49,6 +49,45 @@ pub(crate) mod sse {
         }
     }
 
+    pub const ADD: u8 = 0;
+    pub const SUB: u8 = 1;
+    pub const MUL: u8 = 2;
+
+    /// `d OP s` on two lanes at once, `d` the destination: inline assembly
+    /// fixes the operand order, which shows as which NaN payload survives.
+    #[inline(always)]
+    pub fn packed<const OP: u8>(d: [f64; 2], s: [f64; 2]) -> [f64; 2] {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: [f64; 2] and __m128d are the same 16 bytes; SSE2 is part
+        // of x86-64.
+        unsafe {
+            use core::arch::x86_64::__m128d;
+            let mut d = core::mem::transmute::<[f64; 2], __m128d>(d);
+            let s = core::mem::transmute::<[f64; 2], __m128d>(s);
+            match OP {
+                ADD => {
+                    core::arch::asm!("addpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+                SUB => {
+                    core::arch::asm!("subpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+                _ => {
+                    core::arch::asm!("mulpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+            }
+            core::mem::transmute::<__m128d, [f64; 2]>(d)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let op = match OP {
+                ADD => add,
+                SUB => sub,
+                _ => mul,
+            };
+            [op(d[0], s[0]), op(d[1], s[1])]
+        }
+    }
+
     // On x86-64 the hardware instructions are these semantics: inline
     // assembly keeps LLVM from commuting or folding them, at the cost of
     // one instruction per operation.
@@ -155,24 +194,18 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
     if r.re.is_nan() || r.im.is_nan() { cmul_impl::<ExactArith>(a, b) } else { r }
 }
 
-/// A packed SSE2 operation on both parts of two complex numbers, `$a` the
+/// A packed SSE2 operation on both parts of two complex numbers, `a` the
 /// destination operand: one instruction, with the operand order fixed (in
 /// plain Rust LLVM may commute an addition, and which NaN payload survives
 /// shows as NA vs NaN).
-#[cfg(target_arch = "x86_64")]
-macro_rules! sse_pair {
-    ($insn:literal, $a:expr, $b:expr) => {{
-        use core::arch::x86_64::__m128d;
-        // SAFETY: Complex is #[repr(C)] { re, im }: the same 16 bytes as an
-        // __m128d; SSE2 is part of x86-64.
-        unsafe {
-            let mut va = core::mem::transmute::<Complex, __m128d>($a);
-            let vb = core::mem::transmute::<Complex, __m128d>($b);
-            core::arch::asm!(concat!($insn, " {a}, {b}"), a = inout(xmm_reg) va, b = in(xmm_reg) vb,
-                             options(pure, nomem, nostack, preserves_flags));
-            core::mem::transmute::<__m128d, Complex>(va)
-        }
-    }};
+#[inline(always)]
+fn sse_pair<const OP: u8>(a: Complex, b: Complex) -> Complex {
+    // SAFETY: Complex is #[repr(C)] { re, im }: the layout of [f64; 2].
+    unsafe {
+        let a = core::mem::transmute::<Complex, [f64; 2]>(a);
+        let b = core::mem::transmute::<Complex, [f64; 2]>(b);
+        core::mem::transmute::<[f64; 2], Complex>(sse::packed::<OP>(a, b))
+    }
 }
 
 // R: complex.c:complex_binary PLUSOP. GCC commuted the adds of the
@@ -183,14 +216,7 @@ macro_rules! sse_pair {
 // iterations are all NaN).
 #[inline(always)]
 pub fn cadd(a: Complex, b: Complex) -> Complex {
-    #[cfg(target_arch = "x86_64")]
-    {
-        sse_pair!("addpd", b, a)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        Complex::new(sse::add(b.re, a.re), sse::add(b.im, a.im))
-    }
+    sse_pair::<{ sse::ADD }>(b, a)
 }
 
 // R: complex.c:complex_binary MINUSOP. The subtractions are not
@@ -198,14 +224,7 @@ pub fn cadd(a: Complex, b: Complex) -> Complex {
 // minuend as destination operand.
 #[inline(always)]
 pub fn csub(a: Complex, b: Complex) -> Complex {
-    #[cfg(target_arch = "x86_64")]
-    {
-        sse_pair!("subpd", a, b)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        Complex::new(sse::sub(a.re, b.re), sse::sub(a.im, b.im))
-    }
+    sse_pair::<{ sse::SUB }>(a, b)
 }
 
 /// `f` over two slices of the same length, unrolled by four and written

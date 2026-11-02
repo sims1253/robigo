@@ -96,9 +96,8 @@ impl JitState {
 }
 
 thread_local! {
-    /// [`class`] by symbol id, plus one (0: not known yet). (Only
-    /// `class` writes it, never while it is being read.)
-    static CLASS: std::cell::UnsafeCell<Vec<u8>> = const { std::cell::UnsafeCell::new(Vec::new()) };
+    /// [`class`] by symbol id, plus one (0: not known yet).
+    static CLASS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// JIT scores and hashes of closure bodies, by address (kept alive in
     /// the entry; the hash is computed when first needed).
     static SCORES: RefCell<HashMap<usize, (Value, i64, Option<u64>), crate::env::FastHash>> =
@@ -193,9 +192,7 @@ fn class(sym: Sym) -> u8 {
         return c;
     }
     let c = sym.with_name(class_of_name);
-    // SAFETY: no reference into the table is alive (see `known_class`).
-    CLASS.with(|t| unsafe {
-        let t = &mut *t.get();
+    CLASS.with_borrow_mut(|t| {
         if t.len() <= i {
             t.resize(i + 1, 0);
         }
@@ -207,8 +204,7 @@ fn class(sym: Sym) -> u8 {
 /// The memoized class of `sym`, if known.
 #[inline(always)]
 fn known_class(sym: Sym) -> Option<u8> {
-    // SAFETY: a read of one element; `class` writes only outside this.
-    let c = CLASS.with(|t| unsafe { (&*t.get()).get(sym.0 as usize).copied() }).unwrap_or(0);
+    let c = CLASS.with_borrow(|t| t.get(sym.0 as usize).copied()).unwrap_or(0);
     c.checked_sub(1)
 }
 

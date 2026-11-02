@@ -873,14 +873,7 @@ struct SystemLapack {
 
 /// The dlsym-resolved address of the bound library's ilaver entry point,
 /// for dladdr in La_library.
-static ILAVER_PTR: std::sync::OnceLock<SendPtr> = std::sync::OnceLock::new();
-
-#[derive(Clone, Copy)]
-struct SendPtr(*mut libc::c_void);
-// SAFETY: an opaque dlsym address that is only read (via dladdr) after the
-// process-wide OnceLock initialization has completed.
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
+static ILAVER_ADDR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 /// dlopen the system LAPACK and resolve the routines R's lapack module
 /// uses. `RTLD_LAZY` keeps the first-call cost to the routines actually
@@ -911,7 +904,7 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
     unsafe {
         let ilaver: IlaverFn = sym(handle, b"ilaver_\0")?;
         let ilaver_ptr: *mut libc::c_void = libc::dlsym(handle, b"ilaver_\0".as_ptr().cast());
-        let _ = ILAVER_PTR.set(SendPtr(ilaver_ptr));
+        let _ = ILAVER_ADDR.set(ilaver_ptr as usize);
         let lib = SystemLapack {
             dsyevr: sym(handle, b"dsyevr_\0")?,
             dgeev: sym(handle, b"dgeev_\0")?,
@@ -2425,7 +2418,7 @@ fn do_la_library(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Val
     // R: Lapack.c case 1001: dladdr the ilaver we call, realpath its
     // object. (R additionally reports the flexiblas backend when the
     // library is flexiblas; no supported platform here uses it.)
-    let Some(f) = ILAVER_PTR.get() else {
+    let Some(&addr) = ILAVER_ADDR.get() else {
         // No bound library: R also answers "" when it cannot tell.
         return Ok(Value::str(""));
     };
@@ -2433,7 +2426,7 @@ fn do_la_library(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Val
     // at most PATH_MAX+1 bytes into `buf`.
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
-        if libc::dladdr(f.0, &mut info) != 0 {
+        if libc::dladdr(addr as *const libc::c_void, &mut info) != 0 {
             let mut buf = [0i8; (libc::PATH_MAX as usize) + 1];
             let res = libc::realpath(info.dli_fname, buf.as_mut_ptr());
             if !res.is_null() {

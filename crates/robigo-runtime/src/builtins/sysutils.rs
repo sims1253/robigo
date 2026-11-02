@@ -3,7 +3,7 @@
 //! util.c, times.c, version.c, CommandLineArgs.c, sys-unix.c), plus the
 //! `.Machine` and `.Platform` variables (platform.c `Init_R_Variables`).
 
-use std::ffi::{CStr, CString, c_char, c_int, c_long};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 
 use super::{arg, internal};
@@ -300,30 +300,6 @@ fn do_set_session_time_limit(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env)
     Ok(Value::Null)
 }
 
-/// glibc's `glob_t`.
-#[repr(C)]
-struct GlobT {
-    gl_pathc: usize,
-    gl_pathv: *mut *mut c_char,
-    gl_offs: usize,
-    gl_flags: c_int,
-    gl_closedir: *mut std::ffi::c_void,
-    gl_readdir: *mut std::ffi::c_void,
-    gl_opendir: *mut std::ffi::c_void,
-    gl_lstat: *mut std::ffi::c_void,
-    gl_stat: *mut std::ffi::c_void,
-}
-
-unsafe extern "C" {
-    fn glob(pattern: *const c_char, flags: c_int, errfunc: *const std::ffi::c_void, pglob: *mut GlobT) -> c_int;
-    fn globfree(pglob: *mut GlobT);
-}
-
-const GLOB_MARK: c_int = 1 << 1;
-const GLOB_APPEND: c_int = 1 << 5;
-const GLOB_NOSPACE: c_int = 1;
-const GLOB_ABORTED: c_int = 2;
-
 // R: sysutils.c:do_glob
 fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let Value::Str(x) = arg(&args, 0) else {
@@ -338,17 +314,18 @@ fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     }
     // SAFETY: an all-zero glob_t is its documented initial state; glob()
     // fills it and globfree() releases it.
-    let mut g: GlobT = unsafe { std::mem::zeroed() };
+    let mut g: libc::glob_t = unsafe { std::mem::zeroed() };
     let mut initialized = false;
     for el in x.data.iter() {
         let Some(el) = el else { continue };
         let Ok(pat) = CString::new(el.as_bytes()) else { continue };
-        let flags = (if dirmark != 0 { GLOB_MARK } else { 0 }) | (if initialized { GLOB_APPEND } else { 0 });
-        let res = unsafe { glob(pat.as_ptr(), flags, std::ptr::null(), &mut g) };
-        if res == GLOB_ABORTED {
+        let flags =
+            (if dirmark != 0 { libc::GLOB_MARK } else { 0 }) | (if initialized { libc::GLOB_APPEND } else { 0 });
+        let res = unsafe { libc::glob(pat.as_ptr(), flags, None, &mut g) };
+        if res == libc::GLOB_ABORTED {
             i.warning(format!("read error on '{}'", el))?;
         }
-        if res == GLOB_NOSPACE {
+        if res == libc::GLOB_NOSPACE {
             return Err(Flow::error("internal out-of-memory condition"));
         }
         initialized = true;
@@ -360,7 +337,7 @@ fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
             let p = unsafe { CStr::from_ptr(*g.gl_pathv.add(k)) };
             out.push(Some(crate::value::RString::from(p.to_string_lossy().as_ref())));
         }
-        unsafe { globfree(&mut g) };
+        unsafe { libc::globfree(&mut g) };
     }
     Ok(Value::strs(out))
 }
@@ -384,50 +361,6 @@ fn do_read_renviron(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
             Ok(Value::lgl(true))
         }
     }
-}
-
-unsafe extern "C" {
-    fn mkdtemp(template: *mut c_char) -> *mut c_char;
-    fn atexit(cb: extern "C" fn()) -> c_int;
-    fn time(t: *mut i64) -> i64;
-    fn ctime_r(t: *const i64, buf: *mut c_char) -> *mut c_char;
-    fn uname(buf: *mut UtsName) -> c_int;
-    fn getlogin() -> *mut c_char;
-    fn getuid() -> u32;
-    fn geteuid() -> u32;
-    fn getpwuid(uid: u32) -> *mut Passwd;
-    fn getrusage(who: c_int, usage: *mut RUsage) -> c_int;
-    fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
-}
-
-#[repr(C)]
-struct UtsName {
-    sysname: [c_char; 65],
-    nodename: [c_char; 65],
-    release: [c_char; 65],
-    version: [c_char; 65],
-    machine: [c_char; 65],
-    domainname: [c_char; 65],
-}
-
-#[repr(C)]
-struct Passwd {
-    pw_name: *mut c_char,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct TimeVal {
-    tv_sec: c_long,
-    tv_usec: c_long,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct RUsage {
-    ru_utime: TimeVal,
-    ru_stime: TimeVal,
-    rest: [c_long; 14],
 }
 
 fn cstr(p: *const c_char) -> Option<String> {
@@ -662,13 +595,15 @@ fn do_sysgetpid(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
 /// R: sysutils.c:do_proctime / R_getProcTime
 fn do_proctime(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let et = i.start_time.elapsed().as_secs_f64();
-    let mut selfu = RUsage::default();
-    let mut child = RUsage::default();
-    unsafe {
-        getrusage(0, &mut selfu);
-        getrusage(-1, &mut child);
-    }
-    let t = |tv: &TimeVal| tv.tv_sec as f64 + 1e-3 * (tv.tv_usec / 1000) as f64;
+    // SAFETY: rusage is plain data, filled by getrusage.
+    let (selfu, child) = unsafe {
+        let mut selfu: libc::rusage = std::mem::zeroed();
+        let mut child: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut selfu);
+        libc::getrusage(libc::RUSAGE_CHILDREN, &mut child);
+        (selfu, child)
+    };
+    let t = |tv: &libc::timeval| tv.tv_sec as f64 + 1e-3 * (tv.tv_usec / 1000) as f64;
     let data = vec![
         t(&selfu.ru_utime),
         t(&selfu.ru_stime),
@@ -686,21 +621,21 @@ fn do_proctime(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value
 fn do_date(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut buf = [0 as c_char; 64];
     let s = unsafe {
-        let mut t: i64 = 0;
-        time(&mut t);
-        ctime_r(&t, buf.as_mut_ptr());
+        let mut t: libc::time_t = 0;
+        libc::time(&mut t);
+        libc::ctime_r(&t, buf.as_mut_ptr());
         cstr(buf.as_ptr()).unwrap_or_default()
     };
     Ok(Value::str(s.trim_end_matches('\n')))
 }
 
 fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut u: UtsName = unsafe { std::mem::zeroed() };
-    if unsafe { uname(&mut u) } == -1 {
+    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    if unsafe { libc::uname(&mut u) } == -1 {
         return Ok(Value::Null);
     }
     let pw = |uid: u32| -> String {
-        let p = unsafe { getpwuid(uid) };
+        let p = unsafe { libc::getpwuid(uid) };
         if p.is_null() { "unknown".into() } else { cstr(unsafe { (*p).pw_name }).unwrap_or_else(|| "unknown".into()) }
     };
     let vals = vec![
@@ -709,9 +644,9 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
         cstr(u.version.as_ptr()).unwrap_or_default(),
         cstr(u.nodename.as_ptr()).unwrap_or_default(),
         cstr(u.machine.as_ptr()).unwrap_or_default(),
-        cstr(unsafe { getlogin() }).unwrap_or_else(|| "unknown".into()),
-        pw(unsafe { getuid() }),
-        pw(unsafe { geteuid() }),
+        cstr(unsafe { libc::getlogin() }).unwrap_or_else(|| "unknown".into()),
+        pw(unsafe { libc::getuid() }),
+        pw(unsafe { libc::geteuid() }),
     ];
     let mut v = Value::strs_from(vals);
     v.set_attr_raw(
@@ -724,16 +659,6 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
 // ----------------------------------------------------------------------
 // Locales
 
-const LC_CTYPE: c_int = 0;
-const LC_NUMERIC: c_int = 1;
-const LC_TIME: c_int = 2;
-const LC_COLLATE: c_int = 3;
-const LC_MONETARY: c_int = 4;
-const LC_MESSAGES: c_int = 5;
-const LC_ALL: c_int = 6;
-const LC_PAPER: c_int = 7;
-const LC_MEASUREMENT: c_int = 11;
-
 /// R sets these categories from the environment at startup.
 pub fn init_locale() {
     thread_local! {
@@ -743,8 +668,16 @@ pub fn init_locale() {
         return;
     }
     let empty = CString::new("").unwrap();
-    for cat in [LC_CTYPE, LC_COLLATE, LC_TIME, LC_MONETARY, LC_MESSAGES, LC_PAPER, LC_MEASUREMENT] {
-        unsafe { setlocale(cat, empty.as_ptr()) };
+    for cat in [
+        libc::LC_CTYPE,
+        libc::LC_COLLATE,
+        libc::LC_TIME,
+        libc::LC_MONETARY,
+        libc::LC_MESSAGES,
+        libc::LC_PAPER,
+        libc::LC_MEASUREMENT,
+    ] {
+        unsafe { libc::setlocale(cat, empty.as_ptr()) };
     }
 }
 
@@ -767,7 +700,7 @@ pub(crate) fn collation_is_c() -> bool {
 #[cold]
 fn collation_is_c_slow() -> bool {
     init_locale();
-    let c = match cstr(unsafe { setlocale(LC_COLLATE, std::ptr::null()) }) {
+    let c = match cstr(unsafe { libc::setlocale(libc::LC_COLLATE, std::ptr::null()) }) {
         Some(l) => l == "C",
         None => true,
     };
@@ -781,15 +714,15 @@ thread_local! {
 
 fn locale_category(code: i32) -> Option<c_int> {
     Some(match code {
-        1 => LC_ALL,
-        2 => LC_COLLATE,
-        3 => LC_CTYPE,
-        4 => LC_MONETARY,
-        5 => LC_NUMERIC,
-        6 => LC_TIME,
-        7 => LC_MESSAGES,
-        8 => LC_PAPER,
-        9 => LC_MEASUREMENT,
+        1 => libc::LC_ALL,
+        2 => libc::LC_COLLATE,
+        3 => libc::LC_CTYPE,
+        4 => libc::LC_MONETARY,
+        5 => libc::LC_NUMERIC,
+        6 => libc::LC_TIME,
+        7 => libc::LC_MESSAGES,
+        8 => libc::LC_PAPER,
+        9 => libc::LC_MEASUREMENT,
         _ => return None,
     })
 }
@@ -800,7 +733,7 @@ fn do_getlocale(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
     }
-    let p = locale_category(cat).and_then(|c| cstr(unsafe { setlocale(c, std::ptr::null()) }));
+    let p = locale_category(cat).and_then(|c| cstr(unsafe { libc::setlocale(c, std::ptr::null()) }));
     Ok(Value::str(&p.unwrap_or_default()))
 }
 
@@ -815,28 +748,28 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         _ => return Err(Flow::error("invalid 'locale' argument")),
     };
     let cl = CString::new(l.clone()).unwrap_or_default();
-    // R: platform.c:do_setlocale calls resetICUcollator for LC_ALL and
-    // LC_COLLATE; dropping the cache for every category is equivalent.
+    // R: platform.c:do_setlocale calls resetICUcollator for libc::LC_ALL and
+    // libc::LC_COLLATE; dropping the cache for every category is equivalent.
     COLLATION_IS_C.set(None);
     let p: Option<String> = unsafe {
         match cat {
             1 => {
-                if setlocale(LC_CTYPE, cl.as_ptr()).is_null() {
+                if libc::setlocale(libc::LC_CTYPE, cl.as_ptr()).is_null() {
                     None
                 } else {
-                    setlocale(LC_COLLATE, cl.as_ptr());
-                    setlocale(LC_MONETARY, cl.as_ptr());
-                    setlocale(LC_TIME, cl.as_ptr());
-                    cstr(setlocale(LC_ALL, std::ptr::null()))
+                    libc::setlocale(libc::LC_COLLATE, cl.as_ptr());
+                    libc::setlocale(libc::LC_MONETARY, cl.as_ptr());
+                    libc::setlocale(libc::LC_TIME, cl.as_ptr());
+                    cstr(libc::setlocale(libc::LC_ALL, std::ptr::null()))
                 }
             }
             5 => {
                 if l != "C" {
                     i.warning("setting 'LC_NUMERIC' may cause R to function strangely")?;
                 }
-                cstr(setlocale(LC_NUMERIC, cl.as_ptr()))
+                cstr(libc::setlocale(libc::LC_NUMERIC, cl.as_ptr()))
             }
-            2 | 3 | 4 | 6 | 7 | 8 | 9 => cstr(setlocale(locale_category(cat).unwrap(), cl.as_ptr())),
+            2 | 3 | 4 | 6 | 7 | 8 | 9 => cstr(libc::setlocale(locale_category(cat).unwrap(), cl.as_ptr())),
             _ => return Err(Flow::error("invalid 'category' argument")),
         }
     };
@@ -883,13 +816,13 @@ pub fn session_tempdir() -> RResult<String> {
     }
     let template = CString::new(format!("{}/RtmpXXXXXX", base)).unwrap();
     let mut bytes = template.into_bytes_with_nul();
-    let p = unsafe { mkdtemp(bytes.as_mut_ptr() as *mut c_char) };
+    let p = unsafe { libc::mkdtemp(bytes.as_mut_ptr() as *mut c_char) };
     if p.is_null() {
         return Err(Flow::error("cannot create 'R_TempDir'"));
     }
     let d = cstr(p).unwrap();
     *g = Some(d.clone());
-    unsafe { atexit(clean_tempdir) };
+    unsafe { libc::atexit(clean_tempdir) };
     Ok(d)
 }
 
@@ -1519,21 +1452,6 @@ fn is_dir_path(path: &str) -> bool {
 }
 
 /// glibc's `struct dirent` (Linux LP64: `d_name` at byte offset 19).
-#[repr(C)]
-struct Dirent {
-    d_ino: u64,
-    d_off: u64,
-    d_reclen: u16,
-    d_type: u8,
-    d_name: [u8; 256],
-}
-
-unsafe extern "C" {
-    fn opendir(name: *const c_char) -> *mut std::ffi::c_void;
-    fn readdir(dirp: *mut std::ffi::c_void) -> *mut Dirent;
-    fn closedir(dirp: *mut std::ffi::c_void) -> c_int;
-}
-
 /// The entry names of a directory in readdir order, `"."` and `".."`
 /// included (R: platform.c R_readdir; `std::fs::read_dir` hides them).
 /// `None` when the path is not an openable directory.
@@ -1541,20 +1459,20 @@ fn read_dir_raw(path: &str) -> Option<Vec<String>> {
     let c = CString::new(path.as_bytes()).ok()?;
     // SAFETY: opendir/readdir/closedir are called with the returned
     // handle only, single-threaded; d_name is NUL-terminated by readdir.
-    let dir = unsafe { opendir(c.as_ptr()) };
+    let dir = unsafe { libc::opendir(c.as_ptr()) };
     if dir.is_null() {
         return None;
     }
     let mut names = Vec::new();
     loop {
-        let de = unsafe { readdir(dir) };
+        let de = unsafe { libc::readdir(dir) };
         if de.is_null() {
             break;
         }
-        let name = unsafe { CStr::from_ptr((*de).d_name.as_ptr().cast()) };
+        let name = unsafe { CStr::from_ptr((*de).d_name.as_ptr()) };
         names.push(name.to_string_lossy().into_owned());
     }
-    unsafe { closedir(dir) };
+    unsafe { libc::closedir(dir) };
     Some(names)
 }
 
@@ -1758,58 +1676,6 @@ fn check_internal_arity(args: &[Arg], n: usize, name: &str) -> RResult<()> {
 // R: platform.c:APPENDBUFSIZE
 const APPEND_BUFSIZE: usize = 128 * 1024;
 
-unsafe extern "C" {
-    fn access(path: *const c_char, mode: c_int) -> c_int;
-    fn chmod(path: *const c_char, mode: u32) -> c_int;
-    fn umask(mask: u32) -> u32;
-    fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: usize) -> isize;
-    fn utimensat(dirfd: c_int, path: *const c_char, times: *const [Timespec; 2], flags: c_int) -> c_int;
-    fn localeconv() -> *const Lconv;
-    fn getgrgid(gid: u32) -> *const Group;
-}
-
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-#[repr(C)]
-struct Group {
-    gr_name: *const c_char,
-    gr_passwd: *const c_char,
-    gr_gid: u32,
-    gr_mem: *const *const c_char,
-}
-
-#[repr(C)]
-struct Lconv {
-    decimal_point: *const c_char,
-    thousands_sep: *const c_char,
-    grouping: *const c_char,
-    int_curr_symbol: *const c_char,
-    currency_symbol: *const c_char,
-    mon_decimal_point: *const c_char,
-    mon_thousands_sep: *const c_char,
-    mon_grouping: *const c_char,
-    positive_sign: *const c_char,
-    negative_sign: *const c_char,
-    int_frac_digits: c_char,
-    frac_digits: c_char,
-    p_cs_precedes: c_char,
-    p_sep_by_space: c_char,
-    n_cs_precedes: c_char,
-    n_sep_by_space: c_char,
-    p_sign_posn: c_char,
-    n_sign_posn: c_char,
-    int_p_cs_precedes: c_char,
-    int_p_sep_by_space: c_char,
-    int_n_cs_precedes: c_char,
-    int_n_sep_by_space: c_char,
-    int_p_sign_posn: c_char,
-    int_n_sign_posn: c_char,
-}
-
 fn cstr_or_empty(p: *const c_char) -> String {
     if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
 }
@@ -1817,7 +1683,7 @@ fn cstr_or_empty(p: *const c_char) -> String {
 // R: platform.c:do_localeconv
 fn do_localeconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_internal_arity(&args, 0, "Sys.localeconv")?;
-    let lc = unsafe { localeconv() };
+    let lc = unsafe { libc::localeconv() };
     if lc.is_null() {
         return Err(Flow::error("localeconv failed"));
     }
@@ -1881,7 +1747,7 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
             Some(f) => {
                 let path = expand_file_name(f);
                 match CString::new(path) {
-                    Ok(c) => unsafe { access(c.as_ptr(), modemask) },
+                    Ok(c) => unsafe { libc::access(c.as_ptr(), modemask) },
                     Err(_) => -1,
                 }
             }
@@ -1892,13 +1758,12 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 
 /// `getpwuid`, as R uses it for `file.info(extra_cols = TRUE)`.
 fn user_name(uid: u32) -> RStr {
-    // `getpwuid` is declared above (pw_name is its first member).
-    let p = unsafe { getpwuid(uid) };
+    let p = unsafe { libc::getpwuid(uid) };
     if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.pw_name).into()) }
 }
 
 fn group_name(gid: u32) -> RStr {
-    let p = unsafe { getgrgid(gid) };
+    let p = unsafe { libc::getgrgid(gid) };
     if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.gr_name).into()) }
 }
 
@@ -1965,14 +1830,14 @@ fn do_fileinfo(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 
 /// The permission mask `do_copy` applies: `0777 & ~umask`.
 fn umask_mask() -> u32 {
-    let um = unsafe { umask(0) };
-    unsafe { umask(um) };
+    let um = unsafe { libc::umask(0) };
+    unsafe { libc::umask(um) };
     0o777 & !um
 }
 
 fn chmod_path(path: &str, mode: u32) -> bool {
     let Ok(c) = CString::new(path) else { return false };
-    (unsafe { chmod(c.as_ptr(), mode) }) == 0
+    (unsafe { libc::chmod(c.as_ptr(), mode) }) == 0
 }
 
 // R: platform.c:copyFileTime
@@ -1982,9 +1847,9 @@ fn copy_file_time(from: &str, to: &str) {
     let ftime = md.mtime() as f64 + 1e-9 * md.mtime_nsec() as f64;
     let sec = ftime as i32 as i64;
     let nsec = (1e9 * (ftime - ftime as i32 as f64)) as i64;
-    let times = [Timespec { tv_sec: sec, tv_nsec: nsec }, Timespec { tv_sec: sec, tv_nsec: nsec }];
+    let times = [libc::timespec { tv_sec: sec, tv_nsec: nsec }, libc::timespec { tv_sec: sec, tv_nsec: nsec }];
     if let Ok(c) = CString::new(to) {
-        unsafe { utimensat(-100, c.as_ptr(), &times, 0) };
+        unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
     }
 }
 
@@ -2181,8 +2046,8 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     if use_umask == NA_LOGICAL {
         return Err(Flow::error("invalid 'use_umask' argument"));
     }
-    let um = unsafe { umask(0) };
-    unsafe { umask(um) };
+    let um = unsafe { libc::umask(0) };
+    unsafe { libc::umask(um) };
     let mut out = Vec::with_capacity(n);
     for (k, p) in paths.data.iter().enumerate() {
         let mut mode = modes[k % m] as u32;
@@ -2208,13 +2073,13 @@ fn do_sysumask(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let mode = as_integer(&arg(&args, 0));
     let res = unsafe {
         if mode == NA_INTEGER {
-            let res = umask(0);
-            umask(res);
+            let res = libc::umask(0);
+            libc::umask(res);
             i.visible = true;
             res
         } else {
             i.visible = false;
-            umask(mode as u32)
+            libc::umask(mode as u32)
         }
     };
     let ans = Value::int(res as i32);
@@ -2237,7 +2102,7 @@ fn do_readlink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             continue;
         };
         let mut buf = vec![0u8; R_PATH_MAX + 1];
-        let res = unsafe { readlink(c.as_ptr(), buf.as_mut_ptr() as *mut c_char, R_PATH_MAX) };
+        let res = unsafe { libc::readlink(c.as_ptr(), buf.as_mut_ptr() as *mut c_char, R_PATH_MAX) };
         if res as usize == R_PATH_MAX {
             let s = String::from_utf8_lossy(&buf[..res as usize]).into_owned();
             i.warning(format!("possible truncation of value for element {}", out.len() + 1))?;
@@ -2274,10 +2139,10 @@ fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         let ftime = times[k % times.len()];
         let secs = ftime as i32;
         let nsec = (1e9 * (ftime - secs as f64)) as i32;
-        let ts = || Timespec { tv_sec: secs as i64, tv_nsec: nsec as i64 };
+        let ts = || libc::timespec { tv_sec: secs as i64, tv_nsec: nsec as i64 };
         let fname = CString::new(p.as_deref().unwrap_or("NA")).unwrap_or_default();
-        // AT_FDCWD
-        let res = unsafe { utimensat(-100, fname.as_ptr(), &[ts(), ts()], 0) } == 0;
+        let times = [ts(), ts()];
+        let res = unsafe { libc::utimensat(libc::AT_FDCWD, fname.as_ptr(), times.as_ptr(), 0) } == 0;
         ans.push(res as Lgl);
     }
     Ok(Value::lgls(ans))
@@ -2285,7 +2150,6 @@ fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 
 unsafe extern "C" {
     fn lzma_version_string() -> *const c_char;
-    fn gnu_get_libc_version() -> *const c_char;
 }
 
 // R: platform.c:do_eSoftVersion — the versions of the external libraries
@@ -2294,7 +2158,7 @@ unsafe extern "C" {
 fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let c = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
     let xz = c(unsafe { lzma_version_string() });
-    let iconv = format!("glibc {}", c(unsafe { gnu_get_libc_version() }));
+    let iconv = format!("glibc {}", c(unsafe { libc::gnu_get_libc_version() }));
     let vals = ["", "", &xz, "", "", "", "", &iconv, "", ""];
     let names = ["zlib", "bzlib", "xz", "libdeflate", "PCRE", "ICU", "TRE", "iconv", "readline", "BLAS"];
     let mut ans = Value::strs_from(vals);

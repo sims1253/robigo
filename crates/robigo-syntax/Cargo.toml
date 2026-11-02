@@ -11,3 +11,4 @@ keywords = ["r", "parser", "language", "statistics"]
 categories = ["parser-implementations", "science"]
 
 [dependencies]
+bumpalo = "3"

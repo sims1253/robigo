@@ -277,16 +277,12 @@ impl ConnState {
 // ----------------------------------------------------------------------
 // Opening, closing, reading and writing connections
 
-unsafe extern "C" {
-    fn strerror(errnum: std::ffi::c_int) -> *const std::ffi::c_char;
-}
-
 /// The C library's message for an OS error, as R prints with
 /// `strerror(errno)`.
 pub fn os_error_message(e: &std::io::Error) -> String {
     match e.raw_os_error() {
         Some(code) => unsafe {
-            let p = strerror(code);
+            let p = libc::strerror(code);
             std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
         },
         None => e.to_string(),
@@ -385,22 +381,17 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     Ok(true)
 }
 
-unsafe extern "C" {
-    fn iconv_open(tocode: *const std::ffi::c_char, fromcode: *const std::ffi::c_char) -> *mut std::ffi::c_void;
-    fn iconv_close(cd: *mut std::ffi::c_void) -> std::ffi::c_int;
-}
-
 /// Whether glibc's iconv can convert `from` to `to` ("" is the locale
 /// charset, as R's `Riconv_open` on Unix relies on).
 fn iconv_converts(to: &str, from: &str) -> bool {
     let (Ok(t), Ok(f)) = (std::ffi::CString::new(to), std::ffi::CString::new(from)) else { return false };
     // SAFETY: both pointers are valid C strings for the call's duration.
-    let cd = unsafe { iconv_open(t.as_ptr(), f.as_ptr()) };
+    let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
     if cd as isize == -1 {
         return false;
     }
     // SAFETY: cd is a converter iconv_open returned.
-    unsafe { iconv_close(cd) };
+    unsafe { libc::iconv_close(cd) };
     true
 }
 
@@ -438,11 +429,6 @@ const O_RDWR: i32 = 0o2;
 const O_APPEND: i32 = 0o2000;
 const O_NONBLOCK: i32 = 0o4000;
 const ENXIO: i32 = 6;
-
-unsafe extern "C" {
-    fn mkfifo(path: *const std::ffi::c_char, mode: u32) -> std::ffi::c_int;
-    fn open(path: *const std::ffi::c_char, flags: std::ffi::c_int, ...) -> std::ffi::c_int;
-}
 
 /// `fifo()`'s open: create the fifo when writing, then open it with
 /// `O_NONBLOCK` unless the connection is blocking.
@@ -502,7 +488,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
         Err(_) => return Ok(false),
     };
     // SAFETY: open takes the path and flags only.
-    let fd = unsafe { open(c.as_ptr(), flags) };
+    let fd = unsafe { libc::open(c.as_ptr(), flags) };
     if fd < 0 {
         let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         if err == ENXIO {
@@ -539,7 +525,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
 fn c_open_mkfifo(name: &str) -> i32 {
     let Ok(c) = std::ffi::CString::new(name.as_bytes()) else { return 0 };
     // SAFETY: mkfifo takes the path string only.
-    if unsafe { mkfifo(c.as_ptr(), 0o644) } == 0 {
+    if unsafe { libc::mkfifo(c.as_ptr(), 0o644) } == 0 {
         return 0;
     }
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -1236,14 +1222,15 @@ fn do_stderr(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> 
     Ok(v)
 }
 
-unsafe extern "C" {
-    fn isatty(fd: std::ffi::c_int) -> std::ffi::c_int;
-}
-
 fn do_isatty(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let con = as_integer(&arg(&args, 0));
-    let r = if con == NA_INTEGER || !(0..=2).contains(&con) { false } else { unsafe { isatty(con) != 0 } };
-    Ok(Value::lgl(r))
+    use std::io::IsTerminal;
+    Ok(Value::lgl(match con {
+        0 => std::io::stdin().is_terminal(),
+        1 => std::io::stdout().is_terminal(),
+        2 => std::io::stderr().is_terminal(),
+        _ => false,
+    }))
 }
 
 /// Check for a compressed file (R: connections.c:comp_type_from_file).
