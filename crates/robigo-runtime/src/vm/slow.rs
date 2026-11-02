@@ -289,6 +289,11 @@ const MA_RSUB: u8 = 3;
 
 /// `out[i] = x[i] * y[i] OP c[i]` (`K`: `MA_*`, the operand order of R's
 /// expression), with scalar sources (`S*`) read at index 0.
+///
+/// # Safety
+/// `out` is valid for `n` writes. `x`, `y` and `c` are valid for `n` reads, or
+/// one read if scalar, and may equal `out`: an element is read before its
+/// index is written.
 #[inline(always)]
 unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K: u8>(
     out: *mut f64,
@@ -305,6 +310,7 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
     for base in (0..end).step_by(8) {
         for k in 0..4 {
             let i = base + 2 * k;
+            // SAFETY: `i + 1 < end <= n`, within the contract's ranges.
             unsafe {
                 let a = if SX { [*x; 2] } else { [*x.add(i), *x.add(i + 1)] };
                 let b = if SY { [*y; 2] } else { [*y.add(i), *y.add(i + 1)] };
@@ -334,6 +340,7 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
         }
     }
     for i in end..n {
+        // SAFETY: `i < n`, within the contract's ranges.
         unsafe {
             let a = if SX { *x } else { *x.add(i) };
             let b = if SY { *y } else { *y.add(i) };
@@ -363,6 +370,10 @@ unsafe fn mul_add_kernel<const SX: bool, const SY: bool, const SC: bool, const K
     }
 }
 
+/// [`mul_add_kernel`] for the shapes `s*`.
+///
+/// # Safety
+/// As for [`mul_add_kernel`].
 unsafe fn mul_add_dispatch(
     out: *mut f64,
     n: usize,
@@ -373,11 +384,14 @@ unsafe fn mul_add_dispatch(
 ) {
     macro_rules! k {
         ($sx:literal, $sy:literal, $sc:literal) => {
-            match kind {
-                MA_ADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_ADD>(out, n, x, y, c) },
-                MA_SUB => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_SUB>(out, n, x, y, c) },
-                MA_RADD => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RADD>(out, n, x, y, c) },
-                _ => unsafe { mul_add_kernel::<$sx, $sy, $sc, MA_RSUB>(out, n, x, y, c) },
+            // SAFETY: this function's contract is the kernel's.
+            unsafe {
+                match kind {
+                    MA_ADD => mul_add_kernel::<$sx, $sy, $sc, MA_ADD>(out, n, x, y, c),
+                    MA_SUB => mul_add_kernel::<$sx, $sy, $sc, MA_SUB>(out, n, x, y, c),
+                    MA_RADD => mul_add_kernel::<$sx, $sy, $sc, MA_RADD>(out, n, x, y, c),
+                    _ => mul_add_kernel::<$sx, $sy, $sc, MA_RSUB>(out, n, x, y, c),
+                }
             }
         };
     }

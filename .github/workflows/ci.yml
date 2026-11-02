@@ -84,6 +84,17 @@ jobs:
       - name: Clippy
         run: scripts/lint.sh
 
+  miri:
+    if: ${{ inputs.perf_diagnostic != true }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Miri on RString and the Rc alias writes
+        run: |
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component miri,rust-src
+          cargo +nightly-2026-11-01 miri test -p robigo-runtime --lib -- value::
+
   build:
     if: ${{ inputs.perf_diagnostic != true }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}

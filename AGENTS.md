@@ -74,6 +74,12 @@ is faster for more work, it wins.
    error that says so (e.g. `"robigo: '<feature>' is not implemented yet"`)
    rather than returning a plausible value.
 
+7. **`unsafe` is a last resort** (`docs/architecture.md`, "Unsafe code"). Use
+   `std` or a `sys.rs` wrapper first. If it must stay, give the block a
+   `// SAFETY:` comment with the reason and name the module or statement with
+   `#[allow(unsafe_code)]`. A function whose caller has to uphold anything is
+   an `unsafe fn` with a `# Safety` section.
+
 ## Writing a builtin
 
 ```rust

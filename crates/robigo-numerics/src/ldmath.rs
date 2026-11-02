@@ -6,11 +6,10 @@
 //! library in that format and the results are bit-identical to GNU R's.
 
 use crate::ldouble::LDouble;
-use std::mem::MaybeUninit;
 
 #[cfg(target_arch = "x86_64")]
 mod imp {
-    use super::{LDouble, MaybeUninit};
+    use super::LDouble;
     use std::arch::asm;
 
     unsafe extern "C" {
@@ -28,9 +27,12 @@ mod imp {
             /// the result returned in st(0). The output pointer is in a
             /// callee-saved register so that it survives the call.
             pub fn $name(x: &LDouble) -> LDouble {
-                let mut out = MaybeUninit::<LDouble>::uninit();
+                let mut out = LDouble([0; 16]);
                 let xp = x as *const LDouble as *const u8;
-                let op = out.as_mut_ptr() as *mut u8;
+                let op = out.0.as_mut_ptr();
+                // SAFETY: the C function of type `long double (long double)`,
+                // called with the stack aligned for it (no `nostack`), its
+                // argument in place and its result popped into `out`.
                 unsafe {
                     asm!(
                         "sub rsp, 32",
@@ -44,8 +46,8 @@ mod imp {
                         f = sym $c,
                         clobber_abi("C"),
                     );
-                    out.assume_init()
                 }
+                out
             }
         };
     }
@@ -57,6 +59,8 @@ mod imp {
     /// Compare: -1, 0, 1, or 2 for unordered (as `ldouble::imp::cmp`).
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
         let flags: u16;
+        // SAFETY: as for `x87!` in `ldouble.rs`: both operands are references
+        // of 16 bytes, and `fucompp` pops what the loads pushed.
         unsafe {
             asm!(
                 "fld tbyte ptr [{b}]",
@@ -228,12 +232,7 @@ mod tests {
         // The 80-bit results glibc gives for these inputs (printed by C as
         // the raw significand/exponent words).
         fn bits(x: LDouble) -> [u16; 5] {
-            let p = &x as *const LDouble as *const u16;
-            let mut w = [0u16; 5];
-            for (k, s) in w.iter_mut().enumerate() {
-                *s = unsafe { *p.add(k) };
-            }
-            w
+            std::array::from_fn(|k| u16::from_le_bytes([x.0[2 * k], x.0[2 * k + 1]]))
         }
         // expl(1.0L) = 2.71828182845904523536028747135266249776L
         assert_eq!(bits(expl(ld(1.0))), [0x4a9b, 0xa2bb, 0x5458, 0xadf8, 0x4000]);

@@ -110,11 +110,13 @@ impl RString {
         let size = Self::HEADER_SIZE.checked_add(text.len()).expect("string allocation overflow");
         let layout = std::alloc::Layout::from_size_align(size, std::mem::align_of::<StringHeader>())
             .expect("string allocation overflow");
+        // SAFETY: `layout` is non-zero: it includes the header.
         let ptr = unsafe { std::alloc::alloc(layout) };
         let Some(ptr) = std::ptr::NonNull::new(ptr) else { std::alloc::handle_alloc_error(layout) };
         let data = ptr.cast::<StringHeader>();
-        // The checked layout fits the header followed by all bytes. The
-        // payload is initialized once and never mutated after publication.
+        // SAFETY: the checked layout fits the header followed by all bytes,
+        // and is aligned for the header. The payload is initialized once and
+        // never mutated after publication.
         unsafe {
             data.as_ptr().write(header);
             std::ptr::copy_nonoverlapping(text.as_ptr(), ptr.as_ptr().add(Self::HEADER_SIZE), text.len());
@@ -126,19 +128,23 @@ impl RString {
     }
     #[inline]
     fn text_ptr(&self) -> *const u8 {
+        // SAFETY: the allocation holds the header and then the text.
         unsafe { self.data.as_ptr().cast::<u8>().add(Self::HEADER_SIZE) }
     }
     #[inline]
     fn tag(&self) -> usize {
+        // SAFETY: `self` keeps the allocation alive.
         unsafe { self.data.as_ref().encoding() as usize }
     }
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.data == b.data
     }
+    /// # Safety
+    /// `data` is from `from_text_tag` and this is its final owner.
     #[inline(never)]
     unsafe fn deallocate(data: std::ptr::NonNull<StringHeader>) {
-        // Only the final owner calls this. The original checked allocation
-        // layout is recovered from its immutable length and fixed alignment.
+        // SAFETY: the original checked allocation layout is recovered from
+        // its immutable length and fixed alignment.
         unsafe {
             let size = Self::HEADER_SIZE + data.as_ref().len();
             let layout = std::alloc::Layout::from_size_align_unchecked(size, std::mem::align_of::<StringHeader>());
@@ -148,6 +154,7 @@ impl RString {
     #[inline]
     pub fn from_bytes(bytes: &[u8], encoding: Encoding) -> Self {
         if bytes.is_ascii() {
+            // SAFETY: ASCII, as just checked, is valid UTF-8.
             Self::from_text(unsafe { std::str::from_utf8_unchecked(bytes) }, Encoding::Native)
         } else {
             Self::from_non_ascii_bytes(bytes, encoding)
@@ -210,6 +217,7 @@ impl RString {
 impl Clone for RString {
     #[inline]
     fn clone(&self) -> Self {
+        // SAFETY: `self` keeps the allocation alive.
         let refs = unsafe { &self.data.as_ref().refs };
         let count = refs.get().wrapping_add(1);
         if count == 0 {
@@ -222,10 +230,12 @@ impl Clone for RString {
 impl Drop for RString {
     #[inline]
     fn drop(&mut self) {
+        // SAFETY: `self` keeps the allocation alive until the count is 0.
         let refs = unsafe { &self.data.as_ref().refs };
         let count = refs.get() - 1;
         refs.set(count);
         if count == 0 {
+            // SAFETY: the count reached 0, so this handle was the last.
             unsafe {
                 Self::deallocate(self.data);
             }
@@ -257,7 +267,8 @@ impl std::ops::Deref for RString {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        // Constructors initialize a valid UTF-8 view after the header.
+        // SAFETY: constructors store `len` bytes of a `&str` after the header,
+        // never changed, and `self` keeps them alive.
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.text_ptr(), self.len)) }
     }
 }
@@ -372,36 +383,21 @@ impl<T> Vector<T> {
     }
 }
 
-/// The shared branch of a `SET_VECTOR_ELT`-style store: write the cell where
-/// the allocation keeps it, as C writes into `DATAPTR`, replacing and
-/// dropping the old element. The runtime is single-threaded and callers do
-/// not hold a Rust borrow into the vector across the store.
-#[cold]
-#[inline(never)]
-fn store_cell_shared<T>(v: &Rc<Vector<T>>, i: usize, value: T) {
+/// Write the cell where the allocation keeps it, as C writes into `DATAPTR`,
+/// replacing and dropping the old element.
+///
+/// # Safety
+/// `i` is in bounds. No reference into the vector's elements is live: the
+/// old element is freed here, and the write invalidates any `&[T]` over it.
+unsafe fn store_cell<T>(v: &Rc<Vector<T>>, i: usize, value: T) {
+    // SAFETY: the raw pointer reaches the element buffer without making a
+    // reference to the vector, and the caller guarantees none is live. The
+    // runtime is single-threaded: `Rc` keeps this on one thread.
     unsafe {
         let data = std::ptr::addr_of!((*Rc::as_ptr(v)).data);
         let slot = (*data).as_ptr().add(i).cast_mut();
         drop(std::ptr::replace(slot, value));
     }
-}
-
-/// The shared branch of SETCAR/SETCDR/SET_TAG on a cons spine: mutate the
-/// cells where the allocation keeps them, replacing (and dropping) what the
-/// cell held. The runtime is single-threaded and callers hold no Rust borrow
-/// into the pairlist across the write.
-#[cold]
-#[inline(never)]
-fn mut_pairlist(p: &Rc<Pairlist>, f: impl FnOnce(&mut Pairlist)) {
-    // R: main/memory.c:SETCAR/SETCDR/SET_TAG
-    unsafe { f(&mut *Rc::as_ptr(p).cast_mut()) }
-}
-
-#[cold]
-#[inline(never)]
-fn mut_lang(l: &Rc<Lang>, f: impl FnOnce(&mut Lang)) {
-    // R: main/memory.c:SETCAR/SETCDR/SET_TAG
-    unsafe { f(&mut *Rc::as_ptr(l).cast_mut()) }
 }
 
 /// Whether two attribute boxes hold the same objects in the same order.
@@ -1152,7 +1148,13 @@ impl Value {
     ///
     /// Returns false when `self` is not a generic vector or `i` is out of
     /// range; callers check those first (as eval.c:do_putconst does).
-    pub fn set_vector_elt_through_alias(&self, i: usize, value: Value) -> bool {
+    ///
+    /// # Safety
+    /// No reference into this vector's elements is live anywhere, including
+    /// in callers further up the stack: the write frees the old element and
+    /// `Vector` has no interior mutability. This is what makes the operation
+    /// `unsafe`: a C pointer into a list has no such rule to break.
+    pub unsafe fn set_vector_elt_through_alias(&self, i: usize, value: Value) -> bool {
         let v = match self {
             Value::List(v) | Value::Expr(v) => v,
             _ => return false,
@@ -1165,177 +1167,55 @@ impl Value {
         // path to one). The binding-store paths already advance the
         // collector's epoch; an in-place write has no binding store.
         crate::env::Env::mark_cycle_dirty();
-        if Rc::strong_count(v) == 1 {
-            // The only owner: the unique branch of Rc::get_mut.
-            unsafe {
-                let data = &mut (*Rc::as_ptr(v).cast_mut()).data;
-                data[i] = value;
-            }
-        } else {
-            store_cell_shared(v, i, value);
-        }
+        // SAFETY: `i` was checked above; the caller vouches for the borrows.
+        unsafe { store_cell(v, i, value) };
         true
     }
 
     /// R: memory.c:SET_STRING_ELT, the STRSXP counterpart of
     /// [`Value::set_vector_elt_through_alias`]. Returns false when `self` is
     /// not a character vector or `i` is out of range.
-    pub fn set_string_elt_through_alias(&self, i: usize, value: RStr) -> bool {
+    ///
+    /// # Safety
+    /// As for [`Value::set_vector_elt_through_alias`].
+    pub unsafe fn set_string_elt_through_alias(&self, i: usize, value: RStr) -> bool {
         let Value::Str(v) = self else { return false };
         if i >= v.data.len() {
             return false;
         }
-        store_cell_shared(v, i, value);
+        // SAFETY: `i` was checked above; the caller vouches for the borrows.
+        unsafe { store_cell(v, i, value) };
         true
-    }
-
-    /// R: memory.c:CAR for a pairlist/call cell, 0-based; cell 0 of a call
-    /// is the function position.
-    pub fn pair_car(&self, cell: usize) -> Option<&Value> {
-        match self {
-            Value::Pairlist(p) => p.items.get(cell).map(|a| &a.value),
-            Value::Lang(l) => match cell {
-                0 => Some(&l.fun),
-                n => l.args.get(n - 1).map(|a| &a.value),
-            },
-            _ => None,
-        }
-    }
-
-    /// R: memory.c:SETCAR (LISTSXP/LANGSXP), the C cell write that mutates
-    /// *through every alias*: GNU R stores into the cons cell without
-    /// duplicating, and the cell's old value loses a reference while the new
-    /// one gains one (`FIX_BINDING_REFCNT`; `CHECK_OLD_TO_NEW` is a
-    /// generational barrier with no counterpart on the Rc heap).
-    ///
-    /// The R-level replacement primitives duplicate a shared object first
-    /// (`MAYBE_SHARED`/`MAYBE_REFERENCED`), which `Rc::make_mut` expresses;
-    /// this is the one pairlist operation that changes a shared object. The
-    /// flat model stores the whole spine in one `Rc`, so an alias sees the
-    /// same cells. `y == CAR(x)` returns before any refcount change.
-    ///
-    /// Returns false when `self` is not a pairlist/call or `cell` is absent.
-    pub fn set_pair_car_through_alias(&self, cell: usize, value: Value) -> bool {
-        let same = match self.pair_car(cell) {
-            Some(old) => old.ptr_eq(&value),
-            None => return false,
-        };
-        if same {
-            return true;
-        }
-        // The new value may reach an environment the old one did not (or vice
-        // versa); an in-place write is not a binding store and does not
-        // advance the epoch by itself.
-        crate::env::Env::mark_cycle_dirty();
-        match self {
-            Value::Pairlist(p) => mut_pairlist(p, |m| m.items[cell].value = value),
-            Value::Lang(l) => mut_lang(l, |m| {
-                if cell == 0 {
-                    m.fun = value;
-                } else {
-                    m.args[cell - 1].value = value;
-                }
-            }),
-            _ => unreachable!("pair_car accepted a non-pairlist"),
-        }
-        true
-    }
-
-    /// R: memory.c:SET_TAG (LISTSXP/LANGSXP). Tags are interned symbols, so
-    /// only the cell changes: no environment becomes reachable through one.
-    pub fn set_pair_tag_through_alias(&self, cell: usize, tag: Option<Sym>) -> bool {
-        match self {
-            Value::Pairlist(p) => {
-                if p.items.get(cell).map(|a| a.tag) == Some(tag) {
-                    return true;
-                }
-                if cell >= p.items.len() {
-                    return false;
-                }
-                mut_pairlist(p, |m| m.items[cell].tag = tag);
-                true
-            }
-            Value::Lang(l) => {
-                let old = if cell == 0 { Some(l.fun_tag) } else { l.args.get(cell - 1).map(|a| a.tag) };
-                let Some(old) = old else { return false };
-                if old == tag {
-                    return true;
-                }
-                mut_lang(l, |m| {
-                    if cell == 0 {
-                        m.fun_tag = tag;
-                    } else {
-                        m.args[cell - 1].tag = tag;
-                    }
-                });
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// R: memory.c:SETCDR (LISTSXP/LANGSXP): replace the rest of the spine
-    /// after `cell` with `tail`'s cells. `NULL` ends the list there.
-    ///
-    /// The flat model only carries proper spines, so a non-list `y` (C's
-    /// dotted pair) is rejected; callers report it rather than guessing.
-    /// Returns false when `self` is not a pairlist/call, `cell` is absent,
-    /// or `tail` is not a list.
-    pub fn set_pair_cdr_through_alias(&self, cell: usize, tail: &Value) -> bool {
-        let rest: Vec<Arg> = match tail {
-            Value::Null => Vec::new(),
-            Value::Pairlist(p) => p.items.clone(),
-            Value::Lang(l) => l.items(),
-            Value::Dots(d) => d.as_ref().clone(),
-            _ => return false,
-        };
-        match self {
-            Value::Pairlist(p) => {
-                if cell >= p.items.len() {
-                    return false;
-                }
-                crate::env::Env::mark_cycle_dirty();
-                mut_pairlist(p, |m| {
-                    m.items.truncate(cell + 1);
-                    m.items.extend(rest);
-                });
-                true
-            }
-            Value::Lang(l) => {
-                if cell > l.args.len() {
-                    return false;
-                }
-                crate::env::Env::mark_cycle_dirty();
-                mut_lang(l, |m| {
-                    m.args.truncate(cell);
-                    m.args.extend(rest);
-                });
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Rewrite a whole pairlist spine in the allocation, as a native routine
     /// that ran SETCAR/SETCDR/SET_TAG over a cons chain did (the bridge's
     /// write-back). Every alias keeps the same object and sees the cells.
-    pub fn set_pairlist_cells_through_alias(&self, items: Vec<Arg>, attrs: AttrBox) -> bool {
+    ///
+    /// # Safety
+    /// No reference into the pairlist is live: its header is written through
+    /// the shared `Rc`, and a length change replaces the cells' buffer.
+    pub unsafe fn set_pairlist_cells_through_alias(&self, items: Vec<Arg>, attrs: AttrBox) -> bool {
         let Value::Pairlist(p) = self else { return false };
         if same_cells(&p.items, &items) && same_attrs(&p.attrs, &attrs) {
             return true;
         }
         crate::env::Env::mark_cycle_dirty();
-        mut_pairlist(p, |m| {
-            rewrite_cells(&mut m.items, items);
-            m.attrs = attrs;
-        });
+        // SAFETY: the pointer keeps `Rc`'s write provenance, and the caller
+        // guarantees this `&mut` is the only reference. R: memory.c:SETCAR
+        let m = unsafe { &mut *Rc::as_ptr(p).cast_mut() };
+        rewrite_cells(&mut m.items, items);
+        m.attrs = attrs;
         true
     }
 
     /// Rewrite a whole call in the allocation (the bridge's write-back of
     /// SETCAR/SETCDR/SET_TAG on a LANGSXP chain). Every alias keeps the same
     /// object and sees the new function, tags and arguments.
-    pub fn set_lang_cells_through_alias(
+    ///
+    /// # Safety
+    /// As for [`Value::set_pairlist_cells_through_alias`].
+    pub unsafe fn set_lang_cells_through_alias(
         &self,
         fun: Value,
         fun_tag: Option<Sym>,
@@ -1348,14 +1228,14 @@ impl Value {
             return true;
         }
         crate::env::Env::mark_cycle_dirty();
-        mut_lang(l, |m| {
-            if !m.fun.same_object(&fun) {
-                m.fun = fun;
-            }
-            m.fun_tag = fun_tag;
-            rewrite_cells(&mut m.args, args);
-            m.attrs = attrs;
-        });
+        // SAFETY: as in `set_pairlist_cells_through_alias`.
+        let m = unsafe { &mut *Rc::as_ptr(l).cast_mut() };
+        if !m.fun.same_object(&fun) {
+            m.fun = fun;
+        }
+        m.fun_tag = fun_tag;
+        rewrite_cells(&mut m.args, args);
+        m.attrs = attrs;
         true
     }
 
@@ -1837,6 +1717,23 @@ impl Default for RString {
     }
 }
 
+/// The alias writes, for tests. A test holds no reference across its calls.
+#[cfg(test)]
+impl Value {
+    fn set_elt(&self, i: usize, value: Value) -> bool {
+        // SAFETY: see the comment on this impl.
+        unsafe { self.set_vector_elt_through_alias(i, value) }
+    }
+    fn set_pairlist_cells(&self, items: Vec<Arg>, attrs: AttrBox) -> bool {
+        // SAFETY: see the comment on this impl.
+        unsafe { self.set_pairlist_cells_through_alias(items, attrs) }
+    }
+    fn set_lang_cells(&self, fun: Value, fun_tag: Option<Sym>, args: Vec<Arg>, attrs: AttrBox) -> bool {
+        // SAFETY: see the comment on this impl.
+        unsafe { self.set_lang_cells_through_alias(fun, fun_tag, args, attrs) }
+    }
+}
+
 #[cfg(test)]
 mod string_window_tests {
     use super::*;
@@ -1882,9 +1779,13 @@ mod string_window_tests {
                 let clone = handle.clone();
                 assert!(RString::ptr_eq(&handle, &clone));
                 assert_eq!(handle, clone);
-                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 2);
+                let refs = |s: &RString| {
+                    // SAFETY: `s` keeps the allocation alive.
+                    unsafe { s.data.as_ref().refs.get() }
+                };
+                assert_eq!(refs(&clone), 2);
                 drop(handle);
-                assert_eq!(unsafe { clone.data.as_ref().refs.get() }, 1);
+                assert_eq!(refs(&clone), 1);
                 assert_eq!(&*clone, text);
                 drop(clone);
             }
@@ -1958,7 +1859,7 @@ mod shared_list_tests {
         holder.set_attr_raw(Sym::new("tag"), x.clone());
 
         let epoch = Env::cycle_epoch();
-        assert!(x.set_vector_elt_through_alias(0, Value::int(42)));
+        assert!(x.set_elt(0, Value::int(42)));
 
         assert_eq!(int(&elt(&binding, 0)), 42);
         assert_eq!(int(&elt(&env.get_local(Sym::new("shared")).unwrap(), 0)), 42);
@@ -1976,22 +1877,22 @@ mod shared_list_tests {
     #[test]
     fn set_vector_elt_works_on_unique_and_expression_vectors() {
         let x = Value::expr_vec(vec![Value::int(1)]);
-        assert!(x.set_vector_elt_through_alias(0, Value::int(7)));
+        assert!(x.set_elt(0, Value::int(7)));
         assert_eq!(int(&elt(&x, 0)), 7);
 
         let y = Value::list(vec![Value::Null]);
         let alias = y.clone();
-        assert!(y.set_vector_elt_through_alias(0, Value::int(3)));
+        assert!(y.set_elt(0, Value::int(3)));
         assert_eq!(int(&elt(&alias, 0)), 3);
     }
 
     #[test]
     fn set_vector_elt_rejects_a_non_vector_or_a_bad_index() {
         let x = Value::int(1);
-        assert!(!x.set_vector_elt_through_alias(0, Value::int(2)));
+        assert!(!x.set_elt(0, Value::int(2)));
         let y = Value::list(vec![Value::int(1), Value::int(2)]);
         let alias = y.clone();
-        assert!(!y.set_vector_elt_through_alias(2, Value::int(3)));
+        assert!(!y.set_elt(2, Value::int(3)));
         assert_eq!(int(&elt(&alias, 0)), 1);
         assert_eq!(int(&elt(&alias, 1)), 2);
     }
@@ -2003,7 +1904,7 @@ mod shared_list_tests {
         let x = Value::list(vec![inner.clone(), Value::Null]);
         let alias = x.clone();
         assert_eq!(Rc::strong_count(inner_rc), 2); // inner and the shared cell
-        assert!(x.set_vector_elt_through_alias(0, Value::Null));
+        assert!(x.set_elt(0, Value::Null));
         assert_eq!(Rc::strong_count(inner_rc), 1);
         assert!(matches!(elt(&alias, 0), Value::Null));
     }
@@ -2034,7 +1935,12 @@ mod shared_pairlist_tests {
     }
 
     fn elt(v: &Value, cell: usize) -> Value {
-        v.pair_car(cell).expect("cell").clone()
+        match v {
+            Value::Pairlist(p) => p.items[cell].value.clone(),
+            Value::Lang(l) if cell == 0 => l.fun.clone(),
+            Value::Lang(l) => l.args[cell - 1].value.clone(),
+            _ => panic!("not a cons spine"),
+        }
     }
 
     fn int(v: &Value) -> i32 {
@@ -2066,13 +1972,13 @@ mod shared_pairlist_tests {
         let plist = pl(vec![Value::int(1), Value::lgl(true)]);
         let before = items_ptr(&plist);
         let Value::Pairlist(p) = &plist else { panic!() };
-        assert!(plist.set_pairlist_cells_through_alias(p.items.clone(), None));
+        assert!(plist.set_pairlist_cells(p.items.clone(), None));
         assert_eq!(items_ptr(&plist), before);
 
         let call = Value::lang(Value::Sym(Sym::new("f")), vec![Arg::pos(Value::int(1))]);
         let before = items_ptr(&call);
         let Value::Lang(l) = &call else { panic!() };
-        assert!(call.set_lang_cells_through_alias(l.fun.clone(), None, l.args.clone(), None));
+        assert!(call.set_lang_cells(l.fun.clone(), None, l.args.clone(), None));
         assert_eq!(items_ptr(&call), before);
     }
 
@@ -2083,7 +1989,7 @@ mod shared_pairlist_tests {
         let second = elt(&plist, 1);
         let before = items_ptr(&plist);
         let cells = vec![Arg::pos(Value::int(9)), Arg::pos(second.clone())];
-        assert!(plist.set_pairlist_cells_through_alias(cells, None));
+        assert!(plist.set_pairlist_cells(cells, None));
         assert_eq!(items_ptr(&plist), before);
         assert_eq!(int(&elt(&alias, 0)), 9);
         assert!(elt(&alias, 1).same_object(&second));
@@ -2097,155 +2003,17 @@ mod shared_pairlist_tests {
     }
 
     #[test]
-    fn set_car_writes_through_every_pairlist_alias() {
-        let x = pl(vec![Value::int(1), Value::int(2)]);
-        let binding = x.clone();
-        let env = Env::new(None);
-        env.set_local(Sym::new("shared"), x.clone());
-        let mut holder = Value::list(vec![Value::Null]);
-        holder.set_attr_raw(Sym::new("tag"), x.clone());
-
-        let epoch = Env::cycle_epoch();
-        assert!(x.set_pair_car_through_alias(0, Value::int(42)));
-
-        assert_eq!(int(&elt(&binding, 0)), 42);
-        assert_eq!(int(&elt(&env.get_local(Sym::new("shared")).unwrap(), 0)), 42);
-        assert_eq!(int(&elt(&holder.get_attr(Sym::new("tag")).unwrap(), 0)), 42);
-        assert_eq!(int(&elt(&binding, 1)), 2);
-        assert_eq!(binding.len(), 2);
-        assert_ne!(Env::cycle_epoch(), epoch);
-    }
-
-    #[test]
-    fn set_car_writes_the_function_position_of_a_shared_call() {
-        let call =
-            Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1)), Arg::new(Some(Sym::new("b")), Value::int(2))]);
-        let alias = call.clone();
-        assert!(call.set_pair_car_through_alias(0, Value::sym("g")));
-        assert!(call.set_pair_car_through_alias(2, Value::int(9)));
-        match &alias {
-            Value::Lang(l) => {
-                assert_eq!(l.fun.as_sym().unwrap().name().as_ref(), "g");
-                assert_eq!(int(&l.args[1].value), 9);
-                assert_eq!(l.args[1].tag.unwrap().name().as_ref(), "b");
-            }
-            _ => panic!("not a call"),
-        }
-    }
-
-    #[test]
-    fn set_tag_writes_through_every_alias_without_touching_reachability() {
-        let x = pl(vec![Value::int(1), Value::int(2)]);
-        let alias = x.clone();
-        let call = Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1))]);
-        let call_alias = call.clone();
-        let epoch = Env::cycle_epoch();
-
-        assert!(x.set_pair_tag_through_alias(1, Some(Sym::new("z"))));
-        assert!(call.set_pair_tag_through_alias(0, Some(Sym::new("head"))));
-
-        assert_eq!(strs(&alias.names().unwrap()), vec![Some(RString::from("")), Some(RString::from("z"))]);
-        match &call_alias {
-            Value::Lang(l) => assert_eq!(l.fun_tag.unwrap().name().as_ref(), "head"),
-            _ => panic!("not a call"),
-        }
-        // Tags are interned symbols: no environment becomes reachable.
-        assert_eq!(Env::cycle_epoch(), epoch);
-    }
-
-    #[test]
-    fn set_cdr_replaces_the_tail_through_every_alias() {
-        let x = pl(vec![Value::int(1), Value::int(2), Value::int(3)]);
-        let alias = x.clone();
-        let epoch = Env::cycle_epoch();
-        assert!(x.set_pair_cdr_through_alias(0, &pl(vec![Value::int(8), Value::int(9)])));
-        assert_eq!(alias.len(), 3);
-        assert_eq!(int(&elt(&alias, 0)), 1);
-        assert_eq!(int(&elt(&alias, 1)), 8);
-        assert_eq!(int(&elt(&alias, 2)), 9);
-        assert_ne!(Env::cycle_epoch(), epoch);
-        // NULL ends the spine after the cell.
-        assert!(x.set_pair_cdr_through_alias(0, &Value::Null));
-        assert_eq!(alias.len(), 1);
-        assert_eq!(int(&elt(&alias, 0)), 1);
-    }
-
-    #[test]
-    fn set_cdr_replaces_a_call_argument_tail() {
-        let call = Value::lang(Value::sym("f"), vec![Arg::pos(Value::int(1)), Arg::pos(Value::int(2))]);
-        let alias = call.clone();
-        assert!(call.set_pair_cdr_through_alias(0, &pl(vec![Value::int(7)])));
-        match &alias {
-            Value::Lang(l) => {
-                assert_eq!(l.args.len(), 1);
-                assert_eq!(int(&l.args[0].value), 7);
-            }
-            _ => panic!("not a call"),
-        }
-        let plist = pl(vec![Value::int(1), Value::int(2), Value::int(3)]);
-        let plist_alias = plist.clone();
-        assert!(plist.set_pair_cdr_through_alias(1, &pl(vec![Value::int(4)])));
-        assert_eq!(plist_alias.len(), 3);
-        assert_eq!(int(&elt(&plist_alias, 1)), 2);
-        assert_eq!(int(&elt(&plist_alias, 2)), 4);
-        // a call spliced as a tail contributes its function cell too
-        let tail = Value::lang(Value::sym("g"), vec![Arg::pos(Value::int(5))]);
-        assert!(plist.set_pair_cdr_through_alias(1, &tail));
-        assert_eq!(plist_alias.len(), 4);
-        assert_eq!(elt(&plist_alias, 2).as_sym().unwrap().name().as_ref(), "g");
-        assert_eq!(int(&elt(&plist_alias, 3)), 5);
-    }
-
-    #[test]
-    fn set_cell_rejects_non_cons_values_bad_cells_and_dotted_tails() {
-        let x = Value::int(1);
-        assert!(!x.set_pair_car_through_alias(0, Value::int(2)));
-        assert!(!x.set_pair_tag_through_alias(0, None));
-        assert!(!x.set_pair_cdr_through_alias(0, &Value::Null));
-
-        let y = pl(vec![Value::int(1)]);
-        let alias = y.clone();
-        assert!(!y.set_pair_car_through_alias(1, Value::int(2)));
-        assert!(!y.set_pair_tag_through_alias(1, Some(Sym::new("z"))));
-        assert!(!y.set_pair_cdr_through_alias(1, &Value::Null));
-        // a dotted pair's cdr is not representable by the flat model
-        assert!(!y.set_pair_cdr_through_alias(0, &Value::int(3)));
-        assert_eq!(int(&elt(&alias, 0)), 1);
-        assert_eq!(alias.len(), 1);
-
-        let call = Value::lang(Value::sym("f"), vec![]);
-        assert!(!call.set_pair_car_through_alias(1, Value::int(1)));
-    }
-
-    #[test]
-    fn set_car_drops_the_replaced_element_once() {
-        let inner = Value::list(vec![Value::int(1)]);
-        let Value::List(inner_rc) = &inner else { unreachable!() };
-        let x = pl(vec![inner.clone(), Value::Null]);
-        let alias = x.clone();
-        assert_eq!(Rc::strong_count(inner_rc), 2); // inner and the shared cell
-        assert!(x.set_pair_car_through_alias(0, Value::Null));
-        assert_eq!(Rc::strong_count(inner_rc), 1);
-        assert!(matches!(elt(&alias, 0), Value::Null));
-    }
-
-    #[test]
     fn bulk_spine_rewrites_keep_the_object_and_its_aliases() {
         let x = pl(vec![Value::int(1)]);
         let alias = x.clone();
         let items = vec![Arg::new(Some(Sym::new("a")), Value::int(2)), Arg::pos(Value::int(3))];
-        assert!(x.set_pairlist_cells_through_alias(items, None));
+        assert!(x.set_pairlist_cells(items, None));
         assert_eq!(alias.len(), 2);
         assert_eq!(strs(&alias.names().unwrap()), vec![Some(RString::from("a")), Some(RString::from(""))]);
 
         let call = Value::lang(Value::sym("f"), vec![]);
         let call_alias = call.clone();
-        assert!(call.set_lang_cells_through_alias(
-            Value::sym("h"),
-            Some(Sym::new("tag")),
-            vec![Arg::pos(Value::int(4))],
-            None
-        ));
+        assert!(call.set_lang_cells(Value::sym("h"), Some(Sym::new("tag")), vec![Arg::pos(Value::int(4))], None));
         match &call_alias {
             Value::Lang(l) => {
                 assert_eq!(l.fun.as_sym().unwrap().name().as_ref(), "h");
@@ -2254,8 +2022,8 @@ mod shared_pairlist_tests {
             }
             _ => panic!("not a call"),
         }
-        assert!(!Value::int(1).set_pairlist_cells_through_alias(vec![], None));
-        assert!(!Value::int(1).set_lang_cells_through_alias(Value::Null, None, vec![], None));
+        assert!(!Value::int(1).set_pairlist_cells(vec![], None));
+        assert!(!Value::int(1).set_lang_cells(Value::Null, None, vec![], None));
     }
 
     #[test]

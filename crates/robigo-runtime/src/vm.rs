@@ -2709,7 +2709,9 @@ fn jit_enter(
             _ => return None,
         }
     }
-    let ret = (jl.func)(vals.as_mut_ptr(), vecs.as_ptr());
+    // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and the
+    // vectors they view are held by `regs` and `vars` for the whole call.
+    let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) };
     // Write the variables back as pending assignments.
     for s in &jl.slots {
         if !s.written || !s.ty.is_scalar() {
@@ -2949,6 +2951,8 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool
     let checked: &mut [u32] = if code.nguards <= 128 {
         // Only the guards the code has are initialized.
         let p = small.as_mut_ptr() as *mut u32;
+        // SAFETY: `nguards <= 128`, the array's length, and each of the
+        // `nguards` elements in the slice is written first.
         unsafe {
             for k in 0..code.nguards {
                 p.add(k).write(init);

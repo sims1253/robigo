@@ -1634,9 +1634,7 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         out.push(match f {
             // R treats NA as a non-existent file.
             None => -1,
-            Some(f) => {
-                crate::sys::access(&expand_file_name(f), modemask)
-            }
+            Some(f) => crate::sys::access(&expand_file_name(f), modemask),
         });
     }
     Ok(Value::ints(out))

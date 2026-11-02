@@ -892,15 +892,21 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
     if handle.is_null() {
         return Err("robigo: system LAPACK library (liblapack.so.3) is unavailable");
     }
-    // SAFETY: the symbol table is immutable once the library is loaded;
-    // the transmuted pointers are only ever called with matching signatures.
+    /// # Safety
+    /// `handle` is an open library, `name` is NUL-terminated, and `T` is the
+    /// function pointer type of the symbol `name`.
     unsafe fn sym<T: Copy>(handle: *mut libc::c_void, name: &[u8]) -> Result<T, &'static str> {
+        // SAFETY: the caller's contract; the symbol table is immutable once
+        // the library is loaded.
         let p = unsafe { libc::dlsym(handle, name.as_ptr().cast()) };
         if p.is_null() {
             return Err("robigo: system LAPACK is missing a required routine");
         }
+        // SAFETY: the caller's contract: `T` is a function pointer type.
         Ok(unsafe { std::mem::transmute_copy::<*mut libc::c_void, T>(&p) })
     }
+    // SAFETY: the Fortran routines of LAPACK's interface, each loaded as the
+    // type declared for it above, from the library just opened.
     unsafe {
         let ilaver: IlaverFn = sym(handle, b"ilaver_\0")?;
         let ilaver_ptr: *mut libc::c_void = libc::dlsym(handle, c"ilaver_".as_ptr());
@@ -1087,6 +1093,8 @@ fn do_la_rs(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let liwork = itmp;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
     let mut iwork = vec![0i32; liwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &jobv,
@@ -1176,6 +1184,8 @@ fn do_la_rs_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
     let lwork = tmp.r as i32;
     let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &jobv,
@@ -1284,6 +1294,8 @@ fn do_la_rg(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     }
     let lwork = tmp as i32;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &b'N',
@@ -1379,6 +1391,8 @@ fn do_la_rg_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
     let lwork = tmp.r as i32;
     let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &b'N',
@@ -1502,6 +1516,8 @@ fn do_la_svd(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     }
     let lwork = tmp as i32;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &job,
@@ -1634,6 +1650,8 @@ fn do_la_svd_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     let lwork = tmp.r as i32;
     let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &job,
@@ -2177,6 +2195,8 @@ fn do_la_qr(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     }
     let lwork = tmp as i32;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             &m_i,
@@ -2271,6 +2291,8 @@ fn do_qr_coef_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     let lwork = tmp as i32;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             b"L".as_ptr(),
@@ -2294,6 +2316,8 @@ fn do_qr_coef_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         return Err(Flow::error(format!("error code {} from Lapack routine 'dormqr [work]'", info)));
     }
     let g = system_lapack()?.dtrtrs;
+    // SAFETY: as for the dormqr calls above: the same factor and right-hand
+    // sides, with the sizes they were allocated for.
     unsafe {
         g(
             b"U".as_ptr(),
@@ -2377,6 +2401,8 @@ fn do_qr_qy_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     }
     let lwork = tmp as i32;
     let mut work = vec![0.0f64; lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             b"L".as_ptr(),

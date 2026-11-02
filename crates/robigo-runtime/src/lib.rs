@@ -1,5 +1,9 @@
 //! The robigo R runtime: object model, evaluator and builtins.
 
+// Unsafe code is limited to the modules marked below and the few statements
+// marked in place (`docs/architecture.md`, "Unsafe code").
+#![deny(unsafe_code)]
+
 pub mod attrib;
 pub mod bootstrap;
 pub mod builtins;
@@ -13,6 +17,7 @@ pub mod env;
 pub mod error;
 pub mod format;
 pub mod interp;
+#[allow(unsafe_code)] // enters generated machine code
 pub mod jit;
 pub mod lang;
 pub mod memory;
@@ -22,13 +27,17 @@ pub mod print;
 pub mod rdbflat;
 pub mod reachability;
 pub mod s4;
+#[allow(unsafe_code)] // the fixed-width readers, measured against safe code
 pub mod serialize;
 pub mod startup;
 pub mod sym;
+#[allow(unsafe_code)] // the C library
 pub mod sys;
 pub mod task;
 pub mod typeprof;
+#[allow(unsafe_code)] // `RString`, and C-level writes through `Rc` aliases
 pub mod value;
+#[allow(unsafe_code)] // uninitialized register files, in-place arithmetic kernels
 pub mod vm;
 
 pub use env::Env;

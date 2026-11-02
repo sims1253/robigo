@@ -11,6 +11,7 @@ use crate::value::*;
 
 pub mod apply;
 pub mod arith;
+#[allow(unsafe_code)] // fills spare capacity in kernels
 mod arith_exact;
 pub mod array;
 pub mod attrib;
@@ -19,6 +20,7 @@ pub mod bind;
 pub mod bytecode;
 pub mod character;
 pub mod coerce;
+#[allow(unsafe_code)] // SSE2 assembly fixing NaN payload order
 pub mod complex;
 pub mod conditions;
 pub mod datetime;
@@ -29,9 +31,11 @@ pub mod envir;
 pub mod funs;
 pub mod grep;
 pub mod identical;
+#[allow(unsafe_code)] // libcurl through dlopen
 pub mod internet;
 pub mod io;
 pub mod lang;
+#[allow(unsafe_code)] // LAPACK through dlopen
 pub mod lapack;
 pub mod math;
 pub mod misc;

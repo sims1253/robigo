@@ -417,7 +417,7 @@ impl Glob {
         if !self.started {
             return Vec::new();
         }
-        (0..self.glob.gl_pathc as usize)
+        (0..self.glob.gl_pathc)
             .filter_map(|k| {
                 // SAFETY: glob stored gl_pathc NUL-terminated strings.
                 unsafe { copy_cstr(*self.glob.gl_pathv.add(k)) }
@@ -492,9 +492,8 @@ impl Mmap {
         }
         // SAFETY: a new mapping at an address the kernel picks, so nothing
         // existing is replaced.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0)
-        };
+        let p =
+            unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0) };
         if p == libc::MAP_FAILED {
             return None;
         }
@@ -518,3 +517,109 @@ impl Drop for Mmap {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> String {
+        let dir = mkdtemp(&format!("{}/robigo-sys-{name}-XXXXXX", std::env::temp_dir().display())).unwrap();
+        assert!(std::path::Path::new(&dir).is_dir());
+        dir
+    }
+
+    #[test]
+    fn read_dir_names_lists_the_dot_entries() {
+        let dir = scratch("readdir");
+        std::fs::write(format!("{dir}/a"), "").unwrap();
+        let mut names = read_dir_names(&dir).unwrap();
+        names.sort();
+        assert_eq!(names, [".", "..", "a"]);
+        assert_eq!(read_dir_names(&format!("{dir}/none")), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn readlink_reports_links_truncation_and_errno() {
+        let dir = scratch("readlink");
+        let link = format!("{dir}/l");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        assert_eq!(readlink(&link, 64).unwrap(), b"target");
+        assert_eq!(readlink(&link, 3).unwrap(), b"tar");
+        assert_eq!(readlink(&dir, 64), Err(libc::EINVAL));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn glob_appends_across_patterns_and_marks_directories() {
+        let dir = scratch("glob");
+        std::fs::write(format!("{dir}/a.txt"), "").unwrap();
+        std::fs::create_dir(format!("{dir}/b")).unwrap();
+        let mut g = Glob::new();
+        assert_eq!(g.paths(), Vec::<String>::new());
+        assert_eq!(g.add(&CString::new(format!("{dir}/*.txt")).unwrap(), false), 0);
+        assert_eq!(g.add(&CString::new(format!("{dir}/b")).unwrap(), true), 0);
+        assert_eq!(g.paths(), [format!("{dir}/a.txt"), format!("{dir}/b/")]);
+        drop(g);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn file_times_and_access_follow_the_c_library() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = scratch("times");
+        let file = format!("{dir}/f");
+        std::fs::write(&file, "").unwrap();
+        assert!(set_file_times(&file, 1000, 5));
+        let md = std::fs::metadata(&file).unwrap();
+        assert_eq!((md.mtime(), md.mtime_nsec()), (1000, 5));
+        assert!(!set_file_times(&format!("{dir}/none"), 0, 0));
+        assert_eq!(access(&file, libc::F_OK), 0);
+        assert_eq!(access("a\0b", libc::F_OK), -1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saved_bytes_reach_the_file_when_closed() {
+        let dir = scratch("cfile");
+        let path = format!("{dir}/f");
+        let mut file = CFile::for_writing(File::create(&path).unwrap().into()).unwrap();
+        assert!(file.write(b"RDX3\n"));
+        file.close();
+        assert_eq!(std::fs::read(&path).unwrap(), b"RDX3\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_mapping_shows_the_file() {
+        let dir = scratch("mmap");
+        let path = format!("{dir}/f");
+        std::fs::write(&path, "mapped").unwrap();
+        let file = File::open(&path).unwrap();
+        assert_eq!(Mmap::new(&file, 6).unwrap().as_slice(), b"mapped");
+        assert!(Mmap::new(&file, 0).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn c_library_values_are_copied_out() {
+        assert_eq!(format_g16_line(0.1), "0.1\n");
+        assert_eq!(format_g16_line(1e300), "1e+300\n");
+        assert_eq!(atoi("3junk"), Some(3));
+        assert_eq!(atoi("a\0b"), None);
+        assert!(!strerror(libc::ENOENT).is_empty());
+        assert!(iconv_supported("UTF-8", "latin1"));
+        assert!(!iconv_supported("no-such-encoding", "UTF-8"));
+        assert!(setlocale(libc::LC_ALL, None).is_some());
+        assert_eq!(localeconv().unwrap()[0].0, "decimal_point");
+        assert_eq!(current_umask(), current_umask());
+        assert!(uname().is_some_and(|u| !u.sysname.is_empty()));
+        assert!(!lzma_version().is_empty());
+    }
+
+    #[test]
+    fn complex_helpers_use_the_c_abi() {
+        // atan(1 / 1) is pi / 4.
+        let (re, im) = catan_of_quotient((1.0, 0.0), (1.0, 0.0));
+        assert_eq!((re, im), (std::f64::consts::FRAC_PI_4, 0.0));
+    }
+}

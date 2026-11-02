@@ -334,7 +334,12 @@ fn putconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             return Ok(Value::int(idx as i32));
         }
     }
-    args[0].value.set_vector_elt_through_alias(count, x);
+    // SAFETY: `buf`'s last use is the search above, and nothing up the stack
+    // of an `.Internal` borrows the elements of a constant buffer.
+    #[allow(unsafe_code)]
+    unsafe {
+        args[0].value.set_vector_elt_through_alias(count, x)
+    };
     Ok(Value::int(count as i32))
 }
 fn getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

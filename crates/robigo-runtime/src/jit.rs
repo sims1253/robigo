@@ -91,7 +91,10 @@ pub struct VecView {
 /// Returned by native code when the loop finished normally.
 pub const EXIT: u32 = u32::MAX;
 
-type LoopFn = extern "C" fn(*mut u64, *const VecView) -> u32;
+/// A compiled loop. The caller passes the register and slot buffer of
+/// [`JitLoop`]'s layout and one view per vector the loop was compiled for:
+/// the machine code indexes both without checks.
+type LoopFn = unsafe extern "C" fn(*mut u64, *const VecView) -> u32;
 
 /// A compiled loop.
 pub struct JitLoop {

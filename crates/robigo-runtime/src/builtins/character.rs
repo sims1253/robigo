@@ -1303,8 +1303,8 @@ fn parse_enc(e: &str) -> Option<Enc> {
 
 /// Whether the C library's iconv knows the conversion; R reports a failing
 /// `iconv_open` as an unsupported conversion. "" is the native encoding.
-fn system_iconv_supports(from: &str, to: &str) -> bool {
-    let native = |e| if e == "" { "UTF-8" } else { e };
+fn system_iconv_supports<'a>(from: &'a str, to: &'a str) -> bool {
+    let native = |e: &'a str| if e.is_empty() { "UTF-8" } else { e };
     crate::sys::iconv_supported(native(to), native(from))
 }
 
