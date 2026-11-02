@@ -147,7 +147,9 @@ fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
                 }
             };
             for (i, n) in names.iter().enumerate().skip(1) {
-                if n.as_deref().is_none_or(|s| s.is_empty()) {
+                // R: attrib.c:do_attributesgets checks `CHAR(..)[0] == '\0'`;
+                // an NA name passes (its CHAR is "NA").
+                if n.as_deref() == Some("") {
                     return Err(Flow::error(format!("all attributes must have names [{} does not]", i + 1)));
                 }
             }
@@ -175,11 +177,13 @@ fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
         if Some(i) == dim_i {
             continue;
         }
-        let n = n.as_deref().unwrap_or("");
-        // R: attrib.c:do_attributesgets calls installTrChar for each name.
-        if n.is_empty() {
-            return Err(Flow::error("attempt to use zero-length variable name"));
-        }
+        let n = match n.as_deref() {
+            // R: installTrChar(NA_STRING) installs the symbol "NA".
+            None => "NA",
+            // R: install("") errors.
+            Some("") => return Err(Flow::error("attempt to use zero-length variable name")),
+            Some(n) => n,
+        };
         object = set_attrib(object, Sym::new(n), v.clone())?;
     }
     if s4 {

@@ -263,3 +263,40 @@ Worktree note: an unattributed `attributes<-` NA-names diff and a
 `/tmp/build-attrib.log` build appeared in this worktree
 (t3-4696fc33) around 16:15 — some other process is using this path.
 Their diff is preserved as a stash ("foreign attrib NA-names diff ...").
+
+## 2026-11-02: Recall promises, NA attribute names, as.numeric -> 6 cases
+
+Three root causes, all oracle-verified in the container, worth 6 gnur-examples
+cases (83 -> 89 marked; CI 1,090 -> 1,096 expected):
+
+- **`Recall` forces its arguments** (`tools/xgettext`): R's `do_recall`
+  (eval.c) reuses the enclosing call's `promargs`, so `Recall(e[[i]])` keeps
+  the argument expression as the promise the original call had; robigo
+  rebuilt the call from already-evaluated values and `find_strings(e)`
+  hit `argument "e" is missing` when the recursive call's argument was
+  missing. Now takes the promises from the `Recall` closure's `...`.
+- **`attributes<-` rejects NA names** (`utils/cite`, `utils/bibentry`,
+  `utils/citation`, `tools/bibstyle`): `attrib.c:do_attributesgets` only
+  checks `CHAR(name)[0] == '\0'` from the second name on; `installTrChar`
+  of `NA_STRING` installs the symbol `NA`. `[.bibentry` relies on this:
+  `attributes(y) <- attributes(x)[c("mheader", "mfooter")]` yields two NA
+  names. Empty names still raise `attempt to use zero-length variable name`.
+- **`as.numeric` dispatched on "as.numeric"** (`graphics/axis.POSIXct`):
+  both primitives are `do_asatomic` with PRIMVAL 2, whose `DispatchOrEval`
+  generic is always `"as.double"`; `as.numeric(as.POSIXlt(...))` therefore
+  reaches `as.double.POSIXlt`, not the default coercion (which turned the
+  POSIXlt list into a numeric vector and warned "NAs introduced by
+  coercion"). Also matches R's documented `as.double`-only methods.
+
+Local-versus-CI environment note: the recorded output contains
+`/usr/lib/R` paths from the oracle's Debian install. Locally `R.home()` is
+`$HOME/.local/opt/R-4.5.0`, so the 17 path/pager-sensitive marked cases
+(`base/Rhome`, `base/search`, `base/system.file`, `utils/Question`,
+`base/file.show`, ...) fail a *local* full run but pass in CI; running
+without `R_HOME` is worse (it picks the host's `/usr/lib/R`, R 4.6.1).
+`tools/bibstyle`, `utils/bibentry`, `utils/citation` also need
+`R_SHARE_DIR` (the local relocated R's `bin/R` hardcodes a
+`/usr/share/R/share` that does not exist here), so local runs use
+`R_HOME=~/.local/opt/R-4.5.0 R_SHARE_DIR=~/.local/opt/R-4.5.0/share`.
+Marked: `tools/xgettext`, `utils/cite`, `tools/bibstyle`,
+`utils/bibentry`, `utils/citation`, `graphics/axis.POSIXct`.
