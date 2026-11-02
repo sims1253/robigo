@@ -58,6 +58,7 @@ fn main() {
         "robigo_glue",
         "robigo_sys",
         "robigo_hashtab",
+        "robigo_inline",
         "robigo_util",
         "robigo_internet",
         "Rsock",

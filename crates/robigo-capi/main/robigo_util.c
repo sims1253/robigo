@@ -804,3 +804,133 @@ const wchar_t *wtransChar(SEXP x)
     translateToWchar(CHAR(x), &cbuff, t, 0);
     return wcopyAndFreeStringBuffer(&cbuff);
 }
+
+/* R: sysutils.c:reEncodeIconv */
+static int reEncodeIconv(const char *x, R_StringBuffer *cbuff,
+                         const char *fromcode, const char *tocode, int subst)
+{
+    void * obj;
+    const char *inbuf;
+    char *outbuf;
+    size_t inb, outb, res;
+    bool fromWchar = !strcmp(fromcode, TO_WCHAR);
+
+    obj = Riconv_open(tocode, fromcode);
+    if(obj == (void *)(-1)) return 1;
+    R_AllocStringBuffer(0, cbuff);
+top_of_loop:
+    inbuf = x;
+    if (fromWchar)
+	inb = wcslen((wchar_t *)inbuf) * sizeof(wchar_t);
+    else
+	inb = strlen(inbuf);
+    outbuf = cbuff->data; outb = cbuff->bufsize - 3;
+    /* First initialize output */
+    Riconv (obj, NULL, NULL, &outbuf, &outb);
+next_char:
+    /* Then convert input  */
+    res = Riconv(obj, &inbuf , &inb, &outbuf, &outb);
+    if(res == -1 && errno == E2BIG) {
+	R_AllocStringBuffer(2*cbuff->bufsize, cbuff);
+	goto top_of_loop;
+    } else if(res == -1 && (errno == EILSEQ || errno == EINVAL)) {
+	res = Riconv(obj, NULL, NULL, &outbuf, &outb);
+	if(res == -1 && errno == E2BIG) {
+	    R_AllocStringBuffer(2*cbuff->bufsize, cbuff);
+	    goto top_of_loop;
+	}
+	size_t inb_per_char = fromWchar ? sizeof(wchar_t) : 1;
+
+	/* ensure space in cbuff for substitution */	
+	size_t need = 0; 
+	switch(subst) {
+	case 1: /* substitute hex */
+	    need = inb_per_char * 4 + 1;
+	    break;
+	case 2: /* substitute . */
+	case 3: /* substitute ? */
+	    need = inb_per_char;
+	    break;
+	default: /* skip byte */
+	    inbuf += inb_per_char;
+	    inb -= inb_per_char;
+	    goto next_char;
+	}
+	if(outb < need) {
+	    R_AllocStringBuffer(2*cbuff->bufsize, cbuff);
+	    goto top_of_loop;
+	}
+
+	/* substitute individual bytes, it makes more sense for users as
+	   typically errors would be due to conversion from a single-byte
+	   encoding */
+	for(int i = 0; i < inb_per_char; i++) {
+	    if (!inb) break;
+	    switch(subst) {
+	    case 1: /* substitute hex */
+		snprintf(outbuf, 5, "<%02x>", (unsigned char)*inbuf);
+		outbuf += 4; outb -= 4;
+		inbuf++; inb--;
+		break;
+	    case 2: /* substitute . */
+		*outbuf++ = '.'; inbuf++; outb--; inb--;
+		break;
+	    case 3: /* substitute ? */
+		*outbuf++ = '?'; inbuf++; outb--; inb--;
+		break;
+	    }
+	}
+	goto next_char;
+    }
+    Riconv_close(obj);
+    *outbuf = '\0';
+    return 0;
+}
+
+/* R: sysutils.c:reEnc3 */
+attribute_hidden
+const char *reEnc3(const char *x,
+                   const char *fromcode, const char *tocode, int subst)
+{
+    R_StringBuffer cbuff = {NULL, 0, MAXELTSIZE};
+    if (reEncodeIconv(x, &cbuff, fromcode, tocode, subst)) return x;
+    size_t res = strlen(cbuff.data) + 1;
+    char *p = R_alloc(res, 1);
+    memcpy(p, cbuff.data, res);
+    R_FreeStringBuffer(&cbuff);
+    return p;
+}
+
+/* R: util.c:mbcsTruncateToValid */
+char* mbcsTruncateToValid(char *s)
+{
+    if (!mbcslocale || *s == '\0')
+	return s;
+
+    mbstate_t mb_st;
+    size_t slen = strlen(s); /* at least 1 */
+    size_t goodlen = 0;
+
+    mbs_init(&mb_st);
+
+    if (utf8locale) {
+	/* UTF-8 is self-synchronizing so we can look back from the end
+	   for the first non-continuation byte */
+	goodlen = slen - 1; /* at least 0 */
+	/* for char == signed char we assume 2's complement representation */
+	while (goodlen && ((s[goodlen] & '\xC0') == '\x80'))
+	    --goodlen;
+    }
+    while(goodlen < slen) {
+	size_t res;
+	res = mbrtowc(NULL, s + goodlen, slen - goodlen, &mb_st);
+	if (res == (size_t) -1 || res == (size_t) -2) {
+	    /* strip off all remaining characters */
+	    for(;goodlen < slen; goodlen++)
+		s[goodlen] = '\0';
+	    return s;
+	}
+	goodlen += res;
+    }
+    return s;
+}
