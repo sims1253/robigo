@@ -502,7 +502,7 @@ impl Core {
             return c;
         }
         let c = self.alloc_char(bytes, bits, h);
-        self.chars.insert(c);
+        unsafe { self.chars.insert(c) };
         c
     }
 

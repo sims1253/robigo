@@ -47,15 +47,21 @@ impl CharTable {
     }
 
     /// Insert a CHARSXP not in the table (its header holds its hash).
-    pub fn insert(&mut self, c: Sexp) {
+    ///
+    /// # Safety
+    /// `c` must be a live CHARSXP of the heap this table belongs to. The
+    /// table reads its header from now on, until the collector prunes it.
+    pub unsafe fn insert(&mut self, c: Sexp) {
         if (self.len + 1) * 4 > self.slots.len() * 3 {
             self.rebuild(self.slots.len() * 2, |_| true);
         }
-        Self::place(&mut self.slots, c);
+        unsafe { Self::place(&mut self.slots, c) };
         self.len += 1;
     }
 
-    fn place(slots: &mut [Sexp], c: Sexp) {
+    /// # Safety
+    /// `c` must be a live CHARSXP: its header holds the hash.
+    unsafe fn place(slots: &mut [Sexp], c: Sexp) {
         let mask = slots.len() - 1;
         let mut i = unsafe { c.char_hash() } as usize & mask;
         while !slots[i].is_null() {
@@ -69,7 +75,7 @@ impl CharTable {
         self.len = 0;
         for c in old {
             if !c.is_null() && keep(c) {
-                Self::place(&mut self.slots, c);
+                unsafe { Self::place(&mut self.slots, c) };
                 self.len += 1;
             }
         }

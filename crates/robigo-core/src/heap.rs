@@ -363,8 +363,12 @@ impl Heap {
     }
 
     /// Immediate free of a small object.
+    ///
+    /// # Safety
+    /// `p` must be a live small object of this heap, freed once, with no
+    /// reference to it left: it goes straight on the free list.
     #[allow(dead_code)]
-    pub fn free_small(&mut self, p: *mut u8) {
+    pub unsafe fn free_small(&mut self, p: *mut u8) {
         let b = (p as usize & !(BLOCK - 1)) as *mut Block;
         let ci = unsafe { (*b).class as usize };
         debug_assert!(ci < SIZES.len());
@@ -382,8 +386,12 @@ impl Heap {
     }
 
     /// Immediate free of a large object: the whole chunk goes back to the OS.
+    ///
+    /// # Safety
+    /// `p` must be a large object of this heap (the start of its chunk's
+    /// data), with no reference to it left: its memory is unmapped here.
     #[allow(dead_code)]
-    pub fn free_large(&mut self, p: *mut u8) {
+    pub unsafe fn free_large(&mut self, p: *mut u8) {
         let w = p as usize;
         let idx = self.chunks.partition_point(|c| c.base < w) - 1;
         if idx >= self.chunks.len() {
@@ -469,8 +477,12 @@ impl Heap {
     /// reference to it can exist); immortals are never marked and never
     /// swept, so this count is what stands in for them in the sweeper's
     /// skip test.
+    ///
+    /// # Safety
+    /// `p` must be an object in a small block of this heap: its block's
+    /// header is written.
     #[allow(dead_code)]
-    pub fn note_immortal(&mut self, p: *mut u8) {
+    pub unsafe fn note_immortal(&mut self, p: *mut u8) {
         let b = self.block_of(p);
         unsafe {
             debug_assert_eq!((*b).magic, 0x524f4249474f4241, "immortal outside a small block");
