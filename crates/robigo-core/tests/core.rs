@@ -683,3 +683,15 @@ fn a_large_object_starts_unmarked_whatever_its_chunk_held() {
     assert_eq!(c.stats.collections, next_epoch);
     assert!(c.resolve(child.addr()).is_some(), "the large vector's child was swept");
 }
+
+#[test]
+#[should_panic(expected = "not a vector type")]
+fn alloc_vector_rejects_a_non_vector_type() {
+    Core::new().alloc_vector(LISTSXP, 5);
+}
+
+#[test]
+#[should_panic(expected = "not a vector type")]
+fn try_alloc_vector_rejects_a_non_vector_type() {
+    Core::new().try_alloc_vector(ENVSXP, 1000);
+}

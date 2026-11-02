@@ -19,6 +19,15 @@ unsafe fn block_has_room(b: *mut Block) -> bool {
     unsafe { !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / 16) as u32 <= (*b).granules }
 }
 
+/// `alloc_vector` of a type without elements: tracing the result would read
+/// its length word as a car.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn not_a_vector_type(t: u8) -> ! {
+    panic!("robigo: SEXPTYPE {t} is not a vector type")
+}
+
 /// Releases an external payload or host handle when its object dies.
 pub type ReleaseFn = unsafe extern "C" fn(usize);
 
@@ -295,10 +304,16 @@ impl Core {
     /// A vector as GNU R's allocVector: STRSXP filled with
     /// R_BlankString, VECSXP/EXPRSXP with R_NilValue, others not
     /// initialized.
+    ///
+    /// # Panics
+    /// If `t` is not a vector type (the check folds away for a constant `t`).
     #[inline]
     pub fn alloc_vector(&mut self, t: u8, n: usize) -> Sexp {
         let esz = crate::elt_size(t);
         if n <= 256 && !matches!(t, STRSXP | VECSXP | EXPRSXP | WEAKREFSXP) {
+            if esz == 0 {
+                not_a_vector_type(t);
+            }
             // small atomic vectors: no overflow check, no fill
             let x = self.alloc_object(t, (OFF_DATA + n * esz).div_ceil(16) * 16);
             unsafe {
@@ -320,8 +335,14 @@ impl Core {
     /// A vector, or None if there is no memory for it (after a
     /// collection): the API turns that into GNU R's "cannot allocate
     /// vector of size ..." error.
+    ///
+    /// # Panics
+    /// If `t` is not a vector type.
     pub fn try_alloc_vector(&mut self, t: u8, n: usize) -> Option<Sexp> {
         let esz = crate::elt_size(t);
+        if esz == 0 {
+            not_a_vector_type(t);
+        }
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
         let x = if bytes > crate::heap::MAX_MEDIUM {
             if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
