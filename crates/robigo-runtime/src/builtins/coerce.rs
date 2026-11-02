@@ -307,7 +307,9 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
                 Value::Sym(_) => Ok(x),
                 v if v.is_atomic() && !v.is_empty() => {
                     let s = as_string(v).expect("non-empty atomic has a first element");
-                    Ok(Value::Sym(Sym::new(&s)))
+                    // R: coerceToSymbol — installTrChar, which rejects the
+                    // empty name (plain error(), against the context call).
+                    Sym::install_tr(&s).map(Value::Sym).map_err(Flow::error)
                 }
                 v if v.is_atomic() => Err(Flow::error(format!("invalid data of mode '{}' (too short)", v.type_name()))),
                 Value::Null => Err(Flow::error("invalid type/length (symbol/0) in vector allocation")),

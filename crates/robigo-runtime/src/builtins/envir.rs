@@ -368,7 +368,8 @@ fn do_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let value = arg(&args, 1);
     let env = env_arg(i, &arg(&args, 2), call, "envir")?;
     let inherits = lgl_arg(&arg(&args, 3), "inherits")?;
-    let sym = Sym::new(&name);
+    // R: envir.c:do_assign — installTrChar, rejecting the empty name.
+    let sym = Sym::install_tr(&name).map_err(Flow::error)?;
     if inherits {
         let mut cur = Some(env.clone());
         while let Some(e) = cur {
@@ -1078,7 +1079,8 @@ fn do_delayed_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     let eval_env = env_arg(i, &arg(&args, 2), call, "eval.env")?;
     let assign_env = env_arg(i, &arg(&args, 3), call, "assign.env")?;
     let p = Value::Promise(Rc::new(Promise::new(value, eval_env)));
-    i.define(Sym::new(&name), p, &assign_env)?;
+    // R: envir.c:do_delayedassign — installTrChar of the name.
+    i.define(Sym::install_tr(&name).map_err(Flow::error)?, p, &assign_env)?;
     Ok(Value::Null)
 }
 
@@ -1087,7 +1089,10 @@ fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) ->
     // reported against the context call, not the internal's own call.
     let sym = match arg(&args, 0) {
         Value::Sym(s) => s,
-        Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
+        // installTrChar of the name (envir.c:do_makeActiveBinding).
+        Value::Str(v) if v.data.len() == 1 => {
+            Sym::install_tr(v.data[0].as_deref().unwrap_or("")).map_err(Flow::error)?
+        }
         _ => return Err(Flow::error("not a symbol")),
     };
     let f = arg(&args, 1);

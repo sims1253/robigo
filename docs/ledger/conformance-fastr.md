@@ -121,7 +121,6 @@
 - Status: kept (PR pending).
 
 ## 2026-11-02: round 11 - matrix column labels use the escaped width
-
 - Topic: `builtins/TestBuiltin_aperm` (2 cases)
 - Diagnosis: the two "logical" aperm cases print a matrix whose dimnames contain `\Sexpr`. R's `_COMPUTE_W2_` (printarray.c) measures a column name with `strwidth()` = `Rstrwid`, which counts a backslash as two because `EncodeString` prints it doubled; robigo measured the raw string, so every column under such a label was one character too narrow.
 - Changes:
@@ -141,4 +140,15 @@
   - `crates/robigo-runtime/src/builtins/array.rs`: `do_aperm` takes the interp and coerces `perm` through `interp.coerce`, which emits R's coercion warnings against the calling closure.
   - `tests/r/packages/stats-terms.R` + `tests/r/io/matrix.R` extended and re-recorded in the oracle: NULL response installs a "NULL" variable (`res[[2]] <- NULL` then drops the lhs in `simplify`), 0/1/TRUE responses stay, 2 and "a" still error; the complex perm warns and permutes by real parts.
 - Result: `TestUpdateForm` 4/4, `TestBuiltin_aperm` 44/44 counting PR #261's print fix (+5 fixed here; the two logical aperm cases need #261); 10 more markers absorbed (deriv 7, TestStats 3) that pass on main where CI ships natives. 0 regressions.
+## 2026-11-02: round 13 - runtime installs reject the empty name
+
+- Topic: zero-length variable names (4 cases: `TestSimpleAssignment` 2, `TestSimpleParsing` 1, `TestParser` 1)
+- Diagnosis: the parser keeps `'' <- 123` as a string lhs (robigo already parses it like GNU R), but every runtime site that *installs* a name goes through `installTrChar` (`names.c:install`): the empty string errors "attempt to use zero-length variable name" and names over MAXIDSIZE (10000 bytes) error "variable names are limited to 10000 bytes". robigo interned the empty symbol silently. (`switch(x, ""=v77)` was already correct: it errors at parse time.)
+- Changes:
+  - `crates/robigo-runtime/src/sym.rs`: `Sym::install_tr` ports the two guards (plain `error()`, reported against the context call).
+  - `crates/robigo-runtime/src/builtins/lang.rs`: `assign_target` — a string lhs installs through `install_tr` (`eval.c:do_set`).
+  - `crates/robigo-runtime/src/builtins/coerce.rs`: `as.symbol`/`as.name` of "" errors (`coerceToSymbol`).
+  - `crates/robigo-runtime/src/builtins/envir.rs`: `assign`, `makeActiveBinding` and `delayedAssign` install their names through `install_tr` (verified against the oracle: all three error for "" and 10001-byte names).
+  - `tests/r/lang/empty-name.R` (recorded in `robigo-oracle:4.5.0`) pins all five sites, the 10000/10001 boundary, and that `parse` itself still accepts the empty lhs.
+- Result: 4 cases pass, 0 regressions (`TestSimpleAssignment|TestSimpleParsing|TestParser` slice green; attach/env2list/ls/postoenv fail for unrelated argument-validation reasons).
 - Status: kept (PR pending).
