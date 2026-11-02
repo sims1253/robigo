@@ -7,13 +7,15 @@
 # libR). The results land in .robigo/natives/<pkg>/<pkg>.so, where
 # scripts/robigo-home.sh installs them into robigo's R_HOME.
 #
-# Usage: scripts/build-natives.sh [PKG...]        (default: stats)
+# Usage: scripts/build-natives.sh [PKG...]
+#   (default: every base package with native code that robigo has no port
+#   of; stats last, as the only one that needs static LAPACK and BLAS)
 #   R_HOME   GNU R 4.5.0 (its etc/Makeconf gives compilers and flags)
 #   RSRC     the R 4.5.0 sources (default ~/.cache/robigo-research/rsrc/
 #            R-4.5.0; downloaded from CRAN and checked when missing)
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-pkgs=${*:-stats}
+pkgs=${*:-tools parallel utils grDevices graphics grid splines stats}
 gnu=${R_HOME:-$(R RHOME)}
 RSRC=${RSRC:-$HOME/.cache/robigo-research/rsrc/R-4.5.0}
 out=$root/.robigo/natives
@@ -98,7 +100,9 @@ SAFE_FFLAGS="$(conf SAFE_FFLAGS) $(conf FPICFLAGS)"
 # -Bsymbolic-functions binds the package's calls to its own global
 # functions at link time (they are internal; nothing may interpose
 # them), so the loader does not resolve ~700 self-references per run.
-LINKFLAGS="-Wl,--as-needed -Wl,-Bsymbolic-functions -Wl,-Bstatic $(conf LAPACK_LIBS) $(conf BLAS_LIBS) -Wl,-Bdynamic $(conf FLIBS)"
+LINKFLAGS="-Wl,--as-needed -Wl,-Bsymbolic-functions"
+LINALG="-Wl,-Bstatic $(conf LAPACK_LIBS) $(conf BLAS_LIBS) -Wl,-Bdynamic"
+FLIBS=$(conf FLIBS)
 
 # the file list of a package Makefile.in variable (continuation lines joined)
 sources() {
@@ -140,7 +144,7 @@ for pkg in $pkgs; do
     # the package's own libraries (grDevices: -lz); AQUA_LIBS is macOS's.
     # Words still holding unexpanded make/autoconf variables ($(BLAS_LIBS),
     # @R_OPENMP_CFLAGS@) are dropped: stats' static LAPACK/BLAS objects
-    # come via $LINKFLAGS below instead.
+    # come via $LINALG below instead.
     pkglibs=$(sources "$src/Makefile.in" PKG_LIBS | sed 's/\$(AQUA_LIBS)//' | tr -s ' \n' '\n' | grep -vE '[$@]' | tr '\n' ' ')
     # R's libR provides xerbla (src/main/print.c: BLAS/LAPACK errors
     # become R errors); the static LAPACK objects would otherwise pull
@@ -159,6 +163,9 @@ void xerbla_(const char *srname, int *info, size_t srname_len)
 }
 EOF
     $CC $CFLAGS -c "$obj/xerbla.c" -o "$obj/xerbla.o" 2>> "$obj/cc.log"
-    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $pkglibs $LINKFLAGS
+    # (Only what asks for it: static LAPACK is not on every machine.)
+    linalg=
+    if grep -qE 'BLAS_LIBS|LAPACK_LIBS' "$src/Makefile.in"; then linalg=$LINALG; fi
+    $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $pkglibs $LINKFLAGS $linalg $FLIBS
     echo "build-natives: $out/$pkg/$pkg.so"
 done
