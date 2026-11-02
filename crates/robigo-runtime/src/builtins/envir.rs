@@ -20,6 +20,7 @@ pub static DEFS: &[Builtin] = &[
     internal("new.env", do_new_env, 3),
     internal("parent.env", do_parent_env, 1),
     internal("parent.env<-", do_set_parent_env, 2),
+    internal("env.profile", do_env_profile, 1),
     internal("environmentName", do_environment_name, 1),
     internal("assign", do_assign, 4).invisible(),
     internal("get", do_get, 4),
@@ -265,6 +266,23 @@ fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         n => n,
     };
     Ok(Value::Env(Env::new_hashed(Some(parent), size)))
+}
+
+// R: envir.c:do_envprofile — profiling information for a hashed
+// environment (size, nchains, counts); NULL for an unhashed one.
+fn do_env_profile(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    super::check_arity(&args, 1, "env.profile", call)?;
+    let Value::Env(e) = arg(&args, 0) else {
+        return Err(Flow::error("argument must be a hashed environment"));
+    };
+    let Some(size) = e.hash_size() else { return Ok(Value::Null) };
+    // Materializes the table, as GNU R's hashed environments always have one.
+    let nchains = e.hash_pri().unwrap_or(0);
+    let counts = e.hash_chains().unwrap_or_default();
+    let counts = counts.iter().map(|c| c.len() as i32).collect::<Vec<_>>();
+    let mut v = Value::list(vec![Value::int(size as i32), Value::int(nchains), Value::ints(counts)]);
+    v.set_attr_raw(s::NAMES, Value::strs_from(["size", "nchains", "counts"]));
+    Ok(v)
 }
 
 fn do_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

@@ -66,7 +66,6 @@ pub static DEFS: &[Builtin] = &[
     internal("asCharacterFactor", do_as_character_factor, 1),
     internal("interruptsSuspended", do_false_any, -1),
     internal("activeBindingFunction", do_active_binding_function, 2),
-    internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
     #[cfg(not(feature = "bytecode-fidelity"))]

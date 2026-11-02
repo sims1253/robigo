@@ -1,0 +1,15 @@
+List of 3
+ $ size   : int 29
+ $ nchains: int 0
+ $ counts : int [1:29] 0 0 0 0 0 0 0 0 0 0 ...
+$size
+[1] 29
+
+$nchains
+[1] 0
+
+$counts
+ [1] 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+
+[1] TRUE
+[1] FALSE
