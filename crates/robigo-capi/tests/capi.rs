@@ -244,6 +244,20 @@ fn the_api() {
         assert_eq!(take_log(), vec!["cleanup jump=0".to_string()]);
         capi::memory::Rf_unprotect(1);
 
+        // ---- R_UnwindProtect with a NULL continuation (context.c:954): the
+        // simple usage, which still continues the unwind after a jump
+        unsafe extern "C" fn null_cont_jump(_: *mut c_void) {
+            unsafe {
+                capi::errors::R_UnwindProtect(fun_error, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), Sexp::NULL);
+                log("not reached: R_UnwindProtect continues the unwind".to_string());
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(null_cont_jump, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["cleanup jump=1".to_string(), "reported: in the body".to_string()]);
+        let r = capi::errors::R_UnwindProtect(fun_ok, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), Sexp::NULL);
+        assert_eq!(*capi::memory::INTEGER(r), 41);
+        assert_eq!(take_log(), vec!["cleanup jump=0".to_string()]);
+
         // ---- warnings may jump (options(warn = 2))
         assert_eq!(capi::errors::R_ToplevelExec(fun_warn, std::ptr::null_mut()), 1);
         assert_eq!(take_log(), vec!["warning: careful".to_string()]);

@@ -532,6 +532,13 @@ pub unsafe extern "C" fn R_UnwindProtect(
     cleandata: *mut c_void,
     cont: Sexp,
 ) -> Sexp {
+    // Simple usage with a NULL continuation token.
+    if cont.is_null() {
+        let cont = crate::memory::Rf_protect(R_MakeUnwindCont());
+        let r = R_UnwindProtect(fun, data, cleanfun, cleandata, cont);
+        crate::memory::Rf_unprotect(1);
+        return r;
+    }
     crate::memory::Rf_protect(cont);
     let r = try_sexp_ptr(fun, data);
     if let Err(t) = r {
