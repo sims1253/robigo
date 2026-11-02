@@ -15,7 +15,10 @@
 
 /* Define to 1 if translation of program messages to the user's native
    language is requested. */
+/* Translations come from glibc: macOS has no libintl.h. */
+#ifndef __APPLE__
 #define ENABLE_NLS 1
+#endif
 
 /* Define to dummy 'main' function (if any) required to link to the Fortran
    libraries. */

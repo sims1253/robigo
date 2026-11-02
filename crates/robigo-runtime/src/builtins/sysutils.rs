@@ -500,7 +500,15 @@ fn do_command_args(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
 fn do_rhome(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     match std::env::var("R_HOME") {
         Ok(h) if !h.is_empty() => Ok(Value::str(&h)),
-        _ => Err(Flow::error("robigo: R.home() is not available: R_HOME is not set")),
+        // No GNU R to borrow a library from: the binary runs on the vendored
+        // base, and the system profile still needs a directory to expand
+        // R_LIBS_SITE against. Nothing is there, so no library is found.
+        _ => {
+            let exe = std::env::current_exe().ok();
+            Ok(Value::str(
+                &exe.as_deref().and_then(|e| e.parent()).unwrap_or(std::path::Path::new(".")).to_string_lossy(),
+            ))
+        }
     }
 }
 
@@ -674,7 +682,9 @@ pub fn init_locale() {
         libc::LC_TIME,
         libc::LC_MONETARY,
         libc::LC_MESSAGES,
+        #[cfg(target_os = "linux")]
         libc::LC_PAPER,
+        #[cfg(target_os = "linux")]
         libc::LC_MEASUREMENT,
     ] {
         unsafe { libc::setlocale(cat, empty.as_ptr()) };
@@ -721,7 +731,9 @@ fn locale_category(code: i32) -> Option<c_int> {
         5 => libc::LC_NUMERIC,
         6 => libc::LC_TIME,
         7 => libc::LC_MESSAGES,
+        #[cfg(target_os = "linux")]
         8 => libc::LC_PAPER,
+        #[cfg(target_os = "linux")]
         9 => libc::LC_MEASUREMENT,
         _ => return None,
     })
@@ -1832,12 +1844,12 @@ fn do_fileinfo(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 fn umask_mask() -> u32 {
     let um = unsafe { libc::umask(0) };
     unsafe { libc::umask(um) };
-    0o777 & !um
+    0o777 & !u32::from(um)
 }
 
 fn chmod_path(path: &str, mode: u32) -> bool {
     let Ok(c) = CString::new(path) else { return false };
-    (unsafe { libc::chmod(c.as_ptr(), mode) }) == 0
+    (unsafe { libc::chmod(c.as_ptr(), mode as libc::mode_t) }) == 0
 }
 
 // R: platform.c:copyFileTime
@@ -2055,7 +2067,7 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             mode = 0o777;
         }
         if use_umask != 0 {
-            mode &= !um;
+            mode &= !u32::from(um);
         }
         let ok = match p {
             Some(p) => chmod_path(&expand_file_name(p), mode),
@@ -2079,7 +2091,7 @@ fn do_sysumask(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             res
         } else {
             i.visible = false;
-            libc::umask(mode as u32)
+            libc::umask(mode as libc::mode_t)
         }
     };
     let ans = Value::int(res as i32);
@@ -2158,7 +2170,10 @@ unsafe extern "C" {
 fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let c = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
     let xz = c(unsafe { lzma_version_string() });
+    #[cfg(target_env = "gnu")]
     let iconv = format!("glibc {}", c(unsafe { libc::gnu_get_libc_version() }));
+    #[cfg(not(target_env = "gnu"))]
+    let iconv = String::new();
     let vals = ["", "", &xz, "", "", "", "", &iconv, "", ""];
     let names = ["zlib", "bzlib", "xz", "libdeflate", "PCRE", "ICU", "TRE", "iconv", "readline", "BLAS"];
     let mut ans = Value::strs_from(vals);
