@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use super::{arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
-use crate::env::{BIND_ACTIVE, Env};
+use crate::env::{BIND_ACTIVE, BIND_LOCKED, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::{Context, Interp};
 use crate::sym::{Sym, s};
@@ -261,11 +261,11 @@ fn do_new_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     Ok(Value::Env(Env::new_hashed(Some(parent), size)))
 }
 
-fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     match s4_as_env(i, arg(&args, 0))? {
         Value::Env(e) => {
             if e.ptr_eq(&i.empty) {
-                return Err(Flow::error_call(call.clone(), "the empty environment has no parent"));
+                return Err(Flow::error("the empty environment has no parent"));
             }
             Ok(e.parent().map(Value::Env).unwrap_or(Value::Null))
         }
@@ -273,15 +273,45 @@ fn do_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     }
 }
 
-fn do_set_parent_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match (s4_as_env(i, arg(&args, 0))?, s4_as_env(i, arg(&args, 1))?) {
-        (Value::Env(e), Value::Env(p)) => {
-            e.set_parent(Some(p));
-            Ok(arg(&args, 0))
-        }
-        (Value::Env(_), _) => Err(Flow::error_call(call.clone(), "'parent' is not an environment")),
-        _ => Err(Flow::error_call(call.clone(), "argument is not an environment")),
+fn do_set_parent_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let raw_env = arg(&args, 0);
+    if raw_env.is_null() {
+        return Err(Flow::error("use of NULL environment is defunct"));
     }
+    let env = match s4_as_env(i, raw_env)? {
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("argument is not an environment")),
+    };
+    if env.ptr_eq(&i.empty) {
+        return Err(Flow::error("can not set parent of the empty environment"));
+    }
+    if env.0.locked.get() {
+        if env.ptr_eq(&i.base_ns) || env.namespace_name().is_some() {
+            return Err(Flow::error("can not set the parent environment of a namespace"));
+        }
+        // R: builtin.c:R_IsImportsEnv — a locked environment whose parent is
+        // the base namespace and whose "name" attribute starts with
+        // "imports:". R-level code creates those with `new.env()` plus
+        // `attr(impenv, "name") <- ...` (rlib/base/R/namespace.R), so the
+        // name is an attribute, not a special name.
+        if env.is_imports_env(&i.base_ns) {
+            return Err(Flow::error("can not set the parent environment of package imports"));
+        }
+    }
+    let raw_parent = arg(&args, 1);
+    if raw_parent.is_null() {
+        return Err(Flow::error("use of NULL environment is defunct"));
+    }
+    let parent = match s4_as_env(i, raw_parent)? {
+        Value::Env(e) => e,
+        _ => return Err(Flow::error("'parent' is not an environment")),
+    };
+    // R: memory.c:SET_ENCLOS — reject a parent chain that closes a cycle.
+    if env.parent_cycle(Some(&parent)) {
+        return Err(Flow::error("cycles in parent chains are not allowed"));
+    }
+    env.set_parent(Some(parent));
+    Ok(arg(&args, 0))
 }
 
 fn do_environment_name(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -594,7 +624,9 @@ fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
     let mut names: Vec<String> =
         syms.into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
-        names.sort();
+        // R: envir.c:do_ls — sorted names go through sortVector(ans, FALSE),
+        // i.e. Scollate, not byte order.
+        names.sort_by(|a, b| super::sort::scollate(a, b));
     }
     names
 }
@@ -978,18 +1010,44 @@ fn do_delayed_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     Ok(Value::Null)
 }
 
-fn do_make_active_binding(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:R_MakeActiveBinding — plain `error()`, so the message is
+    // reported against the context call, not the internal's own call.
     let sym = match arg(&args, 0) {
         Value::Sym(s) => s,
         Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
-        _ => return Err(Flow::error_call(call.clone(), "not a symbol")),
+        _ => return Err(Flow::error("not a symbol")),
     };
     let f = arg(&args, 1);
     if !f.is_function() {
-        return Err(Flow::error_call(call.clone(), "not a function"));
+        return Err(Flow::error("not a function"));
     }
-    let env = env_arg(i, &arg(&args, 2), call, "env")?;
-    env.set_local_flags(sym, f, BIND_ACTIVE);
+    let env = match arg(&args, 2) {
+        Value::Env(e) => e,
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("not an environment")),
+        },
+    };
+    match env.binding_flags(sym) {
+        Some(flags) if flags & BIND_ACTIVE == 0 => {
+            return Err(Flow::error("symbol already has a regular binding"));
+        }
+        Some(flags) if flags & BIND_LOCKED != 0 => {
+            return Err(Flow::error("cannot change active binding if binding is locked"));
+        }
+        Some(_) => {
+            env.set_local_flags(sym, f, BIND_ACTIVE);
+        }
+        None => {
+            // R: envir.c:defineVar fails on a locked environment.
+            if env.0.locked.get() {
+                return Err(Flow::error("cannot add bindings to a locked environment"));
+            }
+            env.set_local_flags(sym, f, BIND_ACTIVE);
+        }
+    }
     Ok(Value::Null)
 }
 
@@ -1063,12 +1121,25 @@ fn do_binding_is_locked(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -
     }
 }
 
-fn do_binding_is_active(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let sym = sym_arg(&arg(&args, 0), call)?;
-    let env = env_arg(i, &arg(&args, 1), call, "env")?;
+fn do_binding_is_active(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:R_BindingIsActive — `error()`, reported against the
+    // context call (`Error: no binding ...` when called from top level).
+    let sym = match arg(&args, 0) {
+        Value::Sym(s) => s,
+        Value::Str(x) if x.data.len() == 1 => Sym::new(x.data[0].as_deref().unwrap_or("")),
+        _ => return Err(Flow::error("not a symbol")),
+    };
+    let env = match arg(&args, 1) {
+        Value::Env(e) => e,
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("not an environment")),
+        },
+    };
     match env.binding_flags(sym) {
         Some(f) => Ok(Value::lgl(f & BIND_ACTIVE != 0)),
-        None => Err(Flow::error_call(call.clone(), format!("no binding for \"{}\"", sym))),
+        None => Err(Flow::error(format!("no binding for \"{}\"", sym))),
     }
 }
 
