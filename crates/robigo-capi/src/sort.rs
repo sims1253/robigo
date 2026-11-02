@@ -422,11 +422,13 @@ pub unsafe extern "C" fn R_qsort_int_I(v: *mut c_int, idx: *mut c_int, i: c_int,
 
 /// Call the host's `.Internal(name(args...))`.
 pub unsafe fn internal(name: &str, args: &[Sexp]) -> Sexp {
-    let mut a = Vec::with_capacity(args.len() + 1);
+    // the host's operation can jump: nothing here may own memory
+    let mut a = [Sexp::NULL; 8];
     let n = std::ffi::CString::new(name).unwrap();
-    a.push(Rf_protect(crate::strings::Rf_mkString(n.as_ptr())));
-    a.extend_from_slice(args);
-    let r = crate::host::op("internal\0", &a);
+    a[0] = Rf_protect(crate::strings::Rf_mkString(n.as_ptr()));
+    drop(n);
+    a[1..=args.len()].copy_from_slice(args);
+    let r = crate::host::op("internal\0", &a[..=args.len()]);
     Rf_unprotect(1);
     r
 }

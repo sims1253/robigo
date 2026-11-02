@@ -101,9 +101,10 @@ pub unsafe extern "C" fn Rf_checkArityCall(op_: Sexp, args: Sexp, call: Sexp) {
                 b.name, b.arity
             ))
         } else {
-            let msg = format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity);
-            let m = std::ffi::CString::new(msg).unwrap_or_default();
-            crate::errors::raise(call, m.as_ptr())
+            crate::errors::errorcall_owned(
+                call,
+                format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity),
+            )
         }
     }
 }

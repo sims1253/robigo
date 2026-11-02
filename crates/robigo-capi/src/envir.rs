@@ -85,21 +85,28 @@ pub unsafe extern "C" fn R_NewEnv(enclos: Sexp, _hash: c_int, _size: c_int) -> S
 pub unsafe extern "C" fn Rf_NewEnvironment(namelist: Sexp, valuelist: Sexp, rho: Sexp) -> Sexp {
     let env = Rf_protect(op("newEnv\0", &[rho]));
     let (mut v, mut n) = (valuelist, namelist);
-    let mut frame = Vec::new();
+    // R_alloc: Rf_defineVar can jump (an active binding, a locked binding)
+    let vmax = vmaxget();
+    let len = Rf_length(valuelist) as usize;
+    let frame = R_alloc(len, std::mem::size_of::<(Sexp, Sexp)>() as c_int) as *mut (Sexp, Sexp);
+    let mut k = 0;
     while v != R_NilValue {
         let tag = if n != R_NilValue { TAG(n) } else { TAG(v) };
-        frame.push((tag, CAR(v)));
+        *frame.add(k) = (tag, CAR(v));
+        k += 1;
         v = CDR(v);
         if n != R_NilValue {
             n = CDR(n);
         }
     }
     // defineVar keeps the first binding of a name, as a frame lookup does
-    for &(tag, val) in frame.iter().rev() {
+    for i in (0..k).rev() {
+        let (tag, val) = *frame.add(i);
         if tag != R_NilValue {
             Rf_defineVar(tag, val, env);
         }
     }
+    vmaxset(vmax);
     Rf_unprotect(1);
     env
 }

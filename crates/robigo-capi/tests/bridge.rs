@@ -287,6 +287,36 @@ fn finalizers_run_with_the_stack_scanned(i: &mut Interp) {
     assert_ne!(top, 0, "the stack was scanned while it ran");
 }
 
+unsafe extern "C" fn run_finalizers_on_a_full_stack() -> Sexp {
+    unsafe {
+        let top = R_PPStackTop;
+        R_PPStackTop = R_PPStackSize;
+        capi::extptr::R_RunPendingFinalizers();
+        R_PPStackTop = top;
+        R_NilValue
+    }
+}
+
+/// A jump out of the finalizer runner must not leave it marked as running
+/// (finalizers would stop for good), and it stops there: GNU R runs each
+/// finalizer in a top-level context.
+fn finalizers_survive_a_jump(i: &mut Interp) {
+    let f = finalized_pointer as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "(no error)");
+    unsafe {
+        let top = core().set_scan_top(0);
+        core().collect();
+        core().set_scan_top(top);
+    }
+    let f = run_finalizers_on_a_full_stack as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "(no error)");
+    SCAN_TOP.set(usize::MAX);
+    let f = finalized_pointer as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "(no error)");
+    BRIDGE.gc(i);
+    assert_ne!(SCAN_TOP.get(), usize::MAX, "finalizers still run");
+}
+
 #[test]
 fn the_bridge() {
     capi::bridge::install();
@@ -299,6 +329,7 @@ fn the_bridge() {
     }
     finalizers_run_with_the_stack_scanned(i);
     replaced_objects_outlive_the_evaluation(i);
+    finalizers_survive_a_jump(i);
     too_many_arguments(i);
     protect_overflow(i);
     raising_altrep_conversions(i);

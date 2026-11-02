@@ -157,14 +157,17 @@ unsafe extern "C" fn m_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_
         if n <= c_int::MAX as usize {
             // Copy before entering R_WriteConnection: its allocation may run
             // finalizers that overwrite a native formatter's static buffer.
-            if n <= 256 {
+            let t = if n <= 256 {
                 let mut scratch = std::mem::MaybeUninit::<[u8; 256]>::uninit();
                 let dst = scratch.as_mut_ptr().cast::<u8>();
                 std::ptr::copy_nonoverlapping(arg.cast::<u8>(), dst, n);
-                R_WriteConnection(con as *mut c_void, dst.cast(), n);
+                write_token(con as *mut c_void, dst.cast(), n)
             } else {
                 let bytes = std::slice::from_raw_parts(arg.cast::<u8>(), n).to_vec();
-                R_WriteConnection(con as *mut c_void, bytes.as_ptr().cast(), n);
+                write_token(con as *mut c_void, bytes.as_ptr().cast(), n)
+            };
+            if t != 0 {
+                crate::errors::jump_host(t);
             }
             return n as c_int;
         }
@@ -176,7 +179,11 @@ unsafe extern "C" fn m_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_
     }
     let bytes = std::slice::from_raw_parts(s as *const u8, r as usize).to_vec();
     libc::free(s as *mut c_void);
-    R_WriteConnection(con as *mut c_void, bytes.as_ptr() as *const c_void, bytes.len());
+    let t = write_token(con as *mut c_void, bytes.as_ptr() as *const c_void, bytes.len());
+    drop(bytes);
+    if t != 0 {
+        crate::errors::jump_host(t);
+    }
     r
 }
 
@@ -262,13 +269,19 @@ pub unsafe extern "C" fn R_GetConnection(s_conn: Sexp) -> *mut c_void {
 // allocations could otherwise overwrite via finalizers).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_WriteConnection(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
-    let num = number_of(con);
-    let bytes = if n == 0 { &[] } else { std::slice::from_raw_parts(buf as *const u8, n) };
-    let t = crate::bridge::write_connection_bytes(num, bytes);
+    let t = write_token(con, buf, n);
     if t != 0 {
         crate::errors::jump_host(t);
     }
     n
+}
+
+/// Write to a connection; a nonzero token is the jump the caller makes
+/// once it dropped what it owns.
+unsafe fn write_token(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
+    let num = number_of(con);
+    let bytes = if n == 0 { &[] } else { std::slice::from_raw_parts(buf as *const u8, n) };
+    crate::bridge::write_connection_bytes(num, bytes)
 }
 
 // R: connections.c:R_ReadConnection

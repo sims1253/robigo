@@ -125,16 +125,15 @@ pub unsafe extern "C" fn R_do_slot(obj: Sexp, name: Sexp) -> Sexp {
         if name == R_NamesSymbol && obj.typ() == VECSXP {
             return value;
         }
-        let input = chars(PRINTNAME(name));
         let class_string = Rf_getAttrib(obj, R_ClassSymbol);
-        if class_string == R_NilValue {
-            error_str_owned(format!(
-                "cannot get a slot (\"{}\") from an object of type \"{}\"",
-                input,
-                type_to_char(obj)
-            ))
-        }
-        error_str_owned(format!("no slot of name \"{}\" for this object of class \"{}\"", input, as_char(class_string)))
+        let input = chars(PRINTNAME(name));
+        let msg = if class_string == R_NilValue {
+            format!("cannot get a slot (\"{}\") from an object of type \"{}\"", input, type_to_char(obj))
+        } else {
+            format!("no slot of name \"{}\" for this object of class \"{}\"", input, as_char(class_string))
+        };
+        drop(input);
+        error_str_owned(msg)
     }
     if value == sym("\u{1}NULL\u{1}") {
         return R_NilValue;
@@ -263,14 +262,12 @@ pub unsafe extern "C" fn Rf_asS4(s: Sexp, flag: c_int, complete: c_int) -> Sexp 
 
 /// The runtime closure behind `x` (closures cross the bridge as handles).
 unsafe fn closure_of(x: Sexp, what: &str) -> std::rc::Rc<robigo_runtime::value::Closure> {
-    match crate::bridge::from_sexp(x) {
-        robigo_runtime::value::Value::Closure(c) => c,
-        _ => error_str_owned(format!(
-            "robigo: {} applied to an object of type '{}', not a closure",
-            what,
-            type_to_char(x)
-        )),
+    let v = crate::bridge::from_sexp(x);
+    if let robigo_runtime::value::Value::Closure(c) = v {
+        return c;
     }
+    drop(v);
+    error_str_owned(format!("robigo: {} applied to an object of type '{}', not a closure", what, type_to_char(x)))
 }
 
 // R: memory.c:R_ClosureFormals
@@ -315,11 +312,13 @@ pub unsafe extern "C" fn R_mkClosure(formals: Sexp, body: Sexp, rho: Sexp) -> Se
         }
         s = s.cdr();
     }
-    let env = match crate::bridge::from_sexp(rho) {
-        robigo_runtime::value::Value::Env(e) => e,
-        _ => error_str("invalid environment"),
+    let rho_value = crate::bridge::from_sexp(rho);
+    let robigo_runtime::value::Value::Env(env) = rho_value else {
+        drop(rho_value);
+        error_str("invalid environment")
     };
     if matches!(body.typ(), CLOSXP | BUILTINSXP | SPECIALSXP | DOTSXP | ANYSXP) {
+        drop(env);
         error_str("invalid body argument for 'function'");
     }
     let formals_vec = match crate::bridge::from_sexp(formals) {

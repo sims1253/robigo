@@ -175,6 +175,12 @@ unsafe fn parse_filename() -> String {
 // R: source.c:parseError
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
+    crate::errors::error_str_owned(parse_error_text(linenum))
+}
+
+unsafe fn parse_error_text(linenum: c_int) -> String {
+    // first: finding the file name can jump
+    let mut filename = if linenum != 0 { parse_filename() } else { String::new() };
     let context: Vec<String> =
         parse_context().iter().map(|l| String::from_utf8_lossy(&tab_expand(l)).into_owned()).collect();
     let msg =
@@ -182,8 +188,7 @@ pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
     let len = context.len();
     let col = R_ParseErrorCol;
     let line = R_ParseContextLine;
-    let text = if linenum != 0 {
-        let mut filename = parse_filename();
+    if linenum != 0 {
         if !filename.is_empty() {
             filename.push(':');
         }
@@ -216,8 +221,7 @@ pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
             1 => format!("{msg} in \"{}\"", context[0]),
             _ => format!("{msg} in:\n\"{}\n{}\"", context[len - 2], context[len - 1]),
         }
-    };
-    crate::errors::error_str_owned(text)
+    }
 }
 
 // R: times.c:currentTime

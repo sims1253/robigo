@@ -419,30 +419,40 @@ thread_local! {
 /// R: memory.c:RunFinalizers -- nested GC may queue more finalizers but
 /// never recursively enters the finalizer runner.
 pub unsafe fn run_finalizers() {
-    if RUNNING_FINALIZERS.with(|r| r.replace(true)) {
-        return;
-    }
-    struct Running;
-    impl Drop for Running {
-        fn drop(&mut self) {
-            RUNNING_FINALIZERS.with(|r| r.set(false));
-        }
-    }
-    let _running = Running;
     // R: memory.c:RunFinalizers walks the references present at entry.
     // References queued by a nested GC wait for a later safe point.
     let count = core().pending_finalizer_count();
+    if count == 0 || RUNNING_FINALIZERS.with(|r| r.replace(true)) {
+        return;
+    }
     for _ in 0..count {
         let Some(w) = core().pop_finalizable() else { break };
-        Rf_protect(w);
         // R: memory.c:RunFinalizers -- isolate errors from the caller and
         // restore its contexts, condition stacks and visibility afterwards.
+        // Each finalizer has its own context, so a jump stops here (the
+        // caller may have none) and the flag below is always reset.
         let visible = R_Visible;
-        crate::host::op("finalizerBegin\0", &[]);
-        crate::extptr::run_finalizer(w);
-        crate::host::op("finalizerEnd\0", &[]);
+        finalizer_context("finalizerBegin\0");
+        let jumped = crate::errors::protect_run(|| {
+            Rf_protect(w);
+            crate::extptr::run_finalizer(w);
+            Rf_unprotect(1);
+        });
+        if let Some(t) = jumped {
+            (crate::host::host().report)(t);
+        }
+        finalizer_context("finalizerEnd\0");
         R_Visible = visible;
-        Rf_unprotect(1);
+    }
+    RUNNING_FINALIZERS.with(|r| r.set(false));
+}
+
+/// The host's finalizer context operations; they have nothing to raise.
+unsafe fn finalizer_context(op: &'static str) {
+    let mut out = Sexp::NULL;
+    let t = crate::host::try_op(op, &[], &mut out);
+    if t != 0 {
+        (crate::host::host().discard)(t);
     }
 }
 

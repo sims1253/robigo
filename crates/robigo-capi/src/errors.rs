@@ -163,14 +163,40 @@ pub fn nmath_warnings() {
 
 #[cold]
 fn nmath_flush() {
+    // A warning can jump (options(warn = 2)): the queue is gone first.
+    let mut token = 0;
     for w in robigo_numerics::take_warnings() {
-        if let Ok(c) = std::ffi::CString::new(w) {
-            unsafe { Rf_warning(c"%s".as_ptr(), c.as_ptr()) }
+        token = unsafe { warning_token(&w) };
+        if token != 0 {
+            break;
         }
+    }
+    if token != 0 {
+        unsafe { jump_host(token) }
     }
     // R: memory.c:R_chk_calloc — nmath's failed allocation is an error
     if let Some(msg) = robigo_numerics::take_alloc_error() {
         unsafe { error_str_owned(msg) }
+    }
+}
+
+/// Signal a warning with GNU R's truncation; a nonzero token is the jump
+/// the caller makes once it dropped what it owns.
+unsafe fn warning_token(msg: &str) -> usize {
+    let buf = scratch();
+    let n = msg.len().min(R_WARN_LENGTH);
+    buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
+    buf[n] = 0;
+    warning_buf(buf, msg.len() > R_WARN_LENGTH);
+    (host().warning)(Sexp::NULL, buf.as_ptr() as *const c_char, 0)
+}
+
+/// `warning()` with an owned message.
+pub unsafe fn warning_owned(msg: String) {
+    let t = warning_token(&msg);
+    drop(msg);
+    if t != 0 {
+        jump_host(t);
     }
 }
 

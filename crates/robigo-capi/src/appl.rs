@@ -185,8 +185,11 @@ pub unsafe extern "C" fn Rf_allocLang(n: c_int) -> Sexp {
 // R: util.c:UNIMPLEMENTED_TYPE
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNIMPLEMENTED_TYPE(s: *const c_char, x: Sexp) -> ! {
-    let what = std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned();
-    crate::errors::error_str_owned(format!("unimplemented type '{}' in '{}'\n", crate::util::type_name(x.typ()), what))
+    crate::errors::error_str_owned(format!(
+        "unimplemented type '{}' in '{}'\n",
+        crate::util::type_name(x.typ()),
+        std::ffi::CStr::from_ptr(s).to_string_lossy()
+    ))
 }
 
 // R: sort.c's Rf_ name for rPsort
@@ -227,10 +230,7 @@ pub unsafe extern "C" fn Rf_deparse1(call: Sexp, _abbrev: c_int, opts: c_int) ->
 unsafe fn label(label: *const c_char, nchar: c_int, len: usize, what: &str) {
     let nc = if nchar < 0 { len as c_int } else { nchar };
     if nc > 255 {
-        crate::errors::Rf_warning(
-            c"%s".as_ptr(),
-            std::ffi::CString::new(format!("invalid character length in '{what}'")).unwrap().as_ptr(),
-        );
+        crate::errors::warning_owned(format!("invalid character length in '{what}'"));
     } else if nc > 0 {
         let b = std::slice::from_raw_parts(label as *const u8, nc as usize);
         let mut s = b.to_vec();
@@ -294,8 +294,16 @@ pub unsafe extern "C" fn realp0_(
 ) {
     label(l, *nchar, len, "realpr");
     let n = (*ndata).max(0) as usize;
-    let d: Vec<f64> = (0..n).map(|k| *data.add(k) as f64).collect();
-    print_vec(robigo_core::types::REALSXP, d.as_ptr() as *const u8, n as c_int, 8)
+    if n == 0 {
+        return;
+    }
+    let v = Rf_protect(try_alloc_vector(robigo_core::types::REALSXP, n));
+    let d = v.std_data() as *mut f64;
+    for k in 0..n {
+        *d.add(k) = *data.add(k) as f64;
+    }
+    crate::envir::Rf_PrintValue(v);
+    Rf_unprotect(1);
 }
 
 #[unsafe(no_mangle)]
@@ -374,8 +382,7 @@ pub unsafe extern "C" fn rexitc_(msg: *const c_char, nchar: *const c_int, _len: 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rwarnc_(msg: *const c_char, nchar: *const c_int, _len: usize) {
-    let m = std::ffi::CString::new(fortran_msg(msg, *nchar, "warning")).unwrap_or_default();
-    crate::errors::Rf_warning(c"%s".as_ptr(), m.as_ptr());
+    crate::errors::warning_owned(fortran_msg(msg, *nchar, "warning"));
 }
 
 #[unsafe(no_mangle)]

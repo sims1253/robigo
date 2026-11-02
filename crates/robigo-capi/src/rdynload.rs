@@ -237,11 +237,10 @@ pub unsafe extern "C" fn R_GetCCallable(package: *const c_char, name: *const c_c
     if let Some(&f) = CCALLABLES.as_ref().and_then(|t| t.get(&(p.clone(), n.clone()))) {
         return f;
     }
-    error_str_owned(format!(
-        "function '{}' not provided by package '{}'",
-        String::from_utf8_lossy(&n),
-        String::from_utf8_lossy(&p)
-    ))
+    let msg =
+        format!("function '{}' not provided by package '{}'", String::from_utf8_lossy(&n), String::from_utf8_lossy(&p));
+    drop((p, n));
+    error_str_owned(msg)
 }
 
 // ---- entry points for the host ----------------------------------------------

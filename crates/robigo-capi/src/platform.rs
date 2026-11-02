@@ -132,7 +132,9 @@ pub unsafe extern "C" fn Rf_mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n:
             n = n.wrapping_sub(1);
         }
     }
-    error_str_owned(format!("invalid multibyte string at '{}'", String::from_utf8_lossy(&err)))
+    let msg = format!("invalid multibyte string at '{}'", String::from_utf8_lossy(&err));
+    drop(err);
+    error_str_owned(msg)
 }
 
 // R: envir.c:R_NewHashedEnv (robigo's environments size themselves)
