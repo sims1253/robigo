@@ -1102,25 +1102,18 @@ fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) ->
             None => return Err(Flow::error("not an environment")),
         },
     };
-    match env.binding_flags(sym) {
-        Some(flags) if flags & BIND_ACTIVE == 0 => {
-            return Err(Flow::error("symbol already has a regular binding"));
-        }
-        Some(flags) if flags & BIND_LOCKED != 0 => {
-            return Err(Flow::error("cannot change active binding if binding is locked"));
-        }
-        Some(_) => {
-            env.set_local_flags(sym, f, BIND_ACTIVE);
-        }
-        None => {
-            // R: envir.c:defineVar fails on a locked environment.
-            if env.0.locked.get() {
-                return Err(Flow::error("cannot add bindings to a locked environment"));
-            }
-            env.set_local_flags(sym, f, BIND_ACTIVE);
-        }
-    }
+    make_active_binding(sym, f, &env)?;
     Ok(Value::Null)
+}
+
+// R: envir.c:R_MakeActiveBinding
+pub(crate) fn make_active_binding(sym: Sym, fun: Value, env: &Env) -> RResult<()> {
+    match env.binding_flags(sym) {
+        Some(f) if f & BIND_ACTIVE == 0 => Err(Flow::error("symbol already has a regular binding")),
+        Some(f) if f & BIND_LOCKED != 0 => Err(Flow::error("cannot change active binding if binding is locked")),
+        _ if env.set_local_flags(sym, fun, BIND_ACTIVE) => Ok(()),
+        _ => Err(Flow::error("cannot add bindings to a locked environment")),
+    }
 }
 
 fn do_lock_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

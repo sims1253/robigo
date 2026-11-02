@@ -2,7 +2,7 @@
 //! `attach`/`detach` (GNU R's envir.c).
 
 use super::{arg, internal, special};
-use crate::env::Env;
+use crate::env::{BIND_ACTIVE, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::{Sym, s};
@@ -194,32 +194,45 @@ fn do_get_ns_registry(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResul
     Ok(Value::Env(i.ns_registry.clone()))
 }
 
-fn do_import_into_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let (Value::Env(imp), Value::Env(exp)) = (arg(&args, 0), arg(&args, 2)) else {
-        return Err(Flow::error_call(call.clone(), "bad environment"));
+// R: envir.c:do_importIntoEnv -- promises are not forced and active bindings
+// are preserved.
+fn do_import_into_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let mut environment = |v: Value, what: &str| match v {
+        Value::Null => Err(Flow::error("use of NULL environment is defunct")),
+        Value::Env(e) => Ok(e),
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => Ok(e),
+            None => Err(Flow::error(format!("bad {what} environment argument"))),
+        },
     };
+    let imp = environment(arg(&args, 0), "import")?;
+    let exp = environment(arg(&args, 2), "export")?;
     let (Value::Str(impn), Value::Str(expn)) = (arg(&args, 1), arg(&args, 3)) else {
-        return Err(Flow::error_call(call.clone(), "invalid 'names' argument"));
+        return Err(Flow::error("invalid 'names' argument"));
     };
     if impn.data.len() != expn.data.len() {
-        return Err(Flow::error_call(call.clone(), "length of import and export names must match"));
+        return Err(Flow::error("length of import and export names must match"));
     }
     for (a, b) in impn.data.iter().zip(expn.data.iter()) {
-        let (Some(a), Some(b)) = (a, b) else { continue };
-        let bsym = Sym::new(b);
+        let impsym = Sym::new(a.as_deref().unwrap_or("NA"));
+        let expsym = Sym::new(b.as_deref().unwrap_or("NA"));
         let mut cur = Some(exp.clone());
         let mut found = None;
         while let Some(e) = cur {
-            if let Some(v) = e.get_local(bsym) {
-                found = Some(v);
+            if let Some(v) = e.get_local(expsym) {
+                found = Some((v, e.binding_flags(expsym).unwrap_or(0)));
                 break;
             }
             cur = e.parent();
         }
-        let Some(v) = found else {
-            return Err(Flow::error_call(call.clone(), format!("exported symbol '{}' has no value", b)));
+        let Some((val, flags)) = found else {
+            return Err(Flow::error(format!("exported symbol '{}' has no value", expsym)));
         };
-        i.define(Sym::new(a), v, &imp)?;
+        if flags & BIND_ACTIVE != 0 {
+            super::envir::make_active_binding(impsym, val, &imp)?;
+        } else {
+            i.define(impsym, val, &imp)?;
+        }
     }
     Ok(Value::Null)
 }
