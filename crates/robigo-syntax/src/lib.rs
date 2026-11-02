@@ -24,8 +24,9 @@ pub use parser::{ConsoleStatus, parse_console, parse_program, parse_program_with
 /// column of the character at `offset` (so it is one past the last counted
 /// character).
 pub fn line_col(src: &str, offset: usize) -> (usize, usize) {
-    let offset = offset.min(src.len());
-    let before = &src[..offset];
+    // An error can point at the byte after a lead byte, as gram.c counts
+    // bytes: the character it falls in is the one being reported.
+    let before = &src[..floor_char_boundary(src, offset)];
     let line = before.matches('\n').count() + 1;
     let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let mut col = 0usize;

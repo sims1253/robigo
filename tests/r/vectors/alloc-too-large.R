@@ -1,0 +1,31 @@
+# Lengths far past any address space: R signals a catchable error where an
+# infallible Rust allocation would abort the process.
+big <- 1e15
+try_it <- function(expr) {
+    cat(tryCatch({ expr; "allocated" }, error = function(e) conditionMessage(e)), "\n")
+}
+try_it(numeric(big))
+try_it(integer(big))
+try_it(logical(big))
+try_it(character(big))
+try_it(raw(big))
+try_it(vector("list", big))
+try_it(vector("expression", big))
+try_it(rep(0, big))
+try_it(rep(1:2, big))
+try_it(rep("a", big))
+try_it(rep(list(1), big))
+try_it(rep(0, each = big))
+try_it(rep_len(0, big))
+try_it(rep(numeric(), length.out = big))
+try_it(rep_len(numeric(), big))
+try_it(rep.int(0, big))
+try_it(seq(0, 1, length.out = big))
+try_it({ x <- 1; length(x) <- big })
+try_it({ l <- list(1); length(l) <- big })
+try_it(matrix(0, 1e8, 1e8))
+try_it(matrix("a", 1e8, 1e8))
+try_it(array(0L, c(1e8, 1e8)))
+try_it(diag(1e8))
+try_it(outer(1:1e8, 1:1e8))
+cat("survived\n")

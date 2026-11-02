@@ -11,6 +11,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
+use crate::memory::{Elt, check_vector, try_vec};
 use crate::sym::{Sym, s};
 use crate::value::*;
 
@@ -158,7 +159,8 @@ fn corrupt() -> Flow {
 impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn bytes(&mut self, n: usize) -> RResult<&'a [u8]> {
-        if self.pos + n > self.data.len() {
+        // The length is the file's: `pos + n` can overflow.
+        if n > self.data.len() - self.pos {
             return Err(Flow::error("error reading from connection"));
         }
         let b = &self.data[self.pos..self.pos + n];
@@ -474,7 +476,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let hflags = self.int()? as u32;
                 if hflags & 255 == VECSXP {
                     let n = self.length()?;
-                    let mut table = Vec::with_capacity(n);
+                    let mut table = try_vec(n, Elt::List)?;
                     for _ in 0..n {
                         let chain = self.read_frame()?;
                         table.push(chain.iter().map(|c| c.0).collect::<Vec<Sym>>());
@@ -561,7 +563,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             CPLXSXP => {
                 let n = self.length()?;
-                let mut out = Vec::with_capacity(n);
+                let mut out = try_vec(n, Elt::Cplx)?;
                 for _ in 0..n {
                     let re = self.real()?;
                     let im = self.real()?;
@@ -571,7 +573,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             STRSXP => {
                 let n = self.length()?;
-                let mut out = Vec::with_capacity(n);
+                let mut out = try_vec(n, Elt::Str)?;
                 for _ in 0..n {
                     let f = self.int()? as u32;
                     if f & 255 != CHARSXP {
@@ -586,7 +588,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             VECSXP | EXPRSXP => {
                 let n = self.length()?;
-                let mut out = Vec::with_capacity(n);
+                let mut out = try_vec(n, Elt::List)?;
                 for _ in 0..n {
                     out.push(self.read_item()?);
                 }
@@ -594,7 +596,8 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             BCODESXP => {
                 let nreps = self.int()?;
-                let mut reps = vec![Value::Null; nreps.max(0) as usize];
+                let mut reps = try_vec(nreps.max(0) as usize, Elt::List)?;
+                reps.resize(nreps.max(0) as usize, Value::Null);
                 #[cfg(not(feature = "bytecode-fidelity"))]
                 {
                     self.read_bc(&mut reps)?
@@ -611,7 +614,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let n = self.length()?;
                 let b = match self.format {
                     Format::Ascii => {
-                        let mut v = Vec::with_capacity(n);
+                        let mut v = try_vec(n, Elt::Raw)?;
                         for _ in 0..n {
                             let w = self.word()?;
                             v.push(u8::from_str_radix(&w, 16).map_err(|_| Flow::error("read error"))?);
@@ -653,7 +656,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             return Err(Flow::error("names in persistent strings are not supported yet"));
         }
         let len = self.int()?;
-        let mut out = Vec::with_capacity(len.max(0) as usize);
+        let mut out = try_vec(len.max(0) as usize, Elt::Str)?;
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
             out.push(self.read_charsxp(f >> 12)?);
@@ -855,7 +858,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
         let n = self.int()?;
-        let mut out = Vec::with_capacity(n.max(0) as usize);
+        let mut out = try_vec(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
             let c = match ty {
@@ -1370,7 +1373,7 @@ pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
     let reps = b.rep_values.get().expect("completed bytecode repetition table");
     let result = (|| -> RResult<Vec<Value>> {
         let n = reader.bc_int()?;
-        let mut out = Vec::with_capacity(n.max(0) as usize);
+        let mut out = try_vec(n.max(0) as usize, Elt::List)?;
         for index in 0..n.max(0) {
             let ty = reader.bc_int()? as u32;
             let value = match ty {
@@ -1579,24 +1582,32 @@ fn altrep_unserialize(info: &Value, state: &Value) -> RResult<Value> {
     match class.as_str() {
         "compact_intseq" => {
             let st = match state {
-                Value::Real(v) => v.data.clone(),
+                Value::Real(v) if v.data.len() == 3 => v.data.clone(),
                 _ => return Err(corrupt()),
             };
             let (n, n1, inc) = (st[0] as i64, st[1] as i64, st[2] as i64);
             if inc != 1 && inc != -1 {
                 return Err(Flow::error(format!("compact sequences with increment {} not supported yet", inc)));
             }
+            if n < 0 {
+                return Err(corrupt());
+            }
+            check_vector(n as usize, Elt::Int)?;
             Ok(Value::compact_intseq(n as usize, n1, inc))
         }
         "compact_realseq" => {
             let st = match state {
-                Value::Real(v) => v.data.clone(),
+                Value::Real(v) if v.data.len() == 3 => v.data.clone(),
                 _ => return Err(corrupt()),
             };
             let (n, n1, inc) = (st[0] as i64, st[1], st[2]);
             if inc != 1.0 && inc != -1.0 {
                 return Err(Flow::error(format!("compact sequences with increment {:.6} not supported yet", inc)));
             }
+            if n < 0 {
+                return Err(corrupt());
+            }
+            check_vector(n as usize, Elt::Real)?;
             Ok(Value::compact_realseq(n as usize, n1, inc))
         }
         c if c.starts_with("wrap_") => match state {
