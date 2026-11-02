@@ -86,6 +86,30 @@ unsafe extern "C" fn nothing() -> Sexp {
     unsafe { R_NilValue }
 }
 
+// ---- finalizers -----------------------------------------------------------
+
+thread_local! {
+    /// `Core::scan_top` when the last C finalizer ran (usize::MAX: none ran).
+    static SCAN_TOP: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+unsafe extern "C" fn note_scan_top(_: Sexp) {
+    unsafe {
+        let top = core().set_scan_top(0);
+        core().set_scan_top(top);
+        SCAN_TOP.set(top);
+    }
+}
+
+unsafe extern "C" fn finalized_pointer() -> Sexp {
+    unsafe {
+        let p = capi::memory::Rf_protect(capi::extptr::R_MakeExternalPtr(std::ptr::null_mut(), R_NilValue, R_NilValue));
+        capi::extptr::R_RegisterCFinalizer(p, note_scan_top);
+        capi::memory::Rf_unprotect(1);
+        R_NilValue
+    }
+}
+
 // ---- the tests ------------------------------------------------------------
 
 /// A protect stack that is full raises GNU R's error, also where no
@@ -120,6 +144,17 @@ fn raising_altrep_conversions(i: &mut Interp) {
     assert_eq!(capi::unwind_depth(), 0);
 }
 
+/// A finalizer is C code like any other: gc() must not leave the stack
+/// scan off while it runs, or a collection inside it misses its locals.
+fn finalizers_run_with_the_stack_scanned(i: &mut Interp) {
+    let f = finalized_pointer as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "(no error)");
+    BRIDGE.gc(i);
+    let top = SCAN_TOP.get();
+    assert_ne!(top, usize::MAX, "the finalizer ran");
+    assert_ne!(top, 0, "the stack was scanned while it ran");
+}
+
 #[test]
 fn the_bridge() {
     capi::bridge::install();
@@ -130,6 +165,7 @@ fn the_bridge() {
     if std::env::var_os("ROBIGO_GCTORTURE").is_some() {
         unsafe { core().set_torture(true) };
     }
+    finalizers_run_with_the_stack_scanned(i);
     protect_overflow(i);
     raising_altrep_conversions(i);
 }

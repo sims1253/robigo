@@ -2324,15 +2324,17 @@ impl NativeBridge for Bridge {
             // gc() from R with no C code active: nothing on the
             // machine stack can hold a core object
             let old = if outer { core().set_scan_top(0) } else { 0 };
-            crate::host::robigo_gc();
+            core().collect();
             if outer {
                 core().set_scan_top(old);
             }
+            // Finalizers are C code: the scan is back on, so a collection
+            // inside one sees its locals.
+            crate::util::safe_point();
         });
         drain_dead();
-        // After the collection and its finalizers (safe_point inside
-        // robigo_gc): the weak-reference round is over, so what only dead
-        // cycles reach can be reclaimed.
+        // After the collection and its finalizers: the weak-reference
+        // round is over, so what only dead cycles reach can be reclaimed.
         unsafe { reclaim_host_cycles() };
     }
 }
