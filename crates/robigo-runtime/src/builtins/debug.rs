@@ -126,11 +126,21 @@ fn check_x(args: &[Arg], call: &Value) -> RResult<()> {
 
 thread_local! {
     /// debug.c's RTRACE bit: which objects `tracemem()` marked. Copy
-    /// reporting (`memtrace_report`) needs allocator hooks and prints raw
-    /// addresses no recording can match; the flag and the address strings
-    /// are what R-level code observes.
+    /// reporting (`memtrace_report`) prints raw addresses no recording can
+    /// match (the corpus masks those lines wholesale), but the flag, the
+    /// address strings and the report *lines* are what R-level code
+    /// observes.
     static TRACED: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// R's `R_current_trace_state()`: something is traced, so copies of it
+    /// report. Read on the subassign paths; kept off the VM's hot paths.
+    static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// R: memory.c:R_current_trace_state — true while any object is traced.
+#[inline]
+pub fn tracing_active() -> bool {
+    TRACING.get()
 }
 
 /// The object's address, debug.c's `snprintf(buffer, 21, "<%p>", object)`.
@@ -168,6 +178,31 @@ fn address_string(p: usize) -> Value {
     Value::str(&format!("<{:p}>", p as *const ()))
 }
 
+/// `Rc::make_mut` reporting the copy of a traced vector: R's
+/// `memtrace_report` ("tracemem[<old> -> <new>]: <context>"), with the
+/// empty context an interpreted run has (R prints the byte-code trace
+/// buffer, which is empty without compiled code). Used by the replacement
+/// paths, whose callers hold the interp.
+#[inline]
+pub fn make_mut_reported<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>>) -> &'a mut Vector<T> {
+    if tracing_active() {
+        return make_mut_reported_cold(i, rc);
+    }
+    Rc::make_mut(rc)
+}
+
+#[cold]
+#[inline(never)]
+fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>>) -> &'a mut Vector<T> {
+    let old = Rc::as_ptr(rc) as usize;
+    let v = Rc::make_mut(rc);
+    let new = v as *const Vector<T> as usize;
+    if old != new && TRACED.with(|t| t.borrow().contains(&old)) {
+        i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
+    }
+    v
+}
+
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).
 fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "tracemem", call)?;
@@ -191,6 +226,7 @@ fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let p = object_ptr(&args[0].value);
     // R: debug.c:do_tracemem sets RTRACE unconditionally, even if set.
     TRACED.with(|t| t.borrow_mut().insert(p));
+    TRACING.set(true);
     Ok(address_string(p))
 }
 
@@ -201,7 +237,11 @@ fn do_untracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     if matches!(args[0].value, Value::Closure(_) | Value::Builtin(_)) {
         return Err(Flow::error_call(call.clone(), "argument must not be a function"));
     }
-    TRACED.with(|t| t.borrow_mut().remove(&object_ptr(&args[0].value)));
+    TRACED.with(|t| {
+        let mut t = t.borrow_mut();
+        t.remove(&object_ptr(&args[0].value));
+        TRACING.set(!t.is_empty());
+    });
     Ok(Value::Null)
 }
 
@@ -228,9 +268,16 @@ fn do_retracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
         Value::Null
     };
     if !previous.is_null() {
-        // SET_RTRACE(object, 1); the "tracemem[<previous> -> new]" report
-        // prints raw addresses and is left unimplemented.
+        // SET_RTRACE(object, 1); memtrace_report: "tracemem[<previous> ->
+        // new]: " — the previous address keeps its <> (debug.c's FIXME
+        // notes the same), the context is empty in interpreted runs.
         TRACED.with(|t| t.borrow_mut().insert(p));
+        TRACING.set(true);
+        if let Value::Str(s) = &previous {
+            if let Some(prev) = s.data[0].as_deref() {
+                i.write_out(&format!("tracemem[{} -> 0x{:x}]: \n", prev, p));
+            }
+        }
     }
     Ok(ans)
 }
