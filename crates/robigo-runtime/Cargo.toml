@@ -35,7 +35,7 @@ liblzma = "0.4"
 # regex-automata for POSIX ERE (leftmost-longest via a DFA), fancy-regex for
 # perl = TRUE (look-around, back-references) and EREs with back-references.
 regex-automata = "0.4"
-fancy-regex = "0.16"
+fancy-regex = "0.20"
 
 [features]
 # Count executed VM ops by kind; printed to stderr when the interpreter
