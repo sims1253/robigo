@@ -14,6 +14,9 @@
 //! Environment:
 //!   ROBIGO_CONF_FILTER=substr   only run matching scripts
 //!   ROBIGO_CONF_DIFF=1          print diffs for failures
+//!   ROBIGO_CONF_RESULTS=path    write the results of an unfiltered run in
+//!                               scripts/corpus.py's result format (corpus
+//!                               `conformance`), for the progress page
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -239,6 +242,24 @@ fn check(root: &Path, script: &Path) -> Outcome {
     Outcome { rel, stdout_ok, stderr_ok, status_ok, diff }
 }
 
+/// The run as `{"summary": {...}, "results": [{"id", "pass"}]}`, the shape
+/// of scripts/corpus.py's result files, which scripts/history.py reads.
+fn write_results(path: &Path, results: &[Outcome], pass: &BTreeSet<String>) {
+    let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    let rows: Vec<String> =
+        results.iter().map(|r| format!("{{\"id\": {}, \"pass\": {}}}", q(&r.rel), pass.contains(&r.rel))).collect();
+    let doc = format!(
+        "{{\"summary\": {{\"corpus\": \"conformance\", \"cases\": {}, \"pass\": {}}},\n\"results\": [\n{}\n]}}\n",
+        results.len(),
+        pass.len(),
+        rows.join(",\n")
+    );
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(path, doc).unwrap_or_else(|e| panic!("writing {}: {}", path.display(), e));
+}
+
 #[test]
 fn conformance() {
     let root = root();
@@ -312,6 +333,9 @@ fn conformance() {
         n_err_ok,
         n_status_ok
     );
+    if let (Some(path), None) = (std::env::var_os("ROBIGO_CONF_RESULTS"), &filter) {
+        write_results(Path::new(&path), &results, &pass);
+    }
     if !new_passes.is_empty() {
         eprintln!("newly passing (not yet ratcheted):");
         for p in &new_passes {

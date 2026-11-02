@@ -11,7 +11,9 @@ image per merge). A line holds what CI measured for that commit:
 
 - `perf`: instruction counts of every benchmark (scripts/perf.py) for
   robigo and GNU R, and whether robigo's output was wrong;
-- `corpora`: passing and scored cases of every corpus (scripts/corpus.py);
+- `corpora`: passing and scored cases of every corpus (scripts/corpus.py),
+  and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs);
+- `gaps`: the failing case ids of every corpus with at most GAPS_MAX of them;
 - `builtins`: GNU R's .Primitive/.Internal functions robigo implements.
 
 `add` reads a directory of CI artifacts (perf.json, corpus result files,
@@ -47,7 +49,12 @@ CORPORA = {
     "r-intro": "An Introduction to R",
     "cran-purer": "Pure-R CRAN packages",
     "capi": "C API",
+    "conformance": "Conformance scripts",
 }
+# The open gaps: a commit records the failing case ids of every corpus with
+# at most this many, so the page can list them (known failures that agents
+# add as unmarked conformance scripts or corpus cases show up here).
+GAPS_MAX = 500
 BUILTINS_LABEL = ".Primitive/.Internal builtins"
 # Benchmark groups by name prefix, in display order.
 GROUPS = [
@@ -110,7 +117,7 @@ def entry_from(d, sha, date, title, run=None):
     e = {"sha": sha, "date": date, "title": title}
     if run:
         e["run"] = int(run)
-    corpora, shards = {}, {}
+    corpora, shards, failing = {}, {}, {}
     for top, _, files in os.walk(d):
         for fn in files:
             path = os.path.join(top, fn)
@@ -129,7 +136,8 @@ def entry_from(d, sha, date, title, run=None):
             elif fn.endswith(".json"):
                 with open(path) as f:
                     try:
-                        s = json.load(f).get("summary")
+                        doc = json.load(f)
+                        s = doc.get("summary")
                     except (ValueError, AttributeError):
                         continue
                 if not isinstance(s, dict) or "corpus" not in s:
@@ -137,6 +145,10 @@ def entry_from(d, sha, date, title, run=None):
                 c = corpora.setdefault(s["corpus"], [0, 0])
                 c[0] += s["pass"]
                 c[1] += s["cases"]
+                results = doc.get("results")
+                if isinstance(results, list):
+                    failing.setdefault(s["corpus"], []).extend(
+                        r["id"] for r in results if isinstance(r, dict) and "id" in r and not r.get("pass"))
                 m = re.search(r"\.shard(\d+)of(\d+)\.json$", fn)
                 i, n = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
                 shards.setdefault(s["corpus"], [n, set()])[1].add(i)
@@ -151,6 +163,11 @@ def entry_from(d, sha, date, title, run=None):
     done = {k: v for k, v in corpora.items() if len(shards[k][1]) == shards[k][0]}
     if done:
         e["corpora"] = done
+        # Only when the result files list every case (older ones may not).
+        gaps = {k: sorted(failing.get(k, [])) for k, (p, n) in done.items()
+                if len(failing.get(k, [])) == n - p and 0 < n - p <= GAPS_MAX}
+        if gaps:
+            e["gaps"] = gaps
     return e
 
 
@@ -483,6 +500,7 @@ td.note {{ color: var(--muted); }}
   border: 1px solid var(--grid); border-radius: 6px; padding: 6px 8px; font-size: 12px; max-width: 360px;
   box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; white-space: normal; }}
 details summary {{ cursor: pointer; color: var(--ink2); }}
+ul.gaps {{ columns: 2 280px; margin: 8px 0 16px; padding-left: 20px; font-size: 13px; }}
 </style>
 </head>
 <body>
@@ -509,6 +527,10 @@ a program whose output differs from GNU R's does not count.</p>
 <tr><th>corpus</th><th class="n">passing</th><th class="n">cases</th><th class="n">share</th></tr>
 {corpus_rows}
 </table>
+<h2>Open gaps at <code>{gap_sha7}</code></h2>
+<p>Cases robigo still fails, per corpus with at most a few hundred. A known gap is a conformance script or corpus
+case with GNU R's recorded output and no ratchet marker yet: CI tracks it without failing on it.</p>
+{gaps}
 <h2>Every commit</h2>
 <details><summary>{n_commits} commits</summary>
 <div class="scroll"><table>
@@ -558,6 +580,14 @@ for (const fig of document.querySelectorAll("figure")) {{
 </body>
 </html>
 """
+
+
+def gap_path(corpus, cid):
+    """The repository file of a failing case, or None (cases.jsonl corpora)."""
+    for p in (cid, f"tests/corpora/{corpus}/cases/{cid}.R"):
+        if p.endswith(".R") and os.path.isfile(os.path.join(ROOT, p)):
+            return p
+    return None
 
 
 def figure(make, *args):
@@ -615,6 +645,18 @@ def cmd_render(a):
             p, n = corp_e["corpora"][k]
             crows.append(f'<tr><td>{E(CORPORA.get(k, k))} <span class="meta">({E(k)})</span></td>'
                          f'<td class="n">{p:,}</td><td class="n">{n:,}</td><td class="n">{fmt_pct(p / n)}</td></tr>')
+    gap_blocks = []
+    for k in corpus_order((corp_e or {}).get("gaps", {})):
+        ids = corp_e["gaps"][k]
+        items = []
+        for cid in ids:
+            path = gap_path(k, cid)
+            label = f"<code>{E(cid)}</code>"
+            items.append(f'<li><a href="{a.repo_url}/blob/{corp_e["sha"]}/{E(path)}">{label}</a></li>' if path
+                         else f"<li>{label}</li>")
+        gap_blocks.append(f'<details><summary>{E(CORPORA.get(k, k))} <span class="meta">({E(k)})</span>: '
+                          f'{len(ids):,} failing</summary><ul class="gaps">{"".join(items)}</ul></details>')
+    gaps = ("\n".join(gap_blocks) if gap_blocks else "<p>No open gaps recorded.</p>")
     cnames = corpus_order({k for e in entries for k in e.get("corpora", {})})
     hrows = []
     for e in reversed(entries):
@@ -630,6 +672,7 @@ def cmd_render(a):
         font=FONT, repo_url=a.repo_url, sha=last["sha"], sha7=last["sha"][:7], date=last["date"][:10],
         speed=figure(speed_svg, entries, ser), groups=figure(groups_svg, entries, ser),
         compat=figure(compat_svg, entries, ser), bench_rows="\n".join(rows), corpus_rows="\n".join(crows),
+        gaps=gaps, gap_sha7=(corp_e or last)["sha"][:7],
         n_commits=len(entries), corpus_heads="".join(f'<th class="n">{E(k)}</th>' for k in cnames),
         history_rows="\n".join(hrows))
     with open(os.path.join(a.out, "index.html"), "w") as f:
