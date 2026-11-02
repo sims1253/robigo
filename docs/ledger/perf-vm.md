@@ -6,6 +6,99 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-02: round 17, sorted-input fast paths in the radix sort
+
+- Base: main bd4cddb8 (with #206), binaries `.robigo/perf/{base,cand}-r18`
+  built sequentially in this tree. Full both-runtime table
+  `.robigo/perf/full-base-r18.json`: geomean **0.4678 over 75 correct
+  programs, faster on 74** — the one slower program is `robigo/sortorder`
+  at 1.084x (this round takes it to ~0.90x); next-worst are
+  `binarytrees` 0.895, `fib` 0.856, `profiler-shared` 0.802,
+  `vecarith` 0.783 (the call-overhead cluster).
+- Why: idiom measurement (`scripts/idiom-vs-r.py`, n=1000, vs GNU R 4.5.0
+  with the corrected oracle env) had `order()` at **1.36x** and `sort()`
+  at 1.25x GNU R — but only for *sorted or reversed* input; random input
+  and large n were already faster (n=1e6: 0.75-0.89x). GNU R's
+  radixsort.c runs `isorted`/`dsorted` first: a sorted column short-
+  circuits to the identity order (with the group runs collected during
+  the scan) and a strictly reversed one to a single `reverse`, before any
+  counting or radix pass; robigo always sorted.
+- Change (`builtins/sort.rs` only):
+  - Ports of `radixsort.c:isorted` and `dsorted` in `radix_group`: for
+    integer/logical and real columns, one scan of the elements in the
+    current order — already sorted (ties allowed) keeps `o` and returns
+    the run lengths (also for `nalast == 0` all-NA groups, as R's -2);
+    strictly reversed reverses `o` (all runs 1); anything else falls
+    through. Ties are equal keys, exactly the radix path's grouping.
+  - The counting branch of `radix_sort_keys` moved to a dedicated
+    `counting_runs` (R's `icount` structure): the run lengths are
+    collected during the cumulate instead of a second pass over the
+    sorted keys, no `sorted` keys vector is built, and the first
+    column's scatter reads the identity directly instead of copying
+    `o`. Dispatch now also requires `range <= n`, as R's `isort` does
+    (a range larger than the vector goes to the radix path), and the
+    min/max scan of the keys is shared with the radix path (it was paid
+    twice in the first cut, +1.75% on `robigo/vecops`, now -0.4%).
+- Result:
+  - Idioms (robigo per iteration, n=1000, vs GNU R): `order(1000:1)`
+    217,965 -> **153,926 (-29%, 1.36x -> 1.17x)**; `order(1:1000,
+    decreasing=TRUE)` 218,110 -> 154,014; `sort(1000:1)` 374,059 ->
+    317,703 (-15%); `order(sample(1000))` 220,025 -> 206,397 (-6%).
+  - New suite benchmark `robigo/sortorder` (sorted, reversed, random,
+    tied, multi-key and factor ordering; output matches GNU R):
+    **-13.45%** paired against the same-tree base.
+  - Full-suite gate paired against `cand-r16b`: **0 faster, 0 slower
+    (> 0.5%), 0 broken** (worst +0.03%, `robigo/vecops` -0.41%).
+- Verified: fixture `tests/r/basics/radix-sorted-input.R` (sorted,
+  reversed, near-sorted, ties, grouping `ends`/`maxgrpn` attributes,
+  NA last/first/dropped, all-NA, NaN, rounded-double ties, multi-key
+  with mixed `decreasing`, rank, sort.list, factors, logicals),
+  recorded with GNU R 4.5.0 — passes byte-for-byte; conformance 9/9 on
+  the branch.
+- Known remaining gap (wrapper, not sort): `order()`/`sort()` of sorted
+  materialized input still trail GNU R ~1.2x because the R-level
+  wrappers (`match.arg`, `list(...)`, `lengths`, ~20 small calls) cost
+  about twice GNU R's per call — the fib-class call-overhead track.
+- Tracked gaps (conformance/benchmark pins):
+  - `order()`/`sort()` materialize compact sequences (`1:30000`) that
+    GNU R scans in place through ALTREP metadata (`order(1:1000)` is
+    1.4x); pinned by the `sc` (compact reversed) line of
+    `benchmarks/suite/sortorder.R`.
+  - the R-wrapper call overhead above is pinned by the same benchmark.
+  - `icheck` at `i32::MIN` with `decreasing=TRUE` (C int wrap in GNU R,
+    i64 in the port) matches GNU R byte for byte and is pinned by
+    `tests/r/basics/order-int-min.R`.
+
+## 2026-11-02: round 18, sprintf's %d and %s conversions off the Rust format machinery
+
+- Base: the round-17 branch (same tree).
+- Why: `sprintf("%05d:%s", 1:500, "ab")` measured **1.15x GNU R**
+  (1,289,352 vs 1,121,611 per 500-element call). GNU R snprintfs into a
+  stack buffer; robigo's `cfmt_int`/`cfmt_str` went through
+  `format!`/`core::fmt::pad` (~288 of ~2900 instructions per output
+  element were `core::fmt`).
+- Change (`builtins/sprintf.rs` only): `cfmt_int` builds signed decimal
+  `%d`/`%i` without precision or `#` directly (digits into a stack
+  buffer, sign and zero/space padding applied by hand, exactly glibc's
+  order: sign before zero padding); `cfmt_str` returns the string
+  unchanged when there is no width, precision or flag. Everything else
+  takes the existing paths unchanged.
+- Result: `sprintf("%05d:%s", n, "ab")` 1,289,352 -> **1,037,752
+  (-19.5%), 1.15x -> 0.93x of GNU R**; `sprintf("%d items", n)` 0.85x.
+  Verified against GNU R 4.5.0 over a 305-line matrix of specs
+  (`%d %5d %-5d %05d %+d % d %+05d %05.3d %.3d %.0d %u %x %X %o %#x %#o
+  %c %s %10s %-10s %.2s %10.3s %e %g %.3e %12.4f %+e % a`) x
+  {0,1,-1,42,-42,INT_MAX,-INT_MAX+1,NA,3.5,"abc"} plus `%n$d`, `%*d`
+  and recycling — byte-identical (`/tmp/sp-eq.R` shape, kept in the PR
+  description; the suite's `robigo/strings` covers sprintf).
+- Tracked gap: `do_sprintf` still reparses the format string for every
+  output element (`strcspn` + `Vec<u8>` copy + `from_utf8_lossy` per
+  spec per element) exactly as GNU R re-walks it, but R walks C
+  buffers; ours allocates. Pre-parsing each of the `nfmt` format
+  strings once would keep outputs identical. Pinned by
+  `benchmarks/suite/strings.R` (`sprintf` line).
+
+
 ## 2026-11-01: round 16, constant and symbol closure bodies compile and inline
 
 - Base: main fb002dc0, saved binary `.robigo/perf/base-r16`, fresh full
