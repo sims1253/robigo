@@ -53,3 +53,13 @@
   - `crates/robigo-syntax/src/lib.rs`: `CONSOLE_SRCNAME = "<input>"`, used by `dump.rs`, `builtins/parsing.rs` and the REPL instead of three literals.
 - Result: 31,231 of 31,374 pass on this branch (+2 cases, 0 regressions). `library/utils/TestUtils/{7e10,868c}` fail only locally: they need the prebuilt native routines CI ships via `ROBIGO_NATIVES`.
 - Status: kept.
+
+## 2026-11-01: round 5 - SET_ENCLOS cycle check and R_IsImportsEnv
+
+- Topic: `builtins/TestBuiltin_parentenvassign` (3 cases: `parent.env(baseenv()) <- ...`, imports environments)
+- Changes:
+  - `crates/robigo-runtime/src/env.rs`: `Env::parent_cycle` ports the parent-chain walk in `SET_ENCLOS` (`src/main/memory.c:4667`), so reparenting an environment below one of its descendants errors with `cycles in parent chains are not allowed` (GNU R reaches this for `parent.env(baseenv()) <- globalenv()`, because the base *package* environment is not a namespace).
+  - `Env::is_imports_env` ports `R_IsImportsEnv` (`src/main/builtin.c:384`), including the `LENGTH(name) == 1` gate.
+  - `crates/robigo-runtime/src/builtins/envir.rs`: `do_set_parent_env` uses the helper and the cycle check.
+- Result: 31,231 of 31,374 pass on this branch (+3 cases, 0 regressions); `parentenvassign` 11/11, `tests/r/basics` unchanged.
+- Status: kept.
