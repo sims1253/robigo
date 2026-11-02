@@ -39,16 +39,27 @@ fi
 curl_prefix=
 if [ ! -f "$build/src/include/config.h" ] && [ ! -x "$(command -v curl-config)" ]; then
     curl_prefix=$out/curl-prefix
+    # curl-config inside the prefix marks a COMPLETE extraction: the .debs
+    # unpack into prefix.tmp, published in one move, so an interrupted run
+    # cannot leave a half prefix that later runs reuse.
     if [ ! -f "$curl_prefix/prefix/usr/bin/curl-config" ]; then
         echo "build-natives: no curl-config; fetching libcurl debs into $curl_prefix" >&2
         mkdir -p "$curl_prefix"
-        (cd "$curl_prefix" && { apt-get download libcurl4-openssl-dev libcurl4t64 ||
-            apt-get download libcurl4-openssl-dev libcurl4 ; } >download.log 2>&1 &&
-            for d in *.deb; do dpkg-deb -x "$d" prefix/; done) || {
-            echo "build-natives: could not provision libcurl (see $curl_prefix/download.log);" >&2
+        if ! (cd "$curl_prefix" && { apt-get download libcurl4-openssl-dev libcurl4t64 ||
+                apt-get download libcurl4-openssl-dev libcurl4 ; } >download.log 2>&1); then
+            echo "build-natives: could not download libcurl (see $curl_prefix/download.log);" >&2
             echo "  install libcurl4-openssl-dev or set CPPFLAGS/LDFLAGS to a curl prefix" >&2
             exit 1
-        }
+        fi
+        # Every extraction must succeed: this runs inside a condition, where
+        # set -e is off and a later .deb could hide an earlier failure.
+        if ! (cd "$curl_prefix" && rm -rf prefix.tmp && mkdir prefix.tmp &&
+                for d in *.deb; do dpkg-deb -x "$d" prefix.tmp/ || exit 1; done &&
+                mv prefix.tmp prefix); then
+            echo "build-natives: could not extract the libcurl debs" >&2
+            rm -rf "$curl_prefix/prefix.tmp"
+            exit 1
+        fi
     fi
     p=$curl_prefix/prefix
     PATH="$p/usr/bin:$PATH"
