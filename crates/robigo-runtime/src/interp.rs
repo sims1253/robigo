@@ -164,6 +164,7 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                                     if let Some(ref v) = res {
                                         q.set_value(v.clone());
                                         *q.env.borrow_mut() = None;
+                                        q.note_c_forced();
                                     }
                                     return res;
                                 }
@@ -452,6 +453,7 @@ impl Interp {
             if let Some(v) = plain_value(&env, *sym) {
                 p.set_value(v.clone());
                 *p.env.borrow_mut() = None;
+                p.note_c_forced();
                 self.visible = true;
                 return Ok(v);
             }
@@ -474,6 +476,7 @@ impl Interp {
         let v = r?;
         p.set_value(v.clone());
         *p.env.borrow_mut() = None;
+        p.note_c_forced();
         Ok(v)
     }
 
