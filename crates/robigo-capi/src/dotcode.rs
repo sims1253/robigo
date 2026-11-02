@@ -49,7 +49,16 @@ pub unsafe extern "C" fn robigo_dotcall(
     let before = R_PPStackTop;
     let r = crate::errors::try_call65(fun, &mut a);
     let after = R_PPStackTop;
-    R_PPStackTop = base;
+    // R: dotcode.c:do_dotcall hands the result straight back with no
+    // allocation between the call and its use. robigo safe-points (and
+    // the caller converts and writes back) in that window, so the result
+    // must stay protected until `from_sexp` preserves it: keep one
+    // protection for it and pop only the arguments and headroom.
+    let r = match r {
+        Ok(v) => Ok(crate::memory::Rf_protect(v)),
+        t => t,
+    };
+    R_PPStackTop = base + usize::from(r.is_ok());
     if !info.is_null() {
         (*info).pp_before = PP_HEADROOM;
         (*info).pp_after = PP_HEADROOM + (after - before);

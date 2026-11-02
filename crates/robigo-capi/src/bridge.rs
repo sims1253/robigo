@@ -1858,6 +1858,9 @@ unsafe fn call_routine_ctx(
 
 unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     ensure_ready(interp);
+    if std::env::var_os("ROBIGO_TRACE_ROUTINES").is_some() {
+        eprintln!("TRACE enter {}::{} if={:?}", r.package, r.name, r.interface);
+    }
     let base = R_PPStackTop;
     let res = match r.interface {
         Interface::Call => {
@@ -1904,6 +1907,9 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
                 write_back(&a.value, x, &mut originals);
             }
             stack_imbalance(interp, ".Call", &info);
+            if std::env::var_os("ROBIGO_TRACE_ROUTINES").is_some() {
+                eprintln!("TRACE call {}::{} t={} out_typ={} out_addr={:x}", r.package, r.name, t, out.typ(), out.addr());
+            }
             result(t, out)
         }
         Interface::External => {
@@ -1936,9 +1942,18 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
                 crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
             };
             stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
+            if std::env::var_os("ROBIGO_TRACE_ROUTINES").is_some() {
+                eprintln!("TRACE ext {}::{} t={} out_typ={} out_addr={:x}", r.package, r.name, t, out.typ(), out.addr());
+            }
             result(t, out)
         }
-        Interface::C | Interface::Fortran => dot_c(interp, call, r, args, env),
+        Interface::C | Interface::Fortran => {
+            let res = dot_c(interp, call, r, args, env);
+            if std::env::var_os("ROBIGO_TRACE_ROUTINES").is_some() {
+                eprintln!("TRACE cdone {}::{}", r.package, r.name);
+            }
+            res
+        }
     };
     R_PPStackTop = base;
     drain_dead();
