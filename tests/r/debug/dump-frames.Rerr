@@ -1,0 +1,2 @@
+Error in g(a * 2) : dumped
+Calls: f -> g

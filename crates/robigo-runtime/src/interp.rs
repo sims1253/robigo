@@ -79,6 +79,7 @@ pub struct Interp {
     pub stack_base: usize,
     pub stack_limit: usize,
     pub depth: usize,
+    /// The `error` option is running (R: inError == 3 in errors.c).
     pub in_error: bool,
     /// An interactive `q()` error in `.Last` is unwinding to the top
     /// level. R_dot_Last sets the top-level contexts, so the caller's

@@ -1,0 +1,42 @@
+[1] "invalid value for 'error'"
+[1] "invalid value for 'error'"
+[1] "invalid value for 'error'"
+[1] "call"
+(function () 
+cat("function handler\n"))()
+function handler
+continued after a function handler
+[1] 4
+[[1]]
+f()
+
+[[2]]
+g()
+
+[[3]]
+stop("boom")
+
+[[4]]
+(function () 
+{
+    print(sys.nframe())
+    print(sys.calls())
+    cat(geterrmessage())
+})()
+
+Error in g() : boom
+Calls: f -> g
+quoted handler, frame 0 
+expression(cat("first\n"), cat("second\n"))
+first
+second
+tryCatch
+inner tryCatch
+handler before on.exit
+on.exit
+handler with pending warnings
+continued after an error in the handler
+on.exit
+on.exit still ran
+[1] "left through a restart"
+NULL

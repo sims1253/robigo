@@ -38,7 +38,7 @@ pub static DEFS: &[Builtin] = &[
     internal("gettext", do_gettext, 3),
     internal("ngettext", do_ngettext, 4),
     internal("bindtextdomain", do_bindtextdomain, 2),
-    internal("traceback", do_null1, 1),
+    internal("traceback", do_traceback, 1),
     internal("debug", do_debug, 3).invisible(),
     internal("undebug", do_undebug, 1).invisible(),
     internal("isdebugged", do_isdebugged, 1),
@@ -844,6 +844,27 @@ fn do_make_lazy(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_null(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Null)
+}
+// R: errors.c:do_traceback, R_GetTraceback
+fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let skip = as_integer(&arg(&args, 0));
+    if skip == NA_INTEGER || skip < 0 {
+        return Err(Flow::error("invalid 'skip' value"));
+    }
+    // R: deparse.c:deparse1m
+    let lines = usize::try_from(i.option_int("deparse.max.lines", 0)).ok().filter(|&n| n > 0);
+    let calls = i.traceback_calls(skip as usize);
+    let deparsed = calls.iter().map(|call| {
+        let text = crate::deparse::deparse_lines(
+            call,
+            crate::deparse::DEFAULT_CUTOFF,
+            true,
+            crate::deparse::DEFAULTDEPARSE,
+            lines,
+        );
+        Arg::pos(Value::strs_from(text.iter().map(String::as_str)))
+    });
+    Ok(Value::pairlist(deparsed.collect()))
 }
 fn do_null1(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Null)

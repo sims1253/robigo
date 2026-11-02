@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RError, RResult};
 use crate::interp::Interp;
-use crate::sym::s;
+use crate::sym::{Sym, s};
 use crate::value::*;
 
 const LONGWARN: usize = 75;
@@ -291,14 +291,17 @@ impl Interp {
 
     /// Default error handling: print the message and unwind to top level.
     pub fn default_error(&mut self, call: &Value, msg: &str) -> Flow {
+        if self.in_error {
+            return self.error_during_wrapup(msg);
+        }
         let mut text = format_error_message(call, msg);
-        self.errmsg = text.clone();
         if !call.is_null() {
             let tb = self.concise_traceback(call);
             if !tb.is_empty() {
                 text.push_str(&format!("Calls: {}\n", tb));
             }
         }
+        self.errmsg = text.clone();
         // R: errors.c:verrorcall_dflt -- R_ShowErrorMessages (the
         // `show.error.messages` option) gates the printing, not the
         // unwinding; rlang's signal_abort stops() with it off to avoid
@@ -310,6 +313,17 @@ impl Interp {
                 self.print_warnings();
             }
         }
+        // R: errors.c:jump_to_top_ex
+        let have_handler = match self.run_error_option() {
+            Ok(have) => have,
+            Err(f) => return f,
+        };
+        self.print_warnings();
+        // Only a session that goes on can read it.
+        if self.interactive || have_handler || self.option_lgl("catch.script.errors", false) {
+            let calls = self.traceback_calls(0).into_iter().map(Arg::pos).collect();
+            self.base.force_set(Sym::new(".Traceback"), Value::pairlist(calls));
+        }
         // R: errors.c:restore_inError
         self.restore_expressions();
         Flow::Error(Box::new(RError {
@@ -318,6 +332,51 @@ impl Interp {
             signaled: true,
             classes: vec![],
         }))
+    }
+
+    /// R: errors.c:jump_to_top_ex -- evaluate `options("error")` with the
+    /// stack of the error still live. Returns whether the option is set.
+    fn run_error_option(&mut self) -> RResult<bool> {
+        let Some(option) = self.get_option("error").filter(|o| !o.is_null()) else {
+            return Ok(false);
+        };
+        let exprs = match &option {
+            Value::Lang(_) => std::slice::from_ref(&option),
+            Value::Expr(v) => v.data.as_slice(),
+            _ => {
+                self.write_err("invalid option \"error\"\n");
+                return Ok(true);
+            }
+        };
+        let global = self.global.clone();
+        self.in_error = true;
+        let r = exprs.iter().try_for_each(|e| self.eval(e, &global).map(drop));
+        self.in_error = false;
+        r.map(|()| true)
+    }
+
+    /// R: errors.c:verrorcall_dflt -- the fail-safe for an error while the
+    /// `error` option runs, which jumps to the top level.
+    fn error_during_wrapup(&mut self, msg: &str) -> Flow {
+        self.write_err(&format!("Error during wrapup: {msg}\n"));
+        if !self.warnings.is_empty() {
+            self.warnings.clear();
+            self.write_err("Lost warning messages\n");
+        }
+        self.write_err("Error: no more error handlers available (recursive errors?); invoking 'abort' restart\n");
+        self.restore_expressions();
+        Flow::Error(Box::new(RError {
+            message: String::new(),
+            call: Some(Value::Null),
+            signaled: true,
+            classes: vec![],
+        }))
+    }
+
+    /// The calls of the frames on the stack, innermost first, without the
+    /// `skip` innermost ones. R: errors.c:R_GetTracebackOnly.
+    pub(crate) fn traceback_calls(&self, skip: usize) -> Vec<Value> {
+        self.frames.iter().rev().filter(|c| !c.builtin).skip(skip).map(|c| c.call.clone()).collect()
     }
 
     pub fn concise_traceback(&self, call: &Value) -> String {
@@ -413,7 +472,7 @@ impl Interp {
 
     pub fn warning_default(&mut self, call: &Value, msg: &str) -> RResult<()> {
         let w = self.option_int("warn", 0);
-        if w < 0 {
+        if w < 0 || self.in_error {
             return Ok(());
         }
         if w >= 2 {

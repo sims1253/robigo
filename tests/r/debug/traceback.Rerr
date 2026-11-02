@@ -1,0 +1,11 @@
+Error in g(x + 1) : boom 2
+Calls: f -> g
+Error in g(x + 1) : boom 3
+Calls: h -> f -> g
+Error: at top level
+Error in x + "a" : non-numeric argument to binary operator
+Calls: k
+Error in print.zz(structure(1, class = "zz")) : in a method
+Calls: p -> print -> print.zz
+Error in long() : long
+Calls: call_with_long_args -> long
