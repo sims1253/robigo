@@ -695,3 +695,44 @@ fn alloc_vector_rejects_a_non_vector_type() {
 fn try_alloc_vector_rejects_a_non_vector_type() {
     Core::new().try_alloc_vector(ENVSXP, 1000);
 }
+
+/// A C++ `throw` is `_Unwind_RaiseException`, and `__cxa_throw` calls
+/// `std::terminate` when that returns. It returns end-of-stack only if phase
+/// 1 stops at the shim; otherwise it finds a handler above the shim
+/// (libtest's `catch_unwind` here, a package's `catch` in real life) and
+/// phase 2 takes the exception through Rust frames.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_foreign_exception_stops_at_the_c_shim() {
+    use std::ffi::{c_int, c_void};
+    const URC_END_OF_STACK: c_int = 5;
+
+    #[repr(C, align(16))]
+    struct UnwindException {
+        class: u64,
+        cleanup: usize,
+        private: [u64; 6],
+    }
+    unsafe extern "C-unwind" {
+        fn _Unwind_RaiseException(e: *mut UnwindException) -> c_int;
+    }
+    /// A package callback that throws: reports what the raise returned.
+    unsafe extern "C-unwind" fn throw(result: *mut c_int) {
+        let mut e = UnwindException { class: u64::from_be_bytes(*b"robigoT\0"), cleanup: 0, private: [0; 6] };
+        // SAFETY: `e` is a well-formed exception object that outlives the
+        // call, and `result` is the caller's local.
+        unsafe { *result = _Unwind_RaiseException(&mut e) };
+    }
+
+    let mut raised: c_int = -1;
+    let mut args = [std::ptr::null_mut::<c_void>(); 65];
+    args[0] = (&raw mut raised).cast();
+    let mut out = std::ptr::null_mut();
+    let thrower = throw as unsafe extern "C-unwind" fn(*mut c_int);
+    // SAFETY: `throw` reads one argument of the 65 and returns nothing, so
+    // `out` receives a meaningless word that is never read.
+    let unwound =
+        unsafe { robigo_core::unwind::robigo_try_call65(thrower as *const c_void, args.as_mut_ptr(), &mut out) };
+    assert_eq!(unwound, 0, "the callback returned");
+    assert_eq!(raised, URC_END_OF_STACK);
+}

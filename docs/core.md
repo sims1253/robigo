@@ -338,7 +338,7 @@ and use `R_UnwindProtect` to get control back). robigo keeps GNU R's
 model at the C boundary:
 
 - A **context stack** of `jmp_buf`s lives in a tiny C shim
-  (`robigo-capi/src/shim.c`; Rust cannot call `setjmp`). Every entry from
+  (`robigo-core/src/shim.c`; Rust cannot call `setjmp`). Every entry from
   robigo into C code (the bridge's `.Call`), every `R_ToplevelExec`,
   `R_tryCatch`, `R_UnwindProtect`, `R_ExecWithCleanup` pushes one.
 - `Rf_error`/`Rf_errorcall` (C-variadic, defined in Rust: stable since
@@ -375,10 +375,18 @@ model at the C boundary:
   invokes a restart): the warning callback returns a token like errors.
 - *C++ exceptions*: an exception escaping a package's callback is fatal in
   GNU R too (it unwinds into C frames without unwind tables and
-  terminates); robigo's callback types stay `extern "C"`, so it aborts
-  deterministically instead of unwinding through Rust. Rcpp and cpp11
-  catch their exceptions and convert them through `R_UnwindProtect`,
-  which is the path that must work (gate).
+  terminates). Declaring robigo's callback types `extern "C"` does not give
+  that by itself: a `catch` further up would let the unwinder through. The
+  shim is compiled without unwind tables for this, so the unwinder's search
+  phase ends at the innermost shim frame, finds no handler, and `__cxa_throw`
+  calls `std::terminate` before any frame is unwound. Every entry into
+  package code has a shim frame below it, so the abort is deterministic on
+  Linux with GCC and Clang (tested with a real `throw` under a `catch`; on
+  macOS the flags are applied if accepted, unmeasured). A `catch` between the
+  `throw` and that shim frame, with Rust API frames between them (C++ calling
+  `INTEGER()` on an ALTREP class whose method throws), is outside this. Rcpp
+  and cpp11 catch their exceptions and convert them through
+  `R_UnwindProtect`, which is the path that must work (gate).
 - Rust panics never cross into C (`extern "C"` aborts on unwind); C++
   exceptions never cross into robigo (packages catch their own).
 - Warnings (`Rf_warning`, `Rf_warningcall`) go to the host's warning

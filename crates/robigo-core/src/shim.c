@@ -5,7 +5,10 @@
  *   R_ToplevelExec, R_UnwindProtect, ...) goes through robigo_try, and
  *   Rf_error & co. leave through robigo_jump, exactly like GNU R's
  *   contexts (src/main/context.c).
- * - The register spill for the conservative stack scan. */
+ * - The register spill for the conservative stack scan.
+ *
+ * Built without unwind tables (build.rs): nothing may unwind through these
+ * frames, and without tables a C++ exception cannot. */
 #include <setjmp.h>
 #include <stdlib.h>
 
