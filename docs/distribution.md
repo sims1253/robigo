@@ -9,7 +9,8 @@ Experimental, version `0.0.1`. There are no stable versioned releases
 yet. What exists:
 
 - **Nightly binaries** (rolling `nightly` GitHub release, built daily
-  from `main` when it moved).
+  from `main` when it moved). The Linux ones are profile-guided
+  (`scripts/pgo-build.sh`).
 - **crates.io** for the self-contained leaf crates
   (`robigo-syntax`, `robigo-numerics`, `robigo-core`).
 - Everything else (the full runtime, `libR.so`, the CLI) via the

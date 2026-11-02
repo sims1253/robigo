@@ -13,6 +13,10 @@ on:
         description: Build even if main has not moved since the last nightly
         type: boolean
         default: false
+      dry_run:
+        description: Build the binaries without publishing a release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,12 +45,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          # A dry run tests the branch it was started on.
+          ref: ${{ inputs.dry_run == true && github.ref || 'main' }}
           fetch-depth: 0
           fetch-tags: true
       - id: decide
         run: |
-          sha=$(git rev-parse origin/main)
+          sha=$(git rev-parse HEAD)
           date=$(date -u +%F)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "date=$date" >> "$GITHUB_OUTPUT"
@@ -63,8 +68,41 @@ jobs:
             echo "main $sha already has a nightly; skipping"
           fi
 
-  build:
+  # Profile-guided optimization needs GNU R 4.5.0's library to train on, and
+  # the oracle's container has it. Its newer glibc must not reach the binaries,
+  # so only the profile leaves this job. macOS has no such R and stays without
+  # (scripts/pgo-build.sh).
+  profile:
     needs: check
+    if: needs.check.outputs.proceed == 'true'
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: ./.github/actions/setup
+      - run: rustup component add llvm-tools
+      - env:
+          ROBIGO_RELEASE: nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.sha }}
+        run: scripts/pgo-build.sh profile ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.target }}
+          path: .robigo/pgo/robigo.profdata
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    needs: [check, profile]
     if: needs.check.outputs.proceed == 'true'
     timeout-minutes: 60
     strategy:
@@ -84,10 +122,20 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zlib1g-dev libbz2-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: profile-${{ matrix.target }}
+          path: .robigo/profile
       - name: Build
         env:
           ROBIGO_RELEASE: nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.sha }}
-        run: cargo build --release --locked -p robigo-cli --target ${{ matrix.target }}
+        run: |
+          if [ -f .robigo/profile/robigo.profdata ]; then
+            scripts/pgo-build.sh use .robigo/profile/robigo.profdata ${{ matrix.target }}
+          else
+            cargo build --release --locked -p robigo-cli --target ${{ matrix.target }}
+          fi
       - name: "Smoke test (no GNU R installed: vendored base only)"
         run: |
           bin="target/${{ matrix.target }}/release/robigo"
@@ -109,7 +157,7 @@ jobs:
 
   release:
     needs: [check, build]
-    if: needs.check.outputs.proceed == 'true'
+    if: needs.check.outputs.proceed == 'true' && inputs.dry_run != true
     runs-on: ubuntu-24.04
     permissions:
       contents: write
