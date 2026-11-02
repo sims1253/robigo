@@ -62,6 +62,20 @@ unsafe extern "C" fn h_op(name: *const c_char, a: *const Sexp, n_args: c_int, o:
             unsafe { *o = capi::memory::Rf_allocSExp(ENVSXP as c_uint) };
             0
         }
+        // connection 3: "file" on "data.csv", open for reading
+        "connInfo" => {
+            unsafe {
+                let info = capi::memory::Rf_protect(capi::memory::Rf_allocVector(VECSXP as u32, 4));
+                for (k, s) in [c"file", c"data.csv", c"r"].iter().enumerate() {
+                    capi::memory::SET_VECTOR_ELT(info, k as isize, capi::strings::Rf_mkString(s.as_ptr()));
+                }
+                capi::memory::SET_VECTOR_ELT(info, 3, capi::memory::Rf_allocVector(LGLSXP as u32, 7));
+                std::ptr::write_bytes(capi::memory::LOGICAL(capi::memory::VECTOR_ELT(info, 3)), 0, 7);
+                capi::memory::Rf_unprotect(1);
+                *o = info;
+            }
+            0
+        }
         "findVarInFrame" if args.len() == 2 => {
             let sym = args[1];
             let x_sym = unsafe { capi::strings::Rf_install(c"x".as_ptr()) };
@@ -503,6 +517,14 @@ fn the_api() {
         assert_eq!(capi::memory::LENGTH(raw_read) as usize, exact_len);
         capi::memory::Rf_unprotect(1);
 
+        // ---- a connection's strings stay where C saw them
+        let con = capi::connections::getConnection(3);
+        let (class, description) = ((*con).class, (*con).description);
+        assert_eq!(CStr::from_ptr(description).to_bytes(), b"data.csv");
+        assert_eq!(capi::connections::getConnection(3), con);
+        assert_eq!((*con).class, class);
+        assert_eq!((*con).description, description, "a saved con->description stays valid");
+
         // ---- corrupt lengths are R errors: an RAWSXP of 2^47 bytes from the
         // long-vector form, and a length past what ReadLENGTH accepts
         static mut CORRUPT: Vec<u8> = Vec::new();
@@ -550,6 +572,32 @@ fn the_api() {
         // stub writes none of it, so this costs address space only)
         assert_eq!(corrupt(0, (1 << 31) + 10, 24), 1, "read through");
         assert!(take_log().is_empty());
+    }
+}
+
+/// The offsets context.rs uses come from the C compiler; on this platform
+/// they are the ones measured against GNU R's Defn.h.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn rcntxt_offsets_are_gnu_rs() {
+    assert_eq!(R::context::rcntxt_offsets(), [8, 272, 280]);
+}
+
+/// R: unix/system.c:Rf_initialize_R. These are data packages read directly.
+#[test]
+fn console_data_is_initialized() {
+    use std::ffi::CStr;
+    unsafe extern "C" {
+        static R_GUIType: *const std::ffi::c_char;
+        static R_Outputfile: *mut libc::FILE;
+        static R_Consolefile: *mut libc::FILE;
+    }
+    unsafe {
+        capi::state::console_init();
+        assert_eq!(CStr::from_ptr(R_GUIType).to_bytes(), b"X11");
+        assert!(!R_Outputfile.is_null() && !R_Consolefile.is_null());
+        assert_eq!(libc::fileno(R_Outputfile), 1);
+        assert_eq!(libc::fileno(R_Consolefile), 2);
     }
 }
 

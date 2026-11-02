@@ -123,6 +123,7 @@
   GetRNGstate;
   HASHTAB;
   INTEGER;
+  INTEGER0;
   INTEGER_ELT;
   INTEGER_GET_REGION;
   INTEGER_IS_SORTED;
@@ -173,6 +174,7 @@
   RC_fopen;
   RDEBUG;
   REAL;
+  REAL0;
   REAL_ELT;
   REAL_GET_REGION;
   REAL_IS_SORTED;
@@ -945,6 +947,7 @@
   Rf_rcauchy;
   Rf_rchisq;
   Rf_reEnc;
+  Rf_reEnc3;
   Rf_revsort;
   Rf_rexp;
   Rf_rf;
@@ -1178,6 +1181,7 @@
   locale2charset;
   main;
   max_contour_segments;
+  mbcsTruncateToValid;
   mbcsValid;
   mbcslocale;
   names;
@@ -1221,6 +1225,7 @@
   rexitc_;
   robigo_capi_init;
   robigo_connection_string_arg;
+  robigo_console_init;
   robigo_dll_close;
   robigo_dll_find;
   robigo_dll_flags;

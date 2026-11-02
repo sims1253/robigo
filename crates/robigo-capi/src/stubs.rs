@@ -48,15 +48,9 @@ pub unsafe extern "C" fn R_Busy() {
 }
 
 #[unsafe(no_mangle)]
-pub static mut R_Consolefile: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_EditFiles() {
     not_implemented("R_EditFiles")
 }
-
-#[unsafe(no_mangle)]
-pub static mut R_GUIType: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_GetVarLocMISSING() {
@@ -65,9 +59,6 @@ pub unsafe extern "C" fn R_GetVarLocMISSING() {
 
 #[unsafe(no_mangle)]
 pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub static mut R_Outputfile: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
@@ -240,3 +231,4 @@ pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
 pub unsafe extern "C" fn utf8Valid() {
     not_implemented("utf8Valid")
 }
+

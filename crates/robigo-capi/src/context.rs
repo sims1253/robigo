@@ -8,12 +8,18 @@ use std::ffi::{c_char, c_int, c_void};
 
 use robigo_core::Sexp;
 
-/// Offsets in GNU R 4.5's `RCNTXT` (Defn.h, x86_64; measured with the
-/// R sources' Defn.h, docs/ledger/core.md): `callflag`, `cend`,
-/// `cenddata`.
-const CALLFLAG: usize = 8;
-const CEND: usize = 272;
-const CENDDATA: usize = 280;
+unsafe extern "C" {
+    /// Offsets in GNU R 4.5's `RCNTXT` (Defn.h, whose C code compiles
+    /// against the same struct): `callflag`, `cend`, `cenddata`.
+    static robigo_rcntxt_offsets: [usize; 3];
+}
+
+/// `RCNTXT`'s `callflag`, `cend` and `cenddata`, as the C compiler lays
+/// them out: the struct embeds a `jmp_buf`, whose size is the platform's.
+pub fn rcntxt_offsets() -> [usize; 3] {
+    // SAFETY: an immutable table of constants defined in robigo_util.c.
+    unsafe { robigo_rcntxt_offsets }
+}
 
 thread_local! {
     /// Contexts begun by C code: (RCNTXT address, unwind depth when begun).
@@ -32,9 +38,10 @@ pub unsafe extern "C" fn Rf_begincontext(
     _promargs: Sexp,
     _callfun: Sexp,
 ) {
-    *(cptr.add(CALLFLAG) as *mut c_int) = flags;
-    *(cptr.add(CEND) as *mut usize) = 0;
-    *(cptr.add(CENDDATA) as *mut usize) = 0;
+    let [callflag, cend, cenddata] = rcntxt_offsets();
+    *(cptr.add(callflag) as *mut c_int) = flags;
+    *(cptr.add(cend) as *mut usize) = 0;
+    *(cptr.add(cenddata) as *mut usize) = 0;
     let depth = robigo_core::unwind::depth();
     CONTEXTS.with(|c| c.borrow_mut().push((cptr as usize, depth)));
 }
@@ -55,6 +62,7 @@ pub unsafe extern "C" fn Rf_endcontext(cptr: *mut u8) {
 /// R_run_onexits).
 pub unsafe fn run_cends() {
     let depth = robigo_core::unwind::depth();
+    let [_, cend_at, cenddata_at] = rcntxt_offsets();
     loop {
         let top = CONTEXTS.with(|c| {
             let mut c = c.borrow_mut();
@@ -67,11 +75,11 @@ pub unsafe fn run_cends() {
             }
         });
         let Some(p) = top else { break };
-        let cend = *(p.add(CEND) as *const usize);
+        let cend = *(p.add(cend_at) as *const usize);
         if cend != 0 {
             let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(cend);
-            *(p.add(CEND) as *mut usize) = 0;
-            f(*(p.add(CENDDATA) as *const *mut c_void));
+            *(p.add(cend_at) as *mut usize) = 0;
+            f(*(p.add(cenddata_at) as *const *mut c_void));
         }
     }
 }

@@ -267,6 +267,15 @@ pub static mut R_TempDir: *mut std::ffi::c_char = std::ptr::null_mut();
 #[unsafe(no_mangle)]
 pub static mut R_Home: *mut std::ffi::c_char = std::ptr::null_mut();
 
+unsafe extern "C" {
+    fn robigo_console_init();
+}
+
+/// R_Outputfile and R_Consolefile (R: unix/system.c:Rf_initialize_R).
+pub unsafe fn console_init() {
+    robigo_console_init()
+}
+
 unsafe fn mark_api_roots(c: &mut Core) {
     for i in 0..R_PPStackTop.max(0) as usize {
         c.mark(*R_PPStack.add(i));
@@ -357,6 +366,7 @@ pub unsafe fn init_state() {
     R_Srcref = nil;
     c.gc_inhibit -= 1;
     crate::arith::init_arith();
+    console_init();
     // the core is bound to this thread (the evaluator's): GNU R's C stack
     // check uses its bounds, the stack grows down (R_CStackDir 1), and
     // the limit is 95% of the stack as setup_Rmainloop sets it
