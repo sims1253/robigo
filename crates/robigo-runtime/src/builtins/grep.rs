@@ -1129,9 +1129,23 @@ fn pcre_translate(pat: &str) -> Result<String, PcreErr> {
                     return Err(perr("unmatched closing parenthesis", boff[i]));
                 }
                 depth -= 1;
+                let start = group_starts.pop();
+                // fancy-regex (at least to 0.20) optimizes `(x+?)*` to
+                // `(x+?)?`, which is only right for a greedy `x+`. A body
+                // that is not a lone repeat escapes that, and an alternative
+                // that cannot match changes nothing else, so this need not
+                // read the quantifier exactly: it only costs the fast path.
+                // In a conditional it would be the else branch, so leave
+                // those alone.
+                let lazy_end = out.ends_with("+?") || out.ends_with("*?") || out.ends_with(",}?");
+                let next: String = b[i + 1..].iter().filter(|c| !matches!(c, ' ' | ')')).take(4).collect();
+                let conditional = start.is_some_and(|s| out[s..].starts_with("(?("));
+                if lazy_end && !conditional && (next.starts_with(['*', '{']) || next.starts_with("(?#")) {
+                    out.push_str("|(?!)");
+                }
                 out.push(')');
                 i += 1;
-                atom_start = group_starts.pop();
+                atom_start = start;
                 last_was_quant = false;
                 continue;
             }
@@ -1550,8 +1564,10 @@ fn pcre_message(e: &fancy_regex::Error) -> String {
             ParseError::InvalidBackref => "reference to non-existent subpattern".into(),
             other => other.to_string(),
         },
-        Error::CompileError(ce) => match ce {
-            CompileError::LookBehindNotConst => "length of lookbehind assertion is not limited".into(),
+        Error::CompileError(ce) => match &**ce {
+            CompileError::LookBehindNotConst | CompileError::VariableLookBehindRequiresFeature => {
+                "length of lookbehind assertion is not limited".into()
+            }
             CompileError::InvalidBackref(_) => "reference to non-existent subpattern".into(),
             other => other.to_string(),
         },
