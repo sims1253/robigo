@@ -458,6 +458,7 @@ impl Interp {
         }
         p.forcing.set(true);
         crate::env::bump_r_epoch();
+        let _default = p.default.then(|| crate::vm::begin_default_force(&env));
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -468,6 +469,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
+        drop(_default);
         p.forcing.set(false);
         let v = r?;
         p.set_value(v.clone());
@@ -1544,7 +1546,9 @@ pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
             } else {
                 None
             };
-            Value::Promise(Rc::new(Promise::with_code(expr.clone(), newenv.clone(), code)))
+            let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
+            p.default = true;
+            Value::Promise(Rc::new(p))
         }
     }
 }

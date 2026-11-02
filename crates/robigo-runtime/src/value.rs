@@ -579,6 +579,10 @@ pub struct Promise {
     pub forcing: Cell<bool>,
     /// Bytecode for `expr`, when the promise was created by compiled code.
     pub code: Option<Rc<crate::compile::Code>>,
+    /// A formal's default: formals are never compiled, so closures created
+    /// while forcing it are interpreted (unlike compiled bodies' and
+    /// argument promises', which GNU R's compiler compiles).
+    pub default: bool,
 }
 
 impl Promise {
@@ -593,6 +597,7 @@ impl Promise {
             value: RefCell::new(PromiseVal::Unforced),
             forcing: Cell::new(false),
             code,
+            default: false,
         }
     }
 
@@ -603,6 +608,7 @@ impl Promise {
             value: RefCell::new(PromiseVal::Boxed(value)),
             forcing: Cell::new(false),
             code: None,
+            default: false,
         }
     }
 
@@ -614,6 +620,7 @@ impl Promise {
             value: RefCell::new(PromiseVal::ScalarInt(x)),
             forcing: Cell::new(false),
             code: None,
+            default: false,
         }
     }
 
@@ -625,6 +632,7 @@ impl Promise {
             value: RefCell::new(PromiseVal::ScalarReal(x)),
             forcing: Cell::new(false),
             code: None,
+            default: false,
         }
     }
 
@@ -636,6 +644,7 @@ impl Promise {
             value: RefCell::new(PromiseVal::ScalarLgl(x)),
             forcing: Cell::new(false),
             code: None,
+            default: false,
         }
     }
 

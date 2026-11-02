@@ -774,17 +774,46 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
     for ctx in interp.frames.iter().rev() {
         if ctx.cloenv.ptr_eq(env) {
             if let Value::Closure(c) = &ctx.function {
+                // A formal's default is never compiled (formals stay AST
+                // even in installed bytecode), so a closure created while
+                // one is forced is interpreted.
+                if DEFAULT_FORCING.with(|d| d.borrow().last().is_some_and(|&p| p == env.id())) {
+                    return;
+                }
                 let v = c.jit.0.get();
                 match v & STATE_MASK {
                     COMPILED => clo.jit.set(INHERITED, v >> 8),
-                    // (Namespace code creates namespace code.)
-                    IGNORE => clo.jit.set(IGNORE, 0),
+                    // Namespace code runs installed bytecode: its nested
+                    // closures are compiled with it (MAKECLOSURE).
+                    IGNORE => clo.jit.set(INHERITED, v >> 8),
                     _ => {}
                 }
             }
             return;
         }
     }
+}
+
+thread_local! {
+    /// Environments whose formal default is being forced, innermost last.
+    static DEFAULT_FORCING: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Marks `env` as running a formal's default; closures created there take
+/// no JIT state.
+pub struct DefaultForceGuard;
+
+impl Drop for DefaultForceGuard {
+    fn drop(&mut self) {
+        DEFAULT_FORCING.with(|d| d.borrow_mut().pop());
+    }
+}
+
+#[cold]
+#[inline(never)]
+pub fn begin_default_force(env: &Env) -> DefaultForceGuard {
+    DEFAULT_FORCING.with(|d| d.borrow_mut().push(env.id()));
+    DefaultForceGuard
 }
 
 #[cfg(test)]
