@@ -43,8 +43,6 @@ pub static DEFS: &[Builtin] = &[
     internal("undebug", do_undebug, 1).invisible(),
     internal("isdebugged", do_isdebugged, 1),
     internal("debugonce", do_debug, 3).invisible(),
-    prim(".primTrace", do_identity, 1).invisible(),
-    prim(".primUntrace", do_identity, 1).invisible(),
     prim("browser", do_null_any, -1).invisible(),
     internal("browserText", do_null_any, 1),
     internal("browserCondition", do_null_any, 1),
@@ -887,9 +885,6 @@ fn do_one(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::real(f64::INFINITY))
-}
-fn do_identity(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(arg(&args, 0))
 }
 
 #[cfg(not(feature = "bytecode-fidelity"))]
