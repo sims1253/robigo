@@ -6,6 +6,72 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-02: round 19, nested pure-call inlining (fib -51%)
+
+- Base: main e8afe195 (post-#212), binaries `.robigo/perf/{base,cand}-co`
+  / `cand-final` built sequentially in this tree.
+- Why: the closest benchmarks were pure call overhead (`fib` 0.855x,
+  3178 instructions per call vs GNU R 4465). An inlinable body could not
+  contain calls, so `fib`'s body (`if (n < 2) n else fib(n-1) +
+  fib(n-2)`) was never inlined and every call paid the frame, context
+  and promise machinery.
+- What (`vm.rs`, `interp.rs` one helper):
+  - `inline_analysis` admits `Op::Call`; at run time the call is
+    resolved and, when its target is itself pure-inlinable, run inline
+    too (`nested_call_inline`, out of line), nesting up to
+    `INLINE_DEPTH = 12` (one Rust frame each). Anything else gives up
+    before anything observable has happened and the caller re-runs the
+    call for real — the pre-existing inline contract.
+  - Structural failures (builtin target, no plain arguments, callee not
+    inlinable, a callee already marked) are remembered per body
+    (`Inline::no_nested`, the search epoch; `u64::MAX` never holds), so
+    `add <- function(a,b) id(a)+id(b)` with a loop-bearing `id` costs no
+    more than before. Depth-budget exhaustion is deliberately not
+    remembered (recursion reaches it on purpose).
+  - Inline runs of call-bearing bodies count toward `interp.depth` and
+    give up at `options(expressions=)`, so the real call's
+    `enter_call` raises "evaluation nested too deeply" at GNU R's exact
+    evaluation depth (GNU R counts every call; without this, deep
+    recursion that GNU R refuses would run forever).
+  - `run_inline_with` is generated twice by a macro: bodies without
+    calls keep the exact codegen they had. A single shared op-loop
+    function (with the arm, or with a const-generic split, or with the
+    dispatcher `#[inline(always)]`) cost `spectralnorm_naive` 1.0-1.9%
+    purely in codegen of the shared loop; duplicated source fixes it
+    (measured at each step: co7 +1.03%, co9 +1.4%, co10 +1.35%,
+    co11 +1.96%, macro duplication -0.01%).
+  - Fast declines where GNU R's caller looks: `run_with`'s call arm
+    skips a closure analyzed as not inlinable — extended to skip one
+    whose nested calls were marked not inlinable too, so
+    `add <- function(a,b) id(a)+id(b)` with a loop-bearing `id` pays one
+    epoch compare instead of a call into `inline_site_call`
+    (`profiler-shared` +0.44% -> +0.13%).
+- Result: `fib(25)` 772.0M -> 286.6M instructions (**-62.9%**); suite
+  `robigo/fib` **-51.3%** (0.855x -> ~0.40x of GNU R), `robigo/apply`
+  -0.5%, `robigo/closures` -0.6%. Gate (against main ab057314, after
+  rebasing over the trace/#252 changes): **3 faster, 0 slower
+  (> 0.5%), 0 broken**; worst +0.39% (`fannkuch`, build-to-build
+  codegen noise — it was +0.02% in the previous build), next
+  +0.25% (`lapplyDots`).
+- Verified: fixture `tests/r/basics/nested-inline-calls.R` (self and
+  mutual recursion, a non-inlinable callee falling back, lazy
+  arguments, errors raised through nested runs, `substitute`,
+  `options(expressions=)` limit, rebinding, integer/double/logical
+  chains) recorded with GNU R 4.5.0, byte-identical in all three tiers;
+  conformance 9/9; `cargo fmt`, `scripts/lint.sh` clean.
+- Also: `tests/r/basics/small-internals.R` `system(timeout=)` timing
+  margins widened for loaded runners (sleep 10 vs timeout 1, elapsed
+  `< 9`, background-descendant and survived cases spaced further from
+  their deadlines); the recorded output is unchanged. This test had
+  flaked CI on #206 under load (`proc.time < 2` after a kill that
+  arrived late).
+- Tracked gap: `Inline::no_nested` is keyed on the search epoch only, so
+  a *local* redefinition of a nested target (fn_version, not search
+  epoch) can leave a stale mark until the next global change — a
+  missed inlining opportunity only, never a wrong result
+  (`tests/r/basics/nested-inline-calls.R` pins the rebinding cases it
+  can observe).
+
 ## 2026-11-02: round 17, sorted-input fast paths in the radix sort
 
 - Base: main bd4cddb8 (with #206), binaries `.robigo/perf/{base,cand}-r18`

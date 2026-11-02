@@ -681,6 +681,15 @@ impl Interp {
         }
     }
 
+    /// Whether one more nested call fits `options(expressions=)`. An
+    /// inline run that would exceed it gives up, so the real call's
+    /// [`Self::enter_call`] raises the error at the same evaluation
+    /// depth as GNU R (which counts every call).
+    #[inline]
+    pub(crate) fn call_depth_available(&self) -> bool {
+        self.depth < self.expressions
+    }
+
     fn eval_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> RResult<Value> {
         let mut fun = match &l.fun {
             Value::Sym(sym) => self.find_fun_for_call(*sym, call, env)?,

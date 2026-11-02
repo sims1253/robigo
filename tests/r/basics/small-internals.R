@@ -48,21 +48,24 @@ print(max.col(rbind(c(2, 2, 2), c(1, 2, 3)), "random"))
 set.seed(42)
 print(max.col(matrix(rep(1, 12), 3), "random"))
 
-# system(timeout=) kills the child, warns and answers 124.
+# system(timeout=) kills the child, warns and answers 124. The sleeps run
+# far longer than the deadlines, so the kills are unambiguous and the
+# elapsed bound tolerates a loaded runner without allowing the child to
+# finish.
 t <- proc.time()[["elapsed"]]
-print(system("sleep 2", timeout = 1))
-print(proc.time()[["elapsed"]] - t < 2)
+print(system("sleep 10", timeout = 1))
+print(proc.time()[["elapsed"]] - t < 9)
 print(system("true", timeout = 5))
 print(system("exit 3", timeout = 5))
 # Captured output survives a timeout and carries status 124; the whole
 # process group is killed, so `survived` never prints.
-r <- system("printf ok; sleep 2", intern = TRUE, timeout = 1)
+r <- system("printf ok; sleep 10", intern = TRUE, timeout = 1)
 print(r)
 print(attr(r, "status"))
-print(system("(sleep 1; echo survived)", timeout = 1))
-print(length(system("seq 1 20000", intern = TRUE, timeout = 5)))
+print(system("(sleep 3; echo survived)", timeout = 1))
+print(length(system("seq 1 20000", intern = TRUE, timeout = 20)))
 # A child that finishes before the deadline keeps its status.
-for (i in 1:4) print(system("sleep 0.5", timeout = 1))
+for (i in 1:4) print(system("sleep 0.5", timeout = 10))
 # A background descendant holding the pipe open does not extend the
 # deadline past the shell's exit.
 r <- system("sleep 3 & true", intern = TRUE, timeout = 1)
