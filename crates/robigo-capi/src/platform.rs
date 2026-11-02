@@ -8,8 +8,24 @@ use crate::envir::{R_ExpandFileName, R_NewEnv};
 use crate::errors::error_str_owned;
 use crate::strings::Rf_translateCharFP;
 
+// libc has no type for it elsewhere; it only passes through here.
+#[cfg(target_os = "linux")]
+use libc::mbstate_t;
+#[cfg(not(target_os = "linux"))]
+type mbstate_t = c_void;
+
+/// # Safety
+/// Always sound: both libcs return a valid pointer to this thread's errno.
+unsafe fn set_errno(value: c_int) {
+    #[cfg(target_os = "linux")]
+    let errno = libc::__errno_location();
+    #[cfg(not(target_os = "linux"))]
+    let errno = libc::__error();
+    *errno = value;
+}
+
 unsafe extern "C" {
-    fn mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n: usize, ps: *mut libc::mbstate_t) -> usize;
+    fn mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n: usize, ps: *mut mbstate_t) -> usize;
 }
 
 // R: sysutils.c:RC_fopen
@@ -55,7 +71,7 @@ pub unsafe extern "C" fn R_opendir(name: *const c_char) -> *mut RDir {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_readdir(rdir: *mut RDir) -> *mut c_void {
     if rdir.is_null() {
-        *libc::__errno_location() = libc::EFAULT;
+        set_errno(libc::EFAULT);
         return std::ptr::null_mut();
     }
     let de = libc::readdir((*rdir).dirp);
@@ -70,7 +86,7 @@ pub unsafe extern "C" fn R_readdir(rdir: *mut RDir) -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_closedir(rdir: *mut RDir) -> c_int {
     if rdir.is_null() {
-        *libc::__errno_location() = libc::EFAULT;
+        set_errno(libc::EFAULT);
         return -1;
     }
     let r = Box::from_raw(rdir);
@@ -85,12 +101,7 @@ pub unsafe extern "C" fn Rf_strchr(s: *const c_char, c: c_int) -> *mut c_char {
 
 // R: util.c:Mbrtowc
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_mbrtowc(
-    wc: *mut libc::wchar_t,
-    s: *const c_char,
-    n: usize,
-    ps: *mut libc::mbstate_t,
-) -> usize {
+pub unsafe extern "C" fn Rf_mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n: usize, ps: *mut mbstate_t) -> usize {
     if n == 0 || *s == 0 {
         return 0;
     }

@@ -129,6 +129,19 @@ impl std::hash::Hasher for FxHasher {
 pub type BuildFx = std::hash::BuildHasherDefault<FxHasher>;
 
 /// The calling thread's stack: (lowest address, highest address).
+#[cfg(target_vendor = "apple")]
+fn thread_stack() -> (usize, usize) {
+    // SAFETY: both only read the attributes of the calling thread, and the
+    // first returns the high end, as stacks grow down.
+    unsafe {
+        let thread = libc::pthread_self();
+        let high = libc::pthread_get_stackaddr_np(thread) as usize;
+        (high - libc::pthread_get_stacksize_np(thread), high)
+    }
+}
+
+/// The calling thread's stack: (lowest address, highest address).
+#[cfg(not(target_vendor = "apple"))]
 fn thread_stack() -> (usize, usize) {
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
