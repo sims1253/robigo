@@ -40,16 +40,19 @@ unsafe extern "C" fn trampoline<F: FnOnce()>(data: *mut c_void) {
 }
 
 /// Run `f` in a new context. Returns `true` if it returned normally,
-/// `false` if [`jump`] unwound to this context. A closure that was
-/// unwound is not dropped (its captures leak), so capture plain data.
+/// `false` if [`jump`] unwound to this context.
+///
+/// A jump skips the closure's frame, so `f` must capture only plain data:
+/// a capture with a destructor does not compile.
+///
+/// ```compile_fail,E0080
+/// let owned = String::new();
+/// robigo_core::unwind::try_run(move || drop(owned));
+/// ```
 pub fn try_run<F: FnOnce()>(f: F) -> bool {
+    const { assert!(!std::mem::needs_drop::<F>(), "a jump would skip the destructor of a capture") };
     let mut slot = Some(f);
-    let r = unsafe { robigo_try(trampoline::<F>, &mut slot as *mut Option<F> as *mut c_void) };
-    if r != 0 {
-        // the closure was moved out and is gone with its frame
-        std::mem::forget(slot);
-    }
-    r == 0
+    unsafe { robigo_try(trampoline::<F>, &mut slot as *mut Option<F> as *mut c_void) == 0 }
 }
 
 /// Unwind to the innermost [`try_run`] context. Aborts if there is none.
