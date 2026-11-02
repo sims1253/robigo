@@ -33,6 +33,8 @@ pub static DEFS: &[Builtin] = &[
     internal("bzfile", do_gzfile, 4),
     internal("xzfile", do_gzfile, 4),
     internal("zstdfile", do_gzfile, 4),
+    internal("memCompress", do_mem_compress, 2),
+    internal("memDecompress", do_mem_decompress, 2),
     internal("textConnection", do_textconnection, 5),
     internal("textConnectionValue", do_textconvalue, 1),
     internal("open", do_open, 3).invisible(),
@@ -1540,6 +1542,118 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 /// `gzfile()`; `bzfile()`, `xzfile()` and `zstdfile()` share the entry
 /// point (R's PRIMVAL); gzip and bzip2 are implemented.
 // R: connections.c:do_gzfile
+/// `memCompress(from, type)`: `from` is a raw vector by the time the
+/// base wrapper calls the internal; the type codes are the wrapper's
+/// (`none` 1, `gzip` 2, `bzip2` 3, `xz` 4, `zstd` 5).
+// R: connections.c:do_memCompress
+fn do_mem_compress(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let from = arg(&args, 0);
+    let Value::Raw(raw) = &from else {
+        return Err(Flow::error("'from' must be raw or character"));
+    };
+    match as_integer(&arg(&args, 1)) {
+        1 => Ok(from),
+        // zlib's compress(): the zlib format at its default level
+        2 => {
+            let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+            enc.write_all(&raw.data)
+                .and_then(|_| enc.finish())
+                .map(Value::raws)
+                .map_err(|_| Flow::error("internal error in memCompress"))
+        }
+        // bzlib at its maximum block size, as BZ2_bzBuffToBuffCompress(…, 9, 0, 0)
+        3 => {
+            let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(9));
+            enc.write_all(&raw.data)
+                .and_then(|_| enc.finish())
+                .map(Value::raws)
+                .map_err(|_| Flow::error("internal error in memCompress"))
+        }
+        4 => Err(Flow::error("robigo: xz compression is not implemented yet")),
+        5 => Err(Flow::error("robigo: Zstd compression is not implemented yet")),
+        // R's switch default: an unknown type returns the input
+        _ => Ok(from),
+    }
+}
+
+/// `memDecompress(from, type)`: the wrapper's type codes, with 5 for
+/// `unknown` (detected from the data).
+// R: connections.c:do_memDecompress
+fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let from = arg(&args, 0);
+    let Value::Raw(raw) = &from else {
+        return Err(Flow::error("'from' must be raw or character"));
+    };
+    let mut typ = as_integer(&arg(&args, 1));
+    if typ == 5 {
+        // R: comp_type_from_memory(p, len, TRUE, &subtype)
+        let p = &raw.data;
+        typ = if p.len() >= 2 && p[0] == 0x1f && p[1] == 0x8b {
+            2
+        } else if p.len() >= 2 && p[0] == 0x78 && p[1] == 0x9c {
+            2
+        } else if p.len() >= 10
+            && &p[..3] == b"BZh"
+            && (b'1'..=b'9').contains(&p[3])
+            && (&p[4..10] == b"\x31\x41\x59\x26\x53\x59" || &p[4..10] == b"\x17\x72\x45\x38\x50\x90")
+        {
+            3
+        } else if p.len() >= 5 && (p[0] == 0xFD && &p[1..5] == b"7zXZ" || p[..5] == [0xFF, b'L', b'Z', b'M', b'A']) {
+            4
+        } else if p.len() >= 5 && p[..5] == [b']', 0, 0, 0x80, 0] {
+            4
+        } else if p.len() >= 4 && p[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
+            6
+        } else if p.len() >= 4 && p[0] == 0x89 && &p[1..4] == b"LZO" {
+            // R: comp_type_from_memory — lzop is not supported by R either
+            return Err(Flow::error("this is a lzop-compressed file which this build of R does not support"));
+        } else {
+            i.warning("unknown compression, assuming none")?;
+            1
+        };
+    }
+    match typ {
+        1 => Ok(from),
+        2 => {
+            // zlib format or an in-memory gzip file; zlib/libdeflate stop
+            // after the first stream or member, unlike the connection
+            // decoders. This R build reports libdeflate's status: any
+            // data error is LIBDEFLATE_BAD_DATA (1); a growable buffer
+            // makes the insufficient-space status unreachable.
+            let mut out = Vec::new();
+            let ok = if raw.data.len() >= 2 && raw.data[0] == 0x1f && raw.data[1] == 0x8b {
+                flate2::read::GzDecoder::new(&raw.data[..]).read_to_end(&mut out).is_ok()
+            } else {
+                flate2::read::ZlibDecoder::new(&raw.data[..]).read_to_end(&mut out).is_ok()
+            };
+            if !ok {
+                return Err(Flow::error("internal error 1 in memDecompress(type = \"libdeflate\")"));
+            }
+            Ok(Value::raws(out))
+        }
+        3 => {
+            // BZ2_bzBuffToBuffDecompress decodes one stream and stops;
+            // the status codes are bzlib's
+            let mut out = Vec::new();
+            if let Err(e) = bzip2::read::BzDecoder::new(&raw.data[..]).read_to_end(&mut out) {
+                let code = match e.get_ref().and_then(|x| x.downcast_ref::<bzip2::Error>()) {
+                    Some(bzip2::Error::DataMagic) => -5,
+                    Some(bzip2::Error::Data) => -4,
+                    Some(bzip2::Error::Sequence) => -1,
+                    Some(_) => -2,
+                    // an i/o end-of-stream error is BZ_UNEXPECTED_EOF
+                    None => -7,
+                };
+                return Err(Flow::error(format!("internal error {code} in memDecompress(type = \"bzip2\")")));
+            }
+            Ok(Value::raws(out))
+        }
+        4 => Err(Flow::error("robigo: xz decompression is not implemented yet")),
+        6 => Err(Flow::error("robigo: Zstd decompression is not implemented yet")),
+        _ => Ok(from),
+    }
+}
+
 fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let fname = match call {
         Value::Lang(l) => l.fun_sym().map(|s| s.name().to_string()).unwrap_or_default(),
