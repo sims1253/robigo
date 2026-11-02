@@ -1,0 +1,8 @@
+[1] "CStackOverflowError" "stackOverflowError"  "error"              
+[4] "condition"          
+[1] "message" "call"    "usage"  
+[1] TRUE
+NULL
+[1] "C stack usage  N is too close to the limit"
+[1] "c"
+[1] "so"
