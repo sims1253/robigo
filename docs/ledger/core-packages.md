@@ -204,3 +204,25 @@ Metrics, in order:
   so the deepest `on.exit` still runs; robigo can overflow again there
   and skip that one. Raising `stack_limit` needs the real stack margin
   checked first.
+
+## options(error=) and tracebacks (#135, #136, part of #133)
+
+- `options(error=)` was stored and never run, and `.Traceback` was never
+  written. `default_error` now does `jump_to_top_ex`'s part with the
+  frames still live, which is why `dump.frames()` from a handler works.
+- #135's acceptance is wrong. GNU R 4.5.0 prints the handler's output,
+  goes on with the script and exits 0 (`main.c:check_session_exit`).
+  `catches_script_errors` already did that; recorded output wins.
+- Recordings showed what the issues did not: `geterrmessage()` includes
+  the `Calls:` line; warnings raised while the handler runs are dropped
+  (`errors.c:476`); a symbol is refused; a quoted handler sees frame 0.
+- `.Traceback` goes through `force_set`: base is locked and `set_local`
+  fails quietly.
+- Measured: `tests/r/conditions/error-option.R`,
+  `tests/r/debug/{traceback,dump-frames}.R` byte-identical in all three
+  tiers. fastr slice 763/764, 0 regressions.
+- Sol: fixed a stale `geterrmessage()` after a failed handler and the
+  missing `  ...` mark. Declined `.Internal(traceback(1+1i))` dropping the
+  coercion warning: `.traceback` calls it only after `is.numeric`.
+- Open: srcrefs on traceback entries (needs #186), `try_jump_to_restart`,
+  `CTXT_BUILTIN` frames for `.Call`, and `recover()`'s menu (#132).
