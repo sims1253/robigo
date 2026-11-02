@@ -257,3 +257,60 @@ returns an external pointer instead of 1), rlang (shim dies: the same
 promise-leak family), vctrs (suite incomplete in 25 min under robigo),
 glue 124/114 vs GNU R 106/116 (return/promise holes like magrittr's
 plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
+
+## 2026-11-02: bzfile connections (libbz2); cli installs
+
+- `bzfile()` was a hard error ("robigo: bzip2 compressed file
+  connections are not implemented yet"), and `gzfile()`/`file()` in
+  read mode — R's `connections.c:do_gzfile` dispatches on the file's
+  magic (`comp_type_from_file`, with the PR#18768 block-size and
+  pi-magic checks) and opens a bzfile connection for BZh data, which is
+  how tools reads a bzip2-compressed sysdata during
+  `R CMD INSTALL` — so **cli could not install**.
+- Port: `ConnKind::Gz` gains a codec (gzip | bzip2); read decompresses
+  the whole file at open (bzip2 crate, MultiBzDecoder — mirroring the
+  existing whole-file gzip model), write compresses the buffer at
+  close, warnings copied from `connections.c:bzfile_open`
+  ("cannot open bzip2-ed file ...", "file '...' appears not to be
+  compressed by bzip2"). `bzfile()` and magic-retyped `gzfile()`
+  produce class "bzfile" connections, as in R; `file()` keeps class
+  "file". xz/zstd stay unimplemented errors.
+- Measured: `tests/r/io/bzfile-roundtrip.R` (the #215 gap tracker) now
+  passes and is marked; new marked
+  `tests/r/io/gzfile-bzip2-dispatch.R` pins the retype
+  (`summary(gzfile(<bz2>))$class == "bzfile"`); `saveRDS(compress =
+  "bzip2")` round trips; conformance 310+/310 with the two scripts in
+  all three tiers (compiled_matches_interpreted green); lint clean.
+- **cli 3.6.6 installs from source now** (was: install failure): its
+  suite under the shim gives 1962 passed / 115 failed where GNU R 4.5.0
+  gives 610/204 — the shim itself cannot express cli's snapshot and
+  progress expectations, so GNU R fails many more; the remaining work
+  is reconciling the failure lists (89 difference), tracked in the
+  ledger, not yet in packages.tsv.
+  - Sol round 1 findings fixed: a valid empty bzip2 stream
+    (`bzfile(p, "wb"); close`) failed to reopen (success was keyed on
+    non-empty output) — decoding now keys the warning on failure, not
+    length; and `bzfile(p, "w", compression = 0)` panicked at close —
+    it now warns "initializing bzip2 compression for file '...' failed"
+    and fails the open, as bzfile_open's BZ_CONFIG_ERROR does. One
+    documented model nuance stays: on non-bzip2 data the open succeeds
+    and reads are empty in both, but robigo's warning fires at open
+    (whole-file decode) where R's fires at first read (bzfile_read).
+  - Sol round 2 (S3): trailing non-bzip2 bytes after a valid stream
+    discarded the decoded prefix — the decoder now keeps it and warns
+    "file '...' has trailing content that appears not to be compressed
+    by bzip2" (bzfile_read's message), where data that never was bzip2
+    still warns "appears not to be compressed" and reads empty.
+    `bzfile-roundtrip.R` pins it. Found while testing: the
+    `memCompress`/`memDecompress` .Internal pair is missing — tracked
+    by unmarked `tests/r/io/memdecompress.R`.
+  - Sol round 3 (S4): every decoder error warned, but R warns only for
+    BZ_DATA_ERROR_MAGIC — a file truncated mid-header (a bare "BZh9")
+    or mid-stream, or a block-magic mismatch after a valid "BZh" header
+    (BZ_DATA_ERROR), is silent and keeps the bytes read. The bzip2
+    crate calls libbz2, so its error kinds are bzlib's codes; the port
+    now keys the two warnings on DataMagic alone and pins the
+    truncated, mid-block-header and bad-block-magic cases in
+    `bzfile-roundtrip.R` (GNU R-recorded, byte-identical). The strict
+    PR#18768 magic stays where R applies it: the gzfile()/file()
+    dispatch (comp_type_from_memory).
