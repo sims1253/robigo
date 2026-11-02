@@ -1195,6 +1195,7 @@
   parseError;
   private_nearbyintl;
   prt_result;
+  ptr_R_Busy;
   ptr_R_ClearerrConsole;
   ptr_R_FlushConsole;
   ptr_R_ReadConsole;

@@ -6,7 +6,8 @@ use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
 
-pub static PORTS: &[(&str, NativeFn)] = &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb)];
+pub static PORTS: &[(&str, NativeFn)] =
+    &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb), ("gray", gray)];
 
 /// Whether cairo (1) or pango-cairo (2) support was built in: robigo has no
 /// cairo graphics devices.
@@ -887,4 +888,74 @@ fn col2rgb(i: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &crate::env::En
     let col_names = names.map(|n| Value::strs(n)).unwrap_or(Value::Null);
     ans.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs(row_names), col_names]));
     Ok(ans)
+}
+
+// `%g` formatting as C's printf does it (colors.c's error messages).
+fn fmt_g(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    robigo_syntax::cfmt::fmt_g(x, 6, false, false)
+}
+
+// R: grDevices/src/colors.c:ScaleAlpha
+fn scale_alpha(x: f64) -> RResult<u32> {
+    if crate::value::is_na_real(x) {
+        return Err(Flow::error("alpha level NA, not in [0,1]"));
+    }
+    if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+        return Err(Flow::error(format!("alpha level {}, not in [0,1]", fmt_g(x))));
+    }
+    Ok((255.0 * x + 0.5) as u32)
+}
+
+// R: grDevices/src/colors.c:gray — "#RRGGBB" strings from gray levels,
+// "#RRGGBBAA" with an alpha. The level check and (int)(255*level + 0.5)
+// scaling are GNU R's; a longer alpha still validates every level
+// (GNU R writes the extra cells out of bounds — UB kept out of robigo).
+fn gray(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let lev = crate::coerce::to_real(&i.coerce(&args[0].value, crate::value::VType::Real)?, &mut Default::default());
+    let nlev = lev.len();
+    if nlev == 0 {
+        return Ok(Value::strs_from(Vec::<String>::new()));
+    }
+    let alpha = match &args[1].value {
+        Value::Null => None,
+        a => Some(crate::coerce::to_real(&i.coerce(a, crate::value::VType::Real)?, &mut Default::default())),
+    };
+    let level = |k: usize| -> RResult<u32> {
+        let x = lev[k];
+        if crate::value::is_nan_or_na(x) || !(0.0..=1.0).contains(&x) {
+            return Err(Flow::error("invalid gray level, must be in [0,1]."));
+        }
+        Ok((255.0 * x + 0.5) as u32)
+    };
+    match alpha {
+        None => Ok(Value::strs_from(
+            (0..nlev)
+                .map(|k| {
+                    Ok({
+                        let v = level(k)?;
+                        format!("#{v:02X}{v:02X}{v:02X}")
+                    })
+                })
+                .collect::<RResult<Vec<String>>>()?,
+        )),
+        Some(a) => {
+            let na = a.len().max(1);
+            let n = nlev.max(a.len());
+            let mut out = Vec::with_capacity(n);
+            for k in 0..n {
+                let v = level(k % nlev)?;
+                let alpha_v = scale_alpha(a[k % na])?;
+                out.push(format!("#{:02X}{:02X}{:02X}{:02X}", v, v, v, alpha_v));
+            }
+            // GNU R's answer is nlev long; cells past it are its OOB writes.
+            out.truncate(nlev);
+            Ok(Value::strs_from(out))
+        }
+    }
 }
