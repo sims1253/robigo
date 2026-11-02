@@ -66,7 +66,7 @@ unsafe fn mark_roots(c: &mut Core) {
 fn core_with_roots() -> Box<Core> {
     ROOTS.with(|r| r.borrow_mut().clear());
     let mut c = Core::new();
-    c.root_fns.push(mark_roots);
+    unsafe { c.add_root_fn(mark_roots) };
     c
 }
 
@@ -90,14 +90,14 @@ unsafe fn ints<'a>(x: Sexp) -> &'a [i32] {
 fn constants() {
     let c = Core::new();
     unsafe {
-        assert_eq!(c.nil.typ(), NILSXP);
-        assert_eq!(c.nil.car(), c.nil);
-        assert_eq!(c.nil.attrib_raw(), c.nil);
-        assert!(c.nil.has_flag(flags::IMMORTAL));
-        assert_eq!(c.na_string.char_bytes(), b"NA");
-        assert_eq!(c.blank_string.char_bytes(), b"");
-        assert_eq!(c.unbound.typ(), SYMSXP);
-        assert_ne!(c.unbound, c.missing_arg);
+        assert_eq!(c.nil().typ(), NILSXP);
+        assert_eq!(c.nil().car(), c.nil());
+        assert_eq!(c.nil().attrib_raw(), c.nil());
+        assert!(c.nil().has_flag(flags::IMMORTAL));
+        assert_eq!(c.na_string().char_bytes(), b"NA");
+        assert_eq!(c.blank_string().char_bytes(), b"");
+        assert_eq!(c.unbound().typ(), SYMSXP);
+        assert_ne!(c.unbound(), c.missing_arg());
     }
 }
 
@@ -109,9 +109,9 @@ fn vectors_are_initialized_like_gnu_r() {
     let r = c.alloc_vector(REALSXP, 1000);
     unsafe {
         let sd = s.std_data() as *const Sexp;
-        assert!((0..3).all(|i| *sd.add(i) == c.blank_string));
+        assert!((0..3).all(|i| *sd.add(i) == c.blank_string()));
         let ld = l.std_data() as *const Sexp;
-        assert!((0..2).all(|i| *ld.add(i) == c.nil));
+        assert!((0..2).all(|i| *ld.add(i) == c.nil()));
         assert_eq!(r.std_len(), 1000);
         assert_eq!(r.std_data() as usize % 16, 0);
     }
@@ -131,7 +131,7 @@ fn chars_are_interned_by_bytes_and_encoding() {
     let l = c.mk_char("café".as_bytes(), gp::LATIN1);
     assert_ne!(u, l);
     assert_eq!(u, c.mk_char("café".as_bytes(), gp::UTF8));
-    assert_ne!(c.mk_char(b"NA", 0), c.na_string);
+    assert_ne!(c.mk_char(b"NA", 0), c.na_string());
 }
 
 #[test]
@@ -156,10 +156,10 @@ fn rooted_objects_survive_and_garbage_is_freed() {
     let mut c = core_with_roots();
     let keep = int_vec(&mut c, &[1, 2, 3]);
     root(keep);
-    let mut list = c.nil;
+    let mut list = c.nil();
     for i in 0..1000 {
         let v = int_vec(&mut c, &[i]);
-        list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil) };
+        list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil()) };
     }
     root(list);
     // garbage
@@ -172,7 +172,7 @@ fn rooted_objects_survive_and_garbage_is_freed() {
         assert_eq!(ints(keep), &[1, 2, 3]);
         let mut n = 0;
         let mut p = list;
-        while p != c.nil {
+        while p != c.nil() {
             assert_eq!(ints(p.car()), &[999 - n]);
             n += 1;
             p = p.cdr();
@@ -272,14 +272,14 @@ fn layout_is_compact() {
     // GNU R's macros onto it
     let mut c = Core::new();
     let v = c.alloc_vector(INTSXP, 1);
-    let n = unsafe { c.alloc_node(LISTSXP, v, c.nil, c.nil) };
+    let n = unsafe { c.alloc_node(LISTSXP, v, c.nil(), c.nil()) };
     unsafe {
         assert_eq!(*v.0, INTSXP, "type: byte 0");
         assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
         assert_eq!(v.std_data() as usize - v.addr(), 32, "payload at +32");
         assert_eq!(*(n.0.add(16) as *const usize), v.addr(), "CAR at +16");
-        assert_eq!(*(n.0.add(24) as *const usize), c.nil.addr(), "CDR at +24");
-        assert_eq!(*(n.0.add(8) as *const usize), c.nil.addr(), "ATTRIB at +8");
+        assert_eq!(*(n.0.add(24) as *const usize), c.nil().addr(), "CDR at +24");
+        assert_eq!(*(n.0.add(8) as *const usize), c.nil().addr(), "ATTRIB at +8");
         n.set_gp(0xABCD);
         assert_eq!(*(n.0.add(2) as *const u16), 0xABCD, "gp at +2");
         assert!(n.tracks_refs());
@@ -322,7 +322,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
         unsafe {
             let d = w.std_data() as *mut Sexp;
             *d = key;
-            *d.add(1) = c.nil;
+            *d.add(1) = c.nil();
             *d.add(2) = fin;
         }
         unsafe {
@@ -526,7 +526,7 @@ fn host_core() -> Box<Core> {
     HOST_EDGES.with(|edges| edges.borrow_mut().clear());
     let mut c = core_with_roots();
     c.set_scan_top(0);
-    c.host_trace = Some(trace_test_host);
+    unsafe { c.set_host_trace(Some(trace_test_host), None) };
     c.gc_inhibit += 1;
     c
 }
@@ -547,8 +547,8 @@ fn test_weak(c: &mut Core, key: Sexp, fin: Sexp) -> Sexp {
 #[test]
 fn host_trace_preserves_native_roots_and_terminates_on_cycles() {
     let mut c = host_core();
-    let a = c.alloc_host(ENVSXP, 1, None);
-    let b = c.alloc_host(ENVSXP, 2, None);
+    let a = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let b = unsafe { c.alloc_host(ENVSXP, 2, None) };
     HOST_EDGES.with(|e| {
         e.borrow_mut().insert(1, vec![b]);
         e.borrow_mut().insert(2, vec![a]);
@@ -567,9 +567,9 @@ fn host_trace_preserves_native_roots_and_terminates_on_cycles() {
 #[test]
 fn host_edges_participate_in_weak_reference_fixed_point() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
-    let finalizer = c.alloc_host(CLOSXP, 2, None);
-    let other_key = c.alloc_host(ENVSXP, 3, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let finalizer = unsafe { c.alloc_host(CLOSXP, 2, None) };
+    let other_key = unsafe { c.alloc_host(ENVSXP, 3, None) };
     let other_fin = c.alloc_vector(RAWSXP, 8);
     HOST_EDGES.with(|e| e.borrow_mut().insert(2, vec![other_key]));
     let first = test_weak(&mut c, key, finalizer);
@@ -589,7 +589,7 @@ fn host_edges_participate_in_weak_reference_fixed_point() {
 #[test]
 fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
     let mut c = host_core();
-    let nil = c.nil;
+    let nil = c.nil();
     let w = test_weak(&mut c, nil, nil);
     unsafe {
         w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
@@ -609,14 +609,14 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
 #[test]
 fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, key, fin);
     c.gc_inhibit -= 1;
     c.collect();
     assert_eq!(c.pop_finalizable(), Some(first));
     // A finalizer registers another key while the batch is running.
-    let later_key = c.alloc_host(ENVSXP, 2, None);
+    let later_key = unsafe { c.alloc_host(ENVSXP, 2, None) };
     root(later_key);
     let later = test_weak(&mut c, later_key, fin);
     assert_eq!(c.weak_refs(), &[later], "the new reference is not lost");
@@ -630,7 +630,7 @@ fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
 #[test]
 fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, key, fin);
     let second = test_weak(&mut c, key, fin);
@@ -644,8 +644,8 @@ fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
 #[test]
 fn exit_finalizers_queue_in_weak_reference_list_order() {
     let mut c = host_core();
-    let first_key = c.alloc_host(ENVSXP, 1, None);
-    let second_key = c.alloc_host(ENVSXP, 2, None);
+    let first_key = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let second_key = unsafe { c.alloc_host(ENVSXP, 2, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, first_key, fin);
     let second = test_weak(&mut c, second_key, fin);
@@ -653,7 +653,7 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
     unsafe {
         second.set_gp(second.gp() | gp::FINALIZE_ON_EXIT);
     }
-    unsafe { c.queue_exit_finalizers() };
+    c.queue_exit_finalizers();
     // only the onexit reference leaves the weak list; the other stays live
     assert_eq!(c.weak_refs(), &[first]);
     assert_eq!(c.pending_finalizer_count(), 1);
@@ -761,7 +761,7 @@ fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
     let mut freed = std::collections::HashSet::new();
     let mut drop_slot = |c: &mut Core, i: usize| unsafe {
         freed.insert((*slots.add(i)).addr());
-        *slots.add(i) = c.nil;
+        *slots.add(i) = c.nil();
     };
     let block = |x: usize| x & !0xFFFF;
     assert!((0..SLOTS).all(|i| unsafe { block((*slots.add(i)).addr()) == block((*slots).addr()) }));
@@ -790,7 +790,7 @@ unsafe fn allocating_root(c: &mut Core) {
 #[should_panic(expected = "inside a collection")]
 fn a_root_callback_cannot_collect() {
     let mut c = Core::new();
-    c.root_fns.push(collecting_root);
+    unsafe { c.add_root_fn(collecting_root) };
     c.collect();
 }
 
@@ -800,7 +800,7 @@ fn a_root_callback_cannot_collect() {
 #[should_panic(expected = "inside a collection")]
 fn a_root_callback_cannot_allocate() {
     let mut c = Core::new();
-    c.root_fns.push(allocating_root);
+    unsafe { c.add_root_fn(allocating_root) };
     c.set_torture(true);
     c.collect();
 }
@@ -813,7 +813,7 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
     let mut c = Core::new();
     c.set_torture(false);
     c.set_scan_top(0);
-    let blank = c.blank_string;
+    let blank = c.blank_string();
     unsafe { c.write_barrier(blank) };
     let before = c.char_cache_len();
     c.mk_char(b"soon dead", 0);
@@ -832,8 +832,8 @@ fn host_release_runs_once_dead() {
     let mut c = Core::new();
     c.set_torture(false);
     c.set_scan_top(0);
-    c.alloc_host(ENVSXP, 7, Some(count_host_release));
-    c.alloc_host(ENVSXP, 100, None);
+    unsafe { c.alloc_host(ENVSXP, 7, Some(count_host_release)) };
+    unsafe { c.alloc_host(ENVSXP, 100, None) };
     c.collect();
     let releases = c.take_releases();
     assert_eq!(releases.len(), 1, "a proxy without a release function queues nothing");

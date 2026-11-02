@@ -1,3 +1,4 @@
+#![allow(clippy::undocumented_unsafe_blocks)] // every call here is the C API itself
 #![allow(static_mut_refs)] // assert_eq! on the exported statics
 //! libR.so's API driven from Rust with a stub host. The API state is bound
 //! to one thread (docs/core.md §3, §10), so everything runs in one test.

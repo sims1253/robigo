@@ -1,3 +1,4 @@
+#![allow(clippy::undocumented_unsafe_blocks)] // every call here is the C API itself
 //! The bridge driven from Rust with a real interpreter, for what
 //! `tests/capi.rs`'s stub host cannot reach: conversions outside a context,
 //! `gc()`, write-backs into runtime objects. The API state is bound to one

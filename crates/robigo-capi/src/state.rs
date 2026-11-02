@@ -331,15 +331,14 @@ pub unsafe fn init_state() {
         std::process::abort();
     }
     let mut heap = Core::new();
-    R_NilValue = heap.nil;
-    R_UnboundValue = heap.unbound;
-    R_MissingArg = heap.missing_arg;
-    R_NaString = heap.na_string;
-    R_BlankString = heap.blank_string;
-    heap.root_fns.push(mark_api_roots);
-    heap.host_trace = Some(crate::bridge::trace_proxy);
-    heap.host_trace_end = Some(crate::bridge::trace_proxy_end);
-    let nil = heap.nil;
+    R_NilValue = heap.nil();
+    R_UnboundValue = heap.unbound();
+    R_MissingArg = heap.missing_arg();
+    R_NaString = heap.na_string();
+    R_BlankString = heap.blank_string();
+    heap.add_root_fn(mark_api_roots);
+    heap.set_host_trace(Some(crate::bridge::trace_proxy), Some(crate::bridge::trace_proxy_end));
+    let nil = heap.nil();
     let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
     ISOLATE.with(|c| c.set(state));
     OWNER.store(state, Ordering::Release);

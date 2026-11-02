@@ -91,11 +91,11 @@ pub struct Core {
     pub stats: GcStats,
 
     // the immortal constants
-    pub nil: Sexp,
-    pub na_string: Sexp,
-    pub blank_string: Sexp,
-    pub unbound: Sexp,
-    pub missing_arg: Sexp,
+    nil: Sexp,
+    na_string: Sexp,
+    blank_string: Sexp,
+    unbound: Sexp,
+    missing_arg: Sexp,
 
     /// the CHARSXP cache: weak, pruned after marking
     chars: crate::chars::CharTable,
@@ -114,15 +114,15 @@ pub struct Core {
     /// not marked and the sweep would free it; a collection nested in this
     /// one panics, which `ROBIGO_GCTORTURE` turns into a certainty for
     /// any hook that allocates.
-    pub root_fns: Vec<unsafe fn(&mut Core)>,
+    root_fns: Vec<unsafe fn(&mut Core)>,
     /// Strong runtime edges of a marked HOST object, visited during every
     /// tracing phase (including the weak-reference fixed point). A hook:
     /// see [`Core::root_fns`].
-    pub host_trace: Option<unsafe fn(&mut Core, usize)>,
+    host_trace: Option<unsafe fn(&mut Core, usize)>,
     /// Release temporary host graph owners before deferred proxy releases.
     /// Runs after the sweep, while the collection is still in progress: it
     /// may release preserved objects but must not allocate or collect.
-    pub host_trace_end: Option<unsafe fn()>,
+    host_trace_end: Option<unsafe fn()>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
     /// weak references whose key died, waiting for their finalizer
@@ -302,12 +302,61 @@ impl Core {
         }
     }
 
+    // ---- the immortal constants and the embedder's hooks ----------------
+
+    /// `R_NilValue`.
+    #[inline(always)]
+    pub fn nil(&self) -> Sexp {
+        self.nil
+    }
+    /// `NA_STRING`.
+    #[inline(always)]
+    pub fn na_string(&self) -> Sexp {
+        self.na_string
+    }
+    /// `R_BlankString`.
+    #[inline(always)]
+    pub fn blank_string(&self) -> Sexp {
+        self.blank_string
+    }
+    /// `R_UnboundValue`.
+    #[inline(always)]
+    pub fn unbound(&self) -> Sexp {
+        self.unbound
+    }
+    /// `R_MissingArg`.
+    #[inline(always)]
+    pub fn missing_arg(&self) -> Sexp {
+        self.missing_arg
+    }
+
+    /// Run `f` during every collection, to mark the embedder's roots.
+    ///
+    /// # Safety
+    /// `f` keeps the contract of a hook, documented on the field
+    /// `Core::root_fns`: it may call [`Core::mark`] and read objects, and
+    /// nothing else on this core.
+    pub unsafe fn add_root_fn(&mut self, f: unsafe fn(&mut Core)) {
+        self.root_fns.push(f);
+    }
+
+    /// Set the hooks for HOST objects: `trace` marks the strong runtime edges
+    /// of one, and `end` releases temporary graph owners after a sweep.
+    ///
+    /// # Safety
+    /// As for [`Core::add_root_fn`]; `trace` also accepts every handle given
+    /// to [`Core::alloc_host`], and `end` may release preserved objects.
+    pub unsafe fn set_host_trace(&mut self, trace: Option<unsafe fn(&mut Core, usize)>, end: Option<unsafe fn()>) {
+        self.host_trace = trace;
+        self.host_trace_end = end;
+    }
+
     // ---- allocation ---------------------------------------------------
 
     /// A raw object of `size` bytes with a fresh header (type `t`, no
     /// flags, attributes R_NilValue).
     #[inline(always)]
-    pub fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
+    pub(crate) fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
         if (self.alloc_since_gc >= self.gc_threshold || self.torture) && self.gc_inhibit == 0 {
             self.collect();
         }
@@ -481,7 +530,11 @@ impl Core {
     /// A proxy for a host object: `release(handle)` runs once it is dead.
     /// The node fields are R_NilValue (the API asks the host for them);
     /// the handle and release function follow at +40/+48.
-    pub fn alloc_host(&mut self, t: u8, handle: usize, release: Option<ReleaseFn>) -> Sexp {
+    ///
+    /// # Safety
+    /// `release` may be called with `handle` from any collection, and
+    /// [`Core::set_host_trace`]'s hook is too: both must accept it.
+    pub unsafe fn alloc_host(&mut self, t: u8, handle: usize, release: Option<ReleaseFn>) -> Sexp {
         let x = self.alloc_object(t, crate::HOST_SIZE);
         // SAFETY: HOST_SIZE covers every field written, up to +56.
         unsafe {
@@ -647,12 +700,7 @@ impl Core {
     /// R: memory.c:R_RunExitFinalizers -- mark every onexit reference
     /// ready and move it to the finalizer queue in weak-reference list
     /// order, then let the ordinary runner execute it.
-    ///
-    /// # Safety
-    /// None beyond the contract of [`Core::register_weak_ref`]: every
-    /// collection keeps the references this reads. It is `unsafe` only until
-    /// the API's call stops wrapping it in a block that would then be unused.
-    pub unsafe fn queue_exit_finalizers(&mut self) {
+    pub fn queue_exit_finalizers(&mut self) {
         let mut keep = Vec::with_capacity(self.weak_refs.len());
         for w in std::mem::take(&mut self.weak_refs) {
             // SAFETY: every collection marks the objects in `weak_refs`.

@@ -31,7 +31,7 @@ unsafe extern "C" {
 // R: sysutils.c:RC_fopen
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn RC_fopen(fn_: Sexp, mode: *const c_char, expand: c_int) -> *mut libc::FILE {
-    if fn_ == crate::state::core().na_string {
+    if fn_ == crate::state::core().na_string() {
         return std::ptr::null_mut();
     }
     let filename = Rf_translateCharFP(fn_);
