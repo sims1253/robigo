@@ -445,12 +445,13 @@ caller's object; `NAMED`/`MAYBE_SHARED` on arguments report "shared"
 
 ## 7. Crates and boundaries
 
-- `crates/robigo-core` (rlib, no `unsafe` outside `heap`/`object`
-  modules' audited accessors): `heap` (blocks, size classes, mark, sweep,
-  conservative scan), `object` (header, types, typed views
-  `Sexp::as_slice::<f64>()`), `strings` (CHARSXP cache, encodings),
-  `symbols`, `altrep`, `weak` (weak refs and finalizers). No R semantics
-  beyond memory.c/`Rinlinedfuns.h`-level constructors and accessors.
+- `crates/robigo-core` (rlib): `heap` (blocks, size classes), `gc`
+  (allocation, mark, sweep, conservative scan, symbols, weak refs and
+  finalizers), `chars` (CHARSXP cache), `unwind` (non-local exits) and, in
+  `lib.rs`, the object header and its `unsafe` accessors. Anything that
+  takes a raw `Sexp` and dereferences it, or roots it, is an `unsafe fn`.
+  No R semantics beyond memory.c/`Rinlinedfuns.h`-level constructors and
+  accessors.
 - `crates/robigo-capi` (`cdylib` `libR.so` + `rlib` for tests): one module
   per GNU R source file whose API it exports (`memory.rs`, `attrib.rs`,
   `envir.rs`, `errors.rs`, `rdynload.rs`, `altrep.rs`, `arithmetic.rs`

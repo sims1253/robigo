@@ -11,7 +11,9 @@ thread_local! {
 unsafe fn mark_roots(c: &mut Core) {
     let roots = ROOTS.with(|r| r.borrow().clone());
     for r in roots {
-        c.mark(r);
+        unsafe {
+            c.mark(r);
+        }
     }
 }
 
@@ -111,7 +113,7 @@ fn rooted_objects_survive_and_garbage_is_freed() {
     let mut list = c.nil;
     for i in 0..1000 {
         let v = int_vec(&mut c, &[i]);
-        list = c.alloc_node(LISTSXP, v, list, c.nil);
+        list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil) };
     }
     root(list);
     // garbage
@@ -173,7 +175,9 @@ fn preserve_and_release() {
     let mut c = Core::new();
     let x = c.alloc_vector(REALSXP, 4);
     let addr = x.addr();
-    c.preserve(x);
+    unsafe {
+        c.preserve(x);
+    }
     for _ in 0..3 {
         c.collect();
     }
@@ -190,10 +194,13 @@ unsafe extern "C" fn count_release(owner: usize) {
 fn extdata_release_runs_once_dead() {
     let mut c = core_with_roots();
     let mut buf = vec![1.5f64, 2.5];
-    let live = c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1000, Some(count_release));
+    // SAFETY: `buf` outlives these objects and count_release never reads it.
+    let live = unsafe { c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1000, Some(count_release)) };
     root(live);
     for _ in 0..10 {
-        c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1, Some(count_release));
+        unsafe {
+            c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1, Some(count_release));
+        }
     }
     // overwrite stack slots that may still hold the dead objects
     std::hint::black_box([0usize; 64]);
@@ -219,7 +226,7 @@ fn layout_is_compact() {
     // GNU R's macros onto it
     let mut c = Core::new();
     let v = c.alloc_vector(INTSXP, 1);
-    let n = c.alloc_node(LISTSXP, v, c.nil, c.nil);
+    let n = unsafe { c.alloc_node(LISTSXP, v, c.nil, c.nil) };
     unsafe {
         assert_eq!(*v.0, INTSXP, "type: byte 0");
         assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
@@ -242,7 +249,9 @@ fn symbol_values_are_traced() {
     let v = c.alloc_vector(REALSXP, 3);
     let addr = v.addr();
     unsafe { s.set_cdr_raw(v) };
-    c.write_barrier(s);
+    unsafe {
+        c.write_barrier(s);
+    }
     let _ = v;
     std::hint::black_box([0usize; 64]);
     for _ in 0..3 {
@@ -270,7 +279,9 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
             *d.add(1) = c.nil;
             *d.add(2) = fin;
         }
-        c.register_weak_ref(w);
+        unsafe {
+            c.register_weak_ref(w);
+        }
         w
     };
     let w1 = mk(&mut c, key_live);
@@ -457,7 +468,9 @@ unsafe fn trace_test_host(c: &mut Core, handle: usize) {
     HOST_EDGES.with(|edges| {
         if let Some(children) = edges.borrow().get(&handle) {
             for &child in children {
-                c.mark(child);
+                unsafe {
+                    c.mark(child);
+                }
             }
         }
     });
@@ -479,7 +492,9 @@ fn test_weak(c: &mut Core, key: Sexp, fin: Sexp) -> Sexp {
         *data = key;
         *data.add(2) = fin;
     }
-    c.register_weak_ref(w);
+    unsafe {
+        c.register_weak_ref(w);
+    }
     w
 }
 

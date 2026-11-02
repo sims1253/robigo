@@ -248,8 +248,13 @@ impl Core {
     }
 
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
+    ///
+    /// # Safety
+    /// `car`, `cdr` and `tag` must be live objects of this heap: they are
+    /// reference counted here and traced by every later collection. Only
+    /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
     #[inline]
-    pub fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Sexp {
+    pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Sexp {
         let x = self.alloc_object(t, NODE_SIZE);
         unsafe {
             x.set_car_raw(car);
@@ -350,7 +355,18 @@ impl Core {
 
     /// A vector whose payload belongs to someone else: `release(owner)`
     /// is called once the object is dead (after the sweep).
-    pub fn alloc_extdata(&mut self, t: u8, data: *mut u8, n: usize, owner: usize, release: Option<ReleaseFn>) -> Sexp {
+    ///
+    /// # Safety
+    /// `data` must hold `n` elements of type `t` and stay valid until
+    /// `release` runs; `release` must accept `owner` after any later sweep.
+    pub unsafe fn alloc_extdata(
+        &mut self,
+        t: u8,
+        data: *mut u8,
+        n: usize,
+        owner: usize,
+        release: Option<ReleaseFn>,
+    ) -> Sexp {
         let x = self.alloc_object(t, EXTDATA_SIZE);
         unsafe {
             x.set_flags(flags::EXTDATA);
@@ -472,8 +488,12 @@ impl Core {
     // R: memory.c:R_PreserveObject / R_ReleaseObject (the list form):
     // each preserve adds an entry, each release removes the most recent
     // matching one
+    ///
+    /// # Safety
+    /// `x` must be a live object of this heap: every collection traces it
+    /// until it is released.
     #[inline]
-    pub fn preserve(&mut self, x: Sexp) {
+    pub unsafe fn preserve(&mut self, x: Sexp) {
         self.precious.push(x);
     }
 
@@ -486,7 +506,11 @@ impl Core {
 
     /// Register a weak reference object (a WEAKREFSXP: key, value,
     /// finalizer, next) with the collector.
-    pub fn register_weak_ref(&mut self, w: Sexp) {
+    ///
+    /// # Safety
+    /// `w` must be a live, fully initialized WEAKREFSXP of this heap: the
+    /// collector keeps it and follows those fields on every collection.
+    pub unsafe fn register_weak_ref(&mut self, w: Sexp) {
         // R: memory.c:NewWeakRef prepends to R_weak_refs.
         self.weak_refs.insert(0, w);
     }
@@ -575,8 +599,12 @@ impl Core {
     /// on every collection (a symbol's value, attributes on a shared
     /// constant). The hook a generational collector extends (docs/core.md
     /// §11: sticky marks).
+    ///
+    /// # Safety
+    /// `x` must be a live object of this heap: its header is read here, and
+    /// an immortal `x` becomes a root of every later collection.
     #[inline(always)]
-    pub fn write_barrier(&mut self, x: Sexp) {
+    pub unsafe fn write_barrier(&mut self, x: Sexp) {
         if unsafe { x.has_flag(flags::IMMORTAL) } {
             self.remember_immortal(x);
         }
@@ -591,8 +619,11 @@ impl Core {
 
     /// Mark `x` and everything reachable from it (root callbacks call
     /// this).
+    ///
+    /// # Safety
+    /// `x` must be null or a live object of this heap.
     #[inline]
-    pub fn mark(&mut self, x: Sexp) {
+    pub unsafe fn mark(&mut self, x: Sexp) {
         unsafe { self.mark_obj(x) }
     }
 
