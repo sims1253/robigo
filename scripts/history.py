@@ -145,8 +145,10 @@ def entry_from(d, sha, date, title, run=None):
                 c = corpora.setdefault(s["corpus"], [0, 0])
                 c[0] += s["pass"]
                 c[1] += s["cases"]
-                failing.setdefault(s["corpus"], []).extend(
-                    r["id"] for r in doc.get("results", []) if isinstance(r, dict) and not r.get("pass"))
+                results = doc.get("results")
+                if isinstance(results, list):
+                    failing.setdefault(s["corpus"], []).extend(
+                        r["id"] for r in results if isinstance(r, dict) and "id" in r and not r.get("pass"))
                 m = re.search(r"\.shard(\d+)of(\d+)\.json$", fn)
                 i, n = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
                 shards.setdefault(s["corpus"], [n, set()])[1].add(i)
@@ -162,8 +164,8 @@ def entry_from(d, sha, date, title, run=None):
     if done:
         e["corpora"] = done
         # Only when the result files list every case (older ones may not).
-        gaps = {k: sorted(failing[k]) for k, (p, n) in done.items()
-                if len(failing[k]) == n - p and 0 < n - p <= GAPS_MAX}
+        gaps = {k: sorted(failing.get(k, [])) for k, (p, n) in done.items()
+                if len(failing.get(k, [])) == n - p and 0 < n - p <= GAPS_MAX}
         if gaps:
             e["gaps"] = gaps
     return e
@@ -643,15 +645,14 @@ def cmd_render(a):
             p, n = corp_e["corpora"][k]
             crows.append(f'<tr><td>{E(CORPORA.get(k, k))} <span class="meta">({E(k)})</span></td>'
                          f'<td class="n">{p:,}</td><td class="n">{n:,}</td><td class="n">{fmt_pct(p / n)}</td></tr>')
-    gap_e = next((e for e in reversed(entries) if "corpora" in e), None)
     gap_blocks = []
-    for k in corpus_order((gap_e or {}).get("gaps", {})):
-        ids = gap_e["gaps"][k]
+    for k in corpus_order((corp_e or {}).get("gaps", {})):
+        ids = corp_e["gaps"][k]
         items = []
         for cid in ids:
             path = gap_path(k, cid)
             label = f"<code>{E(cid)}</code>"
-            items.append(f'<li><a href="{a.repo_url}/blob/{gap_e["sha"]}/{E(path)}">{label}</a></li>' if path
+            items.append(f'<li><a href="{a.repo_url}/blob/{corp_e["sha"]}/{E(path)}">{label}</a></li>' if path
                          else f"<li>{label}</li>")
         gap_blocks.append(f'<details><summary>{E(CORPORA.get(k, k))} <span class="meta">({E(k)})</span>: '
                           f'{len(ids):,} failing</summary><ul class="gaps">{"".join(items)}</ul></details>')
@@ -671,7 +672,7 @@ def cmd_render(a):
         font=FONT, repo_url=a.repo_url, sha=last["sha"], sha7=last["sha"][:7], date=last["date"][:10],
         speed=figure(speed_svg, entries, ser), groups=figure(groups_svg, entries, ser),
         compat=figure(compat_svg, entries, ser), bench_rows="\n".join(rows), corpus_rows="\n".join(crows),
-        gaps=gaps, gap_sha7=(gap_e or last)["sha"][:7],
+        gaps=gaps, gap_sha7=(corp_e or last)["sha"][:7],
         n_commits=len(entries), corpus_heads="".join(f'<th class="n">{E(k)}</th>' for k in cnames),
         history_rows="\n".join(hrows))
     with open(os.path.join(a.out, "index.html"), "w") as f:
