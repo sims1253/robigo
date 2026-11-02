@@ -88,6 +88,15 @@ thread_local! {
     static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Publish `interp` for the callbacks of the C code about to run. The
+/// pointer must derive from the `&mut` that is live across the call: the
+/// outer one `enter` stored would alias it, and with `noalias` on that
+/// reference LLVM may keep its fields in registers across the call.
+#[inline(always)]
+fn publish(interp: &mut Interp) {
+    INTERP.with(|c| c.set(interp as *mut Interp));
+}
+
 /// Run `f` with the interpreter that is currently calling into C.
 pub fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     let p = INTERP.with(|c| c.get());
@@ -141,7 +150,7 @@ unsafe fn converting<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T
 #[cold]
 #[inline(never)]
 unsafe fn converting_in_context<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
-    INTERP.with(|c| c.set(interp as *mut Interp));
+    publish(interp);
     let mut out = None;
     match crate::errors::protect_run(|| out = Some(f())) {
         None => Ok(out.expect("a conversion that returned left its value")),
@@ -1831,6 +1840,7 @@ fn sharing(v: &Value) -> u16 {
 unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
     let mut out = Sexp::NULL;
     let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    publish(interp);
     let t = crate::dotcode::robigo_dotcall(fun, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
     result(interp, t, out)
 }
@@ -1993,6 +2003,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     converting(interp, || call_args(args, &mut xs))?;
     let mut out = Sexp::NULL;
     let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    publish(interp);
     let t =
         crate::dotcode::robigo_dotcall(r.addr as *const c_void, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
     let back = converting(interp, || write_backs(args, &xs));
@@ -2030,8 +2041,10 @@ unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[A
             Rf_protect(op);
             [c, op, Rf_protect(to_sexp(&Value::Env(env.clone())))]
         })?;
+        publish(interp);
         crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
     } else {
+        publish(interp);
         crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
     };
     stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
@@ -2041,7 +2054,7 @@ unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[A
 /// `.C`/`.Fortran` (dotcode.c do_dotCode): every argument is copied into a
 /// C array, the routine works on the copies, and the result is the list
 /// of (copied back) arguments.
-unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     enum Buf {
         I(Vec<i32>),
         D(Vec<f64>),
@@ -2080,6 +2093,7 @@ unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>,
             Buf::S(_, p) => p.as_mut_ptr() as *mut c_void,
         })
         .collect();
+    publish(interp);
     let t = crate::dotcode::robigo_dotc(r.addr as *const c_void, ptrs.as_ptr(), ptrs.len() as c_int);
     if t != 0 {
         return Err(take_flow(t));
