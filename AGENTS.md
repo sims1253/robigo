@@ -102,15 +102,20 @@ See `docs/verification.md` for everything; in short:
 
 - `scripts/build.sh` builds the release binary into `.robigo/bin/robigo`
   (worktrees share cargo's target directory; this keeps yours separate).
-- `cargo test` runs unit tests, the parser oracle and the conformance suite.
+  `scripts/build.sh --quick` rebuilds in seconds for iterating; its binary is
+  about 30% slower, so never measure with it.
+- `cargo test --profile quick` runs unit tests, the parser oracle and the
+  conformance suite. Plain `cargo test` works too, about ten times slower.
 - `scripts/corpus.py run fastr --filter 'TestBuiltin_paste'` runs a slice of
   a corpus; `scripts/corpus.py show fastr ID` diffs one case.
 - `scripts/perf.py run --metric instr --filter shootout/` measures
   instruction counts against GNU R.
 - Conformance scripts: `tests/r/<area>/<name>.R`. Record GNU R's output
-  with `scripts/regen-expected.sh tests/r/<area>/<name>.R` (writes `.Rout`,
-  `.Rerr`, `.Rstatus`; GNU R runs with `R_DEFAULT_PACKAGES=NULL`, so only
-  base functions are available — no `head`, `str`, `median`, `setNames`).
+  with `scripts/regen-expected.sh tests/r/<area>/<name>.R`, after putting GNU R
+  4.5.0 on `PATH` (`scripts/build-oracle.sh` builds one; point `R_HOME` at its
+  `R RHOME` for local conformance too). It writes `.Rout`, `.Rerr` and
+  `.Rstatus`, running GNU R with `R_DEFAULT_PACKAGES=NULL`, so only base
+  functions are available: no `head`, `str`, `median`, `setNames`.
 - Run a subset: `ROBIGO_CONF_FILTER=tests/r/strings ROBIGO_CONF_DIFF=1 cargo test
   -p robigo-cli --test conformance -- --nocapture`.
 - Ratchets (`tests/r/passing/`, `tests/corpora/*/passing/`,
@@ -125,8 +130,9 @@ See `docs/verification.md` for everything; in short:
 
 ## Machine
 
-2 cores, shared `~/.cache/cargo-target` (see `~/.cargo/config.toml`).
-Builds are slow and other agents build too: one build at a time
+Machines differ (`nproc`), so check yours. Other agents build at the same
+time on a shared target directory (`~/.cache/cargo-target`, set by the
+checkouts' parent `.cargo/config.toml`): one build at a time
 (`scripts/build.sh` takes a lock), build only the crates you need
 (`cargo test -p robigo-numerics`), run corpora with `--filter`, and leave
 the full runs to CI. `cargo fmt` before committing (CI checks it).
