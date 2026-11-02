@@ -800,3 +800,20 @@ fn a_root_callback_cannot_allocate() {
     c.set_torture(true);
     c.collect();
 }
+
+/// An immortal CHARSXP is counted once by `immortal_chars`; a store into it
+/// must not count it again as marked, or the sum can equal the table's size
+/// with a dead entry in it, and the prune is skipped.
+#[test]
+fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    let blank = c.blank_string;
+    unsafe { c.write_barrier(blank) };
+    let before = c.char_cache_len();
+    c.mk_char(b"soon dead", 0);
+    assert_eq!(c.char_cache_len(), before + 1);
+    c.collect();
+    assert_eq!(c.char_cache_len(), before, "a dead CHARSXP stayed in the cache");
+}

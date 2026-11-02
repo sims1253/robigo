@@ -533,6 +533,11 @@ impl Core {
         self.syms.get(name).copied()
     }
 
+    /// How many CHARSXPs the cache holds, dead ones not yet pruned included.
+    pub fn char_cache_len(&self) -> usize {
+        self.chars.len()
+    }
+
     /// How many symbols exist.
     pub fn symbol_count(&self) -> usize {
         self.syms.len()
@@ -672,6 +677,12 @@ impl Core {
 
     #[cold]
     fn remember_immortal(&mut self, x: Sexp) {
+        // A CHARSXP has nothing to trace, and must not be: `trace` would
+        // count it in `marked_chars` on top of `immortal_chars`, and with
+        // the sum inflated `prune_chars` could skip a table with dead entries.
+        if unsafe { x.typ() } == CHARSXP {
+            return;
+        }
         if self.immortal_seen.insert(x) {
             self.immortal_roots.push(x);
         }
