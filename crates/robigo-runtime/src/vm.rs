@@ -3649,7 +3649,7 @@ fn run_with(
                         flush!();
                         let c = &code.consts[*call as usize];
                         let traced = match c {
-                            Value::Lang(l) => l
+                            Value::Lang(l) if crate::builtins::debug::any_prim_traced() => l
                                 .fun_sym()
                                 .and_then(|s| crate::builtins::lookup_primitive(&s.name()))
                                 .is_some_and(|b| crate::builtins::debug::is_traced(&Value::Builtin(b))),

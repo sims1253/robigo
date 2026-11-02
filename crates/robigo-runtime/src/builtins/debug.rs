@@ -29,6 +29,7 @@ thread_local! {
 }
 
 /// Whether any builtin is traced (see [`ANY_TRACED_BUILTIN`]).
+#[inline]
 pub fn any_prim_traced() -> bool {
     ANY_TRACED_BUILTIN.with(|c| c.get())
 }
@@ -45,6 +46,7 @@ thread_local! {
 
 /// Whether anything is traced: only then do the evaluators' two trace
 /// reports differ, and only then is [`COMPILED_FRAME`] maintained.
+#[inline]
 pub fn any_traced() -> bool {
     TRACED_CLOSURES.with(|c| c.get()) > 0 || any_prim_traced()
 }
@@ -65,10 +67,13 @@ pub fn leave_frame(prev: bool) {
 
 /// debug.c's RTRACE bit of a function object (`Value::Closure` keeps it in
 /// the closure; a builtin is a static, so the flag is kept aside).
+/// Every builtin call asks, so the set is consulted only while some builtin
+/// is traced.
+#[inline]
 pub fn is_traced(f: &Value) -> bool {
     match f {
         Value::Closure(c) => c.trace.get(),
-        Value::Builtin(b) => TRACED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b))),
+        Value::Builtin(b) => any_prim_traced() && TRACED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b))),
         _ => false,
     }
 }
