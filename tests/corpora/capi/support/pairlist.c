@@ -103,3 +103,18 @@ SEXP capi_setfun_alias(SEXP x) {
     SETCAR(CDR(x), ScalarInteger(6));
     return x;
 }
+
+SEXP capi_car(SEXP x) {
+    return CAR(x);
+}
+
+SEXP capi_cadr(SEXP x) {
+    return CADR(x);
+}
+
+// A cell of the argument, retyped: the result is not the caller's pairlist.
+SEXP capi_car_as_call(SEXP x) {
+    SEXP cell = CAR(x);
+    SET_TYPEOF(cell, LANGSXP);
+    return cell;
+}

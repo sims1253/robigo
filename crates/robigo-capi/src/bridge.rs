@@ -54,6 +54,13 @@ thread_local! {
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
     /// proxy handle -> (identity, the runtime object)
     static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::new());
+    /// Core object of an environment or external pointer -> its attribute
+    /// cells when the two sides last agreed (see [`push_attrs`]); empty if
+    /// absent. Addresses, not values: a reference from here would count as
+    /// the runtime holding what the attributes refer to.
+    static SYNCED_ATTRS: RefCell<HashMap<usize, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
+    /// A `push_attrs` is running: attributes can refer back to the object.
+    static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
     static NEXT_HANDLE: Cell<usize> = const { Cell::new(1) };
     /// handles of proxies the collector found dead (dropped at a safe point)
     static DEAD: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -324,12 +331,13 @@ fn drain_dead() {
     let had = !dead.is_empty();
     for h in dead {
         if let Some((key, _v)) = PROXIED.with(|m| m.borrow_mut().remove(&h)) {
-            PROXY_OF.with(|m| {
+            let x = PROXY_OF.with(|m| {
                 let mut m = m.borrow_mut();
-                if m.get(&key).map(|e| e.0) == Some(h) {
-                    m.remove(&key);
-                }
+                if m.get(&key).map(|e| e.0) == Some(h) { m.remove(&key).map(|e| e.1) } else { None }
             });
+            if let Some(x) = x {
+                forget_attrs(x);
+            }
         }
     }
     if had {
@@ -359,6 +367,7 @@ unsafe fn proxy(v: &Value) -> Sexp {
     drain_dead();
     let (key, t) = identity(v).expect("proxy of a value without identity");
     if let Some((_, x)) = PROXY_OF.with(|m| m.borrow().get(&key).copied()) {
+        push_attrs(v, x);
         return x;
     }
     let h = NEXT_HANDLE.with(|n| {
@@ -387,9 +396,101 @@ unsafe fn proxy(v: &Value) -> Sexp {
         _ => None,
     };
     if attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
-        set_attrs(x, attrs.as_ref());
+        pushing_attrs(|| set_attrs(x, attrs.as_ref()));
+        if matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
+            agree_attrs(x);
+        }
     }
     x
+}
+
+/// The tag and value of each attribute cell of `x`, and its S4 bit.
+unsafe fn attr_cells(x: Sexp) -> Vec<(usize, usize)> {
+    let mut cells = Vec::new();
+    // (A CHARSXP's attribute slot chains the string cache.)
+    if x.typ() == CHARSXP {
+        return cells;
+    }
+    let mut a = x.attrib_raw();
+    while a != R_NilValue && !a.is_null() {
+        cells.push((a.tag().addr(), a.car().addr()));
+        a = a.cdr();
+    }
+    if x.gp() & gp::S4 != 0 {
+        cells.push((0, 0));
+    }
+    cells
+}
+
+unsafe fn attrs_agreed(x: Sexp) -> bool {
+    let cells = attr_cells(x);
+    SYNCED_ATTRS.with(|m| m.borrow().get(&x.addr()).map_or(cells.is_empty(), |c| *c == cells))
+}
+
+unsafe fn agree_attrs(x: Sexp) {
+    let cells = attr_cells(x);
+    if cells.is_empty() {
+        forget_attrs(x);
+    } else {
+        SYNCED_ATTRS.with(|m| m.borrow_mut().insert(x.addr(), cells));
+    }
+}
+
+fn forget_attrs(x: Sexp) {
+    // (The map is gone at thread exit, when `CoreRef`s still drop.)
+    let _ = SYNCED_ATTRS.try_with(|m| m.borrow_mut().remove(&x.addr()));
+}
+
+fn pushing_attrs(f: impl FnOnce()) {
+    let outer = PUSHING_ATTRS.with(|p| p.replace(true));
+    f();
+    PUSHING_ATTRS.with(|p| p.set(outer));
+}
+
+/// An environment or external pointer is one object with its attributes on
+/// both sides of the bridge: bring core object `x` up to date with what R
+/// code did to `v`, before C reads it. A routine's own writes win: they
+/// reach `v` when it returns (`write_back`).
+unsafe fn push_attrs(v: &Value, x: Sexp) {
+    if PUSHING_ATTRS.with(|p| p.get()) || (!v.has_attrs() && attr_cells(x).is_empty()) || !attrs_agreed(x) {
+        return;
+    }
+    let attrs = v.ref_attrs().map(Box::new);
+    let current = {
+        let mut a = attrs_from(x);
+        if x.gp() & gp::S4 != 0 {
+            a.get_or_insert_with(Default::default).1 = true;
+        }
+        a
+    };
+    if identical_attrs(&attrs, &current) {
+        return;
+    }
+    SET_ATTRIB(x, R_NilValue);
+    x.set_flag(flags::OBJECT, false);
+    if attrs.as_ref().is_some_and(|a| a.1) {
+        SET_S4_OBJECT(x)
+    } else {
+        UNSET_S4_OBJECT(x)
+    }
+    pushing_attrs(|| set_attrs(x, attrs.as_deref()));
+    agree_attrs(x);
+}
+
+/// Attributes equal by content: one side was converted from core objects,
+/// so identity says nothing.
+fn identical_attrs(a: &AttrBox, b: &AttrBox) -> bool {
+    match (a.as_deref(), b.as_deref()) {
+        (Some(x), Some(y)) => {
+            x.1 == y.1
+                && x.0.len() == y.0.len()
+                && x.0
+                    .iter()
+                    .zip(&y.0)
+                    .all(|((n, v), (m, w))| n == m && robigo_runtime::builtins::identical::identical(v, w))
+        }
+        _ => same_attrs(a, b),
+    }
 }
 
 thread_local! {
@@ -503,6 +604,7 @@ impl Drop for CoreRef {
         let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
         });
+        forget_attrs(self.0);
     }
 }
 
@@ -520,6 +622,7 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
     core().preserve(x);
     let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag()) } else { Value::Null };
     let attrs = attrs_from(x);
+    agree_attrs(x);
     let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(CoreRef(x))) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
     Value::ExtPtr(p)
@@ -680,7 +783,11 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             set_attrs(r, l.attrs.as_deref());
             return r;
         }
-        Value::ExtPtr(_) if core_ref_of(v).is_some() => return core_ref_of(v).unwrap(),
+        Value::ExtPtr(_) if core_ref_of(v).is_some() => {
+            let x = core_ref_of(v).unwrap();
+            push_attrs(v, x);
+            return x;
+        }
         // `...`: a DOTSXP chain, R_MissingArg when empty (as GNU R binds it)
         Value::Dots(d) => {
             if d.is_empty() {
@@ -1806,11 +1913,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 (*p).attrs = new;
             }
         }
-        Value::Env(e) => {
-            *e.0.attrs.borrow_mut() = box_attrs(x, originals);
-        }
-        Value::ExtPtr(p) => {
-            *p.attrs.borrow_mut() = box_attrs(x, originals);
+        // Only what the routine itself wrote: `x` is behind a runtime
+        // object R code can have changed since (see `push_attrs`).
+        Value::Env(_) | Value::ExtPtr(_) if !attrs_agreed(x) => {
+            v.clone().set_attrs(box_attrs(x, originals));
+            agree_attrs(x);
         }
         _ => {}
     }
@@ -1845,6 +1952,20 @@ unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
         return Err(take_flow(t));
     }
     Ok(from_sexp(out))
+}
+
+/// [`result`] of a `.Call`: a list or call cell that came from the runtime
+/// is the caller's own object, not a copy (`node_poke_cadr(node_car(x), v)`
+/// writes through `x`). `originals` has the routine's writes.
+unsafe fn result_cell(t: usize, out: Sexp, originals: &HashMap<usize, Value>) -> RResult<Value> {
+    if t == 0 {
+        match originals.get(&out.addr()) {
+            Some(v @ Value::Pairlist(_)) if out.typ() == LISTSXP => return Ok(v.clone()),
+            Some(v @ Value::Lang(_)) if out.typ() == LANGSXP => return Ok(v.clone()),
+            _ => {}
+        }
+    }
+    result(t, out)
 }
 
 unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode::CallInfo) {
@@ -1988,7 +2109,7 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
                 write_back(&a.value, x, &mut originals);
             }
             stack_imbalance(interp, ".Call", &info);
-            result(t, out)
+            result_cell(t, out, &originals)
         }
         Interface::External => {
             // R: dotcode.c:do_External — the routine gets the whole
