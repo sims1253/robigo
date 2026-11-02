@@ -1382,6 +1382,9 @@ impl Interp {
     /// Returns the value (`None` if evaluation failed), which the
     /// console REPL stores in `.Last.value`.
     pub fn eval_toplevel(&mut self, e: &Value, env: &Env, _echo: bool) -> Option<Value> {
+        if let Some(b) = crate::native::bridge() {
+            b.at_top_level();
+        }
         self.frames.clear();
         self.handlers = self.global_handlers.clone();
         self.restarts = None;

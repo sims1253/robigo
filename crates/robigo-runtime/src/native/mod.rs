@@ -91,6 +91,8 @@ pub trait NativeBridge: Sync {
         args: Vec<Arg>,
         env: &crate::env::Env,
     ) -> RResult<Value>;
+    /// R is at top level: no evaluator frame exists (`eval_toplevel`).
+    fn at_top_level(&self) {}
     /// Whether runtime weak keys require clearing implementation caches.
     fn finalizers_active(&self) -> bool {
         false

@@ -2,8 +2,6 @@
 //! unique.c/identical.c entry points, which call the host's ports.
 
 use crate::memory::*;
-use crate::state::*;
-use robigo_core::types::*;
 use robigo_core::{Rcomplex, Sexp};
 use std::ffi::c_int;
 
@@ -422,17 +420,23 @@ pub unsafe extern "C" fn R_qsort_int_I(v: *mut c_int, idx: *mut c_int, i: c_int,
 
 /// Call the host's `.Internal(name(args...))`.
 pub unsafe fn internal(name: &str, args: &[Sexp]) -> Sexp {
-    let mut a = Vec::with_capacity(args.len() + 1);
+    // the host's operation can jump: nothing here may own memory, and
+    // R_orderVector passes any number of keys
     let n = std::ffi::CString::new(name).unwrap();
-    a.push(Rf_protect(crate::strings::Rf_mkString(n.as_ptr())));
-    a.extend_from_slice(args);
-    let r = crate::host::op("internal\0", &a);
+    let name = Rf_protect(crate::strings::Rf_mkString(n.as_ptr()));
+    drop(n);
+    let vmax = vmaxget();
+    let a = R_alloc(args.len() + 1, size_of::<Sexp>() as c_int) as *mut Sexp;
+    *a = name;
+    std::ptr::copy_nonoverlapping(args.as_ptr(), a.add(1), args.len());
+    let r = crate::host::op("internal\0", std::slice::from_raw_parts(a, args.len() + 1));
+    vmaxset(vmax);
     Rf_unprotect(1);
     r
 }
 
-fn lgl(b: bool) -> Sexp {
-    unsafe { crate::list::Rf_ScalarLogical(b as c_int) }
+unsafe fn lgl(b: bool) -> Sexp {
+    crate::list::Rf_ScalarLogical(b as c_int)
 }
 
 // R: unique.c:duplicated
@@ -473,10 +477,3 @@ pub unsafe extern "C" fn R_compute_identical(x: Sexp, y: Sexp, flags: c_int) -> 
     );
     (*LOGICAL(r) == 1) as c_int
 }
-
-#[allow(dead_code)]
-fn _unused() -> Sexp {
-    unsafe { R_NilValue }
-}
-#[allow(dead_code)]
-const _T: u8 = INTSXP;

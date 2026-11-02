@@ -23,6 +23,7 @@ use robigo_runtime::interp::Interp;
 use robigo_runtime::native::{Interface, NativeBridge, Routine};
 use robigo_runtime::sym::{Sym, s};
 use robigo_runtime::value::*;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -86,13 +87,56 @@ thread_local! {
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
     static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// What C code replaced in runtime objects (see [`retire`]).
+    static RETIRED: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Replace a field of a runtime object C code changed through an alias,
+/// keeping the old value alive until R is back at top level.
+///
+/// C writes bypass copy-on-modify, but the evaluator walks these objects by
+/// reference: `eval(ex)` walks `ex.data` while `h(ex)` calls a routine on
+/// it, and a closure's body and compiled code are running while
+/// `SET_BODY` replaces them. Those frames can be above the outermost native
+/// call, so nothing short of top level proves they are gone. Only what a
+/// routine changed comes here, and only until the current top-level
+/// expression ends.
+unsafe fn retire<T: 'static>(slot: *mut T, new: T) {
+    let old = std::ptr::replace(slot, new);
+    RETIRED.with(|r| r.borrow_mut().push(Box::new(old)));
+}
+
+/// Move what `slot` holds to [`RETIRED`], leaving a copy for the runtime's
+/// write-back to replace.
+unsafe fn retire_copy<T: Clone + 'static>(slot: *mut T) {
+    retire(slot, (*slot).clone());
+}
+
+/// A closure's compiled forms, which the VM runs by reference.
+unsafe fn retire_code(p: *mut Closure) {
+    retire(&raw mut (*p).code, Default::default());
+    retire(&raw mut (*p).inline, Default::default());
+    retire(&raw mut (*p).defaults, Default::default());
+}
+
+/// Publish `interp` for the callbacks of the C code about to run. The
+/// pointer must derive from the `&mut` that is live across the call: the
+/// outer one `enter` stored would alias it, and with `noalias` on that
+/// reference LLVM may keep its fields in registers across the call.
+#[inline(always)]
+fn publish(interp: &mut Interp) {
+    INTERP.with(|c| c.set(interp as *mut Interp));
 }
 
 /// Run `f` with the interpreter that is currently calling into C.
-pub fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
+///
+/// # Safety
+/// The interpreter's frames above the C code are suspended in a call, so
+/// they do not touch it while `f` runs; `f` must not hold on to it.
+pub unsafe fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     let p = INTERP.with(|c| c.get());
     assert!(!p.is_null(), "robigo: the C API was called outside an R evaluation");
-    f(unsafe { &mut *p })
+    f(&mut *p)
 }
 
 /// Make `interp` current while `f` runs (re-entrant). The outermost
@@ -105,13 +149,51 @@ fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     let marker = 0usize;
     let here = std::hint::black_box(&marker) as *const usize as usize;
     let outer = prev.is_null();
-    let old = if outer { core().set_scan_top(here) } else { 0 };
+    // SAFETY: the runtime calls the bridge on the R thread, and the heap
+    // reference ends with the call.
+    let old = if outer { unsafe { core().set_scan_top(here) } } else { 0 };
     let r = f(interp);
     if outer {
-        core().set_scan_top(old);
+        // SAFETY: as above.
+        unsafe { core().set_scan_top(old) };
     }
     INTERP.with(|c| c.set(prev));
     r
+}
+
+/// Can converting between runtime values and core objects jump? It can
+/// reach a package's ALTREP methods, and `Rf_protect` raises when the stack
+/// is full. There is no context around a conversion (docs/core.md §5:
+/// `robigo_dotcall` has popped its own), so a jump would abort, or land in
+/// a C frame below evaluator frames. Protect-stack depth is a proxy for
+/// the second: a conversion's protections grow with the object's nesting.
+#[inline(always)]
+unsafe fn conversion_can_jump() -> bool {
+    crate::altrep::PACKAGE_ALTREP.load(std::sync::atomic::Ordering::Relaxed) || R_PPStackTop > R_PPStackSize / 2
+}
+
+/// Run a conversion so that a jump out of it becomes an `Err`. Only the
+/// rare case pays for the context; `f` must capture its owned state from
+/// the caller's frame, which the jump does not cross. What `f`'s own
+/// frames built is lost with them (docs/core.md §5's plain frames are the
+/// goal; until the conversions return `Result`, that is a leak).
+#[inline(always)]
+unsafe fn converting<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+    if !conversion_can_jump() {
+        return Ok(f());
+    }
+    converting_in_context(interp, f)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn converting_in_context<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+    publish(interp);
+    let mut out = None;
+    match crate::errors::protect_run(|| out = Some(f())) {
+        None => Ok(out.expect("a conversion that returned left its value")),
+        Some(t) => Err(take_flow(t)),
+    }
 }
 
 fn store_flow(f: Flow) -> usize {
@@ -277,8 +359,8 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
                 }
             });
             for x in &pending {
-                if unsafe { x.has_flag(flags::HOST) } {
-                    let h = unsafe { robigo_core::Core::host_handle(*x) };
+                if x.has_flag(flags::HOST) {
+                    let h = robigo_core::Core::host_handle(*x);
                     if let Some((_, value)) = proxies.get(&h) {
                         graph.root(value);
                     }
@@ -480,11 +562,11 @@ pub unsafe fn trace_proxy_end() {
     TRACE_GRAPH.with(|g| g.borrow_mut().take());
 }
 
-fn proxied(x: Sexp) -> Option<Value> {
-    if !unsafe { x.has_flag(flags::HOST) } {
+unsafe fn proxied(x: Sexp) -> Option<Value> {
+    if !x.has_flag(flags::HOST) {
         return None;
     }
-    let h = unsafe { robigo_core::Core::host_handle(x) };
+    let h = robigo_core::Core::host_handle(x);
     PROXIED.with(|m| m.borrow().get(&h).map(|e| e.1.clone()))
 }
 
@@ -498,7 +580,9 @@ impl Drop for CoreRef {
         // reverse registration order at process exit. Reaching either with
         // `with` would panic in a destructor, which std turns into an abort.
         if crate::state::try_isolate().is_some() {
-            core().release(self.0);
+            // SAFETY: the isolate is alive on this thread, the only one
+            // that holds runtime values.
+            unsafe { core().release(self.0) };
         }
         let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
@@ -527,9 +611,9 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
 
 // ---- Value -> SEXP ---------------------------------------------------------
 
-fn sym_sexp(s: Sym) -> Sexp {
+unsafe fn sym_sexp(s: Sym) -> Sexp {
     if s == s::EMPTY {
-        return unsafe { R_MissingArg };
+        return R_MissingArg;
     }
     s.with_name(|n| core().install(n.as_bytes()))
 }
@@ -870,7 +954,7 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 }
 
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
-    guarded(|| unsafe {
+    guarded(|| {
         let e = from_sexp(expr);
         let rho = match env_of(env) {
             Ok(r) => r,
@@ -887,12 +971,12 @@ unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
 }
 
 unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
-    let s = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(buf, len) }).into_owned();
+    let s = String::from_utf8_lossy(std::slice::from_raw_parts(buf, len)).into_owned();
     with_interp(|i| if stream == 0 { i.write_out(&s) } else { i.write_err(&s) });
 }
 
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
-    guarded(|| unsafe {
+    guarded(|| {
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let r = if call.is_null() {
             with_interp(|i| i.warning(m))
@@ -911,7 +995,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 /// does, so calling handlers run while the C frames are live and the
 /// default handler's traceback includes them.
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
-    guarded(|| unsafe {
+    guarded(|| {
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
         let f = match f {
@@ -953,7 +1037,7 @@ unsafe fn sym_arg(x: Sexp) -> RResult<Sym> {
 
 /// The value bound to `sym` in this frame, as findVarInFrame sees it:
 /// promises unforced, active bindings called.
-fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
+unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     let Some(flags) = env.binding_flags(sym) else { return Ok(None) };
     let v = env.get_local(sym).unwrap_or(Value::Null);
     if flags & robigo_runtime::env::BIND_ACTIVE != 0 {
@@ -993,11 +1077,11 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 }
 
 /// Write bytes to a host connection without wrapping them in a RAWSXP
-/// and an integer scalar and dispatching the generic `writeConnection`
-/// op (R: connections.c:R_WriteConnection, for native callers handing
-/// over each cell, separator and newline). Returns 0, or the flow token
-/// on failure; the caller jumps, as `host::op` does.
-pub(crate) fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
+/// and an integer scalar and going through a host operation (R:
+/// connections.c:R_WriteConnection, for native callers handing over each
+/// cell, separator and newline). Returns 0, or the flow token on failure;
+/// the caller jumps, as `host::op` does.
+pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
     guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
         Ok(()) => 0,
         Err(f) => store_flow(f),
@@ -1056,12 +1140,6 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "connectionNumber" => {
             crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)
-        }
-        "writeConnection" => {
-            let n = int_arg(a[0]);
-            let bytes = std::slice::from_raw_parts(a[1].std_data(), crate::memory::xlength(a[1]) as usize).to_vec();
-            with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, n, &bytes))?;
-            R_NilValue
         }
         "readConnection" => {
             let (n, size) = (int_arg(a[0]), int_arg(a[1]).max(0) as usize);
@@ -1370,40 +1448,35 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
                 Value::Pairlist(p) => p.items.clone(),
                 _ => Vec::new(),
             };
-            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
-            (*p).formals = items.into();
-            (*p).code.take();
-            (*p).inline.take();
-            (*p).defaults.take();
+            let p = Rc::as_ptr(c).cast_mut();
+            retire(&raw mut (*p).formals, items.into());
+            retire_code(p);
         }
         (Value::Closure(c), 1) => {
-            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
+            let p = Rc::as_ptr(c).cast_mut();
             #[cfg(feature = "bytecode-fidelity")]
             match from_sexp(y) {
                 Value::Bytecode(b) => {
-                    (*p).body = b.expression.clone();
-                    (*p).gnu_bytecode = Some(b);
+                    retire(&raw mut (*p).body, b.expression.clone());
+                    retire(&raw mut (*p).gnu_bytecode, Some(b));
                     (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
                 }
                 val => {
-                    (*p).body = val;
-                    (*p).gnu_bytecode = None;
+                    retire(&raw mut (*p).body, val);
+                    retire(&raw mut (*p).gnu_bytecode, None);
                     (*p).jit = Default::default();
                 }
             }
             #[cfg(not(feature = "bytecode-fidelity"))]
             {
-                (*p).body = from_sexp(y);
+                retire(&raw mut (*p).body, from_sexp(y));
                 (*p).jit = Default::default();
             }
-            (*p).code.take();
-            (*p).inline.take();
-            (*p).defaults.take();
+            retire_code(p);
         }
         (Value::Closure(c), 2) => {
             if let Value::Env(e) = from_sexp(y) {
-                let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
-                (*p).env = e;
+                retire(&raw mut (*Rc::as_ptr(c).cast_mut()).env, e);
             }
         }
         (Value::Promise(pr), 0) => {
@@ -1414,9 +1487,9 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
             }
         }
         (Value::Promise(pr), 1) => {
-            let p = Rc::as_ptr(pr) as *mut robigo_runtime::value::Promise;
-            (*p).expr = from_sexp(y);
-            (*p).code = None;
+            let p = Rc::as_ptr(pr).cast_mut();
+            retire(&raw mut (*p).expr, from_sexp(y));
+            retire(&raw mut (*p).code, None);
         }
         (Value::Promise(pr), 2) => {
             *pr.env.borrow_mut() = if y == R_NilValue {
@@ -1433,7 +1506,7 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
 }
 
 unsafe extern "C" fn h_op(name: *const c_char, args: *const Sexp, n: c_int, out: *mut Sexp) -> usize {
-    guarded(|| unsafe {
+    guarded(|| {
         let name = CStr::from_ptr(name).to_string_lossy().into_owned();
         let a = std::slice::from_raw_parts(args, n.max(0) as usize);
         match op(&name, a) {
@@ -1462,7 +1535,7 @@ static HOST: Host = Host {
 // The handler and restart stacks are persistent lists (Rc), so saving is
 // two reference-count increments.
 unsafe extern "C" fn h_ctx_save(out: *mut usize) {
-    with_interp(|i| unsafe {
+    with_interp(|i| {
         *out = i.handlers.clone().map_or(0, |h| Rc::into_raw(h) as usize);
         *out.add(1) = i.restarts.clone().map_or(0, |r| Rc::into_raw(r) as usize);
     })
@@ -1471,18 +1544,16 @@ unsafe extern "C" fn h_ctx_save(out: *mut usize) {
 unsafe fn take_saved(
     saved: *const usize,
 ) -> (robigo_runtime::conditions::HandlerStack, robigo_runtime::conditions::RestartStack) {
-    unsafe {
-        let h = *saved;
-        let r = *saved.add(1);
-        (
-            (h != 0).then(|| Rc::from_raw(h as *const robigo_runtime::conditions::HandlerNode)),
-            (r != 0).then(|| Rc::from_raw(r as *const robigo_runtime::conditions::RestartNode)),
-        )
-    }
+    let h = *saved;
+    let r = *saved.add(1);
+    (
+        (h != 0).then(|| Rc::from_raw(h as *const robigo_runtime::conditions::HandlerNode)),
+        (r != 0).then(|| Rc::from_raw(r as *const robigo_runtime::conditions::RestartNode)),
+    )
 }
 
 unsafe extern "C" fn h_ctx_restore(saved: *const usize) {
-    let (h, r) = unsafe { take_saved(saved) };
+    let (h, r) = take_saved(saved);
     with_interp(|i| {
         i.handlers = h;
         i.restarts = r;
@@ -1490,7 +1561,7 @@ unsafe extern "C" fn h_ctx_restore(saved: *const usize) {
 }
 
 unsafe extern "C" fn h_ctx_drop(saved: *const usize) {
-    drop(unsafe { take_saved(saved) });
+    drop(take_saved(saved));
 }
 
 // ---- the stub libR.so (package objects built by GNU R ask for it) ---------------
@@ -1635,18 +1706,16 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     if x.is_altrep() {
         return;
     }
-    fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
-        unsafe {
-            let n = rc.data.len();
-            if n == 0 || crate::memory::xlength(x) as usize != n {
-                return;
-            }
-            let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
-            if src != rc.data.as_slice() {
-                // R semantics: the routine mutated the caller's object
-                let p = Rc::as_ptr(rc) as *mut Vector<T>;
-                (*p).data.copy_from_slice(src);
-            }
+    unsafe fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
+        let n = rc.data.len();
+        if n == 0 || crate::memory::xlength(x) as usize != n {
+            return;
+        }
+        let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
+        if src != rc.data.as_slice() {
+            // R semantics: the routine mutated the caller's object
+            let p = Rc::as_ptr(rc) as *mut Vector<T>;
+            (*p).data.copy_from_slice(src);
         }
     }
     unsafe fn box_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
@@ -1663,15 +1732,13 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
         let new = box_attrs(x, originals);
         if !same_attrs(&rc.attrs, &new) {
-            let p = Rc::as_ptr(rc) as *mut Vector<T>;
-            (*p).attrs = new;
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }
     }
     // Only what the routine changed is stored, in the buffer the object
     // has: this runs on every argument of every call, and the running R
     // code can be the object itself (`eval(ex)` walks `ex` while `h(ex)`
-    // calls a routine on it), so replacing a buffer here frees memory the
-    // evaluator is reading.
+    // calls a routine on it), so a buffer that must change is retired.
     match v {
         Value::Str(rc) => {
             let same = |a: &RStr, b: &RStr| match (a, b) {
@@ -1689,8 +1756,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 }
             } else {
                 let data = (0..n).map(|j| rstr_of(STRING_ELT(x, j))).collect();
-                let p = Rc::as_ptr(rc) as *mut Vector<RStr>;
-                (*p).data = data;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
         Value::List(rc) | Value::Expr(rc) => {
@@ -1704,28 +1770,41 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 }
             } else {
                 let data = (0..n).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
-                let p = Rc::as_ptr(rc) as *mut Vector<Value>;
-                (*p).data = data;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
         // R: memory.c:SETCAR/SETCDR/SET_TAG on a LISTSXP/LANGSXP chain.
         // The routine mutated the caller's own cells, so the runtime spine
         // is rewritten in place: every alias keeps the object and sees it.
-        Value::Pairlist(_) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
+        Value::Pairlist(rc) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
             let items = pair_items_converted(x, originals);
             let mut attrs = attrs_converted(x, originals);
             if x.gp() & gp::S4 != 0 {
                 attrs.get_or_insert_with(Default::default).1 = true;
             }
+            let p = Rc::as_ptr(rc).cast_mut();
+            if items.len() != rc.items.len() {
+                retire_copy(&raw mut (*p).items);
+            }
+            if !same_attrs(&rc.attrs, &attrs) {
+                retire_copy(&raw mut (*p).attrs);
+            }
             v.set_pairlist_cells_through_alias(items, attrs);
         }
-        Value::Lang(_) if x.typ() == LANGSXP => {
+        Value::Lang(rc) if x.typ() == LANGSXP => {
             let fun = converted(x.car(), originals);
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             let args = pair_items_converted(x.cdr(), originals);
             let mut attrs = attrs_converted(x, originals);
             if x.gp() & gp::S4 != 0 {
                 attrs.get_or_insert_with(Default::default).1 = true;
+            }
+            let p = Rc::as_ptr(rc).cast_mut();
+            if args.len() != rc.args.len() {
+                retire_copy(&raw mut (*p).args);
+            }
+            if !same_attrs(&rc.attrs, &attrs) {
+                retire_copy(&raw mut (*p).attrs);
             }
             v.set_lang_cells_through_alias(fun, fun_tag, args, attrs);
         }
@@ -1754,16 +1833,14 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Closure(rc) => {
             let new = box_attrs(x, originals);
             if !same_attrs(&rc.attrs, &new) {
-                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Closure;
-                (*p).attrs = new;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
             }
         }
         #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) => {
             let new = box_attrs(x, originals);
             if !same_attrs(&rc.attrs, &new) {
-                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Bytecode;
-                (*p).attrs = new;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
             }
         }
         Value::Env(e) => {
@@ -1793,18 +1870,19 @@ fn sharing(v: &Value) -> u16 {
 }
 
 /// A glue routine of the graphics engine, called as `.Call` would.
-unsafe fn gr_call(fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
+unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
     let mut out = Sexp::NULL;
     let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    publish(interp);
     let t = crate::dotcode::robigo_dotcall(fun, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
-    result(t, out)
+    result(interp, t, out)
 }
 
-unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
+unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
-    Ok(from_sexp(out))
+    converting(interp, || from_sexp(out))
 }
 
 unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode::CallInfo) {
@@ -1902,86 +1980,14 @@ unsafe fn call_routine_ctx(
 
 unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     ensure_ready(interp);
+    // R: dotcode.c:do_dotcall, resolveNativeRoutine; .External gets a list
+    if args.len() > crate::dotcode::MAX_ARGS && !matches!(r.interface, Interface::External) {
+        return Err(Flow::error_call(call.clone(), "too many arguments in foreign function call"));
+    }
     let base = R_PPStackTop;
     let res = match r.interface {
-        Interface::Call => {
-            let mut xs = Vec::with_capacity(args.len());
-            for a in &args {
-                // the caller's sharing: a value bound elsewhere (a
-                // variable) is referenced, as in GNU R, so code following
-                // the NAMED/REFCNT protocol duplicates before writing
-                let refs = sharing(&a.value);
-                let x = Rf_protect(to_sexp(&a.value));
-                if refs > 0 && x.refcnt() < refs {
-                    x.set_refcnt(refs);
-                }
-                xs.push(x);
-            }
-            let mut out = Sexp::NULL;
-            let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
-            let t = crate::dotcode::robigo_dotcall(
-                r.addr as *const c_void,
-                xs.as_ptr(),
-                xs.len() as c_int,
-                &mut out,
-                &mut info,
-            );
-            let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
-            let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
-            for (x, value) in &seen {
-                if !xs.contains(x) {
-                    write_back(value, *x, &mut originals);
-                }
-            }
-            let proxies: Vec<_> = PROXIED.with(|m| {
-                PINNED.with(|p| {
-                    let p = p.borrow();
-                    m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
-                })
-            });
-            for (x, value) in &proxies {
-                if !xs.contains(x) {
-                    write_back(value, *x, &mut originals);
-                }
-            }
-            for (a, &x) in args.iter().zip(&xs) {
-                write_back(&a.value, x, &mut originals);
-            }
-            stack_imbalance(interp, ".Call", &info);
-            result(t, out)
-        }
-        Interface::External => {
-            // R: dotcode.c:do_External — the routine gets the whole
-            // argument list, its .NAME first
-            let mut all = vec![Arg::pos(Value::str(&r.name))];
-            all.extend(args.iter().cloned());
-            let list = Rf_protect(args_list(&all, LISTSXP));
-            let mut out = Sexp::NULL;
-            let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
-            // .External2 (PRIMVAL 1): fun(call, op, args, env)
-            let external2 = match call {
-                Value::Lang(l) => match &l.fun {
-                    Value::Sym(s) => &*s.name() == ".External2",
-                    Value::Builtin(b) => b.name == ".External2",
-                    _ => false,
-                },
-                _ => false,
-            };
-            let t = if external2 {
-                let c = Rf_protect(to_sexp(call));
-                let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
-                    Some(b) => to_sexp(&Value::Builtin(b)),
-                    None => R_NilValue,
-                };
-                Rf_protect(op);
-                let rho = Rf_protect(to_sexp(&Value::Env(env.clone())));
-                crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
-            } else {
-                crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
-            };
-            stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
-            result(t, out)
-        }
+        Interface::Call => dot_call(interp, r, &args),
+        Interface::External => dot_external(interp, call, r, &args, env),
         Interface::C | Interface::Fortran => dot_c(interp, call, r, args, env),
     };
     R_PPStackTop = base;
@@ -1989,10 +1995,103 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
     res
 }
 
+/// The argument objects of a `.Call`.
+unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
+    for a in args {
+        // the caller's sharing: a value bound elsewhere (a variable) is
+        // referenced, as in GNU R, so code following the NAMED/REFCNT
+        // protocol duplicates before writing
+        let refs = sharing(&a.value);
+        let x = Rf_protect(to_sexp(&a.value));
+        if refs > 0 && x.refcnt() < refs {
+            x.set_refcnt(refs);
+        }
+        xs.push(x);
+    }
+}
+
+/// What a `.Call` changed in the objects it could reach.
+unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) {
+    let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
+    let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+    for (x, value) in &seen {
+        if !xs.contains(x) {
+            write_back(value, *x, &mut originals);
+        }
+    }
+    let proxies: Vec<_> = PROXIED.with(|m| {
+        PINNED.with(|p| {
+            let p = p.borrow();
+            m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
+        })
+    });
+    for (x, value) in &proxies {
+        if !xs.contains(x) {
+            write_back(value, *x, &mut originals);
+        }
+    }
+    for (a, &x) in args.iter().zip(xs) {
+        write_back(&a.value, x, &mut originals);
+    }
+}
+
+unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Value> {
+    let mut xs = Vec::with_capacity(args.len());
+    converting(interp, || call_args(args, &mut xs))?;
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    publish(interp);
+    let t =
+        crate::dotcode::robigo_dotcall(r.addr as *const c_void, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
+    let back = converting(interp, || write_backs(args, &xs));
+    stack_imbalance(interp, ".Call", &info);
+    if let (0, Err(f)) = (t, back) {
+        return Err(f);
+    }
+    result(interp, t, out)
+}
+
+unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[Arg], env: &Env) -> RResult<Value> {
+    // R: dotcode.c:do_External — the routine gets the whole argument list,
+    // its .NAME first
+    let mut all = vec![Arg::pos(Value::str(&r.name))];
+    all.extend(args.iter().cloned());
+    let list = converting(interp, || Rf_protect(args_list(&all, LISTSXP)))?;
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    // .External2 (PRIMVAL 1): fun(call, op, args, env)
+    let external2 = match call {
+        Value::Lang(l) => match &l.fun {
+            Value::Sym(s) => &*s.name() == ".External2",
+            Value::Builtin(b) => b.name == ".External2",
+            _ => false,
+        },
+        _ => false,
+    };
+    let t = if external2 {
+        let [c, op, rho] = converting(interp, || {
+            let c = Rf_protect(to_sexp(call));
+            let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
+                Some(b) => to_sexp(&Value::Builtin(b)),
+                None => R_NilValue,
+            };
+            Rf_protect(op);
+            [c, op, Rf_protect(to_sexp(&Value::Env(env.clone())))]
+        })?;
+        publish(interp);
+        crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
+    } else {
+        publish(interp);
+        crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
+    };
+    stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
+    result(interp, t, out)
+}
+
 /// `.C`/`.Fortran` (dotcode.c do_dotCode): every argument is copied into a
 /// C array, the routine works on the copies, and the result is the list
 /// of (copied back) arguments.
-unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     enum Buf {
         I(Vec<i32>),
         D(Vec<f64>),
@@ -2031,6 +2130,7 @@ unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>,
             Buf::S(_, p) => p.as_mut_ptr() as *mut c_void,
         })
         .collect();
+    publish(interp);
     let t = crate::dotcode::robigo_dotc(r.addr as *const c_void, ptrs.as_ptr(), ptrs.len() as c_int);
     if t != 0 {
         return Err(take_flow(t));
@@ -2059,6 +2159,8 @@ unsafe fn dot_c(_interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>,
 
 impl NativeBridge for Bridge {
     fn load(&self, interp: &mut Interp, path: &str, name: &str, local: bool, now: bool) -> RResult<usize> {
+        // SAFETY: the runtime is on the R thread, and enter() made `interp`
+        // current for R_init_<pkg>; the C strings and buffers are locals.
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
             let p = CString::new(path).unwrap_or_default();
@@ -2086,24 +2188,31 @@ impl NativeBridge for Bridge {
     }
 
     fn unload(&self, interp: &mut Interp, handle: usize) {
+        // SAFETY: robigo_dll_close only uses a handle it finds in its table.
         enter(interp, |_| unsafe { crate::rdynload::robigo_dll_close(handle as *mut crate::rdynload::DllInfo) })
     }
 
     fn flags(&self, handle: usize) -> (bool, bool) {
-        let f = unsafe { crate::rdynload::robigo_dll_flags(handle as *mut crate::rdynload::DllInfo) };
+        let Some(info) = crate::rdynload::loaded(handle) else { return (false, false) };
+        // SAFETY: `loaded` found the DllInfo in the table of open libraries.
+        let f = unsafe { crate::rdynload::robigo_dll_flags(info) };
         (f & 1 != 0, f & 2 != 0)
     }
 
     fn routines(&self, handle: usize) -> Vec<(Interface, String, usize, i32)> {
-        let info = handle as *mut crate::rdynload::DllInfo;
+        let Some(info) = crate::rdynload::loaded(handle) else { return Vec::new() };
         let mut out = Vec::new();
         for k in 1..=4 {
+            // SAFETY: `loaded` found the DllInfo; k is an interface 1..=4.
             let n = unsafe { crate::rdynload::robigo_dll_routine_count(info, k) };
             for i in 0..n {
                 let mut name: *const c_char = std::ptr::null();
                 let mut fun: *const c_void = std::ptr::null();
                 let mut nargs = 0;
+                // SAFETY: i is below the count just read, and the outputs
+                // are locals.
                 unsafe { crate::rdynload::robigo_dll_routine(info, k, i, &mut name, &mut fun, &mut nargs) };
+                // SAFETY: routine names are CStrings the DllInfo owns.
                 let nm = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
                 out.push((iface_of(k), nm, fun as usize, nargs));
             }
@@ -2112,19 +2221,15 @@ impl NativeBridge for Bridge {
     }
 
     fn lookup(&self, handle: usize, name: &str, interface: Option<Interface>) -> Option<(usize, i32, Interface)> {
+        let info = crate::rdynload::loaded(handle)?;
         let n = CString::new(name).ok()?;
         let mut fun: *const c_void = std::ptr::null();
         let mut nargs = -1;
         let mut found = 0;
+        // SAFETY: `loaded` found the DllInfo, the name is NUL-terminated and
+        // the outputs are locals.
         let ok = unsafe {
-            crate::rdynload::robigo_dll_find(
-                handle as *mut crate::rdynload::DllInfo,
-                n.as_ptr(),
-                iface_code(interface),
-                &mut fun,
-                &mut nargs,
-                &mut found,
-            )
+            crate::rdynload::robigo_dll_find(info, n.as_ptr(), iface_code(interface), &mut fun, &mut nargs, &mut found)
         };
         if ok == 0 {
             return None;
@@ -2134,6 +2239,8 @@ impl NativeBridge for Bridge {
     }
 
     fn invoke(&self, interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+        // SAFETY: the runtime is on the R thread, `interp` is current, and
+        // r.addr came from the library's symbol table or registration.
         enter(interp, |interp| unsafe { call_routine(interp, call, r, args, env) })
     }
 
@@ -2142,6 +2249,8 @@ impl NativeBridge for Bridge {
             "recordGraphics" => crate::graphics::do_recordGraphics as *const c_void,
             _ => return Err(Flow::error(format!("robigo: no C internal '{name}'"))),
         };
+        // SAFETY: the R thread with `interp` current; `fun` is a function of
+        // the graphics engine with the .External2 signature.
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
             let base = R_PPStackTop;
@@ -2149,13 +2258,15 @@ impl NativeBridge for Bridge {
                 Some(b) => Value::Builtin(b),
                 None => Value::Null,
             };
-            let a = [
-                Rf_protect(to_sexp(call)),
-                Rf_protect(to_sexp(&op)),
-                Rf_protect(args_list(args, LISTSXP)),
-                Rf_protect(to_sexp(&Value::Env(env.clone()))),
-            ];
-            let r = gr_call(fun, &a);
+            let a = converting(interp, || {
+                [
+                    Rf_protect(to_sexp(call)),
+                    Rf_protect(to_sexp(&op)),
+                    Rf_protect(args_list(args, LISTSXP)),
+                    Rf_protect(to_sexp(&Value::Env(env.clone()))),
+                ]
+            })?;
+            let r = gr_call(interp, fun, &a);
             R_PPStackTop = base;
             crate::graphics::sync_devices(interp);
             r
@@ -2163,41 +2274,60 @@ impl NativeBridge for Bridge {
     }
 
     fn owned_get(&self, interp: &mut Interp, holder: &Value) -> RResult<Value> {
-        Ok(enter(interp, |_| unsafe { crate::owned::get(holder) }))
+        // SAFETY: the R thread with `interp` current; the holder's core
+        // object is preserved by its CoreRef.
+        enter(interp, |interp| unsafe { converting(interp, || crate::owned::get(holder)) })
     }
 
     fn owned_holder(&self, interp: &mut Interp, value: Value) -> RResult<Value> {
-        Ok(enter(interp, |interp| unsafe {
+        // SAFETY: the R thread with `interp` current.
+        enter(interp, |interp| unsafe {
             ensure_ready(interp);
-            wrap_core(to_sexp(&value))
-        }))
+            converting(interp, || wrap_core(to_sexp(&value)))
+        })
     }
 
     fn option_set(&self, name: &str, value: &Value) {
+        // SAFETY: the setters store into C globals of the R thread's engine.
         unsafe { crate::graphics::option_set(name, value) }
     }
 
     fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {
+        // SAFETY: the R thread with `interp` current; robigo_gr_begin takes
+        // no arguments.
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
-            let r = gr_call(crate::graphics::robigo_gr_begin as *const c_void, &[])?;
+            let r = gr_call(interp, crate::graphics::robigo_gr_begin as *const c_void, &[])?;
             Ok(matches!(r, Value::Lgl(v) if v.data.first() == Some(&1)))
         })
     }
 
     fn graphics_end(&self, interp: &mut Interp, call: &Value, op: &Value, args: &[Arg], record: bool) -> RResult<()> {
-        enter(interp, |_| unsafe {
+        // SAFETY: the R thread with `interp` current, as graphics_begin was;
+        // the four objects are protected for the call.
+        enter(interp, |interp| unsafe {
             let base = R_PPStackTop;
-            let xs = [
-                Rf_protect(to_sexp(call)),
-                Rf_protect(to_sexp(op)),
-                Rf_protect(args_list(args, LISTSXP)),
-                Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
-            ];
-            let r = gr_call(crate::graphics::robigo_gr_end as *const c_void, &xs);
+            let xs = converting(interp, || {
+                [
+                    Rf_protect(to_sexp(call)),
+                    Rf_protect(to_sexp(op)),
+                    Rf_protect(args_list(args, LISTSXP)),
+                    Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
+                ]
+            })?;
+            let r = gr_call(interp, crate::graphics::robigo_gr_end as *const c_void, &xs);
             R_PPStackTop = base;
             r.map(|_| ())
         })
+    }
+
+    /// No evaluator frame is left, so nothing walks what C code replaced.
+    fn at_top_level(&self) {
+        if RETIRED.with(|r| !r.borrow().is_empty()) {
+            drop(RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut())));
+            // The bridge held the last reference of some of it.
+            robigo_runtime::env::Env::mark_cycle_dirty();
+        }
     }
 
     fn finalizers_active(&self) -> bool {
@@ -2207,16 +2337,19 @@ impl NativeBridge for Bridge {
     // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.
     fn is_finalizer_key(&self, key: &Value) -> bool {
         matches!(key, Value::Env(_) | Value::ExtPtr(_))
+            // SAFETY: a CoreRef keeps its object preserved.
             && core_ref_of(key).is_none_or(|key| unsafe { matches!(key.typ(), ENVSXP | EXTPTRSXP) })
     }
 
     fn core_type_name(&self, v: &Value) -> Option<&'static str> {
         let x = core_ref_of(v)?;
+        // SAFETY: a CoreRef keeps its object preserved.
         Some(unsafe { crate::util::type_to_char(x) })
     }
 
     fn format_core(&self, v: &Value) -> Option<String> {
         let x = core_ref_of(v)?;
+        // SAFETY: a CoreRef keeps its object preserved.
         unsafe {
             match x.typ() {
                 CHARSXP => {
@@ -2234,18 +2367,24 @@ impl NativeBridge for Bridge {
     }
 
     fn register_finalizer(&self, interp: &mut Interp, key: &Value, fun: &Value, onexit: bool) -> RResult<()> {
+        // SAFETY: the R thread with `interp` current; R_RegisterFinalizerEx's
+        // checks are the caller's (is_finalizer_key, do_regFinaliz).
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
             let top = R_PPStackTop;
-            let key = Rf_protect(to_sexp(key));
-            let fun = Rf_protect(to_sexp(fun));
-            crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+            let r = converting(interp, || {
+                let key = Rf_protect(to_sexp(key));
+                let fun = Rf_protect(to_sexp(fun));
+                crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+            });
             R_PPStackTop = top;
-        });
-        Ok(())
+            r
+        })
     }
 
     fn run_exit_finalizers(&self, interp: &mut Interp) {
+        // SAFETY: the R thread with `interp` current; each finalizer has its
+        // own context, so nothing jumps out.
         enter(interp, |_| unsafe {
             crate::extptr::R_RunExitFinalizers();
         });
@@ -2258,6 +2397,8 @@ impl NativeBridge for Bridge {
             robigo_runtime::reachability::reclaim_cycles();
             return;
         }
+        // SAFETY: on the R thread, with libR ready (READY), and no collector
+        // borrow active: the collection starts below.
         unsafe {
             sweep_stored();
             if HOST_WEAK_REFS.with(|active| active.get()) {
@@ -2265,19 +2406,24 @@ impl NativeBridge for Bridge {
             }
         };
         let outer = INTERP.with(|c| c.get().is_null());
+        // SAFETY: the R thread with `interp` current.
         enter(interp, |_| unsafe {
             // gc() from R with no C code active: nothing on the
             // machine stack can hold a core object
             let old = if outer { core().set_scan_top(0) } else { 0 };
-            crate::host::robigo_gc();
+            core().collect();
             if outer {
                 core().set_scan_top(old);
             }
+            // Finalizers are C code: the scan is back on, so a collection
+            // inside one sees its locals.
+            crate::util::safe_point();
         });
         drain_dead();
-        // After the collection and its finalizers (safe_point inside
-        // robigo_gc): the weak-reference round is over, so what only dead
-        // cycles reach can be reclaimed.
+        // After the collection and its finalizers: the weak-reference
+        // round is over, so what only dead cycles reach can be reclaimed.
+        // SAFETY: the collection and its finalizers are over, and no
+        // collector borrow is active.
         unsafe { reclaim_host_cycles() };
     }
 }
@@ -2302,6 +2448,8 @@ mod tls_drop_tests {
         if std::env::var_os(CHILD).is_none() {
             return;
         }
+        // SAFETY: the test owns this thread, the first and only one to use
+        // the API in this process.
         unsafe {
             // Registration order decides destruction order (reverse):
             // PROXIED is registered first, so WRAPPED (the destructor-bearing

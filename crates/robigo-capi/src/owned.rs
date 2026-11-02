@@ -16,10 +16,11 @@ use robigo_runtime::sym::Sym;
 use robigo_runtime::value::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How many lists C looked up in the current native call (a fast check
 /// for SET_VECTOR_ELT).
-pub static mut ORIGINS: usize = 0;
+pub static ORIGINS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     /// Lists C looked up in this native call: where they are bound.
@@ -48,14 +49,14 @@ pub unsafe fn is_c_env(env: &Env) -> bool {
 /// `findVar` found the list `x` bound to `sym` in `env`.
 pub unsafe fn note_origin(x: Sexp, env: &Env, sym: Sym) {
     ORIGIN.with(|o| o.borrow_mut().insert(x.0 as usize, (env.clone(), sym)));
-    ORIGINS += 1;
+    ORIGINS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The end of the outermost native call.
 pub unsafe fn clear_origins() {
-    if ORIGINS != 0 {
+    if ORIGINS.load(Ordering::Relaxed) != 0 {
         ORIGIN.with(|o| o.borrow_mut().clear());
-        ORIGINS = 0;
+        ORIGINS.store(0, Ordering::Relaxed);
     }
 }
 
@@ -73,7 +74,7 @@ pub unsafe fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
 #[cold]
 pub unsafe fn mutated(x: Sexp) {
     let Some((env, sym)) = ORIGIN.with(|o| o.borrow_mut().remove(&(x.0 as usize))) else { return };
-    ORIGINS -= 1;
+    ORIGINS.fetch_sub(1, Ordering::Relaxed);
     if lookup(&env, sym).is_some() {
         return;
     }

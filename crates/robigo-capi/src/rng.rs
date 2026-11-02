@@ -6,7 +6,10 @@ use crate::host::op;
 use robigo_numerics::rng::Rng;
 
 /// Run `f` with the current interpreter's generator.
-pub fn with_rng<T>(f: impl FnOnce(&mut Rng) -> T) -> T {
+///
+/// # Safety
+/// As for [`crate::bridge::with_interp`].
+pub unsafe fn with_rng<T>(f: impl FnOnce(&mut Rng) -> T) -> T {
     crate::bridge::with_interp(|i| f(&mut i.rng))
 }
 
@@ -23,17 +26,17 @@ pub unsafe extern "C" fn PutRNGstate() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn unif_rand() -> f64 {
+pub unsafe extern "C" fn unif_rand() -> f64 {
     with_rng(|r| r.unif_rand())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn norm_rand() -> f64 {
+pub unsafe extern "C" fn norm_rand() -> f64 {
     with_rng(|r| r.norm_rand())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn exp_rand() -> f64 {
+pub unsafe extern "C" fn exp_rand() -> f64 {
     with_rng(|r| r.exp_rand())
 }
 

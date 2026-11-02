@@ -8,12 +8,18 @@ use std::ffi::{c_char, c_int, c_void};
 
 use robigo_core::Sexp;
 
-/// Offsets in GNU R 4.5's `RCNTXT` (Defn.h, x86_64; measured with the
-/// R sources' Defn.h, docs/ledger/core.md): `callflag`, `cend`,
-/// `cenddata`.
-const CALLFLAG: usize = 8;
-const CEND: usize = 272;
-const CENDDATA: usize = 280;
+unsafe extern "C" {
+    /// Offsets in GNU R 4.5's `RCNTXT` (Defn.h, whose C code compiles
+    /// against the same struct): `callflag`, `cend`, `cenddata`.
+    static robigo_rcntxt_offsets: [usize; 3];
+}
+
+/// `RCNTXT`'s `callflag`, `cend` and `cenddata`, as the C compiler lays
+/// them out: the struct embeds a `jmp_buf`, whose size is the platform's.
+pub fn rcntxt_offsets() -> [usize; 3] {
+    // SAFETY: an immutable table of constants defined in robigo_util.c.
+    unsafe { robigo_rcntxt_offsets }
+}
 
 thread_local! {
     /// Contexts begun by C code: (RCNTXT address, unwind depth when begun).
@@ -32,9 +38,10 @@ pub unsafe extern "C" fn Rf_begincontext(
     _promargs: Sexp,
     _callfun: Sexp,
 ) {
-    *(cptr.add(CALLFLAG) as *mut c_int) = flags;
-    *(cptr.add(CEND) as *mut usize) = 0;
-    *(cptr.add(CENDDATA) as *mut usize) = 0;
+    let [callflag, cend, cenddata] = rcntxt_offsets();
+    *(cptr.add(callflag) as *mut c_int) = flags;
+    *(cptr.add(cend) as *mut usize) = 0;
+    *(cptr.add(cenddata) as *mut usize) = 0;
     let depth = robigo_core::unwind::depth();
     CONTEXTS.with(|c| c.borrow_mut().push((cptr as usize, depth)));
 }
@@ -55,6 +62,7 @@ pub unsafe extern "C" fn Rf_endcontext(cptr: *mut u8) {
 /// R_run_onexits).
 pub unsafe fn run_cends() {
     let depth = robigo_core::unwind::depth();
+    let [_, cend_at, cenddata_at] = rcntxt_offsets();
     loop {
         let top = CONTEXTS.with(|c| {
             let mut c = c.borrow_mut();
@@ -67,11 +75,11 @@ pub unsafe fn run_cends() {
             }
         });
         let Some(p) = top else { break };
-        let cend = *(p.add(CEND) as *const usize);
+        let cend = *(p.add(cend_at) as *const usize);
         if cend != 0 {
             let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(cend);
-            *(p.add(CEND) as *mut usize) = 0;
-            f(*(p.add(CENDDATA) as *const *mut c_void));
+            *(p.add(cend_at) as *mut usize) = 0;
+            f(*(p.add(cenddata_at) as *const *mut c_void));
         }
     }
 }
@@ -95,14 +103,14 @@ pub static mut R_ParseContextLine: c_int = 0;
 /// The recent parse context as lines (R: source.c getParseContext).
 unsafe fn parse_context() -> Vec<Vec<u8>> {
     const SIZE: usize = 256;
-    let ctx = &*std::ptr::addr_of!(R_ParseContext);
+    let ctx = (&raw const R_ParseContext).cast::<c_char>();
     let mut context = [0u8; SIZE + 1];
     let mut last = SIZE;
     let mut i = R_ParseContextLast as usize;
     while last > 0 {
         i %= SIZE;
         last -= 1;
-        context[last] = ctx[i] as u8;
+        context[last] = *ctx.add(i) as u8;
         if context[last] == 0 {
             last += 1;
             break;
@@ -167,15 +175,19 @@ unsafe fn parse_filename() -> String {
 // R: source.c:parseError
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
+    crate::errors::error_str_owned(parse_error_text(linenum))
+}
+
+unsafe fn parse_error_text(linenum: c_int) -> String {
+    // first: finding the file name can jump
+    let mut filename = if linenum != 0 { parse_filename() } else { String::new() };
     let context: Vec<String> =
         parse_context().iter().map(|l| String::from_utf8_lossy(&tab_expand(l)).into_owned()).collect();
-    let msg =
-        std::ffi::CStr::from_ptr(std::ptr::addr_of!(R_ParseErrorMsg) as *const c_char).to_string_lossy().into_owned();
+    let msg = std::ffi::CStr::from_ptr((&raw const R_ParseErrorMsg).cast()).to_string_lossy().into_owned();
     let len = context.len();
     let col = R_ParseErrorCol;
     let line = R_ParseContextLine;
-    let text = if linenum != 0 {
-        let mut filename = parse_filename();
+    if linenum != 0 {
         if !filename.is_empty() {
             filename.push(':');
         }
@@ -208,8 +220,7 @@ pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
             1 => format!("{msg} in \"{}\"", context[0]),
             _ => format!("{msg} in:\n\"{}\n{}\"", context[len - 2], context[len - 1]),
         }
-    };
-    crate::errors::error_str_owned(text)
+    }
 }
 
 // R: times.c:currentTime

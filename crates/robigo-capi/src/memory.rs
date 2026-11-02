@@ -9,7 +9,7 @@ use robigo_core::{Rcomplex, Sexp, flags, gp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 #[inline(always)]
-fn c() -> &'static mut robigo_core::Core {
+unsafe fn c() -> &'static mut robigo_core::Core {
     core()
 }
 
@@ -39,15 +39,8 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
     let t = t as u8;
     match t {
         NILSXP => R_NilValue,
-        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP => {
-            if n <= 256 {
-                return c().alloc_vector(t, n as usize);
-            }
-            match c().try_alloc_vector(t, n as usize) {
-                Some(x) => x,
-                None => cannot_allocate(t, n),
-            }
-        }
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP => try_alloc_vector(t, n as usize),
+        CHARSXP => error_str("use of allocVector(CHARSXP ...) is defunct\n"),
         LISTSXP => Rf_allocList(n as c_int),
         LANGSXP => {
             if n == 0 {
@@ -58,6 +51,20 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
             s
         }
         _ => error_str_owned(format!("invalid type/length ({}/{}) in vector allocation", type_to_char_t(t), n)),
+    }
+}
+
+/// A vector of a caller-chosen length: GNU R's error when there is no
+/// memory for it (the core's `alloc_vector` panics, which aborts in
+/// `extern "C"`). Small vectors always have a place in a block.
+#[inline]
+pub unsafe fn try_alloc_vector(t: u8, n: usize) -> Sexp {
+    if n <= 256 {
+        return c().alloc_vector(t, n);
+    }
+    match c().try_alloc_vector(t, n) {
+        Some(x) => x,
+        None => cannot_allocate(t, n as isize),
     }
 }
 
@@ -142,7 +149,11 @@ pub unsafe extern "C" fn Rf_alloc3DArray(t: c_uint, nrow: c_int, ncol: c_int, nf
     if nrow < 0 || ncol < 0 || nface < 0 {
         error_str("negative extents to 3D array")
     }
-    let s = alloc_vector(t, nrow as isize * ncol as isize * nface as isize);
+    // R: array.c:alloc3DArray checks this against INT_MAX without long
+    // vector support; with it, the product must at least exist
+    let n = (nrow as isize).checked_mul(ncol as isize).and_then(|n| n.checked_mul(nface as isize));
+    let Some(n) = n else { error_str("'alloc3DArray': too many elements specified") };
+    let s = alloc_vector(t, n);
     Rf_protect(s);
     let d = c().alloc_vector(INTSXP, 3);
     let p = d.std_data() as *mut i32;
@@ -161,7 +172,11 @@ pub unsafe extern "C" fn Rf_allocArray(t: c_uint, dims: Sexp) -> Sexp {
     let p = INTEGER(dims);
     let mut n: isize = 1;
     for i in 0..nd {
-        n *= *p.add(i) as isize;
+        // R: array.c:allocArray, as alloc3DArray above
+        let Some(m) = n.checked_mul(*p.add(i) as isize) else {
+            error_str("'allocArray': too many elements specified by 'dims'")
+        };
+        n = m;
     }
     let s = alloc_vector(t, n);
     Rf_protect(s);
@@ -281,7 +296,7 @@ pub unsafe extern "C" fn R_PreserveInMSet(x: Sexp, mset: Sexp) {
         if newsize == 0 {
             newsize = 4;
         }
-        store = c().alloc_vector(VECSXP, newsize as usize);
+        store = try_alloc_vector(VECSXP, newsize as usize);
         SETCAR(mset, store);
     }
     let size = xlength(store);
@@ -290,7 +305,7 @@ pub unsafe extern "C" fn R_PreserveInMSet(x: Sexp, mset: Sexp) {
         if newsize >= i32::MAX as isize {
             error_str("Multi-set overflow")
         }
-        let ns = Rf_protect(c().alloc_vector(VECSXP, newsize as usize));
+        let ns = Rf_protect(try_alloc_vector(VECSXP, newsize as usize));
         for i in 0..size {
             SET_VECTOR_ELT(ns, i, VECTOR_ELT(store, i));
         }
@@ -380,7 +395,7 @@ pub unsafe extern "C" fn R_alloc(nelem: usize, eltsize: c_int) -> *mut c_char {
         if dsize > isize::MAX as f64 {
             error_str_owned(format!("cannot allocate memory block of size {:.0} Tb", dsize / 1024f64.powi(4)))
         }
-        let s = c().alloc_vector(RAWSXP, size + 1);
+        let s = try_alloc_vector(RAWSXP, size + 1);
         s.set_attrib_raw(st().vstack);
         st().vstack = s;
         s.std_data() as *mut c_char
@@ -478,10 +493,10 @@ pub unsafe extern "C" fn R_realloc_gc(p: *mut c_void, n: usize) -> *mut c_void {
 
 /// Stack usage of the R thread (errors.c: R_CStackDir * (start - sp)).
 #[inline(always)]
-fn stack_usage() -> isize {
+unsafe fn stack_usage() -> isize {
     let marker = 0u8;
     let sp = std::hint::black_box(&marker) as *const u8 as usize;
-    unsafe { R_CStackDir as isize * (R_CStackStart as isize - sp as isize) }
+    R_CStackDir as isize * (R_CStackStart as isize - sp as isize)
 }
 
 // R: errors.c:R_SignalCStackOverflow (the condition is reported without a call)
@@ -580,6 +595,15 @@ pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
     if v.typ() != LISTSXP && v.typ() != NILSXP {
         error_str_owned(format!("value of 'SET_ATTRIB' must be a pairlist or NULL, not a '{}'", type_to_char(v)))
     }
+    // The slot of a CHARSXP holds its hash (GNU R's holds the cache chain);
+    // clearing what ATTRIB reports as NULL changes nothing.
+    if x.typ() == CHARSXP {
+        if v == R_NilValue {
+            return;
+        }
+        // R: attrib.c:installAttrib
+        error_str("cannot set attribute on a CHARSXP")
+    }
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);
 }
@@ -663,15 +687,10 @@ pub unsafe extern "C" fn ENSURE_NAMEDMAX(x: Sexp) {
 
 // ---- vector accessors --------------------------------------------------------
 
+/// memory.c's `nvec` table: the types LENGTH and friends refuse.
 #[inline]
 fn nvec(t: u8) -> bool {
-    // memory.c CHK2: types LENGTH and friends refuse
-    !matches!(
-        t,
-        NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP | WEAKREFSXP
-    ) && t != LISTSXP
-        && t != LANGSXP
-        && t != DOTSXP
+    !matches!(t, CHARSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | WEAKREFSXP | RAWSXP)
 }
 
 /// The length of a vector, ALTREP-aware.
@@ -692,9 +711,6 @@ pub unsafe extern "C" fn LENGTH(x: Sexp) -> c_int {
         return 0;
     }
     chk2(x);
-    if matches!(x.typ(), LISTSXP | LANGSXP | DOTSXP) {
-        return Rf_length(x);
-    }
     let n = xlength(x);
     if n > i32::MAX as isize {
         crate::errors::R_BadLongVector(x, c"memory.c".as_ptr(), 0)
@@ -705,9 +721,6 @@ pub unsafe extern "C" fn LENGTH(x: Sexp) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn XLENGTH(x: Sexp) -> isize {
     chk2(x);
-    if matches!(x.typ(), LISTSXP | LANGSXP | DOTSXP) {
-        return Rf_length(x) as isize;
-    }
     xlength(x)
 }
 
@@ -725,6 +738,10 @@ pub unsafe extern "C" fn TRUELENGTH(x: Sexp) -> isize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_TRUELENGTH(x: Sexp, v: isize) {
     chk2(x);
+    // R: Defn.h:SET_TRUELENGTH (the slot is data2 of an ALTREP node)
+    if x.is_altrep() {
+        error_str("can't set ALTREP truelength")
+    }
     x.set_truelen(v)
 }
 
@@ -958,7 +975,7 @@ unsafe fn set_string_elt_slow(x: Sexp, i: isize, v: Sexp) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_VECTOR_ELT(x: Sexp, i: isize, v: Sexp) -> Sexp {
-    if crate::owned::ORIGINS != 0 {
+    if crate::owned::ORIGINS.load(std::sync::atomic::Ordering::Relaxed) != 0 {
         crate::owned::mutated(x);
     }
     if matches!(x.typ(), VECSXP | EXPRSXP) && plain_target(x, i) {
@@ -1327,7 +1344,7 @@ unsafe fn duplicate1(s: Sexp, deep: bool) -> Sexp {
         LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => {
             let n = xlength(s);
             Rf_protect(s);
-            let r = c().alloc_vector(t, n as usize);
+            let r = try_alloc_vector(t, n as usize);
             if n > 0 {
                 let src = dataptr(s) as *const u8;
                 match t {
