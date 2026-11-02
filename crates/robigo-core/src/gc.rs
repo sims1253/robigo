@@ -1000,7 +1000,10 @@ impl Core {
                     let marks = (*b).marks;
                     (*b).marks = [0; START_WORDS];
                     (*b).starts = [0; START_WORDS];
-                    (*b).freelist = std::ptr::null_mut();
+                    // the walk adds to the free list rather than rebuilding
+                    // it: slots already there have no start bit, so it could
+                    // not find them again, and for the same reason it cannot
+                    // add one twice
                     let mut live: u32 = 0;
                     let csize = SIZES[(*b).class as usize] as u64;
                     for (w, &word) in old_starts.iter().enumerate() {

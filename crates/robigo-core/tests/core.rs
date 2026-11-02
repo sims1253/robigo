@@ -736,3 +736,40 @@ fn a_foreign_exception_stops_at_the_c_shim() {
     assert_eq!(unwound, 0, "the callback returned");
     assert_eq!(raised, URC_END_OF_STACK);
 }
+
+/// Free slots have no start bit, so a sweep that walks the bitmap cannot
+/// see the ones it left on the free list earlier.
+#[test]
+fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
+    // 32 + 124 * 8 = 1024 bytes: 62 slots to a block
+    const LEN: usize = 124;
+    const SLOTS: usize = 62;
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    let keep = c.alloc_vector(VECSXP, SLOTS);
+    root(keep);
+    let slots = unsafe { keep.std_data() as *mut Sexp };
+    for i in 0..SLOTS {
+        let v = c.alloc_vector(REALSXP, LEN);
+        unsafe { *slots.add(i) = v };
+    }
+    let mut freed = std::collections::HashSet::new();
+    let mut drop_slot = |c: &mut Core, i: usize| unsafe {
+        freed.insert((*slots.add(i)).addr());
+        *slots.add(i) = c.nil;
+    };
+    let block = |x: usize| x & !0xFFFF;
+    assert!((0..SLOTS).all(|i| unsafe { block((*slots.add(i)).addr()) == block((*slots).addr()) }));
+    for i in (0..SLOTS).step_by(2) {
+        drop_slot(&mut c, i);
+    }
+    c.collect();
+    // one more death: this sweep walks the block
+    drop_slot(&mut c, 1);
+    c.collect();
+    for _ in 0..freed.len() {
+        let x = c.alloc_vector(REALSXP, LEN);
+        assert!(freed.remove(&x.addr()), "{} free slots were lost", freed.len());
+    }
+}

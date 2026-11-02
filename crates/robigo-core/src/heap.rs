@@ -119,6 +119,13 @@ impl Block {
     pub fn start_set(&mut self, g: usize) {
         self.starts[g >> 6] |= 1u64 << (g & 63);
     }
+    /// A free slot has no start bit: the sweep walks the start bits, and
+    /// must not take a slot on the free list for an object to free.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn start_clear(&mut self, g: usize) {
+        self.starts[g >> 6] &= !(1u64 << (g & 63));
+    }
     #[inline]
     #[allow(dead_code)]
     pub fn start_test(&self, g: usize) -> bool {
@@ -367,6 +374,7 @@ impl Heap {
         unsafe {
             *((p as *mut *mut u8).add(1)) = (*b).freelist;
             (*b).freelist = p;
+            (*b).start_clear((p as usize - Block::data_ptr(b) as usize) / 16);
             (*b).live_objects -= 1;
             if (*b).owner == OWNER_NONE && self.classes[ci].cur != b {
                 (*b).owner = OWNER_LIST;
