@@ -35,6 +35,12 @@ panic = "unwind"
 [profile.release.package.cranelift-codegen]
 codegen-units = 16
 
+# Unoptimized code evaluates floating-point operands in another order, which
+# changes the NaN payload that survives complex arithmetic: conformance needs
+# at least this (tests/r/math/complex-nan-payloads.R).
+[profile.dev]
+opt-level = 1
+
 # For iterating: a one-file rebuild takes seconds instead of minutes, and the
 # binary is about 30% slower than `release`. Never measure performance with
 # it. `scripts/build.sh --quick` builds it; CI's test harnesses use it too.

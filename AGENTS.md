@@ -104,8 +104,8 @@ See `docs/verification.md` for everything; in short:
   (worktrees share cargo's target directory; this keeps yours separate).
   `scripts/build.sh --quick` rebuilds in seconds for iterating; its binary is
   about 30% slower, so never measure with it.
-- `cargo test --profile quick` runs unit tests, the parser oracle and the
-  conformance suite. Plain `cargo test` works too, about ten times slower.
+- `cargo test` runs unit tests, the parser oracle and the conformance suite;
+  add `--profile quick` for a binary close to `release` speed.
 - `scripts/corpus.py run fastr --filter 'TestBuiltin_paste'` runs a slice of
   a corpus; `scripts/corpus.py show fastr ID` diffs one case.
 - `scripts/perf.py run --metric instr --filter shootout/` measures
