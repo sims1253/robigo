@@ -2437,6 +2437,8 @@ fn do_qr_coef_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
     // R reads the workspace size from the real part of the work query.
     let lwork = tmp.r as i32;
     let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
     unsafe {
         f(
             b"L".as_ptr(),
@@ -2460,6 +2462,8 @@ fn do_qr_coef_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
         return Err(Flow::error(format!("error code {} from Lapack routine 'zunmqr'", info)));
     }
     let g = system_lapack()?.ztrtrs;
+    // SAFETY: as for the zunmqr calls above: the same factor and right-hand
+    // sides, with the sizes they were allocated for.
     unsafe {
         g(
             b"U".as_ptr(),
