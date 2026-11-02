@@ -47,3 +47,29 @@ call_alias <- call
 .Call("capi_setcdr_alias", call, pairlist(7))
 print(call)
 print(call_alias)
+
+# A cell a routine returns is the caller's own: writes through the result
+# are seen through the list it came from, in R and in later routines.
+outer <- pairlist(pairlist(FALSE, 0L), 2)
+status <- .Call("capi_car", outer)
+.Call("capi_setcar2_alias", status)
+print(status)
+print(outer[[1]])
+print(identical(.Call("capi_car", outer), status))
+.Call("capi_setcar2_alias", .Call("capi_car", outer))
+print(outer)
+e <- new.env()
+e$outer <- outer
+.Call("capi_setcar_alias", .Call("capi_car", e$outer))
+print(e$outer[[1]])
+
+# The same for a call inside a call.
+l <- quote(f(g(a), h(b)))
+inner <- .Call("capi_cadr", l)
+.Call("capi_setfun_alias", inner)
+print(inner)
+print(l)
+
+r <- .Call("capi_car_as_call", pairlist(pairlist(as.name("f"), 1)))
+print(typeof(r))
+print(r)
