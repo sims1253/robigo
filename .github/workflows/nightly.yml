@@ -43,7 +43,7 @@ jobs:
       sha: ${{ steps.decide.outputs.sha }}
       date: ${{ steps.decide.outputs.date }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # A dry run tests the branch it was started on.
           ref: ${{ inputs.dry_run == true && github.ref || 'main' }}
@@ -86,7 +86,7 @@ jobs:
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
       - uses: ./.github/actions/setup
@@ -94,7 +94,7 @@ jobs:
       - env:
           ROBIGO_RELEASE: nightly-${{ needs.check.outputs.date }}-${{ needs.check.outputs.sha }}
         run: scripts/pgo-build.sh profile ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: profile-${{ matrix.target }}
           path: .robigo/pgo/robigo.profdata
@@ -115,7 +115,7 @@ jobs:
           - { os: macos-15-intel, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
       - if: runner.os == 'Linux'
@@ -123,7 +123,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - if: runner.os == 'Linux'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: profile-${{ matrix.target }}
           path: .robigo/profile
@@ -149,7 +149,7 @@ jobs:
           mkdir -p "$staging"
           cp "$bin" README.md LICENSE "$staging/"
           tar -czf "dist/robigo-${{ matrix.target }}.tar.gz" -C dist "robigo-${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nightly-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -164,12 +164,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 0
           fetch-tags: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: nightly-*
           merge-multiple: true
