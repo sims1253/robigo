@@ -175,3 +175,34 @@ Metrics, in order:
   'promise'", "Can't splice an object of type <promise>"), and
   `1 %>% identity() %>% return()` returns an external pointer instead
   of 1 (the trailing bare-`return` rhs in pipe.c's masking path).
+
+## 2026-11-02: gap trackers for the metric-(d) blockers
+
+One conformance script per open gap found while probing the popular
+CRAN packages (unmarked = known failure; #207 lists them on the
+progress page):
+
+- `tests/r/io/url-connection.R` — `url()` connections are not
+  implemented; jsonlite's test-network-Github.R (7 of its 9 remaining
+  failures; robigo 1542/9 vs GNU R 1555/6 after #204/#205).
+- `tests/r/io/bzfile-roundtrip.R` — bzip2 file connections; cli's
+  sysdata DB is bzip2-compressed, so `R CMD INSTALL cli` dies with
+  "robigo: bzip2 compressed file connections are not implemented yet".
+- `tests/r/env/reg-finalizer-local-gc.R` — the finalizer for an object
+  whose scope ends in `local()` does not run during the following
+  `gc(full = TRUE)` (the dead frame's value register keeps it
+  reachable); R6's 5 extra failures (562/17 vs GNU R 567/12) and the
+  gc ledger's retained-frame diagnostics.
+- `tests/r/lang/return-no-target-do-call.R` (marked, passes) — pins
+  #205: `do.call("return", list(1))` raises the catchable error.
+  Tier-checked (compiled_matches_interpreted with the three new
+  scripts green).
+
+CRAN packages measured today (not in packages.tsv — the manifest is a
+strict gate, these do not match GNU R yet): cli (install blocker:
+bzip2 connections), magrittr 12/13 vs 53/0 (rlang `r_env_bind_lazy`
+promises leak into subsetting/eval envir; `1 %>% identity() %>% return()`
+returns an external pointer instead of 1), rlang (shim dies: the same
+promise-leak family), vctrs (suite incomplete in 25 min under robigo),
+glue 124/114 vs GNU R 106/116 (return/promise holes like magrittr's
+plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
