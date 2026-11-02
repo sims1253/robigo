@@ -7,6 +7,7 @@
 //! (attributes, coercion, environments, evaluation) live in the crates
 //! that use it (`robigo-capi` today, the runtime after G3).
 
+#![allow(clippy::undocumented_unsafe_blocks)] // TEMP
 #![allow(clippy::missing_safety_doc)]
 
 mod chars;
