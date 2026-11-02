@@ -117,6 +117,7 @@ pub unsafe extern "C" fn R_Serialize(s: Sexp, stream: *mut OutPStream) {
     // OutInteger x3, and for version 3 the native encoding's length and
     // name): callbacks such as digest's skip it by counting bytes.
     let mut pieces = [2usize, 4, 4, 4, 0, 0];
+    let mut npieces = 4;
     if st.version == 3 && n >= 18 {
         let raw = std::slice::from_raw_parts(p.add(14), 4);
         let nelen = if fmt == XDR {
@@ -126,9 +127,10 @@ pub unsafe extern "C" fn R_Serialize(s: Sexp, stream: *mut OutPStream) {
         } as usize;
         pieces[4] = 4;
         pieces[5] = nelen;
+        npieces = 6;
     }
     let mut off = 0;
-    for len in pieces {
+    for &len in &pieces[..npieces] {
         if off + len > n {
             break;
         }

@@ -183,7 +183,11 @@ unsafe fn nmath_flush() {
 /// the caller makes once it dropped what it owns.
 unsafe fn warning_token(msg: &str) -> usize {
     let buf = scratch();
-    let n = msg.len().min(R_WARN_LENGTH);
+    // as Rvsnprintf_mbcs, never cutting a character
+    let mut n = msg.len().min(R_WARN_LENGTH);
+    while !msg.is_char_boundary(n) {
+        n -= 1;
+    }
     std::ptr::copy_nonoverlapping(msg.as_ptr(), buf.cast::<u8>(), n);
     *buf.cast::<u8>().add(n) = 0;
     warning_buf(buf, msg.len() > R_WARN_LENGTH);
