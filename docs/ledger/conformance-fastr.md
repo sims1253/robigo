@@ -62,6 +62,18 @@
   - `Env::is_imports_env` ports `R_IsImportsEnv` (`src/main/builtin.c:384`), including the `LENGTH(name) == 1` gate.
   - `crates/robigo-runtime/src/builtins/envir.rs`: `do_set_parent_env` uses the helper and the cycle check.
 - Result: 31,231 of 31,374 pass on this branch (+3 cases, 0 regressions); `parentenvassign` 11/11, `tests/r/basics` unchanged.
+
+- Topic: `parser/TestParser` (`as.symbol("")`), `library/base/TestSimpleAssignment` (`"" <- 123`)
+- Changes: `crates/robigo-runtime/src/builtins/coerce.rs` (`as.vector(x, "symbol")` / `as.symbol`) and `crates/robigo-runtime/src/builtins/lang.rs` (`<-`, `=`, `<<-` with a string left-hand side) now raise `attempt to use zero-length variable name` like `install()` (`src/main/names.c:1269`); R's `do_set` installs a string LHS (`src/main/eval.c:3564`) and `coerceToSymbol` installs the first element of an atomic vector.
+- Result: 31,227 of 31,374 pass on this branch (+3 cases, 0 regressions).
+- Status: kept (PR pending).
+
+## 2026-11-01: round 4 - mget argument validation
+
+- Topic: `builtins/TestBuiltin_mget`
+- Changes: `crates/robigo-runtime/src/builtins/envir.rs`: port `do_mget` (`src/main/envir.c:2154`) faithfully — no `simple_as_environment` for `envir` ("second argument must be an environment"), vectorized `mode` (length `length(x)` or 1), `ifnotfound` coerced to a list (environments: "environments cannot be coerced to other types"; closures fail as "cannot coerce type 'closure' to vector of type 'list'") with the "wrong length for 'ifnotfound' argument" gate, `inherits` via `asLogical`, and a function `ifnotfound` called in the caller's environment (`gfind`).
+- Round 2 of the port: `str2mode` runs before `gfind`'s `install`, so a bogus mode wins over a zero-length name, and an NA mode is the string `"NA"` (`invalid 'mode' argument 'NA'`), not `any`. `str2mode` validation per element (`invalid 'mode' argument 'bogus'`, only when an element reaches it, so `mget(character(0), mode = "bogus")` is a named empty list); the NA-name arm of R's check is dead code (`isNull(STRING_ELT(x, i))` never fires, an NA name is looked up as `"NA"`), and an empty name after the first errors in `install` as `attempt to use zero-length variable name`; only an empty *first* name is `invalid name in position 1`. `tests/r/env/mget.R` pins all of it.
+- Result: 31,231 of 31,374 pass on this branch (+4 cases, 0 regressions); `TestBuiltin_mget` 22/22.
 - Status: kept.
 
 ## 2026-11-01: round 7 - active bindings and methods native routines
