@@ -90,6 +90,63 @@ fn pad(sp: &CSpec, prefix: &str, body: &str, zero_ok: bool) -> String {
 
 /// `%d %i %o %u %x %X` (and `%c`) of a C `int`.
 pub fn cfmt_int(sp: &CSpec, v: i32) -> String {
+    // Fast path: signed decimal without precision or `#`, the shape of
+    // `%d`/`%05d` in hot code. glibc pads with zeros after the sign.
+    if matches!(sp.conv, b'd' | b'i') && sp.prec.is_none() && !sp.alt {
+        let neg = v < 0;
+        let mut m = (v as i64).unsigned_abs();
+        let mut buf = [0u8; 10];
+        let mut i = buf.len();
+        loop {
+            i -= 1;
+            buf[i] = b'0' + (m % 10) as u8;
+            m /= 10;
+            if m == 0 {
+                break;
+            }
+        }
+        let digits = &buf[i..];
+        let sign = if neg {
+            '-'
+        } else if sp.plus {
+            '+'
+        } else if sp.space {
+            ' '
+        } else {
+            '\0'
+        };
+        let total = digits.len() + usize::from(sign != '\0');
+        let width = sp.width;
+        let mut out = String::with_capacity(width.max(total));
+        if total >= width {
+            if sign != '\0' {
+                out.push(sign);
+            }
+            out.push_str(std::str::from_utf8(digits).unwrap());
+        } else {
+            let pad = width - total;
+            if sp.minus {
+                if sign != '\0' {
+                    out.push(sign);
+                }
+                out.push_str(std::str::from_utf8(digits).unwrap());
+                out.push_str(&" ".repeat(pad));
+            } else if sp.zero {
+                if sign != '\0' {
+                    out.push(sign);
+                }
+                out.push_str(&"0".repeat(pad));
+                out.push_str(std::str::from_utf8(digits).unwrap());
+            } else {
+                out.push_str(&" ".repeat(pad));
+                if sign != '\0' {
+                    out.push(sign);
+                }
+                out.push_str(std::str::from_utf8(digits).unwrap());
+            }
+        }
+        return out;
+    }
     let signed = matches!(sp.conv, b'd' | b'i');
     let mut digits = match sp.conv {
         b'd' | b'i' => (v as i64).unsigned_abs().to_string(),
@@ -239,6 +296,9 @@ pub fn cfmt_double(sp: &CSpec, x: f64) -> String {
 /// `%s`: precision truncates (in bytes, kept on a character boundary),
 /// width pads in bytes as the C library does.
 pub fn cfmt_str(sp: &CSpec, s: &str) -> String {
+    if sp.width == 0 && sp.prec.is_none() && !sp.minus && !sp.plus && !sp.space && !sp.alt && !sp.zero {
+        return s.to_string();
+    }
     let mut s = s;
     if let Some(p) = sp.prec {
         if p < s.len() {
