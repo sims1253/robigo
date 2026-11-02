@@ -266,6 +266,14 @@ fn the_api() {
         assert_eq!(capi::errors::R_ToplevelExec(huge, std::ptr::null_mut()), 0);
         assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 7450580.6 Gb".to_string()]);
 
+        // R: memory.c:R_alloc goes through allocVector; 1e15 bytes do not fit
+        // any address space, whatever the machine's overcommit policy
+        unsafe extern "C" fn huge_r_alloc(_: *mut c_void) {
+            unsafe { capi::memory::R_alloc(1_000_000_000_000_000, 1) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_r_alloc, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 931322.6 Gb".to_string()]);
+
         // ---- .Call through the 65-argument trampoline
         unsafe extern "C" fn add3(a: Sexp, b: Sexp, c: Sexp) -> Sexp {
             unsafe {

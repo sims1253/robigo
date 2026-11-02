@@ -40,13 +40,7 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
     match t {
         NILSXP => R_NilValue,
         LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP => {
-            if n <= 256 {
-                return c().alloc_vector(t, n as usize);
-            }
-            match c().try_alloc_vector(t, n as usize) {
-                Some(x) => x,
-                None => cannot_allocate(t, n),
-            }
+            try_alloc_vector(t, n as usize)
         }
         LISTSXP => Rf_allocList(n as c_int),
         LANGSXP => {
@@ -58,6 +52,20 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
             s
         }
         _ => error_str_owned(format!("invalid type/length ({}/{}) in vector allocation", type_to_char_t(t), n)),
+    }
+}
+
+/// A vector of a caller-chosen length: GNU R's error when there is no
+/// memory for it (the core's `alloc_vector` panics, which aborts in
+/// `extern "C"`). Small vectors always have a place in a block.
+#[inline]
+pub unsafe fn try_alloc_vector(t: u8, n: usize) -> Sexp {
+    if n <= 256 {
+        return c().alloc_vector(t, n);
+    }
+    match c().try_alloc_vector(t, n) {
+        Some(x) => x,
+        None => cannot_allocate(t, n as isize),
     }
 }
 
@@ -281,7 +289,7 @@ pub unsafe extern "C" fn R_PreserveInMSet(x: Sexp, mset: Sexp) {
         if newsize == 0 {
             newsize = 4;
         }
-        store = c().alloc_vector(VECSXP, newsize as usize);
+        store = try_alloc_vector(VECSXP, newsize as usize);
         SETCAR(mset, store);
     }
     let size = xlength(store);
@@ -290,7 +298,7 @@ pub unsafe extern "C" fn R_PreserveInMSet(x: Sexp, mset: Sexp) {
         if newsize >= i32::MAX as isize {
             error_str("Multi-set overflow")
         }
-        let ns = Rf_protect(c().alloc_vector(VECSXP, newsize as usize));
+        let ns = Rf_protect(try_alloc_vector(VECSXP, newsize as usize));
         for i in 0..size {
             SET_VECTOR_ELT(ns, i, VECTOR_ELT(store, i));
         }
@@ -380,7 +388,7 @@ pub unsafe extern "C" fn R_alloc(nelem: usize, eltsize: c_int) -> *mut c_char {
         if dsize > isize::MAX as f64 {
             error_str_owned(format!("cannot allocate memory block of size {:.0} Tb", dsize / 1024f64.powi(4)))
         }
-        let s = c().alloc_vector(RAWSXP, size + 1);
+        let s = try_alloc_vector(RAWSXP, size + 1);
         s.set_attrib_raw(st().vstack);
         st().vstack = s;
         s.std_data() as *mut c_char
@@ -1320,7 +1328,7 @@ unsafe fn duplicate1(s: Sexp, deep: bool) -> Sexp {
         LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => {
             let n = xlength(s);
             Rf_protect(s);
-            let r = c().alloc_vector(t, n as usize);
+            let r = try_alloc_vector(t, n as usize);
             if n > 0 {
                 let src = dataptr(s) as *const u8;
                 match t {

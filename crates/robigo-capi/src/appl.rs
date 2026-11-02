@@ -243,7 +243,7 @@ unsafe fn print_vec(t: u8, data: *const u8, n: c_int, esz: usize) {
     if n <= 0 {
         return;
     }
-    let v = Rf_protect(core().alloc_vector(t, n as usize));
+    let v = Rf_protect(try_alloc_vector(t, n as usize));
     std::ptr::copy_nonoverlapping(data, v.std_data(), n as usize * esz);
     crate::envir::Rf_PrintValue(v);
     Rf_unprotect(1);

@@ -47,7 +47,7 @@ pub unsafe fn get_attrib0(vec: Sexp, name: Sexp) -> Sexp {
         }
         if matches!(vec.typ(), LISTSXP | LANGSXP | DOTSXP | NILSXP) {
             let len = Rf_length(vec);
-            let s = Rf_protect(core().alloc_vector(STRSXP, len as usize));
+            let s = Rf_protect(crate::memory::try_alloc_vector(STRSXP, len as usize));
             let mut any = false;
             let mut v = vec;
             let mut i = 0;
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn Rf_getAttrib(vec: Sexp, name: Sexp) -> Sexp {
         let s = get_attrib0(vec, R_RowNamesSymbol);
         if Rf_isInteger(s) != 0 && LENGTH(s) == 2 && *INTEGER(s) == i32::MIN {
             let n = (*INTEGER(s).add(1)).abs();
-            let r = core().alloc_vector(INTSXP, n as usize);
+            let r = crate::memory::try_alloc_vector(INTSXP, n as usize);
             let p = r.std_data() as *mut i32;
             for i in 0..n as usize {
                 *p.add(i) = i as i32 + 1;
@@ -396,7 +396,7 @@ pub unsafe extern "C" fn Rf_namesgets(vec: Sexp, val: Sexp) -> Sexp {
     Rf_protect(val);
     let mut val = if Rf_isList(val) != 0 {
         let n = Rf_length(vec);
-        let rval = Rf_protect(core().alloc_vector(STRSXP, n as usize));
+        let rval = Rf_protect(crate::memory::try_alloc_vector(STRSXP, n as usize));
         let mut tval = val;
         let mut i = 0;
         while i < n && tval != R_NilValue {
@@ -487,7 +487,7 @@ pub unsafe extern "C" fn Rf_dimnamesgets(vec: Sexp, val: Sexp) -> Sexp {
     }
     let mut val = val;
     if Rf_isList(val) != 0 {
-        let nv = core().alloc_vector(VECSXP, k as usize);
+        let nv = crate::memory::try_alloc_vector(VECSXP, k as usize);
         let mut v = val;
         for i in 0..k as isize {
             SET_VECTOR_ELT(nv, i, v.car());
@@ -629,7 +629,7 @@ pub unsafe extern "C" fn Rf_copyMostAttribNoTs(inp: Sexp, ans: Sexp) {
                 is_object = 0;
                 is_s4 = 0;
             } else {
-                let ncl = Rf_protect(core().alloc_vector(STRSXP, l as usize - 1));
+                let ncl = Rf_protect(crate::memory::try_alloc_vector(STRSXP, l as usize - 1));
                 let mut j = 0;
                 for i in 0..l {
                     if STRING_ELT(cl, i).char_bytes() != b"ts" {

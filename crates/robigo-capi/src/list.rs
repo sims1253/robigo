@@ -165,7 +165,7 @@ pub unsafe extern "C" fn Rf_mkNamed(t: c_int, names: *const *const c_char) -> Se
         n += 1;
     }
     let ans = Rf_protect(alloc_vector(t as u32, n as isize));
-    let nms = Rf_protect(core().alloc_vector(STRSXP, n));
+    let nms = Rf_protect(try_alloc_vector(STRSXP, n));
     for i in 0..n {
         SET_STRING_ELT(nms, i as isize, crate::strings::Rf_mkChar(*names.add(i)));
     }
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn Rf_xlengthgets(x: Sexp, len: isize) -> Sexp {
     let t = x.typ();
     let lenx = Rf_xlength(x);
     let rval = Rf_protect(alloc_vector(t as u32, len));
-    let names = if xnames != R_NilValue { Rf_protect(core().alloc_vector(STRSXP, len as usize)) } else { R_NilValue };
+    let names = if xnames != R_NilValue { Rf_protect(try_alloc_vector(STRSXP, len as usize)) } else { R_NilValue };
     for i in 0..len {
         let have = i < lenx;
         match t {
