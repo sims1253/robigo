@@ -116,7 +116,7 @@ pub unsafe extern "C" fn R_Serialize(s: Sexp, stream: *mut OutPStream) {
     // The header in the pieces serialize.c writes it (OutFormat, then
     // OutInteger x3, and for version 3 the native encoding's length and
     // name): callbacks such as digest's skip it by counting bytes.
-    let mut pieces = vec![2usize, 4, 4, 4];
+    let mut pieces = [2usize, 4, 4, 4, 0, 0];
     if st.version == 3 && n >= 18 {
         let raw = std::slice::from_raw_parts(p.add(14), 4);
         let nelen = if fmt == XDR {
@@ -124,7 +124,8 @@ pub unsafe extern "C" fn R_Serialize(s: Sexp, stream: *mut OutPStream) {
         } else {
             u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
         } as usize;
-        pieces.extend([4, nelen]);
+        pieces[4] = 4;
+        pieces[5] = nelen;
     }
     let mut off = 0;
     for len in pieces {
@@ -148,78 +149,138 @@ pub unsafe extern "C" fn R_Serialize(s: Sexp, stream: *mut OutPStream) {
     Rf_unprotect(1);
 }
 
+/// Reads one serialized item, keeping the bytes for the host. A callback
+/// can jump, so nothing here owns memory: the bytes are in a protected
+/// RAWSXP, grown geometrically.
 struct InStreamScanner {
     st: *mut InPStream,
-    buf: Vec<u8>,
+    buf: Sexp,
+    /// `buf`'s place on the protect stack
+    pp: c_int,
+    /// bytes read so far
+    len: usize,
     be: bool,
     ascii: bool,
 }
 
+/// What one `in_bytes` call moves: its length is a C `int`.
+const MAX_CHUNK: usize = c_int::MAX as usize;
+
 impl InStreamScanner {
+    unsafe fn new(st: *mut InPStream) -> Self {
+        let mut pp = 0;
+        let buf = try_alloc_vector(RAWSXP, 64);
+        R_ProtectWithIndex(buf, &mut pp);
+        InStreamScanner { st, buf, pp, len: 0, be: true, ascii: false }
+    }
+
+    /// Room for `extra` more bytes.
+    unsafe fn reserve(&mut self, extra: usize) {
+        let Some(need) = self.len.checked_add(extra) else {
+            crate::errors::error_str("serialized data does not fit in memory")
+        };
+        let cap = xlength(self.buf) as usize;
+        if need > cap {
+            if need > isize::MAX as usize {
+                crate::errors::error_str("serialized data does not fit in memory")
+            }
+            let new = try_alloc_vector(RAWSXP, need.max(cap.saturating_mul(2)));
+            std::ptr::copy_nonoverlapping(self.buf.std_data(), new.std_data(), self.len);
+            R_Reprotect(new, self.pp);
+            self.buf = new;
+        }
+    }
+
+    unsafe fn push(&mut self, b: u8) {
+        self.reserve(1);
+        *self.buf.std_data().add(self.len) = b;
+        self.len += 1;
+    }
+
+    unsafe fn byte(&self, i: usize) -> u8 {
+        *self.buf.std_data().add(i)
+    }
+
     unsafe fn read_bytes(&mut self, n: usize) {
         if n == 0 {
             return;
         }
-        let start = self.buf.len();
-        self.buf.resize(start + n, 0);
+        self.reserve(n);
+        let start = self.len;
         if let Some(f) = (*self.st).in_bytes {
-            f(self.st, self.buf.as_mut_ptr().add(start) as *mut c_void, n as c_int);
+            let mut done = 0;
+            while done < n {
+                let chunk = (n - done).min(MAX_CHUNK);
+                f(self.st, self.buf.std_data().add(start + done) as *mut c_void, chunk as c_int);
+                done += chunk;
+            }
         } else if let Some(c) = (*self.st).in_char {
             for k in 0..n {
                 let ch = c(self.st);
                 if ch < 0 {
                     crate::errors::error_str("read error");
                 }
-                self.buf[start + k] = ch as u8;
+                *self.buf.std_data().add(start + k) = ch as u8;
             }
         } else {
             crate::errors::error_str("read error");
         }
+        self.len += n;
     }
 
-    unsafe fn read_word(&mut self) -> String {
+    /// `n` items of `size` bytes.
+    unsafe fn read_items(&mut self, n: usize, size: usize) {
+        match n.checked_mul(size) {
+            Some(bytes) => self.read_bytes(bytes),
+            None => crate::errors::error_str("serialized data does not fit in memory"),
+        }
+    }
+
+    /// The next whitespace-delimited word, as a range of the bytes read.
+    unsafe fn read_word(&mut self) -> (usize, usize) {
         let Some(c) = (*self.st).in_char else {
             crate::errors::error_str("read error");
         };
-        let mut word = Vec::new();
-        loop {
+        let start = loop {
             let ch = c(self.st);
             if ch < 0 {
                 crate::errors::error_str("read error");
             }
-            let b = ch as u8;
-            self.buf.push(b);
-            if !b.is_ascii_whitespace() {
-                word.push(b);
-                break;
+            self.push(ch as u8);
+            if !(ch as u8).is_ascii_whitespace() {
+                break self.len - 1;
             }
-        }
+        };
+        let mut end = self.len;
         loop {
             let ch = c(self.st);
             if ch < 0 {
                 break;
             }
-            let b = ch as u8;
-            self.buf.push(b);
-            if b.is_ascii_whitespace() {
+            self.push(ch as u8);
+            if (ch as u8).is_ascii_whitespace() {
                 break;
             }
-            word.push(b);
+            end = self.len;
         }
-        String::from_utf8_lossy(&word).into_owned()
+        (start, end)
     }
 
     unsafe fn read_int(&mut self) -> i32 {
         if self.ascii {
-            let w = self.read_word();
-            if w == "NA" {
+            let (start, end) = self.read_word();
+            let w = std::slice::from_raw_parts(self.buf.std_data().add(start), end - start);
+            if w == b"NA" {
                 return i32::MIN;
             }
-            return w.parse().unwrap_or_else(|_| crate::errors::error_str("read error"));
+            return match std::str::from_utf8(w).ok().and_then(|w| w.parse().ok()) {
+                Some(i) => i,
+                None => crate::errors::error_str("read error"),
+            };
         }
-        let pos = self.buf.len();
+        let pos = self.len;
         self.read_bytes(4);
-        let b = [self.buf[pos], self.buf[pos + 1], self.buf[pos + 2], self.buf[pos + 3]];
+        let b = [self.byte(pos), self.byte(pos + 1), self.byte(pos + 2), self.byte(pos + 3)];
         if self.be { i32::from_be_bytes(b) } else { i32::from_le_bytes(b) }
     }
 
@@ -231,6 +292,10 @@ impl InStreamScanner {
         if len == -1 {
             let hi = self.read_int() as u32 as u64;
             let lo = self.read_int() as u32 as u64;
+            // R: serialize.c:ReadLENGTH
+            if hi > 65536 {
+                crate::errors::error_str("invalid upper part of serialized vector length");
+            }
             ((hi << 32) + lo) as usize
         } else {
             len as usize
@@ -405,7 +470,7 @@ impl InStreamScanner {
                         let _ = self.read_word();
                     }
                 } else {
-                    self.read_bytes(n * 4);
+                    self.read_items(n, 4);
                 }
             }
             14 => {
@@ -415,17 +480,18 @@ impl InStreamScanner {
                         let _ = self.read_word();
                     }
                 } else {
-                    self.read_bytes(n * 8);
+                    self.read_items(n, 8);
                 }
             }
             15 => {
                 let n = self.read_length();
                 if self.ascii {
-                    for _ in 0..n * 2 {
+                    for _ in 0..n {
+                        let _ = self.read_word();
                         let _ = self.read_word();
                     }
                 } else {
-                    self.read_bytes(n * 16);
+                    self.read_items(n, 16);
                 }
             }
             24 => {
@@ -463,9 +529,10 @@ pub unsafe extern "C" fn R_Unserialize(stream: *mut InPStream) -> Sexp {
     if st.hook.is_some() {
         crate::errors::not_implemented("R_Unserialize with a persistence hook")
     }
-    let mut scanner = InStreamScanner { st: stream, buf: Vec::with_capacity(64), be: true, ascii: false };
+    let top = crate::state::R_PPStackTop;
+    let mut scanner = InStreamScanner::new(stream);
     scanner.read_bytes(2);
-    let fmt = match (scanner.buf[0], scanner.buf[1]) {
+    let fmt = match (scanner.byte(0), scanner.byte(1)) {
         (b'A', _) => {
             scanner.ascii = true;
             ASCII
@@ -501,11 +568,11 @@ pub unsafe extern "C" fn R_Unserialize(stream: *mut InPStream) -> Sexp {
                     let _ = scanner.read_word();
                 }
             } else if nelen > 0 {
-                let name_start = scanner.buf.len();
+                let name_start = scanner.len;
                 scanner.read_bytes(nelen as usize);
                 let copy_len = (nelen as usize).min(63);
                 for i in 0..copy_len {
-                    st.native_encoding[i] = scanner.buf[name_start + i] as c_char;
+                    st.native_encoding[i] = scanner.byte(name_start + i) as c_char;
                 }
                 st.native_encoding[copy_len] = 0;
             }
@@ -514,9 +581,8 @@ pub unsafe extern "C" fn R_Unserialize(stream: *mut InPStream) -> Sexp {
     if version == 2 || version == 3 {
         scanner.scan_item();
     }
-    let raw = Rf_protect(Rf_allocVector(RAWSXP as u32, scanner.buf.len() as isize));
-    std::ptr::copy_nonoverlapping(scanner.buf.as_ptr(), RAW(raw), scanner.buf.len());
-    let res = crate::sort::internal("unserialize", &[raw, R_NilValue]);
-    Rf_unprotect(1);
+    scanner.buf.set_std_len(scanner.len as isize);
+    let res = crate::sort::internal("unserialize", &[scanner.buf, R_NilValue]);
+    crate::state::R_PPStackTop = top;
     res
 }

@@ -502,6 +502,54 @@ fn the_api() {
         assert_eq!(src.pos, exact_len, "R_Unserialize stops at the exact end of the serialized item");
         assert_eq!(capi::memory::LENGTH(raw_read) as usize, exact_len);
         capi::memory::Rf_unprotect(1);
+
+        // ---- corrupt lengths are R errors: an RAWSXP of 2^47 bytes from the
+        // long-vector form, and a length past what ReadLENGTH accepts
+        static mut CORRUPT: Vec<u8> = Vec::new();
+        static mut CORRUPT_POS: usize = 0;
+        unsafe extern "C" fn in_corrupt(_: *mut capi::serialize::InPStream, dst: *mut c_void, n: c_int) {
+            unsafe {
+                assert!(n >= 0, "in_bytes got a negative length");
+                let data = &*(&raw const CORRUPT);
+                let len = (n as usize).min(data.len() - CORRUPT_POS);
+                std::ptr::copy_nonoverlapping(data.as_ptr().add(CORRUPT_POS), dst as *mut u8, len);
+                CORRUPT_POS += len;
+            }
+        }
+        unsafe extern "C" fn read_corrupt(_: *mut c_void) {
+            unsafe {
+                let mut inp: capi::serialize::InPStream = std::mem::zeroed();
+                capi::serialize::R_InitInPStream(
+                    &mut inp,
+                    std::ptr::null_mut(),
+                    0,
+                    None,
+                    Some(in_corrupt),
+                    None,
+                    R_NilValue,
+                );
+                capi::serialize::R_Unserialize(&mut inp);
+            }
+        }
+        let corrupt = |hi: i32, lo: u32, ty: i32| {
+            let mut bytes = b"X\n".to_vec();
+            for word in [2, 0x040500, 0x030500, ty, -1, hi, lo as i32] {
+                bytes.extend_from_slice(&i32::to_be_bytes(word));
+            }
+            CORRUPT = bytes;
+            CORRUPT_POS = 0;
+            capi::errors::R_ToplevelExec(read_corrupt, std::ptr::null_mut())
+        };
+        let top = R_PPStackTop;
+        assert_eq!(corrupt(70000, 0, 24), 0);
+        assert_eq!(take_log(), vec!["reported: invalid upper part of serialized vector length".to_string()]);
+        assert_eq!(corrupt(32768, 0, 24), 0);
+        assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 131072.0 Gb".to_string()]);
+        assert_eq!(R_PPStackTop, top, "the scanner's protection is undone");
+        // a payload past INT_MAX arrives in chunks in_bytes can take (the
+        // stub writes none of it, so this costs address space only)
+        assert_eq!(corrupt(0, (1 << 31) + 10, 24), 1, "read through");
+        assert!(take_log().is_empty());
     }
 }
 
