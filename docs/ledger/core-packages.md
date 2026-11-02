@@ -175,3 +175,32 @@ Metrics, in order:
   'promise'", "Can't splice an object of type <promise>"), and
   `1 %>% identity() %>% return()` returns an external pointer instead
   of 1 (the trailing bare-`return` rhs in pipe.c's masking path).
+
+## Eval depth limit and stack overflow conditions (#198, #199)
+
+- `options(expressions=)` only ran through validation: the evaluator
+  compared against a constant 5000. Overflow was a `simpleError`, so
+  `tryCatch(stackOverflowError=)` missed it, and the C stack error was
+  one too. GNU R's sources and the 4.5.0 oracle define what follows.
+- Rejected: restoring the limit at `Flow::Return` landing sites, the
+  literal port of `R_restore_globals`. In the interpreter tier every
+  `return()` is a `Flow::Return`, so `invokeRestart`'s own R code dropped
+  the limit under the running handler, which overflowed again. GNU R
+  runs base compiled, where `return` is no jump. It also added a store
+  to the return path.
+- Kept: restore where the jump starts (`goto_exiting_handler`,
+  `.invokeRestart`), in `default_error` (errors.c:`restore_inError`) and
+  at top level; the `on.exit` raise is scoped to the `on.exit` code.
+- Oracle facts: `lapply` recursion reaches the C stack; a compiled
+  closure calling itself hits `nodeStackOverflowError` first, which
+  robigo has no stack for. At `expressions = 100` GNU R aborts with
+  "no more error handlers available" on `invokeRestart`; at 1000 it
+  restarts, so the fixture uses 1000.
+- Measured: `tests/r/conditions/{eval-depth-limit,c-stack-overflow}.R`
+  byte-identical in all three tiers. fastr slice 1150/1151, 0
+  regressions. Local fastr needs a 4.5.0 library: with the host's 4.6.1,
+  every case reports "built under R version" noise on stderr.
+- Open: GNU R raises `R_CStackLimit` by 1/0.95 during C stack recovery,
+  so the deepest `on.exit` still runs; robigo can overflow again there
+  and skip that one. Raising `stack_limit` needs the real stack margin
+  checked first.
