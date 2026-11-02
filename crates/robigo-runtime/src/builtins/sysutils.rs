@@ -627,7 +627,15 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
 // Locales
 
 /// R sets these categories from the environment at startup.
-pub fn init_locale() {
+///
+/// # Safety
+/// No other thread runs C code that reads the locale. Builtins meet this by
+/// holding the thread's `Interp`; embedders call this on the evaluator's.
+pub unsafe fn init_locale() {
+    init_locale_on_evaluator();
+}
+
+fn init_locale_on_evaluator() {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
@@ -645,8 +653,8 @@ pub fn init_locale() {
         #[cfg(target_os = "linux")]
         libc::LC_MEASUREMENT,
     ] {
-        // SAFETY: the evaluator is the only thread that runs locale-dependent
-        // C code: `system(timeout =)`'s reader runs none.
+        // SAFETY: this runs on the evaluator's thread, the only one that runs
+        // locale-dependent C code: `system(timeout =)`'s reader runs none.
         #[allow(unsafe_code)]
         unsafe {
             crate::sys::set_locale(cat, c"")
@@ -672,7 +680,7 @@ pub(crate) fn collation_is_c() -> bool {
 
 #[cold]
 fn collation_is_c_slow() -> bool {
-    init_locale();
+    init_locale_on_evaluator();
     let c = match crate::sys::locale(libc::LC_COLLATE) {
         Some(l) => l == "C",
         None => true,
@@ -703,7 +711,7 @@ fn locale_category(code: i32) -> Option<c_int> {
 }
 
 fn do_getlocale(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    init_locale();
+    init_locale_on_evaluator();
     let cat = as_integer(&arg(&args, 0));
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
@@ -713,7 +721,7 @@ fn do_getlocale(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    init_locale();
+    init_locale_on_evaluator();
     let cat = as_integer(&arg(&args, 0));
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
@@ -727,7 +735,7 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // libc::LC_COLLATE; dropping the cache for every category is equivalent.
     COLLATION_IS_C.set(None);
     let set = |category| {
-        // SAFETY: as in `init_locale`.
+        // SAFETY: as in `init_locale_on_evaluator`.
         #[allow(unsafe_code)]
         unsafe {
             crate::sys::set_locale(category, &cl)

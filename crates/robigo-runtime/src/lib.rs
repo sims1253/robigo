@@ -32,7 +32,7 @@ pub mod serialize;
 pub mod startup;
 pub mod sym;
 #[allow(unsafe_code)] // the C library
-pub mod sys;
+pub(crate) mod sys;
 pub mod task;
 pub mod typeprof;
 #[allow(unsafe_code)] // `RString`, and C-level writes through `Rc` aliases
