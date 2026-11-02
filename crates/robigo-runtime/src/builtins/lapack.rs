@@ -2427,7 +2427,7 @@ fn do_la_library(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Val
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
         if libc::dladdr(addr as *const libc::c_void, &mut info) != 0 {
-            let mut buf = [0i8; (libc::PATH_MAX as usize) + 1];
+            let mut buf = [0 as libc::c_char; (libc::PATH_MAX as usize) + 1];
             let res = libc::realpath(info.dli_fname, buf.as_mut_ptr());
             if !res.is_null() {
                 let path = std::ffi::CStr::from_ptr(res).to_string_lossy().into_owned();
