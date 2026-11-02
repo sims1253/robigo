@@ -14,6 +14,7 @@
 //! Environment:
 //!   ROBIGO_CONF_FILTER=substr   only run matching scripts
 //!   ROBIGO_CONF_DIFF=1          print diffs for failures
+//!   ROBIGO_CONF_BIN=path        test this binary instead of cargo's
 //!   ROBIGO_CONF_RESULTS=path    write the results of an unfiltered run in
 //!                               scripts/corpus.py's result format (corpus
 //!                               `conformance`), for the progress page
@@ -23,6 +24,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// The binary under test: cargo's, or `ROBIGO_CONF_BIN` so that CI tests the
+/// release binary it ships while the harness builds in a cheaper profile.
+fn robigo_bin() -> PathBuf {
+    std::env::var_os("ROBIGO_CONF_BIN").map_or_else(|| env!("CARGO_BIN_EXE_robigo").into(), PathBuf::from)
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
@@ -128,7 +135,7 @@ struct Outcome {
 // by scripts/regen-expected.sh. Resolve before spawning: working directories
 // differ between the oracle recorder and the conformance runner.
 fn script_command(script: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_robigo"));
+    let mut command = Command::new(robigo_bin());
     // As scripts/regen-expected.sh records GNU R's output: base only.
     command.env("R_DEFAULT_PACKAGES", "NULL");
     command.env_remove("TZDIR");
@@ -412,7 +419,7 @@ fn compiled_matches_interpreted() {
 fn vm_guards_hold() {
     let root = root();
     let script = root.join("benchmarks/suite/nbody.R");
-    let out = Command::new(env!("CARGO_BIN_EXE_robigo"))
+    let out = Command::new(robigo_bin())
         .arg(&script)
         .env("LANGUAGE", "en")
         .env("LC_ALL", "C.UTF-8")

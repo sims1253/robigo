@@ -43,6 +43,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.perf_diagnostic == true }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
+    timeout-minutes: 60
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
@@ -69,15 +70,16 @@ jobs:
     if: ${{ inputs.perf_diagnostic != true }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
+    timeout-minutes: 30
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Format
         run: cargo fmt --check
       - name: Build
-        run: cargo build --release --workspace
+        run: cargo build --release --locked --workspace
       # GNU R's base-package natives built from the R 4.5.0 sources
       # (docs/core.md §8): robigo's dyn.load serves the base packages with
       # them instead of the Rust ports (ROBIGO_NATIVES)
@@ -97,23 +99,8 @@ jobs:
           cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" .robigo/bin/robigo
           scripts/build-rdbflat.sh
           python3 scripts/test-rdbflat.py
-      - name: Unit tests, parser oracle, conformance (all tiers)
-        # The conformance results go to the progress page with the corpora
-        # (scripts/history.py records the open gaps from them).
-        env:
-          ROBIGO_CONF_RESULTS: ${{ github.workspace }}/.robigo/conformance-results/conformance.json
-        run: cargo test --release --workspace
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: corpus-conformance-1of1
-          path: .robigo/conformance-results/
-          if-no-files-found: ignore
-          retention-days: 14
       - name: Ratchet markers
         run: python3 scripts/ratchet.py check | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Core and C API under gctorture (collect on every allocation)
-        run: ROBIGO_GCTORTURE=1 cargo test --release -p robigo-core -p robigo-capi
       - name: Parse corpus ratchet
         run: |
           python3 scripts/parse-corpus.py check fastr gnur-tests gnur-examples | tee -a "$GITHUB_STEP_SUMMARY"
@@ -131,25 +118,66 @@ jobs:
           path: dist
           retention-days: 7
 
-  bytecode-fidelity:
-    if: ${{ inputs.perf_diagnostic != true }}
+  # Compiling the test harnesses took 85% of this step when it ran inside
+  # build at release settings, and every job below waited for it. Here they
+  # build in the quick profile, and conformance tests the release binary.
+  test:
+    needs: build
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
+    timeout-minutes: 30
+    env:
+      ROBIGO_CONF_BIN: ${{ github.workspace }}/dist/robigo
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: quick
+      - uses: actions/download-artifact@v4
+        with:
+          name: robigo
+          path: dist
+      - run: |
+          chmod +x dist/robigo
+          echo "ROBIGO_NATIVES=$PWD/dist/natives" >> "$GITHUB_ENV"
+      - name: Unit tests, parser oracle, conformance (all tiers)
+        # The conformance results go to the progress page with the corpora
+        # (scripts/history.py records the open gaps from them).
+        env:
+          ROBIGO_CONF_RESULTS: ${{ github.workspace }}/.robigo/conformance-results/conformance.json
+        run: cargo test --locked --profile quick --workspace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-conformance-1of1
+          path: .robigo/conformance-results/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Core and C API under gctorture (collect on every allocation)
+        run: ROBIGO_GCTORTURE=1 cargo test --locked --profile quick -p robigo-core -p robigo-capi
+
+  bytecode-fidelity:
+    if: ${{ inputs.perf_diagnostic != true }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    timeout-minutes: 30
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: bytecode-fidelity
       - name: Bytecode metadata and encoding round trips
-        run: cargo test --release -p robigo-runtime -p robigo-capi --features bytecode-fidelity
+        run: cargo test --locked --profile quick -p robigo-runtime -p robigo-capi --features bytecode-fidelity
       - name: GNU bytecode fixtures in all three tiers
         run: |
           export ROBIGO_CONF_FILTER=tests/r/serialize/bytecode_
-          ROBIGO_COMPILE=0 cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
-          ROBIGO_JIT=0 cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
-          cargo test --release -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+          ROBIGO_COMPILE=0 cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+          ROBIGO_JIT=0 cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
+          cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
 
   corpora:
     needs: build
@@ -169,6 +197,7 @@ jobs:
           - { corpus: fastr, shard: "3/4" }
           - { corpus: fastr, shard: "4/4" }
     container: debian:trixie
+    timeout-minutes: 60
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
@@ -235,6 +264,8 @@ jobs:
     needs: build
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
+    # perf-baseline.py may wait 50 minutes for main's run, then this measures
+    timeout-minutes: 110
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v4
@@ -329,10 +360,11 @@ jobs:
     # branch progress-data and publish the README's charts and badges on
     # GitHub Pages (scripts/history.py, docs/verification.md). `sync`
     # also records earlier main runs the history lacks.
-    needs: [build, corpora, perf]
+    needs: [build, test, corpora, perf]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.result == 'success' }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
+    timeout-minutes: 15
     concurrency:
       group: progress
       cancel-in-progress: false
