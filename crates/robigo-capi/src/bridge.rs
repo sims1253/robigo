@@ -1495,6 +1495,7 @@ unsafe extern "C" fn h_ctx_drop(saved: *const usize) {
 
 // ---- the stub libR.so (package objects built by GNU R ask for it) ---------------
 
+#[cfg(target_os = "linux")]
 static STUB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libR-stub.so"));
 
 /// Load a soname-only `libR.so` so that objects linked with `-lR` (GNU R's
@@ -1502,6 +1503,7 @@ static STUB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libR-stub.so"));
 /// loader matches `-lR` by the stub's SONAME, not its path, so the stub is
 /// loaded from an anonymous memory file: a file in a shared temporary
 /// directory could be replaced by another user before `dlopen` reads it.
+#[cfg(target_os = "linux")]
 fn load_stub() {
     // SAFETY: memfd_create with a NUL-terminated name; the fd is ours alone.
     let fd = unsafe { libc::memfd_create(c"libR.so".as_ptr(), libc::MFD_CLOEXEC) };
@@ -1526,6 +1528,10 @@ fn load_stub() {
         libc::close(fd);
     }
 }
+
+/// Native package loading on macOS is a later track (docs/core.md).
+#[cfg(not(target_os = "linux"))]
+fn load_stub() {}
 
 unsafe fn ensure_ready(interp: &mut Interp) {
     if READY.with(|r| r.get()) {
