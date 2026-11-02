@@ -11,7 +11,6 @@
 //! `gc.rs`.
 
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
-use std::mem::MaybeUninit;
 
 pub const BLOCK: usize = 65536;
 /// The block header: 64 bytes of fields, the start bitmap and the mark
@@ -58,7 +57,13 @@ pub fn class_index(size: usize) -> usize {
     }
 }
 
-#[repr(C, align(65536))]
+/// The header of a block: its first `DATA_OFF` bytes, and only those. The
+/// objects that follow are reached through raw pointers ([`Block::data_ptr`]),
+/// so a `&mut Block` does not claim memory that live objects and `SEXP`s held
+/// by C point into. That is also why it has no `align(BLOCK)`, which would
+/// round its size up to the whole block: blocks are aligned by their chunk's
+/// `Layout`.
+#[repr(C)]
 pub struct Block {
     pub magic: u64,
     pub class: u8,
@@ -94,21 +99,21 @@ pub struct Block {
     /// one bit per granule: the object starting here was marked by the
     /// current collection (cleared by the sweep that reads it).
     pub marks: [u64; START_WORDS],
-    pub data: [MaybeUninit<u8>; BLOCK - DATA_OFF],
 }
 
-// the sweeper and the conservative resolver index `starts`/`data` through
-// these offsets; `marked` must not push them around
+// the sweeper and the conservative resolver index `starts` and the data
+// through these offsets; `marked` must not push them around
 const _: () = assert!(std::mem::offset_of!(Block, starts) == 64);
 const _: () = assert!(std::mem::offset_of!(Block, marks) == 64 + 8 * START_WORDS);
-const _: () = assert!(std::mem::offset_of!(Block, data) == DATA_OFF);
+const _: () = assert!(std::mem::size_of::<Block>() == DATA_OFF);
 const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
 const _: () = assert!(std::mem::offset_of!(Block, immortals) == 44);
 
 impl Block {
-    #[inline]
-    pub fn data_ptr(&self) -> *mut u8 {
-        self.data.as_ptr() as *mut u8
+    /// The first object of block `b`. Address arithmetic: nothing is read.
+    #[inline(always)]
+    pub fn data_ptr(b: *mut Block) -> *mut u8 {
+        b.cast::<u8>().wrapping_add(DATA_OFF)
     }
     #[inline]
     pub fn start_set(&mut self, g: usize) {
@@ -211,7 +216,6 @@ impl Heap {
                             _rsv: [0; 16],
                             starts: [0; START_WORDS],
                             marks: [0; START_WORDS],
-                            data: [MaybeUninit::uninit(); BLOCK - DATA_OFF],
                         },
                     );
                 }
@@ -247,18 +251,19 @@ impl Heap {
         // the fast path, inlined into the callers: the current block's
         // free list, then its bump region
         let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
-        if !cs.cur.is_null() {
-            let b = unsafe { &mut *cs.cur };
+        let cur = cs.cur;
+        if !cur.is_null() {
+            let b = unsafe { &mut *cur };
             let p = b.freelist;
             if !p.is_null() {
                 b.freelist = unsafe { *((p as *mut *mut u8).add(1)) };
-                b.start_set((p as usize - b.data_ptr() as usize) / 16);
+                b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
                 b.live_objects += 1;
                 return p;
             }
             let g = (SIZES[ci] / 16) as u32;
             if b.bump_next + g <= b.granules {
-                let p = unsafe { b.data_ptr().add(b.bump_next as usize * 16) };
+                let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
                 b.start_set(b.bump_next as usize);
                 b.bump_next += g;
                 b.live_objects += 1;
@@ -282,8 +287,9 @@ impl Heap {
             // checked index both emitted a panic edge that kept alloc from
             // being inlined and (unlike the old raw cast) borrowed self
             let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
-            if !cs.cur.is_null() {
-                let b = unsafe { &mut *cs.cur };
+            let cur = cs.cur;
+            if !cur.is_null() {
+                let b = unsafe { &mut *cur };
                 if !b.freelist.is_null() {
                     let p = b.freelist;
                     b.freelist = unsafe { *((p as *mut *mut u8).add(1)) }; // next at +8
@@ -291,12 +297,12 @@ impl Heap {
                     // so a slot recycled from the free list needs its bit
                     // back or the next sweep cannot see (nor free, nor
                     // resolve) the new object
-                    b.start_set((p as usize - b.data_ptr() as usize) / 16);
+                    b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
                     b.live_objects += 1;
                     return p;
                 }
                 if b.bump_next + g <= b.granules {
-                    let p = unsafe { b.data_ptr().add(b.bump_next as usize * 16) };
+                    let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
                     b.start_set(b.bump_next as usize);
                     b.bump_next += g;
                     b.live_objects += 1;
@@ -419,7 +425,7 @@ impl Heap {
             if (*b).live_objects == 0 {
                 return None; // nothing allocated in this block
             }
-            let data = (*b).data_ptr() as usize;
+            let data = Block::data_ptr(b) as usize;
             if w < data {
                 return None;
             }

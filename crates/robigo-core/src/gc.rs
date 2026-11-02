@@ -686,7 +686,7 @@ impl Core {
             // large chunk's header word): marking never writes an object
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
-                let g = (p.0 as usize - (*b).data_ptr() as usize) / 16;
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / 16;
                 let w = (*b).marks.as_mut_ptr().add(g >> 6);
                 let bit = 1u64 << (g & 63);
                 if *w & bit != 0 {
@@ -711,9 +711,9 @@ impl Core {
             if p.flags() & flags::IMMORTAL != 0 {
                 return true;
             }
-            let b = (p.0 as usize & !(BLOCK - 1)) as *const Block;
+            let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
-                let g = (p.0 as usize - (*b).data_ptr() as usize) / 16;
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / 16;
                 (*b).marks[g >> 6] & (1u64 << (g & 63)) != 0
             } else {
                 *(b as *const u64).add(1) == self.epoch
@@ -1007,7 +1007,7 @@ impl Core {
                         let mut s = word;
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = (*b).data_ptr().add(g * 16);
+                            let p = Block::data_ptr(b).add(g * 16);
                             let f = *p.add(1);
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
