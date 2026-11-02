@@ -1122,7 +1122,7 @@ fn do_transpose(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 /// R: array.c:do_aperm
-fn do_aperm(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_aperm(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let a = arg(&args, 0);
     let isa = dims_of(&a);
     if isa.is_empty() || !a.is_vector() {
@@ -1149,7 +1149,9 @@ fn do_aperm(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
                 }
             }
         } else {
-            let iv = match coerce_quiet(&perm, VType::Int) {
+            // R: array.c:do_aperm coerceVector(perm, INTSXP): the coercion's
+            // own warnings (imaginary parts discarded, NAs introduced) fire.
+            let iv = match i.coerce(&perm, VType::Int)? {
                 Value::Int(v) => v.data.clone(),
                 _ => vec![],
             };
