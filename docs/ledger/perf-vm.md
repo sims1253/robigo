@@ -40,15 +40,19 @@ conformance` (interpreter, VM and VM+JIT against each other).
     purely in codegen of the shared loop; duplicated source fixes it
     (measured at each step: co7 +1.03%, co9 +1.4%, co10 +1.35%,
     co11 +1.96%, macro duplication -0.01%).
-  - Fast declines in `inline_site_call` before the formals/JIT checks:
-    analyzed-not-inlinable bodies (2 loads) and marked bodies (one
-    epoch compare).
+  - Fast declines where GNU R's caller looks: `run_with`'s call arm
+    skips a closure analyzed as not inlinable — extended to skip one
+    whose nested calls were marked not inlinable too, so
+    `add <- function(a,b) id(a)+id(b)` with a loop-bearing `id` pays one
+    epoch compare instead of a call into `inline_site_call`
+    (`profiler-shared` +0.44% -> +0.13%).
 - Result: `fib(25)` 772.0M -> 286.6M instructions (**-62.9%**); suite
   `robigo/fib` **-51.3%** (0.855x -> ~0.40x of GNU R), `robigo/apply`
-  -0.65%, `robigo/closures` -0.5%. Gate: **2 faster, 0 slower (> 0.5%),
-  0 broken**; worst +0.30% (`profiler-shared`, whose `add` pays the
-  epoch compare of the failure memo, ~1 instruction per call — the
-  floor of the memo; next-worst +0.16%).
+  -0.5%, `robigo/closures` -0.6%. Gate (against main ab057314, after
+  rebasing over the trace/#252 changes): **3 faster, 0 slower
+  (> 0.5%), 0 broken**; worst +0.39% (`fannkuch`, build-to-build
+  codegen noise — it was +0.02% in the previous build), next
+  +0.25% (`lapplyDots`).
 - Verified: fixture `tests/r/basics/nested-inline-calls.R` (self and
   mutual recursion, a non-inlinable callee falling back, lazy
   arguments, errors raised through nested runs, `substitute`,

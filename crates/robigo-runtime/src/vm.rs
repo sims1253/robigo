@@ -1941,19 +1941,10 @@ fn inline_site_call(
     regs: &[RVal],
 ) -> Option<RVal> {
     // (Until GNU R's JIT would have decided about the closure, its calls
-    // are counted: see `rjit::jit_check`.)
-    // Fast declines first: a body analyzed as not inlinable at all, or
-    // one whose nested calls were seen not to be inlinable (cheaper than
-    // the formals and JIT checks below, and this is the common case).
-    match clo.inline.get() {
-        // A nested call of this body was already seen not to be
-        // inlinable: straight to the real call.
-        Some(Some(info)) if info.no_nested.get() == crate::env::search_epoch() => return None,
-        // Analyzed and not inlinable at all.
-        Some(None) => return None,
-        _ => {}
-    }
-    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {        return None;
+    // are counted: see `rjit::jit_check`. A body whose nested calls were
+    // seen not to be inlinable is declined by the caller's check.)
+    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {
+        return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(clo)).as_ref()?;
     if info.free_vars && vars.dirty {
@@ -3979,11 +3970,16 @@ fn run_with(
                 // (it cannot observe the frame, so nothing needs flushing,
                 // unless it reads variables that pending writes may affect).
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
-                    // (Not for a closure already known not to be pure; nor
-                    // for a traced one, see `inline_site_call`.)
-                    if !matches!(clo.inline.get(), Some(None))
-                        && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs)
-                    {
+                    // (Not for a closure already known not to be pure, or
+                    // one whose nested calls were seen not to be
+                    // inlinable, nor for a traced one, see
+                    // `inline_site_call`.)
+                    let inlineable = match clo.inline.get() {
+                        None => true,
+                        Some(None) => false,
+                        Some(Some(info)) => info.no_nested.get() != crate::env::search_epoch(),
+                    };
+                    if inlineable && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs) {
                         interp.visible = true;
                         regs[*dst as usize] = v;
                         continue;
