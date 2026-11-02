@@ -711,9 +711,13 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
             out.set_attrs(Some(Box::new(a)));
         }
     }
-    if matches!(t, VType::List | VType::Expr) {
+    // R: coerce.c:coercePairList's tail — a pairlist's non-null tags
+    // become a names attribute for every target type it coerces to
+    // (language objects only coerce to strings, lists and expressions,
+    // and dots error, so the widened rule is pairlists only).
+    if !matches!(t, VType::Null) {
         if let Some(n) = v.names() {
-            if matches!(v, Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_)) {
+            if matches!(v, Value::Pairlist(_)) {
                 out.set_attr_raw(s::NAMES, n);
             }
         }

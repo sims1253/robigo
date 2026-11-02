@@ -6,7 +6,8 @@ use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
 
-pub static PORTS: &[(&str, NativeFn)] = &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb)];
+pub static PORTS: &[(&str, NativeFn)] =
+    &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb), ("gray", gray), ("hcl", hcl)];
 
 /// Whether cairo (1) or pango-cairo (2) support was built in: robigo has no
 /// cairo graphics devices.
@@ -887,4 +888,196 @@ fn col2rgb(i: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &crate::env::En
     let col_names = names.map(|n| Value::strs(n)).unwrap_or(Value::Null);
     ans.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs(row_names), col_names]));
     Ok(ans)
+}
+
+// `%g` formatting as C's printf does it (colors.c's error messages).
+fn fmt_g(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    robigo_syntax::cfmt::fmt_g(x, 6, false, false)
+}
+
+// R: grDevices/src/colors.c:ScaleAlpha
+fn scale_alpha(x: f64) -> RResult<u32> {
+    if crate::value::is_na_real(x) {
+        return Err(Flow::error("alpha level NA, not in [0,1]"));
+    }
+    if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+        return Err(Flow::error(format!("alpha level {}, not in [0,1]", fmt_g(x))));
+    }
+    Ok((255.0 * x + 0.5) as u32)
+}
+
+// R: grDevices/src/colors.c:gray — "#RRGGBB" strings from gray levels,
+// "#RRGGBBAA" with an alpha. The level check and (int)(255*level + 0.5)
+// scaling are GNU R's; a longer alpha still validates every level
+// (GNU R writes the extra cells out of bounds — UB kept out of robigo).
+fn gray(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let lev = crate::coerce::to_real(&i.coerce(&args[0].value, crate::value::VType::Real)?, &mut Default::default());
+    let nlev = lev.len();
+    if nlev == 0 {
+        return Ok(Value::strs_from(Vec::<String>::new()));
+    }
+    let alpha = match &args[1].value {
+        Value::Null => None,
+        a => Some(crate::coerce::to_real(&i.coerce(a, crate::value::VType::Real)?, &mut Default::default())),
+    };
+    let level = |k: usize| -> RResult<u32> {
+        let x = lev[k];
+        if crate::value::is_nan_or_na(x) || !(0.0..=1.0).contains(&x) {
+            return Err(Flow::error("invalid gray level, must be in [0,1]."));
+        }
+        Ok((255.0 * x + 0.5) as u32)
+    };
+    match alpha {
+        None => Ok(Value::strs_from(
+            (0..nlev)
+                .map(|k| {
+                    Ok({
+                        let v = level(k)?;
+                        format!("#{v:02X}{v:02X}{v:02X}")
+                    })
+                })
+                .collect::<RResult<Vec<String>>>()?,
+        )),
+        Some(a) => {
+            let na = a.len().max(1);
+            let n = nlev.max(a.len());
+            let mut out = Vec::with_capacity(n);
+            for k in 0..n {
+                let v = level(k % nlev)?;
+                let alpha_v = scale_alpha(a[k % na])?;
+                out.push(format!("#{:02X}{:02X}{:02X}{:02X}", v, v, v, alpha_v));
+            }
+            // GNU R's answer is nlev long; cells past it are its OOB writes.
+            out.truncate(nlev);
+            Ok(Value::strs_from(out))
+        }
+    }
+}
+
+/// grDevices' `WHITE_Y` (the D65 white point's Y).
+const WHITE_Y: f64 = 100.000;
+
+// R: grDevices/src/colors.c:gtrans — sRGB inverse gamma
+fn gtrans(u: f64) -> f64 {
+    if u > 0.00304 { 1.055 * u.powf(1.0 / 2.4) - 0.055 } else { 12.92 * u }
+}
+
+// R: grDevices/src/colors.c:FixupColor — clamp to 0..255, report a fix
+fn fixup_color(r: &mut i32, g: &mut i32, b: &mut i32) -> bool {
+    let clamp = |x: &mut i32| {
+        if *x < 0 {
+            *x = 0;
+            true
+        } else if *x > 255 {
+            *x = 255;
+            true
+        } else {
+            false
+        }
+    };
+    clamp(r) | clamp(g) | clamp(b)
+}
+
+// R: grDevices/src/colors.c:hcl2rgb — HCL -> CIE-LUV -> CIE-XYZ -> sRGB
+fn hcl2rgb(h: f64, c: f64, l: f64) -> (f64, f64, f64) {
+    if l <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    const WHITE_U: f64 = 0.1978398;
+    const WHITE_V: f64 = 0.4683363;
+    let rad = h * (std::f64::consts::PI / 180.0);
+    let (u_, v_) = (c * rad.cos(), c * rad.sin());
+    let (x, y, z);
+    if l <= 0.0 && u_ == 0.0 && v_ == 0.0 {
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
+    } else {
+        y = WHITE_Y * if l > 7.999592 { ((l + 16.0) / 116.0).powi(3) } else { l / 903.3 };
+        let u = u_ / (13.0 * l) + WHITE_U;
+        let v = v_ / (13.0 * l) + WHITE_V;
+        x = 9.0 * y * u / (4.0 * v);
+        z = -x / 3.0 - 5.0 * y + 3.0 * y / v;
+    }
+    (
+        gtrans((3.240479 * x - 1.537150 * y - 0.498535 * z) / WHITE_Y),
+        gtrans((-0.969256 * x + 1.875992 * y + 0.041556 * z) / WHITE_Y),
+        gtrans((0.055648 * x - 0.204043 * y + 1.057311 * z) / WHITE_Y),
+    )
+}
+
+// R: grDevices/src/colors.c:hcl — HCL colors as "#RRGGBB" (or
+// "#RRGGBBAA") strings, recycled over the longest of h, c, l, alpha.
+fn hcl(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let real = |i: &mut Interp, v: &Value| -> RResult<Vec<f64>> {
+        Ok(crate::coerce::to_real(&i.coerce(v, crate::value::VType::Real)?, &mut Default::default()))
+    };
+    let h = real(i, &args[0].value)?;
+    let c = real(i, &args[1].value)?;
+    let l = real(i, &args[2].value)?;
+    let a = match &args[3].value {
+        Value::Null => None,
+        v => Some(real(i, v)?),
+    };
+    // asLogical: NA (nonzero, like NA_LOGICAL) counts as TRUE here, as
+    // GNU R's `!fixup` test makes it behave
+    let fixup = crate::coerce::as_logical(&args[4].value) != 0;
+    let (nh, nc, nl) = (h.len(), c.len(), l.len());
+    let na = a.as_ref().map_or(1, Vec::len);
+    if nh == 0 || nc == 0 || nl == 0 || na == 0 {
+        return Ok(Value::strs_from(Vec::<String>::new()));
+    }
+    let max = nh.max(nc).max(nl).max(na);
+    let mut out = Vec::with_capacity(max);
+    for k in 0..max {
+        let (hh, cc, ll) = (h[k % nh], c[k % nc], l[k % nl]);
+        match a.as_ref() {
+            None => {
+                if !(hh.is_finite() && cc.is_finite() && ll.is_finite()) {
+                    out.push(None);
+                    continue;
+                }
+                if ll < 0.0 || ll > WHITE_Y || cc < 0.0 {
+                    return Err(Flow::error("invalid hcl color"));
+                }
+                let (r, g, b) = hcl2rgb(hh, cc, ll);
+                let (mut ir, mut ig, mut ib) =
+                    ((255.0 * r + 0.5) as i32, (255.0 * g + 0.5) as i32, (255.0 * b + 0.5) as i32);
+                if fixup_color(&mut ir, &mut ig, &mut ib) && !fixup {
+                    out.push(None);
+                } else {
+                    out.push(crate::value::rstr(&format!("#{ir:02X}{ig:02X}{ib:02X}")));
+                }
+            }
+            Some(a) => {
+                let mut aa = a[k % na];
+                if !aa.is_finite() {
+                    aa = 1.0;
+                }
+                if !(hh.is_finite() && cc.is_finite() && ll.is_finite()) {
+                    out.push(None);
+                    continue;
+                }
+                if ll < 0.0 || ll > WHITE_Y || cc < 0.0 || aa < 0.0 || aa > 1.0 {
+                    return Err(Flow::error("invalid hcl color"));
+                }
+                let (r, g, b) = hcl2rgb(hh, cc, ll);
+                let (mut ir, mut ig, mut ib) =
+                    ((255.0 * r + 0.5) as i32, (255.0 * g + 0.5) as i32, (255.0 * b + 0.5) as i32);
+                let alpha = scale_alpha(aa)?;
+                if fixup_color(&mut ir, &mut ig, &mut ib) && !fixup {
+                    out.push(None);
+                } else {
+                    out.push(crate::value::rstr(&format!("#{ir:02X}{ig:02X}{ib:02X}{alpha:02X}")));
+                }
+            }
+        }
+    }
+    Ok(Value::Str(std::rc::Rc::new(Vector::new(out))))
 }

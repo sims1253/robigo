@@ -1,0 +1,13 @@
+[1] 1npc
+[1] "simpleUnit" "unit"       "unit_v2"   
+[1] 0
+[1] 1cm 2cm 3cm
+[1] 1points   2.5points
+[1] 2inches
+[1] 1strwidth
+[1] 0.5npc     1grobwidth
+[1] "Invalid unit"
+[1] 1npc
+[1] "no string supplied for 'strwidth/height' unit"
+[1] TRUE
+[1] sum(1npc, 2cm)

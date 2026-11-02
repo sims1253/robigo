@@ -8,7 +8,6 @@ use crate::errors::not_implemented;
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
-    "R_Busy",
     "R_EditFiles",
     "R_GetVarLocMISSING",
     "R_ShowMessage",
@@ -41,11 +40,6 @@ pub static STUBS: &[&str] = &[
     "getPRIMNAME",
     "utf8Valid",
 ];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_Busy() {
-    not_implemented("R_Busy")
-}
 
 #[unsafe(no_mangle)]
 pub static mut R_Consolefile: [usize; 4] = [0; 4];
