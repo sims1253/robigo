@@ -55,7 +55,9 @@ permissions:
 jobs:
   code-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A large PR's review takes about 30 minutes, and the retry step below
+    # can run a second one.
+    timeout-minutes: 60
     # Keep in sync with the concurrency group. Bot comments are excluded
     # because a PAT or App token, unlike GITHUB_TOKEN, would trigger runs.
     if: |
