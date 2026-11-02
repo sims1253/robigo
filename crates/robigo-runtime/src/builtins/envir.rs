@@ -624,7 +624,9 @@ fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
     let mut names: Vec<String> =
         syms.into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
-        names.sort();
+        // R: envir.c:do_ls — sorted names go through sortVector(ans, FALSE),
+        // i.e. Scollate, not byte order.
+        names.sort_by(|a, b| super::sort::scollate(a, b));
     }
     names
 }
