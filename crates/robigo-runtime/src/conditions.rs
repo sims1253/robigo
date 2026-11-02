@@ -244,7 +244,9 @@ impl Interp {
                 return self.goto_exiting_handler(Value::List(Rc::new(cond)), Value::Null, &entry);
             }
         }
-        self.default_error(&Value::Null, &msg)
+        // R: errors.c:jump_to_top_ex -- "don't use options("error") when
+        // handling a C stack overflow".
+        self.error_dflt(&Value::Null, &msg, false)
     }
 
     pub fn goto_exiting_handler(&mut self, cond: Value, call: Value, entry: &HandlerEntry) -> Flow {
@@ -291,6 +293,12 @@ impl Interp {
 
     /// Default error handling: print the message and unwind to top level.
     pub fn default_error(&mut self, call: &Value, msg: &str) -> Flow {
+        self.error_dflt(call, msg, true)
+    }
+
+    /// `verrorcall_dflt`; `try_handler` is `jump_to_top_ex`'s test of
+    /// whether the `error` option may run.
+    fn error_dflt(&mut self, call: &Value, msg: &str, try_handler: bool) -> Flow {
         if self.in_error {
             return self.error_during_wrapup(msg);
         }
@@ -314,7 +322,7 @@ impl Interp {
             }
         }
         // R: errors.c:jump_to_top_ex
-        let have_handler = match self.run_error_option() {
+        let have_handler = match if try_handler { self.run_error_option() } else { Ok(false) } {
             Ok(have) => have,
             Err(f) => return f,
         };
