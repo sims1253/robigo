@@ -201,7 +201,8 @@ jobs:
   # recorded result (scripts/cran-gate.py; docs/verification.md).
   cran:
     needs: build
-    # A backstop only: above the steps' own limits for every package hanging.
+    # A backstop only: above the steps' own limits with every package hanging.
+    # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
