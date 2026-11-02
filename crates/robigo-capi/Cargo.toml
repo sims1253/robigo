@@ -27,3 +27,6 @@ cc = "1"
 
 [features]
 bytecode-fidelity = ["robigo-runtime/bytecode-fidelity"]
+
+[lints]
+workspace = true

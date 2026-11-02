@@ -195,7 +195,7 @@ fn mean_complete<LD: Accumulator>(x: &[f64], n: usize, nc: usize, ind: &[i32], n
                         sum += dm::<LD>(xx[k], tmp);
                     }
                 }
-                tmp = tmp + sum / ld_int::<LD>(nobs);
+                tmp += sum / ld_int::<LD>(nobs);
             }
             tmp.to_f64()
         })
@@ -214,7 +214,7 @@ fn mean_na<LD: Accumulator>(x: &[f64], n: usize, nc: usize, has_na: &[bool]) -> 
             let mut tmp = sum / ld_int::<LD>(n);
             if tmp.to_f64().is_finite() {
                 let sum = tmp.sum_dev(xx);
-                tmp = tmp + sum / ld_int::<LD>(n);
+                tmp += sum / ld_int::<LD>(n);
             }
             tmp.to_f64()
         })

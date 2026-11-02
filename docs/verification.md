@@ -158,20 +158,21 @@ scripts/perf.py compare before.json after.json          # the gate
 
 `.github/workflows/ci.yml`, on every push and pull request:
 
-1. **build:** `cargo fmt --check`, release build, base-package natives,
+1. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+2. **build:** release build, base-package natives,
    the binary every job below uses.
-2. **test:** all `cargo test`s (unit, parser oracle, conformance in all
+3. **test:** all `cargo test`s (unit, parser oracle, conformance in all
    tiers). The harnesses build in the quick profile and conformance tests
    the release binary (`ROBIGO_CONF_BIN`).
-3. **corpora:** each corpus (FastR in four shards) against its ratchet.
+4. **corpora:** each corpus (FastR in four shards) against its ratchet.
    Results are artifacts; the summary shows pass counts.
-4. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
+5. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
    compiled code — installed from source with robigo and compared with
    GNU R's recorded result (§ CRAN packages with compiled code).
-5. **perf:** instruction counts of every benchmark; on pull requests
+6. **perf:** instruction counts of every benchmark; on pull requests
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
-6. **progress** (main only): appends the commit's numbers (instruction
+7. **progress** (main only): appends the commit's numbers (instruction
    counts of every benchmark, passing cases of every corpus and of the
    `tests/r` conformance scripts, the failing case ids of every corpus
    with at most a few hundred — the open gaps —, builtins implemented)

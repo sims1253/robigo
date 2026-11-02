@@ -182,6 +182,7 @@ impl Interp {
 
     /// Run the handler protocol for an error raised by Rust code
     /// (`vsignalError`) and fall back to default error handling.
+    #[allow(clippy::boxed_local)] // callers hold it boxed in Flow::Error
     pub fn signal_error(&mut self, e: Box<RError>) -> Flow {
         let ecall = e.call.clone().unwrap_or_else(|| self.context_call());
         let mut classes: Vec<&str> = e.classes.clone();

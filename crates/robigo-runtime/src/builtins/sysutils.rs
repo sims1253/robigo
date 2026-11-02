@@ -1738,7 +1738,7 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         return Err(Flow::error("invalid 'mode' argument"));
     }
     // mode bit 1 = X_OK, 2 = W_OK, 4 = R_OK.
-    let modemask = ((mode & 1 != 0) as c_int) * 1 | ((mode & 2 != 0) as c_int) * 2 | ((mode & 4 != 0) as c_int) * 4;
+    let modemask = ((mode & 1 != 0) as c_int) | (((mode & 2 != 0) as c_int) * 2) | (((mode & 4 != 0) as c_int) * 4);
     let mut out = Vec::with_capacity(files.data.len());
     for f in &files.data {
         out.push(match f {

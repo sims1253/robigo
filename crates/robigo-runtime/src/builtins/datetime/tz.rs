@@ -856,8 +856,8 @@ impl State {
             let mut tzname: [Option<crate::value::RString>; 2] = [None, None];
             let nt = f.transitions.len();
             let ntypes = f.types.len();
-            let info: usize;
-            if nt == 0 || timer < f.transitions[0] {
+
+            let info: usize = if nt == 0 || timer < f.transitions[0] {
                 // Before any transition: the first non-DST type.
                 let mut i = 0;
                 while i < ntypes && f.types[i].isdst != 0 {
@@ -880,7 +880,7 @@ impl State {
                         j += 1;
                     }
                 }
-                info = i;
+                i
             } else {
                 let mut i: usize;
                 let mut use_spec = false;
@@ -958,8 +958,8 @@ impl State {
                 if tzname[0].is_none() {
                     tzname[0] = tzname[1].clone();
                 }
-                info = f.type_idxs[i - 1] as usize;
-            }
+                f.type_idxs[i - 1] as usize
+            };
             let ti = f.types[info];
             let n0 = tzname[0].clone().unwrap_or_else(|| f.name(0));
             let n1 = tzname[1].clone().unwrap_or_else(|| n0.clone());

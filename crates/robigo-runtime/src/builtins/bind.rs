@@ -361,7 +361,7 @@ fn extract_names(
         Value::Null => {}
         Value::Pairlist(p) => {
             for a in &p.items {
-                let namei = a.tag.map(|t| t.name().into());
+                let namei = a.tag.map(|t| t.name());
                 if recurse {
                     extract_names(&a.value, &base, &namei, recurse, out, nd);
                 } else {
@@ -448,11 +448,11 @@ pub fn c_default(args: &[Arg], recurse: bool, usenames: bool) -> Value {
             combine_atomic(&leaves, mode)
         }
     };
-    if d.nnames && ans.len() > 0 {
+    if d.nnames && !ans.is_empty() {
         let mut names = Vec::with_capacity(ans.len());
         for a in args {
             let mut nd = NameData { count: 0, seqno: 0 };
-            let tag = a.tag.map(|t| t.name().into());
+            let tag = a.tag.map(|t| t.name());
             extract_names(&a.value, &None, &tag, recurse, &mut names, &mut nd);
         }
         names.resize(ans.len(), Some(crate::value::RString::from("")));
@@ -542,12 +542,12 @@ fn do_unlist(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
             combine_atomic(&leaves, mode)
         }
     };
-    if d.nnames && ans.len() > 0 {
+    if d.nnames && !ans.is_empty() {
         let mut names = Vec::new();
         let mut nd = NameData { count: 0, seqno: 0 };
         if !recurse {
             for a in &items {
-                let tag = a.tag.map(|t| t.name().into());
+                let tag = a.tag.map(|t| t.name());
                 extract_names(&a.value, &None, &tag, recurse, &mut names, &mut nd);
             }
         } else {
@@ -563,10 +563,8 @@ fn do_list(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     if !args.iter().any(|a| a.tag.is_some()) {
         return Ok(Value::list(args.into_iter().map(|a| a.value).collect()));
     }
-    let names: Vec<RStr> = args
-        .iter()
-        .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
-        .collect();
+    let names: Vec<RStr> =
+        args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from("")))).collect();
     let mut v = Value::list(args.into_iter().map(|a| a.value).collect());
     v.set_attr_raw(s::NAMES, Value::strs(names));
     Ok(v)

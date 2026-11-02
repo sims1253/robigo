@@ -219,15 +219,15 @@ fn pgamma_smallx(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
     }
     if lower_tail {
         let f1 = if log_p { log1p(sum) } else { 1.0 + sum };
-        let f2;
-        if alph > 1.0 {
+
+        let f2 = if alph > 1.0 {
             let d = dpois_raw(alph, x, log_p);
-            f2 = if log_p { d + x } else { d * x.exp() };
+            if log_p { d + x } else { d * x.exp() }
         } else if log_p {
-            f2 = alph * x.ln() - lgamma1p(alph);
+            alph * x.ln() - lgamma1p(alph)
         } else {
-            f2 = x.powf(alph) / lgamma1p(alph).exp();
-        }
+            x.powf(alph) / lgamma1p(alph).exp()
+        };
         if log_p { f1 + f2 } else { f1 * f2 }
     } else {
         let lf2 = alph * x.ln() - lgamma1p(alph);
@@ -424,19 +424,19 @@ pub fn pgamma_raw(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
     if x >= ML_POSINF {
         return r_dt_1(lower_tail, log_p);
     }
-    let res;
-    if x < 1.0 {
-        res = pgamma_smallx(x, alph, lower_tail, log_p);
+
+    let res = if x < 1.0 {
+        pgamma_smallx(x, alph, lower_tail, log_p)
     } else if x <= alph - 1.0 && x < 0.8 * (alph + 50.0) {
         let sum = pd_upper_series(x, alph, log_p);
         let d = dpois_wrap(alph, x, log_p);
-        res = if !lower_tail {
+        if !lower_tail {
             if log_p { r_log1_exp(d + sum) } else { 1.0 - d * sum }
         } else if log_p {
             sum + d
         } else {
             sum * d
-        };
+        }
     } else if alph - 1.0 < x && alph < 0.8 * (x + 50.0) {
         let sum;
         let d = dpois_wrap(alph, x, log_p);
@@ -451,16 +451,16 @@ pub fn pgamma_raw(x: f64, alph: f64, lower_tail: bool, log_p: bool) -> f64 {
             let s = pd_lower_series(x, alph - 1.0);
             sum = if log_p { log1p(s) } else { 1.0 + s };
         }
-        res = if !lower_tail {
+        if !lower_tail {
             if log_p { sum + d } else { sum * d }
         } else if log_p {
             r_log1_exp(d + sum)
         } else {
             1.0 - d * sum
-        };
+        }
     } else {
-        res = ppois_asymp(alph - 1.0, x, !lower_tail, log_p);
-    }
+        ppois_asymp(alph - 1.0, x, !lower_tail, log_p)
+    };
     if !log_p && res < DBL_MIN / DBL_EPSILON { pgamma_raw(x, alph, lower_tail, true).exp() } else { res }
 }
 

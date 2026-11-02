@@ -874,7 +874,7 @@ fn force_count(e: &Value) -> Option<u32> {
         Value::Int(v) if v.data.len() == 1 && v.attrs.is_none() && v.data[0] != NA_INTEGER => v.data[0] as f64,
         _ => return None,
     };
-    (n >= 0.0 && n <= 64.0 && n == n.trunc()).then_some(n as u32)
+    ((0.0..=64.0).contains(&n) && n == n.trunc()).then_some(n as u32)
 }
 
 /// `x$name` with a variable `x`: the variable and the name.
@@ -885,7 +885,7 @@ fn dollar_form(e: &Value) -> Option<(Sym, RStr)> {
     }
     let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
     let name = match &l.args[1].value {
-        Value::Sym(s) if is_var(*s) => Some(s.name().into()),
+        Value::Sym(s) if is_var(*s) => Some(s.name()),
         Value::Str(v) if v.data.len() == 1 && v.attrs.is_none() => v.data[0].clone(),
         _ => return None,
     };

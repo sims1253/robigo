@@ -37,7 +37,7 @@ fn paste_args(interp: &mut Interp, x: &Value, env: &Env, name: &str) -> RResult<
     for xj in &l.data {
         let v = match xj {
             Value::Str(s) => s.data.clone(),
-            Value::Sym(sy) => vec![Some(sy.name().into())],
+            Value::Sym(sy) => vec![Some(sy.name())],
             xj if xj.is_object() => {
                 let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(xj.clone())]);
                 match interp.eval(&call, env)? {

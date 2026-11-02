@@ -360,7 +360,7 @@ pub fn str_arg(v: &Value, what: &str) -> RResult<crate::value::RString> {
             Some(x) => Ok(x.clone()),
             None => Err(Flow::error(format!("invalid '{}' argument", what))),
         },
-        Value::Sym(s) => Ok(s.name().into()),
+        Value::Sym(s) => Ok(s.name()),
         _ => Err(Flow::error(format!("invalid '{}' argument", what))),
     }
 }

@@ -251,7 +251,7 @@ pred! {
     Rf_isValidString(|s| s.typ() == STRSXP && LENGTH(s) > 0 && STRING_ELT(s, 0).typ() != NILSXP);
     Rf_isUnordered(|s| s.typ() == INTSXP && inherits(s, b"factor") && !inherits(s, b"ordered"));
     Rf_isOrdered(|s| s.typ() == INTSXP && inherits(s, b"factor") && inherits(s, b"ordered"));
-    Rf_isValidStringF(|s| Rf_isValidString(s) != 0 && STRING_ELT(s, 0).char_bytes().first().is_some());
+    Rf_isValidStringF(|s| Rf_isValidString(s) != 0 && !STRING_ELT(s, 0).char_bytes().is_empty());
 }
 
 // R: util.c:isBlankString

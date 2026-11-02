@@ -92,7 +92,7 @@ pub fn parse_context(src: &str, end: usize) -> Vec<String> {
                 if c == '\t' {
                     loop {
                         expanded.push(' ');
-                        if expanded.len() % 8 == 0 {
+                        if expanded.len().is_multiple_of(8) {
                             break;
                         }
                     }

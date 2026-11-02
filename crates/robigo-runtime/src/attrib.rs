@@ -430,7 +430,7 @@ pub fn attributes_list(v: &Value) -> Value {
     let attrs = v.attrs().cloned().or_else(|| v.ref_attrs());
     if let Some(a) = attrs {
         for (k, _) in &a.0 {
-            names.push(Some(k.name().into()));
+            names.push(Some(k.name()));
             vals.push(get_attrib(v, *k));
         }
     }

@@ -24,6 +24,30 @@ robigo-syntax = { path = "crates/robigo-syntax" }
 robigo-numerics = { path = "crates/robigo-numerics" }
 robigo-runtime = { path = "crates/robigo-runtime" }
 
+# Most of the code is a port of GNU R's C, and the contract is to stay close
+# to it: these lints would move the code away from its source, or change what
+# happens with NaN. Everything else clippy finds is an error in CI.
+[workspace.lints.clippy]
+approx_constant = "allow"
+collapsible_if = "allow"
+eq_op = "allow"
+excessive_precision = "allow"
+if_same_then_else = "allow"
+manual_clamp = "allow"
+needless_range_loop = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+too_many_arguments = "allow"
+# Rust API shapes this codebase has chosen.
+chunks_exact_to_as_chunks = "allow"
+large_enum_variant = "allow"
+len_without_is_empty = "allow"
+mutable_key_type = "allow"
+result_large_err = "allow"
+result_unit_err = "allow"
+should_implement_trait = "allow"
+type_complexity = "allow"
+wrong_self_convention = "allow"
+
 [profile.release]
 # Keep workspace optimization independent of codegen-unit partition changes.
 codegen-units = 1

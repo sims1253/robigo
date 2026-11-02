@@ -853,7 +853,7 @@ fn random_dispatch(
     if n == 0 {
         return Ok(ty.empty());
     }
-    if args[1..].iter().any(|a| a.value.len() < 1) {
+    if args[1..].iter().any(|a| a.value.is_empty()) {
         let ans = fill_with_nas(ty, n)?;
         i.warning("NAs produced")?;
         return Ok(ans);

@@ -327,7 +327,7 @@ impl InStreamScanner {
                 }
                 return;
             }
-            247 | 248 | 249 => {
+            247..=249 => {
                 self.scan_string_vec();
                 return;
             }

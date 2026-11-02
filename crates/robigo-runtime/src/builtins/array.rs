@@ -353,7 +353,7 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         na_vector(t, n, true)
     };
     ans.set_attr_raw(s::DIM, Value::ints(vec![nr as i32, nc as i32]));
-    if !dimnames.is_null() && dimnames.len() > 0 {
+    if !dimnames.is_null() && !dimnames.is_empty() {
         ans = set_attrib(ans, s::DIMNAMES, dimnames)?;
     }
     Ok(ans)
@@ -411,7 +411,7 @@ fn do_array(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         }
     };
     ans = set_attrib(ans, s::DIM, Value::ints(dims))?;
-    if !dimnames.is_null() && dimnames.len() > 0 {
+    if !dimnames.is_null() && !dimnames.is_empty() {
         ans = set_attrib(ans, s::DIMNAMES, dimnames)?;
     }
     Ok(ans)
@@ -564,7 +564,7 @@ pub fn drop_dims(mut x: Value) -> Value {
 fn do_drop(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = if args.is_empty() { Value::Null } else { std::mem::replace(&mut args[0].value, Value::Null) };
     let d = dims_of(&x);
-    if d.iter().any(|&k| k == 1) {
+    if d.contains(&1) {
         return Ok(drop_dims(x));
     }
     Ok(x)
@@ -1156,7 +1156,7 @@ fn do_aperm(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             return Err(Flow::error("value out of range in 'perm'"));
         }
     }
-    if iip.iter().any(|&c| c == 0) {
+    if iip.contains(&0) {
         return Err(Flow::error("invalid 'perm' argument"));
     }
     let pp: Vec<usize> = pp.into_iter().map(|p| p as usize).collect();
@@ -1596,7 +1596,7 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
         if method.is_none() && obj.is_object() {
             // R_data_class2: S4 objects dispatch on their superclasses too.
             for c in i.data_class2(&obj)? {
-                let msym = Sym::dotted(&generic, &c);
+                let msym = Sym::dotted(generic, &c);
                 let base = i.base.clone();
                 if let Some(f) = i.lookup_method(msym, env, &base)? {
                     method = Some(f);
@@ -1747,11 +1747,11 @@ fn col_names(dn: &Value) -> Value {
 
 fn bind_name(tag: Option<Sym>, expr: &Value, deparse_level: i32) -> Option<RStr> {
     if let Some(t) = tag {
-        return Some(Some(t.name().into()));
+        return Some(Some(t.name()));
     }
     if deparse_level == 1 {
         if let Value::Sym(sym) = expr {
-            return Some(Some(sym.name().into()));
+            return Some(Some(sym.name()));
         }
     } else if deparse_level == 2 {
         let d = crate::deparse::deparse_lines(expr, 500, true, crate::deparse::SIMPLEDEPARSE, None);
@@ -1814,7 +1814,7 @@ fn cbind(
             }
         } else {
             let k = u.len();
-            if !warned && k > 0 && (k > rows || rows % k != 0) {
+            if !warned && k > 0 && (k > rows || !rows.is_multiple_of(k)) {
                 warned = true;
                 i.warning(format!("number of rows of result is not a multiple of vector length (arg {})", na + 1))?;
             }
@@ -2120,7 +2120,7 @@ fn rbind(
             }
         } else {
             let k = u.len();
-            if !warned && k > 0 && (k > cols || cols % k != 0) {
+            if !warned && k > 0 && (k > cols || !cols.is_multiple_of(k)) {
                 warned = true;
                 i.warning(format!("number of columns of result is not a multiple of vector length (arg {})", na + 1))?;
             }

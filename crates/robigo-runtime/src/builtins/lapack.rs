@@ -903,7 +903,7 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
     }
     unsafe {
         let ilaver: IlaverFn = sym(handle, b"ilaver_\0")?;
-        let ilaver_ptr: *mut libc::c_void = libc::dlsym(handle, b"ilaver_\0".as_ptr().cast());
+        let ilaver_ptr: *mut libc::c_void = libc::dlsym(handle, c"ilaver_".as_ptr());
         let _ = ILAVER_ADDR.set(ilaver_ptr as usize);
         let lib = SystemLapack {
             dsyevr: sym(handle, b"dsyevr_\0")?,
@@ -2127,7 +2127,7 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     }
     let onenrm = norm.starts_with('O') || norm.starts_with('1');
     if !onenrm && !norm.starts_with('I') {
-        return Err(Flow::error(format!("'norm' must be one of 'O', 'I'")));
+        return Err(Flow::error("'norm' must be one of 'O', 'I'".to_string()));
     }
     let x = reals(&a);
     let anorm = if onenrm { dlange_one(&x, n, n) } else { dlange_inf(&x, n, n) };

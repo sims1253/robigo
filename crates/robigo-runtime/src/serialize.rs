@@ -120,7 +120,6 @@ fn lang_cells(l: &Rc<Lang>) -> Vec<usize> {
 
 /// A node of a pairlist-like chain while reading.
 struct PNode {
-    attr: Value,
     tag: Value,
     car: Value,
 }
@@ -210,6 +209,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// Two consecutive integers in one bounds check; bytecode headers
     /// read such pairs (BCREPDEF's position and type).
     #[inline]
+    #[cfg(not(feature = "bytecode-fidelity"))]
     fn int2(&mut self) -> RResult<(i32, i32)> {
         match self.format {
             Format::Xdr => {
@@ -232,6 +232,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// other shape (Ascii, other types, attributes) falls back to a full
     /// read that is discarded. Vectors never enter the reader's ref
     /// table, so skipping cannot shift later REFSXP indices.
+    #[cfg(not(feature = "bytecode-fidelity"))]
     fn skip_discarded_item(&mut self, flags: u32) -> RResult<()> {
         let ty = flags & 255;
         if matches!(ty, LGLSXP | INTSXP) && !matches!(self.format, Format::Ascii) {
@@ -699,9 +700,9 @@ impl<'a, 'i> Reader<'a, 'i> {
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
             let car = self.read_item()?;
             if nodes.is_empty() {
-                head_attr = attr.clone();
+                head_attr = attr;
             }
-            nodes.push(PNode { attr, tag, car });
+            nodes.push(PNode { tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
                 // The CDR is the body / expression, read as a single item.
                 break;
@@ -726,7 +727,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
         };
-        let _ = &nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
                 let n = nodes.into_iter().next().unwrap();
@@ -808,13 +808,15 @@ impl<'a, 'i> Reader<'a, 'i> {
         let mut cells = Vec::new();
         let mut ty = flags & 255;
         while matches!(ty, LISTSXP | LANGSXP | CLOSXP | PROMSXP | DOTSXP) {
-            let attr = if flags & HAS_ATTR_BIT != 0 { self.read_item()? } else { Value::Null };
+            if flags & HAS_ATTR_BIT != 0 {
+                self.read_item()?;
+            }
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
             let car = self.read_item()?;
             if ty == LANGSXP {
                 cells.push(nodes.len() - 1);
             }
-            nodes.push(PNode { attr, tag, car });
+            nodes.push(PNode { tag, car });
             if matches!(ty, CLOSXP | PROMSXP) {
                 break;
             }
@@ -1779,7 +1781,7 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
         2 => {}
         3 => {
             let nelen = r.int()?;
-            if nelen < 0 || nelen > 200 {
+            if !(0..=200).contains(&nelen) {
                 return Err(Flow::error("invalid length of encoding name"));
             }
             r.string_bytes(nelen as usize)?;
@@ -2011,7 +2013,7 @@ impl Writer<'_> {
         }
         self.refs.push(RefKey::Sym(s));
         self.int(SYMSXP as i32);
-        self.charsxp(&Some(s.name().into()));
+        self.charsxp(&Some(s.name()));
     }
     /// R: serialize.c:GetPersistentName (environments and external
     /// pointers go to the hook)
@@ -2494,7 +2496,7 @@ pub fn serialize(v: &Value) -> Vec<u8> {
 mod tests {
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {
-        assert_eq!(std::mem::size_of::<super::PNode>(), 48);
+        assert_eq!(std::mem::size_of::<super::PNode>(), 32);
     }
 }
 
