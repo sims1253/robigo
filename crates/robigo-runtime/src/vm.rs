@@ -2128,6 +2128,19 @@ pub(crate) fn try_inline_expr(
     call: &Value,
     env: &Env,
 ) -> Option<RResult<Value>> {
+    // R: only installed — or, after R_CheckJIT's timing, warmed — code
+    // observes the inline, and only for its OWN body: the expression must
+    // evaluate in the caller closure's frame. A promise forced from that
+    // body keeps the promise's env (where the call was written), and GNU R
+    // never compiles promise expressions: the wrapper's closure runs,
+    // frame and all (issue #157). `cat(identical(x, y))` forces its
+    // promise in the global env although cat is base code. The frame
+    // check is the common rejection and only reads, so it runs before
+    // the caller lookup and its clone.
+    let frame = interp.current_frame()?;
+    if !env.ptr_eq(&interp.frames[frame].cloenv) {
+        return None;
+    }
     let (caller, ns, compiled) = simple_caller(interp)?;
     if !ns && !compiled {
         return None;
