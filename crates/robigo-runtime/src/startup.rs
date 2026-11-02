@@ -27,7 +27,12 @@ pub struct StartupOptions {
 }
 
 fn setenv(name: &str, value: &str) {
-    crate::sys::set_env(name, value);
+    // SAFETY: called during single-threaded startup or from the evaluator,
+    // the only thread that reads the environment.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var(name, value)
+    }
 }
 
 /// robigo's own `R_HOME` (`scripts/robigo-home.sh`): `home/` beside the

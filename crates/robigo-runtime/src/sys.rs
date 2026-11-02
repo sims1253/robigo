@@ -6,9 +6,10 @@
 //! contract: NUL-terminated arguments, buffers that outlive the call, and
 //! copying results out of the C library's static storage before returning.
 //!
-//! The evaluator runs on one thread, so nothing here can race with itself on
-//! that static storage. The only other thread robigo starts is the reader of
-//! `system(timeout =)`, which calls none of this.
+//! Functions that hand out the C library's static storage copy it under one
+//! lock (`c_statics`), so these are safe to call from any thread. Setting an
+//! environment variable is not here: that needs the caller's knowledge that
+//! no other thread is running C code that reads the environment.
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
 use std::fs::File;
@@ -32,22 +33,15 @@ fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// Held while using a function that returns the C library's static storage,
+/// so that safe callers on any thread cannot overwrite each other's results.
+fn c_statics() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // ----------------------------------------------------------------------
-// Environment
-
-/// `setenv`. `std::env::set_var` is unsafe because another thread could be
-/// reading the environment.
-pub fn set_env(name: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
-    // SAFETY: called during startup or from the evaluator, the only thread
-    // that reads the environment (see the module comment).
-    unsafe { std::env::set_var(name, value) }
-}
-
-/// `unsetenv`. See [`set_env`].
-pub fn remove_env(name: impl AsRef<OsStr>) {
-    // SAFETY: as in `set_env`.
-    unsafe { std::env::remove_var(name) }
-}
+// Environment and numbers
 
 /// C's `atoi`, which accepts trailing text.
 pub fn atoi(text: &str) -> Option<i32> {
@@ -61,7 +55,8 @@ pub fn atoi(text: &str) -> Option<i32> {
 
 /// `strerror(code)`.
 pub fn strerror(code: i32) -> String {
-    // SAFETY: strerror returns a NUL-terminated string, copied at once.
+    let _statics = c_statics();
+    // SAFETY: strerror returns a NUL-terminated string, copied under the lock.
     unsafe { copy_cstr(libc::strerror(code)) }.unwrap_or_default()
 }
 
@@ -190,7 +185,8 @@ pub fn uname() -> Option<Uname> {
 
 /// `getlogin()`.
 pub fn login_name() -> Option<String> {
-    // SAFETY: null or a NUL-terminated static buffer, copied at once.
+    let _statics = c_statics();
+    // SAFETY: null or a NUL-terminated static buffer, copied under the lock.
     unsafe { copy_cstr(libc::getlogin()) }
 }
 
@@ -208,7 +204,8 @@ pub fn euid() -> u32 {
 
 /// The name of user `uid` (`getpwuid`).
 pub fn user_name(uid: u32) -> Option<String> {
-    // SAFETY: null or a static record, whose name is copied at once.
+    let _statics = c_statics();
+    // SAFETY: null or a static record, whose name is copied under the lock.
     unsafe {
         let p = libc::getpwuid(uid);
         if p.is_null() { None } else { copy_cstr((*p).pw_name) }
@@ -217,7 +214,8 @@ pub fn user_name(uid: u32) -> Option<String> {
 
 /// The name of group `gid` (`getgrgid`).
 pub fn group_name(gid: u32) -> Option<String> {
-    // SAFETY: null or a static record, whose name is copied at once.
+    let _statics = c_statics();
+    // SAFETY: null or a static record, whose name is copied under the lock.
     unsafe {
         let p = libc::getgrgid(gid);
         if p.is_null() { None } else { copy_cstr((*p).gr_name) }
@@ -237,16 +235,18 @@ pub fn kill(pid: i32, signal: c_int) {
 /// the locale's name, or `None` when the C library refuses.
 pub fn setlocale(category: c_int, locale: Option<&CStr>) -> Option<String> {
     let locale = locale.map_or(std::ptr::null(), CStr::as_ptr);
+    let _statics = c_statics();
     // SAFETY: null or NUL-terminated; the result is null or a C string,
-    // which the next call may overwrite and which is copied at once.
+    // which the next call may overwrite and which is copied under the lock.
     unsafe { copy_cstr(libc::setlocale(category, locale)) }
 }
 
 /// The fields of `localeconv()` in the order of R's `Sys.localeconv()`, or
 /// `None` when it fails.
 pub fn localeconv() -> Option<Vec<(&'static str, String)>> {
+    let _statics = c_statics();
     // SAFETY: null or a struct that stays valid until the next localeconv
-    // or setlocale; all of it is copied below, before either can run.
+    // or setlocale; all of it is copied below, under the lock both take.
     let lc = unsafe { libc::localeconv().as_ref() }?;
     let text = |p: *const c_char| {
         // SAFETY: lconv's string members are null or NUL-terminated.
@@ -357,8 +357,9 @@ pub fn read_dir_names(path: &str) -> Option<Vec<String>> {
 /// without also setting `O_CLOEXEC`. `Err` holds errno.
 pub fn open(path: &str, flags: c_int) -> Result<File, i32> {
     let c = c_path(path).ok_or(libc::ENOENT)?;
-    // SAFETY: a NUL-terminated path; these flags take no mode argument.
-    let fd = unsafe { libc::open(c.as_ptr(), flags) };
+    // SAFETY: a NUL-terminated path. The mode is ignored unless `flags`
+    // create a file, and a file it creates then has no permissions.
+    let fd = unsafe { libc::open(c.as_ptr(), flags, 0 as libc::c_uint) };
     if fd < 0 {
         return Err(last_errno());
     }
@@ -484,7 +485,12 @@ pub struct Mmap {
 
 impl Mmap {
     /// Map the first `len` bytes of `file`.
-    pub fn new(file: &File, len: u64) -> Option<Mmap> {
+    ///
+    /// # Safety
+    /// Nothing writes to or truncates those bytes while the mapping lives:
+    /// `as_slice` hands them out as `&[u8]`, and `MAP_PRIVATE` does not hide
+    /// later writes to the file.
+    pub unsafe fn new(file: &File, len: u64) -> Option<Mmap> {
         use std::os::fd::AsRawFd;
         let len = usize::try_from(len).ok()?;
         if len == 0 || len > isize::MAX as usize {
@@ -501,10 +507,8 @@ impl Mmap {
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: `len` readable bytes are mapped until drop. The one caller
-        // maps rdbflat cache files, which a session never writes: they are
-        // rebuilt only by `scripts/build-rdbflat.py`, so only rebuilding the
-        // cache under a running session can change them.
+        // SAFETY: `len` readable bytes stay mapped and, by `new`'s contract,
+        // unchanged until drop.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
@@ -595,8 +599,10 @@ mod tests {
         let path = format!("{dir}/f");
         std::fs::write(&path, "mapped").unwrap();
         let file = File::open(&path).unwrap();
-        assert_eq!(Mmap::new(&file, 6).unwrap().as_slice(), b"mapped");
-        assert!(Mmap::new(&file, 0).is_none());
+        // SAFETY: only this test uses the file.
+        let (map, empty) = unsafe { (Mmap::new(&file, 6), Mmap::new(&file, 0)) };
+        assert_eq!(map.unwrap().as_slice(), b"mapped");
+        assert!(empty.is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

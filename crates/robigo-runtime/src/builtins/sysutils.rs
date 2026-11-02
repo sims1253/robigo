@@ -520,7 +520,12 @@ fn do_setenv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         let v = v.as_deref().unwrap_or("NA");
         let ok = !n.is_empty() && !n.contains('=') && !n.contains('\0') && !v.contains('\0');
         if ok {
-            crate::sys::set_env(n, v);
+            // SAFETY: the evaluator is the only thread that reads the
+            // environment: `system(timeout =)`'s reader runs no such code.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var(n, v)
+            };
         }
         out.push(ok as Lgl);
     }
@@ -533,7 +538,11 @@ fn do_unsetenv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     for n in &nm {
         let n = n.as_deref().unwrap_or("NA");
         if !n.is_empty() && !n.contains('=') && !n.contains('\0') {
-            crate::sys::remove_env(n);
+            // SAFETY: as in `do_setenv`.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var(n)
+            };
         }
         out.push(std::env::var_os(n).is_none() as Lgl);
     }

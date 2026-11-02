@@ -172,7 +172,10 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
     }
     let f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
-    let map = crate::sys::Mmap::new(&f, len)?;
+    // SAFETY: `scripts/build-rdbflat.py`, the only writer, replaces the file
+    // by rename, which keeps the inode mapped here intact.
+    #[allow(unsafe_code)]
+    let map = unsafe { crate::sys::Mmap::new(&f, len) }?;
     let bytes = map.as_slice();
     if bytes.len() < 32 || &bytes[..8] != b"RFLAT01\n" {
         return None;
