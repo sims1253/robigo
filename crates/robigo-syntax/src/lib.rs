@@ -4,6 +4,8 @@
 //! handling and parse-time rewrites such as `->` and `|>` are reproduced so
 //! that the resulting trees match what `parse()` returns in GNU R.
 
+#![forbid(unsafe_code)]
+
 pub mod arena;
 pub mod ast;
 pub mod cfmt;

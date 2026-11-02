@@ -7,88 +7,46 @@
 //! allocated here must not own memory and must not implement `Drop`
 //! (all AST types below satisfy that: references and `Copy` data only).
 //!
-//! Allocation takes `&self` (as bumpalo's does): the bump discipline
-//! hands out disjoint memory, so several allocations can be alive at
-//! once through one shared borrow — that is what lets a parser hold
-//! `&Arena` and build nodes throughout a recursive descent.
+//! Allocation takes `&self`: the bump discipline hands out disjoint memory,
+//! so several allocations can be alive at once through one shared borrow,
+//! which is what lets a parser hold `&Arena` and build nodes throughout a
+//! recursive descent.
 
-use std::cell::{Cell, RefCell};
-
-/// Chunks double in size, starting small so short sources do not pay for
-/// long ones; the arena is single-use (create one per parse).
-pub struct Arena {
-    chunks: RefCell<Vec<Box<[u8]>>>,
-    used: Cell<usize>,
-}
+/// Chunks grow as needed from a small first one, so short sources do not
+/// pay for long ones; the arena is single-use (create one per parse).
+pub struct Arena(bumpalo::Bump);
 
 const FIRST_CHUNK: usize = 2048;
 
 impl Arena {
     pub fn new() -> Arena {
-        Arena { chunks: RefCell::new(Vec::new()), used: Cell::new(0) }
-    }
-
-    /// The raw pointer to space for `size` bytes aligned to `align`.
-    fn take(&self, size: usize, align: usize) -> *mut u8 {
-        let mut chunks = self.chunks.borrow_mut();
-        let base = chunks.last().map_or(std::ptr::null::<u8>(), |c| c.as_ptr());
-        let start = (base as usize + self.used.get() + align - 1) & !(align - 1);
-        let end = start + size;
-        let chunk_end = base as usize + chunks.last().map_or(0, |c| c.len());
-        if end > chunk_end || base.is_null() {
-            let next = chunks.last().map_or(FIRST_CHUNK, |c| c.len() * 2).max(size.max(align));
-            chunks.push(vec![0u8; next].into_boxed_slice());
-            self.used.set(0);
-            let b = chunks.last().unwrap().as_ptr();
-            let s = (b as usize + align - 1) & !(align - 1);
-            self.used.set(s - b as usize + size);
-            return s as *mut u8;
-        }
-        self.used.set(end - base as usize);
-        start as *mut u8
+        Arena(bumpalo::Bump::with_capacity(FIRST_CHUNK))
     }
 
     /// Place one value in the arena.
+    #[inline]
     pub fn alloc<T>(&self, value: T) -> &mut T {
-        let ptr = self.take(std::mem::size_of::<T>(), std::mem::align_of::<T>()) as *mut T;
-        unsafe {
-            ptr.write(value);
-            &mut *ptr
-        }
+        self.0.alloc(value)
     }
 
     /// Place a copy of a slice in the arena (`T` must be `Copy`: the
     /// source is dropped by the caller as usual, the copy is never
     /// dropped).
+    #[inline]
     pub fn alloc_slice<T: Copy>(&self, vals: &[T]) -> &[T] {
-        if vals.is_empty() {
-            return &[];
-        }
-        let size = std::mem::size_of::<T>() * vals.len();
-        let ptr = self.take(size, std::mem::align_of::<T>()) as *mut T;
-        unsafe {
-            std::ptr::copy_nonoverlapping(vals.as_ptr(), ptr, vals.len());
-            std::slice::from_raw_parts_mut(ptr, vals.len())
-        }
+        self.0.alloc_slice_copy(vals)
     }
 
     /// Copy bytes into the arena.
+    #[inline]
     pub fn bytes(&self, b: &[u8]) -> &[u8] {
-        if b.is_empty() {
-            return &[];
-        }
-        let ptr = self.take(b.len(), 1);
-        unsafe {
-            std::ptr::copy_nonoverlapping(b.as_ptr(), ptr, b.len());
-            std::slice::from_raw_parts_mut(ptr, b.len())
-        }
+        self.0.alloc_slice_copy(b)
     }
 
     /// Copy a string into the arena.
+    #[inline]
     pub fn str(&self, s: &str) -> &str {
-        let b = self.bytes(s.as_bytes());
-        // The bytes came from a &str and are unchanged.
-        unsafe { std::str::from_utf8_unchecked(b) }
+        self.0.alloc_str(s)
     }
 }
 

@@ -910,6 +910,9 @@ dependencies = [
 [[package]]
 name = "robigo-syntax"
 version = "0.0.1"
+dependencies = [
+ "bumpalo",
+]
 
 [[package]]
 name = "rustc-demangle"
