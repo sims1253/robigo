@@ -29,6 +29,45 @@ if [ ! -f "$RSRC/src/include/Defn.h" ]; then
 fi
 
 # GNU R's configured headers (config.h, Rconfig.h, ...) for Defn.h
+# R 4.5's configure requires libcurl >= 7.28 headers with https and offers
+# no opt-out. Machines without libcurl4-openssl-dev get a self-provisioned
+# prefix: the distribution's libcurl dev+runtime .debs, downloaded (no
+# root needed) and extracted next to the build tree, with curl-config on
+# PATH for configure's feature checks. An already-working curl (curl-config
+# finds headers) is left alone; CPPFLAGS/LDFLAGS from the environment are
+# kept.
+curl_prefix=
+if [ ! -f "$build/src/include/config.h" ] && [ ! -x "$(command -v curl-config)" ]; then
+    curl_prefix=$out/curl-prefix
+    # curl-config inside the prefix marks a COMPLETE extraction: the .debs
+    # unpack into prefix.tmp, published in one move, so an interrupted run
+    # cannot leave a half prefix that later runs reuse.
+    if [ ! -f "$curl_prefix/prefix/usr/bin/curl-config" ]; then
+        echo "build-natives: no curl-config; fetching libcurl debs into $curl_prefix" >&2
+        mkdir -p "$curl_prefix"
+        if ! (cd "$curl_prefix" && { apt-get download libcurl4-openssl-dev libcurl4t64 ||
+                apt-get download libcurl4-openssl-dev libcurl4 ; } >download.log 2>&1); then
+            echo "build-natives: could not download libcurl (see $curl_prefix/download.log);" >&2
+            echo "  install libcurl4-openssl-dev or set CPPFLAGS/LDFLAGS to a curl prefix" >&2
+            exit 1
+        fi
+        # Every extraction must succeed: this runs inside a condition, where
+        # set -e is off and a later .deb could hide an earlier failure.
+        if ! (cd "$curl_prefix" && rm -rf prefix.tmp && mkdir prefix.tmp &&
+                for d in *.deb; do dpkg-deb -x "$d" prefix.tmp/ || exit 1; done &&
+                mv prefix.tmp prefix); then
+            echo "build-natives: could not extract the libcurl debs" >&2
+            rm -rf "$curl_prefix/prefix.tmp"
+            exit 1
+        fi
+    fi
+    p=$curl_prefix/prefix
+    PATH="$p/usr/bin:$PATH"
+    export PATH
+    CPPFLAGS="${CPPFLAGS:-} -I$p/usr/include/$(gcc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)"
+    LDFLAGS="${LDFLAGS:-} -L$p/usr/lib/$(gcc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)"
+    export CPPFLAGS LDFLAGS
+fi
 if [ ! -f "$build/src/include/config.h" ]; then
     mkdir -p "$build"
     (cd "$build" && "$RSRC/configure" --with-x=no --without-recommended-packages \
