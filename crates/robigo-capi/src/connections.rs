@@ -108,8 +108,6 @@ unsafe fn refresh(con: *mut Rconn) {
     let flags = std::slice::from_raw_parts(LOGICAL(VECTOR_ELT(info, 3)), 7);
     Rf_unprotect(1);
     let c = &mut *con;
-    c.class = class.as_ptr() as *mut c_char;
-    c.description = desc.as_ptr() as *mut c_char;
     c.mode = [0; 5];
     for (k, &b) in mode.as_bytes().iter().take(4).enumerate() {
         c.mode[k] = b as c_char;
@@ -117,7 +115,16 @@ unsafe fn refresh(con: *mut Rconn) {
     [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking] =
         [flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]];
     if let Some(e) = CONNS.as_mut().and_then(|m| m.get_mut(&(con as usize))) {
-        e.strings = (class, desc);
+        // C may have saved these pointers (GNU R's stay put for the
+        // connection's life): only a string that changed moves.
+        if e.strings.0 != class {
+            e.strings.0 = class;
+        }
+        if e.strings.1 != desc {
+            e.strings.1 = desc;
+        }
+        c.class = e.strings.0.as_ptr() as *mut c_char;
+        c.description = e.strings.1.as_ptr() as *mut c_char;
     }
 }
 
