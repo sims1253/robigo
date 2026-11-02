@@ -14,7 +14,7 @@
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
 use std::fs::File;
-use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 
 /// A copy of a C string the C library owns.
@@ -593,6 +593,222 @@ impl Drop for Mmap {
         // have ended.
         unsafe { libc::munmap(self.ptr.cast::<c_void>(), self.len) };
     }
+}
+
+// ----------------------------------------------------------------------
+// Sockets (R: modules/internet/Rsock.c, sock.c)
+
+/// R: Rsock.c's `fd_set`s bound what a socket's descriptor can be.
+pub const FD_SETSIZE: i32 = libc::FD_SETSIZE as i32;
+
+fn socket_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// Wait for each of `fds` (with its `events`) for `timeout` seconds, for
+/// ever if negative, whichever comes first. `Ok(false)`: the time ran out.
+pub fn socket_poll(fds: &mut [libc::pollfd], timeout: f64) -> Result<bool, i32> {
+    let start = std::time::Instant::now();
+    loop {
+        let left = timeout - start.elapsed().as_secs_f64();
+        let ms = if timeout < 0.0 { 60_000.0 } else { (left.max(0.0) * 1e3).ceil().min(60_000.0) };
+        // SAFETY: the pointer and length come from a live slice.
+        let howmany = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms as libc::c_int) };
+        if howmany < 0 {
+            return Err(socket_errno());
+        }
+        if howmany > 0 {
+            return Ok(true);
+        }
+        if timeout >= 0.0 && start.elapsed().as_secs_f64() >= timeout {
+            return Ok(false);
+        }
+    }
+}
+
+/// What to wait for on `fd`; poll ignores a connection that has no socket.
+pub fn pollfd(fd: Option<BorrowedFd<'_>>, write: bool) -> libc::pollfd {
+    let fd = fd.map_or(-1, |f| f.as_raw_fd());
+    libc::pollfd { fd, events: if write { libc::POLLOUT } else { libc::POLLIN }, revents: 0 }
+}
+
+/// R: Rsock.c:R_SocketWait -- 0 when ready, 1 on time out, or `-errno`.
+pub fn socket_wait(fd: BorrowedFd<'_>, write: bool, timeout: i32) -> isize {
+    if fd.as_raw_fd() >= FD_SETSIZE {
+        return -(libc::EINVAL as isize);
+    }
+    match socket_poll(&mut [pollfd(Some(fd), write)], timeout as f64) {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(e) => -(e as isize),
+    }
+}
+
+fn set_nonblocking(fd: BorrowedFd<'_>) -> bool {
+    let fd = fd.as_raw_fd();
+    // SAFETY: fcntl with integer arguments on a live descriptor.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL, 0);
+        flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
+    }
+}
+
+fn set_int_option(fd: BorrowedFd<'_>, level: i32, name: i32) {
+    let val: libc::c_int = 1;
+    let (p, size) = (&val as *const _ as *const libc::c_void, size_of::<libc::c_int>() as _);
+    // SAFETY: the option's value is a live c_int of the stated size.
+    unsafe { libc::setsockopt(fd.as_raw_fd(), level, name, p, size) };
+}
+
+/// A new socket of the C library's, which nothing else knows of.
+fn new_socket(domain: i32, protocol: i32) -> Option<OwnedFd> {
+    // SAFETY: plain call; a descriptor it returns has no other owner.
+    unsafe {
+        let s = libc::socket(domain, libc::SOCK_STREAM, protocol);
+        (s >= 0).then(|| OwnedFd::from_raw_fd(s))
+    }
+}
+
+fn inet_addr(ip: std::net::Ipv4Addr, port: i32) -> libc::sockaddr_in {
+    // SAFETY: sockaddr_in is plain data, valid when zeroed.
+    let mut a: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    a.sin_family = libc::AF_INET as _;
+    a.sin_port = (port as u16).to_be();
+    a.sin_addr.s_addr = u32::from(ip).to_be();
+    a
+}
+
+/// R: sock.c:Sock_open, non-blocking -- socket(), bind() and listen().
+pub fn socket_listen(port: i32) -> Option<OwnedFd> {
+    // R: sock.c MAXBACKLOG
+    const MAXBACKLOG: i32 = libc::SOMAXCONN;
+    let sock = new_socket(libc::AF_INET, 0)?;
+    if !set_nonblocking(sock.as_fd()) {
+        return None;
+    }
+    set_int_option(sock.as_fd(), libc::SOL_SOCKET, libc::SO_REUSEADDR);
+    let fd = sock.as_raw_fd();
+    let server = inet_addr(std::net::Ipv4Addr::UNSPECIFIED, port);
+    let size = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    // SAFETY: integer arguments; the address is a live sockaddr_in.
+    unsafe {
+        // child processes, those of system() too, must not hold the port
+        let flags = libc::fcntl(fd, libc::F_GETFD, 0);
+        if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
+            return None;
+        }
+        if libc::bind(fd, &server as *const _ as *const libc::sockaddr, size) < 0 || libc::listen(fd, MAXBACKLOG) < 0 {
+            return None;
+        }
+    }
+    Some(sock)
+}
+
+/// The name of a peer, or "unknown" (R: sock.c:Sock_listen, gethostbyaddr).
+fn peer_name(addr: &libc::sockaddr_in) -> String {
+    let mut host = [0 as libc::c_char; 256];
+    // SAFETY: the address and the buffer are live, with their sizes.
+    let rc = unsafe {
+        libc::getnameinfo(
+            addr as *const _ as *const libc::sockaddr,
+            size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            host.as_mut_ptr(),
+            host.len() as _,
+            std::ptr::null_mut(),
+            0,
+            libc::NI_NAMEREQD,
+        )
+    };
+    if rc != 0 {
+        return "unknown".to_string();
+    }
+    // SAFETY: getnameinfo wrote a NUL-terminated name.
+    unsafe { std::ffi::CStr::from_ptr(host.as_ptr()) }.to_string_lossy().into_owned()
+}
+
+/// R: Rsock.c:R_SockListen -- accept(), for at most `timeout` seconds.
+pub fn socket_accept(fd: BorrowedFd<'_>, timeout: i32) -> Option<(OwnedFd, String)> {
+    if fd.as_raw_fd() >= FD_SETSIZE {
+        return None;
+    }
+    let start = std::time::Instant::now();
+    loop {
+        let left = (timeout as f64 - start.elapsed().as_secs_f64()).max(0.0);
+        match socket_poll(&mut [pollfd(Some(fd), false)], left) {
+            Err(libc::EINTR) => continue,
+            Err(_) | Ok(false) => return None,
+            Ok(true) => {}
+        }
+        // SAFETY: sockaddr_in is plain data; accept fills in this much.
+        let mut client: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut len = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        // SAFETY: as above.
+        let s = unsafe { libc::accept(fd.as_raw_fd(), &mut client as *mut _ as *mut libc::sockaddr, &mut len) };
+        if s < 0 {
+            match socket_errno() {
+                libc::EINTR | libc::EINPROGRESS | libc::EWOULDBLOCK | libc::ECONNABORTED | libc::EPROTO => continue,
+                _ => return None,
+            }
+        }
+        // SAFETY: a descriptor accept returned has no other owner.
+        let s = unsafe { OwnedFd::from_raw_fd(s) };
+        // the socket was ready, but maybe no longer is: never block on it
+        if !set_nonblocking(s.as_fd()) {
+            return None;
+        }
+        return Some((s, peer_name(&client)));
+    }
+}
+
+/// R: Rsock.c:R_SockConnect, with IPv4 as `R_gethostbyname` gives.
+pub fn socket_connect(port: i32, host: &str, timeout: i32) -> Option<OwnedFd> {
+    let ip = std::net::ToSocketAddrs::to_socket_addrs(&(host, port as u16))
+        .ok()
+        .and_then(|mut a| {
+            a.find_map(|a| match a {
+                std::net::SocketAddr::V4(v) => Some(*v.ip()),
+                _ => None,
+            })
+        })
+        .or_else(|| (host == "localhost").then_some(std::net::Ipv4Addr::LOCALHOST))?;
+    let s = new_socket(libc::PF_INET, libc::IPPROTO_TCP)?;
+    if !set_nonblocking(s.as_fd()) {
+        return None;
+    }
+    let server = inet_addr(ip, port);
+    let size = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    // SAFETY: the address is a live sockaddr_in.
+    if unsafe { libc::connect(s.as_raw_fd(), &server as *const _ as *const libc::sockaddr, size) } == 0 {
+        return Some(s);
+    }
+    if !matches!(socket_errno(), libc::EINPROGRESS | libc::EWOULDBLOCK) || socket_wait(s.as_fd(), true, timeout) != 0 {
+        return None;
+    }
+    let mut status: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+    let p = &mut status as *mut _ as *mut libc::c_void;
+    // SAFETY: `p` and `len` describe the live c_int.
+    let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_ERROR, p, &mut len) };
+    (rc == 0 && status == 0).then_some(s)
+}
+
+/// `recv(2)`: bytes read, or errno.
+pub fn socket_recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<usize, i32> {
+    // SAFETY: the buffer is live, with this length.
+    let res = unsafe { libc::recv(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+    if res < 0 { Err(socket_errno()) } else { Ok(res as usize) }
+}
+
+/// `send(2)`: bytes written, or errno. A vanished peer is a failed write,
+/// not the end of the process.
+pub fn socket_send(fd: BorrowedFd<'_>, buf: &[u8]) -> Result<usize, i32> {
+    // SAFETY: the buffer is live, with this length.
+    let res = unsafe { libc::send(fd.as_raw_fd(), buf.as_ptr().cast(), buf.len(), libc::MSG_NOSIGNAL) };
+    if res < 0 { Err(socket_errno()) } else { Ok(res as usize) }
+}
+
+pub fn socket_nodelay(fd: BorrowedFd<'_>) {
+    set_int_option(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY);
 }
 
 #[cfg(test)]

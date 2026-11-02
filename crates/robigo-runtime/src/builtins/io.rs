@@ -109,6 +109,10 @@ pub enum ConnKind {
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
     /// smaller than `data.len()` (the allocation is over-sized).
     Raw { data: Vec<u8>, pos: usize, nbytes: usize },
+    /// `socketConnection()` and `socketAccept()`.
+    Sock(super::sock::SockConn),
+    /// `serverSocket()`: open while it exists, it only accepts.
+    ServSock { port: i32, fd: Option<std::os::fd::OwnedFd> },
 }
 
 pub struct Connection {
@@ -136,7 +140,7 @@ pub struct Connection {
 
 impl Connection {
     /// R: connections.c:init_con
-    fn new(class: &str, description: &str, mode: &str, kind: ConnKind) -> Connection {
+    pub(super) fn new(class: &str, description: &str, mode: &str, kind: ConnKind) -> Connection {
         Connection {
             class: class.to_string(),
             description: description.to_string(),
@@ -156,6 +160,10 @@ impl Connection {
             kind,
             ex_ptr: Value::Null,
         }
+    }
+
+    pub(super) fn reset_save(&mut self) {
+        self.save = -1000;
     }
 
     fn terminal(description: &str, mode: &str) -> Connection {
@@ -330,6 +338,9 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     }
     if matches!(con.kind, ConnKind::File { fifo: true, .. }) {
         return fifo_open(i, n);
+    }
+    if matches!(con.kind, ConnKind::Sock(_)) {
+        return super::sock::sock_open(i, n);
     }
     if !matches!(con.kind, ConnKind::File { .. }) {
         con.save = -1000;
@@ -744,6 +755,16 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
         ConnKind::Terminal => {
             let _ = std::io::stdin().read_to_end(&mut out);
         }
+        ConnKind::Sock(_) => {
+            let mut chunk = [0u8; 4096];
+            loop {
+                let k = con_read_bytes(i, n, &mut chunk)?;
+                out.extend_from_slice(&chunk[..k]);
+                if k < chunk.len() {
+                    break;
+                }
+            }
+        }
         _ => return Err(Flow::error("cannot read from this connection")),
     }
     Ok(out)
@@ -755,7 +776,10 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
     // through con->vfprintf, as R's write.table does to stdout())
     let byte_kind = matches!(
         i.conns.get(n)?.kind,
-        ConnKind::Gz { writing: true, .. } | ConnKind::Raw { .. } | ConnKind::File { fp: Some(_), .. }
+        ConnKind::Gz { writing: true, .. }
+            | ConnKind::Raw { .. }
+            | ConnKind::File { fp: Some(_), .. }
+            | ConnKind::Sock(_)
     );
     if n <= 2 || !byte_kind {
         return conn_write(i, n, &String::from_utf8_lossy(bytes));
@@ -793,6 +817,13 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
             *last_was_write = true;
             file_write_buffered(f, wbuf, *fifo, bytes)
                 .map_err(|e| Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))))
+        }
+        ConnKind::Sock(s) => {
+            if s.write(bytes) {
+                Ok(())
+            } else {
+                Err(Flow::error("problem writing to connection"))
+            }
         }
         _ => Err(Flow::error("cannot write to this connection")),
     }
@@ -869,6 +900,14 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
             con.isopen = false;
         }
         ConnKind::TextIn { .. } | ConnKind::Terminal | ConnKind::Raw { .. } => {}
+        ConnKind::Sock(s) => {
+            s.close();
+            con.isopen = false;
+        }
+        ConnKind::ServSock { fd, .. } => {
+            *fd = None;
+            con.isopen = false;
+        }
     }
     Ok(())
 }
@@ -971,7 +1010,14 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
                 _ => EOF,
             }
         }
-        ConnKind::TextOut { .. } => EOF,
+        ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => EOF,
+        // R: sockconn.c:sock_fgetc_internal
+        ConnKind::Sock(s) => {
+            let mut b = [0u8; 1];
+            let (n, incomplete) = s.read(&mut b, con.blocking);
+            con.incomplete = incomplete;
+            if n == 1 { b[0] as i32 } else { EOF }
+        }
     }
 }
 
@@ -1033,10 +1079,11 @@ pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         }
         // Rconn_printf on a raw connection formats then calls con->write
         // (connections.c dummy_vfprintf).
-        ConnKind::Raw { .. } => {
+        ConnKind::Raw { .. } | ConnKind::Sock(_) => {
             raw_bytes = Some(text.as_bytes().to_vec());
             Ok(())
         }
+        ConnKind::ServSock { .. } => Err(Flow::error("cannot write to this connection")),
         ConnKind::File { fp, wbuf, fifo, last_was_write, .. } => match fp {
             Some(f) => {
                 *last_was_write = true;
@@ -1197,6 +1244,33 @@ fn connection_value(con: &Connection, n: usize) -> Value {
 
 fn new_ex_ptr() -> Value {
     Value::ExtPtr(Rc::new(ExtPtr { tag: Value::sym("connection"), attrs: Default::default(), payload: None }))
+}
+
+/// Register `con` in the next free slot: its R object and number.
+pub(super) fn install_new(i: &mut Interp, con: Connection) -> RResult<(Value, i32)> {
+    let n = i.conns.next_connection()?;
+    Ok((install_connection(i, n, con), n as i32))
+}
+
+/// R: connections.c:checked_open, of the connection object `v`.
+pub(super) fn con_open_new(i: &mut Interp, v: &Value) -> RResult<()> {
+    let n = con_arg(v)?;
+    match con_open(i, n) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            i.conns.table[n as usize] = None;
+            Err(Flow::error("cannot open the connection"))
+        }
+        Err(e) => {
+            i.conns.table[n as usize] = None;
+            Err(e)
+        }
+    }
+}
+
+/// Whether `n` is a live stream, which `con_read_all` would wait on.
+pub fn is_socket(i: &mut Interp, n: i32) -> RResult<bool> {
+    Ok(matches!(i.conns.get(n)?.kind, ConnKind::Sock(_)))
 }
 
 /// Register a new connection in slot `n` and return its R object.
@@ -1862,6 +1936,9 @@ fn do_open(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     if !con_open(i, n)? {
         return Err(Flow::error("cannot open the connection"));
     }
+    if let ConnKind::Sock(sock) = &mut i.conns.get(n)?.kind {
+        sock.release_server();
+    }
     Ok(Value::Null)
 }
 
@@ -2501,6 +2578,11 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
             Ok(k) => Ok(used + k),
             Err(_) => Err(Flow::error("error reading from the connection")),
         },
+        ConnKind::Sock(s) => {
+            let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
+            con.incomplete = incomplete;
+            Ok(used + k)
+        }
         _ => Err(Flow::error("cannot read from this connection")),
     }
 }

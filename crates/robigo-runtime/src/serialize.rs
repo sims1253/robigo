@@ -139,9 +139,25 @@ struct BcLevel {
     car: Value,
 }
 
+/// Where a [`Reader`] of a live stream keeps what it has read: chunks that
+/// never move, as `Reader::bytes` hands out slices of them. (Cells: a
+/// refill writes beyond those slices while they are alive.)
+#[derive(Default)]
+pub struct StreamChunks(std::cell::RefCell<Vec<Box<[std::cell::UnsafeCell<u8>]>>>);
+
+/// A [`Reader`]'s connection. It reads exactly what the item being read
+/// needs: what follows the object on the stream is not this reader's.
+struct Stream<'a> {
+    con: i32,
+    chunks: &'a StreamChunks,
+    /// The filled length of the last chunk.
+    fill: usize,
+}
+
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
     pos: usize,
+    stream: Option<Stream<'a>>,
     format: Format,
     refs: Vec<Value>,
     interp: &'i mut Interp,
@@ -164,7 +180,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn bytes(&mut self, n: usize) -> RResult<&'a [u8]> {
         // The length is the file's: `pos + n` can overflow.
-        if n > self.data.len() - self.pos {
+        if n > self.data.len() - self.pos && !self.refill(n) {
             return Err(Flow::error("error reading from connection"));
         }
         let b = &self.data[self.pos..self.pos + n];
@@ -177,25 +193,72 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// check costs ~13% of `int`, which shows at startup.
     #[inline(always)]
     fn array<const N: usize>(&mut self) -> RResult<[u8; N]> {
-        let pos = self.pos;
-        if pos + N > self.data.len() {
+        if self.pos + N > self.data.len() && !self.refill(N) {
             return Err(Flow::error("error reading from connection"));
         }
+        let pos = self.pos;
         self.pos = pos + N;
         // SAFETY: pos + N is within `data`, just checked; [u8; N] has
         // alignment 1.
         Ok(unsafe { self.data.as_ptr().add(pos).cast::<[u8; N]>().read_unaligned() })
     }
 
+    /// Make `n` bytes available at `pos`, from the stream if there is one.
+    #[cold]
+    #[inline(never)]
+    fn refill(&mut self, n: usize) -> bool {
+        // R: serialize.c:InBytesConn -- reads what the item needs
+        let Some(stream) = &mut self.stream else { return false };
+        let chunks = stream.chunks;
+        let rest = self.data.len() - self.pos;
+        let need = n - rest;
+        let mut list = chunks.0.borrow_mut();
+        if list.last().is_none_or(|c| c.len() - stream.fill < need) {
+            let mut chunk = vec![0u8; (rest + need).max(1 << 16)].into_boxed_slice();
+            chunk[..rest].copy_from_slice(&self.data[self.pos..]);
+            // SAFETY: UnsafeCell<u8> has the layout of u8.
+            list.push(unsafe { Box::from_raw(Box::into_raw(chunk) as *mut [std::cell::UnsafeCell<u8>]) });
+            stream.fill = rest;
+            self.pos = 0;
+        }
+        let con = stream.con;
+        let start = stream.fill;
+        let end = start + need;
+        let ptr = list.last().unwrap().as_ptr() as *mut u8;
+        let mut got = start;
+        while got < end {
+            // SAFETY: bytes from `start` on are in no slice handed out, and
+            // the chunk does not move. (`data`, below, is rebuilt anyway.)
+            let tail = unsafe { std::slice::from_raw_parts_mut(ptr.add(got), end - got) };
+            match crate::builtins::io::con_read_bytes(self.interp, con, tail) {
+                Ok(k) if k > 0 => got += k,
+                _ => return false,
+            }
+        }
+        stream.fill = end;
+        // SAFETY: the chunks outlive 'a's Reader and never move or shrink;
+        // the bytes up to `end` are initialised and not written again.
+        self.data = unsafe { std::slice::from_raw_parts(ptr, end) };
+        true
+    }
+
+    fn next_ascii(&mut self) -> Option<u8> {
+        if self.pos >= self.data.len() && !self.refill(1) {
+            return None;
+        }
+        Some(self.data[self.pos])
+    }
+
     fn word(&mut self) -> RResult<String> {
-        while self.pos < self.data.len() && self.data[self.pos].is_ascii_whitespace() {
+        while self.next_ascii().is_some_and(|c| c.is_ascii_whitespace()) {
             self.pos += 1;
         }
-        let start = self.pos;
-        while self.pos < self.data.len() && !self.data[self.pos].is_ascii_whitespace() {
+        let mut word = Vec::new();
+        while let Some(c) = self.next_ascii().filter(|c| !c.is_ascii_whitespace()) {
+            word.push(c);
             self.pos += 1;
         }
-        Ok(String::from_utf8_lossy(&self.data[start..self.pos]).into_owned())
+        Ok(String::from_utf8_lossy(&word).into_owned())
     }
 
     #[inline]
@@ -1757,21 +1820,63 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
     if data.len() < 2 {
         return Err(Flow::error("unknown input format"));
     }
-    let (format, mut pos) = match (data[0], data[1]) {
+    let (format, mut pos) = input_format(data[0], data[1])?;
+    if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
+        pos += 1;
+    }
+    unserialize_from(interp, data, pos, format, None, hook)
+}
+
+fn input_format(a: u8, b: u8) -> RResult<(Format, usize)> {
+    Ok(match (a, b) {
         (b'X', b'\n') => (Format::Xdr, 2),
         (b'B', b'\n') => (Format::Binary, 2),
         (b'A', b'\n') => (Format::Ascii, 2),
         (b'\n', b'A') => (Format::Ascii, 3),
         _ => return Err(Flow::error("unknown input format")),
-    };
-    if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
-        pos += 1;
+    })
+}
+
+/// One object from the connection `con`, which goes on after it (a socket:
+/// what comes next may not have been sent yet).
+// R: serialize.c:R_Unserialize, InFormat
+pub fn unserialize_stream(interp: &mut Interp, con: i32, hook: Value) -> RResult<Value> {
+    let mut head = [0u8; 2];
+    let mut got = 0;
+    while got < 2 {
+        let k = crate::builtins::io::con_read_bytes(interp, con, &mut head[got..])?;
+        if k == 0 {
+            return Err(Flow::error("error reading from connection"));
+        }
+        got += k;
     }
+    let (format, pos) = input_format(head[0], head[1])?;
+    if pos == 3 {
+        // the "\n" of "\nA\n"
+        let mut newline = [0u8; 1];
+        if crate::builtins::io::con_read_bytes(interp, con, &mut newline)? != 1 {
+            return Err(Flow::error("error reading from connection"));
+        }
+    }
+    let chunks = StreamChunks::default();
+    let stream = Stream { con, chunks: &chunks, fill: 0 };
+    unserialize_from(interp, &[], 0, format, Some(stream), hook)
+}
+
+fn unserialize_from<'a>(
+    interp: &mut Interp,
+    data: &'a [u8],
+    pos: usize,
+    format: Format,
+    stream: Option<Stream<'a>>,
+    hook: Value,
+) -> RResult<Value> {
     // 16 covers the reference count of a typical lazy-load entry without
     // the 4→8→16 reallocation chain; big entries still grow.
     let mut r = Reader {
         data,
         pos,
+        stream,
         format,
         refs: Vec::with_capacity(16),
         interp,

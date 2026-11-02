@@ -49,6 +49,7 @@ pub mod s4;
 pub mod scan;
 pub mod seq;
 pub mod serialize;
+pub mod sock;
 pub mod sort;
 pub mod sprintf;
 pub mod subassign;
@@ -157,6 +158,7 @@ static TABLES: &[&[Builtin]] = &[
     unique::DEFS,
     math::DEFS,
     io::DEFS,
+    sock::DEFS,
     dcf::DEFS,
     internet::DEFS,
     printint::DEFS,

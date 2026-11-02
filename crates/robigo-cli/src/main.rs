@@ -270,6 +270,8 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
                     cl.force_interactive = true;
                     break;
                 }
+                // (After `-e` it is the script's: Rscript passes it on.)
+                _ if !cl.exprs.is_empty() => {}
                 _ => show_message(&format!("WARNING: unknown option '{}'\n", a)),
             }
         } else if cl.file.is_none() && cl.exprs.is_empty() && cl.script.is_none() {
@@ -278,6 +280,11 @@ fn initialize_r_arguments(cl: &mut CommandLine, kept: Vec<String>) {
             cl.script = Some(a);
             cl.script_args = kept[i + 1..].to_vec();
             cl.no_echo = true;
+            return;
+        } else if !cl.exprs.is_empty() {
+            // Rscript's user arguments after its `-e` expressions (R:
+            // unix/Rscript.c), the way cluster workers get their MASTER=;
+            // `command_args` puts them after `--args`.
             return;
         } else {
             show_message(&format!("ARGUMENT '{}' __ignored__\n", a));
@@ -395,9 +402,11 @@ fn command_args(argv0: &str, args: &[String], cl: &CommandLine) -> Vec<String> {
         if !e_mode && i0 + 1 < args.len() as isize {
             out.push(format!("--file={}", args[(i0 + 1) as usize]));
         }
-        if i0 + 2 < args.len() as isize {
+        // (no file to step over after `-e`)
+        let user = (if e_mode { i0 + 1 } else { i0 + 2 }) as usize;
+        if user < args.len() {
             out.push("--args".into());
-            out.extend(args[(i0 + 2) as usize..].iter().cloned());
+            out.extend(args[user..].iter().cloned());
         }
     } else {
         // `-f`/`--file=` and the console: `R`'s own argv.
