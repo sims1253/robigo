@@ -468,6 +468,19 @@ impl Env {
         *self.0.parent.borrow_mut() = p;
     }
 
+    /// Whether making `p` the parent of `self` would close a cycle in the
+    /// parent chain (R's `SET_ENCLOS`, src/main/memory.c:4667).
+    pub fn parent_cycle(&self, p: Option<&Env>) -> bool {
+        let mut e = p.cloned();
+        while let Some(cur) = e {
+            if cur.ptr_eq(self) {
+                return true;
+            }
+            e = cur.parent();
+        }
+        false
+    }
+
     pub fn special_name(&self) -> Option<crate::value::RString> {
         self.0.name.borrow().clone()
     }
@@ -478,6 +491,19 @@ impl Env {
         match Value::Env(self.clone()).get_attr(s::NAME) {
             Some(Value::Str(s)) => s.data.first()?.clone().filter(|n| n.starts_with("package:")),
             _ => None,
+        }
+    }
+
+    /// A package imports environment (R's `R_IsImportsEnv`, src/main/builtin.c):
+    /// its parent is the base namespace and its `name` attribute is a single
+    /// string starting with `"imports:"`.
+    pub fn is_imports_env(&self, base_ns: &Env) -> bool {
+        if !self.parent().is_some_and(|p| p.ptr_eq(base_ns)) {
+            return false;
+        }
+        match Value::Env(self.clone()).get_attr(s::NAME) {
+            Some(Value::Str(n)) if n.data.len() == 1 => n.data[0].as_deref().is_some_and(|n| n.starts_with("imports:")),
+            _ => false,
         }
     }
 
