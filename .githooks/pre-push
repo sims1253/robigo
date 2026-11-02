@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Checks that take seconds, before a CI run that takes twenty minutes.
+# Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+cargo fmt --check
+scripts/lint.sh

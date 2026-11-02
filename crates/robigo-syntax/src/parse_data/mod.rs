@@ -291,7 +291,7 @@ impl Recorder<'_> {
                 let (token, loc) = lookahead.unwrap();
                 let translated = YYTRANSLATE[token as usize];
                 let index = pact + translated;
-                if index >= 0 && index <= YYLAST && YYCHECK[index as usize] == translated {
+                if (0..=YYLAST).contains(&index) && YYCHECK[index as usize] == translated {
                     let action = YYTABLE[index as usize];
                     if action > 0 {
                         states.push(action as usize);
@@ -361,7 +361,7 @@ impl Recorder<'_> {
             let lhs = (YYR1[rule] - YYNTOKENS) as usize;
             let state = *states.last().unwrap() as i16;
             let index = YYPGOTO[lhs] + state;
-            let next = if index >= 0 && index <= YYLAST && YYCHECK[index as usize] == state {
+            let next = if (0..=YYLAST).contains(&index) && YYCHECK[index as usize] == state {
                 YYTABLE[index as usize]
             } else {
                 YYDEFGOTO[lhs]

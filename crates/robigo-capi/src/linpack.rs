@@ -559,16 +559,15 @@ pub unsafe extern "C" fn dpbfa_(abd: *mut f64, lda: *const c_int, n: *const c_in
         *info = j;
         let mut s = 0.0;
         let mut ik = m + 1;
-        let mut jk = (j - m).max(1);
+        let jk = (j - m).max(1);
         let mu = (m + 2 - j).max(1);
-        for k in mu..=m {
+        for (k, jk) in (mu..=m).zip(jk..) {
             let len = k - mu;
             let mut t = *a(k, j) - ddot_(&len, a(ik, jk), &one, a(mu, j), &one);
             t /= *a(m + 1, jk);
             *a(k, j) = t;
             s += t * t;
             ik -= 1;
-            jk += 1;
         }
         s = *a(m + 1, j) - s;
         if s <= 0.0 {

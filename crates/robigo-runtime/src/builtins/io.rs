@@ -566,7 +566,7 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
         } else {
             data = raw;
         }
-    } else if let Err(e) = std::fs::OpenOptions::new().write(true).create(true).append(true).open(&name) {
+    } else if let Err(e) = std::fs::OpenOptions::new().create(true).append(true).open(&name) {
         i.warning(format!("cannot open compressed file '{}', probable reason '{}'", name, os_error_message(&e)))?;
         return Ok(false);
     }

@@ -30,3 +30,6 @@ op-stats = ["robigo-runtime/op-stats"]
 
 # Preserve GNU R BCODESXP serialization metadata; intentionally opt-in.
 bytecode-fidelity = ["robigo-runtime/bytecode-fidelity", "robigo-capi/bytecode-fidelity"]
+
+[lints]
+workspace = true

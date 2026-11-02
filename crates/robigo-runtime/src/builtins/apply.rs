@@ -621,7 +621,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     }
     let mut ans = Value::list(out);
     if use_nms {
-        ans.set_attr_raw(s::NAMES, Value::strs(syms.iter().map(|s| Some(s.name().into())).collect()));
+        ans.set_attr_raw(s::NAMES, Value::strs(syms.iter().map(|s| Some(s.name())).collect()));
     }
     Ok(ans)
 }
@@ -681,7 +681,7 @@ fn mapply_inline(
             None => args.push(crate::vm::unbox(v)),
         }
     }
-    if vary.iter().any(|&s| s == usize::MAX) {
+    if vary.contains(&usize::MAX) {
         return Ok(None);
     }
     Ok(Some(MFastClosure { clo: c.clone(), args, vary }))

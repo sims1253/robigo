@@ -378,7 +378,7 @@ pub unsafe extern "C" fn Riconv_open(to: *const c_char, from: *const c_char) -> 
         std::ffi::CString::new(if b.is_empty() { b"UTF-8".to_vec() } else { b.to_vec() }).unwrap()
     };
     let (t, f) = (fix(to), fix(from));
-    libc::iconv_open(t.as_ptr(), f.as_ptr()) as *mut c_void
+    libc::iconv_open(t.as_ptr(), f.as_ptr())
 }
 
 #[unsafe(no_mangle)]

@@ -947,7 +947,7 @@ fn c_strtoi(s: &str, base: u32) -> Option<i32> {
     let mut base = base;
     let has_0x = i + 1 < b.len() && b[i] == b'0' && (b[i + 1] == b'x' || b[i + 1] == b'X');
     if base == 0 {
-        if has_0x && i + 2 < b.len() && (b[i + 2] as char).is_digit(16) {
+        if has_0x && i + 2 < b.len() && (b[i + 2] as char).is_ascii_hexdigit() {
             base = 16;
             i += 2;
         } else if i < b.len() && b[i] == b'0' {
@@ -955,7 +955,7 @@ fn c_strtoi(s: &str, base: u32) -> Option<i32> {
         } else {
             base = 10;
         }
-    } else if base == 16 && has_0x && i + 2 < b.len() && (b[i + 2] as char).is_digit(16) {
+    } else if base == 16 && has_0x && i + 2 < b.len() && (b[i + 2] as char).is_ascii_hexdigit() {
         i += 2;
     }
     let start = i;
@@ -1575,7 +1575,7 @@ fn do_inttoutf8(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     let mut i = 0;
     while i < d.len() {
         let this = d[i];
-        if this == NA_INTEGER || (0xDC00..=0xDFFF).contains(&this) || this > 0x10FFFF || this < 0 {
+        if this == NA_INTEGER || (0xDC00..=0xDFFF).contains(&this) || !(0..=0x10FFFF).contains(&this) {
             return Ok(Value::str_na());
         }
         if (0xD800..=0xDBFF).contains(&this) {

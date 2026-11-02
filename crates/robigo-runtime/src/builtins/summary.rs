@@ -955,7 +955,7 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
     }
     for x in &xs {
         let n = x.len();
-        if len % n != 0 {
+        if !len.is_multiple_of(n) {
             i.warning("an argument will be fractionally recycled")?;
             break;
         }
@@ -1384,7 +1384,7 @@ fn any_na(i: &mut Interp, call: &Value, x: &Value, recursive: &Value, env: &Env)
     }
     Ok(match x {
         Value::Real(v) => v.data.iter().any(|d| d.is_nan()),
-        Value::Int(v) | Value::Lgl(v) => v.data.iter().any(|&d| d == NA_INTEGER),
+        Value::Int(v) | Value::Lgl(v) => v.data.contains(&NA_INTEGER),
         Value::Cplx(v) => v.data.iter().any(|z| z.re.is_nan() || z.im.is_nan()),
         Value::Str(v) => v.data.iter().any(|s| s.is_none()),
         Value::Raw(_) | Value::Null => false,

@@ -19,7 +19,7 @@ pub const BLOCK: usize = 65536;
 /// forked child does not dirty the parent's object pages: docs/core.md §10).
 pub const DATA_OFF: usize = 1072;
 pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / 16) as u32; // 4029
-pub const START_WORDS: usize = (BLOCK_GRANULES as usize + 63) / 64; // 63
+pub const START_WORDS: usize = (BLOCK_GRANULES as usize).div_ceil(64); // 63
 pub const CHUNK_BLOCKS: usize = 16;
 pub const CHUNK_BYTES: usize = BLOCK * CHUNK_BLOCKS;
 pub const MAX_SMALL: usize = 2048;
@@ -48,7 +48,7 @@ const FIRST_MEDIUM: usize = 44;
 
 #[inline]
 pub fn class_index(size: usize) -> usize {
-    debug_assert!(size >= 1 && size <= MAX_MEDIUM);
+    debug_assert!((1..=MAX_MEDIUM).contains(&size));
     if size <= 256 {
         ((size + 15) >> 4) - 1
     } else if size <= MAX_SMALL {

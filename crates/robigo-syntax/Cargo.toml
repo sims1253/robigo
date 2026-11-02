@@ -12,3 +12,6 @@ categories = ["parser-implementations", "science"]
 
 [dependencies]
 bumpalo = "3"
+
+[lints]
+workspace = true

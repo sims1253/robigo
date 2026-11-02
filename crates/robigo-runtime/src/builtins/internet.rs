@@ -97,6 +97,7 @@ fn lib() -> Option<&'static Lib> {
                 if p.is_null() {
                     return None;
                 }
+                #[allow(clippy::missing_transmute_annotations)] // the type of the binding
                 std::mem::transmute::<*mut c_void, _>(p)
             }};
         }

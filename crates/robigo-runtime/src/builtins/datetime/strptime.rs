@@ -67,13 +67,11 @@ fn day_of_the_year(tm: &mut Tm) {
 /// Case-insensitive prefix match (`w_match_string`); advances `rp`.
 fn match_string(cs1: &str, s: &[char], rp: &mut usize) -> bool {
     let n = cs1.chars().count();
-    let mut i = *rp;
-    for a in cs1.chars() {
+    for (a, i) in cs1.chars().zip(*rp..) {
         let Some(&b) = s.get(i) else { return false };
         if a.to_lowercase().ne(b.to_lowercase()) {
             return false;
         }
-        i += 1;
     }
     *rp += n;
     true

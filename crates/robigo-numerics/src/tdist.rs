@@ -205,7 +205,7 @@ pub fn qt(p: f64, ndf: f64, lower_tail: bool, log_p: bool) -> f64 {
             if ndf < 5.0 {
                 c += 0.3 * (ndf - 4.5) * (x + 0.6);
             }
-            c = (((0.05 * d * x - 5.0) * x - 7.0) * x - 2.0) * x + b + c;
+            c += (((0.05 * d * x - 5.0) * x - 7.0) * x - 2.0) * x + b;
             y = (((((0.4 * y + 6.3) * y + 36.0) * y + 94.5) / c - y - 3.0) / b + 1.0) * x;
             y = expm1(a * y * y);
             q = (ndf * y).sqrt();

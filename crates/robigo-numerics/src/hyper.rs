@@ -364,7 +364,7 @@ pub fn rhyper(rng: &mut Rng, nn1in: f64, nn2in: f64, kkin: f64) -> f64 {
     // L_finis: return appropriate variate
     if kk as f64 + kk as f64 >= big_n {
         if nn1 > nn2 {
-            ix = kk - nn2 + ix;
+            ix += kk - nn2;
         } else {
             ix = nn1 - ix;
         }

@@ -56,23 +56,17 @@ pub fn pnt(t: f64, df: f64, ncp: f64, lower_tail: bool, log_p: bool) -> f64 {
     if !t.is_finite() {
         return if t < 0.0 { r_dt_0(lower_tail, log_p) } else { r_dt_1(lower_tail, log_p) };
     }
-    let negdel;
-    let tt;
-    let del;
-    if t >= 0.0 {
-        negdel = false;
-        tt = t;
-        del = ncp;
+
+    let (negdel, tt, del) = if t >= 0.0 {
+        (false, t, ncp)
     } else {
         // We deal quickly with left tail if extreme, since
         // pt(q, df, ncp) <= pt(0, df, ncp) = \Phi(-ncp)
         if ncp > 40.0 && (!log_p || !lower_tail) {
             return r_dt_0(lower_tail, log_p);
         }
-        negdel = true;
-        tt = -t;
-        del = -ncp;
-    }
+        (true, -t, -ncp)
+    };
 
     if df > 4e5 || del * del > 2.0 * M_LN2 * (-(DBL_MIN_EXP as f64)) {
         // 2nd part: if del > 37.62, then p=0 below
@@ -131,14 +125,14 @@ pub fn pnt(t: f64, df: f64, ncp: f64, lower_tail: bool, log_p: bool) -> f64 {
         let mut it = 1;
         loop {
             a += 1.0;
-            xodd = xodd - godd;
-            xeven = xeven - geven;
-            godd = godd * (x * (a + b - 1.0) / a);
-            geven = geven * (x * (a + b - 0.5) / (a + 0.5));
-            p = p * (lambda / (2.0 * it as f64));
-            q = q * (lambda / (2.0 * it as f64 + 1.0));
+            xodd -= godd;
+            xeven -= geven;
+            godd *= x * (a + b - 1.0) / a;
+            geven *= x * (a + b - 0.5) / (a + 0.5);
+            p *= lambda / (2.0 * it as f64);
+            q *= lambda / (2.0 * it as f64 + 1.0);
             tnc = tnc + p * xodd + q * xeven;
-            s = s - p;
+            s -= p;
             // R 2.4.0 added test for rounding error here.
             if lt(s, LDouble::from_f64(-1e-10)) {
                 // happens e.g. for (t,df,ncp)=(40,10,38.5), after 799 it.

@@ -339,11 +339,11 @@ fn check_maxlen(nfmt: usize, lens: &[usize]) -> RResult<usize> {
     for &l in lens {
         maxlen = maxlen.max(l);
     }
-    if maxlen % nfmt != 0 {
+    if !maxlen.is_multiple_of(nfmt) {
         return Err(recycle_error());
     }
     for &l in lens {
-        if maxlen % l != 0 {
+        if !maxlen.is_multiple_of(l) {
             return Err(recycle_error());
         }
     }
@@ -546,19 +546,17 @@ fn do_sprintf(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> 
                                         }
                                     }
                                 }
-                                Some(b's') => {
-                                    if !matches!(a[nthis], Value::Str(_)) {
-                                        let x = a[nthis].clone();
-                                        a[nthis] = coerce_via(interp, "as.character", x, env)?;
-                                        let thislen = elt_len(&a[nthis]);
-                                        if thislen == 0 {
-                                            return Err(Flow::error("coercion has changed vector length to 0"));
-                                        }
-                                        let do_check = lens[nthis] == maxlen;
-                                        lens[nthis] = thislen;
-                                        if do_check && thislen < maxlen {
-                                            maxlen = check_maxlen(nfmt, &lens)?;
-                                        }
+                                Some(b's') if !matches!(a[nthis], Value::Str(_)) => {
+                                    let x = a[nthis].clone();
+                                    a[nthis] = coerce_via(interp, "as.character", x, env)?;
+                                    let thislen = elt_len(&a[nthis]);
+                                    if thislen == 0 {
+                                        return Err(Flow::error("coercion has changed vector length to 0"));
+                                    }
+                                    let do_check = lens[nthis] == maxlen;
+                                    lens[nthis] = thislen;
+                                    if do_check && thislen < maxlen {
+                                        maxlen = check_maxlen(nfmt, &lens)?;
                                     }
                                 }
                                 _ => {}

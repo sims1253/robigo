@@ -296,7 +296,7 @@ impl Interp {
         let vars = vec![
             (s::DOT_GENERIC, Value::str(&info.generic)),
             (s::DOT_CLASS, dot_class),
-            (s::DOT_METHOD, Value::strs(vec![Some(info.method.as_sym().unwrap().name().into())])),
+            (s::DOT_METHOD, Value::strs(vec![Some(info.method.as_sym().unwrap().name())])),
             (s::DOT_GENERIC_CALL_ENV, Value::Env(info.call_env.clone())),
             (s::DOT_GENERIC_DEF_ENV, Value::Env(info.def_env.clone())),
             (s::DOT_GROUP, Value::str(&info.group)),
@@ -530,8 +530,8 @@ impl Interp {
             .iter()
             .map(|a| {
                 let t = class_of(&a.value);
-                if t.iter().any(|c| *c == dispatch_class_name) {
-                    Some(lmeth.name().into())
+                if t.contains(&dispatch_class_name) {
+                    Some(lmeth.name())
                 } else {
                     Some(crate::value::RString::from(""))
                 }
