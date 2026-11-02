@@ -521,13 +521,12 @@ unsafe extern "C" {
 
 /// R: complex.c:z_atan2
 fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
-    let dr;
     if ccs.re == 0.0 && ccs.im == 0.0 {
         if csn.re == 0.0 && csn.im == 0.0 {
             return Complex::new(NA_REAL, NA_REAL);
         }
         let y = csn.re;
-        dr = Complex::new(
+        Complex::new(
             if y.is_nan() {
                 y
             } else if y >= 0.0 {
@@ -536,7 +535,7 @@ fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
                 -nmath::M_PI_2
             },
             0.0,
-        );
+        )
     } else {
         let q = unsafe { __divdc3(csn.re, csn.im, ccs.re, ccs.im) };
         let t = unsafe { catan(q) };
@@ -547,9 +546,8 @@ fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
         if d.re > nmath::M_PI {
             d.re -= 2.0 * nmath::M_PI;
         }
-        dr = d;
+        d
     }
-    dr
 }
 
 /// R: complex.c:complex_math2

@@ -49,7 +49,7 @@ fn full_dll_path(path: &str) -> String {
 // R: Rdynload.c:do_dynload, AddDLL, R_RegisterDLL
 fn do_dynload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let path = full_dll_path(&path_arg(&arg(&args, 0))?);
-    if let Some(k) = i.dlls.iter().position(|d| &*d.path == path) {
+    if let Some(k) = i.dlls.iter().position(|d| *d.path == path) {
         // Already loaded: move it to the end of the list.
         let d = i.dlls.remove(k);
         i.dlls.push(d);
@@ -92,7 +92,7 @@ fn do_dynload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 // R: Rdynload.c:do_dynunload
 fn do_dynunload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let path = full_dll_path(&path_arg(&arg(&args, 0))?);
-    match i.dlls.iter().position(|d| &*d.path == path) {
+    match i.dlls.iter().position(|d| *d.path == path) {
         Some(k) => {
             let d = i.dlls.remove(k);
             if d.native != 0 {

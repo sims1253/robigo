@@ -121,6 +121,10 @@ fn lang_cells(l: &Rc<Lang>) -> Vec<usize> {
 
 /// A node of a pairlist-like chain while reading.
 struct PNode {
+    /// Unread, but it keeps a node the size of `Arg`: `collect()` then
+    /// reuses the node vector in place, where a smaller node reallocates
+    /// once per pairlist read.
+    #[allow(dead_code)]
     attr: Value,
     tag: Value,
     car: Value,
@@ -212,6 +216,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// Two consecutive integers in one bounds check; bytecode headers
     /// read such pairs (BCREPDEF's position and type).
     #[inline]
+    #[cfg(not(feature = "bytecode-fidelity"))]
     fn int2(&mut self) -> RResult<(i32, i32)> {
         match self.format {
             Format::Xdr => {
@@ -234,6 +239,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// other shape (Ascii, other types, attributes) falls back to a full
     /// read that is discarded. Vectors never enter the reader's ref
     /// table, so skipping cannot shift later REFSXP indices.
+    #[cfg(not(feature = "bytecode-fidelity"))]
     fn skip_discarded_item(&mut self, flags: u32) -> RResult<()> {
         let ty = flags & 255;
         if matches!(ty, LGLSXP | INTSXP) && !matches!(self.format, Format::Ascii) {
@@ -729,7 +735,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             // Terminator of the chain (normally NILVALUE_SXP).
             self.read_item_flags(flags)?
         };
-        let _ = &nodes.iter().map(|n| &n.attr).count();
         match head_type {
             CLOSXP => {
                 let n = nodes.into_iter().next().unwrap();
@@ -1790,7 +1795,7 @@ pub fn unserialize(interp: &mut Interp, data: &[u8], hook: Value) -> RResult<Val
         2 => {}
         3 => {
             let nelen = r.int()?;
-            if nelen < 0 || nelen > 200 {
+            if !(0..=200).contains(&nelen) {
                 return Err(Flow::error("invalid length of encoding name"));
             }
             r.string_bytes(nelen as usize)?;
@@ -2022,7 +2027,7 @@ impl Writer<'_> {
         }
         self.refs.push(RefKey::Sym(s));
         self.int(SYMSXP as i32);
-        self.charsxp(&Some(s.name().into()));
+        self.charsxp(&Some(s.name()));
     }
     /// R: serialize.c:GetPersistentName (environments and external
     /// pointers go to the hook)

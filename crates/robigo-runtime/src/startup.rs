@@ -67,7 +67,7 @@ pub fn init_r_home() -> Option<String> {
         let set = script.lines().find_map(|l| l.strip_prefix(var)?.strip_prefix('='));
         let value = match set {
             Some(v) if !v.contains('$') => v.trim().to_string(),
-            _ => format!("{}/{}", home, &var[2..var.len() - 4].to_ascii_lowercase()),
+            _ => format!("{}/{}", home, var[2..var.len() - 4].to_ascii_lowercase()),
         };
         setenv(var, &value);
     }

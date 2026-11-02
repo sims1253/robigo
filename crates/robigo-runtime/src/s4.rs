@@ -861,8 +861,8 @@ impl Interp {
     // R: attrib.c:R_getS4DataSlot
     pub fn get_s4_data_slot(&mut self, obj: &Value, ty: Option<&str>) -> RResult<Value> {
         let objsxp = ty == Some("S4");
-        let value;
-        if !matches!(obj, Value::Obj(_)) || objsxp {
+
+        let value = if !matches!(obj, Value::Obj(_)) || objsxp {
             let s3class = obj.get_attr(syms::s3class());
             if s3class.is_none() && objsxp {
                 return Ok(Value::Null);
@@ -879,14 +879,14 @@ impl Interp {
             if objsxp {
                 return Ok(o);
             }
-            value = o;
+            o
         } else {
             let mut v = obj.get_attr(syms::data()).unwrap_or(Value::Null);
             if v.is_null() {
                 v = obj.get_attr(syms::xdata()).unwrap_or(Value::Null);
             }
-            value = v;
-        }
+            v
+        };
         if !value.is_null() && (ty.is_none() || ty == Some(value.type_name())) { Ok(value) } else { Ok(Value::Null) }
     }
 

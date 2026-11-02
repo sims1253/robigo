@@ -696,7 +696,7 @@ fn brcomp(a: f64, b: f64, x: f64, y: f64, log_p: bool) -> f64 {
                 b0 += -1.0;
                 c *= b0 / (a0 + b0);
             }
-            u = c.ln() + u;
+            u += c.ln();
         }
         z -= u;
         b0 += -1.0;
@@ -921,18 +921,14 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64, w: &mut f64, eps: f64, ierr: &mut i32, 
 /// R: nmath/toms708.c:grat_r -- Q(a,x) / r with r = e^-x x^a / Gamma(a)
 fn grat_r(a: f64, x: f64, log_r: f64, eps: f64) -> f64 {
     if a * x == 0.0 {
-        if x <= a {
-            return (-log_r).exp();
-        } else {
-            return 0.0;
-        }
+        if x <= a { (-log_r).exp() } else { 0.0 }
     } else if a == 0.5 {
         if x < 0.25 {
             let p = erf__(x.sqrt());
-            return (0.5 - p + 0.5) * (-log_r).exp();
+            (0.5 - p + 0.5) * (-log_r).exp()
         } else {
             let sx = x.sqrt();
-            return erfc1(1, sx) / sx * M_SQRT_PI;
+            erfc1(1, sx) / sx * M_SQRT_PI
         }
     } else if x < 1.1 {
         let mut an = 3.0;
@@ -1281,7 +1277,7 @@ fn erfc1(ind: i32, x: f64) -> f64 {
         let w = x * x;
         let t = w;
         let e = w - t;
-        ret_val = (0.5 - e + 0.5) * (-t).exp() * ret_val;
+        ret_val *= (0.5 - e + 0.5) * (-t).exp();
         if x < 0.0 {
             ret_val = 2.0 - ret_val;
         }
@@ -1461,7 +1457,7 @@ fn psi(x: f64) -> f64 {
             den = (den + Q2[i - 1]) * w;
             upper = (upper + P2[i]) * w;
         }
-        aug = upper / (den + Q2[3]) - 0.5 / x + aug;
+        aug += upper / (den + Q2[3]) - 0.5 / x;
     }
     aug + x.ln()
 }

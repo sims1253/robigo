@@ -721,26 +721,14 @@ fn rgb2col(rgb: &str) -> RResult<u32> {
     }
     let b = rgb.as_bytes();
     let d = |i: usize| hexdigit(b[i]);
-    let (mut r, mut g, mut bl, mut a) = (0u32, 0u32, 0u32, 0u32);
-    match b.len() {
-        9 => {
-            a = 16 * d(7)? + d(8)?;
-            (r, g, bl) = (16 * d(1)? + d(2)?, 16 * d(3)? + d(4)?, 16 * d(5)? + d(6)?);
-        }
-        7 => (r, g, bl) = (16 * d(1)? + d(2)?, 16 * d(3)? + d(4)?, 16 * d(5)? + d(6)?),
-        5 => {
-            a = 17 * d(4)?;
-            (r, g, bl) = (17 * d(1)?, 17 * d(2)?, 17 * d(3)?);
-        }
-        4 => (r, g, bl) = (17 * d(1)?, 17 * d(2)?, 17 * d(3)?),
+    let (r, g, bl, a) = match b.len() {
+        9 => (16 * d(1)? + d(2)?, 16 * d(3)? + d(4)?, 16 * d(5)? + d(6)?, 16 * d(7)? + d(8)?),
+        7 => (16 * d(1)? + d(2)?, 16 * d(3)? + d(4)?, 16 * d(5)? + d(6)?, 0xff),
+        5 => (17 * d(1)?, 17 * d(2)?, 17 * d(3)?, 17 * d(4)?),
+        4 => (17 * d(1)?, 17 * d(2)?, 17 * d(3)?, 0xff),
         _ => return Err(Flow::error("invalid RGB specification")),
-    }
-    #[allow(unused_assignments)]
-    let _ = (r, g, bl, a);
-    Ok(match b.len() {
-        7 | 4 => r | (g << 8) | (bl << 16) | 0xff00_0000,
-        _ => r | (g << 8) | (bl << 16) | (a << 24),
-    })
+    };
+    Ok(r | (g << 8) | (bl << 16) | (a << 24))
 }
 
 /// A color name to a packed color.
@@ -764,7 +752,7 @@ fn strtod_index(s: &str) -> Option<f64> {
     let b = t.as_bytes();
     if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
         let h = &t[2..];
-        let (mant, exp) = match h.find(|c| c == 'p' || c == 'P') {
+        let (mant, exp) = match h.find(['p', 'P']) {
             Some(p) => (&h[..p], h[p + 1..].parse::<i32>().ok()?),
             None => (h, 0),
         };
@@ -884,7 +872,7 @@ fn col2rgb(i: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &crate::env::En
     } else {
         vec![Some("red".into()), Some("green".into()), Some("blue".into())]
     };
-    let col_names = names.map(|n| Value::strs(n)).unwrap_or(Value::Null);
+    let col_names = names.map(Value::strs).unwrap_or(Value::Null);
     ans.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs(row_names), col_names]));
     Ok(ans)
 }

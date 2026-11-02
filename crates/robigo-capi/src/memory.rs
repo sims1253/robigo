@@ -762,7 +762,7 @@ pub unsafe fn dataptr(x: Sexp) -> *mut u8 {
         return crate::util::altrep_dataptr(x, true);
     }
     if x.std_len() == 0 && x.typ() != CHARSXP {
-        return 1 as *mut u8;
+        return std::ptr::dangling_mut::<u8>();
     }
     x.std_data()
 }
@@ -1355,10 +1355,7 @@ unsafe fn duplicate1(s: Sexp, deep: bool) -> Sexp {
             }
             r
         }
-        OBJSXP => {
-            let r = c().alloc_node(OBJSXP, nil, nil, nil);
-            r
-        }
+        OBJSXP => c().alloc_node(OBJSXP, nil, nil, nil),
         _ => error_str("unimplemented type in duplicate"),
     };
     Rf_protect(r);

@@ -202,8 +202,7 @@ impl TreParser {
     // PARSE_BRANCH + PARSE_CATENATION
     fn parse_branch(&mut self) -> TreRes<String> {
         let mut s = self.parse_piece()?;
-        loop {
-            let Some(c) = self.peek() else { break };
+        while let Some(c) = self.peek() {
             if !self.literal {
                 if c == '|' {
                     break;
@@ -2179,7 +2178,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
                 let mut ans = Vec::with_capacity(matches.len() + 1);
                 let mut pos = 0usize;
                 for &m in &matches {
-                    let end = (m - 1) as usize;
+                    let end = m - 1;
                     ans.push(Value::raws(text[pos..end].to_vec()));
                     pos = end + pat.len();
                 }
@@ -2225,8 +2224,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut off = offset;
     let mut notbol = false;
-    loop {
-        let Some(m) = re.exec(&ttxt, off, Ctx::Fresh { notbol }, false) else { break };
+    while let Some(m) = re.exec(&ttxt, off, Ctx::Fresh { notbol }, false) {
         let Some((so, eo)) = m[0] else { break };
         if spans.is_empty() {
             notbol = true;
@@ -2237,7 +2235,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
             let mut infinite = true;
             if spans.len() == 1 {
                 match re.exec(&ttxt, off, Ctx::Fresh { notbol }, false).and_then(|m| m[0]) {
-                    Some((_, e2)) if e2 == 0 => {}
+                    Some((_, 0)) => {}
                     _ => infinite = false,
                 }
             }

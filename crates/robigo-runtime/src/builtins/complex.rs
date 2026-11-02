@@ -460,7 +460,7 @@ fn r_cpow_n(mut x: Complex, mut k: i32) -> Complex {
 /// C's `(int)double` cast on x86 (`cvttsd2si`: truncates; out of range
 /// or NaN gives INT_MIN, which C leaves undefined).
 fn c_int(x: f64) -> i32 {
-    if x >= -2147483648.0 && x < 2147483648.0 { x as i32 } else { i32::MIN }
+    if (-2147483648.0..2147483648.0).contains(&x) { x as i32 } else { i32::MIN }
 }
 
 // R: complex.c:mycpow — `x^y` for complex operands.
@@ -491,7 +491,7 @@ pub fn cpow(x: Complex, y: Complex) -> Complex {
 fn x2y2m1(x: f64, y: f64) -> f64 {
     fn mul_split(x: f64, y: f64) -> (f64, f64) {
         let hi = x * y;
-        const C: f64 = ((1u64 << (f64::MANTISSA_DIGITS as u64 + 1) / 2) + 1) as f64;
+        const C: f64 = ((1u64 << (f64::MANTISSA_DIGITS as u64).div_ceil(2)) + 1) as f64;
         let mut x1 = x * C;
         let mut y1 = y * C;
         x1 = (x - x1) + x1;
@@ -563,10 +563,10 @@ pub fn clog(x: Complex) -> Complex {
                 d2m1 += absy * absy;
             }
             result.re = d2m1.ln_1p() / 2.0;
-        } else if absx < 1.0 && absx >= 0.5 && absy < f64::EPSILON / 2.0 && scale == 0 {
+        } else if (0.5..1.0).contains(&absx) && absy < f64::EPSILON / 2.0 && scale == 0 {
             let d2m1 = (absx - 1.0) * (absx + 1.0);
             result.re = d2m1.ln_1p() / 2.0;
-        } else if absx < 1.0 && absx >= 0.5 && scale == 0 && absx * absx + absy * absy >= 0.5 {
+        } else if (0.5..1.0).contains(&absx) && scale == 0 && absx * absx + absy * absy >= 0.5 {
             let d2m1 = x2y2m1(absx, absy);
             result.re = d2m1.ln_1p() / 2.0;
         } else {

@@ -111,7 +111,7 @@ impl Interp {
         // errors do not reach the top level.
         let saved_frames = std::mem::take(&mut self.frames);
         let saved_handlers = std::mem::replace(&mut self.handlers, self.global_handlers.clone());
-        let saved_restarts = std::mem::replace(&mut self.restarts, None);
+        let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
         let saved_ccode = std::mem::take(&mut self.ccode_calls);
         let r = self.eval(&call, &rho);

@@ -609,7 +609,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
                     return Err(Flow::error("replacement has length zero"));
                 }
                 let nru = nr as usize;
-                if nru > 0 && nru % ny != 0 {
+                if nru > 0 && !nru.is_multiple_of(ny) {
                     return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
                 }
                 let start = (jj - 1) as usize * nru;
@@ -708,7 +708,7 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
                 }
                 return Err(Flow::error("replacement has length zero"));
             }
-            if n_last > 0 && n_last % ny != 0 {
+            if n_last > 0 && !n_last.is_multiple_of(ny) {
                 return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
             }
             let mut base = 0usize;
@@ -750,7 +750,7 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
         }
         return Err(Flow::error("replacement has length zero"));
     }
-    if n > 0 && n % ny != 0 {
+    if n > 0 && !n.is_multiple_of(ny) {
         return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
     }
     if ny > 1 && sub_idx.iter().any(|v| v.contains(&NA_IDX)) {
@@ -1300,7 +1300,7 @@ pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Valu
                 };
                 data.push(val);
                 let mut nn = names.unwrap_or_else(|| vec![Some(crate::value::RString::from("")); nx]);
-                nn.push(Some(nl.into()));
+                nn.push(Some(nl));
                 let attrs = rebuilt_attrs(x, Some(Value::strs(nn)));
                 let mut ans = Value::list(data);
                 ans.set_attrs(attrs);

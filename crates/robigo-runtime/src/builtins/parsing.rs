@@ -142,7 +142,7 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let was_str = matches!(text_arg, Value::Str(_));
     let text_len = text_arg.len();
     let text = i.coerce(&text_arg, VType::Str)?;
-    if text_len > 0 && text.len() == 0 {
+    if text_len > 0 && text.is_empty() {
         return Err(Flow::error("coercion of 'text' to character was unsuccessful"));
     }
     let source = arg(&args, 4);
@@ -153,7 +153,7 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     } else {
         robigo_syntax::CONSOLE_SRCNAME
     };
-    let src = if was_str || text.len() > 0 {
+    let src = if was_str || !text.is_empty() {
         text_of(&text).unwrap_or_default()
     } else {
         // R: source.c:do_parse, reading the whole connection
@@ -477,10 +477,8 @@ fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 /// `expression(...)`: unevaluated arguments as an expression vector.
 fn do_expression(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let any_tag = args.iter().any(|a| a.tag.is_some());
-    let names: Vec<RStr> = args
-        .iter()
-        .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
-        .collect();
+    let names: Vec<RStr> =
+        args.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from("")))).collect();
     let mut v = Value::expr_vec(args.into_iter().map(|a| a.value).collect());
     if any_tag {
         v.set_attr_raw(s::NAMES, Value::strs(names));
@@ -494,11 +492,11 @@ fn all_names_rec(e: &Value, functions: bool, unique: bool, max: i64, out: &mut V
     }
     match e {
         Value::Sym(s) => {
-            let n: crate::value::RString = s.name().into();
+            let n: crate::value::RString = s.name();
             if n.is_empty() {
                 return;
             }
-            if unique && out.iter().any(|x| *x == n) {
+            if unique && out.contains(&n) {
                 return;
             }
             out.push(n);

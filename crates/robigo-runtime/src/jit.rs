@@ -807,8 +807,8 @@ pub fn compile(
     for st in states.iter().flatten() {
         for (reg, t) in st.iter().enumerate() {
             if let Some(t) = t {
-                if !reg_idx.contains_key(&(reg as Reg)) {
-                    reg_idx.insert(reg as Reg, nvals);
+                if let std::collections::hash_map::Entry::Vacant(e) = reg_idx.entry(reg as Reg) {
+                    e.insert(nvals);
                     nvals += if *t == JType::Range { 3 } else { 1 };
                 }
             }

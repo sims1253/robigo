@@ -334,7 +334,7 @@ fn do_pack_bits(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         "double" => 64,
         _ => return Err(Flow::error("invalid 'type' argument")),
     };
-    if bits.len() % width != 0 {
+    if !bits.len().is_multiple_of(width) {
         return Err(Flow::error(format!("argument 'x' must be a multiple of {} long", width)));
     }
     Ok(match width {
@@ -839,12 +839,6 @@ fn do_make_lazy(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(Value::Null)
 }
 
-// ----------------------------------------------------------------------
-// trivial results
-
-fn do_null(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
-}
 // R: errors.c:do_traceback, R_GetTraceback
 fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let skip = as_integer(&arg(&args, 0));

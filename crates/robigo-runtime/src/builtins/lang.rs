@@ -453,8 +453,6 @@ pub(crate) fn complex_assign_pre(
     r
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn complex_assign_inner(
     interp: &mut Interp,
     _call: &Value,
@@ -1342,7 +1340,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
         Some(Value::Str(mut m)) => {
             for name in &mut Rc::make_mut(&mut m).data {
                 if name.as_deref() != Some("") {
-                    *name = Some(method_sym.name().into());
+                    *name = Some(method_sym.name());
                 }
             }
             Value::Str(m)
@@ -1472,7 +1470,7 @@ fn do_primitive(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     };
     match super::lookup_primitive(&name) {
         Some(b) => Ok(Value::Builtin(b)),
-        None => Err(Flow::error_call(call.clone(), format!("no such primitive function"))),
+        None => Err(Flow::error_call(call.clone(), "no such primitive function".to_string())),
     }
 }
 
@@ -1531,9 +1529,7 @@ fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<V
         return Ok(Value::Null);
     }
     Ok(Value::strs(
-        d.iter()
-            .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
-            .collect(),
+        d.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from("")))).collect(),
     ))
 }
 

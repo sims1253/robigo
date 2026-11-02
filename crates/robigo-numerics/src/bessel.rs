@@ -254,7 +254,7 @@ fn j_bessel(x: f64, alpha: f64, nb: i32, bo: &mut [f64], ncalc: &mut i32) {
     let nu = alpha;
     let twonu = nu + nu;
 
-    if nb > 0 && x >= 0.0 && 0.0 <= nu && nu < 1.0 {
+    if nb > 0 && x >= 0.0 && (0.0..1.0).contains(&nu) {
         *ncalc = nb;
         if x > XLRG_BESS_IJ {
             ml_warning(ME_RANGE, "J_bessel");
@@ -657,7 +657,7 @@ fn y_bessel(x: f64, alpha: f64, nb: i32, by: &mut [f64], ncalc: &mut i32) {
     let mut nu = alpha;
     let mut ya;
     let mut ya1;
-    if nb > 0 && 0.0 <= nu && nu < 1.0 {
+    if nb > 0 && (0.0..1.0).contains(&nu) {
         if ex < DBL_MIN || ex > XLRG_BESS_Y {
             *ncalc = nb;
             if ex > XLRG_BESS_Y {
@@ -686,8 +686,8 @@ fn y_bessel(x: f64, alpha: f64, nb: i32, by: &mut [f64], ncalc: &mut i32) {
             let mut f = nu * d;
             let mut e = b.powf(-nu);
             let mut c = if nu.abs() < M_EPS_SINC { M_1_PI } else { nu / sinpi(nu) };
-            let s;
-            if f.abs() < 1.0 {
+
+            let s = if f.abs() < 1.0 {
                 let x2 = f * f;
                 let mut en = 19.0;
                 let mut ss = 1.0;
@@ -695,10 +695,10 @@ fn y_bessel(x: f64, alpha: f64, nb: i32, by: &mut [f64], ncalc: &mut i32) {
                     ss = ss * x2 / en / (en - 1.0) + 1.0;
                     en -= 2.0;
                 }
-                s = ss;
+                ss
             } else {
-                s = (e - 1.0 / e) * 0.5 / f;
-            }
+                (e - 1.0 / e) * 0.5 / f
+            };
             // 1/gamma(1-a) by Chebyshev polynomials
             let x2 = nu * nu * 8.0;
             let mut aye = CH[0];
@@ -787,7 +787,7 @@ fn y_bessel(x: f64, alpha: f64, nb: i32, by: &mut [f64], ncalc: &mut i32) {
                     break;
                 }
             }
-            f = 1.0 + f;
+            f += 1.0;
             d = f * f + g * g;
             let pa = f / d;
             let qa = -g / d;
@@ -986,7 +986,7 @@ fn i_bessel(x: f64, alpha: f64, nb: i32, ize: i32, bo: &mut [f64], ncalc: &mut i
     let nu = alpha;
     let twonu = nu + nu;
 
-    if nb > 0 && x >= 0.0 && (0.0 <= nu && nu < 1.0) && (1..=2).contains(&ize) {
+    if nb > 0 && x >= 0.0 && (0.0..1.0).contains(&nu) && (1..=2).contains(&ize) {
         *ncalc = nb;
         if ize == 1 && x > EXPARG_BESS {
             for k in 1..=nb {
@@ -1348,7 +1348,7 @@ fn k_bessel(x: f64, alpha: f64, nb: i32, ize: i32, bk: &mut [f64], ncalc: &mut i
     let ex = x;
     let mut nu = alpha;
     *ncalc = min0(nb, 0) - 2;
-    if nb > 0 && (0.0 <= nu && nu < 1.0) && (1..=2).contains(&ize) {
+    if nb > 0 && (0.0..1.0).contains(&nu) && (1..=2).contains(&ize) {
         if ex <= 0.0 || (ize == 1 && ex > XMAX_BESS_K) {
             if ex <= 0.0 {
                 if ex < 0.0 {
@@ -1542,7 +1542,7 @@ fn k_bessel(x: f64, alpha: f64, nb: i32, ize: i32, bk: &mut [f64], ncalc: &mut i
                         f1 = f0;
                         f0 = f2;
                     }
-                    f1 = (d3 + 2.0) * f0 / ex + f1;
+                    f1 += (d3 + 2.0) * f0 / ex;
                     d1 = 0.0;
                     t1 = 1.0;
                     for i in 1..=7 {

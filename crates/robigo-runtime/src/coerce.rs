@@ -365,6 +365,7 @@ impl CoerceWarnings {
 }
 
 /// Coerce an atomic (or list) vector to logical values.
+#[allow(clippy::only_used_in_recursion)] // the same signature as its siblings
 pub fn to_lgl(v: &Value, w: &mut CoerceWarnings) -> Vec<Lgl> {
     match v {
         Value::Null => vec![],
@@ -570,7 +571,7 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
                 e => rstr(&crate::deparse::deparse_one_line(e)),
             })
             .collect(),
-        Value::Sym(s) => vec![Some(s.name().into())],
+        Value::Sym(s) => vec![Some(s.name())],
         Value::Lang(_) | Value::Pairlist(_) => {
             // as.character on a call: each element deparsed.
             let items: Vec<Value> = match v {
@@ -581,7 +582,7 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
             items
                 .iter()
                 .map(|e| match e {
-                    Value::Sym(s) => Some(s.name().into()),
+                    Value::Sym(s) => Some(s.name()),
                     Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
                     e => rstr(&crate::deparse::deparse_one_line(e)),
                 })
@@ -806,7 +807,7 @@ pub fn as_real(v: &Value) -> f64 {
 /// `asChar`: first element as a string.
 pub fn as_string(v: &Value) -> RStr {
     match v {
-        Value::Sym(s) => Some(s.name().into()),
+        Value::Sym(s) => Some(s.name()),
         v if v.is_atomic() && !v.is_empty() => to_str(&first_elt(v))[0].clone(),
         _ => None,
     }

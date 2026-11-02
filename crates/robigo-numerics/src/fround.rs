@@ -118,6 +118,12 @@ pub fn fprec(x: f64, digits: f64) -> f64 {
     }
 }
 
+/// Truncation toward zero (Rmath's `Rf_ftrunc`; C code calls it).
+// R: ftrunc.c:ftrunc
+pub fn ftrunc(x: f64) -> f64 {
+    x.trunc()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,10 +140,4 @@ mod tests {
         assert_eq!(fprec(0.000123456, 3.0), 0.000123);
         assert_eq!(fprec(-1.5e300, 1.0), -1.0000000000000006e+300);
     }
-}
-
-/// Truncation toward zero (Rmath's `Rf_ftrunc`; C code calls it).
-// R: ftrunc.c:ftrunc
-pub fn ftrunc(x: f64) -> f64 {
-    x.trunc()
 }

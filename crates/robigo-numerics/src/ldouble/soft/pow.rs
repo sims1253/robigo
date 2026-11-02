@@ -204,7 +204,7 @@ impl X128 {
         let m = q << sh;
         let e = a.e - sh as i32;
         // fraction in units of the new lsb: (r/k)·2^sh
-        let rs = (r as u128) << sh;
+        let rs = r << sh;
         let up = 2 * rs > (k as u128) || (2 * rs == (k as u128) && m & 1 != 0);
         let mut m = m + up as u128;
         let mut e = e;
@@ -363,7 +363,7 @@ fn fyl2xp1(x: &LDouble) -> LDouble {
         let mut term = p;
         // log(1+x) = Σ (−1)^{k+1} x^k / k: for x < 0 every term is
         // negative; for x > 0 the even ones are.
-        term.s = s || (k % 2 == 0);
+        term.s = s || k.is_multiple_of(2);
         term = X128::div_small(term, k);
         sum = X128::addsub(sum, term, false);
         if p.m == 0 || sum.e - p.e > 92 || k >= 90 {
@@ -687,7 +687,7 @@ pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
             let ri = rint(y);
             let n = to_u64_trunc(&fabs(&ri)); // |y| ∈ {1, 2, 3}
             let base0 = if sy { div(&LDouble::ONE, x) } else { *x };
-            let mut base = if n % 2 == 0 { fabs(&base0) } else { base0 };
+            let mut base = if n.is_multiple_of(2) { fabs(&base0) } else { base0 };
             let mut acc = LDouble::ONE;
             let mut nn = n;
             while nn != 0 {

@@ -770,7 +770,7 @@ impl RelOp {
 
 fn lang_to_str(v: &Value) -> Value {
     match v {
-        Value::Sym(sy) => Value::strs(vec![Some(sy.name().into())]),
+        Value::Sym(sy) => Value::strs(vec![Some(sy.name())]),
         Value::Lang(_) => Value::str(&crate::deparse::deparse_one_line(v)),
         _ => v.clone(),
     }
@@ -1021,7 +1021,7 @@ fn do_logic(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, and: bo
     if !okt(&x) || !okt(&y) {
         return Err(Flow::error_call(
             call.clone(),
-            format!("operations are possible only for numeric, logical or complex types"),
+            "operations are possible only for numeric, logical or complex types".to_string(),
         ));
     }
     let (nx, ny) = (x.len(), y.len());
@@ -1107,7 +1107,7 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
         Value::Raw(v) => Value::raws(v.data.iter().map(|&b| !b).collect()),
         // R: logic.c:lunary — "for back-compatibility" a zero-length
         // argument of any other type gives logical(0), without attributes
-        other if other.len() == 0 => return Ok(Value::lgls(vec![])),
+        other if other.is_empty() => return Ok(Value::lgls(vec![])),
         _ => return Err(Flow::error_call(call.clone(), "invalid argument type")),
     };
     if keep_all_attrs {
@@ -1728,7 +1728,7 @@ fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
             return Ok(r);
         }
     }
-    if base.len() == 0 {
+    if base.is_empty() {
         return Err(Flow::error_call(call.clone(), "invalid argument 'base' of length 0"));
     }
     if matches!(x, Value::Cplx(_)) || matches!(base, Value::Cplx(_)) {

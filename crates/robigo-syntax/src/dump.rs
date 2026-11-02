@@ -374,7 +374,7 @@ fn dump_into(e: &Expr, s: &mut Vec<u8>) {
             dump_into(fun, s);
             for a in *args {
                 s.push(b' ');
-                dump_arg(a.name.as_deref(), a.value.as_ref(), s);
+                dump_arg(a.name, a.value.as_ref(), s);
             }
             s.push(b')');
         }
@@ -382,7 +382,7 @@ fn dump_into(e: &Expr, s: &mut Vec<u8>) {
             s.extend_from_slice(b"(`function` (pairlist");
             for f in *formals {
                 s.push(b' ');
-                dump_arg(Some(&f.name), f.default.as_ref(), s);
+                dump_arg(Some(f.name), f.default.as_ref(), s);
             }
             s.extend_from_slice(b") ");
             dump_into(body, s);

@@ -172,13 +172,13 @@ pub(super) fn add_mul(mul: bool, a: &[f64], b: &[f64], n: usize, int_operand: bo
     } else if na == 1 && nb == n {
         // y is the vector: its operand is the destination unless x is.
         dispatch!(append_vk, mul, !x_dest, &mut out, b, a[0])
-    } else if na == n && n % nb == 0 {
+    } else if na == n && n.is_multiple_of(nb) {
         // `b` recycled a whole number of times (a matrix times a column).
         out.reserve(n);
         for chunk in a.chunks(nb) {
             dispatch!(append_vv, mul, x_dest, &mut out, chunk, b)
         }
-    } else if nb == n && n % na == 0 {
+    } else if nb == n && n.is_multiple_of(na) {
         out.reserve(n);
         for chunk in b.chunks(na) {
             dispatch!(append_vv, mul, x_dest, &mut out, a, chunk)

@@ -758,6 +758,6 @@ mod tests {
         }
         assert_eq!(super::class_of_name("x"), super::C_OTHER);
         // (The memo stores a class plus one in a byte.)
-        assert!(super::C_OTHER < u8::MAX);
+        const { assert!(super::C_OTHER < u8::MAX) };
     }
 }

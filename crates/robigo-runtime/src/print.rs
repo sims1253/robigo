@@ -217,11 +217,8 @@ impl Printer {
             }
             Value::Pairlist(pl) => {
                 // Print like a list.
-                let names: Vec<RStr> = pl
-                    .items
-                    .iter()
-                    .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| "".into())))
-                    .collect();
+                let names: Vec<RStr> =
+                    pl.items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| "".into()))).collect();
                 let mut lv = Vector::new(pl.items.iter().map(|a| a.value.clone()).collect());
                 if pl.items.iter().any(|a| a.tag.is_some()) {
                     lv.attrs = Some(Box::new(Attrs(vec![(s::NAMES, Value::strs(names))], false)));
