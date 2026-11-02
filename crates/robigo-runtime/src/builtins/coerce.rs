@@ -148,6 +148,7 @@ fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> 
 fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // R: coerce.c:do_ascall — checkArity/check1arg run before DispatchOrEval.
     check_arity(&args, 1, "as.call", call)?;
+    crate::builtins::character::check1arg(&args, call, "x")?;
     // R: coerce.c:do_ascall — DispatchOrEval internal generic.
     if let Some(r) = i.try_dispatch("as.call", call, &args, env)? {
         return Ok(r);
