@@ -106,8 +106,7 @@ pub fn cfmt_int(sp: &CSpec, v: i32) -> String {
                 break;
             }
         }
-        // ASCII digits by construction.
-        let digits = std::str::from_utf8(&buf[i..]).unwrap();
+        let digits = std::str::from_utf8(&buf[i..]).expect("the digit loop writes only ASCII digits");
         let sign = if neg {
             Some('-')
         } else if sp.plus {
@@ -120,18 +119,19 @@ pub fn cfmt_int(sp: &CSpec, v: i32) -> String {
         let total = digits.len() + usize::from(sign.is_some());
         let width = sp.width;
         let mut out = String::with_capacity(width.max(total));
-        // Padding is ASCII, so byte length is the column count.
-        if total < width && !sp.minus && !sp.zero {
-            out.extend(std::iter::repeat_n(' ', width - total));
-        }
+        // Padding is ASCII, so byte length is the column count; `-`
+        // overrides `0`.
+        let pad = width.saturating_sub(total);
+        let (left, zeros, right) = match (sp.minus, sp.zero) {
+            (true, _) => (0, 0, pad),
+            (false, true) => (0, pad, 0),
+            (false, false) => (pad, 0, 0),
+        };
+        out.extend(std::iter::repeat_n(' ', left));
         out.extend(sign);
-        if total < width && !sp.minus && sp.zero {
-            out.extend(std::iter::repeat_n('0', width - total));
-        }
+        out.extend(std::iter::repeat_n('0', zeros));
         out.push_str(digits);
-        if total < width && sp.minus {
-            out.extend(std::iter::repeat_n(' ', width - total));
-        }
+        out.extend(std::iter::repeat_n(' ', right));
         return out;
     }
     let signed = matches!(sp.conv, b'd' | b'i');
