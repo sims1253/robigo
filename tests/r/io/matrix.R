@@ -62,3 +62,6 @@ options(width = 80)
 print(aperm(array(1:27, c(3, 3, 3)), c(1 + 1i, 3 + 3i, 2 + 2i))[1, 2, 3] ==
       array(1:27, c(3, 3, 3))[1, 3, 2])
 aperm(array(1:27, c(3, 3, 3)), c(1 + 1i, 3, 2))
+# A non-vector perm (symbol, call, function) fails at LENGTH(perm).
+for (p in list(quote(a), quote(a + b), sum))
+    print(tryCatch(aperm(array(1:3), p), error = conditionMessage))
