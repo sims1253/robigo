@@ -68,6 +68,8 @@ pub struct Core {
     immortal_chars: usize,
     /// > 0: allocation does not collect (`R_gc` still does).
     pub gc_inhibit: u32,
+    /// a collection is running (see [`Core::root_fns`])
+    collecting: bool,
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
@@ -95,12 +97,22 @@ pub struct Core {
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
     precious: Vec<Sexp>,
-    /// extra precise roots: called during marking with this core
+    /// extra precise roots: called during marking with this core.
+    ///
+    /// The contract of every hook here: the collector is running. A hook
+    /// may call [`Core::mark`] and read objects, and nothing else on this
+    /// core: it must not allocate or collect. An object allocated now is
+    /// not marked and the sweep would free it; a collection nested in this
+    /// one panics, which `ROBIGO_GCTORTURE` turns into a certainty for
+    /// any hook that allocates.
     pub root_fns: Vec<unsafe fn(&mut Core)>,
     /// Strong runtime edges of a marked HOST object, visited during every
-    /// tracing phase (including the weak-reference fixed point).
+    /// tracing phase (including the weak-reference fixed point). A hook:
+    /// see [`Core::root_fns`].
     pub host_trace: Option<unsafe fn(&mut Core, usize)>,
     /// Release temporary host graph owners before deferred proxy releases.
+    /// Runs after the sweep, while the collection is still in progress: it
+    /// may release preserved objects but must not allocate or collect.
     pub host_trace_end: Option<unsafe fn()>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
@@ -197,6 +209,7 @@ impl Core {
             marked_chars: 0,
             immortal_chars: 0,
             gc_inhibit: 0,
+            collecting: false,
             stack_top,
             stack_lo,
             scan_top: usize::MAX,
@@ -879,7 +892,13 @@ impl Core {
     /// A full collection. Returns the pause in nanoseconds. Release
     /// callbacks of dead EXTDATA/HOST objects run at the end; queued
     /// finalizers do not run here (see [`Core::pop_finalizable`]).
+    ///
+    /// # Panics
+    /// If a collection is already running: a GC hook allocated or collected
+    /// (see [`Core::root_fns`]).
     pub fn collect(&mut self) -> u64 {
+        assert!(!self.collecting, "robigo: a GC hook allocated or collected inside a collection");
+        self.collecting = true;
         self.stats.bytes_allocated += self.alloc_since_gc as u64;
         let sp = stack_pointer();
         if sp < self.stack_lo || sp > self.stack_top {
@@ -925,6 +944,7 @@ impl Core {
                 end();
             }
         }
+        self.collecting = false;
         let dt = t0.elapsed().as_nanos() as u64;
         self.stats.collections += 1;
         self.stats.collect_total_ns += dt;

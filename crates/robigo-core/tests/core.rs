@@ -773,3 +773,30 @@ fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
         assert!(freed.remove(&x.addr()), "{} free slots were lost", freed.len());
     }
 }
+
+unsafe fn collecting_root(c: &mut Core) {
+    c.collect();
+}
+
+unsafe fn allocating_root(c: &mut Core) {
+    c.alloc_vector(INTSXP, 1);
+}
+
+#[test]
+#[should_panic(expected = "inside a collection")]
+fn a_root_callback_cannot_collect() {
+    let mut c = Core::new();
+    c.root_fns.push(collecting_root);
+    c.collect();
+}
+
+/// What ROBIGO_GCTORTURE finds in CI: an allocating hook nests a collection
+/// as soon as allocation collects.
+#[test]
+#[should_panic(expected = "inside a collection")]
+fn a_root_callback_cannot_allocate() {
+    let mut c = Core::new();
+    c.root_fns.push(allocating_root);
+    c.set_torture(true);
+    c.collect();
+}
