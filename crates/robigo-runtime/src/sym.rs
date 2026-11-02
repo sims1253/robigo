@@ -174,6 +174,20 @@ impl Sym {
         INTERNER.with(|i| i.borrow_mut().intern(name))
     }
 
+    /// R: names.c:installTrChar — a name a *runtime* caller installs (an
+    /// assignment target, `as.symbol`, ...). Unlike the parser's symbols,
+    /// the empty string and names over MAXIDSIZE (10000 bytes) are
+    /// rejected; the message is R's.
+    pub fn install_tr(name: &str) -> std::result::Result<Sym, &'static str> {
+        if name.is_empty() {
+            return Err("attempt to use zero-length variable name");
+        }
+        if name.len() > 10000 {
+            return Err("variable names are limited to 10000 bytes");
+        }
+        Ok(Sym::new(name))
+    }
+
     /// The symbol named `name` if it has been interned, without interning
     /// it (new symbols shift the ids, and so the frame masks, of all later
     /// ones).

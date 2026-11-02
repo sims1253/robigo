@@ -290,11 +290,17 @@ fn do_quote(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 // ----------------------------------------------------------------------
 // assignment
 
-fn assign_target(lhs: &Value) -> Option<Sym> {
+fn assign_target(lhs: &Value) -> RResult<Option<Sym>> {
     match lhs {
-        Value::Sym(s) => Some(*s),
-        Value::Str(v) if v.data.len() == 1 => v.data[0].as_ref().map(|s| Sym::new(s)),
-        _ => None,
+        Value::Sym(s) => Ok(Some(*s)),
+        // R: eval.c:do_set — a string lhs is installed with installTrChar,
+        // which rejects the empty name (plain error(), so the message is
+        // reported against the context call).
+        Value::Str(v) if v.data.len() == 1 => match v.data[0].as_deref() {
+            Some(name) => Sym::install_tr(name).map(Some).map_err(Flow::error),
+            None => Ok(None),
+        },
+        _ => Ok(None),
     }
 }
 
@@ -303,7 +309,7 @@ fn do_assign(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
         return Err(Flow::error_call(call.clone(), "invalid assignment"));
     }
     let lhs = &args[0].value;
-    if let Some(sym) = assign_target(lhs) {
+    if let Some(sym) = assign_target(lhs)? {
         let v = interp.eval(&args[1].value, env)?;
         interp.define(sym, v.clone(), env)?;
         interp.visible = false;
@@ -325,7 +331,7 @@ fn do_super_assign(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env)
         return Err(Flow::error_call(call.clone(), "invalid assignment"));
     }
     let lhs = &args[0].value;
-    if let Some(sym) = assign_target(lhs) {
+    if let Some(sym) = assign_target(lhs)? {
         let v = interp.eval(&args[1].value, env)?;
         interp.super_assign(sym, v.clone(), env)?;
         interp.visible = false;
