@@ -54,6 +54,45 @@ conformance` (interpreter, VM and VM+JIT against each other).
   materialized input still trail GNU R ~1.2x because the R-level
   wrappers (`match.arg`, `list(...)`, `lengths`, ~20 small calls) cost
   about twice GNU R's per call — the fib-class call-overhead track.
+- Tracked gaps (conformance/benchmark pins):
+  - `order()`/`sort()` materialize compact sequences (`1:30000`) that
+    GNU R scans in place through ALTREP metadata (`order(1:1000)` is
+    1.4x); pinned by the `sc` (compact reversed) line of
+    `benchmarks/suite/sortorder.R`.
+  - the R-wrapper call overhead above is pinned by the same benchmark.
+  - `icheck` at `i32::MIN` with `decreasing=TRUE` (C int wrap in GNU R,
+    i64 in the port) matches GNU R byte for byte and is pinned by
+    `tests/r/basics/order-int-min.R`.
+
+## 2026-11-02: round 18, sprintf's %d and %s conversions off the Rust format machinery
+
+- Base: the round-17 branch (same tree).
+- Why: `sprintf("%05d:%s", 1:500, "ab")` measured **1.15x GNU R**
+  (1,289,352 vs 1,121,611 per 500-element call). GNU R snprintfs into a
+  stack buffer; robigo's `cfmt_int`/`cfmt_str` went through
+  `format!`/`core::fmt::pad` (~288 of ~2900 instructions per output
+  element were `core::fmt`).
+- Change (`builtins/sprintf.rs` only): `cfmt_int` builds signed decimal
+  `%d`/`%i` without precision or `#` directly (digits into a stack
+  buffer, sign and zero/space padding applied by hand, exactly glibc's
+  order: sign before zero padding); `cfmt_str` returns the string
+  unchanged when there is no width, precision or flag. Everything else
+  takes the existing paths unchanged.
+- Result: `sprintf("%05d:%s", n, "ab")` 1,289,352 -> **1,037,752
+  (-19.5%), 1.15x -> 0.93x of GNU R**; `sprintf("%d items", n)` 0.85x.
+  Verified against GNU R 4.5.0 over a 305-line matrix of specs
+  (`%d %5d %-5d %05d %+d % d %+05d %05.3d %.3d %.0d %u %x %X %o %#x %#o
+  %c %s %10s %-10s %.2s %10.3s %e %g %.3e %12.4f %+e % a`) x
+  {0,1,-1,42,-42,INT_MAX,-INT_MAX+1,NA,3.5,"abc"} plus `%n$d`, `%*d`
+  and recycling — byte-identical (`/tmp/sp-eq.R` shape, kept in the PR
+  description; the suite's `robigo/strings` covers sprintf).
+- Tracked gap: `do_sprintf` still reparses the format string for every
+  output element (`strcspn` + `Vec<u8>` copy + `from_utf8_lossy` per
+  spec per element) exactly as GNU R re-walks it, but R walks C
+  buffers; ours allocates. Pre-parsing each of the `nfmt` format
+  strings once would keep outputs identical. Pinned by
+  `benchmarks/suite/strings.R` (`sprintf` line).
+
 
 ## 2026-11-01: round 16, constant and symbol closure bodies compile and inline
 

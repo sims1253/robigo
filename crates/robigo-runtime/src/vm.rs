@@ -224,14 +224,13 @@ pub fn enabled() -> bool {
 
 /// Compiled code for a closure body or loop, compiled on first use.
 pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
-    if !matches!(e, Value::Lang(_)) {
+    let Value::Lang(l) = e else {
         // Constant and symbol bodies (`function() 1`, `function(x) x`,
         // `function() NULL`) compile to a single op, making the call
         // inlinable or at least direct. Compiled per closure (`clo.code`
         // caches it); there is no shared body object to key the cache on.
         return Some(Rc::new(if body { compile_body(e) } else { compile_loop(e)? }));
-    }
-    let Value::Lang(l) = e else { return None };
+    };
     let key = Rc::as_ptr(l) as usize;
     if let Some(c) = CACHE.with(|c| c.borrow().get(&key).map(|(_, code)| code.clone())) {
         return Some(c);
