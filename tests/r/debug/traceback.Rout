@@ -73,3 +73,7 @@ No traceback available
 2: long()
 1: call_with_long_args(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 2, 
     ...
+3: .traceback(x, max.lines = max.lines)
+2: traceback(0)
+1: n(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 2, 
+    ...

@@ -36,6 +36,7 @@ handler before on.exit
 on.exit
 handler with pending warnings
 continued after an error in the handler
+[1] "in the handler"
 on.exit
 on.exit still ran
 [1] "left through a restart"

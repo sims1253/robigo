@@ -62,6 +62,7 @@ w()
 options(error = quote(stop("in the handler")))
 f()
 cat("continued after an error in the handler\n")
+print(geterrmessage())
 h()
 cat("on.exit still ran\n")
 

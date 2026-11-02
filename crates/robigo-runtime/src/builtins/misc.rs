@@ -855,13 +855,17 @@ fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let lines = usize::try_from(i.option_int("deparse.max.lines", 0)).ok().filter(|&n| n > 0);
     let calls = i.traceback_calls(skip as usize);
     let deparsed = calls.iter().map(|call| {
-        let text = crate::deparse::deparse_lines(
+        let mut text = crate::deparse::deparse_lines(
             call,
             crate::deparse::DEFAULT_CUTOFF,
             true,
             crate::deparse::DEFAULTDEPARSE,
-            lines,
+            lines.map(|n| n + 1),
         );
+        if lines.is_some_and(|n| text.len() > n) {
+            text.truncate(lines.unwrap_or(0));
+            text.push("  ...".to_string());
+        }
         Arg::pos(Value::strs_from(text.iter().map(String::as_str)))
     });
     Ok(Value::pairlist(deparsed.collect()))

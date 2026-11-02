@@ -62,3 +62,9 @@ call_with_long_args(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbb
                     cccccccccccccccccccccccccccccc = 3, ddddddddddddddddddd = 4)
 traceback()
 traceback(max.lines = 1)
+
+# deparse.max.lines cuts the live stack, with a mark
+options(deparse.max.lines = 1L)
+n <- function(...) traceback(0)
+n(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 2,
+  cccccccccccccccccccccccccccccc = 3, ddddddddddddddddddd = 4)

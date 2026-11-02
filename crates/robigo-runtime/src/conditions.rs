@@ -358,6 +358,7 @@ impl Interp {
     /// R: errors.c:verrorcall_dflt -- the fail-safe for an error while the
     /// `error` option runs, which jumps to the top level.
     fn error_during_wrapup(&mut self, msg: &str) -> Flow {
+        self.errmsg = msg.to_string();
         self.write_err(&format!("Error during wrapup: {msg}\n"));
         if !self.warnings.is_empty() {
             self.warnings.clear();
