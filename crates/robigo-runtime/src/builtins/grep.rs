@@ -42,6 +42,7 @@ use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::{Sym, s};
+use crate::value::RString;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
@@ -56,6 +57,7 @@ pub static DEFS: &[Builtin] = &[
     internal("grepRaw", do_grepraw, 8),
     internal("agrep", do_agrep, 8),
     internal("agrepl", do_agrepl, 8),
+    internal("adist", do_adist, 8),
     internal("pcre_config", do_pcre_config, 0),
 ];
 
@@ -2088,6 +2090,205 @@ fn do_agrep(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     agrep_impl(interp, args, false)
 }
 
+// R: agrep.c:adist_full -- operation-weighted Levenshtein over the integer
+// vectors the utils wrapper prepared (`utf8ToInt` code points, or bytes as
+// integers; NA strings are a one-element NA integer vector). `counts`
+// also reconstructs the transcript: GNU R's tie order is insert, then
+// delete, then substitute only when strictly closer.
+fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResult<Value> {
+    let list_of_ints = |v: &Value| -> Option<Vec<Rc<Vector<i32>>>> {
+        let Value::List(l) = v else { return None };
+        let mut out = Vec::with_capacity(l.data.len());
+        for e in &l.data {
+            match e {
+                Value::Int(iv) => out.push(iv.clone()),
+                _ => return None,
+            }
+        }
+        Some(out)
+    };
+    let (Some(xv), Some(yv)) = (list_of_ints(x), list_of_ints(y)) else {
+        return Err(Flow::error("robigo: 'adist' expects the lists of integer vectors the R wrapper builds"));
+    };
+    let (nx, ny) = (xv.len(), yv.len());
+    let [cost_ins, cost_del, cost_sub] = costs;
+    let mut ans = vec![0.0f64; nx * ny];
+    // ANS(i, j) = ans[i + j * nx]; COUNTS(i, j, m) = counts[i + j*nx + m*nx*ny]
+    let mut counts: Vec<i32> = if opt_counts { vec![0; nx * ny * 3] } else { Vec::new() };
+    // allocMatrix(STRSXP) starts from "" : NA inputs keep the empty
+    // transcript, only computed non-finite distances set NA_STRING.
+    let mut trafos: Vec<RStr> = if opt_counts { vec![Some(String::new().into()); nx * ny] } else { Vec::new() };
+    for (i, xi) in xv.iter().enumerate() {
+        let nxi = xi.data.len();
+        if nxi > 0 && xi.data[0] == NA_INTEGER {
+            for j in 0..ny {
+                ans[i + j * nx] = NA_REAL;
+                if opt_counts {
+                    for m in 0..3 {
+                        counts[i + j * nx + m * nx * ny] = NA_INTEGER;
+                    }
+                }
+            }
+            continue;
+        }
+        for (j, yj) in yv.iter().enumerate() {
+            let nyj = yj.data.len();
+            if nyj > 0 && yj.data[0] == NA_INTEGER {
+                ans[i + j * nx] = NA_REAL;
+                if opt_counts {
+                    for m in 0..3 {
+                        counts[i + j * nx + m * nx * ny] = NA_INTEGER;
+                    }
+                }
+                continue;
+            }
+            let (nr, nc) = (nxi + 1, nyj + 1);
+            let mut dists = vec![0.0f64; nr * nc];
+            let mut paths: Vec<u8> = if opt_counts { vec![0; nr * nc] } else { Vec::new() };
+            // MAT(dists, k, l) = dists[k + l * nr]
+            for k in 1..nr {
+                dists[k] = k as f64 * cost_del;
+                if opt_counts {
+                    paths[k] = b'D';
+                }
+            }
+            for l in 1..nc {
+                dists[l * nr] = l as f64 * cost_ins;
+                if opt_counts {
+                    paths[l * nr] = b'I';
+                }
+            }
+            for k in 1..nr {
+                for l in 1..nc {
+                    let idx = k + l * nr;
+                    if xi.data[k - 1] == yj.data[l - 1] {
+                        dists[idx] = dists[idx - nr - 1];
+                        if opt_counts {
+                            paths[idx] = b'M';
+                        }
+                    } else {
+                        // idx - nr is (k, l-1): inserting y's char; idx - 1
+                        // is (k-1, l): deleting x's char.
+                        let d_ins = dists[idx - nr] + cost_ins;
+                        let d_del = dists[idx - 1] + cost_del;
+                        let d_sub = dists[idx - nr - 1] + cost_sub;
+                        let (d, p) = if opt_counts {
+                            // R: the transcript's tie order.
+                            let (mut d, mut p) = if d_ins <= d_del { (d_ins, b'I') } else { (d_del, b'D') };
+                            if d_sub < d {
+                                d = d_sub;
+                                p = b'S';
+                            }
+                            (d, p)
+                        } else {
+                            (d_ins.min(d_del).min(d_sub), 0)
+                        };
+                        dists[idx] = d;
+                        if opt_counts {
+                            paths[idx] = p;
+                        }
+                    }
+                }
+            }
+            let v = dists[nr * nc - 1];
+            ans[i + j * nx] = v;
+            if opt_counts {
+                if !v.is_finite() {
+                    for m in 0..3 {
+                        counts[i + j * nx + m * nx * ny] = NA_INTEGER;
+                    }
+                    trafos[i + j * nx] = None;
+                } else {
+                    let (mut nins, mut ndel, mut nsub) = (0usize, 0usize, 0usize);
+                    let (mut k, mut l) = (nxi, nyj);
+                    let mut t = Vec::new();
+                    while k > 0 || l > 0 {
+                        let p = paths[k + l * nr];
+                        match p {
+                            b'I' => {
+                                nins += 1;
+                                l -= 1;
+                            }
+                            b'D' => {
+                                ndel += 1;
+                                k -= 1;
+                            }
+                            _ => {
+                                if p == b'S' {
+                                    nsub += 1;
+                                }
+                                k -= 1;
+                                l -= 1;
+                            }
+                        }
+                        t.push(p);
+                    }
+                    t.reverse();
+                    counts[i + j * nx] = nins as i32;
+                    counts[i + j * nx + nx * ny] = ndel as i32;
+                    counts[i + j * nx + 2 * nx * ny] = nsub as i32;
+                    trafos[i + j * nx] = Some(RString::from(t.iter().map(|&b| b as char).collect::<String>()));
+                }
+            }
+        }
+    }
+    let mut ans = Value::reals(ans);
+    // dimnamesgets turns a zero-length names vector into a NULL element,
+    // but the C code decides dimnames presence from the raw attributes: a
+    // character(0) names attribute on one side still attaches
+    // list(NULL, NULL).
+    let raw_xnames = crate::attrib::get_attrib(x, s::NAMES);
+    let raw_ynames = crate::attrib::get_attrib(y, s::NAMES);
+    let has_names = !raw_xnames.is_null() || !raw_ynames.is_null();
+    let null_if_empty = |v: Value| if v.len() == 0 { Value::Null } else { v };
+    let xnames = null_if_empty(raw_xnames);
+    let ynames = null_if_empty(raw_ynames);
+    ans.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
+    if has_names {
+        ans.set_attr_raw(s::DIMNAMES, Value::list(vec![xnames.clone(), ynames.clone()]));
+    }
+    if opt_counts {
+        let mut cv = Value::ints(counts);
+        cv.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32, 3]));
+        cv.set_attr_raw(
+            s::DIMNAMES,
+            Value::list(vec![xnames.clone(), ynames.clone(), Value::strs_from(["ins", "del", "sub"])]),
+        );
+        ans.set_attr_raw(Sym::new("counts"), cv);
+        let mut tv = Value::strs(trafos);
+        tv.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
+        if has_names {
+            tv.set_attr_raw(s::DIMNAMES, Value::list(vec![xnames, ynames]));
+        }
+        ans.set_attr_raw(Sym::new("trafos"), tv);
+    }
+    Ok(ans)
+}
+
+// R: agrep.c:do_adist. The `partial = TRUE` path needs TRE's approximate
+// regexec with match costs and endpoints, which robigo's matcher does not
+// provide (agrep only needs a yes/no): not implemented yet, said so.
+fn do_adist(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 8, "adist")?;
+    let costs: [f64; 3] = match &args[2].value {
+        Value::Real(v) if v.data.len() >= 3 => [v.data[0], v.data[1], v.data[2]],
+        Value::Int(v) if v.data.len() >= 3 => [v.data[0] as f64, v.data[1] as f64, v.data[2] as f64],
+        _ => [1.0, 1.0, 1.0],
+    };
+    let opt_counts = as_bool2(&args[3].value, call)?;
+    let opt_fixed = as_bool2(&args[4].value, call)?;
+    let opt_partial = as_bool2(&args[5].value, call)?;
+    let _opt_icase = as_bool2(&args[6].value, call)?;
+    let _use_bytes = as_bool2(&args[7].value, call)?;
+    if !opt_fixed && !opt_partial {
+        interp.warning("argument 'partial = FALSE' will be ignored")?;
+    }
+    if !opt_partial {
+        return adist_full(&args[0].value, &args[1].value, costs, opt_counts);
+    }
+    Err(Flow::error("robigo: 'adist' with 'partial = TRUE' is not implemented yet"))
+}
+
 fn do_agrepl(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     agrep_impl(interp, args, true)
 }
@@ -2717,6 +2918,64 @@ fn do_pcre_config(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn adist_ints(v: &[&[i32]]) -> Value {
+        Value::list(v.iter().map(|e| Value::ints(e.to_vec())).collect())
+    }
+
+    fn strs_of(v: &Value) -> Vec<String> {
+        match v {
+            Value::Str(s) => s.data.iter().map(|e| e.as_deref().unwrap_or("<NA>").to_string()).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// GNU R's NA-input trafos stay the allocMatrix default "" (agrep.c's
+    /// NA branches never touch them); non-finite distances set NA_STRING.
+    #[test]
+    fn adist_na_trafos() {
+        let x = adist_ints(&[&[97]]);
+        let y = adist_ints(&[&[NA_INTEGER]]);
+        let a = adist_full(&x, &y, [1.0, 1.0, 1.0], true).unwrap_or(Value::Null);
+        let t = crate::attrib::get_attrib(&a, Sym::new("trafos"));
+        assert_eq!(strs_of(&t), vec!["".to_string()]);
+        let c = crate::attrib::get_attrib(&a, Sym::new("counts"));
+        let cv = match &c {
+            Value::Int(v) => v.data.clone(),
+            _ => vec![],
+        };
+        assert_eq!(cv, vec![NA_INTEGER, NA_INTEGER, NA_INTEGER]);
+    }
+
+    /// dimnamesgets: a character(0) names attribute becomes a NULL element.
+    #[test]
+    fn adist_empty_names_dimnames() {
+        // names on one side, character(0) on the other: elements are
+        // normalized to NULL but the dimnames are attached.
+        let mut x = adist_ints(&[]);
+        x.set_attr_raw(crate::sym::s::NAMES, Value::strs(vec![]));
+        let mut y = adist_ints(&[&[97]]);
+        y.set_attr_raw(crate::sym::s::NAMES, Value::strs_from(["y1"]));
+        let a = adist_full(&x, &y, [1.0, 1.0, 1.0], false).unwrap_or(Value::Null);
+        let dn = crate::attrib::get_attrib(&a, crate::sym::s::DIMNAMES);
+        match dn {
+            Value::List(l) => {
+                assert!(matches!(l.data[0], Value::Null));
+                assert!(matches!(l.data[1], Value::Str(_)));
+            }
+            _ => panic!("dimnames: not a list"),
+        }
+        // character(0) as the ONLY names attribute: list(NULL, NULL).
+        let y2 = adist_ints(&[&[97]]);
+        let b = adist_full(&x, &y2, [1.0, 1.0, 1.0], false).unwrap_or(Value::Null);
+        match crate::attrib::get_attrib(&b, crate::sym::s::DIMNAMES) {
+            Value::List(l) => {
+                assert!(matches!(l.data[0], Value::Null));
+                assert!(matches!(l.data[1], Value::Null));
+            }
+            _ => panic!("dimnames: not a list"),
+        }
+    }
 
     fn tre(p: &str) -> String {
         tre_translate(p, false, false, false).map(|t| t.pattern).unwrap_or_else(|e| format!("ERR {}", e))
