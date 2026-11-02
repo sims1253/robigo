@@ -263,6 +263,19 @@ fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
     assert!(element.upgrade().is_none(), "the old spine is released at top level");
 }
 
+/// R: dotcode.c:do_dotcall, do_dotCode: arguments past MAX_ARGS are an
+/// error, not dropped.
+fn too_many_arguments(i: &mut Interp) {
+    let addr = nothing as *const () as usize;
+    let args = |n: usize| (0..n).map(|k| Value::int(k as i32)).collect::<Vec<_>>();
+    assert_eq!(message(call(i, Interface::Call, addr, args(65))), "(no error)");
+    for interface in [Interface::Call, Interface::C, Interface::Fortran] {
+        assert_eq!(message(call(i, interface, addr, args(66))), "too many arguments in foreign function call");
+    }
+    // .External hands its routine one list
+    assert_eq!(message(call(i, Interface::External, addr, args(66))), "(no error)");
+}
+
 /// A finalizer is C code like any other: gc() must not leave the stack
 /// scan off while it runs, or a collection inside it misses its locals.
 fn finalizers_run_with_the_stack_scanned(i: &mut Interp) {
@@ -286,6 +299,7 @@ fn the_bridge() {
     }
     finalizers_run_with_the_stack_scanned(i);
     replaced_objects_outlive_the_evaluation(i);
+    too_many_arguments(i);
     protect_overflow(i);
     raising_altrep_conversions(i);
 }

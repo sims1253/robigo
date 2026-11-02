@@ -1981,6 +1981,10 @@ unsafe fn call_routine_ctx(
 
 unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     ensure_ready(interp);
+    // R: dotcode.c:do_dotcall, resolveNativeRoutine; .External gets a list
+    if args.len() > crate::dotcode::MAX_ARGS && !matches!(r.interface, Interface::External) {
+        return Err(Flow::error_call(call.clone(), "too many arguments in foreign function call"));
+    }
     let base = R_PPStackTop;
     let res = match r.interface {
         Interface::Call => dot_call(interp, r, &args),
