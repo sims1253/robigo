@@ -39,9 +39,8 @@ pub unsafe fn alloc_vector(t: c_uint, n: isize) -> Sexp {
     let t = t as u8;
     match t {
         NILSXP => R_NilValue,
-        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP => {
-            try_alloc_vector(t, n as usize)
-        }
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP => try_alloc_vector(t, n as usize),
+        CHARSXP => error_str("use of allocVector(CHARSXP ...) is defunct\n"),
         LISTSXP => Rf_allocList(n as c_int),
         LANGSXP => {
             if n == 0 {
@@ -150,7 +149,11 @@ pub unsafe extern "C" fn Rf_alloc3DArray(t: c_uint, nrow: c_int, ncol: c_int, nf
     if nrow < 0 || ncol < 0 || nface < 0 {
         error_str("negative extents to 3D array")
     }
-    let s = alloc_vector(t, nrow as isize * ncol as isize * nface as isize);
+    // R: array.c:alloc3DArray checks this against INT_MAX without long
+    // vector support; with it, the product must at least exist
+    let n = (nrow as isize).checked_mul(ncol as isize).and_then(|n| n.checked_mul(nface as isize));
+    let Some(n) = n else { error_str("'alloc3DArray': too many elements specified") };
+    let s = alloc_vector(t, n);
     Rf_protect(s);
     let d = c().alloc_vector(INTSXP, 3);
     let p = d.std_data() as *mut i32;
@@ -169,7 +172,11 @@ pub unsafe extern "C" fn Rf_allocArray(t: c_uint, dims: Sexp) -> Sexp {
     let p = INTEGER(dims);
     let mut n: isize = 1;
     for i in 0..nd {
-        n *= *p.add(i) as isize;
+        // R: array.c:allocArray, as alloc3DArray above
+        let Some(m) = n.checked_mul(*p.add(i) as isize) else {
+            error_str("'allocArray': too many elements specified by 'dims'")
+        };
+        n = m;
     }
     let s = alloc_vector(t, n);
     Rf_protect(s);
@@ -587,6 +594,15 @@ pub unsafe extern "C" fn ANY_ATTRIB(x: Sexp) -> c_int {
 pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
     if v.typ() != LISTSXP && v.typ() != NILSXP {
         error_str_owned(format!("value of 'SET_ATTRIB' must be a pairlist or NULL, not a '{}'", type_to_char(v)))
+    }
+    // The slot of a CHARSXP holds its hash (GNU R's holds the cache chain);
+    // clearing what ATTRIB reports as NULL changes nothing.
+    if x.typ() == CHARSXP {
+        if v == R_NilValue {
+            return;
+        }
+        // R: attrib.c:installAttrib
+        error_str("cannot set attribute on a CHARSXP")
     }
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);

@@ -248,7 +248,13 @@ fn the_api() {
         // simple usage, which still continues the unwind after a jump
         unsafe extern "C" fn null_cont_jump(_: *mut c_void) {
             unsafe {
-                capi::errors::R_UnwindProtect(fun_error, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), Sexp::NULL);
+                capi::errors::R_UnwindProtect(
+                    fun_error,
+                    std::ptr::null_mut(),
+                    cleanup,
+                    std::ptr::null_mut(),
+                    Sexp::NULL,
+                );
                 log("not reached: R_UnwindProtect continues the unwind".to_string());
             }
         }
@@ -287,6 +293,50 @@ fn the_api() {
         }
         assert_eq!(capi::errors::R_ToplevelExec(huge_r_alloc, std::ptr::null_mut()), 0);
         assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 931322.6 Gb".to_string()]);
+
+        // ---- memory.c:2755: only the cache makes CHARSXPs
+        unsafe extern "C" fn charsxp_vector(_: *mut c_void) {
+            unsafe { capi::memory::Rf_allocVector(CHARSXP as u32, 3) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(charsxp_vector, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: use of allocVector(CHARSXP ...) is defunct\n".to_string()]);
+
+        // ---- a CHARSXP's attribute slot is its hash: it stays in the cache
+        let ch = capi::memory::Rf_protect(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()));
+        capi::memory::CLEAR_ATTRIB(ch);
+        capi::memory::SET_ATTRIB(ch, R_NilValue);
+        assert_eq!(capi::memory::ATTRIB(ch), R_NilValue);
+        assert_eq!(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()), ch, "the hash survived");
+        unsafe extern "C" fn attrib_on_charsxp(_: *mut c_void) {
+            unsafe {
+                let ch = capi::memory::Rf_protect(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()));
+                let v = capi::memory::Rf_cons(R_NilValue, R_NilValue);
+                capi::memory::SET_ATTRIB(ch, v);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(attrib_on_charsxp, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: cannot set attribute on a CHARSXP".to_string()]);
+        capi::host::robigo_gc();
+        assert_eq!(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()), ch, "the hash survived");
+        capi::memory::Rf_unprotect(1);
+
+        // ---- extents whose product overflows R_xlen_t
+        unsafe extern "C" fn huge_3d(_: *mut c_void) {
+            unsafe { capi::memory::Rf_alloc3DArray(INTSXP as u32, c_int::MAX, c_int::MAX, c_int::MAX) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_3d, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: 'alloc3DArray': too many elements specified".to_string()]);
+        unsafe extern "C" fn huge_array(_: *mut c_void) {
+            unsafe {
+                let dims = capi::memory::Rf_protect(capi::memory::Rf_allocVector(INTSXP as u32, 3));
+                for k in 0..3 {
+                    *capi::memory::INTEGER(dims).add(k) = c_int::MAX;
+                }
+                capi::memory::Rf_allocArray(INTSXP as u32, dims);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_array, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: 'allocArray': too many elements specified by 'dims'".to_string()]);
 
         // ---- .Call through the 65-argument trampoline
         unsafe extern "C" fn add3(a: Sexp, b: Sexp, c: Sexp) -> Sexp {
