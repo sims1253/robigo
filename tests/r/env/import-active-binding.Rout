@@ -1,0 +1,40 @@
+[1] TRUE
+[1] 1
+[1] 2
+[1] 3
+{
+    n <<- n + 1
+    n
+}
+[1] "list"
+[1] "changed"
+[1] TRUE
+[1] "changed"
+imported
+forced
+[1] 42
+[1] 42
+[1] 1 2 3
+[1] 2
+[1] FALSE
+[1] "cannot change value of locked binding for 'p'"
+[1] "importIntoEnv(imp, \"x\", exp, \"no_such_export\")"
+[1] "exported symbol 'no_such_export' has no value"
+[1] "length of import and export names must match"
+[1] "invalid 'names' argument"
+[1] "use of NULL environment is defunct"
+[1] "bad import environment argument"
+[1] "bad export environment argument"
+[1] "use of NULL environment is defunct"
+[1] TRUE
+[1] TRUE
+[1] "symbol already has a regular binding"
+[1] "symbol already has a regular binding"
+[1] 1
+[1] "cannot change active binding if binding is locked"
+[1] "cannot change active binding if binding is locked"
+[1] "old"
+[1] "new"
+[1] "cannot add bindings to a locked environment"
+[1] "cannot add bindings to a locked environment"
+[1] FALSE
