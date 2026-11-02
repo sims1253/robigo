@@ -2,11 +2,53 @@
 
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp, flags, gp};
-use std::cell::RefCell;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     static ROOTS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
+    /// Non-zero: what heap chunks allocated on this thread hold at +8.
+    static CHUNK_WORD: Cell<u64> = const { Cell::new(0) };
 }
+
+/// The system allocator, except that a heap chunk (the only 64 KiB-aligned
+/// request) can be made to arrive with chosen contents, as recycled memory
+/// does: `malloc` gives no guarantee, so a test cannot wait for a chunk to
+/// come back dirty.
+struct DirtyChunks;
+
+// SAFETY: every request is forwarded to `System`; the only addition writes
+// one word inside a block that `System` just returned for a layout of at
+// least 64 KiB.
+unsafe impl GlobalAlloc for DirtyChunks {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        let p = unsafe { System.alloc(layout) };
+        if layout.align() == 1 << 16 && !p.is_null() {
+            let word = CHUNK_WORD.with(Cell::get);
+            if word != 0 {
+                // SAFETY: a heap chunk is at least 64 KiB, and aligned for u64.
+                unsafe { *(p as *mut u64).add(1) = word };
+            }
+        }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.dealloc(p, layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.realloc(p, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: DirtyChunks = DirtyChunks;
 
 unsafe fn mark_roots(c: &mut Core) {
     let roots = ROOTS.with(|r| r.borrow().clone());
@@ -618,4 +660,26 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
     c.collect();
     assert!(c.pop_finalizable().is_none());
     ROOTS.with(|r| r.borrow_mut().clear());
+}
+
+/// A large object's mark word lives in its chunk's header. The chunk comes
+/// from `malloc`, so if the word started out holding the next collection's
+/// epoch the object would look marked already and its children would not
+/// be traced.
+#[test]
+fn a_large_object_starts_unmarked_whatever_its_chunk_held() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    // only the rooted vector can keep the child alive
+    c.set_scan_top(0);
+    let next_epoch = c.stats.collections + 1;
+    CHUNK_WORD.with(|w| w.set(next_epoch));
+    let big = c.alloc_vector(VECSXP, 100_000);
+    CHUNK_WORD.with(|w| w.set(0));
+    root(big);
+    let child = c.alloc_vector(INTSXP, 1);
+    unsafe { *(big.std_data() as *mut Sexp) = child };
+    c.collect();
+    assert_eq!(c.stats.collections, next_epoch);
+    assert!(c.resolve(child.addr()).is_some(), "the large vector's child was swept");
 }

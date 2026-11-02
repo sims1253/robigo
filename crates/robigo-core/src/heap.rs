@@ -342,8 +342,13 @@ impl Heap {
         let (base, _) = self.try_new_chunk(true, total_payload)?;
         let base = base as usize;
         // a large chunk has no block header: clear the magic word so
-        // per-block bookkeeping never mistakes it for one
-        unsafe { *(base as *mut u64) = 0 };
+        // per-block bookkeeping never mistakes it for one, and the object's
+        // mark word (an epoch; epochs start at 1), as the allocator's memory
+        // is not zeroed and a stale epoch would read as already marked
+        unsafe {
+            *(base as *mut u64) = 0;
+            *(base as *mut u64).add(1) = 0;
+        }
         Some((base + DATA_OFF) as *mut u8)
     }
 
