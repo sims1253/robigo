@@ -314,3 +314,31 @@ plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
     `bzfile-roundtrip.R` (GNU R-recorded, byte-identical). The strict
     PR#18768 magic stays where R applies it: the gzfile()/file()
     dispatch (comp_type_from_memory).
+
+## 2026-11-02: memCompress/memDecompress
+
+- The `.Internal` pair was missing entirely (tracked by #215's
+  `memdecompress.R`, found while testing cli's bzip2 sysdata path).
+  Ported `connections.c:do_memCompress`/`do_memDecompress`: the zlib
+  format at compress()'s default level for "gzip" (flate2), bzip2
+  through libbz2 at block size 9, `type = "unknown"` detection per
+  `comp_type_from_memory` including the zlib prefix `78 9c` and the
+  "unknown compression, assuming none" warning, and R's switch default
+  (an unknown type returns the input).
+- xz and zstd are not linked: both directions raise explicit
+  "robigo: ... not implemented yet" errors; tracked by unmarked
+  `tests/r/io/memcompress-xz.R`.
+- `memdecompress.R` passes and is marked (GNU R-recorded round trips,
+  `unknown` dispatch, the assuming-none warning). Conformance green in
+  all three tiers; lint clean.
+  - Sol round 1: memDecompress now stops after the first stream, as
+    zlib/libdeflate and BZ2_bzBuffToBuffDecompress do (concatenated
+    members and trailing bytes return only the first member), and
+    "unknown" detection raises R's lzop error ("this is a
+    lzop-compressed file which this build of R does not support") —
+    all pinned in `memdecompress.R` (GNU R-recorded, byte-identical).
+  - Sol round 2 (S4): the failure statuses are now R's verbatim — the
+    gzip/zlib path reports libdeflate's (this R build has libdeflate;
+    any data error is status 1), the bzip2 path reports bzlib's codes
+    (magic -5, data -4, end-of-stream -7), all pinned in
+    `memdecompress.R` (GNU R-recorded, byte-identical).

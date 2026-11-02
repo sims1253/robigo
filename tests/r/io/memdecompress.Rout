@@ -2,3 +2,14 @@
  [1] 68 65 6c 6c 6f 20 6d 65 6d 44 65 63 6f 6d 70 72 65 73 73
  [1] 68 65 6c 6c 6f 20 6d 65 6d 44 65 63 6f 6d 70 72 65 73 73
 [1] "abc"
+[1] "whee"
+plain 1 
+[1] "zlibfmt"
+[1] "first"
+[1] "one"
+[1] "lead"
+[1] "lzop-E"
+[1] "internal error 1 in memDecompress(type = \"libdeflate\")"
+[1] "internal error -5 in memDecompress(type = \"bzip2\")"
+[1] "internal error 1 in memDecompress(type = \"libdeflate\")"
+[1] "internal error -7 in memDecompress(type = \"bzip2\")"
