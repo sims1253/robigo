@@ -31,6 +31,11 @@ fn not_a_vector_type(t: u8) -> ! {
 /// Releases an external payload or host handle when its object dies.
 pub type ReleaseFn = unsafe extern "C" fn(usize);
 
+// Stored at +48 of EXTDATA and HOST objects, which C can see: one word, and
+// null for None (a guarantee of `Option<fn>`, so capi's disarming write of 0
+// is `None`).
+const _: () = assert!(std::mem::size_of::<Option<ReleaseFn>>() == std::mem::size_of::<usize>());
+
 /// Counters the ledger records.
 #[derive(Debug, Clone, Default)]
 pub struct GcStats {
@@ -434,7 +439,7 @@ impl Core {
             x.set_truelen(0);
             *(x.0.add(32) as *mut *mut u8) = data;
             *(x.0.add(40) as *mut usize) = owner;
-            *(x.0.add(48) as *mut usize) = release.map_or(0, |f| f as usize);
+            *(x.0.add(48) as *mut Option<ReleaseFn>) = release;
         }
         x
     }
@@ -450,7 +455,7 @@ impl Core {
             x.set_cdr_raw(self.nil);
             x.set_tag_raw(self.nil);
             *(x.0.add(40) as *mut usize) = handle;
-            *(x.0.add(48) as *mut usize) = release.map_or(0, |f| f as usize);
+            *(x.0.add(48) as *mut Option<ReleaseFn>) = release;
         }
         x
     }
@@ -981,9 +986,9 @@ impl Core {
             if f & (flags::EXTDATA | flags::HOST) != 0 {
                 // EXTDATA and HOST objects both keep owner/handle at +40
                 // and the release function at +48
-                let (owner, rel) = (*(p.add(40) as *const usize), *(p.add(48) as *const usize));
-                if rel != 0 {
-                    self.releases.push((std::mem::transmute::<usize, ReleaseFn>(rel), owner));
+                let (owner, rel) = (*(p.add(40) as *const usize), *(p.add(48) as *const Option<ReleaseFn>));
+                if let Some(rel) = rel {
+                    self.releases.push((rel, owner));
                 }
             }
         }

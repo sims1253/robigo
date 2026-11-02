@@ -817,3 +817,24 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
     c.collect();
     assert_eq!(c.char_cache_len(), before, "a dead CHARSXP stayed in the cache");
 }
+
+static HOST_RELEASED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe extern "C" fn count_host_release(handle: usize) {
+    HOST_RELEASED.fetch_add(handle, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn host_release_runs_once_dead() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    c.alloc_host(ENVSXP, 7, Some(count_host_release));
+    c.alloc_host(ENVSXP, 100, None);
+    c.collect();
+    let releases = c.take_releases();
+    assert_eq!(releases.len(), 1, "a proxy without a release function queues nothing");
+    for (f, h) in releases {
+        unsafe { f(h) };
+    }
+    assert_eq!(HOST_RELEASED.load(std::sync::atomic::Ordering::SeqCst), 7);
+}

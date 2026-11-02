@@ -35,7 +35,7 @@ impl CharTable {
         let mask = self.slots.len() - 1;
         let mut i = h as usize & mask;
         loop {
-            let c = unsafe { *self.slots.get_unchecked(i) };
+            let c = self.slots[i];
             if c.is_null() {
                 return None;
             }

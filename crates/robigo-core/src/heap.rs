@@ -154,7 +154,7 @@ pub struct ClassState {
 pub struct Heap {
     /// sorted by base
     pub chunks: Vec<Chunk>,
-    pub classes: Vec<ClassState>,
+    pub classes: [ClassState; SIZES.len()],
     pub empty_pool: Vec<*mut Block>,
     pub min_addr: usize,
     pub max_addr: usize,
@@ -171,7 +171,7 @@ impl Heap {
     pub fn new() -> Heap {
         Heap {
             chunks: Vec::new(),
-            classes: (0..SIZES.len()).map(|_| ClassState { cur: std::ptr::null_mut(), blocks: Vec::new() }).collect(),
+            classes: std::array::from_fn(|_| ClassState { cur: std::ptr::null_mut(), blocks: Vec::new() }),
             empty_pool: Vec::new(),
             min_addr: usize::MAX,
             max_addr: 0,
@@ -257,7 +257,7 @@ impl Heap {
         let ci = class_index(size);
         // the fast path, inlined into the callers: the current block's
         // free list, then its bump region
-        let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
+        let cs = &mut self.classes[ci];
         let cur = cs.cur;
         if !cur.is_null() {
             let b = unsafe { &mut *cur };
@@ -290,10 +290,7 @@ impl Heap {
         // (classes above 256 bytes span four 16-byte sizes)
         let g = (SIZES[ci] / 16) as u32;
         loop {
-            // ci < SIZES.len() by construction (size <= MAX_SMALL); the
-            // checked index both emitted a panic edge that kept alloc from
-            // being inlined and (unlike the old raw cast) borrowed self
-            let cs = unsafe { &mut *self.classes.as_mut_ptr().add(ci) };
+            let cs = &mut self.classes[ci];
             let cur = cs.cur;
             if !cur.is_null() {
                 let b = unsafe { &mut *cur };
@@ -340,7 +337,7 @@ impl Heap {
             }
             let b = self.fresh_block();
             unsafe { (*b).class = ci as u8 };
-            cs.cur = b;
+            self.classes[ci].cur = b;
         }
     }
 
