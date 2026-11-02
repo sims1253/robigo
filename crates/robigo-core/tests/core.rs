@@ -213,7 +213,7 @@ fn extdata_release_runs_once_dead() {
         unsafe { f(h) };
     }
     let r = RELEASED.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(r <= 10 && r >= 5, "dead extdata released ({r}), live one not");
+    assert!((5..=10).contains(&r), "dead extdata released ({r}), live one not");
     unsafe {
         assert!(live.has_flag(flags::EXTDATA));
         assert_eq!(*(live.std_data() as *const f64).add(1), 2.5);

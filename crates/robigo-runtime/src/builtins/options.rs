@@ -523,7 +523,7 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             Value::Pairlist(p) => {
                 for a in &p.items {
                     items.push((
-                        Some(Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from("")))),
+                        Some(Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from("")))),
                         a.value.clone(),
                     ));
                 }
@@ -545,7 +545,7 @@ fn do_options(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     } else {
         for a in &args {
             items.push((
-                Some(Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from("")))),
+                Some(Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from("")))),
                 a.value.clone(),
             ));
         }

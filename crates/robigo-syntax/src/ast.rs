@@ -95,10 +95,7 @@ impl<'a> Expr<'a> {
     /// The function name, if this is a call to a symbol.
     pub fn call_name(&self) -> Option<&str> {
         match self {
-            Expr::Call { fun, .. } => match fun {
-                Expr::Sym(s, _) => Some(s),
-                _ => None,
-            },
+            Expr::Call { fun: Expr::Sym(s, _), .. } => Some(s),
             _ => None,
         }
     }

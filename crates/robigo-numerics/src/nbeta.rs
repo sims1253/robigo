@@ -35,13 +35,13 @@ pub fn dnbeta(x: f64, a: f64, b: f64, ncp: f64, give_log: bool) -> f64 {
     let dx2 = ncp2 * x;
     let d = (dx2 - a - 1.0) / 2.0;
     let mut dd = d * d + dx2 * (a + b) - a;
-    let k_max: i32;
-    if dd <= 0.0 {
-        k_max = 0;
+
+    let k_max: i32 = if dd <= 0.0 {
+        0
     } else {
         dd = (d + dd.sqrt()).ceil();
-        k_max = if dd > 0.0 { dd as i32 } else { 0 };
-    }
+        if dd > 0.0 { dd as i32 } else { 0 }
+    };
 
     // The starting "middle term" --- first look at its log scale:
     let mut term = LDouble::from_f64(dbeta(x, a + k_max as f64, b, true));
@@ -65,8 +65,8 @@ pub fn dnbeta(x: f64, a: f64, b: f64, ncp: f64, give_log: bool) -> f64 {
     while k > 0.0 && gt(term, sum * eps) {
         k -= 1.0;
         let q = (k + 1.0) * (k + a) / (k + a + b) / dx2; // 1 / r_k
-        term = term * q;
-        sum = sum + term;
+        term *= q;
+        sum += term;
     }
     // middle to the right
     term = LDouble::from_f64(1.0);
@@ -74,8 +74,8 @@ pub fn dnbeta(x: f64, a: f64, b: f64, ncp: f64, give_log: bool) -> f64 {
     loop {
         let q = dx2 * (k + a + b) / (k + a) / (k + 1.0); // r_{old k}
         k += 1.0;
-        term = term * q;
-        sum = sum + term;
+        term *= q;
+        sum += term;
         if !gt(term, sum * eps) {
             break;
         }
@@ -131,11 +131,11 @@ pub fn pnbeta_raw(x: f64, o_x: f64, a: f64, b: f64, ncp: f64) -> LDouble {
     loop {
         j += 1.0;
         temp -= gx.to_f64();
-        gx = gx * (x * (a + b + j - 1.0) / (a + j));
-        q = q * (c / j);
-        sumq = sumq - q;
+        gx *= x * (a + b + j - 1.0) / (a + j);
+        q *= c / j;
+        sumq -= q;
         let ax = LDouble::from_f64(temp) * q;
-        ans = ans + ax;
+        ans += ax;
         errbd = ((LDouble::from_f64(temp) - gx) * sumq).to_f64();
         if !(errbd > ERRMAX && j < ITRMAX as f64 + x0) {
             break;

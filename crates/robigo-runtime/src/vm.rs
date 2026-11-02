@@ -544,7 +544,7 @@ fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Opti
         Leaf::R(r) => num(&regs[*r as usize])?,
     };
     // NaN fails both comparisons.
-    (x >= 1.0 && x < 4503599627370496.0).then_some(x.trunc() - 1.0)
+    (1.0..4503599627370496.0).contains(&x).then_some(x.trunc() - 1.0)
 }
 
 /// How a variable index operand of `x[i]` / `x[i, j]` stands before its
@@ -1683,7 +1683,7 @@ fn run_inline_with(
     fill_empty(&mut slots_buf, code.vars.len(), || None);
     // Plain slices: indexing a SmallVec tests where its data is each time.
     let regs: &mut [RVal] = &mut regs_buf;
-    let mut slots: &mut [Option<RVal>] = &mut slots_buf;
+    let slots: &mut [Option<RVal>] = &mut slots_buf;
     for (k, slot) in info.formal_slots.iter().enumerate() {
         if let Some(s) = slot {
             slots[*s as usize] = Some(arg(interp, k)?);
@@ -1715,7 +1715,7 @@ fn run_inline_with(
             Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
             Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
             Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
-            Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(&mut slots, env, *sym, *slot)?,
+            Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(slots, env, *sym, *slot)?,
             Op::Guard { sym, .. } => {
                 if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
                     return None;
@@ -1733,16 +1733,16 @@ fn run_inline_with(
                 if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
                     return None;
                 }
-                let x = leaf(&mut slots, &regs, a)?;
-                let y = leaf(&mut slots, &regs, b)?;
+                let x = leaf(slots, regs, a)?;
+                let y = leaf(slots, regs, b)?;
                 regs[*dst as usize] = arith_fast(*op, x, y)?;
             }
             Op::RelL { op, dst, a, b, sym, g, .. } => {
                 if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
                     return None;
                 }
-                let x = leaf(&mut slots, &regs, a)?;
-                let y = leaf(&mut slots, &regs, b)?;
+                let x = leaf(slots, regs, a)?;
+                let y = leaf(slots, regs, b)?;
                 regs[*dst as usize] = rel_fast(*op, x, y);
             }
             Op::Neg { dst, a, .. } => {
@@ -2092,7 +2092,7 @@ fn try_inline_site(
     };
     match hit {
         Some(inline) => {
-            let Some(inline) = inline else { return None };
+            let inline = inline?;
             if !ns && !interp.resolves_to_base(head, env) {
                 return None;
             }
@@ -2129,9 +2129,7 @@ pub(crate) fn try_inline_expr(
     call: &Value,
     env: &Env,
 ) -> Option<RResult<Value>> {
-    let Some((caller, ns, compiled)) = simple_caller(interp) else {
-        return None;
-    };
+    let (caller, ns, compiled) = simple_caller(interp)?;
     if !ns && !compiled {
         return None;
     }
@@ -3198,7 +3196,7 @@ fn run_with(
                     }
                     None => {
                         flush!();
-                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, &mut vars, env, regs);
+                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, vars, env, regs);
                         match tryop!(r) {
                             Slow::Val(v) => v,
                             Slow::Next(r, v) => {
@@ -3269,7 +3267,7 @@ fn run_with(
                         let v = other.to_value();
                         flush!();
                         let c = code.consts[*call as usize].clone();
-                        let r = crate::coerce::as_condition(interp, &v, &c).map(|b| Value::lgl(b));
+                        let r = crate::coerce::as_condition(interp, &v, &c).map(Value::lgl);
                         let v = tryop!(signal(interp, r));
                         crate::coerce::as_logical(&v) != 0
                     }
@@ -3304,13 +3302,13 @@ fn run_with(
             }
             Op::Index { dst, x, slot, i, two, k } => {
                 interp.visible = true;
-                let mut fast = match scalar_index(&mut vars, env, &regs, i) {
-                    Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
+                let mut fast = match scalar_index(vars, env, regs, i) {
+                    Some(ix) => read_var(vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
                     None => None,
                 };
                 if let (None, Leaf::R(r), false) = (&fast, i, *two) {
                     if let RVal::Range { start, step, n } = regs[*r as usize] {
-                        fast = read_var(&mut vars, env, *x, *slot).and_then(|xv| range_subset(xv, start, step, n));
+                        fast = read_var(vars, env, *x, *slot).and_then(|xv| range_subset(xv, start, step, n));
                     }
                 }
                 if fast.is_none() && vars.get(*slot as usize).is_none() && unforced_promise(env, *x) {
@@ -3319,8 +3317,8 @@ fn run_with(
                     flush!();
                     let r = interp.eval_sym(*x, env);
                     tryop!(signal(interp, r));
-                    fast = match scalar_index(&mut vars, env, &regs, i) {
-                        Some(ix) => read_var(&mut vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
+                    fast = match scalar_index(vars, env, regs, i) {
+                        Some(ix) => read_var(vars, env, *x, *slot).and_then(|xv| element(xv, ix as usize, *two)),
                         None => None,
                     };
                 }
@@ -3462,7 +3460,7 @@ fn run_with(
                 interp.visible = true;
                 let fast = match &regs[*i as usize] {
                     RVal::Range { start, step, n } if !*two => range_subset(&regs[*x as usize], *start, *step, *n),
-                    _ => match scalar_index(&mut vars, env, regs, &Leaf::R(*i)) {
+                    _ => match scalar_index(vars, env, regs, &Leaf::R(*i)) {
                         Some(ix) => element(&regs[*x as usize], ix as usize, *two),
                         None => None,
                     },
@@ -3484,14 +3482,14 @@ fn run_with(
             }
             Op::Index2 { dst, x, slot, i, j, two, k } => {
                 interp.visible = true;
-                let mut fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, None), i, j);
+                let mut fast = matrix_element_at(vars, env, regs, (*x, *slot, None), i, j);
                 if fast.is_none() && vars.get(*slot as usize).is_none() && unforced_promise(env, *x) {
                     // `x` is an argument not yet forced: force it (`[`
                     // evaluates it first anyway), then retry.
                     flush!();
                     let r = interp.eval_sym(*x, env);
                     tryop!(signal(interp, r));
-                    fast = matrix_element_at(&mut vars, env, &regs, (*x, *slot, None), i, j);
+                    fast = matrix_element_at(vars, env, regs, (*x, *slot, None), i, j);
                 }
                 regs[*dst as usize] = match fast {
                     Some(v) => v,
@@ -3508,8 +3506,8 @@ fn run_with(
                 tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
             }
             Op::SetIndex2 { val, x, slot, i, j, two, k } => {
-                let done = match (scalar_index(&mut vars, env, &regs, i), scalar_index(&mut vars, env, &regs, j)) {
-                    (Some(a), Some(b)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                let done = match (scalar_index(vars, env, regs, i), scalar_index(vars, env, regs, j)) {
+                    (Some(a), Some(b)) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
                             Some(off) => set_element(xv, off, &regs[*val as usize], *two),
                             None => false,
@@ -3541,7 +3539,7 @@ fn run_with(
                 if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
                     vars.slots[*slot as usize] = SlotVal::Empty;
                 }
-                let done = match scalar_index(&mut vars, env, &regs, i) {
+                let done = match scalar_index(vars, env, regs, i) {
                     Some(ix) => super_set_element(interp, env, *x, ix as usize, &regs[*val as usize], *two),
                     None => false,
                 };
@@ -3552,7 +3550,7 @@ fn run_with(
             }
             Op::SetDollar { val, x, slot, name, k } => {
                 let Value::Str(nm) = &code.consts[*name as usize] else { unreachable!() };
-                let done = own_var(&mut vars, env, *x, *slot)
+                let done = own_var(vars, env, *x, *slot)
                     && match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &regs[*val as usize]),
                         _ => false,
@@ -3570,14 +3568,14 @@ fn run_with(
                     },
                     _ => None,
                 };
-                let done = match (range, scalar_index(&mut vars, env, &regs, i)) {
-                    (Some((start, step, n)), _) if own_var(&mut vars, env, *x, *slot) => {
+                let done = match (range, scalar_index(vars, env, regs, i)) {
+                    (Some((start, step, n)), _) if own_var(vars, env, *x, *slot) => {
                         match &mut vars.slots[*slot as usize] {
                             SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &regs[*val as usize]),
                             _ => false,
                         }
                     }
-                    (None, Some(ix)) if own_var(&mut vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                    (None, Some(ix)) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
                         SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[*val as usize], *two),
                         _ => false,
                     },
@@ -3675,7 +3673,7 @@ fn run_with(
                     },
                     RangeKind::SeqLen => match scalar(&regs[*a as usize]) {
                         Some(Num::I(n)) if n != NA_INTEGER && n >= 0 => Some((1, 1, n as u64)),
-                        Some(Num::D(d)) if d >= 0.0 && d < 2147483647.0 => Some((1, 1, d as u64)),
+                        Some(Num::D(d)) if (0.0..2147483647.0).contains(&d) => Some((1, 1, d as u64)),
                         _ => None,
                     },
                     RangeKind::SeqAlong => match &regs[*a as usize] {
@@ -3716,7 +3714,7 @@ fn run_with(
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
                     // (Not for a closure already known not to be pure.)
                     if !matches!(clo.inline.get(), Some(None))
-                        && let Some(v) = inline_site_call(interp, clo, leaves, &mut vars, env, regs)
+                        && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs)
                     {
                         interp.visible = true;
                         regs[*dst as usize] = v;
@@ -3762,7 +3760,7 @@ fn run_with(
                 regs[*dst as usize] = v;
             }
             Op::ForSeqLength { len, seq, call } => {
-                let n = match leaf_num(&mut vars, env, &regs, len) {
+                let n = match leaf_num(vars, env, regs, len) {
                     Some(n) => {
                         flush!();
                         seq_length_range(interp, env, n)
@@ -3816,7 +3814,7 @@ fn run_with(
                 let v = r.into_value();
                 // R: context.c:findcontext — a `return` with no target
                 // context is a catchable error at the jump site.
-                if !interp.has_return_target(&env) {
+                if !interp.has_return_target(env) {
                     flush!();
                     return Err(Flow::error("no function to return from, jumping to top level"));
                 }

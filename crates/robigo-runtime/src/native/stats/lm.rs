@@ -17,7 +17,7 @@ pub fn cdqrls(i: &mut Interp, x: &Value, y: &Value, tol: &Value, chk: &Value) ->
     }
     let (n, p) = (dims[0] as usize, dims[1] as usize);
     let ylen = y.len();
-    let ny = if n > 0 { ylen / n } else { 0 };
+    let ny = ylen.checked_div(n).unwrap_or(0);
     if check && n * ny != ylen {
         return Err(Flow::error(format!("dimensions of 'x' ({},{}) and 'y' ({}) do not match", n, p, ylen)));
     }

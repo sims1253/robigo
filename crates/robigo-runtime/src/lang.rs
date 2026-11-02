@@ -44,12 +44,7 @@ pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
         Expr::Call { fun, args, .. } => {
             let args = args
                 .iter()
-                .map(|a| {
-                    Arg::new(
-                        a.name.as_deref().map(Sym::new),
-                        a.value.as_ref().map(rec).unwrap_or_else(Value::missing_arg),
-                    )
-                })
+                .map(|a| Arg::new(a.name.map(Sym::new), a.value.as_ref().map(rec).unwrap_or_else(Value::missing_arg)))
                 .collect();
             Value::lang(rec(fun), args)
         }
@@ -57,7 +52,7 @@ pub fn expr_to_value_src(e: &Expr, src: Option<(&str, &str)>) -> Value {
             let formals: Vec<Arg> = formals
                 .iter()
                 .map(|f| {
-                    Arg::new(Some(Sym::new(&f.name)), f.default.as_ref().map(rec).unwrap_or_else(Value::missing_arg))
+                    Arg::new(Some(Sym::new(f.name)), f.default.as_ref().map(rec).unwrap_or_else(Value::missing_arg))
                 })
                 .collect();
             let body = rec(body);

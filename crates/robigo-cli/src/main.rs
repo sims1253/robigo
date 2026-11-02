@@ -638,7 +638,7 @@ fn line_profile(report: &pprof::Report) -> String {
     for (title, map) in [("innermost (inlined) location", inner), ("location in the physical function", outer)] {
         out.push_str(&format!("\n== {}\n", title));
         let mut v: Vec<_> = map.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.sort_by_key(|e| std::cmp::Reverse(e.1));
         for (k, n) in v.into_iter().take(40) {
             out.push_str(&format!("{:5.1}%  {}\n", 100.0 * n as f64 / total as f64, k));
         }

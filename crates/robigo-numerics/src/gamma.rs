@@ -160,7 +160,7 @@ pub fn lgammafn_sign(x: f64, sgn: Option<&mut i32>) -> f64 {
     if x.is_nan() {
         return x;
     }
-    if let Some(s) = sgn.as_deref_mut() {
+    if let Some(s) = sgn {
         if x < 0.0 && fmod((-x).floor(), 2.0) == 0.0 {
             *s = -1;
         }

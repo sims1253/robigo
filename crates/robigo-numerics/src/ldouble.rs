@@ -803,7 +803,7 @@ mod x87_vs_soft {
         let b = match rng.below(8) {
             0 => rng.next(),
             1 => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x0010_0000_0000_0000, // tiny exponent
-            2 => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x0000_0000_0000_0000, // denormals
+            2 => rng.next() & 0x800f_ffff_ffff_ffff,                           // denormals
             3 => (rng.next() & 0x800f_ffff_ffff_ffff) | 0x7fe0_0000_0000_0000, // huge
             4 => (rng.next() & 0x8010_ffff_ffff_ffff) | 0x7ff0_0000_0000_0000, // NaN
             5 => rng.next() & 0x7fff_ffff_ffff_ffff,                           // [0, 2)
@@ -1033,7 +1033,7 @@ mod x87_vs_soft {
                 nan.push(ld(se, m));
             }
         }
-        let plain = vec![
+        let plain = [
             ld(0x3fff, 0x8000_0000_0000_0000),
             ld(0x0000, 0),
             ld(0x7fff, 0x8000_0000_0000_0000),
@@ -1085,7 +1085,7 @@ mod x87_vs_soft {
                 1 => rng.next() as i32 as f64,
                 2 => (rng.next() as f64) / 65536.0 - 32768.0,
                 3 => f64::from_bits((rng.next() & 0x800f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000),
-                4 => f64::from_bits((rng.next() & 0x800f_ffff_ffff_ffff) | 0x0000_0000_0000_0000),
+                4 => f64::from_bits(rng.next() & 0x800f_ffff_ffff_ffff),
                 _ => (rng.next() % 200) as f64 - 100.0,
             }
         };
@@ -1203,7 +1203,7 @@ mod x87_vs_soft {
                 }
                 (s * m as i128, -16446)
             } else {
-                (s * (m as i128) << 0, e - 16383 - 63)
+                ((s * (m as i128)), e - 16383 - 63)
             }
         };
         let (va, ka) = dec(sa, ma);
@@ -1251,7 +1251,7 @@ mod x87_vs_soft {
         let mut far = 0u64; // differences of more than 1 ulp: never ok
         let mut last_bit = 0u64; // 1-ulp differences (glibc's own error)
         let mut total = 0u64;
-        let mut rng = Rng::new(0x5AFE_0B5E_0DD0_011);
+        let mut rng = Rng::new(0x5AF_E0B5_E0DD_0011);
         let mut shown = 0u64;
         fn note(
             kind: &str,

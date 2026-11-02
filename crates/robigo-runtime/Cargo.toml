@@ -43,3 +43,6 @@ fancy-regex = "0.16"
 op-stats = []
 
 bytecode-fidelity = []
+
+[lints]
+workspace = true

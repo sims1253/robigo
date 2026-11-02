@@ -962,13 +962,13 @@ fn binary_name(t: &Tok) -> &'static str {
     match t {
         Tok::Question => "?",
         Tok::EqAssign => "=",
-        Tok::LeftAssign(op) => *op,
+        Tok::LeftAssign(op) => op,
         Tok::Tilde => "~",
         Tok::Or => "|",
         Tok::Or2 => "||",
         Tok::And => "&",
         Tok::And2 => "&&",
-        Tok::Cmp(op) => *op,
+        Tok::Cmp(op) => op,
         Tok::Plus => "+",
         Tok::Minus => "-",
         Tok::Star => "*",
@@ -1085,7 +1085,6 @@ fn substitute_extraction_placeholder<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ConsoleStatus::*;
 
     /// The console statuses GNU R 4.5.0 produces for these chunks were
     /// verified by feeding them to `R --vanilla` on stdin (prompts,
@@ -1095,17 +1094,17 @@ mod tests {
     /// the rest of the line to the next chunk.
     #[test]
     fn console_statuses() {
-        let null = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Null);
-        let incomplete = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Incomplete);
-        let eof = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Eof);
-        let error = |s: &str, msg: &str| match parse_console(&mut Arena::new(), s) {
+        let null = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Null);
+        let incomplete = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Incomplete);
+        let eof = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Eof);
+        let error = |s: &str, msg: &str| match parse_console(&Arena::new(), s) {
             ConsoleStatus::Error(e) => {
                 assert_eq!(e.message, msg, "chunk {s:?}");
                 true
             }
             _ => false,
         };
-        let ok = |s: &str| matches!(parse_console(&mut Arena::new(), s), ConsoleStatus::Ok(..));
+        let ok = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Ok(..));
 
         // prog: '\n' — blank and comment-only chunks (with the newline).
         assert!(null("\n"));
@@ -1168,15 +1167,15 @@ mod tests {
     /// GenerateCode gate makes them fire on the real parse alone.
     #[test]
     fn console_warnings() {
-        match parse_console(&mut Arena::new(), "1.5L\n") {
+        match parse_console(&Arena::new(), "1.5L\n") {
             ConsoleStatus::Ok(_, w) => assert_eq!(w, ["integer literal 1.5L contains decimal; using numeric value"]),
             other => panic!("{other:?}"),
         }
-        match parse_console(&mut Arena::new(), "1.5L +\n") {
+        match parse_console(&Arena::new(), "1.5L +\n") {
             ConsoleStatus::Incomplete => {}
             other => panic!("{other:?}"),
         }
-        match parse_console(&mut Arena::new(), "1e-3L\n") {
+        match parse_console(&Arena::new(), "1e-3L\n") {
             // `seendot && !seenexp` picks the message (verified against
             // GNU R: no dot before the exponent says "non-integer value").
             ConsoleStatus::Ok(_, w) => assert_eq!(w, ["non-integer value 1e-3L qualified with L; using numeric value"]),
@@ -1191,13 +1190,13 @@ mod tests {
         // A bare placeholder as the pipe RHS errors in the rewrite
         // (verified against GNU R); one surviving in the tree gives
         // checkForPlaceholder's message.
-        match parse_console(&mut Arena::new(), "x |> _\n") {
+        match parse_console(&Arena::new(), "x |> _\n") {
             ConsoleStatus::Error(e) => {
                 assert_eq!(e.message, "The pipe operator requires a function call as RHS")
             }
             other => panic!("{other:?}"),
         }
-        match parse_console(&mut Arena::new(), "f(x, _)\n") {
+        match parse_console(&Arena::new(), "f(x, _)\n") {
             ConsoleStatus::Error(e) => assert_eq!(e.message, "invalid use of pipe placeholder"),
             other => panic!("{other:?}"),
         }
@@ -1206,8 +1205,8 @@ mod tests {
     #[test]
     fn pipe_extraction_substitutes() {
         // `x |> _$a[[1]]` builds the extraction chain over x.
-        let mut arena = Arena::new();
-        let exprs = parse_program(&mut arena, "x |> _$a[[1]]\n").unwrap();
+        let arena = Arena::new();
+        let exprs = parse_program(&arena, "x |> _$a[[1]]\n").unwrap();
         let d = crate::dump::dump(&exprs[0]);
         assert_eq!(String::from_utf8_lossy(&d), "(`[[` (`$` `x` `a`) dbl:1)");
     }

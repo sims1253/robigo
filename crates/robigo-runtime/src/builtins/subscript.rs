@@ -259,7 +259,7 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
             if indx == -1 {
                 indx = nx;
             }
-            *newname = Some(Some(want.into()));
+            *newname = Some(Some(want));
         }
         _ => return Err(ecall(call, format!("invalid subscript type '{}'", s.type_name()))),
     }

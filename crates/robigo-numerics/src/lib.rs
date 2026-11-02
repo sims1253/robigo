@@ -7,13 +7,7 @@
 //! are collected in a thread-local buffer; builtins drain it with
 //! [`take_warnings`] and emit them against the right call.
 
-#![allow(
-    non_snake_case,
-    clippy::excessive_precision,
-    clippy::many_single_char_names,
-    clippy::too_many_arguments,
-    clippy::neg_cmp_op_on_partial_ord
-)]
+#![allow(non_snake_case, clippy::many_single_char_names)]
 
 use std::cell::RefCell;
 

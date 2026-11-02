@@ -1301,7 +1301,7 @@ fn do_radixsort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RR
         Value::Lgl(v) => v.data.clone(),
         other => crate::coerce::to_lgl(other, &mut Default::default()),
     };
-    if dec.iter().any(|&d| d == NA_LOGICAL) {
+    if dec.contains(&NA_LOGICAL) {
         return Err(Flow::error("'decreasing' elements must be TRUE or FALSE"));
     }
     let n = nl.max(0) as usize;

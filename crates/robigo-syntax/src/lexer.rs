@@ -194,16 +194,14 @@ impl<'a> Lexer<'a> {
 
     fn peek_char_at(&self, offset: usize) -> Option<char> {
         // ASCII up to `offset`: index bytes directly.
-        let mut i = self.pos;
         for k in 0..=offset {
-            let b = *self.bytes.get(i)?;
+            let b = *self.bytes.get(self.pos + k)?;
             if b >= 0x80 {
                 return self.src[self.pos..].chars().nth(offset);
             }
             if k == offset {
                 return Some(b as char);
             }
-            i += 1;
         }
         None
     }

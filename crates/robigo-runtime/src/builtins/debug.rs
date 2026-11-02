@@ -24,11 +24,11 @@ fn check_x(args: &[Arg], call: &Value) -> RResult<()> {
     Ok(())
 }
 
-/// debug.c's RTRACE bit: which objects `tracemem()` marked. Copy
-/// reporting (`memtrace_report`) needs allocator hooks and prints raw
-/// addresses no recording can match; the flag and the address strings
-/// are what R-level code observes.
 thread_local! {
+    /// debug.c's RTRACE bit: which objects `tracemem()` marked. Copy
+    /// reporting (`memtrace_report`) needs allocator hooks and prints raw
+    /// addresses no recording can match; the flag and the address strings
+    /// are what R-level code observes.
     static TRACED: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
 }

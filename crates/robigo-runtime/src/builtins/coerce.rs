@@ -85,7 +85,7 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
                 format!("cannot coerce type '{}' to vector of type '{}'", x.type_name(), t.name()),
             ));
         }
-        Value::Sym(sy) if t == VType::Str => return Ok(Value::strs(vec![Some(sy.name().into())])),
+        Value::Sym(sy) if t == VType::Str => return Ok(Value::strs(vec![Some(sy.name())])),
         Value::Sym(_) => {
             return Err(Flow::error(format!("cannot coerce type 'symbol' to vector of type '{}'", t.name())));
         }
@@ -191,7 +191,7 @@ fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     let mode = match &args[1].value {
         // R: isValidString — length at least 1 and the first element not
         // NA; a longer vector uses its first element.
-        Value::Str(m) if m.data.len() >= 1 && m.data[0].is_some() => m.data[0].clone().unwrap(),
+        Value::Str(m) if !m.data.is_empty() && m.data[0].is_some() => m.data[0].clone().unwrap(),
         _ => return Err(Flow::error("'value' must be non-null character string")),
     };
     let t = match &*mode {
@@ -342,7 +342,7 @@ pub fn as_vector(i: &mut Interp, x: Value, mode: &str, call: &Value) -> RResult<
             if let Value::Sym(_) = &x {
                 return Err(Flow::error_call(
                     call.clone(),
-                    format!("cannot coerce type 'symbol' to vector of type 'pairlist'"),
+                    "cannot coerce type 'symbol' to vector of type 'pairlist'".to_string(),
                 ));
             }
             // R: coerce.c:coercePairList — language objects whose

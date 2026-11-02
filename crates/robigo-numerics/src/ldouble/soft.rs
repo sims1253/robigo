@@ -440,7 +440,7 @@ fn add_core(ma: u64, ea: i32, mb: u64, eb: i32, s: bool, sub: bool) -> LDouble {
         // smaller operand is below half an ulp: the exact sum rounds to
         // the larger operand either way.
         if de == 65 && ma == 1u64 << 63 && sub && ea >= E_MIN && mb > 1u64 << 63 {
-            return if ea - 1 >= E_MIN { make(s, (ea - 1 + BIAS) as u16, u64::MAX) } else { make(s, 0, u64::MAX) };
+            return if ea > E_MIN { make(s, (ea - 1 + BIAS) as u16, u64::MAX) } else { make(s, 0, u64::MAX) };
         }
         return make(s, (ea + BIAS) as u16, ma);
     }
@@ -568,7 +568,7 @@ pub fn sqrt(x: &LDouble) -> LDouble {
     // is impossible (no tie).
     let mut mant = sq;
     let mut e2 = e_s;
-    if rem >= (sq as u128) + 1 {
+    if rem > (sq as u128) {
         if sq == u64::MAX {
             // Carried past a full significand.
             e2 += 1;

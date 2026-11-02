@@ -300,7 +300,7 @@ fn do_load_from_conn2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRe
                 for a in &p.items {
                     if let Some(t) = a.tag {
                         aenv.set_local(t, a.value.clone());
-                        names.push(Some(t.name().into()));
+                        names.push(Some(t.name()));
                     }
                 }
             }
@@ -377,7 +377,7 @@ pub fn decompress(data: &[u8], method: i32) -> Result<Vec<u8>, DecompressFail> {
         3 => decompress3(data),
         2 => Err(DecompressFail::Unsupported("bzip2")),
         1 => decompress1(data),
-        0 | _ => Ok(data.to_vec()),
+        _ => Ok(data.to_vec()),
     }
 }
 
@@ -740,9 +740,6 @@ fn default_save_version() -> i32 {
             .ok()
             .and_then(|v| std::ffi::CString::new(v).ok())
             .map(|v| unsafe { libc::atoi(v.as_ptr()) });
-        match version {
-            Some(v @ (2 | 3)) => v,
-            _ => 3,
-        }
+        version.filter(|v| matches!(v, 2 | 3)).unwrap_or(3)
     })
 }

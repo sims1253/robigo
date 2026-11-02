@@ -11,3 +11,6 @@ keywords = ["r", "statistics", "numerics", "special-functions"]
 categories = ["science", "mathematics"]
 
 [dependencies]
+
+[lints]
+workspace = true

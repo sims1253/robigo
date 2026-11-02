@@ -1806,7 +1806,7 @@ fn tags_to_names(items: &[Arg]) -> Option<Value> {
     Some(Value::strs(
         items
             .iter()
-            .map(|a| Some(a.tag.map(|t| t.name().into()).unwrap_or_else(|| crate::value::RString::from(""))))
+            .map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| crate::value::RString::from(""))))
             .collect(),
     ))
 }
