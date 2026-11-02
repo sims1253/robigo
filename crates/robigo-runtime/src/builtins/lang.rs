@@ -1427,14 +1427,20 @@ impl Interp {
 fn do_recall(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // The function that called Recall's closure.
     let Some(i) = interp.current_frame() else { return Err(Flow::error("'Recall' called from outside a closure")) };
+    // R: eval.c:do_recall takes `cptr->promargs` for the enclosing call, so
+    // the arguments of `Recall(...)` stay promises of the original call's
+    // expressions (e.g. a missing argument in a pairlist is never forced).
+    let promargs = match env.lookup(s::DOTS) {
+        Some((Value::Dots(d), _)) => d.as_ref().clone(),
+        _ => args,
+    };
     let parent_env = interp.frames[i].sysparent.clone();
     let Some(j) = interp.frame_of_env(&parent_env) else {
         return Err(Flow::error("'Recall' called from outside a closure"));
     };
     let f = interp.frames[j].function.clone();
     let call = interp.frames[j].call.clone();
-    let _ = env;
-    interp.apply_function(&f, args, &parent_env, &call)
+    interp.apply_function(&f, promargs, &parent_env, &call)
 }
 
 // ----------------------------------------------------------------------

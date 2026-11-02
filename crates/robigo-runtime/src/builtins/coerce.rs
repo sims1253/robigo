@@ -120,11 +120,9 @@ fn do_as_integer(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Val
     as_atomic(i, c, a, e, "as.integer", VType::Int)
 }
 fn do_as_double(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
-    let generic = match c {
-        Value::Lang(l) if l.fun_sym().is_some_and(|s| &*s.name() == "as.numeric") => "as.numeric",
-        _ => "as.double",
-    };
-    as_atomic(i, c, a, e, generic, VType::Real)
+    // R: names.c maps both `as.double` and `as.numeric` to do_asatomic with
+    // PRIMVAL 2, whose DispatchOrEval generic is always "as.double".
+    as_atomic(i, c, a, e, "as.double", VType::Real)
 }
 fn do_as_complex(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
     as_atomic(i, c, a, e, "as.complex", VType::Cplx)
