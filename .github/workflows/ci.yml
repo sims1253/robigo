@@ -201,6 +201,9 @@ jobs:
   # recorded result (scripts/cran-gate.py; docs/verification.md).
   cran:
     needs: build
+    # A backstop only: above the steps' own limits with every package hanging.
+    # That is 25 min per package plus setup, so raise it as packages.tsv grows.
+    timeout-minutes: 60
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
     steps:
@@ -223,6 +226,7 @@ jobs:
           scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
       - name: Run the CRAN gate
         run: |
+          python3 scripts/test-cran-gate.py
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           ROBIGO=dist/robigo python3 scripts/cran-gate.py run | tee -a "$GITHUB_STEP_SUMMARY"
