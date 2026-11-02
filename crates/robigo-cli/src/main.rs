@@ -478,8 +478,7 @@ fn real_main() -> ExitCode {
                 break; // the script (its arguments follow it)
             }
             if let Some(v) = args[k].strip_prefix("--default-packages=") {
-                // SAFETY: single-threaded at this point.
-                unsafe { std::env::set_var("R_DEFAULT_PACKAGES", v) };
+                robigo_runtime::sys::set_env("R_DEFAULT_PACKAGES", v);
                 args.remove(k);
                 continue;
             }

@@ -694,10 +694,9 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         let empty = std::env::temp_dir().join(format!("robigo-no-natives-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
-        // safety: no other test holds the lock while this is set
-        unsafe { std::env::set_var("ROBIGO_NATIVES", &empty) };
+        crate::sys::set_env("ROBIGO_NATIVES", &empty);
         let msg = super::unimplemented_routine_message("grid", "initGrid");
-        unsafe { std::env::remove_var("ROBIGO_NATIVES") };
+        crate::sys::remove_env("ROBIGO_NATIVES");
         assert!(msg.starts_with("robigo: native routine 'initGrid' of package 'grid' is not implemented yet"));
         assert!(msg.contains("scripts/build-natives.sh grid"), "message was: {msg}");
 

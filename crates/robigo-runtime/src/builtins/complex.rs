@@ -200,12 +200,8 @@ pub fn cmul(a: Complex, b: Complex) -> Complex {
 /// shows as NA vs NaN).
 #[inline(always)]
 fn sse_pair<const OP: u8>(a: Complex, b: Complex) -> Complex {
-    // SAFETY: Complex is #[repr(C)] { re, im }: the layout of [f64; 2].
-    unsafe {
-        let a = core::mem::transmute::<Complex, [f64; 2]>(a);
-        let b = core::mem::transmute::<Complex, [f64; 2]>(b);
-        core::mem::transmute::<[f64; 2], Complex>(sse::packed::<OP>(a, b))
-    }
+    let [re, im] = sse::packed::<OP>([a.re, a.im], [b.re, b.im]);
+    Complex { re, im }
 }
 
 // R: complex.c:complex_binary PLUSOP. GCC commuted the adds of the

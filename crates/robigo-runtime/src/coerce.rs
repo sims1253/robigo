@@ -322,8 +322,7 @@ fn int_to_str_new(x: i32) -> RStr {
         i -= 1;
         buf[i] = b'-';
     }
-    // SAFETY: ASCII digits and '-'.
-    rstr(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
+    Some(crate::value::RString::from_bytes(&buf[i..], crate::value::Encoding::Native))
 }
 
 pub fn cplx_to_str(z: Complex) -> RStr {

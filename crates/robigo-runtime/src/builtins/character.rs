@@ -1304,21 +1304,8 @@ fn parse_enc(e: &str) -> Option<Enc> {
 /// Whether the C library's iconv knows the conversion; R reports a failing
 /// `iconv_open` as an unsupported conversion. "" is the native encoding.
 fn system_iconv_supports(from: &str, to: &str) -> bool {
-    use std::ffi::CString;
-    let native = |e: &str| if e.is_empty() { "UTF-8".to_string() } else { e.to_string() };
-    let (Ok(f), Ok(t)) = (CString::new(native(from)), CString::new(native(to))) else {
-        return false;
-    };
-    // SAFETY: both arguments are valid NUL-terminated strings; the
-    // descriptor is closed right away.
-    unsafe {
-        let cd = libc::iconv_open(t.as_ptr(), f.as_ptr());
-        if cd as isize == -1 {
-            return false;
-        }
-        libc::iconv_close(cd);
-    }
-    true
+    let native = |e| if e == "" { "UTF-8" } else { e };
+    crate::sys::iconv_supported(native(to), native(from))
 }
 
 // R: sysutils.c:do_iconv (UTF-8, ASCII and Latin-1 byte windows)

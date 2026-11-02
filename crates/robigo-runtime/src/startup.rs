@@ -27,9 +27,7 @@ pub struct StartupOptions {
 }
 
 fn setenv(name: &str, value: &str) {
-    // SAFETY: called during single-threaded startup or from the R
-    // evaluator, which is single-threaded.
-    unsafe { std::env::set_var(name, value) }
+    crate::sys::set_env(name, value);
 }
 
 /// robigo's own `R_HOME` (`scripts/robigo-home.sh`): `home/` beside the

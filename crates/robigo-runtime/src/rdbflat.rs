@@ -81,41 +81,8 @@ type FlatIndex = HashMap<(u64, u32), (u64, u32), BuildHasherDefault<Fx>>;
 type PathMap<V> = HashMap<PathBuf, V, BuildHasherDefault<Fx>>;
 
 struct Flat {
-    map: Mmap,
+    map: crate::sys::Mmap,
     index: FlatIndex,
-}
-
-/// A read-only, private file mapping. Only the pages actually served
-/// from it are ever read into the process, so a flat file costs memory
-/// for the entries a run fetched, not for all of them.
-struct Mmap {
-    ptr: *mut u8,
-    len: usize,
-}
-
-impl Mmap {
-    fn new(f: &std::fs::File, len: u64) -> Option<Mmap> {
-        use std::os::unix::io::AsRawFd;
-        let len = usize::try_from(len).ok()?;
-        if len == 0 || len > isize::MAX as usize {
-            return None;
-        }
-        let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
-        if p == libc::MAP_FAILED {
-            return None;
-        }
-        Some(Mmap { ptr: p as *mut u8, len })
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-}
-
-impl Drop for Mmap {
-    fn drop(&mut self) {
-        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
-    }
 }
 
 #[derive(Default)]
@@ -205,7 +172,7 @@ fn load(path: &Path, rdb: &Path, size: u64, mtime_ns: u64) -> Option<Flat> {
     }
     let f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
-    let map = Mmap::new(&f, len)?;
+    let map = crate::sys::Mmap::new(&f, len)?;
     let bytes = map.as_slice();
     if bytes.len() < 32 || &bytes[..8] != b"RFLAT01\n" {
         return None;

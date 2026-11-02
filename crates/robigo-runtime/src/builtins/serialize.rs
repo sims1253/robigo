@@ -669,7 +669,6 @@ fn valid_file_name(v: &Value) -> Option<&RStr> {
 
 // R: saveload.c:do_savefile, R_SaveToFileV.
 fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    use std::os::fd::IntoRawFd;
     let file = arg(&args, 1);
     let name = valid_file_name(&file).ok_or_else(|| Flow::error("'file' must be non-empty string"))?;
     let ascii = arg(&args, 2);
@@ -688,19 +687,14 @@ fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     // R uses buffered FILE output, including on an error that unwinds
     // past fclose. Keep libc's pending bytes and exit-time flushing too.
-    let fd = file.into_raw_fd();
-    let file = unsafe { libc::fdopen(fd, c"wb".as_ptr()) };
-    if file.is_null() {
-        unsafe {
-            libc::close(fd);
-        }
+    let Some(mut file) = crate::sys::CFile::for_writing(file.into()) else {
         return Err(Flow::error("unable to open 'file'"));
-    }
+    };
     let magic = format!("RD{}{}\n", if ascii { 'A' } else { 'X' }, if version == 2 { 2 } else { 3 });
-    write_save_bytes(file, magic.as_bytes())?;
+    write_save_bytes(&mut file, magic.as_bytes())?;
     if version > 3 {
         // R_Serialize writes OutFormat before validating the version.
-        write_save_bytes(file, if ascii { b"A\n" } else { b"X\n" })?;
+        write_save_bytes(&mut file, if ascii { b"A\n" } else { b"X\n" })?;
         return Err(Flow::error(format!("version {version} not supported")));
     }
     let object = arg(&args, 0);
@@ -709,16 +703,14 @@ fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     } else {
         crate::serialize::serialize_version(&object, version)
     };
-    write_save_bytes(file, &bytes)?;
-    unsafe {
-        libc::fclose(file);
-    }
+    write_save_bytes(&mut file, &bytes)?;
+    file.close();
     Ok(Value::Null)
 }
 
 // R: serialize.c:OutBytesFile.
-fn write_save_bytes(file: *mut libc::FILE, bytes: &[u8]) -> RResult<()> {
-    if unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), file) } != bytes.len() {
+fn write_save_bytes(file: &mut crate::sys::CFile, bytes: &[u8]) -> RResult<()> {
+    if !file.write(bytes) {
         return Err(Flow::error("write failed"));
     }
     Ok(())
@@ -736,10 +728,7 @@ fn open_save_file(_: &mut Interp, name: &RStr, write: bool) -> RResult<std::fs::
 fn default_save_version() -> i32 {
     static VERSION: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *VERSION.get_or_init(|| {
-        let version = std::env::var("R_DEFAULT_SAVE_VERSION")
-            .ok()
-            .and_then(|v| std::ffi::CString::new(v).ok())
-            .map(|v| unsafe { libc::atoi(v.as_ptr()) });
+        let version = std::env::var("R_DEFAULT_SAVE_VERSION").ok().and_then(|v| crate::sys::atoi(&v));
         version.filter(|v| matches!(v, 2 | 3)).unwrap_or(3)
     })
 }
