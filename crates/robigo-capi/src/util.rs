@@ -288,7 +288,7 @@ pub unsafe extern "C" fn Rf_nrows(s: Sexp) -> c_int {
     if is_vector(s) || Rf_isList(s) != 0 {
         let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
         if t == R_NilValue {
-            return LENGTH(s);
+            return Rf_length(s);
         }
         return *INTEGER(t);
     } else if Rf_isFrame(s) != 0 {
@@ -349,7 +349,8 @@ pub unsafe extern "C" fn IS_SCALAR(x: Sexp, ty: c_int) -> c_int {
     if x.is_null() {
         return 0;
     }
-    (x.typ() as c_int == ty && XLENGTH(x) == 1) as c_int
+    // GNU R's scalar bit is set for vectors of length 1 only
+    (x.typ() as c_int == ty && !matches!(x.typ(), NILSXP | LISTSXP | LANGSXP | DOTSXP) && XLENGTH(x) == 1) as c_int
 }
 
 // R: Rinlinedfuns.h:XTRUELENGTH

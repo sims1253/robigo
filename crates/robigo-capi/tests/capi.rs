@@ -293,6 +293,35 @@ fn the_api() {
         assert_eq!(capi::altrep::LOGICAL_IS_SORTED(s_lgl), i32::MIN);
         capi::memory::Rf_unprotect(2);
 
+        // ---- memory.c's CHK2 and Defn.h's SET_TRUELENGTH: neither a pairlist
+        // nor an ALTREP object has a truelength slot to write
+        unsafe extern "C" fn truelength_of_altrep(_: *mut c_void) {
+            unsafe {
+                let seq = capi::memory::Rf_protect(capi::compact::new_compact_intseq(10, 1, 1));
+                capi::memory::SET_TRUELENGTH(seq, 3);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_altrep, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: can't set ALTREP truelength".to_string()]);
+        unsafe extern "C" fn truelength_of_pairlist(_: *mut c_void) {
+            unsafe {
+                let p = capi::memory::Rf_protect(capi::memory::Rf_cons(R_NilValue, R_NilValue));
+                capi::memory::SET_TRUELENGTH(p, 3);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_pairlist, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: LENGTH or similar applied to pairlist object".to_string()]);
+        unsafe extern "C" fn truelength_of_null(_: *mut c_void) {
+            unsafe { capi::memory::SET_TRUELENGTH(R_NilValue, 3) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_null, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: LENGTH or similar applied to NULL object".to_string()]);
+        assert_eq!(capi::memory::CDR(R_NilValue), R_NilValue, "R_NilValue is intact");
+        let p = capi::memory::Rf_protect(capi::memory::Rf_cons(R_NilValue, R_NilValue));
+        assert_eq!(capi::util::IS_SCALAR(p, LISTSXP as c_int), 0, "a pairlist is no scalar");
+        assert_eq!(capi::memory::Rf_length(p), 1);
+        capi::memory::Rf_unprotect(1);
+
         // ---- R_qsort, R_qsort_int, R_qsort_I, R_qsort_int_I, Rf_cPsort
         let mut rv = [99.0, 4.0, 1.5, 3.0, 2.0, -1.0, 88.0];
         capi::sort::R_qsort(rv.as_mut_ptr(), 2, 6);

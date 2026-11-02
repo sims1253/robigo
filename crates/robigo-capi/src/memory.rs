@@ -663,15 +663,10 @@ pub unsafe extern "C" fn ENSURE_NAMEDMAX(x: Sexp) {
 
 // ---- vector accessors --------------------------------------------------------
 
+/// memory.c's `nvec` table: the types LENGTH and friends refuse.
 #[inline]
 fn nvec(t: u8) -> bool {
-    // memory.c CHK2: types LENGTH and friends refuse
-    !matches!(
-        t,
-        NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP | WEAKREFSXP
-    ) && t != LISTSXP
-        && t != LANGSXP
-        && t != DOTSXP
+    !matches!(t, CHARSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | WEAKREFSXP | RAWSXP)
 }
 
 /// The length of a vector, ALTREP-aware.
@@ -692,9 +687,6 @@ pub unsafe extern "C" fn LENGTH(x: Sexp) -> c_int {
         return 0;
     }
     chk2(x);
-    if matches!(x.typ(), LISTSXP | LANGSXP | DOTSXP) {
-        return Rf_length(x);
-    }
     let n = xlength(x);
     if n > i32::MAX as isize {
         crate::errors::R_BadLongVector(x, c"memory.c".as_ptr(), 0)
@@ -705,9 +697,6 @@ pub unsafe extern "C" fn LENGTH(x: Sexp) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn XLENGTH(x: Sexp) -> isize {
     chk2(x);
-    if matches!(x.typ(), LISTSXP | LANGSXP | DOTSXP) {
-        return Rf_length(x) as isize;
-    }
     xlength(x)
 }
 
@@ -725,6 +714,10 @@ pub unsafe extern "C" fn TRUELENGTH(x: Sexp) -> isize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_TRUELENGTH(x: Sexp, v: isize) {
     chk2(x);
+    // R: Defn.h:SET_TRUELENGTH (the slot is data2 of an ALTREP node)
+    if x.is_altrep() {
+        error_str("can't set ALTREP truelength")
+    }
     x.set_truelen(v)
 }
 
