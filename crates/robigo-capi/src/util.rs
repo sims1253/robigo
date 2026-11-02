@@ -1,7 +1,7 @@
 //! util.c and Rinlinedfuns.h: type names, predicates, dimensions; and the
 //! dispatch points to ALTREP classes and finalizers.
 
-use crate::errors::{error_str, error_str_owned};
+use crate::errors::error_str;
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
@@ -81,11 +81,14 @@ pub unsafe extern "C" fn Rf_type2char(t: c_uint) -> *const c_char {
         Some(s) if !s.is_empty() => s.as_ptr(),
         _ => {
             crate::errors::Rf_warning(c"type %d is unimplemented in '%s'".as_ptr(), t as c_int, c"type2char".as_ptr());
-            static mut BUF: [u8; 50] = [0; 50];
+            thread_local! {
+                static BUF: std::cell::UnsafeCell<[u8; 50]> = const { std::cell::UnsafeCell::new([0; 50]) };
+            }
             let s = format!("unknown type #{t}\0");
             let n = s.len().min(49);
-            BUF[..n].copy_from_slice(&s.as_bytes()[..n]);
-            std::ptr::addr_of!(BUF) as *const c_char
+            let buf = BUF.with(|b| b.get()).cast::<u8>();
+            std::ptr::copy_nonoverlapping(s.as_ptr(), buf, n);
+            buf as *const c_char
         }
     }
 }
@@ -454,11 +457,6 @@ unsafe fn finalizer_context(op: &'static str) {
     if t != 0 {
         (crate::host::host().discard)(t);
     }
-}
-
-#[allow(dead_code)]
-unsafe fn _unused() -> ! {
-    error_str_owned(String::new())
 }
 
 /// C's `%g` (messages that GNU R formats with it).

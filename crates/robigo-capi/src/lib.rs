@@ -6,7 +6,9 @@
 //! that are not implemented yet are exported by [`stubs`] as functions
 //! that raise "robigo: C API function 'X' is not implemented yet".
 
-#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, clippy::missing_safety_doc, static_mut_refs)]
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, clippy::missing_safety_doc)]
+// These are C-ABI bodies: nearly every line touches raw memory, so blocks
+// around each operation would only bury what the functions do.
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod altrep;

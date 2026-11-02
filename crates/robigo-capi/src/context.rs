@@ -103,14 +103,14 @@ pub static mut R_ParseContextLine: c_int = 0;
 /// The recent parse context as lines (R: source.c getParseContext).
 unsafe fn parse_context() -> Vec<Vec<u8>> {
     const SIZE: usize = 256;
-    let ctx = &*std::ptr::addr_of!(R_ParseContext);
+    let ctx = (&raw const R_ParseContext).cast::<c_char>();
     let mut context = [0u8; SIZE + 1];
     let mut last = SIZE;
     let mut i = R_ParseContextLast as usize;
     while last > 0 {
         i %= SIZE;
         last -= 1;
-        context[last] = ctx[i] as u8;
+        context[last] = *ctx.add(i) as u8;
         if context[last] == 0 {
             last += 1;
             break;
@@ -183,8 +183,7 @@ unsafe fn parse_error_text(linenum: c_int) -> String {
     let mut filename = if linenum != 0 { parse_filename() } else { String::new() };
     let context: Vec<String> =
         parse_context().iter().map(|l| String::from_utf8_lossy(&tab_expand(l)).into_owned()).collect();
-    let msg =
-        std::ffi::CStr::from_ptr(std::ptr::addr_of!(R_ParseErrorMsg) as *const c_char).to_string_lossy().into_owned();
+    let msg = std::ffi::CStr::from_ptr((&raw const R_ParseErrorMsg).cast()).to_string_lossy().into_owned();
     let len = context.len();
     let col = R_ParseErrorCol;
     let line = R_ParseContextLine;

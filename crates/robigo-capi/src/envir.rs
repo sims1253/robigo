@@ -405,7 +405,9 @@ pub unsafe extern "C" fn Rf_PrintValue(x: Sexp) {
 // R: sysutils.c:R_ExpandFileName (a static buffer, as GNU R's)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ExpandFileName(s: *const c_char) -> *const c_char {
-    static mut BUF: [u8; 4096] = [0; 4096];
+    thread_local! {
+        static BUF: std::cell::UnsafeCell<[u8; 4096]> = const { std::cell::UnsafeCell::new([0; 4096]) };
+    }
     let name = CStr::from_ptr(s).to_string_lossy().into_owned();
     let expanded = if name == "~" || name.starts_with("~/") {
         match std::env::var("HOME") {
@@ -417,8 +419,8 @@ pub unsafe extern "C" fn R_ExpandFileName(s: *const c_char) -> *const c_char {
     };
     let b = expanded.as_bytes();
     let n = b.len().min(4095);
-    let buf = &mut *std::ptr::addr_of_mut!(BUF);
-    buf[..n].copy_from_slice(&b[..n]);
-    buf[n] = 0;
-    buf.as_ptr() as *const c_char
+    let buf = BUF.with(|b| b.get()).cast::<u8>();
+    std::ptr::copy_nonoverlapping(b.as_ptr(), buf, n);
+    *buf.add(n) = 0;
+    buf as *const c_char
 }

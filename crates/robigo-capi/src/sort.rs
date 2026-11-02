@@ -2,8 +2,6 @@
 //! unique.c/identical.c entry points, which call the host's ports.
 
 use crate::memory::*;
-use crate::state::*;
-use robigo_core::types::*;
 use robigo_core::{Rcomplex, Sexp};
 use std::ffi::c_int;
 
@@ -475,10 +473,3 @@ pub unsafe extern "C" fn R_compute_identical(x: Sexp, y: Sexp, flags: c_int) -> 
     );
     (*LOGICAL(r) == 1) as c_int
 }
-
-#[allow(dead_code)]
-fn _unused() -> Sexp {
-    unsafe { R_NilValue }
-}
-#[allow(dead_code)]
-const _T: u8 = INTSXP;

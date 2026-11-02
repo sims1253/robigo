@@ -7,14 +7,8 @@ use crate::state::{R_NilValue, R_PPStackTop, nil};
 use robigo_core::Sexp;
 use robigo_core::types::*;
 use robigo_core::unwind;
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
-
-/// The flow token of the jump in progress.
-pub static mut PENDING: usize = 0;
-
-/// Continuation tokens of R_UnwindProtect (`R_MakeUnwindCont`) are
-/// nodes; their car holds the pending flow token as an integer.
-pub unsafe fn mark_roots(_c: &mut robigo_core::Core) {}
 
 unsafe extern "C" {
     fn vsnprintf(buf: *mut c_char, n: usize, fmt: *const c_char, ap: std::ffi::VaList) -> c_int;
@@ -23,6 +17,8 @@ unsafe extern "C" {
 const BUFSIZE: usize = 8192;
 
 thread_local! {
+    /// The flow token of the jump in progress.
+    static PENDING: Cell<usize> = const { Cell::new(0) };
     static SCRATCH: std::cell::UnsafeCell<[u8; BUFSIZE]> = const { std::cell::UnsafeCell::new([0; BUFSIZE]) };
 }
 
@@ -67,7 +63,7 @@ unsafe fn vformat(buf: &mut [u8], n: usize, fmt: *const c_char, ap: std::ffi::Va
 
 /// Jump with a host flow token. Plain frames only (see `unwind`).
 pub unsafe fn jump_host(token: usize) -> ! {
-    PENDING = token;
+    PENDING.set(token);
     crate::context::run_cends();
     unwind::jump()
 }
@@ -409,9 +405,7 @@ pub unsafe fn ctx_restore(c: &Ctx) {
 /// After a trampoline returned 1: restore the context, take the token.
 unsafe fn unwound(c: &Ctx) -> usize {
     ctx_restore(c);
-    let t = PENDING;
-    PENDING = 0;
-    t
+    PENDING.replace(0)
 }
 
 /// `f(data)` in a context (C trampoline).

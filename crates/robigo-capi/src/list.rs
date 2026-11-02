@@ -6,7 +6,7 @@ use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
 use robigo_core::{Rcomplex, Sexp};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{c_char, c_int};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_list1(s: Sexp) -> Sexp {
@@ -304,9 +304,4 @@ pub unsafe extern "C" fn Rf_xlengthgets(x: Sexp, len: isize) -> Sexp {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_lengthgets(x: Sexp, len: c_int) -> Sexp {
     Rf_xlengthgets(x, len as isize)
-}
-
-#[allow(dead_code)]
-unsafe fn cstr(p: *const c_char) -> &'static [u8] {
-    CStr::from_ptr(p).to_bytes()
 }

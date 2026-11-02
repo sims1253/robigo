@@ -74,8 +74,6 @@ unsafe fn error_in_class(msg: &str, x: Sexp) -> ! {
 /// cannot raise, and the normal path stays free of the context.
 pub static PACKAGE_ALTREP: AtomicBool = AtomicBool::new(false);
 
-static mut REGISTRY: Vec<Sexp> = Vec::new();
-
 // R: altrep.c:make_altrep_class / RegisterClass
 unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> ClassT {
     let c = core();
@@ -89,12 +87,6 @@ unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> Class
     let info = crate::list::Rf_list3(csym, psym, stype);
     SET_ATTRIB(class, info);
     Rf_unprotect(1);
-    // a class registered again (a reloaded package) replaces the old one
-    REGISTRY.retain(|&k| {
-        let i = k.attrib_raw();
-        !(i.car() == csym && i.cdr().car() == psym)
-    });
-    REGISTRY.push(class);
     ClassT { ptr: class }
 }
 

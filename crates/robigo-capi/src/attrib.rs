@@ -7,7 +7,7 @@ use crate::strings::Rf_installTrChar;
 use crate::util::*;
 use robigo_core::types::*;
 use robigo_core::{Sexp, flags};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{c_char, c_int};
 
 fn sym(name: &str) -> Sexp {
     core().install(name.as_bytes())
@@ -695,9 +695,4 @@ pub unsafe extern "C" fn Rf_GetRowNames(dimnames: Sexp) -> Sexp {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_GetColNames(dimnames: Sexp) -> Sexp {
     if dimnames.typ() == VECSXP { VECTOR_ELT(dimnames, 1) } else { R_NilValue }
-}
-
-#[allow(dead_code)]
-unsafe fn cstr(p: *const c_char) -> &'static [u8] {
-    CStr::from_ptr(p).to_bytes()
 }

@@ -4,7 +4,7 @@
 //! `robigo_dll_*` entry points here.
 
 use crate::errors::error_str_owned;
-use robigo_core::Sexp;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
@@ -57,10 +57,11 @@ pub struct RegisteredNativeSymbol {
     pub dll: *mut DllInfo,
 }
 
-static mut DLLS: Vec<*mut DllInfo> = Vec::new();
-static mut CCALLABLES: Option<HashMap<(Vec<u8>, Vec<u8>), DlFunc>> = None;
-
-pub unsafe fn mark_roots(_c: &mut robigo_core::Core) {}
+thread_local! {
+    /// Newest last. No borrow is held while package code runs.
+    static DLLS: RefCell<Vec<*mut DllInfo>> = const { RefCell::new(Vec::new()) };
+    static CCALLABLES: RefCell<HashMap<(Vec<u8>, Vec<u8>), DlFunc>> = RefCell::new(HashMap::new());
+}
 
 unsafe fn add_routines<T>(
     info: &mut DllInfo,
@@ -123,7 +124,7 @@ pub unsafe extern "C" fn R_forceSymbols(info: *mut DllInfo, value: c_int) -> c_i
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_getDllInfo(path: *const c_char) -> *mut DllInfo {
     let p = CStr::from_ptr(path);
-    DLLS.iter().copied().find(|&d| (*d).path.as_c_str() == p).unwrap_or(std::ptr::null_mut())
+    DLLS.with(|l| l.borrow().iter().copied().find(|&d| (*d).path.as_c_str() == p)).unwrap_or(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -140,7 +141,7 @@ pub unsafe extern "C" fn R_getEmbeddingDllInfo() -> *mut DllInfo {
         force_symbols: false,
         routines: Default::default(),
     }));
-    DLLS.push(d);
+    DLLS.with(|l| l.borrow_mut().push(d));
     d
 }
 
@@ -197,7 +198,9 @@ pub unsafe extern "C" fn R_FindSymbol(
     let pkg = CStr::from_ptr(pkg).to_bytes();
     let all = pkg.is_empty();
     let iface = if symbol.is_null() { ANY_SYM } else { (*symbol).type_ };
-    for &d in DLLS.iter().rev() {
+    // copied: dlsym can run a library's constructors, which call the API
+    let dlls = DLLS.with(|l| l.borrow().clone());
+    for &d in dlls.iter().rev() {
         let info = &*d;
         let mut doit = if all { 1 } else { 0 };
         if doit == 0 && info.name.as_bytes() == pkg {
@@ -225,8 +228,8 @@ pub unsafe extern "C" fn R_FindSymbol(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_RegisterCCallable(package: *const c_char, name: *const c_char, fptr: DlFunc) {
-    let t = CCALLABLES.get_or_insert_with(HashMap::new);
-    t.insert((CStr::from_ptr(package).to_bytes().to_vec(), CStr::from_ptr(name).to_bytes().to_vec()), fptr);
+    let key = (CStr::from_ptr(package).to_bytes().to_vec(), CStr::from_ptr(name).to_bytes().to_vec());
+    CCALLABLES.with(|t| t.borrow_mut().insert(key, fptr));
 }
 
 // R: Rdynload.c:R_GetCCallable
@@ -234,9 +237,11 @@ pub unsafe extern "C" fn R_RegisterCCallable(package: *const c_char, name: *cons
 pub unsafe extern "C" fn R_GetCCallable(package: *const c_char, name: *const c_char) -> DlFunc {
     let p = CStr::from_ptr(package).to_bytes().to_vec();
     let n = CStr::from_ptr(name).to_bytes().to_vec();
-    if let Some(&f) = CCALLABLES.as_ref().and_then(|t| t.get(&(p.clone(), n.clone()))) {
+    let key = (p, n);
+    if let Some(f) = CCALLABLES.with(|t| t.borrow().get(&key).copied()) {
         return f;
     }
+    let (p, n) = key;
     let msg =
         format!("function '{}' not provided by package '{}'", String::from_utf8_lossy(&n), String::from_utf8_lossy(&p));
     drop((p, n));
@@ -261,9 +266,14 @@ pub unsafe extern "C" fn robigo_dll_open(
 ) -> *mut DllInfo {
     *token = 0;
     let p = CStr::from_ptr(path);
-    if let Some(k) = DLLS.iter().position(|&d| (*d).path.as_c_str() == p) {
-        let d = DLLS.remove(k);
-        DLLS.push(d);
+    let found = DLLS.with(|l| {
+        let mut l = l.borrow_mut();
+        let k = l.iter().position(|&d| (*d).path.as_c_str() == p)?;
+        let d = l.remove(k);
+        l.push(d);
+        Some(d)
+    });
+    if let Some(d) = found {
         return d;
     }
     let flags = (if now != 0 { libc::RTLD_NOW } else { libc::RTLD_LAZY })
@@ -284,7 +294,7 @@ pub unsafe extern "C" fn robigo_dll_open(
         force_symbols: false,
         routines: Default::default(),
     }));
-    DLLS.push(info);
+    DLLS.with(|l| l.borrow_mut().push(info));
     let init = |sym: &str| {
         let c = CString::new(sym).unwrap();
         libc::dlsym(handle, c.as_ptr())
@@ -306,8 +316,11 @@ pub unsafe extern "C" fn robigo_dll_open(
 /// Unload (Rdynload.c DeleteDLL): runs `R_unload_<name>`, then dlclose.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_dll_close(info: *mut DllInfo) {
-    if let Some(k) = DLLS.iter().position(|&d| d == info) {
-        DLLS.remove(k);
+    let known = DLLS.with(|l| {
+        let mut l = l.borrow_mut();
+        l.iter().position(|&d| d == info).map(|k| l.remove(k))
+    });
+    if known.is_some() {
         let i = Box::from_raw(info);
         if !i.handle.is_null() {
             let nm = i.name.to_string_lossy().replace('.', "_");
@@ -376,6 +389,3 @@ pub unsafe extern "C" fn robigo_dll_routine(
     *fun = r.fun;
     *nargs = r.nargs;
 }
-
-#[allow(dead_code)]
-fn _unused(_: Sexp) {}

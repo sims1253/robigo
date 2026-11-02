@@ -8,6 +8,7 @@ use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
 use robigo_core::Sexp;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_void};
 
@@ -72,25 +73,26 @@ struct Entry {
     strings: (CString, CString),
 }
 
-static mut CONNS: Option<HashMap<usize, Entry>> = None;
-static mut BY_NUMBER: Option<HashMap<c_int, usize>> = None;
-
-/// The last connection pointer and its number. Connections are never
-/// removed and their numbers never change, so this stays valid; native
-/// table writers hand every cell to the same connection.
-static mut LAST_NUMBER: Option<(usize, c_int)> = None;
+thread_local! {
+    static CONNS: RefCell<HashMap<usize, Entry>> = RefCell::new(HashMap::new());
+    static BY_NUMBER: RefCell<HashMap<c_int, usize>> = RefCell::new(HashMap::new());
+    /// The last connection pointer and its number. Connections are never
+    /// removed and their numbers never change, so this stays valid; native
+    /// table writers hand every cell to the same connection.
+    static LAST_NUMBER: Cell<Option<(usize, c_int)>> = const { Cell::new(None) };
+}
 
 pub unsafe fn number_of(con: *mut c_void) -> c_int {
     let key = con as usize;
-    if let Some((k, n)) = LAST_NUMBER {
+    if let Some((k, n)) = LAST_NUMBER.get() {
         if k == key {
             return n;
         }
     }
-    match CONNS.as_ref().and_then(|m| m.get(&key)) {
-        Some(e) => {
-            LAST_NUMBER = Some((key, e.n));
-            e.n
+    match CONNS.with(|m| m.borrow().get(&key).map(|e| e.n)) {
+        Some(n) => {
+            LAST_NUMBER.set(Some((key, n)));
+            n
         }
         None => crate::errors::error_str("invalid connection"),
     }
@@ -114,18 +116,20 @@ unsafe fn refresh(con: *mut Rconn) {
     }
     [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking] =
         [flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]];
-    if let Some(e) = CONNS.as_mut().and_then(|m| m.get_mut(&(con as usize))) {
-        // C may have saved these pointers (GNU R's stay put for the
-        // connection's life): only a string that changed moves.
-        if e.strings.0 != class {
-            e.strings.0 = class;
+    CONNS.with(|m| {
+        if let Some(e) = m.borrow_mut().get_mut(&(con as usize)) {
+            // C may have saved these pointers (GNU R's stay put for the
+            // connection's life): only a string that changed moves.
+            if e.strings.0 != class {
+                e.strings.0 = class;
+            }
+            if e.strings.1 != desc {
+                e.strings.1 = desc;
+            }
+            c.class = e.strings.0.as_ptr() as *mut c_char;
+            c.description = e.strings.1.as_ptr() as *mut c_char;
         }
-        if e.strings.1 != desc {
-            e.strings.1 = desc;
-        }
-        c.class = e.strings.0.as_ptr() as *mut c_char;
-        c.description = e.strings.1.as_ptr() as *mut c_char;
-    }
+    });
 }
 
 unsafe extern "C" fn m_open(con: *mut Rconn) -> c_int {
@@ -220,9 +224,8 @@ unsafe extern "C" fn m_write(ptr: *const c_void, size: usize, n: usize, con: *mu
 // R: connections.c:getConnection
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
-    let by = BY_NUMBER.get_or_insert_with(HashMap::new);
-    let con = match by.get(&n) {
-        Some(&p) => p as *mut Rconn,
+    let con = match BY_NUMBER.with(|by| by.borrow().get(&n).copied()) {
+        Some(p) => p as *mut Rconn,
         None => {
             // the host validates the number ("invalid connection")
             Rf_protect(op("connInfo\0", &[Rf_ScalarInteger(n)]));
@@ -242,10 +245,9 @@ pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
             c.save = -1000;
             c.save2 = -1000;
             let p = Box::into_raw(c);
-            by.insert(n, p as usize);
-            CONNS
-                .get_or_insert_with(HashMap::new)
-                .insert(p as usize, Entry { n, strings: (CString::default(), CString::default()) });
+            BY_NUMBER.with(|by| by.borrow_mut().insert(n, p as usize));
+            let strings = (CString::default(), CString::default());
+            CONNS.with(|m| m.borrow_mut().insert(p as usize, Entry { n, strings }));
             p
         }
     };
@@ -262,7 +264,7 @@ pub unsafe extern "C" fn R_GetConnection(s_conn: Sexp) -> *mut c_void {
 
 // R: connections.c:R_WriteConnection. The bytes go straight to the host
 // connection without wrapping them in a RAWSXP and an integer scalar
-// and dispatching the generic `writeConnection` op (R:
+// and going through a host operation (R:
 // library/utils/src/io.c:writetable hands each cell, separator and
 // newline to Rconn_printf; m_vfprintf already copied them out of the
 // native formatter's static buffer, which con_write_bytes' own

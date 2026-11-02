@@ -975,7 +975,7 @@ unsafe fn set_string_elt_slow(x: Sexp, i: isize, v: Sexp) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_VECTOR_ELT(x: Sexp, i: isize, v: Sexp) -> Sexp {
-    if crate::owned::ORIGINS != 0 {
+    if crate::owned::ORIGINS.load(std::sync::atomic::Ordering::Relaxed) != 0 {
         crate::owned::mutated(x);
     }
     if matches!(x.typ(), VECSXP | EXPRSXP) && plain_target(x, i) {

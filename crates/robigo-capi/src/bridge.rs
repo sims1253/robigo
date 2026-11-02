@@ -1068,10 +1068,10 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 }
 
 /// Write bytes to a host connection without wrapping them in a RAWSXP
-/// and an integer scalar and dispatching the generic `writeConnection`
-/// op (R: connections.c:R_WriteConnection, for native callers handing
-/// over each cell, separator and newline). Returns 0, or the flow token
-/// on failure; the caller jumps, as `host::op` does.
+/// and an integer scalar and going through a host operation (R:
+/// connections.c:R_WriteConnection, for native callers handing over each
+/// cell, separator and newline). Returns 0, or the flow token on failure;
+/// the caller jumps, as `host::op` does.
 pub(crate) fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
     guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
         Ok(()) => 0,
@@ -1131,12 +1131,6 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "connectionNumber" => {
             crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)
-        }
-        "writeConnection" => {
-            let n = int_arg(a[0]);
-            let bytes = std::slice::from_raw_parts(a[1].std_data(), crate::memory::xlength(a[1]) as usize).to_vec();
-            with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, n, &bytes))?;
-            R_NilValue
         }
         "readConnection" => {
             let (n, size) = (int_arg(a[0]), int_arg(a[1]).max(0) as usize);

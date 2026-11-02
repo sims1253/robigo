@@ -301,8 +301,6 @@ unsafe fn mark_api_roots(c: &mut Core) {
             c.mark(v);
         }
     }
-    crate::errors::mark_roots(c);
-    crate::rdynload::mark_roots(c);
     crate::graphics::mark_roots(c);
     crate::bridge::mark_proxies(c);
 }

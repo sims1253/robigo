@@ -7,6 +7,7 @@
 //! data1 is the info `c(length, first, increment)` (a REALSXP, so long
 //! vectors fit), data2 the expanded vector once DATAPTR was taken.
 
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 
 use robigo_core::Sexp;
@@ -19,8 +20,10 @@ use crate::state::*;
 const SORTED_DECR: c_int = -1;
 const SORTED_INCR: c_int = 1;
 
-static mut INTSEQ: Option<ClassT> = None;
-static mut REALSEQ: Option<ClassT> = None;
+thread_local! {
+    static INTSEQ: Cell<Option<ClassT>> = const { Cell::new(None) };
+    static REALSEQ: Cell<Option<ClassT>> = const { Cell::new(None) };
+}
 
 unsafe fn info(x: Sexp) -> (isize, f64, f64) {
     let i = std::slice::from_raw_parts(x.car().std_data() as *const f64, 3);
@@ -181,7 +184,7 @@ unsafe extern "C" fn realseq_unserialize(_class: Sexp, state: Sexp) -> Sexp {
 // ---- the classes -----------------------------------------------------------
 
 unsafe fn intseq_class() -> ClassT {
-    if let Some(c) = INTSEQ {
+    if let Some(c) = INTSEQ.get() {
         return c;
     }
     use crate::altrep::*;
@@ -198,12 +201,12 @@ unsafe fn intseq_class() -> ClassT {
     R_set_altinteger_Is_sorted_method(c, intseq_is_sorted as *const () as usize);
     R_set_altinteger_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altinteger_Sum_method(c, intseq_sum as *const () as usize);
-    INTSEQ = Some(c);
+    INTSEQ.set(Some(c));
     c
 }
 
 unsafe fn realseq_class() -> ClassT {
-    if let Some(c) = REALSEQ {
+    if let Some(c) = REALSEQ.get() {
         return c;
     }
     use crate::altrep::*;
@@ -219,7 +222,7 @@ unsafe fn realseq_class() -> ClassT {
     R_set_altreal_Is_sorted_method(c, intseq_is_sorted as *const () as usize);
     R_set_altreal_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altreal_Sum_method(c, realseq_sum as *const () as usize);
-    REALSEQ = Some(c);
+    REALSEQ.set(Some(c));
     c
 }
 
@@ -259,8 +262,8 @@ pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
         return None;
     }
     let c = crate::altrep::class_of(x);
-    let int = matches!(INTSEQ, Some(k) if k.ptr == c);
-    let real = matches!(REALSEQ, Some(k) if k.ptr == c);
+    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == c);
+    let real = matches!(REALSEQ.get(), Some(k) if k.ptr == c);
     if !int && !real {
         return None;
     }
