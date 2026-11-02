@@ -221,6 +221,7 @@ fn take_flow(t: usize) -> Flow {
 
 /// A host callback: catch panics so they never unwind into C, and turn
 /// them into R errors.
+#[inline(always)]
 fn guarded(f: impl FnOnce() -> usize) -> usize {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(t) => t,
@@ -1188,6 +1189,7 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 /// connections.c:R_WriteConnection, for native callers handing over each
 /// cell, separator and newline). Returns 0, or the flow token on failure;
 /// the caller jumps, as `host::op` does.
+#[inline(always)]
 pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
     guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
         Ok(()) => 0,

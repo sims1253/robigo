@@ -8,9 +8,10 @@ use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
 use robigo_core::Sexp;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_void};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 type Method<R> = Option<unsafe extern "C" fn(*mut Rconn) -> R>;
 
@@ -76,22 +77,26 @@ struct Entry {
 thread_local! {
     static CONNS: RefCell<HashMap<usize, Entry>> = RefCell::new(HashMap::new());
     static BY_NUMBER: RefCell<HashMap<c_int, usize>> = RefCell::new(HashMap::new());
-    /// The last connection pointer and its number. Connections are never
-    /// removed and their numbers never change, so this stays valid; native
-    /// table writers hand every cell to the same connection.
-    static LAST_NUMBER: Cell<Option<(usize, c_int)>> = const { Cell::new(None) };
 }
 
+/// The last connection pointer and its number. Connections are never
+/// removed and their numbers never change, so this stays valid; native
+/// table writers hand every cell to the same connection, so this is read per
+/// cell: atomics, which cost nothing there, rather than a thread-local. The API
+/// belongs to one thread, so the two parts never disagree.
+static LAST_KEY: AtomicUsize = AtomicUsize::new(0);
+static LAST_NUMBER: AtomicI32 = AtomicI32::new(0);
+
+#[inline]
 pub unsafe fn number_of(con: *mut c_void) -> c_int {
     let key = con as usize;
-    if let Some((k, n)) = LAST_NUMBER.get() {
-        if k == key {
-            return n;
-        }
+    if key != 0 && LAST_KEY.load(Ordering::Relaxed) == key {
+        return LAST_NUMBER.load(Ordering::Relaxed);
     }
     match CONNS.with(|m| m.borrow().get(&key).map(|e| e.n)) {
         Some(n) => {
-            LAST_NUMBER.set(Some((key, n)));
+            LAST_NUMBER.store(n, Ordering::Relaxed);
+            LAST_KEY.store(key, Ordering::Relaxed);
             n
         }
         None => crate::errors::error_str("invalid connection"),
