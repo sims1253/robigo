@@ -20,3 +20,19 @@ t <- terms(y ~ ., data = d); print(t)
 print(update(y ~ x, ~ . + z))
 print(update(y ~ x + w, log(.) ~ . - w))
 f <- y ~ x; print(terms(f))
+
+# R: model.c:InstallVar — R's isLanguage(R_NilValue) is true, so a NULL
+# response is a legitimate term: it is installed as a variable (deparsed
+# "NULL"), response stays 1, and update.formula's simplify drops the lhs
+# again (`res[[2]] <- NULL` removes the slot).
+show(NULL ~ y)
+show(NULL ~ y + z)
+print(update.formula(x ~ y, NULL ~ .))
+print(update.formula(z ~ x + y, NULL ~ .))
+print(update.formula(. ~ u + v, NULL ~ .))
+print(terms.formula(NULL ~ y, simplify = TRUE))
+print(terms.formula(NULL ~ y)$factors)
+show(1 ~ y)
+show(TRUE ~ y)
+cat(tryCatch(terms.formula(2 ~ y), error = conditionMessage), "\n")
+cat(tryCatch(terms.formula("a" ~ y), error = conditionMessage), "\n")

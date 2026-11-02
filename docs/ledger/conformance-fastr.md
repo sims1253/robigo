@@ -119,3 +119,26 @@
   - `tests/r/lang/pairlist-print.R` pins the named and unnamed pairlist cases, both `as.vector` modes, the `parse()` expression, and that a class attribute is still printed after the elements.
 - Result: +4 cases over main (31,263 of 31,374 by the ratchet), 0 regressions; the print/pairlist/aslist slice of the fastr corpus is 416/416.
 - Status: kept (PR pending).
+
+## 2026-11-02: round 11 - matrix column labels use the escaped width
+
+- Topic: `builtins/TestBuiltin_aperm` (2 cases)
+- Diagnosis: the two "logical" aperm cases print a matrix whose dimnames contain `\Sexpr`. R's `_COMPUTE_W2_` (printarray.c) measures a column name with `strwidth()` = `Rstrwid`, which counts a backslash as two because `EncodeString` prints it doubled; robigo measured the raw string, so every column under such a label was one character too narrow.
+- Changes:
+  - `crates/robigo-runtime/src/print.rs`: `clabw` now measures `escape_rstring(s, None)` — the same escaped width the label is printed with.
+  - `tests/r/matrix/dimname-escape.R` (recorded in `robigo-oracle:4.5.0`) pins column labels, row labels, quotes vs backslashes, and the logical/numeric/string matrix paths.
+- Result: `TestBuiltin_aperm` 43/44 (+2 cases, 0 regressions); third remaining case is the complex-perm warning of round 12.
+- Status: kept (PR #261).
+
+## 2026-11-02: round 12 - terms() accepts a NULL response; aperm's complex perm warns
+
+- Topic: `library/stats/TestUpdateForm` (4 cases), `builtins/TestBuiltin_aperm` (1 case)
+- Diagnosis:
+  - `update.formula(x ~ y, NULL ~ .)` failed in `terms.formula` with "invalid term in model formula": the parser puts R_NilValue in the language for a literal `NULL`, and R's `InstallVar` accepts it because `Rf_isLanguage(R_NilValue)` is true (verified against libR in `robigo-oracle:4.5.0`). robigo's `install_var` rejected `Value::Null`.
+  - `aperm(a, c(1+1i, 3+3i, 2+2i))` was missing GNU R's `imaginary parts discarded in coercion` warning: `do_aperm` uses `coerceVector(perm, INTSXP)` (array.c:1734), whose warnings fire; robigo used quiet coercion.
+- Changes:
+  - `crates/robigo-runtime/src/native/stats/model.rs`: `install_var` accepts `Value::Null` (comment explains the isLanguage quirk); `match_var` already handled Null both ways.
+  - `crates/robigo-runtime/src/builtins/array.rs`: `do_aperm` takes the interp and coerces `perm` through `interp.coerce`, which emits R's coercion warnings against the calling closure.
+  - `tests/r/packages/stats-terms.R` + `tests/r/io/matrix.R` extended and re-recorded in the oracle: NULL response installs a "NULL" variable (`res[[2]] <- NULL` then drops the lhs in `simplify`), 0/1/TRUE responses stay, 2 and "a" still error; the complex perm warns and permutes by real parts.
+- Result: `TestUpdateForm` 4/4, `TestBuiltin_aperm` 44/44 counting PR #261's print fix (+5 fixed here; the two logical aperm cases need #261); 10 more markers absorbed (deriv 7, TestStats 3) that pass on main where CI ships natives. 0 regressions.
+- Status: kept (PR pending).

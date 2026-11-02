@@ -56,3 +56,9 @@ backsolve(matrix(c(1, 0, 2, 3), 2), c(8, 9))
 forwardsolve(matrix(c(1, 2, 0, 3), 2), c(8, 9))
 tryCatch(matrix(1:6, 4), warning = function(w) conditionMessage(w))
 tryCatch(m %*% 1:3, error = function(e) conditionMessage(e))
+options(width = 80)
+# R: array.c:do_aperm coerces `perm` with coerceVector, so a complex perm
+# warns about its imaginary parts and uses the real ones.
+print(aperm(array(1:27, c(3, 3, 3)), c(1 + 1i, 3 + 3i, 2 + 2i))[1, 2, 3] ==
+      array(1:27, c(3, 3, 3))[1, 3, 2])
+aperm(array(1:27, c(3, 3, 3)), c(1 + 1i, 3, 2))

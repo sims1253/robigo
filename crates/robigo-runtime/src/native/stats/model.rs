@@ -119,7 +119,9 @@ fn dot() -> Sym {
 impl TermsState {
     // R: model.c:InstallVar
     fn install_var(&mut self, var: &Value) -> RResult<usize> {
-        if !matches!(var, Value::Sym(_) | Value::Lang(_)) && !is_zero_one(var) {
+        // R's isLanguage(R_NilValue) is true, so a NULL response (as in
+        // `NULL ~ y`) is a legitimate "variable" and is installed.
+        if !matches!(var, Value::Null | Value::Sym(_) | Value::Lang(_)) && !is_zero_one(var) {
             return Err(Flow::error("invalid term in model formula"));
         }
         if let Some(k) = self.varlist.iter().position(|v| match_var(var, v)) {
