@@ -216,12 +216,21 @@ impl Printer {
                 return Ok(());
             }
             Value::Pairlist(pl) => {
-                // Print like a list.
+                // Print like a list: the tags become names and R's
+                // printAttributes (print.c:909) still prints the pairlist's
+                // other attributes after the elements.
                 let names: Vec<RStr> =
                     pl.items.iter().map(|a| Some(a.tag.map(|t| t.name()).unwrap_or_else(|| "".into()))).collect();
                 let mut lv = Vector::new(pl.items.iter().map(|a| a.value.clone()).collect());
+                let mut attrs = Vec::new();
                 if pl.items.iter().any(|a| a.tag.is_some()) {
-                    lv.attrs = Some(Box::new(Attrs(vec![(s::NAMES, Value::strs(names))], false)));
+                    attrs.push((s::NAMES, Value::strs(names)));
+                }
+                if let Some(a) = pl.attrs.as_ref() {
+                    attrs.extend(a.0.iter().filter(|(tag, _)| *tag != s::NAMES).cloned());
+                }
+                if !attrs.is_empty() {
+                    lv.attrs = Some(Box::new(Attrs(attrs, false)));
                 }
                 let l = Value::List(std::rc::Rc::new(lv));
                 self.generic_vector(interp, &l)?;
