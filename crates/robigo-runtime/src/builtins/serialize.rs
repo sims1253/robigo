@@ -37,7 +37,9 @@ fn do_serialize(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let version = serialize_version_arg(&arg(&args, 3))?;
     let bytes = match format {
         3 => crate::serialize::serialize_binary(&object, version),
-        1 | 2 => return Err(Flow::error("robigo: ascii serialization is not implemented yet")),
+        1 => crate::serialize::serialize_ascii(&object, version),
+        2 => return Err(Flow::error("robigo: asciihex serialization is not implemented yet")),
+        _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
         _ => crate::serialize::serialize_version(&object, version),
     };
     match arg(&args, 1) {
@@ -62,6 +64,7 @@ fn do_serializeb(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     let version = serialize_version_arg(&arg(&args, 3))?;
     let bytes = match format {
         3 => crate::serialize::serialize_binary(&object, version),
+        _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
         _ => crate::serialize::serialize_version(&object, version),
     };
     write_to_conn(i, n, &bytes, format)
@@ -147,11 +150,20 @@ fn do_serialize_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
     if !arg(&args, 4).is_null() {
         return Err(Flow::error("robigo: serialization hooks are not implemented yet"));
     }
-    if ascii != 0 {
-        return Err(Flow::error("robigo: ascii serialization is not implemented yet"));
+    if ascii == NA_LOGICAL {
+        return Err(Flow::error("robigo: asciihex serialization is not implemented yet"));
     }
-    let bytes = crate::serialize::serialize_version(&object, version);
-    write_to_conn(i, con, &bytes, 0)
+    if version > 3 {
+        // R_Serialize writes the format before validating the version.
+        write_to_conn(i, con, if ascii != 0 { b"A\n" } else { b"X\n" }, if ascii != 0 { 1 } else { 0 })?;
+        return Err(Flow::error(format!("version {version} not supported")));
+    }
+    let bytes = if ascii != 0 {
+        crate::serialize::serialize_ascii(&object, version)
+    } else {
+        crate::serialize::serialize_version(&object, version)
+    };
+    write_to_conn(i, con, &bytes, if ascii != 0 { 1 } else { 0 })
 }
 
 /// `readRDS` and `unserialize(con)`.
@@ -234,23 +246,29 @@ fn do_save_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     if ep == NA_LOGICAL {
         return Err(Flow::error("invalid 'eval.promises' argument"));
     }
-    if ascii != 0 {
-        return Err(Flow::error("robigo: ascii serialization is not implemented yet"));
+    if ascii == NA_LOGICAL {
+        return Err(Flow::error("robigo: asciihex serialization is not implemented yet"));
     }
     let (wasopen, ..) = io::conn_state(i, con)?;
     if !wasopen && !io::open_in_mode(i, con, "wb")? {
         return Err(Flow::error("cannot open the connection"));
     }
     let r = (|| -> RResult<()> {
-        if !io::conn_state(i, con)?.2 {
+        let (_, _, canwrite, text) = io::conn_state(i, con)?;
+        if !canwrite {
             return Err(Flow::error("connection not open for writing"));
         }
-        if io::conn_state(i, con)?.3 {
+        if ascii == 0 && text {
             return Err(Flow::error("cannot save XDR format to a text-mode connection"));
         }
         // R writes the magic number, then a tagged pairlist of the objects.
-        let magic = format!("RDX{}\n", version);
+        let magic = format!("RD{}{}\n", if ascii != 0 { 'A' } else { 'X' }, version);
         io::con_write_bytes(i, con, magic.as_bytes())?;
+        if version > 3 {
+            // R_Serialize writes the format before validating the version.
+            io::con_write_bytes(i, con, if ascii != 0 { b"A\n" } else { b"X\n" })?;
+            return Err(Flow::error(format!("version {version} not supported")));
+        }
         let mut items: Vec<Arg> = Vec::with_capacity(list.len());
         for name in &list {
             let Some(name) = name.as_deref() else { continue };
@@ -259,7 +277,12 @@ fn do_save_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
                 env.lookup(sym).map(|(v, _)| v).ok_or_else(|| Flow::error(format!("object '{}' not found", name)))?;
             items.push(Arg::new(Some(sym), val));
         }
-        let bytes = crate::serialize::serialize_version(&Value::pairlist(items), version);
+        let object = Value::pairlist(items);
+        let bytes = if ascii != 0 {
+            crate::serialize::serialize_ascii(&object, version)
+        } else {
+            crate::serialize::serialize_version(&object, version)
+        };
         io::con_write_bytes(i, con, &bytes)
     })();
     if !wasopen {
