@@ -846,6 +846,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 inline: Default::default(),
                 defaults: Default::default(),
                 jit: Default::default(),
+                trace: Default::default(),
             };
             return Value::Closure(Rc::new(clo));
         }

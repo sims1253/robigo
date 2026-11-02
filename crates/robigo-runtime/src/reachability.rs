@@ -637,6 +637,7 @@ mod tests {
             inline: Default::default(),
             defaults: Default::default(),
             jit: Default::default(),
+            trace: Default::default(),
         }));
         env(&a).set_local(Sym::new("f"), closure);
         *env(&b).0.attrs.borrow_mut() = Some(Box::new(Attrs(vec![(Sym::new("owner"), a.clone())], false)));
@@ -664,6 +665,7 @@ mod tests {
             inline: Default::default(),
             defaults: Default::default(),
             jit: Default::default(),
+            trace: Default::default(),
         }));
         *code.call_sites[0].memo.borrow_mut() = Some((0, 0, instance_method));
         let constructor = Closure {
@@ -677,6 +679,7 @@ mod tests {
             inline: Default::default(),
             defaults: Default::default(),
             jit: Default::default(),
+            trace: Default::default(),
         };
         constructor.code.set(Some(code)).unwrap_or_else(|_| panic!("empty code cell"));
         env(&root).set_local(Sym::new("constructor"), Value::Closure(Rc::new(constructor)));
@@ -754,6 +757,7 @@ mod tests {
             inline: Default::default(),
             defaults: Default::default(),
             jit: Default::default(),
+            trace: Default::default(),
         }));
         env(&a).set_local(Sym::new("f"), closure);
         let weak = Rc::downgrade(&env(&a).0);

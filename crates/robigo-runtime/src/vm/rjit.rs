@@ -84,6 +84,16 @@ impl JitState {
         self.0.get() & STATE_MASK < NOJIT
     }
 
+    /// Whether GNU R's AST interpreter would run this closure's body: it is
+    /// not installed bytecode, and the JIT has not compiled it (`IGNORE`
+    /// marks closures in a namespace, whose installed bodies are bytecode).
+    /// Only the trace reports differ between the two evaluators
+    /// (eval.c:1224 vs 7894).
+    pub fn interpreted(&self) -> bool {
+        let v = self.0.get();
+        !self.is_bytecode() && v & STATE_MASK != IGNORE
+    }
+
     fn set(&self, state: u64, mask: u64) {
         self.0.set(state | (self.0.get() & LOADED_BYTECODE) | (mask << 8));
     }

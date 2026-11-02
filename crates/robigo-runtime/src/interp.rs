@@ -692,6 +692,10 @@ impl Interp {
                 fun = f;
             }
         }
+        // R: eval.c:1224 — the AST interpreter prints the whole call.
+        if crate::builtins::s4::trace_state() && crate::builtins::debug::is_traced(&fun) {
+            crate::builtins::debug::print_trace(self, call);
+        }
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
@@ -699,7 +703,9 @@ impl Interp {
                 // bytecode inlines simple wrappers before forcing X; only
                 // installed (namespace) code observes the inline. Out of
                 // line: candidate calls are rare.
-                if let Some(r) = self.try_inline_call(l, call, env) {
+                if !c.trace.get()
+                    && let Some(r) = self.try_inline_call(l, call, env)
+                {
                     return r;
                 }
                 let promargs = self.promise_args(&l.args, env)?;

@@ -565,6 +565,8 @@ pub struct Closure {
     /// Whether GNU R's JIT would have compiled the closure by now, and the
     /// base functions it bound then (see `vm::jit_check`).
     pub jit: crate::vm::JitState,
+    /// debug.c's RTRACE bit, set by `.primTrace()` (`trace()`).
+    pub trace: std::cell::Cell<bool>,
 }
 
 #[derive(Clone)]

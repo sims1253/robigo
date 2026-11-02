@@ -773,6 +773,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     inline: Default::default(),
                     defaults: Default::default(),
                     jit: if bytecode_body { crate::vm::JitState::from_bytecode() } else { Default::default() },
+                    trace: Default::default(),
                 }));
                 set_attr_pairlist(&mut v, head_attr);
                 Ok(v)

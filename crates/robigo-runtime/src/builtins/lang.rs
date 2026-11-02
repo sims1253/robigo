@@ -264,6 +264,7 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         inline: Default::default(),
         defaults: Default::default(),
         jit: Default::default(),
+        trace: Default::default(),
     };
     crate::vm::jit_inherit(interp, &clo, env);
     Ok(Value::Closure(Rc::new(clo)))

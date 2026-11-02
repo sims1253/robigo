@@ -300,3 +300,33 @@ without `R_HOME` is worse (it picks the host's `/usr/lib/R`, R 4.6.1).
 `R_HOME=~/.local/opt/R-4.5.0 R_SHARE_DIR=~/.local/opt/R-4.5.0/share`.
 Marked: `tools/xgettext`, `utils/cite`, `tools/bibstyle`,
 `utils/bibentry`, `utils/citation`, `graphics/axis.POSIXct`.
+
+## 2026-11-02: trace(), and S4 rep keeps its class (3 cases)
+
+- **`trace()` was a stub** (`base/trace`, `base/make.unique`,
+  `methods/cbind2`). `debug.c:do_trace` (`.primTrace`/`.primUntrace`,
+  PRIMVAL 0/1) sets debug.c's RTRACE bit on a closure, special or builtin,
+  or on the function a length-1 string names (`find_char_fun`, then
+  `findFun`), and errors with `argument must be a function` otherwise.
+  Closures keep the bit in `Closure.trace`; builtins are `&'static`
+  singletons, so their bit lives in a `TRACED_BUILTINS` set keyed by
+  address, like `DEBUGGED` for closures (which also means the bit is
+  process-global until unset, as in R).
+  Reporting follows GNU R's two evaluators: the AST interpreter prints the
+  whole call (`eval.c:1224`, gated on `R_current_trace_state()`), compiled
+  code prints the function's symbol at GETFUN/GETGLOBFUN/GETSYMFUN/
+  GETBUILTIN (`eval.c:7894`) and CALLSPECIAL (`eval.c:8133`), without
+  consulting the trace state. robigo mirrors both, and the inline/JIT
+  fast paths (which would skip the report) are switched off for traced
+  closures and, via `ANY_TRACED_BUILTIN`, for traced builtins; the
+  `Op::Builtin1` fast path falls back to the call and prints the symbol.
+  `tests/r/lang/trace.R` covers both evaluators.
+- **`rep("<S4>", ...)` dropped the class** (`methods/cbind2`): seq.c's
+  `_S4_rep_keepClass` copies `class` and sets the S4 bit for `rep`,
+  `rep.int` and `rep_len`, before the factor branch overwrites the class.
+  `cbind`'s dispatch loop calls `rep(x, length.out = n)` on the `Num`
+  argument of `[`; without the class the S4 method was never selected, so
+  GNU R printed four `trace: cbind2` reports and two method messages where
+  robigo printed three and one.
+
+Marked: `base/trace`, `base/make.unique`, `methods/cbind2`.

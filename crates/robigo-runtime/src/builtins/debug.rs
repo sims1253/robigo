@@ -6,13 +6,127 @@ use super::{check_arity, match_args, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
+use crate::sym::Sym;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     prim("tracemem", do_tracemem, 1),
     prim("untracemem", do_untracemem, 1).invisible(),
     prim("retracemem", do_retracemem, -1).custom_vis(),
+    prim(".primTrace", do_prim_trace, 1).invisible(),
+    prim(".primUntrace", do_prim_untrace, 1).invisible(),
 ];
+
+thread_local! {
+    /// debug.c's RTRACE bit for BUILTINSXP/SPECIALSXP objects: robigo's
+    /// builtins are `&'static` singletons, so the bit lives beside them,
+    /// keyed by address (as `DEBUGGED` does for closures).
+    static TRACED_BUILTINS: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// `!TRACED_BUILTINS.is_empty()`: the VM's builtin fast paths print
+    /// nothing, so they are off while any builtin is traced.
+    static ANY_TRACED_BUILTIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether any builtin is traced (see [`ANY_TRACED_BUILTIN`]).
+pub fn any_prim_traced() -> bool {
+    ANY_TRACED_BUILTIN.with(|c| c.get())
+}
+
+thread_local! {
+    /// Whether the closure body running now is bytecode in GNU R, whose
+    /// evaluator prints the function's symbol (eval.c:7894); the AST
+    /// interpreter prints the whole call (eval.c:1224). Restored per frame.
+    static COMPILED_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many closures are traced, so a call need not look at the frame
+    /// flag when nothing is traced.
+    static TRACED_CLOSURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether anything is traced: only then do the evaluators' two trace
+/// reports differ, and only then is [`COMPILED_FRAME`] maintained.
+pub fn any_traced() -> bool {
+    TRACED_CLOSURES.with(|c| c.get()) > 0 || any_prim_traced()
+}
+
+/// [`COMPILED_FRAME`]: how a traced function's call is reported here.
+pub fn in_compiled_frame() -> bool {
+    COMPILED_FRAME.with(|c| c.get())
+}
+
+/// Enter a closure body; returns the previous frame's value.
+pub fn enter_frame(compiled: bool) -> bool {
+    COMPILED_FRAME.with(|c| c.replace(compiled))
+}
+
+pub fn leave_frame(prev: bool) {
+    COMPILED_FRAME.with(|c| c.set(prev))
+}
+
+/// debug.c's RTRACE bit of a function object (`Value::Closure` keeps it in
+/// the closure; a builtin is a static, so the flag is kept aside).
+pub fn is_traced(f: &Value) -> bool {
+    match f {
+        Value::Closure(c) => c.trace.get(),
+        Value::Builtin(b) => TRACED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b))),
+        _ => false,
+    }
+}
+
+fn builtin_key(b: &'static Builtin) -> usize {
+    b as *const Builtin as usize
+}
+
+/// `Rprintf("trace: "); PrintValue(x)`: the AST interpreter shows the whole
+/// call (eval.c:1224), compiled code shows the function's symbol
+/// (eval.c:7894). `PrintValue` deparses either (backticks for
+/// non-syntactic names).
+pub fn print_trace(i: &mut Interp, shown: &Value) {
+    let text = crate::deparse::deparse_one_line(shown);
+    i.write_out(&format!("trace: {text}\n"));
+}
+
+// R: debug.c:do_trace (`.primTrace` and `.primUntrace`).
+fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) -> RResult<Value> {
+    check_arity(&args, 1, if on { ".primTrace" } else { ".primUntrace" }, call)?;
+    let mut v = args.into_iter().next().unwrap().value;
+    // `find_char_fun`: a string names the function to find.
+    if let Value::Str(s) = &v {
+        if s.data.len() == 1 {
+            let name = s.data[0].clone().unwrap_or_default();
+            v = i.find_fun(Sym::new(&name), env)?;
+        }
+    }
+    match &v {
+        Value::Closure(c) => {
+            if c.trace.get() != on {
+                c.trace.set(on);
+                TRACED_CLOSURES.with(|n| n.set(if on { n.get() + 1 } else { n.get() - 1 }));
+            }
+        }
+        Value::Builtin(b) => {
+            let k = builtin_key(b);
+            TRACED_BUILTINS.with(|t| {
+                if on {
+                    t.borrow_mut().insert(k);
+                } else {
+                    t.borrow_mut().remove(&k);
+                }
+                ANY_TRACED_BUILTIN.with(|c| c.set(!t.borrow().is_empty()));
+            });
+        }
+        _ => return Err(Flow::error("argument must be a function")),
+    }
+    Ok(Value::Null)
+}
+
+fn do_prim_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    set_trace(i, call, args, env, true)
+}
+
+fn do_prim_untrace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    set_trace(i, call, args, env, false)
+}
 
 // R: util.c:check1arg.
 fn check_x(args: &[Arg], call: &Value) -> RResult<()> {

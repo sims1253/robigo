@@ -27,6 +27,11 @@ thread_local! {
     static TRACE_DEBUG_STATE: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, true)) };
 }
 
+/// debug.c's `R_current_trace_state()`: whether `trace:` reports are on.
+pub(crate) fn trace_state() -> bool {
+    TRACE_DEBUG_STATE.with(|s| s.get().0)
+}
+
 // R: debug.c:do_traceOnOff
 fn do_trace_on_off(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env, trace: bool) -> RResult<Value> {
     let (t, d) = TRACE_DEBUG_STATE.with(|s| s.get());

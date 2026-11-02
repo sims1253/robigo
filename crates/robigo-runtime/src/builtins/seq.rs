@@ -793,7 +793,18 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
             ans.set_attr_raw(s::NAMES, Value::strs(rep4(&xn.data, &times, len, each, nt)));
         }
     }
+    s4_keep_class(&x, &mut ans);
     Ok(ans)
+}
+
+/// R: seq.c's `_S4_rep_keepClass`: `rep(<S4>, .)` keeps the class (e.g.
+/// `contains = "list"`). Applied before the factor branch, which replaces
+/// the class.
+fn s4_keep_class(s: &Value, a: &mut Value) {
+    if s.is_s4() {
+        a.set_attr_raw(s::CLASS, get_attrib(s, s::CLASS));
+        a.set_s4(true);
+    }
 }
 
 fn factor_class_levels(s1: &Value, a: &mut Value) {
@@ -867,6 +878,7 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
             gather_all(s1, &idx)
         }
     };
+    s4_keep_class(s1, &mut a);
     factor_class_levels(s1, &mut a);
     Ok(a)
 }
@@ -932,6 +944,7 @@ fn do_rep_len(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     crate::memory::check_vector(na, crate::memory::Elt::Real)?;
     let idx: Vec<usize> = (0..na).map(|k| k % ns).collect();
     let mut a = gather_all(s1, &idx);
+    s4_keep_class(s1, &mut a);
     factor_class_levels(s1, &mut a);
     Ok(a)
 }

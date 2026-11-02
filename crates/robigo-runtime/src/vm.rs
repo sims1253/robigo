@@ -1757,7 +1757,14 @@ fn run_inline_with(
                 };
             }
             Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
-            Op::Builtin1 { f, dst, a, .. } => regs[*dst as usize] = builtin1_fast(*f, &regs[*a as usize])?,
+            Op::Builtin1 { f, dst, a, .. } => {
+                // A traced builtin must print where GNU R's GETBUILTIN
+                // would: leave this to the interpreter.
+                if crate::builtins::debug::any_prim_traced() {
+                    return None;
+                }
+                regs[*dst as usize] = builtin1_fast(*f, &regs[*a as usize])?;
+            }
             Op::JumpIfNot { cond, target, .. } | Op::JumpIf { cond, target, .. } => {
                 let truth = match regs[*cond as usize] {
                     RVal::L(x) if x != NA_LOGICAL => x != 0,
@@ -2483,14 +2490,14 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
 
 /// Whether calls of `clo` can run inline (see [`inline_info`]).
 pub(crate) fn inlinable(clo: &Closure) -> bool {
-    enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
+    !clo.trace.get() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
 
 /// Call an inlinable closure with pre-unboxed or fast `RVal` argument values,
 /// returning the unboxed `RVal` result directly.
 pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]) -> Option<RVal> {
     let info = clo.inline.get()?.as_ref()?;
-    if args.len() != info.formal_slots.len() || clo.jit.unsettled() {
+    if clo.trace.get() || args.len() != info.formal_slots.len() || clo.jit.unsettled() {
         return None;
     }
     let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()))?;
@@ -2515,7 +2522,7 @@ fn inline_call(
     }
     let leaves = cs.leaf_args.as_ref()?;
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if leaves.len() != clo.formals.len() {
+    if clo.trace.get() || leaves.len() != clo.formals.len() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
@@ -2755,6 +2762,22 @@ fn jit_enter(
     Some((Outcome::Deopt(p), nested))
 }
 
+/// The head symbol of a call constant: what GNU R prints when tracing in
+/// compiled code (`PrintValue(symbol)` in eval.c's GETFUN/GETBUILTIN ops).
+fn call_sym(call: &Value) -> Value {
+    match call {
+        Value::Lang(l) => l.fun_sym().map(Value::Sym).unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+/// A traced function's report: the whole call from the AST interpreter
+/// (eval.c:1224), the function's symbol from bytecode (eval.c:7894).
+fn trace_report(interp: &mut Interp, call: &Value) {
+    let shown = if crate::builtins::debug::in_compiled_frame() { call_sym(call) } else { call.clone() };
+    crate::builtins::debug::print_trace(interp, &shown);
+}
+
 /// The function a call site calls, memoized like [`guard_ok`]: frames below
 /// the search path are checked directly, the search-path lookup is cached
 /// against the search epoch (only when it needs no forcing or active
@@ -2824,9 +2847,19 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
 /// code is left unboxed (see [`body_result`]) and a placeholder returned:
 /// nothing runs between the return and the caller taking it.
 pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
+    // R: eval.c:1224 / 7894 — a traced function reports as a call in the
+    // AST interpreter, as a symbol in bytecode (see vm::trace_report).
+    let frame = crate::builtins::debug::any_traced().then(|| {
+        let compiled = !clo.jit.interpreted();
+        crate::builtins::debug::enter_frame(compiled)
+    });
     let pre = code.nguards > 0
         && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
-    run_pre(interp, code, env, pre, unboxed)
+    let r = run_pre(interp, code, env, pre, unboxed);
+    if let Some(prev) = frame {
+        crate::builtins::debug::leave_frame(prev);
+    }
+    r
 }
 
 #[inline]
@@ -3588,6 +3621,9 @@ fn run_with(
             Op::CallBuiltin { dst, f, args, call } => {
                 flush!();
                 let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
+                if crate::builtins::debug::is_traced(&Value::Builtin(b)) {
+                    trace_report(interp, &code.consts[*call as usize]);
+                }
                 let argv: Vec<Arg> = code.arglists[*args as usize]
                     .iter()
                     .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
@@ -3597,13 +3633,31 @@ fn run_with(
             }
             Op::Builtin1 { f, dst, a, call } => {
                 interp.visible = true;
-                regs[*dst as usize] = match builtin1_fast(*f, &regs[*a as usize]) {
+                // R: eval.c:7894 (GETBUILTIN) — a traced builtin prints its
+                // symbol, so the no-call fast path is off while one is traced.
+                let fast = if crate::builtins::debug::any_prim_traced() {
+                    None
+                } else {
+                    builtin1_fast(*f, &regs[*a as usize])
+                };
+                regs[*dst as usize] = match fast {
                     Some(v) => {
                         regs[*a as usize] = RVal::I(0);
                         v
                     }
                     None => {
                         flush!();
+                        let c = &code.consts[*call as usize];
+                        let traced = match c {
+                            Value::Lang(l) => l
+                                .fun_sym()
+                                .and_then(|s| crate::builtins::lookup_primitive(&s.name()))
+                                .is_some_and(|b| crate::builtins::debug::is_traced(&Value::Builtin(b))),
+                            _ => false,
+                        };
+                        if traced {
+                            trace_report(interp, c);
+                        }
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
                     }
@@ -3711,8 +3765,10 @@ fn run_with(
                 // (it cannot observe the frame, so nothing needs flushing,
                 // unless it reads variables that pending writes may affect).
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
-                    // (Not for a closure already known not to be pure.)
-                    if !matches!(clo.inline.get(), Some(None))
+                    // (Not for a closure already known not to be pure, nor
+                    // for a traced one: GNU R's compiled code would print.)
+                    if !clo.trace.get()
+                        && !matches!(clo.inline.get(), Some(None))
                         && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs)
                     {
                         interp.visible = true;
@@ -3725,6 +3781,9 @@ fn run_with(
                     Some(f) => f,
                     None => tryop!(call_site_fun(interp, *f, site, env)),
                 };
+                if crate::builtins::debug::is_traced(&fun) {
+                    trace_report(interp, &site.call);
+                }
                 let v = match (&fun, &site.call) {
                     (Value::Closure(clo), Value::Lang(l)) => {
                         tryop!(closure_call(interp, site, clo, l, env, vars, regs))
@@ -3794,6 +3853,9 @@ fn run_with(
             Op::CallSpecial { dst, f, k } => {
                 flush!();
                 let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
+                if crate::builtins::debug::is_traced(&Value::Builtin(b)) {
+                    trace_report(interp, &code.consts[*k as usize]);
+                }
                 let v = tryop!(interp.eval_special(b, &code.consts[*k as usize], env));
                 regs[*dst as usize] = RVal::V(v);
             }

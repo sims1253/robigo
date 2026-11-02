@@ -614,6 +614,7 @@ pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, holder: Valu
         inline: Default::default(),
         defaults: Default::default(),
         jit: Default::default(),
+        trace: Default::default(),
     }));
     env.set_local_flags(sym, f, crate::env::BIND_ACTIVE);
 }
