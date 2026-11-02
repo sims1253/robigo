@@ -1,5 +1,9 @@
 //! robigo-core's heap, strings, symbols and unwinding, tested directly.
 
+// Tests poke objects directly: a safety comment on each block would say "this
+// test built that object" a hundred times.
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp, flags, gp};
 use std::alloc::{GlobalAlloc, Layout, System};

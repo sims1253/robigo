@@ -39,6 +39,8 @@ impl CharTable {
             if c.is_null() {
                 return None;
             }
+            // SAFETY: entries are live CHARSXPs: `insert`'s contract, and the
+            // collector prunes dead ones before it frees them.
             if unsafe { c.char_hash() } == h && eq(c) {
                 return Some(c);
             }
@@ -55,6 +57,7 @@ impl CharTable {
         if (self.len + 1) * 4 > self.slots.len() * 3 {
             self.rebuild(self.slots.len() * 2, |_| true);
         }
+        // SAFETY: `place` asks for what this function's contract gives.
         unsafe { Self::place(&mut self.slots, c) };
         self.len += 1;
     }
@@ -63,6 +66,7 @@ impl CharTable {
     /// `c` must be a live CHARSXP: its header holds the hash.
     unsafe fn place(slots: &mut [Sexp], c: Sexp) {
         let mask = slots.len() - 1;
+        // SAFETY: `c` is a live CHARSXP, this function's contract.
         let mut i = unsafe { c.char_hash() } as usize & mask;
         while !slots[i].is_null() {
             i = (i + 1) & mask;
@@ -75,6 +79,8 @@ impl CharTable {
         self.len = 0;
         for c in old {
             if !c.is_null() && keep(c) {
+                // SAFETY: an entry, so a live CHARSXP (see `find`): `keep` runs
+                // after marking and before the sweep frees anything.
                 unsafe { Self::place(&mut self.slots, c) };
                 self.len += 1;
             }

@@ -15,7 +15,11 @@ use std::time::Instant;
 /// Free slots or bump space left in a block (the sweep re-lists such
 /// blocks: it resets the allocation cursors, and a block left off every
 /// list would keep its unused space until all its objects died).
+///
+/// # Safety
+/// `b` must be a block of this heap assigned to a size class.
 unsafe fn block_has_room(b: *mut Block) -> bool {
+    // SAFETY: the caller's contract: an assigned header, a valid class index.
     unsafe { !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / 16) as u32 <= (*b).granules }
 }
 
@@ -169,6 +173,9 @@ fn thread_stack() -> (usize, usize) {
 /// The calling thread's stack: (lowest address, highest address).
 #[cfg(not(target_vendor = "apple"))]
 fn thread_stack() -> (usize, usize) {
+    // SAFETY: an all-zero pthread_attr_t is only storage for
+    // pthread_getattr_np to initialize; the attribute calls below read it
+    // only after that succeeded, and write into locals that outlive them.
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
@@ -237,6 +244,9 @@ impl Core {
             immortal_roots: Vec::new(),
             immortal_seen: Default::default(),
         });
+        // SAFETY: every object here is fresh from this heap, node-sized where
+        // node fields are written, and flagged immortal before the next
+        // allocation can collect, so none of them can be swept.
         unsafe {
             // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
             let nil = c.alloc_object(NILSXP, NODE_SIZE);
@@ -264,7 +274,18 @@ impl Core {
 
     /// Flag `x` immortal: never marked, never freed. Only for objects no
     /// other object can be traced through to anything mortal.
+    ///
+    /// # Safety
+    /// `x` must be a live object of this heap. From here on the collector
+    /// does not trace `x`: whatever it points at now must be immortal, or be
+    /// kept alive some other way, until a store into `x` passes
+    /// [`Core::write_barrier`], which makes `x` a root. An object flagged
+    /// without this function is missing from its block's count, and the
+    /// sweep miscounts.
     pub unsafe fn make_immortal(&mut self, x: Sexp) {
+        // SAFETY: `x` is live, so its header can be read and written. Its
+        // block's address is in a chunk, and a large chunk's first word
+        // (cleared when allocated) cannot equal the magic number.
         unsafe {
             if x.has_flag(flags::IMMORTAL) {
                 return;
@@ -292,6 +313,8 @@ impl Core {
         }
         let size = size.max(16);
         let p = self.heap.alloc(size);
+        // SAFETY: `p` has at least 16 bytes, 16-byte aligned, and no one else
+        // has it yet. Writing +0 as a word clears the flags, gp and counts.
         unsafe {
             *(p as *mut u64) = t as u64;
             *((p as *mut *mut u8).add(1)) = self.nil.0;
@@ -303,12 +326,16 @@ impl Core {
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
     ///
     /// # Safety
-    /// `car`, `cdr` and `tag` must be live objects of this heap: they are
-    /// reference counted here and traced by every later collection. Only
-    /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
+    /// `car`, `cdr` and `tag` must be live objects of this heap, and stay
+    /// rooted through this call, which can collect: they are reference
+    /// counted here and traced by every later collection. Only for
+    /// EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
     #[inline]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Sexp {
         let x = self.alloc_object(t, NODE_SIZE);
+        // SAFETY: `x` has node fields. The allocation above may collect, but
+        // the caller's contract keeps `car`, `cdr` and `tag` live through it,
+        // and only an object's count is written, never a non-object `car`.
         unsafe {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
@@ -347,6 +374,8 @@ impl Core {
             }
             // small atomic vectors: no overflow check, no fill
             let x = self.alloc_object(t, (OFF_DATA + n * esz).div_ceil(16) * 16);
+            // SAFETY: at least OFF_DATA bytes were requested, and a fresh
+            // vector of a type with elements has its length fields there.
             unsafe {
                 x.set_std_len(n as isize);
                 x.set_truelen(0);
@@ -388,6 +417,7 @@ impl Core {
                     self.heap.try_alloc_large(bytes)?
                 }
             };
+            // SAFETY: as in `alloc_object`: `p` is fresh, with `bytes` bytes.
             unsafe {
                 *(p as *mut u64) = t as u64;
                 *((p as *mut *mut u8).add(1)) = self.nil.0;
@@ -397,6 +427,9 @@ impl Core {
         } else {
             self.alloc_object(t, bytes)
         };
+        // SAFETY: `x` is fresh with `OFF_DATA + n * esz` bytes (no overflow:
+        // checked above), and for the filled types `esz` is a pointer's size,
+        // so the `n` writes stay in the payload.
         unsafe {
             x.set_std_len(n as isize);
             x.set_truelen(0);
@@ -433,6 +466,7 @@ impl Core {
         release: Option<ReleaseFn>,
     ) -> Sexp {
         let x = self.alloc_object(t, EXTDATA_SIZE);
+        // SAFETY: EXTDATA_SIZE covers every field written, up to +56.
         unsafe {
             x.set_flags(flags::EXTDATA);
             x.set_std_len(n as isize);
@@ -449,6 +483,7 @@ impl Core {
     /// the handle and release function follow at +40/+48.
     pub fn alloc_host(&mut self, t: u8, handle: usize, release: Option<ReleaseFn>) -> Sexp {
         let x = self.alloc_object(t, crate::HOST_SIZE);
+        // SAFETY: HOST_SIZE covers every field written, up to +56.
         unsafe {
             x.set_flags(flags::HOST);
             x.set_car_raw(self.nil);
@@ -461,12 +496,23 @@ impl Core {
     }
 
     /// The host handle of a HOST proxy.
+    ///
+    /// # Safety
+    /// `x` must be a live object made by [`Core::alloc_host`] (flag HOST).
+    /// Any other object has something else at +40, or nothing: it can be
+    /// past the end of the object.
     pub unsafe fn host_handle(x: Sexp) -> usize {
+        // SAFETY: the caller's contract: a HOST object has its handle at +40.
         unsafe { *(x.0.add(40) as *const usize) }
     }
 
     /// The owner word of an EXTDATA vector.
+    ///
+    /// # Safety
+    /// `x` must be a live object made by [`Core::alloc_extdata`] (flag
+    /// EXTDATA). On a standard vector +40 is payload.
     pub unsafe fn extdata_owner(x: Sexp) -> usize {
+        // SAFETY: the caller's contract: EXTDATA has its owner word at +40.
         unsafe { *(x.0.add(40) as *const usize) }
     }
 
@@ -474,6 +520,8 @@ impl Core {
 
     fn alloc_char(&mut self, bytes: &[u8], gpbits: u16, h: u32) -> Sexp {
         let x = self.alloc_object(CHARSXP, (OFF_DATA + bytes.len() + 1).div_ceil(16) * 16);
+        // SAFETY: `x` has room for the bytes and their NUL, and `bytes`, a
+        // borrow of memory outside the slot just handed out, cannot overlap it.
         unsafe {
             *(x.0.add(8) as *mut u64) = h as u64;
             x.set_std_len(bytes.len() as isize);
@@ -495,6 +543,8 @@ impl Core {
         let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
         let h = hash_bytes(bytes);
         let enc = bits & !gp::CACHED;
+        // SAFETY: the table's entries are live CHARSXPs: the collector removes
+        // dead ones before it frees them.
         let found = self.chars.find(h, |c| unsafe {
             c.gp() & (gp::UTF8 | gp::LATIN1 | gp::BYTES | gp::ASCII) == enc && c.char_bytes() == bytes
         });
@@ -502,12 +552,15 @@ impl Core {
             return c;
         }
         let c = self.alloc_char(bytes, bits, h);
+        // SAFETY: `c` is a new CHARSXP of this heap, and this table is its.
         unsafe { self.chars.insert(c) };
         c
     }
 
     fn new_symbol(&mut self, name: Sexp) -> Sexp {
         let s = self.alloc_object(SYMSXP, NODE_SIZE);
+        // SAFETY: `s` is fresh and node-sized, and no allocation follows, so
+        // `name` (immortal, in both callers) and `nil` cannot be swept first.
         unsafe {
             s.set_car_raw(name);
             s.set_cdr_raw(self.unbound_or(s));
@@ -527,6 +580,7 @@ impl Core {
             return s;
         }
         let c = self.mk_char(name, 0);
+        // SAFETY: `c` is live, and a CHARSXP has no children.
         unsafe { self.make_immortal(c) };
         let s = self.new_symbol(c);
         self.syms.insert(name.into(), s);
@@ -593,10 +647,17 @@ impl Core {
     /// R: memory.c:R_RunExitFinalizers -- mark every onexit reference
     /// ready and move it to the finalizer queue in weak-reference list
     /// order, then let the ordinary runner execute it.
+    ///
+    /// # Safety
+    /// None beyond the contract of [`Core::register_weak_ref`]: every
+    /// collection keeps the references this reads. It is `unsafe` only until
+    /// the API's call stops wrapping it in a block that would then be unused.
     pub unsafe fn queue_exit_finalizers(&mut self) {
         let mut keep = Vec::with_capacity(self.weak_refs.len());
         for w in std::mem::take(&mut self.weak_refs) {
+            // SAFETY: every collection marks the objects in `weak_refs`.
             if unsafe { w.gp() } & gp::FINALIZE_ON_EXIT != 0 {
+                // SAFETY: as above.
                 unsafe { w.set_gp(w.gp() | gp::READY_TO_FINALIZE) };
                 self.finalize_queue.push(w);
             } else {
@@ -659,6 +720,8 @@ impl Core {
         self.weak_refs
             .iter()
             .chain(self.finalize_queue.iter())
+            // SAFETY: both lists hold initialized WEAKREFSXPs that every
+            // collection marks.
             .flat_map(|&w| (0..3).map(move |i| unsafe { Self::weak_field(w, i) }))
             .collect()
     }
@@ -675,16 +738,22 @@ impl Core {
     /// an immortal `x` becomes a root of every later collection.
     #[inline(always)]
     pub unsafe fn write_barrier(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract: `x` is live.
         if unsafe { x.has_flag(flags::IMMORTAL) } {
-            self.remember_immortal(x);
+            // SAFETY: as above, and immortal, so `x` is never freed.
+            unsafe { self.remember_immortal(x) };
         }
     }
 
+    /// # Safety
+    /// `x` must be an immortal object of this heap: it is read here, and on
+    /// every collection from now on.
     #[cold]
-    fn remember_immortal(&mut self, x: Sexp) {
+    unsafe fn remember_immortal(&mut self, x: Sexp) {
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
         // the sum inflated `prune_chars` could skip a table with dead entries.
+        // SAFETY: the caller's contract: `x` is live.
         if unsafe { x.typ() } == CHARSXP {
             return;
         }
@@ -700,6 +769,7 @@ impl Core {
     /// `x` must be null or a live object of this heap.
     #[inline]
     pub unsafe fn mark(&mut self, x: Sexp) {
+        // SAFETY: `mark_obj` asks for what this function's contract gives.
         unsafe { self.mark_obj(x) }
     }
 
@@ -715,8 +785,15 @@ impl Core {
 
     // ---- collection ----------------------------------------------------
 
+    /// # Safety
+    /// `p` must be null or the start of an object of this heap that is not
+    /// free: it, and later everything it reaches, is read.
     #[inline]
     unsafe fn mark_obj(&mut self, p: Sexp) {
+        // SAFETY: the caller's contract. A live object's block is its address
+        // rounded down to 64 KiB (a large object's is its chunk's base), and
+        // either kind starts with a word that tells them apart. In a block `g`
+        // is a granule of the data area, so the bitmap word is in `marks`.
         unsafe {
             if p.is_null() {
                 return;
@@ -747,8 +824,11 @@ impl Core {
         }
     }
 
+    /// # Safety
+    /// As for [`Core::mark_obj`], except that `p` must not be null.
     #[inline]
     unsafe fn is_marked(&self, p: Sexp) -> bool {
+        // SAFETY: as in `mark_obj`, for reads.
         unsafe {
             if p.flags() & flags::IMMORTAL != 0 {
                 return true;
@@ -763,7 +843,16 @@ impl Core {
         }
     }
 
+    /// Mark what the objects on the mark stack reach.
+    ///
+    /// # Safety
+    /// Only during a collection, on a mark stack of live objects whose
+    /// fields hold live objects (the rules of the raw setters).
     unsafe fn trace(&mut self) {
+        // SAFETY: the caller's contract. Each body is read as what its type
+        // and flags say it is, and the order matters: a CHARSXP has its hash
+        // where attributes go, an ALTREP object of a vector type has no
+        // length, and a HOST object's fields are the host's.
         unsafe {
             while let Some(p) = self.mark_stack.pop() {
                 let t = p.typ();
@@ -811,7 +900,12 @@ impl Core {
         }
     }
 
+    /// Field `i` of a weak reference: key, value, finalizer.
+    ///
+    /// # Safety
+    /// `w` must be a live, standard WEAKREFSXP longer than `i`.
     unsafe fn weak_field(w: Sexp, i: usize) -> Sexp {
+        // SAFETY: element `i` of a standard vector's pointer payload.
         unsafe { *(w.std_data() as *const Sexp).add(i) }
     }
 
@@ -820,7 +914,13 @@ impl Core {
     /// whose key died and that have a finalizer are queued, keeping key,
     /// value and finalizer alive for the finalizer; the others are
     /// cleared.
+    ///
+    /// # Safety
+    /// Only during a collection, after the roots are marked.
     unsafe fn process_weak_refs(&mut self) {
+        // SAFETY: `register_weak_ref`'s contract makes every entry an
+        // initialized WEAKREFSXP. `collect` marked them, and nothing has been
+        // swept since, so their fields still point at objects.
         unsafe {
             loop {
                 let mut changed = false;
@@ -877,7 +977,21 @@ impl Core {
         }
     }
 
+    /// Mark what the machine stack points at, from this frame up.
+    ///
+    /// # Safety
+    /// `ctx` must be the core `collect` passed to `robigo_spill`, the only
+    /// way to reach it during this call, and the thread must be the core's.
     unsafe extern "C" fn scan_stack(ctx: *mut c_void) {
+        // SAFETY: `ctx` is as the caller promises. [sp, top) is mapped stack
+        // of this thread (collect checked the thread) and word-aligned, and
+        // `resolve` only returns allocated objects. This is the one block in
+        // the crate whose reason lies outside Rust's rules: the loop reads
+        // other frames' memory, which can be uninitialized, or borrowed
+        // exclusively by a frame that is suspended here. A conservative scan
+        // needs those reads. It works because they are ordinary machine
+        // loads of integers compared to addresses, in a function only called
+        // through C, so nothing can be optimized from them.
         unsafe {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
@@ -924,6 +1038,12 @@ impl Core {
         let t0 = Instant::now();
         self.epoch += 1;
         self.marked_chars = 0;
+        // SAFETY: no object was freed since the last sweep, so every list
+        // here holds objects whose fields are objects (the rooting contracts
+        // of `preserve`, `register_weak_ref` and `write_barrier`). The hooks
+        // are called as registered, on this core, while marking; `spill`
+        // gets a callback and a context of matching types; and this thread
+        // is the core's, checked above.
         unsafe {
             for i in 0..self.precious.len() {
                 let p = self.precious[i];
@@ -970,17 +1090,25 @@ impl Core {
 
     fn prune_chars(&mut self) {
         if self.marked_chars + self.immortal_chars == self.chars.len() {
+            // SAFETY: nothing has been swept, so entries are still objects.
             debug_assert!(self.chars.all(|c| unsafe { self.is_marked(c) }));
             return;
         }
         let mut chars = std::mem::take(&mut self.chars);
+        // SAFETY: nothing has been swept, so entries are still objects.
         chars.prune(|c| unsafe { self.is_marked(c) });
         self.chars = chars;
     }
 
     /// Queue the release callback of a dead object.
+    ///
+    /// # Safety
+    /// `p` must be an object not yet overwritten by the sweep.
     #[inline]
     unsafe fn on_death(&mut self, p: *mut u8) {
+        // SAFETY: the flags are in the header. They mean the object was made
+        // by `alloc_extdata` or `alloc_host`, which fill +40 and +48, and +48
+        // is an `Option<ReleaseFn>`: API code that disarms it writes null.
         unsafe {
             let f = *p.add(1);
             if f & (flags::EXTDATA | flags::HOST) != 0 {
@@ -1010,11 +1138,15 @@ impl Core {
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + DATA_OFF) as *mut u8;
+                // SAFETY: a large chunk holds one object at DATA_OFF, and it
+                // has a header once allocated: the chunk is made for it.
                 let f = unsafe { *obj.add(1) };
+                // SAFETY: +8 of a chunk at least a block long.
                 if f & flags::IMMORTAL != 0 || unsafe { *(c.base as *const u64).add(1) } == epoch {
                     live_bytes += (c.end - c.base) as u64;
                     live_objects += 1;
                 } else {
+                    // SAFETY: as above, and this object is not read again.
                     unsafe { self.on_death(obj) };
                     dead_chunks.push(idx);
                 }
@@ -1024,6 +1156,11 @@ impl Core {
             let mut chunk_touched = false;
             for bi in 0..c.claimed as usize {
                 let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: `b` is a claimed block of a live chunk, so its
+                // header is initialized. `g` comes from a start bit, so `p`
+                // is an object's first byte: its slot, of the class's size,
+                // is inside the data area and writable, and has the header
+                // and link words this writes.
                 unsafe {
                     if (*b).class == CLASS_NONE {
                         if (*b).owner == OWNER_EMPTY {
@@ -1115,6 +1252,8 @@ impl Core {
             }
         }
         for (ci, b) in to_list {
+            // SAFETY: `to_list` holds blocks found above in chunks that are
+            // not released until later in this function.
             unsafe {
                 (*b).owner = crate::heap::OWNER_LIST;
                 (*b).sticky_listed = 1;
@@ -1137,6 +1276,8 @@ impl Core {
         for &idx in release.iter().rev() {
             let c = self.heap.chunks[idx];
             let total = c.end - c.base;
+            // SAFETY: `try_new_chunk` allocated exactly this layout, and the
+            // loops above dropped every list entry that points into it.
             unsafe {
                 std::alloc::dealloc(c.base as *mut u8, std::alloc::Layout::from_size_align(total, BLOCK).unwrap());
             }
