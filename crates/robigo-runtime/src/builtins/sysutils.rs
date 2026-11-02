@@ -645,7 +645,12 @@ pub fn init_locale() {
         #[cfg(target_os = "linux")]
         libc::LC_MEASUREMENT,
     ] {
-        crate::sys::setlocale(cat, Some(c""));
+        // SAFETY: the evaluator is the only thread that runs locale-dependent
+        // C code: `system(timeout =)`'s reader runs none.
+        #[allow(unsafe_code)]
+        unsafe {
+            crate::sys::set_locale(cat, c"")
+        };
     }
 }
 
@@ -668,7 +673,7 @@ pub(crate) fn collation_is_c() -> bool {
 #[cold]
 fn collation_is_c_slow() -> bool {
     init_locale();
-    let c = match crate::sys::setlocale(libc::LC_COLLATE, None) {
+    let c = match crate::sys::locale(libc::LC_COLLATE) {
         Some(l) => l == "C",
         None => true,
     };
@@ -703,7 +708,7 @@ fn do_getlocale(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
     }
-    let p = locale_category(cat).and_then(|c| crate::sys::setlocale(c, None));
+    let p = locale_category(cat).and_then(crate::sys::locale);
     Ok(Value::str(&p.unwrap_or_default()))
 }
 
@@ -721,13 +726,19 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // R: platform.c:do_setlocale calls resetICUcollator for libc::LC_ALL and
     // libc::LC_COLLATE; dropping the cache for every category is equivalent.
     COLLATION_IS_C.set(None);
-    let set = |category| crate::sys::setlocale(category, Some(&cl));
+    let set = |category| {
+        // SAFETY: as in `init_locale`.
+        #[allow(unsafe_code)]
+        unsafe {
+            crate::sys::set_locale(category, &cl)
+        }
+    };
     let p: Option<String> = match cat {
         1 => set(libc::LC_CTYPE).and_then(|_| {
             set(libc::LC_COLLATE);
             set(libc::LC_MONETARY);
             set(libc::LC_TIME);
-            crate::sys::setlocale(libc::LC_ALL, None)
+            crate::sys::locale(libc::LC_ALL)
         }),
         5 => {
             if l != "C" {

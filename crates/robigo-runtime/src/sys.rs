@@ -7,9 +7,10 @@
 //! copying results out of the C library's static storage before returning.
 //!
 //! Functions that hand out the C library's static storage copy it under one
-//! lock (`c_statics`), so these are safe to call from any thread. Setting an
-//! environment variable is not here: that needs the caller's knowledge that
-//! no other thread is running C code that reads the environment.
+//! lock (`c_statics`), so these are safe to call from any thread. Changing
+//! the environment or the locale is another matter: only a caller can know
+//! that no other thread is running C code that reads them, so the first
+//! stays at its call sites and [`set_locale`] is `unsafe`.
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
 use std::fs::File;
@@ -231,14 +232,24 @@ pub fn kill(pid: i32, signal: c_int) {
 // ----------------------------------------------------------------------
 // Locale
 
-/// `setlocale(category, locale)`; `locale` `None` queries. The result is
-/// the locale's name, or `None` when the C library refuses.
-pub fn setlocale(category: c_int, locale: Option<&CStr>) -> Option<String> {
-    let locale = locale.map_or(std::ptr::null(), CStr::as_ptr);
+/// The name of the locale of `category` (`setlocale(category, NULL)`).
+pub fn locale(category: c_int) -> Option<String> {
     let _statics = c_statics();
-    // SAFETY: null or NUL-terminated; the result is null or a C string,
+    // SAFETY: a null locale only queries. The result is null or a C string,
     // which the next call may overwrite and which is copied under the lock.
-    unsafe { copy_cstr(libc::setlocale(category, locale)) }
+    unsafe { copy_cstr(libc::setlocale(category, std::ptr::null())) }
+}
+
+/// `setlocale(category, locale)`: the new locale's name, or `None` when the C
+/// library refuses.
+///
+/// # Safety
+/// No other thread runs C code that reads the locale, as `snprintf` and every
+/// function here do: glibc does not synchronize them with this call.
+pub unsafe fn set_locale(category: c_int, locale: &CStr) -> Option<String> {
+    let _statics = c_statics();
+    // SAFETY: as for `locale`, and the caller rules out other readers.
+    unsafe { copy_cstr(libc::setlocale(category, locale.as_ptr())) }
 }
 
 /// The fields of `localeconv()` in the order of R's `Sys.localeconv()`, or
@@ -615,7 +626,7 @@ mod tests {
         assert!(!strerror(libc::ENOENT).is_empty());
         assert!(iconv_supported("UTF-8", "latin1"));
         assert!(!iconv_supported("no-such-encoding", "UTF-8"));
-        assert!(setlocale(libc::LC_ALL, None).is_some());
+        assert!(locale(libc::LC_ALL).is_some());
         assert_eq!(localeconv().unwrap()[0].0, "decimal_point");
         assert_eq!(current_umask(), current_umask());
         assert!(uname().is_some_and(|u| !u.sysname.is_empty()));
