@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
@@ -60,7 +60,7 @@ jobs:
           python3 scripts/perf.py fetch
       - name: Profile both binaries and audit cache guards
         run: python3 scripts/perf-diagnostic.py .robigo/diagnostic-base .robigo/diagnostic-candidate .robigo/perf-diagnostic
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: perf-diagnostic
@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Format
@@ -83,7 +83,7 @@ jobs:
       # GNU R's base-package natives built from the R 4.5.0 sources
       # (docs/core.md §8): robigo's dyn.load serves the base packages with
       # them instead of the Rust ports (ROBIGO_NATIVES)
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/robigo-research/rsrc
           key: r-4.5.0-sources
@@ -112,7 +112,7 @@ jobs:
             p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d$p.so" "dist/natives/$p/"
           done
           cp -r .robigo/rdbflat dist/rdbflat
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: robigo
           path: dist
@@ -130,12 +130,12 @@ jobs:
       ROBIGO_CONF_BIN: ${{ github.workspace }}/dist/robigo
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: quick
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: robigo
           path: dist
@@ -148,7 +148,7 @@ jobs:
         env:
           ROBIGO_CONF_RESULTS: ${{ github.workspace }}/.robigo/conformance-results/conformance.json
         run: cargo test --locked --profile quick --workspace
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: corpus-conformance-1of1
@@ -165,7 +165,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -200,11 +200,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: robigo
           path: dist
@@ -218,7 +218,7 @@ jobs:
       - name: Name the results
         if: always()
         run: echo "RESULT_NAME=corpus-${{ matrix.corpus }}-${{ matrix.shard }}" | sed 's#/#of#' >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ${{ env.RESULT_NAME }}
@@ -237,11 +237,11 @@ jobs:
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: robigo
           path: dist
@@ -268,11 +268,11 @@ jobs:
     timeout-minutes: 110
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: robigo
           path: dist
@@ -344,12 +344,12 @@ jobs:
       - name: Report
         if: github.ref == 'refs/heads/main'
         run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && github.ref != 'refs/heads/main'
         with:
           name: perf-paired-profiles
           path: .robigo/perf-paired
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
           path: perf.json
@@ -380,8 +380,8 @@ jobs:
       - run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git gh python3 ca-certificates > /dev/null
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Record on progress-data
