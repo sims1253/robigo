@@ -113,16 +113,22 @@ keeps it, so `LEVELS`/`SETLEVELS` round-trip.
 
 - **Payload access** (`DATAPTR`, `INTEGER`, `REAL`, ...): flags clear →
   `x + 32`; EXTDATA → the stored pointer; ALTREP → the class's `Dataptr`
-  method (materializing). One header-byte test on the fast path, the
-  same shape as GNU R's `ALTREP(x) ? ALTVEC_DATAPTR(x) : STDVEC_DATAPTR(x)`.
+  method (materializing when writable access needs it). One header-byte
+  test on the fast path, the same shape as GNU R's `ALTREP(x) ? ALTVEC_DATAPTR(x) : STDVEC_DATAPTR(x)`.
   EXTDATA is not ALTREP: `ALTREP(x)` is false, so packages that branch on
   it see an ordinary vector.
 - **Storage variants** (F2): *owned* (inline payload), *external*
-  (EXTDATA: a buffer owned by someone else, released by the sweeper —
-  Arrow/NumPy/mmap buffers, and the bridge's zero-copy arguments, §6),
-  *compact* and other *ALTREP* classes (compact intseq/realseq, wrappers,
-  deferred strings are built-in classes; packages define their own with
+  (EXTDATA: a writable buffer owned by someone else, released by the
+  sweeper — the bridge's zero-copy arguments, §6), *compact* and other
+  *ALTREP* classes (compact intseq/realseq, wrappers, deferred strings and
+  foreign buffers are built-in classes; packages define their own with
   `R_make_alt*_class`).
+- **Foreign buffers are ALTREP, never EXTDATA.** `INTEGER()` and `REAL()`
+  are `DATAPTR` with `writable = TRUE` (`Defn.h`, `altrep.c`), and EXTDATA
+  returns its stored pointer with no hook, so a C write would corrupt a
+  shared immutable Arrow buffer, or fault on a read-only mmap. An ALTREP
+  class sees the writable request. The rule for Arrow is below; NumPy and
+  mmap follow the same shape.
 - **Scalars and small vectors** need no special case: a length-1 INTSXP
   is 48 bytes (GNU R: 56). Immortal shared constants: `R_NilValue`,
   `R_TrueValue`/`R_FalseValue`/`R_LogicalNAValue`, `NA_STRING`,
@@ -138,6 +144,58 @@ correct; the exported functions remain for code that takes their
 address. `Defn.h` for base-package sources defines the `USE_RINTERNALS`
 macros (`CAR`, `CDR`, `TAG`, `PRINTNAME`, `ENC_KNOWN`, `RTRACE`,
 `SET_TYPEOF`, ...) against the same layout.
+
+### Arrow buffers
+
+The reasoning is from the two formats' specifications; none of this is
+prototyped. Decided in #203 (Claude Opus, GPT Sol, Gemini, Muse).
+
+| Arrow array | R vector | read-only `Dataptr` |
+|---|---|---|
+| Float64, no nulls | REALSXP | the buffer |
+| Int32, no nulls | INTSXP, scanned at import | the buffer |
+| UInt8, no nulls | RAWSXP | the buffer |
+| any array with nulls, multi-chunk, misaligned, or not native-endian | by type | materializes |
+| Boolean | LGLSXP | materializes: bit-packed, R logicals are `i32` |
+| Int64 | not INTSXP: R integers are 32-bit | materializes |
+| Utf8 | STRSXP | materializes: `STRSXP` holds pointers to interned `CHARSXP`s |
+
+"The buffer" means base + offset × width of one contiguous chunk. `Length`
+is the slice's, never the buffer's capacity, and `TRUELENGTH` is 0, as for
+every ALTREP vector (`altrep.c`). "No nulls" means in the slice; `null_count == -1` is unknown, so count it.
+Date32 and dictionary indices are Int32 buffers but do not qualify: their
+R values are not the stored ones. Pointer-eligible or not, `Elt` and
+`Get_region` convert lazily, writing `NA` into null slots: value slots
+under a null are unspecified, and R would read them as data.
+
+- **Writable `Dataptr`** materializes once into owned storage held in
+  `data2`, and every later access uses that. So code reading through
+  `REAL()` copies once, the price of being safe; `DATAPTR_OR_NULL`,
+  `REAL_RO` and robigo's kernels read the buffer directly. In-place
+  replacement goes through writable `Dataptr` too: `refcnt == 1` says
+  nothing about Arrow's other owners.
+- **`i32::MIN`** is a valid Arrow value and is `NA_integer_` in R, and no
+  INTSXP can hold it otherwise. Import scans once, eagerly: at `DATAPTR`
+  a warning could longjmp through arbitrary C. A hit stays INTSXP, reads
+  as `NA`, warns "NAs introduced by coercion to integer range" and answers
+  `No_NA` false, as `as.integer(-2147483648)` does; `readBin` gives the
+  same `NA`. It does not widen to REALSXP, which would make `typeof()`
+  depend on the data. The bytes do not change, so the buffer stays
+  shareable. Trusted min/max statistics may skip the scan.
+- **A NaN whose low word is 1954** is `NA_real_` by `R_IsNA`'s definition,
+  in any REALSXP: `readBin` of those bytes is `identical()` to `NA_real_`.
+  So Float64 is not scanned and a copy could not do better: it is exact in
+  bits, not in the Arrow value, where that NaN is not null. `No_NA` cannot
+  claim true for Float64 without a scan.
+- **Export** computes validity from R's sentinels: null is
+  `x == NA_INTEGER` or `R_IsNA(x)`, never `isnan`, so `NaN` stays valid
+  with its bits; no bitmap when nothing is missing. The value buffer is
+  shared only while the object is pinned against in-place modification
+  (release at a safe point, §12 row 16); otherwise it is copied. LGLSXP and
+  STRSXP always convert.
+- **`Serialized_state`** returns NULL, so `serialize()` writes the bytes of
+  an ordinary vector. `SETLENGTH` errors on ALTREP in GNU R (`memory.c`),
+  which an EXTDATA vector would not.
 
 ## 3. Memory: the mark-region heap
 

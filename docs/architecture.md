@@ -110,7 +110,7 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
 
 - **Storage variants** for vectors: owned inline payload, compact
   sequences (`1:n`), foreign buffers (Arrow, NumPy, mmap: zero-copy
-  interop), and ALTREP classes. `DATAPTR` materializes; element and region
+  interop where the formats agree, `docs/core.md` §2), and ALTREP classes. `DATAPTR` materializes; element and region
   access does not have to.
 - **Copy-on-modify** by reference counts, as in GNU R since 4.0.
 - **Memory manager** (decided by measurement, `docs/design.md` §5.5,
