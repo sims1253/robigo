@@ -99,10 +99,10 @@ pub enum ConnKind {
     /// `textConnection(name, "w")`: lines go to a character vector bound
     /// to `namesym` in `env` (or kept internally for `NULL`).
     TextOut { namesym: Option<Sym>, env: Env, data: Vec<RStr>, lastline: Vec<u8> },
-    /// `gzfile()`: read by decompressing the whole file when opened
-    /// (uncompressed files are read as they are), written by compressing
-    /// the buffered output when closed.
-    Gz { level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
+    /// `gzfile()`/`bzfile()`: read by decompressing the whole file when
+    /// opened (uncompressed files are read as they are), written by
+    /// compressing the buffered output when closed.
+    Gz { codec: Codec, level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
     /// `rawConnection()`: an in-memory raw vector (R: connections.c
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
     /// smaller than `data.len()` (the allocation is over-sized).
@@ -166,6 +166,27 @@ impl Connection {
 }
 
 const FILE_WBUF_SIZE: usize = 8192;
+
+/// The codec of a compressed-file connection. R's `gzfile()` in read
+/// mode and `file()` dispatch on the file's magic (connections.c:
+/// comp_type_from_file) and open a bzfile connection for bzip2 data;
+/// the connection's class then says how it was really opened.
+// R: connections.c:newgzfile, newbzfile
+#[derive(Clone, Copy, PartialEq)]
+pub enum Codec {
+    Gzip,
+    Bzip2,
+}
+
+impl Codec {
+    /// The connection class R gives it.
+    fn class(self) -> &'static str {
+        match self {
+            Codec::Gzip => "gzfile",
+            Codec::Bzip2 => "bzfile",
+        }
+    }
+}
 
 fn flush_file_wbuf(f: &mut File, wbuf: &mut Vec<u8>) -> std::io::Result<()> {
     if !wbuf.is_empty() {
@@ -511,8 +532,8 @@ fn c_open_mkfifo(name: &str) -> i32 {
     crate::sys::mkfifo(name)
 }
 
-/// Open a `gzfile` connection.
-// R: connections.c:gzfile_open
+/// Open a `gzfile`/`bzfile` connection.
+// R: connections.c:gzfile_open, bzfile_open
 fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     let name = expand_file_name(&con.description);
@@ -523,31 +544,89 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
         let raw = match std::fs::read(&name) {
             Ok(d) => d,
             Err(e) => {
+                let bzed = matches!(con.kind, ConnKind::Gz { codec: Codec::Bzip2, .. });
                 i.warning(format!(
-                    "cannot open compressed file '{}', probable reason '{}'",
+                    "cannot open {} file '{}', probable reason '{}'",
+                    if bzed { "bzip2-ed" } else { "compressed" },
                     name,
                     os_error_message(&e)
                 ))?;
                 return Ok(false);
             }
         };
-        if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
-            // The flat cache (rdbflat.rs) may already hold this file's
-            // inflate — a lazy-load database's .rdx index is read with a
-            // gzfile at every startup; the builder pre-inflates it next
-            // to its .rdb's cache (single (0, 0) entry, same size/mtime
-            // guard). Falls through to the decoder when there is none.
-            let cached = crate::rdbflat::with_entry(&name, 0, 0, |d| d.to_vec());
-            if let Some(d) = cached {
-                data = d;
-            } else if flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut data).is_err() {
-                return Err(Flow::error(format!("robigo: '{}' is not a valid gzip file", name)));
+        let codec = match con.kind {
+            ConnKind::Gz { codec, .. } => codec,
+            _ => Codec::Gzip,
+        };
+        match codec {
+            Codec::Bzip2 => {
+                // R: connections.c:bzfile_open — BZ2_bzReadOpen never
+                // reads, so any file opens; data errors surface at read
+                // (bzfile_read): only BZ_DATA_ERROR_MAGIC warns ("appears
+                // not to be compressed"; a bad header in a later stream
+                // after a decoded one warns "has trailing content" from
+                // the re-open). Everything else — EOF mid-header (a bare
+                // "BZh9") or mid-stream, a block-magic mismatch — is
+                // silent and keeps the bytes read so far. The bzip2 crate
+                // calls libbz2, so its error kinds are bzlib's codes; the
+                // whole-file model decodes at open, so warnings fire here.
+                // A valid empty stream (and an empty file) decodes to
+                // nothing and opens.
+                let mut err: Option<bzip2::Error> = None;
+                let mut dec = bzip2::read::MultiBzDecoder::new(&raw[..]);
+                let mut buf = [0u8; 8192];
+                loop {
+                    match dec.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => data.extend_from_slice(&buf[..n]),
+                        Err(e) => {
+                            err = e.get_ref().and_then(|x| x.downcast_ref::<bzip2::Error>().cloned());
+                            break;
+                        }
+                    }
+                }
+                if matches!(err, Some(bzip2::Error::DataMagic)) && !raw.is_empty() {
+                    if data.is_empty() {
+                        i.warning(format!("file '{name}' appears not to be compressed by bzip2"))?;
+                    } else {
+                        i.warning(format!(
+                            "file '{name}' has trailing content that appears not to be compressed by bzip2"
+                        ))?;
+                    }
+                }
             }
-        } else {
-            data = raw;
+            Codec::Gzip => {
+                if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
+                    // The flat cache (rdbflat.rs) may already hold this file's
+                    // inflate — a lazy-load database's .rdx index is read with a
+                    // gzfile at every startup; the builder pre-inflates it next
+                    // to its .rdb's cache (single (0, 0) entry, same size/mtime
+                    // guard). Falls through to the decoder when there is none.
+                    let cached = crate::rdbflat::with_entry(&name, 0, 0, |d| d.to_vec());
+                    if let Some(d) = cached {
+                        data = d;
+                    } else if flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut data).is_err() {
+                        return Err(Flow::error(format!("robigo: '{}' is not a valid gzip file", name)));
+                    }
+                } else {
+                    data = raw;
+                }
+            }
         }
     } else if let Err(e) = std::fs::OpenOptions::new().create(true).append(true).open(&name) {
-        i.warning(format!("cannot open compressed file '{}', probable reason '{}'", name, os_error_message(&e)))?;
+        let bzed = matches!(con.kind, ConnKind::Gz { codec: Codec::Bzip2, .. });
+        i.warning(format!(
+            "cannot open {} file '{}', probable reason '{}'",
+            if bzed { "bzip2-ed" } else { "compressed" },
+            name,
+            os_error_message(&e)
+        ))?;
+        return Ok(false);
+    } else if writing && matches!(&con.kind, ConnKind::Gz { codec: Codec::Bzip2, level: 0, .. }) {
+        // R: connections.c:bzfile_open — BZ2_bzWriteOpen rejects
+        // blockSize100k = 0 with BZ_CONFIG_ERROR; R warns and the open
+        // fails (compress = 0 passes do_gzfile's 0..9 validation).
+        i.warning(format!("initializing bzip2 compression for file '{name}' failed"))?;
         return Ok(false);
     }
     let con = i.conns.get(n)?;
@@ -757,12 +836,19 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                 }
             }
         }
-        ConnKind::Gz { level, out, writing, append, data, .. } => {
+        ConnKind::Gz { codec, level, out, writing, append, data, .. } => {
             if *writing {
                 let name = expand_file_name(&con.description);
-                let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level));
-                let ok = enc.write_all(out).is_ok();
-                let bytes = enc.finish().ok().filter(|_| ok);
+                let bytes = match codec {
+                    Codec::Gzip => {
+                        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level));
+                        enc.write_all(out).is_ok().then(|| enc.finish().ok()).flatten()
+                    }
+                    Codec::Bzip2 => {
+                        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(*level));
+                        enc.write_all(out).is_ok().then(|| enc.finish().ok()).flatten()
+                    }
+                };
                 let file =
                     std::fs::OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(&name);
                 con.status = match (bytes, file) {
@@ -1286,7 +1372,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         return Err(Flow::error("robigo: URL connections are not implemented yet"));
     }
     let ncon = i.conns.next_connection()?;
-    let mut gzip = false;
+    let mut comp: Option<Codec> = None;
     let path = url.strip_prefix("file://").map(|s| s.to_string());
     let description = path.clone().unwrap_or_else(|| url.clone());
     if path.is_none() {
@@ -1319,10 +1405,8 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         // attribute stays "file".
         if !raw && (open.is_empty() || open == "r" || open == "rt") {
             match compressed_file_type(&efn) {
-                Some(Compression::Gzip) => gzip = true,
-                Some(Compression::Bzip2) => {
-                    return Err(Flow::error("robigo: bzip2 compressed file connections are not implemented yet"));
-                }
+                Some(Compression::Gzip) => comp = Some(Codec::Gzip),
+                Some(Compression::Bzip2) => comp = Some(Codec::Bzip2),
                 Some(Compression::Xz) => {
                     return Err(Flow::error("robigo: xz compressed file connections are not implemented yet"));
                 }
@@ -1339,13 +1423,13 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         }
     }
     let mode = if open.is_empty() {
-        // R: newgzfile(url, strlen(open) ? open : "rt", compress)
-        if gzip { "rt".to_string() } else { "r".to_string() }
+        // R: newgzfile/newbzfile(url, strlen(open) ? open : "rt", compress)
+        if comp.is_some() { "rt".to_string() } else { "r".to_string() }
     } else {
         open.clone()
     };
-    let kind = if gzip {
-        ConnKind::Gz { level: 0, data: Vec::new(), cur: 0, out: Vec::new(), writing: false, append: false }
+    let kind = if let Some(codec) = comp {
+        ConnKind::Gz { codec, level: 0, data: Vec::new(), cur: 0, out: Vec::new(), writing: false, append: false }
     } else {
         ConnKind::File {
             raw,
@@ -1362,7 +1446,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     };
     let mut con = Connection::new("file", &description, &mode, kind);
     // gzfile connections decompress on open and cannot seek in robigo.
-    con.canseek = !raw && !gzip;
+    con.canseek = !raw && comp.is_none();
     con.blocking = block != 0;
     con.encname = enc.chars().take(99).collect();
     if !con.encname.is_empty() && con.encname != "native.enc" {
@@ -1454,7 +1538,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 /// `gzfile()`; `bzfile()`, `xzfile()` and `zstdfile()` share the entry
-/// point (R's PRIMVAL), but only gzip is implemented.
+/// point (R's PRIMVAL); gzip and bzip2 are implemented.
 // R: connections.c:do_gzfile
 fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let fname = match call {
@@ -1491,10 +1575,18 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     }
     if ty == 0 && (open.is_empty() || open.starts_with('r')) {
         // check magic no
+        // R: connections.c:comp_type_from_memory — the bzip2 test also
+        // checks the block size and the block/eos magic, to reduce the
+        // risk of picking up an uncompressed file (PR#18768).
         let efn = expand_file_name(&file);
-        let mut buf = [0u8; 6];
+        let mut buf = [0u8; 10];
         let k = File::open(&efn).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
-        if k >= 3 && &buf[..3] == b"BZh" {
+        if k >= 10
+            && &buf[..3] == b"BZh"
+            && buf[3] >= b'1'
+            && buf[3] <= b'9'
+            && (&buf[4..10] == b"\x31\x41\x59\x26\x53\x59" || &buf[4..10] == b"\x17\x72\x45\x38\x50\x90")
+        {
             ty = 1;
         } else if k >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
             ty = 2;
@@ -1502,13 +1594,15 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             ty = 3;
         }
     }
-    if ty != 0 {
-        let what = ["", "bzip2", "xz", "zstd"][ty];
+    if ty > 1 {
+        let what = ["", "", "xz", "zstd"][ty];
         return Err(Flow::error(format!("robigo: {} compressed file connections are not implemented yet", what)));
     }
+    let codec = if ty == 1 { Codec::Bzip2 } else { Codec::Gzip };
     let ncon = i.conns.next_connection()?;
     let mode = if open.is_empty() { "rb".to_string() } else { open.clone() };
     let kind = ConnKind::Gz {
+        codec,
         level: compress as u32,
         data: Vec::new(),
         cur: 0,
@@ -1516,7 +1610,7 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         writing: false,
         append: false,
     };
-    let mut con = Connection::new("gzfile", &file, &mode, kind);
+    let mut con = Connection::new(codec.class(), &file, &mode, kind);
     con.blocking = true;
     con.canseek = false;
     con.encname = enc;
