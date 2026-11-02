@@ -177,3 +177,33 @@ SEXP capi_is_package_env(SEXP a, SEXP b, SEXP c, SEXP d) {
 SEXP capi_env_locked(SEXP e) {
     return ScalarLogical(R_EnvironmentIsLocked(e));
 }
+
+// R_NewEnv with a NULL enclosure: legal (ENCLOS stays R_NilValue);
+// nanonext's rnng_request creates such environments and re-parents them
+// with SETCDR (its NANO_SET_ENCLOS). Issue #146.
+SEXP capi_newenv_null(SEXP val) {
+    SEXP env = PROTECT(R_NewEnv(R_NilValue, 0, 0));
+    Rf_defineVar(install("x"), val, env);
+    SEXP v = PROTECT(Rf_eval(install("x"), env));
+    SEXP before = PROTECT(CDR(env));
+    SETCDR(env, R_GlobalEnv);
+    SEXP ans = PROTECT(allocVector(VECSXP, 4));
+    SET_VECTOR_ELT(ans, 0, ScalarLogical(isEnvironment(env)));
+    SET_VECTOR_ELT(ans, 1, v);
+    SET_VECTOR_ELT(ans, 2, env);
+    SET_VECTOR_ELT(ans, 3, before);
+    UNPROTECT(4);
+    return ans;
+}
+
+// Walking FRAME(env) directly, as nanonext's nano_findVarInFrame does
+// (CAR of an environment proxy): tagged cells, R_NilValue when absent.
+SEXP capi_frame_find(SEXP env, SEXP sym) {
+    SEXP frame = CAR(env);
+    while (frame != R_NilValue) {
+        if (TAG(frame) == sym)
+            return CAR(frame);
+        frame = CDR(frame);
+    }
+    return R_NilValue;
+}
