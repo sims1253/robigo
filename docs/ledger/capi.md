@@ -45,6 +45,34 @@ of `n_pkgs` over symbols a corpus case imports, over the total.
   first pairlist element; `...` binds to `R_MissingArg` when empty and
   to a `DOTSXP` pairlist otherwise.
 
+## Audit of libR.so's memory safety (2026-11-02)
+
+- `tests/bridge.rs` drives the real bridge with an `Interp` and Rust
+  routines, for what the stub host of `tests/capi.rs` cannot reach. One
+  thread per process, so a case that must abort runs in a child.
+- Confirmed by a failing test before the fix: conversions after a routine
+  (SIGABRT), SET_TRUELENGTH, finalizers with the stack scan off, a second
+  thread overwriting R_NilValue, NULL continuation and CLEAR_ATTRIB on a
+  CHARSXP (both SIGSEGV), SET_BODY/SETLENGTH freeing what they replace,
+  the finalizer guard stuck after a jump.
+- What C replaces in a runtime object lives until top level, not until the
+  outermost native call returns: the frames reading it can be above that
+  call (`lapply(x, function(e) .Call(h, x))`). A long-running function
+  that keeps replacing attributes through C holds the old ones until it
+  returns. Element stores (`set_*_elt_through_alias`) drop the old element
+  at once; a call element running while C replaces it is still exposed.
+- Normal `.Call` under callgrind (three arguments, release, 100k calls,
+  minus a load-only run): 16,743 -> 16,795 instructions (+0.31%). Two gates
+  on the conversions, the argument-count and protect-depth compares and
+  republishing the interpreter. The first version cost +98: a `Result`
+  around the write-back was 37 of it, now only on the rare path.
+- A fixed array in `sort::internal` panicked in `extern "C"` for
+  R_orderVector's keys; only the capi corpus's `vectors` case caught it.
+- Shared-target trap: cargo hashes path packages relative to the workspace,
+  so checkouts share build-script OUT_DIRs. A concurrent build replaced
+  `librobigo_graphics.a` and new C symbols went missing at link time; a C
+  change needs a private CARGO_TARGET_DIR while others build.
+
 ## Open (next steps, by uncovered weight)
 
 - `GE*` graphics engine (~60 weight): needs a `DevDesc` device in the
