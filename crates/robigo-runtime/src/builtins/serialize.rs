@@ -111,7 +111,18 @@ fn do_unserialize(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
             let text = s.data.first().cloned().flatten().unwrap_or_default();
             crate::serialize::unserialize(i, text.as_bytes(), hook)
         }
-        _ => Err(Flow::error("robigo: unserialize() from connections is not implemented yet")),
+        // R: serialize.c:R_unserialize, R_InitConnInPStream, CheckInConn
+        conn => {
+            let con = super::io::connection_number(&conn)?;
+            let (isopen, canread, ..) = super::io::conn_state(i, con)?;
+            if !isopen {
+                return Err(Flow::error("connection is not open"));
+            }
+            if !canread {
+                return Err(Flow::error("cannot read from this connection"));
+            }
+            crate::serialize::unserialize_stream(i, con, hook)
+        }
     }
 }
 
@@ -156,6 +167,9 @@ fn do_unserialize_from_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) 
         let (_, canread, ..) = io::conn_state(i, con)?;
         if !canread {
             return Err(Flow::error("connection not open for reading"));
+        }
+        if io::is_socket(i, con)? {
+            return crate::serialize::unserialize_stream(i, con, arg(&args, 1));
         }
         let bytes = io::con_read_all(i, con)?;
         crate::serialize::unserialize(i, &bytes, arg(&args, 1))
