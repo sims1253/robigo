@@ -420,13 +420,17 @@ pub unsafe extern "C" fn R_qsort_int_I(v: *mut c_int, idx: *mut c_int, i: c_int,
 
 /// Call the host's `.Internal(name(args...))`.
 pub unsafe fn internal(name: &str, args: &[Sexp]) -> Sexp {
-    // the host's operation can jump: nothing here may own memory
-    let mut a = [Sexp::NULL; 8];
+    // the host's operation can jump: nothing here may own memory, and
+    // R_orderVector passes any number of keys
     let n = std::ffi::CString::new(name).unwrap();
-    a[0] = Rf_protect(crate::strings::Rf_mkString(n.as_ptr()));
+    let name = Rf_protect(crate::strings::Rf_mkString(n.as_ptr()));
     drop(n);
-    a[1..=args.len()].copy_from_slice(args);
-    let r = crate::host::op("internal\0", &a[..=args.len()]);
+    let vmax = vmaxget();
+    let a = R_alloc(args.len() + 1, size_of::<Sexp>() as c_int) as *mut Sexp;
+    *a = name;
+    std::ptr::copy_nonoverlapping(args.as_ptr(), a.add(1), args.len());
+    let r = crate::host::op("internal\0", std::slice::from_raw_parts(a, args.len() + 1));
+    vmaxset(vmax);
     Rf_unprotect(1);
     r
 }

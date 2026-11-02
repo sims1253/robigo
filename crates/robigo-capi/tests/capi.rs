@@ -408,6 +408,13 @@ fn the_api() {
         assert_eq!(capi::memory::Rf_length(p), 1);
         capi::memory::Rf_unprotect(1);
 
+        // ---- a host .Internal with any number of arguments (R_orderVector)
+        unsafe extern "C" fn many_arguments(_: *mut c_void) {
+            unsafe { capi::sort::internal("many", &[R_NilValue; 20]) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(many_arguments, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: op internal:many".to_string()]);
+
         // ---- R_qsort, R_qsort_int, R_qsort_I, R_qsort_int_I, Rf_cPsort
         let mut rv = [99.0, 4.0, 1.5, 3.0, 2.0, -1.0, 88.0];
         capi::sort::R_qsort(rv.as_mut_ptr(), 2, 6);
