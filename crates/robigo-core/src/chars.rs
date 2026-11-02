@@ -35,7 +35,10 @@ impl CharTable {
         let mask = self.slots.len() - 1;
         let mut i = h as usize & mask;
         loop {
-            let c = self.slots[i];
+            // SAFETY: `i` is masked by `len - 1`, and the length is a power
+            // of two. This is the CHARSXP cache's probe: `mkChar` is hot, and
+            // a bounds check here costs 0.05% of `csv`.
+            let c = unsafe { *self.slots.get_unchecked(i) };
             if c.is_null() {
                 return None;
             }

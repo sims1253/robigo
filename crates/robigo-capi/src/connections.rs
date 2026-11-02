@@ -280,6 +280,7 @@ pub unsafe extern "C" fn R_WriteConnection(con: *mut c_void, buf: *const c_void,
 
 /// Write to a connection; a nonzero token is the jump the caller makes
 /// once it dropped what it owns.
+#[inline(always)]
 unsafe fn write_token(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
     let num = number_of(con);
     let bytes = if n == 0 { &[] } else { std::slice::from_raw_parts(buf as *const u8, n) };
