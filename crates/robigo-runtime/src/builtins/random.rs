@@ -524,26 +524,6 @@ fn fixup_prob(p: &mut [f64], require_k: i32, replace: bool) -> RResult<()> {
     Ok(())
 }
 
-/// A vector of capacity `n`, failing like R's allocVector when memory is
-/// exhausted (memory.c: "cannot allocate vector of size ...").
-fn try_alloc<T>(n: usize) -> RResult<Vec<T>> {
-    let mut v = Vec::new();
-    if v.try_reserve_exact(n).is_err() {
-        // R rounds the request up to whole 8-byte VECRECs
-        let bytes = (n * std::mem::size_of::<T>()).div_ceil(8) * 8;
-        let dsize = bytes as f64 / 1024.0;
-        let msg = if dsize > 1024.0 * 1024.0 {
-            format!("cannot allocate vector of size {:.1} Gb", dsize / 1024.0 / 1024.0)
-        } else if dsize > 1024.0 {
-            format!("cannot allocate vector of size {:.1} Mb", dsize / 1024.0)
-        } else {
-            format!("cannot allocate vector of size {:.0} Kb", dsize)
-        };
-        return Err(Flow::error_nocall(msg));
-    }
-    Ok(v)
-}
-
 /// R: builtin.c:asVecSize
 fn as_vec_size(i: &mut Interp, x: &Value) -> RResult<i64> {
     if x.is_atomic() && !x.is_empty() {
@@ -643,14 +623,14 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         let rng = &mut i.rng;
         if dn > i32::MAX as f64 || k > i32::MAX as i64 {
             let k = k as usize;
-            let mut ry = try_alloc::<f64>(k)?;
+            let mut ry = crate::memory::try_vec::<f64>(k, crate::memory::Elt::Real)?;
             if replace {
                 for _ in 0..k {
                     ry.push(rng.unif_index(dn) + 1.0);
                 }
             } else {
                 let mut n = dn as i64;
-                let mut x = try_alloc::<f64>(n as usize)?;
+                let mut x = crate::memory::try_vec::<f64>(n as usize, crate::memory::Elt::Real)?;
                 x.extend((0..n).map(|v| v as f64));
                 for _ in 0..k {
                     let j = rng.unif_index(n as f64) as i64 as usize;
@@ -663,13 +643,13 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         } else {
             let mut n = dn as i32;
             let k = k as usize;
-            let mut iy = try_alloc::<i32>(k)?;
+            let mut iy = crate::memory::try_vec::<i32>(k, crate::memory::Elt::Int)?;
             if replace || k < 2 {
                 for _ in 0..k {
                     iy.push((rng.unif_index(n as f64) + 1.0) as i32);
                 }
             } else {
-                let mut x = try_alloc::<i32>(n as usize)?;
+                let mut x = crate::memory::try_vec::<i32>(n as usize, crate::memory::Elt::Int)?;
                 x.extend(0..n);
                 for _ in 0..k {
                     let j = rng.unif_index(n as f64) as i32 as usize;
@@ -773,12 +753,12 @@ impl RandType {
 fn fill_with_nas(ty: RandType, n: usize) -> RResult<Value> {
     Ok(match ty {
         RandType::Int => {
-            let mut data = try_alloc::<i32>(n)?;
+            let mut data = crate::memory::try_vec::<i32>(n, crate::memory::Elt::Int)?;
             data.resize(n, NA_INTEGER);
             Value::ints(data)
         }
         RandType::Real => {
-            let mut data = try_alloc::<f64>(n)?;
+            let mut data = crate::memory::try_vec::<f64>(n, crate::memory::Elt::Real)?;
             data.resize(n, NA_REAL);
             Value::reals(data)
         }
@@ -881,7 +861,7 @@ fn random_dispatch(
     let mut real_data: Vec<f64> = Vec::new();
     let mut real_from = n;
     if ty == RandType::Int {
-        int_data = try_alloc::<i32>(n)?;
+        int_data = crate::memory::try_vec::<i32>(n, crate::memory::Elt::Int)?;
         int_data.resize(n, 0);
         for k in 0..n {
             let rx = draw!(k);
@@ -891,7 +871,7 @@ fn random_dispatch(
             } else if rx > i32::MAX as f64 || rx <= i32::MIN as f64 {
                 // integer overflow: coerce the result so far to REALSXP and
                 // continue in the real loop below.
-                real_data = try_alloc::<f64>(n)?;
+                real_data = crate::memory::try_vec::<f64>(n, crate::memory::Elt::Real)?;
                 real_data.extend(int_data[..k].iter().map(|&v| if v == NA_INTEGER { NA_REAL } else { v as f64 }));
                 real_data.push(rx);
                 real_from = k + 1;
@@ -902,7 +882,7 @@ fn random_dispatch(
         }
     }
     if ty == RandType::Real {
-        real_data = try_alloc::<f64>(n)?;
+        real_data = crate::memory::try_vec::<f64>(n, crate::memory::Elt::Real)?;
         for k in 0..n {
             let v = draw!(k);
             if v.is_nan() {
