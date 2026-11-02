@@ -2849,16 +2849,24 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
 pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
     // R: eval.c:1224 / 7894 — a traced function reports as a call in the
     // AST interpreter, as a symbol in bytecode (see vm::trace_report).
-    let frame = crate::builtins::debug::any_traced().then(|| {
-        let compiled = !clo.jit.interpreted();
-        crate::builtins::debug::enter_frame(compiled)
-    });
+    // The frame flag is kept only while something is traced, so the common
+    // call stays a tail call into `run_pre`.
+    if crate::builtins::debug::any_traced() {
+        return run_closure_traced(interp, code, env, clo, unboxed);
+    }
+    let pre = code.nguards > 0
+        && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
+    run_pre(interp, code, env, pre, unboxed)
+}
+
+#[cold]
+#[inline(never)]
+fn run_closure_traced(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
+    let prev = crate::builtins::debug::enter_frame(!clo.jit.interpreted());
     let pre = code.nguards > 0
         && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
     let r = run_pre(interp, code, env, pre, unboxed);
-    if let Some(prev) = frame {
-        crate::builtins::debug::leave_frame(prev);
-    }
+    crate::builtins::debug::leave_frame(prev);
     r
 }
 

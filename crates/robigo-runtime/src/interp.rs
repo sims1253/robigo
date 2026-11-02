@@ -693,7 +693,7 @@ impl Interp {
             }
         }
         // R: eval.c:1224 — the AST interpreter prints the whole call.
-        if crate::builtins::s4::trace_state() && crate::builtins::debug::is_traced(&fun) {
+        if crate::builtins::debug::is_traced(&fun) && crate::builtins::s4::trace_state() {
             crate::builtins::debug::print_trace(self, call);
         }
         match &fun {

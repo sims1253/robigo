@@ -42,13 +42,21 @@ thread_local! {
     /// How many closures are traced, so a call need not look at the frame
     /// flag when nothing is traced.
     static TRACED_CLOSURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// `TRACED_CLOSURES > 0 || ANY_TRACED_BUILTIN`, kept in one flag:
+    /// every closure call reads it.
+    static ANY_TRACED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Whether anything is traced: only then do the evaluators' two trace
 /// reports differ, and only then is [`COMPILED_FRAME`] maintained.
 #[inline]
 pub fn any_traced() -> bool {
-    TRACED_CLOSURES.with(|c| c.get()) > 0 || any_prim_traced()
+    ANY_TRACED.with(|c| c.get())
+}
+
+fn refresh_any_traced() {
+    let any = TRACED_CLOSURES.with(|c| c.get()) > 0 || any_prim_traced();
+    ANY_TRACED.with(|c| c.set(any));
 }
 
 /// [`COMPILED_FRAME`]: how a traced function's call is reported here.
@@ -69,13 +77,19 @@ pub fn leave_frame(prev: bool) {
 /// the closure; a builtin is a static, so the flag is kept aside).
 /// Every builtin call asks, so the set is consulted only while some builtin
 /// is traced.
-#[inline]
+#[inline(always)]
 pub fn is_traced(f: &Value) -> bool {
     match f {
         Value::Closure(c) => c.trace.get(),
-        Value::Builtin(b) => any_prim_traced() && TRACED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b))),
+        Value::Builtin(b) => any_prim_traced() && builtin_traced(b),
         _ => false,
     }
+}
+
+#[cold]
+#[inline(never)]
+fn builtin_traced(b: &'static Builtin) -> bool {
+    TRACED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b)))
 }
 
 fn builtin_key(b: &'static Builtin) -> usize {
@@ -122,6 +136,7 @@ fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) 
         }
         _ => return Err(Flow::error("argument must be a function")),
     }
+    refresh_any_traced();
     Ok(Value::Null)
 }
 
