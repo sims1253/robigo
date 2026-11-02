@@ -22,7 +22,7 @@ robigo-runtime.workspace = true
 # GNU R's C API (libR); the executable exports it to packages' objects
 robigo-capi = { path = "../robigo-capi" }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
-pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [features]
 profile = ["dep:pprof"]
