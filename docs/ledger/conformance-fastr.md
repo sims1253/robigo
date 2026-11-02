@@ -97,3 +97,15 @@
   - `tests/r/io/compressed-bzip2-xz.R` is the gap test for the bzip2/xz branches (GNU R 4.5.0 output recorded, no marker): robigo still errors there, because `bzfile`/`xzfile` would need new compression crates.
 - Result: 31,242 of 31,374 pass on this branch (+2 cases, 0 regressions); the remaining four `TestBuiltin_zzfile` cases are the bzip2/xz pair, tracked by the gap test.
 - Status: kept.
+
+## 2026-11-02: round 9 - qr_coef_cmplx (complex qr.coef)
+
+- Topic: `builtins/TestBuiltin_qr` (8 cases: 7 were already passing on main and only needed markers, the 8th needed the internal)
+- Diagnosis: `qr_coef_cmplx` had no implementation, so `.Internal(qr_coef_cmplx(qr, y))` failed with "there is no .Internal function". `qr.coef` takes that branch whenever `is.complex(qr$qr)` (`rlib/base/R/qr.R:75`), before the `useLAPACK` test.
+- Changes:
+  - `crates/robigo-runtime/src/builtins/lapack.rs`: `do_qr_coef_cmplx` ports `qr_coef_cmplx` (`src/modules/lapack/Lapack.c:806`) — `zunmqr("L", "C", ...)` then `ztrtrs("U", "N", "N", ...)`, with the workspace size read from the real part of the work query as R does. `zunmqr`/`ztrtrs` are resolved with the rest of the system LAPACK routines.
+  - `tests/r/linalg/qr-coef-cmplx.R` pins the complex branch on a LAPACK factor (both `qr` and `qraux` made complex, the shape `La_qr_cmplx` produces), the coerced numeric RHS and the `'b' must be a complex matrix` arm.
+- Divergence not reproduced: R passes `COMPLEX(tau)` to `zunmqr` without coercing, so a *real* `qraux` (the LINPACK factor) is reinterpreted as pairs of doubles and read past its end. robigo coerces the real `qraux` to complex, which is the only defined reading. The complex branch is reached for real factors only through that undefined path.
+- Gap: `qr()` of a complex matrix still needs `La_qr_cmplx` (zgeqp3); recorded in `tests/r/linalg/qr-cmplx.R` (GNU R 4.5.0 output, deliberately unmarked).
+- Result: 31,259 of 31,374 pass on this branch (+8 cases, 0 regressions); `TestBuiltin_qr` is 18/18.
+- Status: kept (PR pending).
