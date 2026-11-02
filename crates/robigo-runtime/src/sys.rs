@@ -74,18 +74,81 @@ pub fn format_g16_line(x: f64) -> String {
 // ----------------------------------------------------------------------
 // Encodings and libraries
 
+/// The C library's conversion descriptor for one source encoding.
+pub struct Iconv(libc::iconv_t);
+
+impl Iconv {
+    // R: sysutils.c:Riconv_open
+    pub fn open(to: &str, from: &str) -> Option<Iconv> {
+        use std::ffi::CString;
+        let (t, f) = (CString::new(to).ok()?, CString::new(from).ok()?);
+        // SAFETY: both arguments are valid NUL-terminated strings.
+        let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
+        (cd as isize != -1).then_some(Iconv(cd))
+    }
+
+    /// One `iconv(3)` step; `Err` carries errno. Advances the slices past
+    /// what was consumed and produced.
+    pub fn step(&self, input: &mut &[u8], out: &mut &mut [u8]) -> Result<(), i32> {
+        let mut inbuf = input.as_ptr() as *mut libc::c_char;
+        let mut inb = input.len();
+        let mut outbuf = out.as_mut_ptr() as *mut libc::c_char;
+        let mut outb = out.len();
+        // SAFETY: the pointers and lengths come from live slices; iconv
+        // does not write through `inbuf` despite its type.
+        let res = unsafe { libc::iconv(self.0, &mut inbuf, &mut inb, &mut outbuf, &mut outb) };
+        let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        *input = &input[input.len() - inb..];
+        let done = out.len() - outb;
+        *out = &mut std::mem::take(out)[done..];
+        if res == usize::MAX { Err(err) } else { Ok(()) }
+    }
+
+    /// Back to the initial shift state, writing what that takes to `out`.
+    pub fn reset(&self, out: &mut &mut [u8]) {
+        let mut outbuf = out.as_mut_ptr() as *mut libc::c_char;
+        let mut outb = out.len();
+        // SAFETY: a null input asks iconv to reset; the output pointer and
+        // length come from a live slice.
+        unsafe { libc::iconv(self.0, std::ptr::null_mut(), std::ptr::null_mut(), &mut outbuf, &mut outb) };
+        let done = out.len() - outb;
+        *out = &mut std::mem::take(out)[done..];
+    }
+}
+
+impl Drop for Iconv {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor came from iconv_open and is closed once.
+        unsafe { libc::iconv_close(self.0) };
+    }
+}
+
 /// Whether `iconv` can convert `from` to `to`; R reports a failing
 /// `iconv_open` as an unsupported conversion.
 pub fn iconv_supported(to: &str, from: &str) -> bool {
-    let (Ok(t), Ok(f)) = (CString::new(to), CString::new(from)) else { return false };
-    // SAFETY: both are NUL-terminated for the call's duration.
-    let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
-    if cd as isize == -1 {
-        return false;
-    }
-    // SAFETY: `cd` is the descriptor iconv_open just returned.
-    unsafe { libc::iconv_close(cd) };
-    true
+    Iconv::open(to, from).is_some()
+}
+
+/// The locale's character encoding (`nl_langinfo(CODESET)`).
+pub fn codeset() -> String {
+    let _statics = c_statics();
+    // SAFETY: a NUL-terminated string, copied under the lock.
+    unsafe { copy_cstr(libc::nl_langinfo(libc::CODESET)) }.unwrap_or_default()
+}
+
+unsafe extern "C" {
+    #[cfg(target_os = "linux")]
+    safe fn __ctype_get_mb_cur_max() -> usize;
+    #[cfg(target_os = "macos")]
+    safe fn ___mb_cur_max() -> c_int;
+}
+
+/// The C library's `MB_CUR_MAX` for the current locale.
+pub fn mb_cur_max() -> usize {
+    #[cfg(target_os = "linux")]
+    return __ctype_get_mb_cur_max();
+    #[cfg(target_os = "macos")]
+    return ___mb_cur_max() as usize;
 }
 
 unsafe extern "C" {

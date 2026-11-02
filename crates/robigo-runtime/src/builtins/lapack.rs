@@ -31,6 +31,7 @@ pub static DEFS: &[Builtin] = &[
     internal("La_solve_cmplx", do_la_solve_cmplx, 3),
     internal("La_qr", do_la_qr, 1),
     internal("qr_coef_real", do_qr_coef_real, 2),
+    internal("qr_coef_cmplx", do_qr_coef_cmplx, 2),
     internal("qr_qy_real", do_qr_qy_real, 3),
     internal("det_ge_real", do_det_ge_real, 2),
     internal("La_chol", do_la_chol, 3),
@@ -844,6 +845,39 @@ type DtrtrsFn = unsafe extern "C" fn(
     usize,
 );
 
+type ZunmqrFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const i32,
+    *const i32,
+    *const i32,
+    *const Z,
+    *const i32,
+    *const Z,
+    *mut Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+);
+type ZtrtrsFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const u8,
+    *const i32,
+    *const i32,
+    *const Z,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut i32,
+    usize,
+    usize,
+    usize,
+);
+
 /// Rcomplex on the C side: two doubles in declaration order (r, i).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -869,6 +903,8 @@ struct SystemLapack {
     dgeqp3: Dgeqp3Fn,
     dormqr: DormqrFn,
     dtrtrs: DtrtrsFn,
+    zunmqr: ZunmqrFn,
+    ztrtrs: ZtrtrsFn,
 }
 
 /// The dlsym-resolved address of the bound library's ilaver entry point,
@@ -926,6 +962,8 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
             dgeqp3: sym(handle, b"dgeqp3_\0")?,
             dormqr: sym(handle, b"dormqr_\0")?,
             dtrtrs: sym(handle, b"dtrtrs_\0")?,
+            zunmqr: sym(handle, b"zunmqr_\0")?,
+            ztrtrs: sym(handle, b"ztrtrs_\0")?,
         };
         Ok(lib)
     }
@@ -2340,6 +2378,110 @@ fn do_qr_coef_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     if let Value::Real(r) = &mut out {
         std::rc::Rc::make_mut(r).data = b;
+    }
+    Ok(out)
+}
+
+/// R: Lapack.c:qr_coef_cmplx — `Q' B` (zunmqr) then a triangular solve
+/// (ztrtrs) with the complex LAPACK factor, returning B in place.
+fn do_qr_coef_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let q = arg(&args, 0);
+    let bin = arg(&args, 1);
+    // R: Lapack.c:qr_coef_cmplx — isMatrix(Bin) is checked before the
+    // coercion, and the message says "complex" even for a numeric matrix.
+    if !matches!(bin.get_attr(s::DIM), Some(d) if d.len() == 2) {
+        return Err(Flow::error("'b' must be a complex matrix"));
+    }
+    let qr = list_elt(&q, 0);
+    let tau = list_elt(&q, 2);
+    let (n, _) = dims2(&qr);
+    let k = tau.len();
+    let (brows, nrhs) = dims2(&bin);
+    if brows != n {
+        return Err(Flow::error(format!("right-hand side should have {} not {} rows", n, brows)));
+    }
+    let qrv = cplx_data(&qr);
+    let tauv = cplx_data(&tau);
+    let mut out = coerce_quiet(&bin, VType::Cplx);
+    let mut b = match &out {
+        Value::Cplx(c) => c.data.iter().map(|z| Z { r: z.re, i: z.im }).collect::<Vec<Z>>(),
+        _ => return Err(Flow::error("robigo: 'b' could not be coerced to complex")),
+    };
+    let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
+    let f = system_lapack()?.zunmqr;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: qrv holds the n x n factor, tauv k reflectors, b n*nrhs.
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            b"C".as_ptr(),
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            &mut tmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zunmqr'", info)));
+    }
+    // R reads the workspace size from the real part of the work query.
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            b"C".as_ptr(),
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'zunmqr'", info)));
+    }
+    let g = system_lapack()?.ztrtrs;
+    unsafe {
+        g(
+            b"U".as_ptr(),
+            b"N".as_ptr(),
+            b"N".as_ptr(),
+            &k_i,
+            &nrhs_i,
+            qrv.as_ptr(),
+            &n_i,
+            b.as_mut_ptr(),
+            &n_i,
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'ztrtrs'", info)));
+    }
+    if let Value::Cplx(c) = &mut out {
+        std::rc::Rc::make_mut(c).data = b.into_iter().map(|z| Complex::new(z.r, z.i)).collect();
     }
     Ok(out)
 }

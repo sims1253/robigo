@@ -636,7 +636,7 @@ pub unsafe fn init_locale() {
     init_locale_on_evaluator();
 }
 
-fn init_locale_on_evaluator() {
+pub(super) fn init_locale_on_evaluator() {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }

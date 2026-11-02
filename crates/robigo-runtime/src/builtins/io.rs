@@ -1214,23 +1214,45 @@ fn do_isatty(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 }
 
 /// Check for a compressed file (R: connections.c:comp_type_from_file).
-fn is_compressed_file(path: &str) -> bool {
-    let mut buf = [0u8; 7];
-    let Ok(mut f) = File::open(path) else { return false };
-    let n = f.read(&mut buf).unwrap_or(0);
-    if n >= 2 && buf[0] == 0x1f && buf[1] == 0x8b {
-        return true;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Compression {
+    Gzip,
+    Bzip2,
+    Xz,
+    Zstd,
+    Lzop,
+}
+
+/// R: connections.c:comp_type_from_memory with `with_zlib = FALSE` (what
+/// `do_file` passes through `comp_type_from_file`). The magic numbers are
+/// checked beyond their short prefix so that an uncompressed file is not
+/// mistaken for a compressed one (R's PR#18768 fixed that for bzip2).
+fn compressed_file_type(path: &str) -> Option<Compression> {
+    let mut buf = [0u8; 10];
+    let Ok(mut f) = File::open(path) else { return None };
+    let len = f.read(&mut buf).unwrap_or(0);
+    if len >= 2 && buf[0] == 0x1f && buf[1] == 0x8b {
+        return Some(Compression::Gzip);
     }
-    if n >= 3 && &buf[..3] == b"BZh" {
-        return true;
+    if len >= 10 && &buf[..3] == b"BZh" && (b'1'..=b'9').contains(&buf[3]) {
+        // 0x314159265359 (BCD pi) or 0x177245385090 (BCD sqrt(pi)).
+        if &buf[4..10] == b"\x31\x41\x59\x26\x53\x59" || &buf[4..10] == b"\x17\x72\x45\x38\x50\x90" {
+            return Some(Compression::Bzip2);
+        }
     }
-    if n >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
-        return true;
+    if len >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
+        return Some(Compression::Xz);
     }
-    if n >= 4 && buf[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
-        return true;
+    if len >= 5 && (buf[0] == 0xFF && &buf[1..5] == b"LZMA" || buf[..5] == [b']', b'\0', b'\0', 0x80, b'\0']) {
+        return Some(Compression::Xz);
     }
-    false
+    if len >= 4 && buf[0] == 0x89 && &buf[1..4] == b"LZO" {
+        return Some(Compression::Lzop);
+    }
+    if len >= 4 && buf[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
+        return Some(Compression::Zstd);
+    }
+    None
 }
 
 /// `.Internal(file(description, open, blocking, encoding, method, raw))`
@@ -1264,6 +1286,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         return Err(Flow::error("robigo: URL connections are not implemented yet"));
     }
     let ncon = i.conns.next_connection()?;
+    let mut gzip = false;
     let path = url.strip_prefix("file://").map(|s| s.to_string());
     let description = path.clone().unwrap_or_else(|| url.clone());
     if path.is_none() {
@@ -1291,25 +1314,55 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 }
             }
         }
-        if !raw && (open.is_empty() || open == "r" || open == "rt") && is_compressed_file(&efn) {
-            return Err(Flow::error("robigo: compressed file connections are not implemented yet"));
+        // R: connections.c:do_file — a compressed file read in text mode is
+        // opened through its gz/bz/xz/zstd connection; only its class
+        // attribute stays "file".
+        if !raw && (open.is_empty() || open == "r" || open == "rt") {
+            match compressed_file_type(&efn) {
+                Some(Compression::Gzip) => gzip = true,
+                Some(Compression::Bzip2) => {
+                    return Err(Flow::error("robigo: bzip2 compressed file connections are not implemented yet"));
+                }
+                Some(Compression::Xz) => {
+                    return Err(Flow::error("robigo: xz compressed file connections are not implemented yet"));
+                }
+                Some(Compression::Zstd) => {
+                    return Err(Flow::error("robigo: zstd compressed file connections are not implemented yet"));
+                }
+                // R: connections.c:comp_type_from_memory — lzop is not
+                // supported by R either.
+                Some(Compression::Lzop) => {
+                    return Err(Flow::error("this is a lzop-compressed file which this build of R does not support"));
+                }
+                None => {}
+            }
         }
     }
-    let mode = if open.is_empty() { "r".to_string() } else { open.clone() };
-    let kind = ConnKind::File {
-        raw,
-        fp: None,
-        rbuf: Vec::new(),
-        rpos: 0,
-        wbuf: Vec::new(),
-        temp: false,
-        last_was_write: false,
-        frpos: 0,
-        wpos: 0,
-        fifo: false,
+    let mode = if open.is_empty() {
+        // R: newgzfile(url, strlen(open) ? open : "rt", compress)
+        if gzip { "rt".to_string() } else { "r".to_string() }
+    } else {
+        open.clone()
+    };
+    let kind = if gzip {
+        ConnKind::Gz { level: 0, data: Vec::new(), cur: 0, out: Vec::new(), writing: false, append: false }
+    } else {
+        ConnKind::File {
+            raw,
+            fp: None,
+            rbuf: Vec::new(),
+            rpos: 0,
+            wbuf: Vec::new(),
+            temp: false,
+            last_was_write: false,
+            frpos: 0,
+            wpos: 0,
+            fifo: false,
+        }
     };
     let mut con = Connection::new("file", &description, &mode, kind);
-    con.canseek = !raw;
+    // gzfile connections decompress on open and cannot seek in robigo.
+    con.canseek = !raw && !gzip;
     con.blocking = block != 0;
     con.encname = enc.chars().take(99).collect();
     if !con.encname.is_empty() && con.encname != "native.enc" {

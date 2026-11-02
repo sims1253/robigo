@@ -1301,11 +1301,145 @@ fn parse_enc(e: &str) -> Option<Enc> {
     }
 }
 
-/// Whether the C library's iconv knows the conversion; R reports a failing
-/// `iconv_open` as an unsupported conversion. "" is the native encoding.
-fn system_iconv_supports<'a>(from: &'a str, to: &'a str) -> bool {
-    let native = |e: &'a str| if e.is_empty() { "UTF-8" } else { e };
-    crate::sys::iconv_supported(native(to), native(from))
+use crate::sys::Iconv;
+
+/// The text `sub` puts in place of input the conversion stopped at, and how
+/// many bytes it replaces. `input` can be empty: glibc reports what
+/// `//IGNORE` dropped after consuming everything.
+// R: sysutils.c:do_iconv (next_char)
+fn iconv_substitute(sub: &str, from_utf8: bool, from: &str, input: &[u8]) -> (Vec<u8>, usize) {
+    if from_utf8 && (sub == "Unicode" || sub == "c99") {
+        let n = match input.first() {
+            Some(0xC0..=0xDF) => 2,
+            Some(0xE0..=0xEF) => 3,
+            Some(0xF0..=0xF7) => 4,
+            _ => 1,
+        };
+        // (GNU R loops forever on input that is not UTF-8: replace a byte.)
+        if let Some(c) = input.get(..n).and_then(|b| std::str::from_utf8(b).ok()).and_then(|t| t.chars().next()) {
+            let u = c as u32;
+            let text = if sub == "Unicode" {
+                format!("<U+{:04X}>", u)
+            } else if u < 65536 {
+                format!("\\u{:04x}", u)
+            } else {
+                format!("\\U{:08x}", u)
+            };
+            return (text.into_bytes(), n);
+        }
+    }
+    let prefix = |p: &str| from.len() >= p.len() && ieq(&from[..p.len()], p);
+    let unit = if prefix("UTF-16") || prefix("UCS-2") {
+        2
+    } else if prefix("UTF-32") || prefix("UCS-4") {
+        4
+    } else {
+        1
+    };
+    let n = input.len().min(unit);
+    let mut text = Vec::new();
+    for b in &input[..n] {
+        if sub == "byte" {
+            text.extend_from_slice(format!("<{:02x}>", b).as_bytes());
+        } else {
+            text.extend_from_slice(sub.as_bytes());
+        }
+    }
+    (text, n)
+}
+
+/// Convert one element; `None` where it cannot be (NA in R).
+// R: sysutils.c:do_iconv (top_of_loop)
+fn iconv_element(cd: &Iconv, input: &[u8], sub: Option<&str>, from_utf8: bool, from: &str) -> Option<Vec<u8>> {
+    let mut size = 8192.max(input.len() * 2);
+    'top: loop {
+        let mut buf = vec![0u8; size];
+        let mut out: &mut [u8] = &mut buf;
+        let mut rest = input;
+        cd.reset(&mut out);
+        let ok = loop {
+            match cd.step(&mut rest, &mut out) {
+                Err(libc::E2BIG) => {
+                    size *= 2;
+                    continue 'top;
+                }
+                Err(libc::EILSEQ | libc::EINVAL) if sub.is_some() => {
+                    let (text, n) = iconv_substitute(sub.unwrap(), from_utf8, from, rest);
+                    if out.len() < text.len() {
+                        size *= 2;
+                        continue 'top;
+                    }
+                    let (head, tail) = std::mem::take(&mut out).split_at_mut(text.len());
+                    head.copy_from_slice(&text);
+                    out = tail;
+                    rest = &rest[n..];
+                }
+                r => break r.is_ok(),
+            }
+        };
+        let done = size - out.len();
+        return (ok && rest.is_empty()).then(|| {
+            buf.truncate(done);
+            buf
+        });
+    }
+}
+
+/// The locale's character encoding, what iconv takes `""` for.
+fn native_codeset() -> String {
+    super::sysutils::init_locale_on_evaluator();
+    crate::sys::codeset()
+}
+
+/// `iconv()` for what the byte windows of [`do_iconv`] do not cover: the C
+/// library's conversions, so its tables and `//TRANSLIT`/`//IGNORE` apply.
+// R: sysutils.c:do_iconv
+fn iconv_system(x: &Value, from: &str, to: &str, sub: Option<&str>) -> RResult<Vec<Option<Vec<u8>>>> {
+    // (iconv's "" and //TRANSLIT follow LC_CTYPE)
+    super::sysutils::init_locale_on_evaluator();
+    // The descriptors are opened for the first element that needs each.
+    let (mut utf8_cd, mut latin1_cd, mut arg_cd) = (None, None, None);
+    let n = x.len();
+    let mut results = Vec::with_capacity(n);
+    for k in 0..n {
+        let (bytes, source) = match x {
+            Value::Str(v) => match &v.data[k] {
+                None => {
+                    results.push(None);
+                    continue;
+                }
+                Some(s) if from.is_empty() && s.encoding() == Encoding::Utf8 => (s.raw_bytes(), Some("UTF-8")),
+                Some(s) if from.is_empty() && s.encoding() == Encoding::Latin1 => (s.raw_bytes(), Some("latin1")),
+                Some(s) => (s.raw_bytes(), None),
+            },
+            Value::List(l) => match &l.data[k] {
+                Value::Null => {
+                    results.push(None);
+                    continue;
+                }
+                Value::Raw(r) => (std::borrow::Cow::Borrowed(&r.data[..]), None),
+                _ => return Err(Flow::error("'x' must be a character vector or a list of NULL or raw vectors")),
+            },
+            _ => return Err(Flow::error("'x' must be a character vector")),
+        };
+        let slot = match source {
+            Some("UTF-8") => &mut utf8_cd,
+            Some(_) => &mut latin1_cd,
+            None => &mut arg_cd,
+        };
+        let name = source.unwrap_or(from);
+        if slot.is_none() {
+            *slot = Some(
+                Iconv::open(to, name)
+                    .ok_or_else(|| Flow::error(format!("unsupported conversion from '{}' to '{}'", name, to)))?,
+            );
+        }
+        let from_utf8 = source == Some("UTF-8")
+            || from == "UTF-8"
+            || (from.is_empty() && source.is_none() && ieq(&native_codeset(), "UTF-8"));
+        results.push(iconv_element(slot.as_ref().unwrap(), &bytes, sub, from_utf8, from));
+    }
+    Ok(results)
 }
 
 // R: sysutils.c:do_iconv (UTF-8, ASCII and Latin-1 byte windows)
@@ -1333,10 +1467,12 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Err(Flow::error("invalid 'toRaw' argument"));
     }
     let (Some(fenc), Some(tenc)) = (parse_enc(&from), parse_enc(&to)) else {
-        if !system_iconv_supports(&from, &to) {
-            return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", from, to)));
-        }
-        return Err(Flow::error(format!("robigo: iconv() from '{}' to '{}' is not implemented yet", from, to)));
+        // R: sysutils.c:do_iconv -- some iconv's allow "UTF8", but GNU
+        // libiconv does not
+        let utf8 = |e: &str| if ieq(e, "UTF8") { "UTF-8".to_string() } else { e.to_string() };
+        let (from, to) = (utf8(&from), utf8(&to));
+        let results = iconv_system(x, &from, &to, sub.as_deref())?;
+        return iconv_result(x, results, &to, mark, to_raw);
     };
     // Inputs: strings, or a list of raw vectors / NULL.
     let inputs: Vec<Option<(Vec<u8>, Enc)>> = match x {
@@ -1464,14 +1600,14 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         }
         results.push(if failed { None } else { Some(out) });
     }
+    iconv_result(x, results, &to, mark, to_raw)
+}
+
+fn iconv_result(x: &Value, results: Vec<Option<Vec<u8>>>, to: &str, mark: i32, to_raw: i32) -> RResult<Value> {
     if to_raw != 0 {
         let items: Vec<Value> = results.into_iter().map(|r| r.map(Value::raws).unwrap_or(Value::Null)).collect();
         let mut ans = Value::list(items);
-        if !matches!(x, Value::List(_)) {
-            copy_all_attrs(x, &mut ans);
-        } else {
-            copy_all_attrs(x, &mut ans);
-        }
+        copy_all_attrs(x, &mut ans);
         return Ok(ans);
     }
     let mut out = Vec::with_capacity(results.len());
@@ -1481,11 +1617,17 @@ fn do_iconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             Some(bytes) => {
                 // R: sysutils.c:do_iconv -- output marks use these exact
                 // alias checks, independently of iconv's accepted aliases.
+                let native = if to.is_empty() { native_codeset() } else { String::new() };
                 let encoding = if mark == 0 {
                     Encoding::Native
-                } else if ieq(&to, "latin1") || ieq(&to, "ISO_8859-1") {
+                } else if ieq(to, "latin1")
+                    || ieq(to, "ISO_8859-1")
+                    || ieq(to, "CP1252")
+                    || native == "ISO-8859-1"
+                    || ieq(&native, "ISO8859-1")
+                {
                     Encoding::Latin1
-                } else if to.is_empty() || &*to == "UTF-8" || ieq(&to, "UTF8") {
+                } else if to == "UTF-8" || ieq(to, "UTF8") || ieq(&native, "UTF-8") {
                     Encoding::Utf8
                 } else {
                     Encoding::Native
@@ -1758,13 +1900,14 @@ fn do_dirname(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(Value::strs(out))
 }
 
-// R: platform.c:do_l10n_info (Linux, UTF-8 locale)
+// R: platform.c:do_l10n_info, R_check_locale
 fn do_l10n_info(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let codeset = native_codeset();
     Ok(Value::named_list(vec![
-        ("MBCS", Value::lgl(true)),
-        ("UTF-8", Value::lgl(true)),
-        ("Latin-1", Value::lgl(false)),
-        ("codeset", Value::str("UTF-8")),
+        ("MBCS", Value::lgl(crate::sys::mb_cur_max() > 1)),
+        ("UTF-8", Value::lgl(ieq(&codeset, "UTF-8"))),
+        ("Latin-1", Value::lgl(codeset == "ISO-8859-1" || ieq(&codeset, "ISO8859-1"))),
+        ("codeset", Value::str(&codeset)),
     ]))
 }
 

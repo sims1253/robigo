@@ -1,0 +1,15 @@
+$a
+[1] 1
+
+$b
+[1] "2"
+
+ERR: invalid 'mode' argument 'bogus' 
+named list()
+ERR: value for ‘NA’ not found 
+ERR: attempt to use zero-length variable name 
+ERR: invalid name in position 1 
+ERR: environments cannot be coerced to other types 
+ERR: cannot coerce type 'closure' to vector of type 'list' 
+ERR: invalid 'mode' argument 'NA' 
+ERR: invalid 'mode' argument 'bogus' 

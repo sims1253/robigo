@@ -1201,8 +1201,13 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             R_NilValue
         }
         "newEnv" => {
-            let parent = env_of(a[0])?;
-            let env = Env::new(Some(parent));
+            // R: envir.c:R_NewEnv — NewEnvironment(R_NilValue, R_NilValue,
+            // enclos): a NULL enclos is allowed and leaves ENCLOS as
+            // R_NilValue (nanonext's rnng_request creates such an env and
+            // re-parents it later); robigo models that as a missing
+            // parent, which parent.env() reports as NULL.
+            let parent = if a[0] == R_NilValue { None } else { Some(env_of(a[0])?) };
+            let env = Env::new(parent);
             crate::owned::note_c_env(&env);
             to_sexp(&Value::Env(env))
         }
@@ -1431,9 +1436,34 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             Some(e) => to_sexp(&Value::Env(e)),
             None => R_NilValue,
         },
+        (Value::Env(e), 0) => {
+            // FRAME: the frame as a pairlist of tagged cells. C code such
+            // as nanonext's nano_findVarInFrame walks CAR(env) directly
+            // (Rinternals' ENCLOS/FIELD accessors are the supported way to
+            // reach an environment's bindings). Binding order is GNU R's
+            // listing order; an active binding's cell holds its function.
+            // C-owned bindings (the bridge's defineVar for environments C
+            // created and mutates) hold a holder closure; their cell shows
+            // the object itself, as GNU R's plain binding does.
+            let items: Vec<Arg> = e
+                .symbols()
+                .into_iter()
+                .map(|s| {
+                    let v = e.get_local(s).unwrap_or(Value::Null);
+                    let v = match robigo_runtime::native::c_owned_holder(&v) {
+                        Some(h) => unsafe { crate::owned::get(&h) },
+                        None => v,
+                    };
+                    Arg::new(Some(s), v)
+                })
+                .collect();
+            to_sexp(&Value::pairlist(items))
+        }
         (Value::Env(e), 1) => match e.parent() {
             Some(p) => to_sexp(&Value::Env(p)),
-            None => R_EmptyEnv,
+            // ENCLOS is R_NilValue for the empty environment and for C's
+            // R_NewEnv(R_NilValue, ...), so CDR is R_NilValue too
+            None => R_NilValue,
         },
         (Value::Env(_), _) => R_NilValue,
         _ => R_NilValue,
@@ -1477,6 +1507,16 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         (Value::Closure(c), 2) => {
             if let Value::Env(e) = from_sexp(y) {
                 retire(&raw mut (*Rc::as_ptr(c).cast_mut()).env, e);
+            }
+        }
+        (Value::Env(e), 1) => {
+            // ENCLOS writes: SETCDR/SET_ENCLOS on an environment proxy
+            // (nanonext re-parents its request environments this way).
+            // A NULL value restores ENCLOS = R_NilValue.
+            if y == R_NilValue {
+                e.set_parent(None);
+            } else if let Value::Env(p) = from_sexp(y) {
+                e.set_parent(Some(p));
             }
         }
         (Value::Promise(pr), 0) => {

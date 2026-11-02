@@ -40,3 +40,16 @@ print(.Call("capi_env_locked", globalenv()))
 print(.Call("capi_env_locked", as.environment("package:base")))
 print(tryCatch(.Call("capi_env_locked", NULL), error = conditionMessage))
 print(tryCatch(.Call("capi_env_locked", 1), error = conditionMessage))
+
+# R_NewEnv with a NULL enclosure (nanonext's request environments, #146):
+# ENCLOS stays R_NilValue, so CDR/parent.env report NULL, until C
+# re-parents the environment.
+re <- .Call("capi_newenv_null", 41 + 1)
+print(re[[1]])
+print(re[[2]])
+print(re[[4]])
+print(parent.env(re[[3]]))
+print(re[[3]]$x)
+print(identical(parent.env(re[[3]]), globalenv()))
+print(.Call("capi_frame_find", re[[3]], as.name("x")))
+print(.Call("capi_frame_find", re[[3]], as.name("y")))

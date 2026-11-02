@@ -120,11 +120,9 @@ fn do_as_integer(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Val
     as_atomic(i, c, a, e, "as.integer", VType::Int)
 }
 fn do_as_double(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
-    let generic = match c {
-        Value::Lang(l) if l.fun_sym().is_some_and(|s| &*s.name() == "as.numeric") => "as.numeric",
-        _ => "as.double",
-    };
-    as_atomic(i, c, a, e, generic, VType::Real)
+    // R: names.c maps both `as.double` and `as.numeric` to do_asatomic with
+    // PRIMVAL 2, whose DispatchOrEval generic is always "as.double".
+    as_atomic(i, c, a, e, "as.double", VType::Real)
 }
 fn do_as_complex(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
     as_atomic(i, c, a, e, "as.complex", VType::Cplx)
@@ -147,7 +145,14 @@ fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> 
     Ok(r)
 }
 
-fn do_ascall(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: coerce.c:do_ascall — checkArity/check1arg run before DispatchOrEval.
+    check_arity(&args, 1, "as.call", call)?;
+    crate::builtins::character::check1arg(&args, call, "x")?;
+    // R: coerce.c:do_ascall — DispatchOrEval internal generic.
+    if let Some(r) = i.try_dispatch("as.call", call, &args, env)? {
+        return Ok(r);
+    }
     let x = one(&args, "as.call", call)?;
     // R: coerce.c:do_ascall — the result's first cell never has a tag
     let untag = |mut l: Lang| {
@@ -554,7 +559,6 @@ is_fn!(is_expression, "is.expression", |x| matches!(x, Value::Expr(_)));
 is_fn!(is_raw, "is.raw", |x| matches!(x, Value::Raw(_)));
 is_fn!(is_object, "is.object", |x| x.is_object());
 is_fn!(is_s4, "isS4", |x| x.is_s4());
-is_fn!(is_array, "is.array", |x| x.get_attr(s::DIM).is_some_and(|d| !d.is_empty()));
 is_fn!(is_atomic, "is.atomic", |x| x.is_atomic());
 is_fn!(is_recursive, "is.recursive", |x| matches!(
     x,
@@ -586,8 +590,24 @@ fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 
 fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.matrix", call)?;
-    let _ = (i, env);
+    // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
+    if args[0].value.is_object() {
+        if let Some(r) = i.try_dispatch("is.matrix", call, &args, env)? {
+            return Ok(r);
+        }
+    }
     Ok(Value::lgl(args[0].value.get_attr(s::DIM).is_some_and(|d| d.len() == 2)))
+}
+
+fn is_array(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "is.array", call)?;
+    // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
+    if args[0].value.is_object() {
+        if let Some(r) = i.try_dispatch("is.array", call, &args, env)? {
+            return Ok(r);
+        }
+    }
+    Ok(Value::lgl(args[0].value.get_attr(s::DIM).is_some_and(|d| !d.is_empty())))
 }
 
 fn is_single(_: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
