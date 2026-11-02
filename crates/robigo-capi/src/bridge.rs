@@ -169,7 +169,7 @@ fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
 /// the second: a conversion's protections grow with the object's nesting.
 #[inline(always)]
 unsafe fn conversion_can_jump() -> bool {
-    crate::altrep::PACKAGE_ALTREP.load(std::sync::atomic::Ordering::Relaxed) || R_PPStackTop > R_PPStackSize / 2
+    crate::altrep::PACKAGE_ALTREP.load(std::sync::atomic::Ordering::Relaxed) || R_PPStackTop > PPSSIZE / 2
 }
 
 /// Run a conversion so that a jump out of it becomes an `Err`. Only the
@@ -2043,7 +2043,15 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     publish(interp);
     let t =
         crate::dotcode::robigo_dotcall(r.addr as *const c_void, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
-    let back = converting(interp, || write_backs(args, &xs));
+    // The routine may have instantiated an ALTREP class, so this is a new
+    // question; it covers the result too. The Result stays out of the
+    // normal path: it is what this call would pay most for.
+    if !conversion_can_jump() {
+        write_backs(args, &xs);
+        stack_imbalance(interp, ".Call", &info);
+        return if t != 0 { Err(take_flow(t)) } else { Ok(from_sexp(out)) };
+    }
+    let back = converting_in_context(interp, || write_backs(args, &xs));
     stack_imbalance(interp, ".Call", &info);
     if let (0, Err(f)) = (t, back) {
         return Err(f);

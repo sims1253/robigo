@@ -367,7 +367,15 @@ model at the C boundary:
   rule by construction (messages are formatted into stack buffers and
   owned values dropped before jumping; no locks or `RefCell` guards are
   held across calls that can jump; host callbacks return tokens and the
-  jump happens in `libR.so`). The stronger form the council proposed —
+  jump happens in `libR.so`). Converting between `Value`s and core objects
+  after a routine returned has no context of its own and can reach a
+  package's ALTREP methods or a full protect stack, so it runs in one once
+  a package instantiated an ALTREP class or the stack is over half full
+  (`bridge::converting`); a jump then leaks what the conversion had built.
+  What C code replaces in a runtime object (a buffer after `SETLENGTH`,
+  attributes, a closure's body and code) stays alive until R is back at
+  top level (`bridge::retire`), since the frames reading it can be above
+  the outermost native call. The stronger form the council proposed —
   inner functions return `Result`, and only a thin exported wrapper (or a
   C trampoline) jumps — is the planned refactor before G3 puts the
   evaluator itself behind these calls.
