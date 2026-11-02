@@ -123,3 +123,32 @@ track's R_IsPackageEnv/R_EnvironmentIsLocked, merged 68493386)
   per iteration; evaluate_palette/cvd sweeps (farver-dominated); the
   package's own suite as a mixed workload. GNU R reference: whole suite
   345 s.
+
+## 2026-11-02 (round 3): #155/#157 fixed and merged
+
+- #157 (Calls: traces drop wrapper frames) — PR #222 (merge 963fc9ca):
+  two layers; promise thunks compile without simple-.Internal sites
+  (compile.rs), and the interpreted inline path requires the expression
+  to evaluate in the caller closure's own frame (vm.rs), so forced
+  promises call the wrapper's closure as GNU R does. Seven variants
+  byte-match GNU R in all three tiers; ratcheted by PR #255.
+  The tests/r scripts ride the gap protocol (unmarked = failing was
+  never needed: they landed passing).
+- #155 (build-natives libcurl) — PR #221 (merge 686a1871): the script
+  self-provisions the libcurl debs when curl-config is missing (no
+  root); hardened per sol review (atomic prefix publish, loud extract
+  failures). Remaining open in #155: the default/CI natives set — new
+  evidence: since 16ddec2b `nsl()` needs utils natives, so CI's
+  gnur-tests sockets case fails on every PR until then.
+- New issue #224: VM call-site memo returns stale results in loops
+  (rlang expr_deparse / testthat snapshots fail; needs conformance-lang).
+- huerd suite (light files, main binary + natives): 624 pass, 1 fail
+  (#224), 2 timeouts (ggplot2-scales/visualization-analysis: grid-units
+  natives = PR #194's scope; cvd-analysis 60/60 once graphics natives
+  are built). Optimizer-heavy files impractical (~24x gap: quick_palette(5)
+  1.46 s GNU R vs 35.7 s robigo).
+- Dashboard pkg-compat corpus: not on main yet (dagriculture's
+  integration PR pending); case prepared at
+  tests/corpora/pkg-compat-prep/huerd/calls-trace-internal-wrapper.R —
+  record with `scripts/corpus.py record pkg-compat --filter '^huerd/'`
+  once the corpus lands (it will pass; ratchet immediately).
