@@ -261,7 +261,6 @@ fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         inline: Default::default(),
         defaults: Default::default(),
         jit: crate::vm::JitState::from_bytecode(),
-        trace: Default::default(),
     })))
 }
 // R: eval.c:disassemble. BCODE_EXPR is constant zero, not a fourth field.

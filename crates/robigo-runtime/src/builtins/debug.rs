@@ -39,11 +39,14 @@ thread_local! {
     /// evaluator prints the function's symbol (eval.c:7894); the AST
     /// interpreter prints the whole call (eval.c:1224). Restored per frame.
     static COMPILED_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// How many closures are traced, so a call need not look at the frame
-    /// flag when nothing is traced.
-    static TRACED_CLOSURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// `TRACED_CLOSURES > 0 || ANY_TRACED_BUILTIN`, kept in one flag:
-    /// every closure call reads it.
+    /// debug.c's RTRACE bit for closures, keyed by address. It is kept
+    /// aside rather than in `Closure`, which every call and every
+    /// `function` allocates; the entry holds the closure, so its address is
+    /// not reused while it is marked.
+    static TRACED_CLOSURES: std::cell::RefCell<std::collections::HashMap<usize, Value>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// `!TRACED_CLOSURES.is_empty() || ANY_TRACED_BUILTIN`, kept in one
+    /// flag: every closure call reads it.
     static ANY_TRACED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -55,7 +58,7 @@ pub fn any_traced() -> bool {
 }
 
 fn refresh_any_traced() {
-    let any = TRACED_CLOSURES.with(|c| c.get()) > 0 || any_prim_traced();
+    let any = TRACED_CLOSURES.with(|c| !c.borrow().is_empty()) || any_prim_traced();
     ANY_TRACED.with(|c| c.set(any));
 }
 
@@ -73,17 +76,31 @@ pub fn leave_frame(prev: bool) {
     COMPILED_FRAME.with(|c| c.set(prev))
 }
 
-/// debug.c's RTRACE bit of a function object (`Value::Closure` keeps it in
-/// the closure; a builtin is a static, so the flag is kept aside).
-/// Every builtin call asks, so the set is consulted only while some builtin
-/// is traced.
+/// debug.c's RTRACE bit of a function object. Every call asks, so the
+/// sets are consulted only while something is traced.
 #[inline(always)]
 pub fn is_traced(f: &Value) -> bool {
     match f {
-        Value::Closure(c) => c.trace.get(),
+        Value::Closure(c) => closure_traced(c),
         Value::Builtin(b) => any_prim_traced() && builtin_traced(b),
         _ => false,
     }
+}
+
+/// [`is_traced`] for a closure.
+#[inline(always)]
+pub fn closure_traced(c: &Closure) -> bool {
+    any_traced() && closure_traced_slow(c)
+}
+
+#[cold]
+#[inline(never)]
+fn closure_traced_slow(c: &Closure) -> bool {
+    TRACED_CLOSURES.with(|t| t.borrow().contains_key(&closure_key(c)))
+}
+
+fn closure_key(c: &Closure) -> usize {
+    c as *const Closure as usize
 }
 
 #[cold]
@@ -118,10 +135,14 @@ fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) 
     }
     match &v {
         Value::Closure(c) => {
-            if c.trace.get() != on {
-                c.trace.set(on);
-                TRACED_CLOSURES.with(|n| n.set(if on { n.get() + 1 } else { n.get() - 1 }));
-            }
+            let k = closure_key(c);
+            TRACED_CLOSURES.with(|t| {
+                if on {
+                    t.borrow_mut().insert(k, v.clone());
+                } else {
+                    t.borrow_mut().remove(&k);
+                }
+            });
         }
         Value::Builtin(b) => {
             let k = builtin_key(b);

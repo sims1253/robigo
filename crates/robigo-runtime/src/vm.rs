@@ -2490,14 +2490,14 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
 
 /// Whether calls of `clo` can run inline (see [`inline_info`]).
 pub(crate) fn inlinable(clo: &Closure) -> bool {
-    !clo.trace.get() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
+    !crate::builtins::debug::closure_traced(clo) && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
 
 /// Call an inlinable closure with pre-unboxed or fast `RVal` argument values,
 /// returning the unboxed `RVal` result directly.
 pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]) -> Option<RVal> {
     let info = clo.inline.get()?.as_ref()?;
-    if clo.trace.get() || args.len() != info.formal_slots.len() || clo.jit.unsettled() {
+    if crate::builtins::debug::closure_traced(clo) || args.len() != info.formal_slots.len() || clo.jit.unsettled() {
         return None;
     }
     let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()))?;
@@ -2522,7 +2522,7 @@ fn inline_call(
     }
     let leaves = cs.leaf_args.as_ref()?;
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if clo.trace.get() || leaves.len() != clo.formals.len() {
+    if crate::builtins::debug::closure_traced(&clo) || leaves.len() != clo.formals.len() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
@@ -3775,7 +3775,7 @@ fn run_with(
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
                     // (Not for a closure already known not to be pure, nor
                     // for a traced one: GNU R's compiled code would print.)
-                    if !clo.trace.get()
+                    if !crate::builtins::debug::closure_traced(clo)
                         && !matches!(clo.inline.get(), Some(None))
                         && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs)
                     {
@@ -3789,7 +3789,7 @@ fn run_with(
                     Some(f) => f,
                     None => tryop!(call_site_fun(interp, *f, site, env)),
                 };
-                if crate::builtins::debug::is_traced(&fun) {
+                if crate::builtins::debug::any_traced() && crate::builtins::debug::is_traced(&fun) {
                     trace_report(interp, &site.call);
                 }
                 let v = match (&fun, &site.call) {

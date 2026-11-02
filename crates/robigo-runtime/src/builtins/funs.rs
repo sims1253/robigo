@@ -75,7 +75,6 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
             inline: Default::default(),
             defaults: Default::default(),
             jit: Default::default(),
-            trace: Default::default(),
         }))),
         Value::Builtin(b) => {
             // Primitives: look up their argument template in .ArgsEnv or
@@ -94,7 +93,6 @@ fn do_args(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Valu
                             inline: Default::default(),
                             defaults: Default::default(),
                             jit: Default::default(),
-                            trace: Default::default(),
                         })));
                     }
                 }

@@ -346,7 +346,6 @@ pub unsafe extern "C" fn R_mkClosure(formals: Sexp, body: Sexp, rho: Sexp) -> Se
         inline: Default::default(),
         defaults: Default::default(),
         jit,
-        trace: Default::default(),
     };
     crate::bridge::to_sexp(&robigo_runtime::value::Value::Closure(std::rc::Rc::new(clo)))
 }
