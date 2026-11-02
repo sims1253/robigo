@@ -8,8 +8,13 @@ conformance` (interpreter, VM and VM+JIT against each other).
 
 ## 2026-11-02: round 17, sorted-input fast paths in the radix sort
 
-- Base: track/perf-vm-round16 (main 675cc1c6 + #206), binaries
-  `.robigo/perf/{cand-r16b,cand-sort4}` built sequentially in this tree.
+- Base: main bd4cddb8 (with #206), binaries `.robigo/perf/{base,cand}-r18`
+  built sequentially in this tree. Full both-runtime table
+  `.robigo/perf/full-base-r18.json`: geomean **0.4678 over 75 correct
+  programs, faster on 74** — the one slower program is `robigo/sortorder`
+  at 1.084x (this round takes it to ~0.90x); next-worst are
+  `binarytrees` 0.895, `fib` 0.856, `profiler-shared` 0.802,
+  `vecarith` 0.783 (the call-overhead cluster).
 - Why: idiom measurement (`scripts/idiom-vs-r.py`, n=1000, vs GNU R 4.5.0
   with the corrected oracle env) had `order()` at **1.36x** and `sort()`
   at 1.25x GNU R — but only for *sorted or reversed* input; random input
