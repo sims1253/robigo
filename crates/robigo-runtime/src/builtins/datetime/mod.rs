@@ -484,6 +484,14 @@ fn valid_posixlt(interp: &mut Interp, x: &Value, nm: usize) -> RResult<Vec<Value
         }
     }
     let mut comps = l.data.clone();
+    let set_elt = |k, value| {
+        // SAFETY: this function reads its components from `comps` and holds
+        // no reference into the list, nor do the builtins that call it.
+        #[allow(unsafe_code)]
+        unsafe {
+            x.set_vector_elt_through_alias(k, value)
+        };
+    };
     for i in 0..9.min(nm) {
         if !is_num(&comps[i]) {
             return Err(Flow::error(format!("a valid \"POSIXlt\" object has a numeric element {}", LTNAMES[i])));
@@ -491,13 +499,13 @@ fn valid_posixlt(interp: &mut Interp, x: &Value, nm: usize) -> RResult<Vec<Value
     }
     // R: SET_VECTOR_ELT(x, 0, coerceVector(VECTOR_ELT(x, 0), REALSXP))
     comps[0] = interp.coerce(&comps[0], VType::Real)?;
-    x.set_vector_elt_through_alias(0, comps[0].clone());
+    set_elt(0, comps[0].clone());
     for i in 1..n_check {
         if i == 9 {
             continue; // skip zone
         }
         comps[i] = interp.coerce(&comps[i], VType::Int)?;
-        x.set_vector_elt_through_alias(i, comps[i].clone());
+        set_elt(i, comps[i].clone());
     }
     if n_check >= 10 && !matches!(comps[9], Value::Str(_)) {
         return Err(Flow::error(format!("a valid \"POSIXlt\" object has a character element {}", LTNAMES[9])));

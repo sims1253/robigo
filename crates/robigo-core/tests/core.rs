@@ -1,12 +1,58 @@
 //! robigo-core's heap, strings, symbols and unwinding, tested directly.
 
+// Tests poke objects directly: a safety comment on each block would say "this
+// test built that object" a hundred times.
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp, flags, gp};
-use std::cell::RefCell;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     static ROOTS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
+    /// Non-zero: what heap chunks allocated on this thread hold at +8.
+    static CHUNK_WORD: Cell<u64> = const { Cell::new(0) };
 }
+
+/// The system allocator, except that a heap chunk (the only 64 KiB-aligned
+/// request) can be made to arrive with chosen contents, as recycled memory
+/// does: `malloc` gives no guarantee, so a test cannot wait for a chunk to
+/// come back dirty.
+struct DirtyChunks;
+
+// SAFETY: every request is forwarded to `System`; the only addition writes
+// one word inside a block that `System` just returned for a layout of at
+// least 64 KiB.
+unsafe impl GlobalAlloc for DirtyChunks {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        let p = unsafe { System.alloc(layout) };
+        if layout.align() == 1 << 16 && !p.is_null() {
+            let word = CHUNK_WORD.with(Cell::get);
+            if word != 0 {
+                // SAFETY: a heap chunk is at least 64 KiB, and aligned for u64.
+                unsafe { *(p as *mut u64).add(1) = word };
+            }
+        }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.dealloc(p, layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller's contract, forwarded.
+        unsafe { System.realloc(p, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: DirtyChunks = DirtyChunks;
 
 unsafe fn mark_roots(c: &mut Core) {
     let roots = ROOTS.with(|r| r.borrow().clone());
@@ -20,7 +66,7 @@ unsafe fn mark_roots(c: &mut Core) {
 fn core_with_roots() -> Box<Core> {
     ROOTS.with(|r| r.borrow_mut().clear());
     let mut c = Core::new();
-    c.root_fns.push(mark_roots);
+    unsafe { c.add_root_fn(mark_roots) };
     c
 }
 
@@ -44,14 +90,14 @@ unsafe fn ints<'a>(x: Sexp) -> &'a [i32] {
 fn constants() {
     let c = Core::new();
     unsafe {
-        assert_eq!(c.nil.typ(), NILSXP);
-        assert_eq!(c.nil.car(), c.nil);
-        assert_eq!(c.nil.attrib_raw(), c.nil);
-        assert!(c.nil.has_flag(flags::IMMORTAL));
-        assert_eq!(c.na_string.char_bytes(), b"NA");
-        assert_eq!(c.blank_string.char_bytes(), b"");
-        assert_eq!(c.unbound.typ(), SYMSXP);
-        assert_ne!(c.unbound, c.missing_arg);
+        assert_eq!(c.nil().typ(), NILSXP);
+        assert_eq!(c.nil().car(), c.nil());
+        assert_eq!(c.nil().attrib_raw(), c.nil());
+        assert!(c.nil().has_flag(flags::IMMORTAL));
+        assert_eq!(c.na_string().char_bytes(), b"NA");
+        assert_eq!(c.blank_string().char_bytes(), b"");
+        assert_eq!(c.unbound().typ(), SYMSXP);
+        assert_ne!(c.unbound(), c.missing_arg());
     }
 }
 
@@ -63,9 +109,9 @@ fn vectors_are_initialized_like_gnu_r() {
     let r = c.alloc_vector(REALSXP, 1000);
     unsafe {
         let sd = s.std_data() as *const Sexp;
-        assert!((0..3).all(|i| *sd.add(i) == c.blank_string));
+        assert!((0..3).all(|i| *sd.add(i) == c.blank_string()));
         let ld = l.std_data() as *const Sexp;
-        assert!((0..2).all(|i| *ld.add(i) == c.nil));
+        assert!((0..2).all(|i| *ld.add(i) == c.nil()));
         assert_eq!(r.std_len(), 1000);
         assert_eq!(r.std_data() as usize % 16, 0);
     }
@@ -85,7 +131,7 @@ fn chars_are_interned_by_bytes_and_encoding() {
     let l = c.mk_char("café".as_bytes(), gp::LATIN1);
     assert_ne!(u, l);
     assert_eq!(u, c.mk_char("café".as_bytes(), gp::UTF8));
-    assert_ne!(c.mk_char(b"NA", 0), c.na_string);
+    assert_ne!(c.mk_char(b"NA", 0), c.na_string());
 }
 
 #[test]
@@ -110,10 +156,10 @@ fn rooted_objects_survive_and_garbage_is_freed() {
     let mut c = core_with_roots();
     let keep = int_vec(&mut c, &[1, 2, 3]);
     root(keep);
-    let mut list = c.nil;
+    let mut list = c.nil();
     for i in 0..1000 {
         let v = int_vec(&mut c, &[i]);
-        list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil) };
+        list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil()) };
     }
     root(list);
     // garbage
@@ -126,7 +172,7 @@ fn rooted_objects_survive_and_garbage_is_freed() {
         assert_eq!(ints(keep), &[1, 2, 3]);
         let mut n = 0;
         let mut p = list;
-        while p != c.nil {
+        while p != c.nil() {
             assert_eq!(ints(p.car()), &[999 - n]);
             n += 1;
             p = p.cdr();
@@ -226,14 +272,14 @@ fn layout_is_compact() {
     // GNU R's macros onto it
     let mut c = Core::new();
     let v = c.alloc_vector(INTSXP, 1);
-    let n = unsafe { c.alloc_node(LISTSXP, v, c.nil, c.nil) };
+    let n = unsafe { c.alloc_node(LISTSXP, v, c.nil(), c.nil()) };
     unsafe {
         assert_eq!(*v.0, INTSXP, "type: byte 0");
         assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
         assert_eq!(v.std_data() as usize - v.addr(), 32, "payload at +32");
         assert_eq!(*(n.0.add(16) as *const usize), v.addr(), "CAR at +16");
-        assert_eq!(*(n.0.add(24) as *const usize), c.nil.addr(), "CDR at +24");
-        assert_eq!(*(n.0.add(8) as *const usize), c.nil.addr(), "ATTRIB at +8");
+        assert_eq!(*(n.0.add(24) as *const usize), c.nil().addr(), "CDR at +24");
+        assert_eq!(*(n.0.add(8) as *const usize), c.nil().addr(), "ATTRIB at +8");
         n.set_gp(0xABCD);
         assert_eq!(*(n.0.add(2) as *const u16), 0xABCD, "gp at +2");
         assert!(n.tracks_refs());
@@ -276,7 +322,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
         unsafe {
             let d = w.std_data() as *mut Sexp;
             *d = key;
-            *d.add(1) = c.nil;
+            *d.add(1) = c.nil();
             *d.add(2) = fin;
         }
         unsafe {
@@ -480,7 +526,7 @@ fn host_core() -> Box<Core> {
     HOST_EDGES.with(|edges| edges.borrow_mut().clear());
     let mut c = core_with_roots();
     c.set_scan_top(0);
-    c.host_trace = Some(trace_test_host);
+    unsafe { c.set_host_trace(Some(trace_test_host), None) };
     c.gc_inhibit += 1;
     c
 }
@@ -501,8 +547,8 @@ fn test_weak(c: &mut Core, key: Sexp, fin: Sexp) -> Sexp {
 #[test]
 fn host_trace_preserves_native_roots_and_terminates_on_cycles() {
     let mut c = host_core();
-    let a = c.alloc_host(ENVSXP, 1, None);
-    let b = c.alloc_host(ENVSXP, 2, None);
+    let a = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let b = unsafe { c.alloc_host(ENVSXP, 2, None) };
     HOST_EDGES.with(|e| {
         e.borrow_mut().insert(1, vec![b]);
         e.borrow_mut().insert(2, vec![a]);
@@ -521,9 +567,9 @@ fn host_trace_preserves_native_roots_and_terminates_on_cycles() {
 #[test]
 fn host_edges_participate_in_weak_reference_fixed_point() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
-    let finalizer = c.alloc_host(CLOSXP, 2, None);
-    let other_key = c.alloc_host(ENVSXP, 3, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let finalizer = unsafe { c.alloc_host(CLOSXP, 2, None) };
+    let other_key = unsafe { c.alloc_host(ENVSXP, 3, None) };
     let other_fin = c.alloc_vector(RAWSXP, 8);
     HOST_EDGES.with(|e| e.borrow_mut().insert(2, vec![other_key]));
     let first = test_weak(&mut c, key, finalizer);
@@ -543,7 +589,7 @@ fn host_edges_participate_in_weak_reference_fixed_point() {
 #[test]
 fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
     let mut c = host_core();
-    let nil = c.nil;
+    let nil = c.nil();
     let w = test_weak(&mut c, nil, nil);
     unsafe {
         w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
@@ -563,14 +609,14 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
 #[test]
 fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, key, fin);
     c.gc_inhibit -= 1;
     c.collect();
     assert_eq!(c.pop_finalizable(), Some(first));
     // A finalizer registers another key while the batch is running.
-    let later_key = c.alloc_host(ENVSXP, 2, None);
+    let later_key = unsafe { c.alloc_host(ENVSXP, 2, None) };
     root(later_key);
     let later = test_weak(&mut c, later_key, fin);
     assert_eq!(c.weak_refs(), &[later], "the new reference is not lost");
@@ -584,7 +630,7 @@ fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
 #[test]
 fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
     let mut c = host_core();
-    let key = c.alloc_host(ENVSXP, 1, None);
+    let key = unsafe { c.alloc_host(ENVSXP, 1, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, key, fin);
     let second = test_weak(&mut c, key, fin);
@@ -598,8 +644,8 @@ fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
 #[test]
 fn exit_finalizers_queue_in_weak_reference_list_order() {
     let mut c = host_core();
-    let first_key = c.alloc_host(ENVSXP, 1, None);
-    let second_key = c.alloc_host(ENVSXP, 2, None);
+    let first_key = unsafe { c.alloc_host(ENVSXP, 1, None) };
+    let second_key = unsafe { c.alloc_host(ENVSXP, 2, None) };
     let fin = c.alloc_vector(RAWSXP, 8);
     let first = test_weak(&mut c, first_key, fin);
     let second = test_weak(&mut c, second_key, fin);
@@ -607,7 +653,7 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
     unsafe {
         second.set_gp(second.gp() | gp::FINALIZE_ON_EXIT);
     }
-    unsafe { c.queue_exit_finalizers() };
+    c.queue_exit_finalizers();
     // only the onexit reference leaves the weak list; the other stays live
     assert_eq!(c.weak_refs(), &[first]);
     assert_eq!(c.pending_finalizer_count(), 1);
@@ -618,4 +664,181 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
     c.collect();
     assert!(c.pop_finalizable().is_none());
     ROOTS.with(|r| r.borrow_mut().clear());
+}
+
+/// A large object's mark word lives in its chunk's header. The chunk comes
+/// from `malloc`, so if the word started out holding the next collection's
+/// epoch the object would look marked already and its children would not
+/// be traced.
+#[test]
+fn a_large_object_starts_unmarked_whatever_its_chunk_held() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    // only the rooted vector can keep the child alive
+    c.set_scan_top(0);
+    let next_epoch = c.stats.collections + 1;
+    CHUNK_WORD.with(|w| w.set(next_epoch));
+    let big = c.alloc_vector(VECSXP, 100_000);
+    CHUNK_WORD.with(|w| w.set(0));
+    root(big);
+    let child = c.alloc_vector(INTSXP, 1);
+    unsafe { *(big.std_data() as *mut Sexp) = child };
+    c.collect();
+    assert_eq!(c.stats.collections, next_epoch);
+    assert!(c.resolve(child.addr()).is_some(), "the large vector's child was swept");
+}
+
+#[test]
+#[should_panic(expected = "not a vector type")]
+fn alloc_vector_rejects_a_non_vector_type() {
+    Core::new().alloc_vector(LISTSXP, 5);
+}
+
+#[test]
+#[should_panic(expected = "not a vector type")]
+fn try_alloc_vector_rejects_a_non_vector_type() {
+    Core::new().try_alloc_vector(ENVSXP, 1000);
+}
+
+/// A C++ `throw` is `_Unwind_RaiseException`, and `__cxa_throw` calls
+/// `std::terminate` when that returns. It returns end-of-stack only if phase
+/// 1 stops at the shim; otherwise it finds a handler above the shim
+/// (libtest's `catch_unwind` here, a package's `catch` in real life) and
+/// phase 2 takes the exception through Rust frames.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_foreign_exception_stops_at_the_c_shim() {
+    use std::ffi::{c_int, c_void};
+    const URC_END_OF_STACK: c_int = 5;
+
+    #[repr(C, align(16))]
+    struct UnwindException {
+        class: u64,
+        cleanup: usize,
+        private: [u64; 6],
+    }
+    unsafe extern "C-unwind" {
+        fn _Unwind_RaiseException(e: *mut UnwindException) -> c_int;
+    }
+    /// A package callback that throws: reports what the raise returned.
+    unsafe extern "C-unwind" fn throw(result: *mut c_int) {
+        let mut e = UnwindException { class: u64::from_be_bytes(*b"robigoT\0"), cleanup: 0, private: [0; 6] };
+        // SAFETY: `e` is a well-formed exception object that outlives the
+        // call, and `result` is the caller's local.
+        unsafe { *result = _Unwind_RaiseException(&mut e) };
+    }
+
+    let mut raised: c_int = -1;
+    let mut args = [std::ptr::null_mut::<c_void>(); 65];
+    args[0] = (&raw mut raised).cast();
+    let mut out = std::ptr::null_mut();
+    let thrower = throw as unsafe extern "C-unwind" fn(*mut c_int);
+    // SAFETY: `throw` reads one argument of the 65 and returns nothing, so
+    // `out` receives a meaningless word that is never read.
+    let unwound =
+        unsafe { robigo_core::unwind::robigo_try_call65(thrower as *const c_void, args.as_mut_ptr(), &mut out) };
+    assert_eq!(unwound, 0, "the callback returned");
+    assert_eq!(raised, URC_END_OF_STACK);
+}
+
+/// Free slots have no start bit, so a sweep that walks the bitmap cannot
+/// see the ones it left on the free list earlier.
+#[test]
+fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
+    // 32 + 124 * 8 = 1024 bytes: 62 slots to a block
+    const LEN: usize = 124;
+    const SLOTS: usize = 62;
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    let keep = c.alloc_vector(VECSXP, SLOTS);
+    root(keep);
+    let slots = unsafe { keep.std_data() as *mut Sexp };
+    for i in 0..SLOTS {
+        let v = c.alloc_vector(REALSXP, LEN);
+        unsafe { *slots.add(i) = v };
+    }
+    let mut freed = std::collections::HashSet::new();
+    let mut drop_slot = |c: &mut Core, i: usize| unsafe {
+        freed.insert((*slots.add(i)).addr());
+        *slots.add(i) = c.nil();
+    };
+    let block = |x: usize| x & !0xFFFF;
+    assert!((0..SLOTS).all(|i| unsafe { block((*slots.add(i)).addr()) == block((*slots).addr()) }));
+    for i in (0..SLOTS).step_by(2) {
+        drop_slot(&mut c, i);
+    }
+    c.collect();
+    // one more death: this sweep walks the block
+    drop_slot(&mut c, 1);
+    c.collect();
+    for _ in 0..freed.len() {
+        let x = c.alloc_vector(REALSXP, LEN);
+        assert!(freed.remove(&x.addr()), "{} free slots were lost", freed.len());
+    }
+}
+
+unsafe fn collecting_root(c: &mut Core) {
+    c.collect();
+}
+
+unsafe fn allocating_root(c: &mut Core) {
+    c.alloc_vector(INTSXP, 1);
+}
+
+#[test]
+#[should_panic(expected = "inside a collection")]
+fn a_root_callback_cannot_collect() {
+    let mut c = Core::new();
+    unsafe { c.add_root_fn(collecting_root) };
+    c.collect();
+}
+
+/// What ROBIGO_GCTORTURE finds in CI: an allocating hook nests a collection
+/// as soon as allocation collects.
+#[test]
+#[should_panic(expected = "inside a collection")]
+fn a_root_callback_cannot_allocate() {
+    let mut c = Core::new();
+    unsafe { c.add_root_fn(allocating_root) };
+    c.set_torture(true);
+    c.collect();
+}
+
+/// An immortal CHARSXP is counted once by `immortal_chars`; a store into it
+/// must not count it again as marked, or the sum can equal the table's size
+/// with a dead entry in it, and the prune is skipped.
+#[test]
+fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    let blank = c.blank_string();
+    unsafe { c.write_barrier(blank) };
+    let before = c.char_cache_len();
+    c.mk_char(b"soon dead", 0);
+    assert_eq!(c.char_cache_len(), before + 1);
+    c.collect();
+    assert_eq!(c.char_cache_len(), before, "a dead CHARSXP stayed in the cache");
+}
+
+static HOST_RELEASED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe extern "C" fn count_host_release(handle: usize) {
+    HOST_RELEASED.fetch_add(handle, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn host_release_runs_once_dead() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    unsafe { c.alloc_host(ENVSXP, 7, Some(count_host_release)) };
+    unsafe { c.alloc_host(ENVSXP, 100, None) };
+    c.collect();
+    let releases = c.take_releases();
+    assert_eq!(releases.len(), 1, "a proxy without a release function queues nothing");
+    for (f, h) in releases {
+        unsafe { f(h) };
+    }
+    assert_eq!(HOST_RELEASED.load(std::sync::atomic::Ordering::SeqCst), 7);
 }

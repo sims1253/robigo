@@ -27,7 +27,12 @@ robigo-runtime = { path = "crates/robigo-runtime" }
 # Most of the code is a port of GNU R's C, and the contract is to stay close
 # to it: these lints would move the code away from its source, or change what
 # happens with NaN. Everything else clippy finds is an error in CI.
+[workspace.lints.rust]
+# Every crate states what may be unsafe in its lib.rs; see docs/architecture.md.
+unsafe_op_in_unsafe_fn = "deny"
+
 [workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
 approx_constant = "allow"
 collapsible_if = "allow"
 eq_op = "allow"

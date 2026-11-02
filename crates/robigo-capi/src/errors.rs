@@ -7,14 +7,8 @@ use crate::state::{R_NilValue, R_PPStackTop, nil};
 use robigo_core::Sexp;
 use robigo_core::types::*;
 use robigo_core::unwind;
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
-
-/// The flow token of the jump in progress.
-pub static mut PENDING: usize = 0;
-
-/// Continuation tokens of R_UnwindProtect (`R_MakeUnwindCont`) are
-/// nodes; their car holds the pending flow token as an integer.
-pub unsafe fn mark_roots(_c: &mut robigo_core::Core) {}
 
 unsafe extern "C" {
     fn vsnprintf(buf: *mut c_char, n: usize, fmt: *const c_char, ap: std::ffi::VaList) -> c_int;
@@ -23,6 +17,8 @@ unsafe extern "C" {
 const BUFSIZE: usize = 8192;
 
 thread_local! {
+    /// The flow token of the jump in progress.
+    static PENDING: Cell<usize> = const { Cell::new(0) };
     static SCRATCH: std::cell::UnsafeCell<[u8; BUFSIZE]> = const { std::cell::UnsafeCell::new([0; BUFSIZE]) };
 }
 
@@ -31,15 +27,16 @@ thread_local! {
 /// Messages are handed to the host, which copies them at once, before
 /// anything else can format into it.
 #[inline(always)]
-fn scratch() -> &'static mut [u8; BUFSIZE] {
-    SCRATCH.with(|b| unsafe { &mut *b.get() })
+fn scratch() -> *mut [u8; BUFSIZE] {
+    SCRATCH.with(|b| b.get())
 }
 /// options(warning.length) default
 const R_WARN_LENGTH: usize = 1000;
 
 /// Rvsnprintf_mbcs: format into `buf` (size `n`), truncating at a UTF-8
 /// character boundary. Returns the untruncated length.
-unsafe fn vformat(buf: &mut [u8], n: usize, fmt: *const c_char, ap: std::ffi::VaList) -> usize {
+unsafe fn vformat(buf: *mut [u8; BUFSIZE], n: usize, fmt: *const c_char, ap: std::ffi::VaList) -> usize {
+    let buf = &mut *buf;
     let n = n.min(buf.len());
     let r = vsnprintf(buf.as_mut_ptr() as *mut c_char, n, fmt, ap);
     let len = CStr::from_ptr(buf.as_ptr() as *const c_char).to_bytes().len();
@@ -67,7 +64,7 @@ unsafe fn vformat(buf: &mut [u8], n: usize, fmt: *const c_char, ap: std::ffi::Va
 
 /// Jump with a host flow token. Plain frames only (see `unwind`).
 pub unsafe fn jump_host(token: usize) -> ! {
-    PENDING = token;
+    PENDING.set(token);
     crate::context::run_cends();
     unwind::jump()
 }
@@ -81,20 +78,21 @@ pub unsafe fn raise(call: Sexp, msg: *const c_char) -> ! {
 
 /// Raise an error from a Rust message.
 pub unsafe fn error_str(msg: &str) -> ! {
-    let buf = scratch();
+    raise(Sexp::NULL, scratch_copy(msg))
+}
+
+/// `msg`, NUL-terminated, in the scratch buffer.
+unsafe fn scratch_copy(msg: &str) -> *const c_char {
+    let buf = scratch().cast::<u8>();
     let n = msg.len().min(BUFSIZE - 1);
-    buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
-    buf[n] = 0;
-    raise(Sexp::NULL, buf.as_ptr() as *const c_char)
+    std::ptr::copy_nonoverlapping(msg.as_ptr(), buf, n);
+    *buf.add(n) = 0;
+    buf as *const c_char
 }
 
 /// Raise an error reported against `call`.
 pub unsafe fn errorcall_str(call: Sexp, msg: &str) -> ! {
-    let buf = scratch();
-    let n = msg.len().min(BUFSIZE - 1);
-    buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
-    buf[n] = 0;
-    raise(call, buf.as_ptr() as *const c_char)
+    raise(call, scratch_copy(msg))
 }
 
 /// "robigo: C API function 'X' is not implemented yet" (porting contract §6).
@@ -112,7 +110,7 @@ pub unsafe fn not_implemented(name: &str) -> ! {
 pub unsafe extern "C" fn Rf_error(fmt: *const c_char, args: ...) -> ! {
     let buf = scratch();
     vformat(buf, R_WARN_LENGTH, fmt, args);
-    raise(Sexp::NULL, buf.as_ptr() as *const c_char)
+    raise(Sexp::NULL, buf as *const c_char)
 }
 
 // R: errors.c:errorcall
@@ -121,18 +119,19 @@ pub unsafe extern "C" fn Rf_errorcall(call: Sexp, fmt: *const c_char, args: ...)
     let buf = scratch();
     vformat(buf, BUFSIZE, fmt, args);
     let call = if call == crate::state::R_CurrentExpression { Sexp::NULL } else { call };
-    raise(call, buf.as_ptr() as *const c_char)
+    raise(call, buf as *const c_char)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_errorcall_cpy(call: Sexp, fmt: *const c_char, args: ...) -> ! {
     let buf = scratch();
     vformat(buf, BUFSIZE, fmt, args);
-    raise(call, buf.as_ptr() as *const c_char)
+    raise(call, buf as *const c_char)
 }
 
 /// RprintTrunc and the trailing-newline strip of warning().
-unsafe fn warning_buf(buf: &mut [u8; BUFSIZE], truncated: bool) {
+unsafe fn warning_buf(buf: *mut [u8; BUFSIZE], truncated: bool) {
+    let buf = &mut *buf;
     let len = CStr::from_ptr(buf.as_ptr() as *const c_char).to_bytes().len();
     if len > 0 && buf[len - 1] == b'\n' {
         buf[len - 1] = 0;
@@ -144,8 +143,8 @@ unsafe fn warning_buf(buf: &mut [u8; BUFSIZE], truncated: bool) {
     }
 }
 
-unsafe fn do_warning(call: Sexp, buf: &[u8], immediate: c_int) {
-    let t = (host().warning)(call, buf.as_ptr() as *const c_char, immediate);
+unsafe fn do_warning(call: Sexp, buf: *const [u8; BUFSIZE], immediate: c_int) {
+    let t = (host().warning)(call, buf as *const c_char, immediate);
     if t != 0 {
         jump_host(t);
     }
@@ -155,22 +154,52 @@ unsafe fn do_warning(call: Sexp, buf: &[u8], immediate: c_int) {
 /// drains the queue after its own calls): R `warning()`s, as GNU R's nmath
 /// calls warning() for C callers too.
 #[inline]
-pub fn nmath_warnings() {
+pub unsafe fn nmath_warnings() {
     if robigo_numerics::pending() {
         nmath_flush();
     }
 }
 
 #[cold]
-fn nmath_flush() {
+unsafe fn nmath_flush() {
+    // A warning can jump (options(warn = 2)): the queue is gone first.
+    let mut token = 0;
     for w in robigo_numerics::take_warnings() {
-        if let Ok(c) = std::ffi::CString::new(w) {
-            unsafe { Rf_warning(c"%s".as_ptr(), c.as_ptr()) }
+        token = warning_token(&w);
+        if token != 0 {
+            break;
         }
+    }
+    if token != 0 {
+        jump_host(token)
     }
     // R: memory.c:R_chk_calloc — nmath's failed allocation is an error
     if let Some(msg) = robigo_numerics::take_alloc_error() {
-        unsafe { error_str_owned(msg) }
+        error_str_owned(msg)
+    }
+}
+
+/// Signal a warning with GNU R's truncation; a nonzero token is the jump
+/// the caller makes once it dropped what it owns.
+unsafe fn warning_token(msg: &str) -> usize {
+    let buf = scratch();
+    // as Rvsnprintf_mbcs, never cutting a character
+    let mut n = msg.len().min(R_WARN_LENGTH);
+    while !msg.is_char_boundary(n) {
+        n -= 1;
+    }
+    std::ptr::copy_nonoverlapping(msg.as_ptr(), buf.cast::<u8>(), n);
+    *buf.cast::<u8>().add(n) = 0;
+    warning_buf(buf, msg.len() > R_WARN_LENGTH);
+    (host().warning)(Sexp::NULL, buf as *const c_char, 0)
+}
+
+/// `warning()` with an owned message.
+pub unsafe fn warning_owned(msg: String) {
+    let t = warning_token(&msg);
+    drop(msg);
+    if t != 0 {
+        jump_host(t);
     }
 }
 
@@ -181,7 +210,7 @@ pub unsafe extern "C" fn Rf_warning(fmt: *const c_char, args: ...) {
     let psize = R_WARN_LENGTH + 1;
     let n = vformat(buf, psize, fmt, args);
     warning_buf(buf, n >= psize);
-    do_warning(Sexp::NULL, &buf[..], 0)
+    do_warning(Sexp::NULL, buf, 0)
 }
 
 // R: errors.c:warningcall
@@ -189,7 +218,7 @@ pub unsafe extern "C" fn Rf_warning(fmt: *const c_char, args: ...) {
 pub unsafe extern "C" fn Rf_warningcall(call: Sexp, fmt: *const c_char, args: ...) {
     let buf = scratch();
     vformat(buf, BUFSIZE, fmt, args);
-    do_warning(if call.is_null() { nil() } else { call }, &buf[..], 0)
+    do_warning(if call.is_null() { nil() } else { call }, buf, 0)
 }
 
 // R: errors.c:warningcall_immediate
@@ -197,7 +226,7 @@ pub unsafe extern "C" fn Rf_warningcall(call: Sexp, fmt: *const c_char, args: ..
 pub unsafe extern "C" fn Rf_warningcall_immediate(call: Sexp, fmt: *const c_char, args: ...) {
     let buf = scratch();
     vformat(buf, BUFSIZE, fmt, args);
-    do_warning(if call.is_null() { nil() } else { call }, &buf[..], 1)
+    do_warning(if call.is_null() { nil() } else { call }, buf, 1)
 }
 
 // R: errors.c:R_BadLongVector
@@ -212,21 +241,15 @@ pub unsafe extern "C" fn R_BadLongVector(_x: Sexp, file: *const c_char, line: c_
 /// Raise with an owned message (moved into a fixed buffer first so no
 /// `Drop` is pending across the jump).
 pub unsafe fn error_str_owned(msg: String) -> ! {
-    let buf = scratch();
-    let n = msg.len().min(BUFSIZE - 1);
-    buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
-    buf[n] = 0;
+    let buf = scratch_copy(&msg);
     drop(msg);
-    raise(Sexp::NULL, buf.as_ptr() as *const c_char)
+    raise(Sexp::NULL, buf)
 }
 
 pub unsafe fn errorcall_owned(call: Sexp, msg: String) -> ! {
-    let buf = scratch();
-    let n = msg.len().min(BUFSIZE - 1);
-    buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
-    buf[n] = 0;
+    let buf = scratch_copy(&msg);
     drop(msg);
-    raise(call, buf.as_ptr() as *const c_char)
+    raise(call, buf)
 }
 
 // R: memory.c:R_signal_protect_error (the condition is reported without a call)
@@ -383,9 +406,7 @@ pub unsafe fn ctx_restore(c: &Ctx) {
 /// After a trampoline returned 1: restore the context, take the token.
 unsafe fn unwound(c: &Ctx) -> usize {
     ctx_restore(c);
-    let t = PENDING;
-    PENDING = 0;
-    t
+    PENDING.replace(0)
 }
 
 /// `f(data)` in a context (C trampoline).
@@ -532,6 +553,13 @@ pub unsafe extern "C" fn R_UnwindProtect(
     cleandata: *mut c_void,
     cont: Sexp,
 ) -> Sexp {
+    // Simple usage with a NULL continuation token.
+    if cont.is_null() {
+        let cont = crate::memory::Rf_protect(R_MakeUnwindCont());
+        let r = R_UnwindProtect(fun, data, cleanfun, cleandata, cont);
+        crate::memory::Rf_unprotect(1);
+        return r;
+    }
     crate::memory::Rf_protect(cont);
     let r = try_sexp_ptr(fun, data);
     if let Err(t) = r {

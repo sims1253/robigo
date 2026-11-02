@@ -1301,54 +1301,7 @@ fn parse_enc(e: &str) -> Option<Enc> {
     }
 }
 
-/// The C library's conversion descriptor for one source encoding.
-struct Iconv(libc::iconv_t);
-
-impl Iconv {
-    // R: sysutils.c:Riconv_open
-    fn open(to: &str, from: &str) -> Option<Iconv> {
-        use std::ffi::CString;
-        let (t, f) = (CString::new(to).ok()?, CString::new(from).ok()?);
-        // SAFETY: both arguments are valid NUL-terminated strings.
-        let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
-        (cd as isize != -1).then_some(Iconv(cd))
-    }
-
-    /// One `iconv(3)` step; `Err` carries errno. Advances the slices past
-    /// what was consumed and produced.
-    fn step(&self, input: &mut &[u8], out: &mut &mut [u8]) -> Result<(), i32> {
-        let mut inbuf = input.as_ptr() as *mut libc::c_char;
-        let mut inb = input.len();
-        let mut outbuf = out.as_mut_ptr() as *mut libc::c_char;
-        let mut outb = out.len();
-        // SAFETY: the pointers and lengths come from live slices; iconv
-        // does not write through `inbuf` despite its type.
-        let res = unsafe { libc::iconv(self.0, &mut inbuf, &mut inb, &mut outbuf, &mut outb) };
-        let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        *input = &input[input.len() - inb..];
-        let done = out.len() - outb;
-        *out = &mut std::mem::take(out)[done..];
-        if res == usize::MAX { Err(err) } else { Ok(()) }
-    }
-
-    /// Back to the initial shift state, writing what that takes to `out`.
-    fn reset(&self, out: &mut &mut [u8]) {
-        let mut outbuf = out.as_mut_ptr() as *mut libc::c_char;
-        let mut outb = out.len();
-        // SAFETY: a null input asks iconv to reset; the output pointer and
-        // length come from a live slice.
-        unsafe { libc::iconv(self.0, std::ptr::null_mut(), std::ptr::null_mut(), &mut outbuf, &mut outb) };
-        let done = out.len() - outb;
-        *out = &mut std::mem::take(out)[done..];
-    }
-}
-
-impl Drop for Iconv {
-    fn drop(&mut self) {
-        // SAFETY: the descriptor came from iconv_open and is closed once.
-        unsafe { libc::iconv_close(self.0) };
-    }
-}
+use crate::sys::Iconv;
 
 /// The text `sub` puts in place of input the conversion stopped at, and how
 /// many bytes it replaces. `input` can be empty: glibc reports what
@@ -1434,10 +1387,8 @@ fn iconv_element(cd: &Iconv, input: &[u8], sub: Option<&str>, from_utf8: bool, f
 
 /// The locale's character encoding, what iconv takes `""` for.
 fn native_codeset() -> String {
-    super::sysutils::init_locale();
-    // SAFETY: nl_langinfo returns a NUL-terminated string.
-    let codeset = unsafe { std::ffi::CStr::from_ptr(libc::nl_langinfo(libc::CODESET)) };
-    codeset.to_string_lossy().into_owned()
+    super::sysutils::init_locale_on_evaluator();
+    crate::sys::codeset()
 }
 
 /// `iconv()` for what the byte windows of [`do_iconv`] do not cover: the C
@@ -1445,7 +1396,7 @@ fn native_codeset() -> String {
 // R: sysutils.c:do_iconv
 fn iconv_system(x: &Value, from: &str, to: &str, sub: Option<&str>) -> RResult<Vec<Option<Vec<u8>>>> {
     // (iconv's "" and //TRANSLIT follow LC_CTYPE)
-    super::sysutils::init_locale();
+    super::sysutils::init_locale_on_evaluator();
     // The descriptors are opened for the first element that needs each.
     let (mut utf8_cd, mut latin1_cd, mut arg_cd) = (None, None, None);
     let n = x.len();
@@ -1949,28 +1900,11 @@ fn do_dirname(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(Value::strs(out))
 }
 
-unsafe extern "C" {
-    #[cfg(target_os = "linux")]
-    fn __ctype_get_mb_cur_max() -> usize;
-    #[cfg(target_os = "macos")]
-    fn ___mb_cur_max() -> libc::c_int;
-}
-
-/// The C library's `MB_CUR_MAX` for the current locale.
-fn mb_cur_max() -> usize {
-    // SAFETY: reads the locale's constant.
-    #[cfg(target_os = "linux")]
-    return unsafe { __ctype_get_mb_cur_max() };
-    // SAFETY: as above.
-    #[cfg(target_os = "macos")]
-    return unsafe { ___mb_cur_max() as usize };
-}
-
 // R: platform.c:do_l10n_info, R_check_locale
 fn do_l10n_info(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let codeset = native_codeset();
     Ok(Value::named_list(vec![
-        ("MBCS", Value::lgl(mb_cur_max() > 1)),
+        ("MBCS", Value::lgl(crate::sys::mb_cur_max() > 1)),
         ("UTF-8", Value::lgl(ieq(&codeset, "UTF-8"))),
         ("Latin-1", Value::lgl(codeset == "ISO-8859-1" || ieq(&codeset, "ISO8859-1"))),
         ("codeset", Value::str(&codeset)),

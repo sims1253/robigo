@@ -5,6 +5,7 @@ use crate::host::Host;
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp};
 use std::ffi::c_int;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct State {
     pub core: Box<Core>,
@@ -22,6 +23,11 @@ thread_local! {
     static ISOLATE: std::cell::Cell<*mut State> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
+/// The thread that initialized the API owns it: the exported data below
+/// is process-wide, so a second initialization would overwrite the
+/// `R_NilValue` every object of the first refers to (`docs/core.md` §10).
+static OWNER: AtomicPtr<State> = AtomicPtr::new(std::ptr::null_mut());
+
 /// This thread's isolate, or null if it has not been initialized.
 #[inline(always)]
 pub fn isolate() -> *mut State {
@@ -35,26 +41,38 @@ pub fn try_isolate() -> Option<*mut State> {
     ISOLATE.try_with(|c| c.get()).ok().filter(|p| !p.is_null())
 }
 
+/// This thread's isolate, initialized on first use.
+///
+/// # Safety
+/// The caller is on the R thread, and no other reference into the state is
+/// used while this one is: the API re-enters itself through callbacks, so
+/// the `'static` here is the caller's promise, not the compiler's.
 #[inline(always)]
-pub fn st() -> &'static mut State {
-    unsafe {
-        let p = isolate();
-        if p.is_null() {
-            init_state();
-            return &mut *isolate();
-        }
-        &mut *p
+pub unsafe fn st() -> &'static mut State {
+    let p = isolate();
+    if p.is_null() {
+        init_state();
+        return &mut *isolate();
     }
+    &mut *p
 }
 
+/// The heap.
+///
+/// # Safety
+/// As for [`st`].
 #[inline(always)]
-pub fn core() -> &'static mut Core {
+pub unsafe fn core() -> &'static mut Core {
     &mut st().core
 }
 
+/// `R_NilValue`.
+///
+/// # Safety
+/// The API is initialized and the caller is on the R thread.
 #[inline(always)]
-pub fn nil() -> Sexp {
-    unsafe { R_NilValue }
+pub unsafe fn nil() -> Sexp {
+    R_NilValue
 }
 
 // ---- exported data (Rinternals.h, R_ext/*.h) -------------------------------
@@ -261,6 +279,15 @@ pub static mut R_TempDir: *mut std::ffi::c_char = std::ptr::null_mut();
 #[unsafe(no_mangle)]
 pub static mut R_Home: *mut std::ffi::c_char = std::ptr::null_mut();
 
+unsafe extern "C" {
+    fn robigo_console_init();
+}
+
+/// R_Outputfile and R_Consolefile (R: unix/system.c:Rf_initialize_R).
+pub unsafe fn console_init() {
+    robigo_console_init()
+}
+
 unsafe fn mark_api_roots(c: &mut Core) {
     for i in 0..R_PPStackTop.max(0) as usize {
         c.mark(*R_PPStack.add(i));
@@ -286,8 +313,6 @@ unsafe fn mark_api_roots(c: &mut Core) {
             c.mark(v);
         }
     }
-    crate::errors::mark_roots(c);
-    crate::rdynload::mark_roots(c);
     crate::graphics::mark_roots(c);
     crate::bridge::mark_proxies(c);
 }
@@ -298,18 +323,25 @@ pub unsafe fn init_state() {
     if !isolate().is_null() {
         return;
     }
+    // a claim until the record exists: the data below must not be touched
+    // once another thread got here
+    let claim = std::ptr::NonNull::dangling().as_ptr();
+    if OWNER.compare_exchange(std::ptr::null_mut(), claim, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        eprintln!("robigo: the R heap was used from a thread other than the R thread");
+        std::process::abort();
+    }
     let mut heap = Core::new();
-    R_NilValue = heap.nil;
-    R_UnboundValue = heap.unbound;
-    R_MissingArg = heap.missing_arg;
-    R_NaString = heap.na_string;
-    R_BlankString = heap.blank_string;
-    heap.root_fns.push(mark_api_roots);
-    heap.host_trace = Some(crate::bridge::trace_proxy);
-    heap.host_trace_end = Some(crate::bridge::trace_proxy_end);
-    let nil = heap.nil;
+    R_NilValue = heap.nil();
+    R_UnboundValue = heap.unbound();
+    R_MissingArg = heap.missing_arg();
+    R_NaString = heap.na_string();
+    R_BlankString = heap.blank_string();
+    heap.add_root_fn(mark_api_roots);
+    heap.set_host_trace(Some(crate::bridge::trace_proxy), Some(crate::bridge::trace_proxy_end));
+    let nil = heap.nil();
     let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
     ISOLATE.with(|c| c.set(state));
+    OWNER.store(state, Ordering::Release);
     let stack = vec![Sexp::NULL; PPSSIZE as usize + 1000].into_boxed_slice();
     R_PPStack = Box::into_raw(stack) as *mut Sexp;
     R_PPStackSize = PPSSIZE;
@@ -343,6 +375,7 @@ pub unsafe fn init_state() {
     R_Srcref = nil;
     c.gc_inhibit -= 1;
     crate::arith::init_arith();
+    console_init();
     // the core is bound to this thread (the evaluator's): GNU R's C stack
     // check uses its bounds, the stack grows down (R_CStackDir 1), and
     // the limit is 95% of the stack as setup_Rmainloop sets it

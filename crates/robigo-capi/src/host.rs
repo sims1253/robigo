@@ -68,7 +68,11 @@ pub unsafe extern "C" fn robigo_set_global(which: c_int, v: Sexp) {
     }
 }
 
-pub fn host() -> &'static Host {
+/// The callback table.
+///
+/// # Safety
+/// The caller is on the R thread.
+pub unsafe fn host() -> &'static Host {
     match &st().host {
         Some(h) => h,
         None => {
@@ -95,8 +99,11 @@ pub unsafe fn try_op(name: &'static str, args: &[Sexp], out: &mut Sexp) -> usize
 }
 
 /// Write to the console.
-pub fn write(stream: c_int, s: &[u8]) {
-    unsafe { (host().write)(stream, s.as_ptr(), s.len()) }
+///
+/// # Safety
+/// As for [`host`].
+pub unsafe fn write(stream: c_int, s: &[u8]) {
+    (host().write)(stream, s.as_ptr(), s.len())
 }
 
 /// A proxy for a host object (HOST flag): `release(handle)` runs once the

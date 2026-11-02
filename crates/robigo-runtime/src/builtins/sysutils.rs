@@ -3,7 +3,7 @@
 //! util.c, times.c, version.c, CommandLineArgs.c, sys-unix.c), plus the
 //! `.Machine` and `.Platform` variables (platform.c `Init_R_Variables`).
 
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CString, c_int};
 use std::sync::Mutex;
 
 use super::{arg, internal};
@@ -132,14 +132,7 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         if intern != 0 {
             command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit());
         }
-        // SAFETY: setpgid is async-signal-safe and runs between fork and
-        // exec; its failure means the child is already a group leader.
-        unsafe {
-            command.pre_exec(|| {
-                libc::setpgid(0, 0);
-                Ok(())
-            });
-        }
+        command.process_group(0);
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -198,9 +191,7 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
             if now >= limit {
                 timed_out = true;
                 // R kills the process group so background descendants die too.
-                unsafe {
-                    libc::kill(-pid, libc::SIGKILL);
-                }
+                crate::sys::kill(-pid, libc::SIGKILL);
                 let _ = child.wait();
                 break;
             }
@@ -312,34 +303,19 @@ fn do_glob(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     if dirmark == NA_LOGICAL {
         return Err(Flow::error("invalid 'dirmark' argument"));
     }
-    // SAFETY: an all-zero glob_t is its documented initial state; glob()
-    // fills it and globfree() releases it.
-    let mut g: libc::glob_t = unsafe { std::mem::zeroed() };
-    let mut initialized = false;
+    let mut g = crate::sys::Glob::new();
     for el in x.data.iter() {
         let Some(el) = el else { continue };
         let Ok(pat) = CString::new(el.as_bytes()) else { continue };
-        let flags =
-            (if dirmark != 0 { libc::GLOB_MARK } else { 0 }) | (if initialized { libc::GLOB_APPEND } else { 0 });
-        let res = unsafe { libc::glob(pat.as_ptr(), flags, None, &mut g) };
+        let res = g.add(&pat, dirmark != 0);
         if res == libc::GLOB_ABORTED {
             i.warning(format!("read error on '{}'", el))?;
         }
         if res == libc::GLOB_NOSPACE {
             return Err(Flow::error("internal out-of-memory condition"));
         }
-        initialized = true;
     }
-    let mut out = Vec::new();
-    if initialized {
-        for k in 0..g.gl_pathc {
-            // SAFETY: glob() returned gl_pathc valid C strings.
-            let p = unsafe { CStr::from_ptr(*g.gl_pathv.add(k)) };
-            out.push(Some(crate::value::RString::from(p.to_string_lossy().as_ref())));
-        }
-        unsafe { libc::globfree(&mut g) };
-    }
-    Ok(Value::strs(out))
+    Ok(Value::strs(g.paths().iter().map(|p| rstr(p)).collect()))
 }
 
 // R: Renviron.c:do_readEnviron
@@ -361,10 +337,6 @@ fn do_read_renviron(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
             Ok(Value::lgl(true))
         }
     }
-}
-
-fn cstr(p: *const c_char) -> Option<String> {
-    if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
 }
 
 fn str_vec(v: &Value, msg: &str) -> RResult<Vec<RStr>> {
@@ -548,8 +520,12 @@ fn do_setenv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         let v = v.as_deref().unwrap_or("NA");
         let ok = !n.is_empty() && !n.contains('=') && !n.contains('\0') && !v.contains('\0');
         if ok {
-            // SAFETY: robigo is single-threaded.
-            unsafe { std::env::set_var(n, v) };
+            // SAFETY: the evaluator is the only thread that reads the
+            // environment: `system(timeout =)`'s reader runs no such code.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var(n, v)
+            };
         }
         out.push(ok as Lgl);
     }
@@ -562,8 +538,11 @@ fn do_unsetenv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     for n in &nm {
         let n = n.as_deref().unwrap_or("NA");
         if !n.is_empty() && !n.contains('=') && !n.contains('\0') {
-            // SAFETY: robigo is single-threaded.
-            unsafe { std::env::remove_var(n) };
+            // SAFETY: as in `do_setenv`.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var(n)
+            };
         }
         out.push(std::env::var_os(n).is_none() as Lgl);
     }
@@ -603,14 +582,7 @@ fn do_sysgetpid(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
 /// R: sysutils.c:do_proctime / R_getProcTime
 fn do_proctime(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let et = i.start_time.elapsed().as_secs_f64();
-    // SAFETY: rusage is plain data, filled by getrusage.
-    let (selfu, child) = unsafe {
-        let mut selfu: libc::rusage = std::mem::zeroed();
-        let mut child: libc::rusage = std::mem::zeroed();
-        libc::getrusage(libc::RUSAGE_SELF, &mut selfu);
-        libc::getrusage(libc::RUSAGE_CHILDREN, &mut child);
-        (selfu, child)
-    };
+    let (selfu, child) = (crate::sys::rusage(libc::RUSAGE_SELF), crate::sys::rusage(libc::RUSAGE_CHILDREN));
     let t = |tv: &libc::timeval| tv.tv_sec as f64 + 1e-3 * (tv.tv_usec / 1000) as f64;
     let data = vec![
         t(&selfu.ru_utime),
@@ -627,34 +599,21 @@ fn do_proctime(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value
 
 /// R: platform.c:do_date (`ctime()` without the newline).
 fn do_date(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut buf = [0 as c_char; 64];
-    let s = unsafe {
-        let mut t: libc::time_t = 0;
-        libc::time(&mut t);
-        libc::ctime_r(&t, buf.as_mut_ptr());
-        cstr(buf.as_ptr()).unwrap_or_default()
-    };
-    Ok(Value::str(s.trim_end_matches('\n')))
+    Ok(Value::str(crate::sys::ctime_now().trim_end_matches('\n')))
 }
 
 fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
-    if unsafe { libc::uname(&mut u) } == -1 {
-        return Ok(Value::Null);
-    }
-    let pw = |uid: u32| -> String {
-        let p = unsafe { libc::getpwuid(uid) };
-        if p.is_null() { "unknown".into() } else { cstr(unsafe { (*p).pw_name }).unwrap_or_else(|| "unknown".into()) }
-    };
+    let Some(u) = crate::sys::uname() else { return Ok(Value::Null) };
+    let pw = |uid: u32| crate::sys::user_name(uid).unwrap_or_else(|| "unknown".into());
     let vals = vec![
-        cstr(u.sysname.as_ptr()).unwrap_or_default(),
-        cstr(u.release.as_ptr()).unwrap_or_default(),
-        cstr(u.version.as_ptr()).unwrap_or_default(),
-        cstr(u.nodename.as_ptr()).unwrap_or_default(),
-        cstr(u.machine.as_ptr()).unwrap_or_default(),
-        cstr(unsafe { libc::getlogin() }).unwrap_or_else(|| "unknown".into()),
-        pw(unsafe { libc::getuid() }),
-        pw(unsafe { libc::geteuid() }),
+        u.sysname,
+        u.release,
+        u.version,
+        u.nodename,
+        u.machine,
+        crate::sys::login_name().unwrap_or_else(|| "unknown".into()),
+        pw(crate::sys::uid()),
+        pw(crate::sys::euid()),
     ];
     let mut v = Value::strs_from(vals);
     v.set_attr_raw(
@@ -668,14 +627,22 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
 // Locales
 
 /// R sets these categories from the environment at startup.
-pub fn init_locale() {
+///
+/// # Safety
+/// No other thread runs C code that reads the locale. Builtins meet this by
+/// holding the thread's `Interp`; embedders call this on the evaluator's.
+#[allow(unsafe_code)]
+pub unsafe fn init_locale() {
+    init_locale_on_evaluator();
+}
+
+pub(super) fn init_locale_on_evaluator() {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     if DONE.with(|d| d.replace(true)) {
         return;
     }
-    let empty = CString::new("").unwrap();
     for cat in [
         libc::LC_CTYPE,
         libc::LC_COLLATE,
@@ -687,7 +654,12 @@ pub fn init_locale() {
         #[cfg(target_os = "linux")]
         libc::LC_MEASUREMENT,
     ] {
-        unsafe { libc::setlocale(cat, empty.as_ptr()) };
+        // SAFETY: this runs on the evaluator's thread, the only one that runs
+        // locale-dependent C code: `system(timeout =)`'s reader runs none.
+        #[allow(unsafe_code)]
+        unsafe {
+            crate::sys::set_locale(cat, c"")
+        };
     }
 }
 
@@ -709,8 +681,8 @@ pub(crate) fn collation_is_c() -> bool {
 
 #[cold]
 fn collation_is_c_slow() -> bool {
-    init_locale();
-    let c = match cstr(unsafe { libc::setlocale(libc::LC_COLLATE, std::ptr::null()) }) {
+    init_locale_on_evaluator();
+    let c = match crate::sys::locale(libc::LC_COLLATE) {
         Some(l) => l == "C",
         None => true,
     };
@@ -740,17 +712,17 @@ fn locale_category(code: i32) -> Option<c_int> {
 }
 
 fn do_getlocale(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    init_locale();
+    init_locale_on_evaluator();
     let cat = as_integer(&arg(&args, 0));
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
     }
-    let p = locale_category(cat).and_then(|c| cstr(unsafe { libc::setlocale(c, std::ptr::null()) }));
+    let p = locale_category(cat).and_then(crate::sys::locale);
     Ok(Value::str(&p.unwrap_or_default()))
 }
 
 fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    init_locale();
+    init_locale_on_evaluator();
     let cat = as_integer(&arg(&args, 0));
     if cat == NA_INTEGER || cat < 0 {
         return Err(Flow::error("invalid 'category' argument"));
@@ -763,31 +735,32 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // R: platform.c:do_setlocale calls resetICUcollator for libc::LC_ALL and
     // libc::LC_COLLATE; dropping the cache for every category is equivalent.
     COLLATION_IS_C.set(None);
-    let p: Option<String> = unsafe {
-        match cat {
-            1 => {
-                if libc::setlocale(libc::LC_CTYPE, cl.as_ptr()).is_null() {
-                    None
-                } else {
-                    libc::setlocale(libc::LC_COLLATE, cl.as_ptr());
-                    libc::setlocale(libc::LC_MONETARY, cl.as_ptr());
-                    libc::setlocale(libc::LC_TIME, cl.as_ptr());
-                    cstr(libc::setlocale(libc::LC_ALL, std::ptr::null()))
-                }
-            }
-            5 => {
-                if l != "C" {
-                    i.warning("setting 'LC_NUMERIC' may cause R to function strangely")?;
-                }
-                cstr(libc::setlocale(libc::LC_NUMERIC, cl.as_ptr()))
-            }
-            // LC_PAPER and LC_MEASUREMENT exist only on some systems
-            2 | 3 | 4 | 6 | 7 | 8 | 9 => match locale_category(cat) {
-                Some(category) => cstr(libc::setlocale(category, cl.as_ptr())),
-                None => return Err(Flow::error("invalid 'category' argument")),
-            },
-            _ => return Err(Flow::error("invalid 'category' argument")),
+    let set = |category| {
+        // SAFETY: as in `init_locale_on_evaluator`.
+        #[allow(unsafe_code)]
+        unsafe {
+            crate::sys::set_locale(category, &cl)
         }
+    };
+    let p: Option<String> = match cat {
+        1 => set(libc::LC_CTYPE).and_then(|_| {
+            set(libc::LC_COLLATE);
+            set(libc::LC_MONETARY);
+            set(libc::LC_TIME);
+            crate::sys::locale(libc::LC_ALL)
+        }),
+        5 => {
+            if l != "C" {
+                i.warning("setting 'LC_NUMERIC' may cause R to function strangely")?;
+            }
+            set(libc::LC_NUMERIC)
+        }
+        // LC_PAPER and LC_MEASUREMENT exist only on some systems
+        2 | 3 | 4 | 6 | 7 | 8 | 9 => match locale_category(cat) {
+            Some(category) => set(category),
+            None => return Err(Flow::error("invalid 'category' argument")),
+        },
+        _ => return Err(Flow::error("invalid 'category' argument")),
     };
     match p {
         Some(p) => Ok(Value::str(&p)),
@@ -830,15 +803,11 @@ pub fn session_tempdir() -> RResult<String> {
     if base.is_empty() {
         base = "/tmp".into();
     }
-    let template = CString::new(format!("{}/RtmpXXXXXX", base)).unwrap();
-    let mut bytes = template.into_bytes_with_nul();
-    let p = unsafe { libc::mkdtemp(bytes.as_mut_ptr() as *mut c_char) };
-    if p.is_null() {
+    let Some(d) = crate::sys::mkdtemp(&format!("{}/RtmpXXXXXX", base)) else {
         return Err(Flow::error("cannot create 'R_TempDir'"));
-    }
-    let d = cstr(p).unwrap();
+    };
     *g = Some(d.clone());
-    unsafe { libc::atexit(clean_tempdir) };
+    crate::sys::at_exit(clean_tempdir);
     Ok(d)
 }
 
@@ -1467,31 +1436,6 @@ fn is_dir_path(path: &str) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
 }
 
-/// glibc's `struct dirent` (Linux LP64: `d_name` at byte offset 19).
-/// The entry names of a directory in readdir order, `"."` and `".."`
-/// included (R: platform.c R_readdir; `std::fs::read_dir` hides them).
-/// `None` when the path is not an openable directory.
-fn read_dir_raw(path: &str) -> Option<Vec<String>> {
-    let c = CString::new(path.as_bytes()).ok()?;
-    // SAFETY: opendir/readdir/closedir are called with the returned
-    // handle only, single-threaded; d_name is NUL-terminated by readdir.
-    let dir = unsafe { libc::opendir(c.as_ptr()) };
-    if dir.is_null() {
-        return None;
-    }
-    let mut names = Vec::new();
-    loop {
-        let de = unsafe { libc::readdir(dir) };
-        if de.is_null() {
-            break;
-        }
-        let name = unsafe { CStr::from_ptr((*de).d_name.as_ptr()) };
-        names.push(name.to_string_lossy().into_owned());
-    }
-    unsafe { libc::closedir(dir) };
-    Some(names)
-}
-
 /// `path_buffer_append`'s "over-long path" warning (Unix).
 fn warn_over_long(i: &mut Interp, newlen: usize) -> RResult<()> {
     if newlen > R_PATH_MAX {
@@ -1532,7 +1476,7 @@ fn list_files(
                     }
                     // Recurse when the directory can be opened; its
                     // children append to the entry path plus a separator.
-                    if let Some(children) = read_dir_raw(&full) {
+                    if let Some(children) = crate::sys::read_dir_names(&full) {
                         list_files(
                             i,
                             &children,
@@ -1603,7 +1547,7 @@ fn do_listfiles(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     for path in d.iter().flatten() {
         let expanded = expand_file_name(path);
         // search_setup: skip paths that do not name an openable directory.
-        let Some(names) = read_dir_raw(&expanded) else { continue };
+        let Some(names) = crate::sys::read_dir_names(&expanded) else { continue };
         // Unix search_setup always appends the separator.
         let dir = format!("{}/", expanded);
         let offset = if fullnames { 0 } else { dir.len() };
@@ -1629,7 +1573,7 @@ fn list_dirs(
         if is_dir_path(&full) && name != "." && name != ".." {
             out.push(full[offset..].to_string());
             if recursive {
-                if let Some(children) = read_dir_raw(&full) {
+                if let Some(children) = crate::sys::read_dir_names(&full) {
                     list_dirs(i, &children, &format!("{}/", full), offset, out, recursive)?;
                 }
             }
@@ -1654,7 +1598,7 @@ fn do_listdirs(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let mut out: Vec<String> = Vec::new();
     for path in d.iter().flatten() {
         let expanded = expand_file_name(path);
-        let Some(names) = read_dir_raw(&expanded) else { continue };
+        let Some(names) = crate::sys::read_dir_names(&expanded) else { continue };
         let dir = format!("{}/", expanded);
         let offset = if fullnames { 0 } else { dir.len() };
         // list.dirs(recursive=TRUE) includes the initial directory itself
@@ -1692,54 +1636,13 @@ fn check_internal_arity(args: &[Arg], n: usize, name: &str) -> RResult<()> {
 // R: platform.c:APPENDBUFSIZE
 const APPEND_BUFSIZE: usize = 128 * 1024;
 
-fn cstr_or_empty(p: *const c_char) -> String {
-    if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
-}
-
 // R: platform.c:do_localeconv
 fn do_localeconv(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_internal_arity(&args, 0, "Sys.localeconv")?;
-    let lc = unsafe { libc::localeconv() };
-    if lc.is_null() {
+    let Some(fields) = crate::sys::localeconv() else {
         return Err(Flow::error("localeconv failed"));
-    }
-    let lc = unsafe { &*lc };
-    let mut names: Vec<&str> = Vec::with_capacity(18);
-    let mut vals: Vec<String> = Vec::with_capacity(18);
-    macro_rules! num {
-        ($field:ident, $name:expr) => {
-            names.push($name);
-            vals.push(format!("{}", lc.$field as i32));
-        };
-    }
-    names.push("decimal_point");
-    vals.push(cstr_or_empty(lc.decimal_point));
-    names.push("thousands_sep");
-    vals.push(cstr_or_empty(lc.thousands_sep));
-    names.push("grouping");
-    vals.push(cstr_or_empty(lc.grouping));
-    names.push("int_curr_symbol");
-    vals.push(cstr_or_empty(lc.int_curr_symbol));
-    names.push("currency_symbol");
-    vals.push(cstr_or_empty(lc.currency_symbol));
-    names.push("mon_decimal_point");
-    vals.push(cstr_or_empty(lc.mon_decimal_point));
-    names.push("mon_thousands_sep");
-    vals.push(cstr_or_empty(lc.mon_thousands_sep));
-    names.push("mon_grouping");
-    vals.push(cstr_or_empty(lc.mon_grouping));
-    names.push("positive_sign");
-    vals.push(cstr_or_empty(lc.positive_sign));
-    names.push("negative_sign");
-    vals.push(cstr_or_empty(lc.negative_sign));
-    num!(int_frac_digits, "int_frac_digits");
-    num!(frac_digits, "frac_digits");
-    num!(p_cs_precedes, "p_cs_precedes");
-    num!(p_sep_by_space, "p_sep_by_space");
-    num!(n_cs_precedes, "n_cs_precedes");
-    num!(n_sep_by_space, "n_sep_by_space");
-    num!(p_sign_posn, "p_sign_posn");
-    num!(n_sign_posn, "n_sign_posn");
+    };
+    let (names, vals): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
     let mut v = Value::strs_from(vals);
     v.set_attr_raw(s::NAMES, Value::strs_from(names));
     Ok(v)
@@ -1760,13 +1663,7 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         out.push(match f {
             // R treats NA as a non-existent file.
             None => -1,
-            Some(f) => {
-                let path = expand_file_name(f);
-                match CString::new(path) {
-                    Ok(c) => unsafe { libc::access(c.as_ptr(), modemask) },
-                    Err(_) => -1,
-                }
-            }
+            Some(f) => crate::sys::access(&expand_file_name(f), modemask),
         });
     }
     Ok(Value::ints(out))
@@ -1774,13 +1671,11 @@ fn do_fileaccess(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 
 /// `getpwuid`, as R uses it for `file.info(extra_cols = TRUE)`.
 fn user_name(uid: u32) -> RStr {
-    let p = unsafe { libc::getpwuid(uid) };
-    if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.pw_name).into()) }
+    crate::sys::user_name(uid).map(Into::into)
 }
 
 fn group_name(gid: u32) -> RStr {
-    let p = unsafe { libc::getgrgid(gid) };
-    if p.is_null() { None } else { Some(cstr_or_empty(unsafe { &*p }.gr_name).into()) }
+    crate::sys::group_name(gid).map(Into::into)
 }
 
 // R: platform.c:do_fileinfo
@@ -1846,14 +1741,12 @@ fn do_fileinfo(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 
 /// The permission mask `do_copy` applies: `0777 & ~umask`.
 fn umask_mask() -> u32 {
-    let um = unsafe { libc::umask(0) };
-    unsafe { libc::umask(um) };
-    0o777 & !(um as u32)
+    0o777 & !crate::sys::current_umask()
 }
 
 fn chmod_path(path: &str, mode: u32) -> bool {
-    let Ok(c) = CString::new(path) else { return false };
-    (unsafe { libc::chmod(c.as_ptr(), mode as libc::mode_t) }) == 0
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).is_ok()
 }
 
 // R: platform.c:copyFileTime
@@ -1863,10 +1756,7 @@ fn copy_file_time(from: &str, to: &str) {
     let ftime = md.mtime() as f64 + 1e-9 * md.mtime_nsec() as f64;
     let sec = ftime as i32 as i64;
     let nsec = (1e9 * (ftime - ftime as i32 as f64)) as i64;
-    let times = [libc::timespec { tv_sec: sec, tv_nsec: nsec }, libc::timespec { tv_sec: sec, tv_nsec: nsec }];
-    if let Ok(c) = CString::new(to) {
-        unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
-    }
+    crate::sys::set_file_times(to, sec, nsec);
 }
 
 /// Copy `from` + `name` to `to` + `name`, recursively for directories.
@@ -2062,8 +1952,7 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     if use_umask == NA_LOGICAL {
         return Err(Flow::error("invalid 'use_umask' argument"));
     }
-    let um = unsafe { libc::umask(0) };
-    unsafe { libc::umask(um) };
+    let um = crate::sys::current_umask();
     let mut out = Vec::with_capacity(n);
     for (k, p) in paths.data.iter().enumerate() {
         let mut mode = modes[k % m] as u32;
@@ -2071,7 +1960,7 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             mode = 0o777;
         }
         if use_umask != 0 {
-            mode &= !(um as u32);
+            mode &= !um;
         }
         let ok = match p {
             Some(p) => chmod_path(&expand_file_name(p), mode),
@@ -2087,17 +1976,8 @@ fn do_syschmod(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 fn do_sysumask(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_internal_arity(&args, 1, "Sys.umask")?;
     let mode = as_integer(&arg(&args, 0));
-    let res = unsafe {
-        if mode == NA_INTEGER {
-            let res = libc::umask(0);
-            libc::umask(res);
-            i.visible = true;
-            res
-        } else {
-            i.visible = false;
-            libc::umask(mode as libc::mode_t)
-        }
-    };
+    i.visible = mode == NA_INTEGER;
+    let res = if mode == NA_INTEGER { crate::sys::current_umask() } else { crate::sys::set_umask(mode as u32) };
     let ans = Value::int(res as i32);
     crate::attrib::set_attrib(ans, s::CLASS, Value::str("octmode"))
 }
@@ -2113,24 +1993,16 @@ fn do_readlink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             continue;
         };
         let path = expand_file_name(p);
-        let Ok(c) = CString::new(path) else {
-            out.push(None);
-            continue;
-        };
-        let mut buf = vec![0u8; R_PATH_MAX + 1];
-        let res = unsafe { libc::readlink(c.as_ptr(), buf.as_mut_ptr() as *mut c_char, R_PATH_MAX) };
-        if res as usize == R_PATH_MAX {
-            let s = String::from_utf8_lossy(&buf[..res as usize]).into_owned();
-            i.warning(format!("possible truncation of value for element {}", out.len() + 1))?;
-            out.push(Some(s.into()));
-        } else if res >= 0 {
-            let s = String::from_utf8_lossy(&buf[..res as usize]).into_owned();
-            out.push(Some(s.into()));
-        } else if std::io::Error::last_os_error().raw_os_error() == Some(22) {
-            // EINVAL: not a symbolic link.
-            out.push(Some("".into()));
-        } else {
-            out.push(None);
+        match crate::sys::readlink(&path, R_PATH_MAX) {
+            Ok(link) => {
+                if link.len() == R_PATH_MAX {
+                    i.warning(format!("possible truncation of value for element {}", out.len() + 1))?;
+                }
+                out.push(rstr(&String::from_utf8_lossy(&link)));
+            }
+            // Not a symbolic link.
+            Err(libc::EINVAL) => out.push(Some("".into())),
+            Err(_) => out.push(None),
         }
     }
     Ok(Value::strs(out))
@@ -2155,27 +2027,19 @@ fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         let ftime = times[k % times.len()];
         let secs = ftime as i32;
         let nsec = (1e9 * (ftime - secs as f64)) as i32;
-        let ts = || libc::timespec { tv_sec: secs as i64, tv_nsec: nsec as i64 };
-        let fname = CString::new(p.as_deref().unwrap_or("NA")).unwrap_or_default();
-        let times = [ts(), ts()];
-        let res = unsafe { libc::utimensat(libc::AT_FDCWD, fname.as_ptr(), times.as_ptr(), 0) } == 0;
+        let res = crate::sys::set_file_times(p.as_deref().unwrap_or("NA"), secs as i64, nsec as i64);
         ans.push(res as Lgl);
     }
     Ok(Value::lgls(ans))
-}
-
-unsafe extern "C" {
-    fn lzma_version_string() -> *const c_char;
 }
 
 // R: platform.c:do_eSoftVersion — the versions of the external libraries
 // in use; "" for those robigo does not use (it has its own deflate,
 // regular-expression, LAPACK code and no bzip2, ICU or readline)
 fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let c = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
-    let xz = c(unsafe { lzma_version_string() });
+    let xz = crate::sys::lzma_version();
     #[cfg(target_env = "gnu")]
-    let iconv = format!("glibc {}", c(unsafe { libc::gnu_get_libc_version() }));
+    let iconv = format!("glibc {}", crate::sys::glibc_version());
     #[cfg(not(target_env = "gnu"))]
     let iconv = String::new();
     let vals = ["", "", &xz, "", "", "", "", &iconv, "", ""];

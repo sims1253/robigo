@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
@@ -12,6 +14,11 @@ struct Allocator;
 
 const WORD: usize = std::mem::size_of::<usize>();
 
+// SAFETY: every method forwards to the mimalloc call for the layout's
+// alignment, and mimalloc honours it: the plain entry points return word-aligned
+// blocks, and `*_aligned` the rest. A failure is a null result, as the trait
+// asks.
+#[allow(unsafe_code)]
 unsafe impl std::alloc::GlobalAlloc for Allocator {
     #[inline]
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
@@ -478,8 +485,12 @@ fn real_main() -> ExitCode {
                 break; // the script (its arguments follow it)
             }
             if let Some(v) = args[k].strip_prefix("--default-packages=") {
-                // SAFETY: single-threaded at this point.
-                unsafe { std::env::set_var("R_DEFAULT_PACKAGES", v) };
+                // SAFETY: the main thread only waits for this one, which is
+                // the only one running.
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::env::set_var("R_DEFAULT_PACKAGES", v)
+                };
                 args.remove(k);
                 continue;
             }

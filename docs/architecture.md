@@ -125,6 +125,41 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   to a runtime instance, not to `thread_local!`s, so several runtimes can
   live in one process (embedding). Values are single-threaded.
 
+## Unsafe code
+
+`unsafe` is limited to where the language has no other way to say it:
+
+- `robigo-syntax` forbids it. `robigo-numerics`, `robigo-runtime` and
+  `robigo-cli` deny it (`#![deny(unsafe_code)]`), so a new use has to name
+  itself with `#[allow(unsafe_code)]` on a module or statement and give the
+  reason. `grep -rn 'allow(unsafe_code)' crates` is the complete list:
+  - the C library behind safe functions (`robigo-runtime/src/sys.rs`), which
+    is where builtins go for anything POSIX offers and `std` does not;
+  - dynamically loaded LAPACK and libcurl (`builtins/lapack.rs`,
+    `builtins/internet.rs`), and generated machine code (`jit.rs`);
+  - x87 and SSE2 assembly, which fixes `long double` bits and NaN payloads
+    (`ldouble.rs`, `ldmath.rs`, `builtins/complex.rs`);
+  - `RString`'s refcounted allocation and the C-level writes through `Rc`
+    aliases (`value.rs`);
+  - hot paths where a safe version was measured slower: uninitialized register
+    files and spare-capacity kernels (`vm`, `arith_exact.rs`), the fixed-width
+    readers of `serialize.rs`.
+- `robigo-core` and `robigo-capi` are unsafe by nature: a SEXP is a raw pointer
+  into memory C shares, and the API is `extern "C"` functions over such
+  pointers. Rust's aliasing model does not describe that heap, so the rules are
+  the ones in `docs/core.md`.
+
+Every `unsafe` block has a `// SAFETY:` comment giving the reason, not a
+restatement (`clippy::undocumented_unsafe_blocks`), and every `unsafe fn` a
+`# Safety` section giving its contract, so a block's reason can be "the
+caller's contract". A safe function must be safe to call from any safe code: if
+a caller has to know something for it to be sound, it is an `unsafe fn`.
+`Value::*_through_alias` is the example: `Rc` aliases see the write as C does,
+but a live reference into the object would dangle.
+
+Miri runs `value.rs` in CI. It cannot run the rest: FFI, assembly, the
+conservative stack scan.
+
 ## Execution
 
 - **AST interpreter:** bootstrap, `eval` of arbitrary language objects,

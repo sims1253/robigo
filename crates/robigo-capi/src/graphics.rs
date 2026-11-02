@@ -4,6 +4,7 @@
 //! `R_FunTab[PRIMOFFSET(op)].cfun`), arity checks, and a few envir.c,
 //! options.c and console entry points.
 
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_uint};
 
 use robigo_core::Sexp;
@@ -37,16 +38,14 @@ const MAX_FUNTAB: usize = 4096;
 #[unsafe(no_mangle)]
 pub static mut R_FunTab: [FunTab; MAX_FUNTAB] = [EMPTY; MAX_FUNTAB];
 
-static mut FILLED: bool = false;
-
 unsafe fn funtab() -> &'static Vec<&'static robigo_runtime::value::Builtin> {
     static LIST: std::sync::OnceLock<Vec<&'static robigo_runtime::value::Builtin>> = std::sync::OnceLock::new();
-    let list = LIST.get_or_init(robigo_runtime::builtins::all_builtins);
-    if !FILLED {
-        let tab = &mut *std::ptr::addr_of_mut!(R_FunTab);
+    LIST.get_or_init(|| {
+        let list = robigo_runtime::builtins::all_builtins();
+        let tab = (&raw mut R_FunTab).cast::<FunTab>();
         for (k, b) in list.iter().enumerate().take(MAX_FUNTAB) {
             let name = std::ffi::CString::new(b.name).unwrap_or_default();
-            tab[k] = FunTab {
+            let entry = FunTab {
                 name: name.into_raw(),
                 cfun: Some(prim_call),
                 code: 0,
@@ -58,10 +57,11 @@ unsafe fn funtab() -> &'static Vec<&'static robigo_runtime::value::Builtin> {
                 prec: 0,
                 rightassoc: 0,
             };
+            // SAFETY: k is below MAX_FUNTAB, and get_or_init runs this once.
+            unsafe { tab.add(k).write(entry) };
         }
-        FILLED = true;
-    }
-    list
+        list
+    })
 }
 
 /// A primitive called from C (`PRIMFUN(op)(call, op, args, env)`): the
@@ -101,9 +101,10 @@ pub unsafe extern "C" fn Rf_checkArityCall(op_: Sexp, args: Sexp, call: Sexp) {
                 b.name, b.arity
             ))
         } else {
-            let msg = format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity);
-            let m = std::ffi::CString::new(msg).unwrap_or_default();
-            crate::errors::raise(call, m.as_ptr())
+            crate::errors::errorcall_owned(
+                call,
+                format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity),
+            )
         }
     }
 }
@@ -120,11 +121,13 @@ pub unsafe extern "C" fn Rf_GetOptionDeviceAsk() -> c_int {
     (ask != 0) as c_int
 }
 
-/// `.Devices`, the pairlist devices.c keeps current with SETCAR/SETCDR:
-/// C works on this object (the bridge would hand it a copy of the base
-/// binding) and the binding is refreshed from it after each native call.
-static mut DEVICES: Sexp = Sexp::NULL;
-static mut DEVICES_OUT: bool = false;
+thread_local! {
+    /// `.Devices`, the pairlist devices.c keeps current with SETCAR/SETCDR:
+    /// C works on this object (the bridge would hand it a copy of the base
+    /// binding) and the binding is refreshed from it after each native call.
+    static DEVICES: Cell<Sexp> = const { Cell::new(Sexp::NULL) };
+    static DEVICES_OUT: Cell<bool> = const { Cell::new(false) };
+}
 
 unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
     sym == R_DevicesSymbol && (rho == R_BaseEnv || rho == R_BaseNamespace)
@@ -132,9 +135,8 @@ unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
 
 /// After a native call: copy C's `.Devices` into the base binding.
 pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) {
-    if DEVICES_OUT {
-        DEVICES_OUT = false;
-        let v = crate::bridge::from_sexp(DEVICES);
+    if DEVICES_OUT.replace(false) {
+        let v = crate::bridge::from_sexp(DEVICES.get());
         interp.base.force_set(robigo_runtime::sym::Sym::new(".Devices"), v);
     }
 }
@@ -143,11 +145,11 @@ pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
     if is_devices(sym, rho) {
-        if !DEVICES.is_null() {
-            crate::state::core().release(DEVICES);
+        if !DEVICES.get().is_null() {
+            crate::state::core().release(DEVICES.get());
         }
         crate::state::core().preserve(val);
-        DEVICES = val;
+        DEVICES.set(val);
     }
     crate::envir::Rf_defineVar(sym, val, rho)
 }
@@ -156,12 +158,13 @@ pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_findVar(sym: Sexp, rho: Sexp) -> Sexp {
     if is_devices(sym, rho) {
-        if DEVICES.is_null() {
-            DEVICES = crate::envir::Rf_findVar(sym, rho);
-            crate::state::core().preserve(DEVICES);
+        if DEVICES.get().is_null() {
+            let devices = crate::envir::Rf_findVar(sym, rho);
+            crate::state::core().preserve(devices);
+            DEVICES.set(devices);
         }
-        DEVICES_OUT = true;
-        return DEVICES;
+        DEVICES_OUT.set(true);
+        return DEVICES.get();
     }
     crate::envir::Rf_findVar(sym, rho)
 }

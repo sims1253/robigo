@@ -6,16 +6,37 @@
 #include <config.h>
 #endif
 
+#define R_USE_SIGNALS 1 /* for RCNTXT */
 #include <Defn.h>
 #include <Internal.h>
 #include <R_ext/Print.h>
 #include <ctype.h>
 #include <float.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <errno.h>
 #include "RBufferUtils.h"
 #include <Rmath.h>
 #include <R_ext/RS.h>
 #include <R_ext/Itermacros.h>
+
+/* R: unix/system.c:Rf_initialize_R. The engine's stdio data; console
+   output itself goes through the host. */
+char *R_GUIType = "X11";
+FILE *R_Outputfile;
+FILE *R_Consolefile;
+
+void robigo_console_init(void)
+{
+    R_Outputfile = stdout;
+    R_Consolefile = stderr;
+}
+
+/* robigo: where an RCNTXT keeps what src/context.rs reads and writes. The
+   struct embeds a jmp_buf, so the offsets are the platform's. */
+const size_t robigo_rcntxt_offsets[3] = {
+    offsetof(RCNTXT, callflag), offsetof(RCNTXT, cend), offsetof(RCNTXT, cenddata)
+};
 
 /* R: memory.c (RBufferUtils) */
 void *R_AllocStringBuffer(size_t blen, R_StringBuffer *buf)

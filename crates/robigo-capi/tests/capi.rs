@@ -1,4 +1,5 @@
-#![allow(static_mut_refs)]
+#![allow(clippy::undocumented_unsafe_blocks)] // every call here is the C API itself
+#![allow(static_mut_refs)] // assert_eq! on the exported statics
 //! libR.so's API driven from Rust with a stub host. The API state is bound
 //! to one thread (docs/core.md §3, §10), so everything runs in one test.
 
@@ -60,6 +61,20 @@ unsafe extern "C" fn h_op(name: *const c_char, a: *const Sexp, n_args: c_int, o:
         }
         "newEnv" => {
             unsafe { *o = capi::memory::Rf_allocSExp(ENVSXP as c_uint) };
+            0
+        }
+        // connection 3: "file" on "data.csv", open for reading
+        "connInfo" => {
+            unsafe {
+                let info = capi::memory::Rf_protect(capi::memory::Rf_allocVector(VECSXP as u32, 4));
+                for (k, s) in [c"file", c"data.csv", c"r"].iter().enumerate() {
+                    capi::memory::SET_VECTOR_ELT(info, k as isize, capi::strings::Rf_mkString(s.as_ptr()));
+                }
+                capi::memory::SET_VECTOR_ELT(info, 3, capi::memory::Rf_allocVector(LGLSXP as u32, 7));
+                std::ptr::write_bytes(capi::memory::LOGICAL(capi::memory::VECTOR_ELT(info, 3)), 0, 7);
+                capi::memory::Rf_unprotect(1);
+                *o = info;
+            }
             0
         }
         "findVarInFrame" if args.len() == 2 => {
@@ -244,6 +259,26 @@ fn the_api() {
         assert_eq!(take_log(), vec!["cleanup jump=0".to_string()]);
         capi::memory::Rf_unprotect(1);
 
+        // ---- R_UnwindProtect with a NULL continuation (context.c:954): the
+        // simple usage, which still continues the unwind after a jump
+        unsafe extern "C" fn null_cont_jump(_: *mut c_void) {
+            unsafe {
+                capi::errors::R_UnwindProtect(
+                    fun_error,
+                    std::ptr::null_mut(),
+                    cleanup,
+                    std::ptr::null_mut(),
+                    Sexp::NULL,
+                );
+                log("not reached: R_UnwindProtect continues the unwind".to_string());
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(null_cont_jump, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["cleanup jump=1".to_string(), "reported: in the body".to_string()]);
+        let r = capi::errors::R_UnwindProtect(fun_ok, std::ptr::null_mut(), cleanup, std::ptr::null_mut(), Sexp::NULL);
+        assert_eq!(*capi::memory::INTEGER(r), 41);
+        assert_eq!(take_log(), vec!["cleanup jump=0".to_string()]);
+
         // ---- warnings may jump (options(warn = 2))
         assert_eq!(capi::errors::R_ToplevelExec(fun_warn, std::ptr::null_mut()), 1);
         assert_eq!(take_log(), vec!["warning: careful".to_string()]);
@@ -265,6 +300,58 @@ fn the_api() {
         }
         assert_eq!(capi::errors::R_ToplevelExec(huge, std::ptr::null_mut()), 0);
         assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 7450580.6 Gb".to_string()]);
+
+        // R: memory.c:R_alloc goes through allocVector; 1e15 bytes do not fit
+        // any address space, whatever the machine's overcommit policy
+        unsafe extern "C" fn huge_r_alloc(_: *mut c_void) {
+            unsafe { capi::memory::R_alloc(1_000_000_000_000_000, 1) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_r_alloc, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 931322.6 Gb".to_string()]);
+
+        // ---- memory.c:2755: only the cache makes CHARSXPs
+        unsafe extern "C" fn charsxp_vector(_: *mut c_void) {
+            unsafe { capi::memory::Rf_allocVector(CHARSXP as u32, 3) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(charsxp_vector, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: use of allocVector(CHARSXP ...) is defunct\n".to_string()]);
+
+        // ---- a CHARSXP's attribute slot is its hash: it stays in the cache
+        let ch = capi::memory::Rf_protect(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()));
+        capi::memory::CLEAR_ATTRIB(ch);
+        capi::memory::SET_ATTRIB(ch, R_NilValue);
+        assert_eq!(capi::memory::ATTRIB(ch), R_NilValue);
+        assert_eq!(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()), ch, "the hash survived");
+        unsafe extern "C" fn attrib_on_charsxp(_: *mut c_void) {
+            unsafe {
+                let ch = capi::memory::Rf_protect(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()));
+                let v = capi::memory::Rf_cons(R_NilValue, R_NilValue);
+                capi::memory::SET_ATTRIB(ch, v);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(attrib_on_charsxp, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: cannot set attribute on a CHARSXP".to_string()]);
+        capi::host::robigo_gc();
+        assert_eq!(capi::strings::Rf_mkChar(c"attrib-free".as_ptr()), ch, "the hash survived");
+        capi::memory::Rf_unprotect(1);
+
+        // ---- extents whose product overflows R_xlen_t
+        unsafe extern "C" fn huge_3d(_: *mut c_void) {
+            unsafe { capi::memory::Rf_alloc3DArray(INTSXP as u32, c_int::MAX, c_int::MAX, c_int::MAX) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_3d, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: 'alloc3DArray': too many elements specified".to_string()]);
+        unsafe extern "C" fn huge_array(_: *mut c_void) {
+            unsafe {
+                let dims = capi::memory::Rf_protect(capi::memory::Rf_allocVector(INTSXP as u32, 3));
+                for k in 0..3 {
+                    *capi::memory::INTEGER(dims).add(k) = c_int::MAX;
+                }
+                capi::memory::Rf_allocArray(INTSXP as u32, dims);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(huge_array, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: 'allocArray': too many elements specified by 'dims'".to_string()]);
 
         // ---- .Call through the 65-argument trampoline
         unsafe extern "C" fn add3(a: Sexp, b: Sexp, c: Sexp) -> Sexp {
@@ -292,6 +379,42 @@ fn the_api() {
         assert_eq!(capi::altrep::LOGICAL_NO_NA(s_lgl), 0);
         assert_eq!(capi::altrep::LOGICAL_IS_SORTED(s_lgl), i32::MIN);
         capi::memory::Rf_unprotect(2);
+
+        // ---- memory.c's CHK2 and Defn.h's SET_TRUELENGTH: neither a pairlist
+        // nor an ALTREP object has a truelength slot to write
+        unsafe extern "C" fn truelength_of_altrep(_: *mut c_void) {
+            unsafe {
+                let seq = capi::memory::Rf_protect(capi::compact::new_compact_intseq(10, 1, 1));
+                capi::memory::SET_TRUELENGTH(seq, 3);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_altrep, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: can't set ALTREP truelength".to_string()]);
+        unsafe extern "C" fn truelength_of_pairlist(_: *mut c_void) {
+            unsafe {
+                let p = capi::memory::Rf_protect(capi::memory::Rf_cons(R_NilValue, R_NilValue));
+                capi::memory::SET_TRUELENGTH(p, 3);
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_pairlist, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: LENGTH or similar applied to pairlist object".to_string()]);
+        unsafe extern "C" fn truelength_of_null(_: *mut c_void) {
+            unsafe { capi::memory::SET_TRUELENGTH(R_NilValue, 3) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(truelength_of_null, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: LENGTH or similar applied to NULL object".to_string()]);
+        assert_eq!(capi::memory::CDR(R_NilValue), R_NilValue, "R_NilValue is intact");
+        let p = capi::memory::Rf_protect(capi::memory::Rf_cons(R_NilValue, R_NilValue));
+        assert_eq!(capi::util::IS_SCALAR(p, LISTSXP as c_int), 0, "a pairlist is no scalar");
+        assert_eq!(capi::memory::Rf_length(p), 1);
+        capi::memory::Rf_unprotect(1);
+
+        // ---- a host .Internal with any number of arguments (R_orderVector)
+        unsafe extern "C" fn many_arguments(_: *mut c_void) {
+            unsafe { capi::sort::internal("many", &[R_NilValue; 20]) };
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(many_arguments, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: op internal:many".to_string()]);
 
         // ---- R_qsort, R_qsort_int, R_qsort_I, R_qsort_int_I, Rf_cPsort
         let mut rv = [99.0, 4.0, 1.5, 3.0, 2.0, -1.0, 88.0];
@@ -401,6 +524,87 @@ fn the_api() {
         assert_eq!(src.pos, exact_len, "R_Unserialize stops at the exact end of the serialized item");
         assert_eq!(capi::memory::LENGTH(raw_read) as usize, exact_len);
         capi::memory::Rf_unprotect(1);
+
+        // ---- a connection's strings stay where C saw them
+        let con = capi::connections::getConnection(3);
+        let (class, description) = ((*con).class, (*con).description);
+        assert_eq!(CStr::from_ptr(description).to_bytes(), b"data.csv");
+        assert_eq!(capi::connections::getConnection(3), con);
+        assert_eq!((*con).class, class);
+        assert_eq!((*con).description, description, "a saved con->description stays valid");
+
+        // ---- corrupt lengths are R errors: an RAWSXP of 2^47 bytes from the
+        // long-vector form, and a length past what ReadLENGTH accepts
+        thread_local! {
+            static CORRUPT: RefCell<(Vec<u8>, usize)> = const { RefCell::new((Vec::new(), 0)) };
+        }
+        unsafe extern "C" fn in_corrupt(_: *mut capi::serialize::InPStream, dst: *mut c_void, n: c_int) {
+            assert!(n >= 0, "in_bytes got a negative length");
+            CORRUPT.with_borrow_mut(|(data, pos)| {
+                let len = (n as usize).min(data.len() - *pos);
+                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr().add(*pos), dst as *mut u8, len) };
+                *pos += len;
+            });
+        }
+        unsafe extern "C" fn read_corrupt(_: *mut c_void) {
+            unsafe {
+                let mut inp: capi::serialize::InPStream = std::mem::zeroed();
+                capi::serialize::R_InitInPStream(
+                    &mut inp,
+                    std::ptr::null_mut(),
+                    0,
+                    None,
+                    Some(in_corrupt),
+                    None,
+                    R_NilValue,
+                );
+                capi::serialize::R_Unserialize(&mut inp);
+            }
+        }
+        let corrupt = |hi: i32, lo: u32, ty: i32| {
+            let mut bytes = b"X\n".to_vec();
+            for word in [2, 0x040500, 0x030500, ty, -1, hi, lo as i32] {
+                bytes.extend_from_slice(&i32::to_be_bytes(word));
+            }
+            CORRUPT.set((bytes, 0));
+            capi::errors::R_ToplevelExec(read_corrupt, std::ptr::null_mut())
+        };
+        let top = R_PPStackTop;
+        assert_eq!(corrupt(70000, 0, 24), 0);
+        assert_eq!(take_log(), vec!["reported: invalid upper part of serialized vector length".to_string()]);
+        assert_eq!(corrupt(32768, 0, 24), 0);
+        assert_eq!(take_log(), vec!["reported: cannot allocate vector of size 131072.0 Gb".to_string()]);
+        assert_eq!(R_PPStackTop, top, "the scanner's protection is undone");
+        // a payload past INT_MAX arrives in chunks in_bytes can take (the
+        // stub writes none of it, so this costs address space only)
+        assert_eq!(corrupt(0, (1 << 31) + 10, 24), 1, "read through");
+        assert!(take_log().is_empty());
+    }
+}
+
+/// The offsets context.rs uses come from the C compiler; on this platform
+/// they are the ones measured against GNU R's Defn.h.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn rcntxt_offsets_are_gnu_rs() {
+    assert_eq!(R::context::rcntxt_offsets(), [8, 272, 280]);
+}
+
+/// R: unix/system.c:Rf_initialize_R. These are data packages read directly.
+#[test]
+fn console_data_is_initialized() {
+    use std::ffi::CStr;
+    unsafe extern "C" {
+        static R_GUIType: *const std::ffi::c_char;
+        static R_Outputfile: *mut libc::FILE;
+        static R_Consolefile: *mut libc::FILE;
+    }
+    unsafe {
+        capi::state::console_init();
+        assert_eq!(CStr::from_ptr(R_GUIType).to_bytes(), b"X11");
+        assert!(!R_Outputfile.is_null() && !R_Consolefile.is_null());
+        assert_eq!(libc::fileno(R_Outputfile), 1);
+        assert_eq!(libc::fileno(R_Consolefile), 2);
     }
 }
 

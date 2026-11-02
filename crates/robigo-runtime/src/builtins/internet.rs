@@ -80,6 +80,8 @@ struct Lib {
 
 fn lib() -> Option<&'static Lib> {
     static LIB: std::sync::OnceLock<Option<Lib>> = std::sync::OnceLock::new();
+    // SAFETY: libcurl's symbols, each transmuted to the type its `Lib` field
+    // declares from curl.h. curl_global_init runs once, before any other use.
     LIB.get_or_init(|| unsafe {
         let mut h = std::ptr::null_mut();
         for name in [c"libcurl.so.4", c"libcurl.so", c"libcurl-gnutls.so.4"] {
@@ -206,6 +208,8 @@ fn now() -> f64 {
 
 // R: libcurl.c:progress (a progress bar for a single download)
 unsafe extern "C" fn progress(clientp: *mut c_void, dltotal: i64, dlnow: i64, _: i64, _: i64) -> c_int {
+    // SAFETY: `add_url` sets `clientp` to the easy handle this callback
+    // reports on, and the strings libcurl returns live as long as it does.
     unsafe {
         let l = lib().unwrap();
         let mut status: c_long = 0;
@@ -244,6 +248,8 @@ unsafe extern "C" fn progress(clientp: *mut c_void, dltotal: i64, dlnow: i64, _:
 
 // R: libcurl.c:progress_multi (an absolute-time timeout per transfer)
 unsafe extern "C" fn progress_multi(clientp: *mut c_void, dltotal: i64, dlnow: i64, _: i64, _: i64) -> c_int {
+    // SAFETY: `add_url` sets `clientp` to a cell of `Download::tstart`, boxed
+    // so that it stays put while the transfer runs.
     unsafe {
         let tstart = clientp as *mut f64;
         if !tstart.is_null() {
@@ -259,6 +265,7 @@ unsafe extern "C" fn progress_multi(clientp: *mut c_void, dltotal: i64, dlnow: i
 
 // R: libcurl.c:prereq_multi
 unsafe extern "C" fn prereq_multi(clientp: *mut c_void, _: *mut c_char, _: *mut c_char, _: c_int, _: c_int) -> c_int {
+    // SAFETY: as in `progress_multi`.
     unsafe {
         *(clientp as *mut f64) = CURRENT_TIME.get();
         0
@@ -283,8 +290,12 @@ struct Download {
 }
 
 impl Download {
-    // R: libcurl.c:download_cleanup_url
+    /// R: libcurl.c:download_cleanup_url
+    ///
+    /// # Safety
+    /// `hnd[i]` and `out[i]` are null or what `add_url` stored.
     unsafe fn cleanup_url(&mut self, i: usize) {
+        // SAFETY: the caller's contract; each is nulled once released.
         unsafe {
             let l = self.l;
             if !self.out[i].is_null() {
@@ -311,6 +322,8 @@ impl Download {
 
 impl Drop for Download {
     fn drop(&mut self) {
+        // SAFETY: only `add_url` and `do_curldownload` fill these fields,
+        // with what libcurl returned, and this releases each once.
         unsafe {
             for i in 0..self.hnd.len() {
                 self.cleanup_url(i);
@@ -335,8 +348,13 @@ struct Opts {
     verbose: bool,
 }
 
-// R: libcurl.c:curlCommon
+/// R: libcurl.c:curlCommon
+///
+/// # Safety
+/// `hnd` is a live easy handle.
 unsafe fn curl_common(l: &Lib, hnd: *mut Curl, o: &Opts) {
+    // SAFETY: the caller's contract. libcurl copies each string option, and
+    // every value has the type curl.h gives its option.
     unsafe {
         let capath = std::env::var("CURL_CA_BUNDLE").ok().filter(|s| !s.is_empty());
         if let Some(c) = capath.and_then(|c| CString::new(c).ok()) {
@@ -368,8 +386,12 @@ unsafe fn curl_common(l: &Lib, hnd: *mut Curl, o: &Opts) {
     }
 }
 
-// R: libcurl.c:download_add_url
+/// R: libcurl.c:download_add_url
+///
+/// # Safety
+/// `d.mhnd` is live, and `d`'s handles and files are null or `d`'s own.
 unsafe fn add_url(i: &mut Interp, k: usize, o: &Opts, mustwork: bool, d: &mut Download) -> RResult<bool> {
+    // SAFETY: the caller's contract, and `d` owns what is registered here.
     unsafe {
         let l = d.l;
         let url = &o.urls[k];
@@ -444,8 +466,12 @@ unsafe fn add_url(i: &mut Interp, k: usize, o: &Opts, mustwork: bool, d: &mut Do
     }
 }
 
-// R: libcurl.c:download_report_url_error
+/// R: libcurl.c:download_report_url_error
+///
+/// # Safety
+/// `msg` is from `curl_multi_info_read`, and its handle is live.
 unsafe fn report_url_error(i: &mut Interp, l: &Lib, msg: &CurlMsg) -> RResult<()> {
+    // SAFETY: the caller's contract; libcurl's strings are read at once.
     unsafe {
         let mut url: *const c_char = std::ptr::null();
         let mut status: c_long = 0;
@@ -476,8 +502,13 @@ unsafe fn report_url_error(i: &mut Interp, l: &Lib, msg: &CurlMsg) -> RResult<()
     }
 }
 
-// R: libcurl.c:download_close_finished
+/// R: libcurl.c:download_close_finished
+///
+/// # Safety
+/// `d.mhnd` is live, and its transfers are the ones `d` owns.
 unsafe fn close_finished(i: &mut Interp, d: &mut Download) -> RResult<()> {
+    // SAFETY: the caller's contract; messages are read before the handles
+    // they name are released.
     unsafe {
         let l = d.l;
         loop {
@@ -573,6 +604,9 @@ fn do_curldownload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         paths,
         delete_failed: mode.contains('w'),
     };
+    // SAFETY: `l` is the loaded library, `d` owns every handle made here and
+    // releases it when dropped, and `tstart` and the option strings stay put
+    // until then.
     unsafe {
         if let Value::Str(h) = &sheaders {
             for x in h.data.iter() {

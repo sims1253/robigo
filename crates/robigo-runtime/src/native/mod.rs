@@ -91,6 +91,8 @@ pub trait NativeBridge: Sync {
         args: Vec<Arg>,
         env: &crate::env::Env,
     ) -> RResult<Value>;
+    /// R is at top level: no evaluator frame exists (`eval_toplevel`).
+    fn at_top_level(&self) {}
     /// Whether runtime weak keys require clearing implementation caches.
     fn finalizers_active(&self) -> bool {
         false
@@ -694,10 +696,17 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         let empty = std::env::temp_dir().join(format!("robigo-no-natives-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
-        // safety: no other test holds the lock while this is set
-        unsafe { std::env::set_var("ROBIGO_NATIVES", &empty) };
+        // SAFETY: `LOCK` is held, and no other test reads this variable.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("ROBIGO_NATIVES", &empty)
+        };
         let msg = super::unimplemented_routine_message("grid", "initGrid");
-        unsafe { std::env::remove_var("ROBIGO_NATIVES") };
+        // SAFETY: as above.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var("ROBIGO_NATIVES")
+        };
         assert!(msg.starts_with("robigo: native routine 'initGrid' of package 'grid' is not implemented yet"));
         assert!(msg.contains("scripts/build-natives.sh grid"), "message was: {msg}");
 

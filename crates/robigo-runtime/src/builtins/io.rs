@@ -281,10 +281,7 @@ impl ConnState {
 /// `strerror(errno)`.
 pub fn os_error_message(e: &std::io::Error) -> String {
     match e.raw_os_error() {
-        Some(code) => unsafe {
-            let p = libc::strerror(code);
-            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-        },
+        Some(code) => crate::sys::strerror(code),
         None => e.to_string(),
     }
 }
@@ -384,15 +381,7 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
 /// Whether glibc's iconv can convert `from` to `to` ("" is the locale
 /// charset, as R's `Riconv_open` on Unix relies on).
 fn iconv_converts(to: &str, from: &str) -> bool {
-    let (Ok(t), Ok(f)) = (std::ffi::CString::new(to), std::ffi::CString::new(from)) else { return false };
-    // SAFETY: both pointers are valid C strings for the call's duration.
-    let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
-    if cd as isize == -1 {
-        return false;
-    }
-    // SAFETY: cd is a converter iconv_open returned.
-    unsafe { libc::iconv_close(cd) };
-    true
+    crate::sys::iconv_supported(to, from)
 }
 
 /// `set_iconv`'s validity check (R: connections.c set_iconv): a text
@@ -434,7 +423,6 @@ const ENXIO: i32 = 6;
 /// `O_NONBLOCK` unless the connection is blocking.
 // R: connections.c fifo_open
 fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
-    use std::os::unix::io::FromRawFd;
     let (description, mode, blocking) = {
         let con = i.conns.get(n)?;
         (con.description.clone(), con.mode.clone(), con.blocking)
@@ -483,26 +471,23 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     if m.first() == Some(&b'a') {
         flags |= O_APPEND;
     }
-    let c = match std::ffi::CString::new(name.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
-    // SAFETY: open takes the path and flags only.
-    let fd = unsafe { libc::open(c.as_ptr(), flags) };
-    if fd < 0 {
-        let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if err == ENXIO {
-            i.warning(format!("fifo '{}' is not ready", name))?;
-        } else {
-            i.warning(format!("cannot open fifo '{}'", name))?;
-        }
+    if name.as_bytes().contains(&0) {
         return Ok(false);
     }
+    let f = match crate::sys::open(&name, flags) {
+        Ok(f) => f,
+        Err(err) => {
+            if err == ENXIO {
+                i.warning(format!("fifo '{}' is not ready", name))?;
+            } else {
+                i.warning(format!("cannot open fifo '{}'", name))?;
+            }
+            return Ok(false);
+        }
+    };
     if is_temp {
         let _ = std::fs::remove_file(&name);
     }
-    // SAFETY: fd is an open file descriptor we now own.
-    let f = unsafe { File::from_raw_fd(fd) };
     let con = i.conns.get(n)?;
     if let ConnKind::File { fp, rbuf, rpos, wbuf, temp, .. } = &mut con.kind {
         *fp = Some(f);
@@ -523,12 +508,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
 
 /// `mkfifo(name, 00644)`, returning errno on failure (0 on success).
 fn c_open_mkfifo(name: &str) -> i32 {
-    let Ok(c) = std::ffi::CString::new(name.as_bytes()) else { return 0 };
-    // SAFETY: mkfifo takes the path string only.
-    if unsafe { libc::mkfifo(c.as_ptr(), 0o644) } == 0 {
-        return 0;
-    }
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+    crate::sys::mkfifo(name)
 }
 
 /// Open a `gzfile` connection.

@@ -1895,11 +1895,7 @@ impl Writer<'_> {
             } else if x == f64::NEG_INFINITY {
                 "-Inf\n".to_string()
             } else {
-                let mut buf = [0u8; 128];
-                unsafe {
-                    libc::snprintf(buf.as_mut_ptr().cast(), buf.len(), c"%.16g\n".as_ptr(), x);
-                }
-                String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap()]).into_owned()
+                crate::sys::format_g16_line(x)
             };
             self.out.extend_from_slice(text.as_bytes());
         } else if self.little_endian {

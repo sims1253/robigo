@@ -201,7 +201,7 @@ under a null are unspecified, and R would read them as data.
 
 The `mm-gc` prototype becomes `robigo_core::heap`, unchanged in policy:
 64 KiB blocks in 1 MiB chunks, 44 size classes up to 2 KiB, a dedicated
-chunk per larger object, free lists rebuilt by the sweeper, fully empty
+chunk per larger object, free lists extended by the sweeper, fully empty
 blocks pooled, dead chunks returned to the OS, a 2 MiB collection floor,
 growth to 1.5x the live bytes, alternating mark colors and skip-clean
 sweeps with per-block immortal counts. Every slot is carved at its size
@@ -338,7 +338,7 @@ and use `R_UnwindProtect` to get control back). robigo keeps GNU R's
 model at the C boundary:
 
 - A **context stack** of `jmp_buf`s lives in a tiny C shim
-  (`robigo-capi/src/shim.c`; Rust cannot call `setjmp`). Every entry from
+  (`robigo-core/src/shim.c`; Rust cannot call `setjmp`). Every entry from
   robigo into C code (the bridge's `.Call`), every `R_ToplevelExec`,
   `R_tryCatch`, `R_UnwindProtect`, `R_ExecWithCleanup` pushes one.
 - `Rf_error`/`Rf_errorcall` (C-variadic, defined in Rust: stable since
@@ -367,7 +367,15 @@ model at the C boundary:
   rule by construction (messages are formatted into stack buffers and
   owned values dropped before jumping; no locks or `RefCell` guards are
   held across calls that can jump; host callbacks return tokens and the
-  jump happens in `libR.so`). The stronger form the council proposed —
+  jump happens in `libR.so`). Converting between `Value`s and core objects
+  after a routine returned has no context of its own and can reach a
+  package's ALTREP methods or a full protect stack, so it runs in one once
+  a package instantiated an ALTREP class or the stack is over half full
+  (`bridge::converting`); a jump then leaks what the conversion had built.
+  What C code replaces in a runtime object (a buffer after `SETLENGTH`,
+  attributes, a closure's body and code) stays alive until R is back at
+  top level (`bridge::retire`), since the frames reading it can be above
+  the outermost native call. The stronger form the council proposed —
   inner functions return `Result`, and only a thin exported wrapper (or a
   C trampoline) jumps — is the planned refactor before G3 puts the
   evaluator itself behind these calls.
@@ -375,10 +383,18 @@ model at the C boundary:
   invokes a restart): the warning callback returns a token like errors.
 - *C++ exceptions*: an exception escaping a package's callback is fatal in
   GNU R too (it unwinds into C frames without unwind tables and
-  terminates); robigo's callback types stay `extern "C"`, so it aborts
-  deterministically instead of unwinding through Rust. Rcpp and cpp11
-  catch their exceptions and convert them through `R_UnwindProtect`,
-  which is the path that must work (gate).
+  terminates). Declaring robigo's callback types `extern "C"` does not give
+  that by itself: a `catch` further up would let the unwinder through. The
+  shim is compiled without unwind tables for this, so the unwinder's search
+  phase ends at the innermost shim frame, finds no handler, and `__cxa_throw`
+  calls `std::terminate` before any frame is unwound. Every entry into
+  package code has a shim frame below it, so the abort is deterministic on
+  Linux with GCC and Clang (tested with a real `throw` under a `catch`; on
+  macOS the flags are applied if accepted, unmeasured). A `catch` between the
+  `throw` and that shim frame, with Rust API frames between them (C++ calling
+  `INTEGER()` on an ALTREP class whose method throws), is outside this. Rcpp
+  and cpp11 catch their exceptions and convert them through
+  `R_UnwindProtect`, which is the path that must work (gate).
 - Rust panics never cross into C (`extern "C"` aborts on unwind); C++
   exceptions never cross into robigo (packages catch their own).
 - Warnings (`Rf_warning`, `Rf_warningcall`) go to the host's warning

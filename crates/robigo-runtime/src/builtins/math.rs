@@ -505,20 +505,6 @@ fn complex_round(i: &mut Interp, x: &Value, digits: &Value, is_signif: bool) -> 
     }
 }
 
-/// C99 `double complex` as passed by value on the SysV ABI.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CDouble {
-    re: f64,
-    im: f64,
-}
-
-unsafe extern "C" {
-    fn catan(z: CDouble) -> CDouble;
-    /// libgcc's complex division, which C's `/` on `double complex` uses
-    fn __divdc3(a: f64, b: f64, c: f64, d: f64) -> CDouble;
-}
-
 /// R: complex.c:z_atan2
 fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
     if ccs.re == 0.0 && ccs.im == 0.0 {
@@ -537,9 +523,8 @@ fn z_atan2(csn: Complex, ccs: Complex) -> Complex {
             0.0,
         )
     } else {
-        let q = unsafe { __divdc3(csn.re, csn.im, ccs.re, ccs.im) };
-        let t = unsafe { catan(q) };
-        let mut d = Complex::new(t.re, t.im);
+        let (re, im) = crate::sys::catan_of_quotient((csn.re, csn.im), (ccs.re, ccs.im));
+        let mut d = Complex::new(re, im);
         if ccs.re < 0.0 {
             d.re += nmath::M_PI;
         }

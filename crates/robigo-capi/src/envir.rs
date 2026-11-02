@@ -10,8 +10,8 @@ use robigo_core::Sexp;
 use robigo_core::types::*;
 use std::ffi::{CStr, c_char, c_int};
 
-fn lgl(b: bool) -> Sexp {
-    unsafe { crate::list::Rf_ScalarLogical(b as c_int) }
+unsafe fn lgl(b: bool) -> Sexp {
+    crate::list::Rf_ScalarLogical(b as c_int)
 }
 
 unsafe fn int(x: c_int) -> Sexp {
@@ -85,21 +85,28 @@ pub unsafe extern "C" fn R_NewEnv(enclos: Sexp, _hash: c_int, _size: c_int) -> S
 pub unsafe extern "C" fn Rf_NewEnvironment(namelist: Sexp, valuelist: Sexp, rho: Sexp) -> Sexp {
     let env = Rf_protect(op("newEnv\0", &[rho]));
     let (mut v, mut n) = (valuelist, namelist);
-    let mut frame = Vec::new();
+    // R_alloc: Rf_defineVar can jump (an active binding, a locked binding)
+    let vmax = vmaxget();
+    let len = Rf_length(valuelist) as usize;
+    let frame = R_alloc(len, std::mem::size_of::<(Sexp, Sexp)>() as c_int) as *mut (Sexp, Sexp);
+    let mut k = 0;
     while v != R_NilValue {
         let tag = if n != R_NilValue { TAG(n) } else { TAG(v) };
-        frame.push((tag, CAR(v)));
+        *frame.add(k) = (tag, CAR(v));
+        k += 1;
         v = CDR(v);
         if n != R_NilValue {
             n = CDR(n);
         }
     }
     // defineVar keeps the first binding of a name, as a frame lookup does
-    for &(tag, val) in frame.iter().rev() {
+    for i in (0..k).rev() {
+        let (tag, val) = *frame.add(i);
         if tag != R_NilValue {
             Rf_defineVar(tag, val, env);
         }
     }
+    vmaxset(vmax);
     Rf_unprotect(1);
     env
 }
@@ -398,7 +405,9 @@ pub unsafe extern "C" fn Rf_PrintValue(x: Sexp) {
 // R: sysutils.c:R_ExpandFileName (a static buffer, as GNU R's)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ExpandFileName(s: *const c_char) -> *const c_char {
-    static mut BUF: [u8; 4096] = [0; 4096];
+    thread_local! {
+        static BUF: std::cell::UnsafeCell<[u8; 4096]> = const { std::cell::UnsafeCell::new([0; 4096]) };
+    }
     let name = CStr::from_ptr(s).to_string_lossy().into_owned();
     let expanded = if name == "~" || name.starts_with("~/") {
         match std::env::var("HOME") {
@@ -410,8 +419,8 @@ pub unsafe extern "C" fn R_ExpandFileName(s: *const c_char) -> *const c_char {
     };
     let b = expanded.as_bytes();
     let n = b.len().min(4095);
-    let buf = &mut *std::ptr::addr_of_mut!(BUF);
-    buf[..n].copy_from_slice(&b[..n]);
-    buf[n] = 0;
-    buf.as_ptr() as *const c_char
+    let buf = BUF.with(|b| b.get()).cast::<u8>();
+    std::ptr::copy_nonoverlapping(b.as_ptr(), buf, n);
+    *buf.add(n) = 0;
+    buf as *const c_char
 }

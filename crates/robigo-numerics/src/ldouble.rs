@@ -17,7 +17,7 @@ pub mod soft;
 /// An 80-bit x87 extended-precision value (stored in 16 bytes).
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
-pub struct LDouble([u8; 16]);
+pub struct LDouble(pub(crate) [u8; 16]);
 
 impl std::fmt::Debug for LDouble {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,20 +30,34 @@ mod imp {
     use super::LDouble;
     use std::arch::asm;
 
+    /// Assembly on the x87 stack, whose registers it clobbers, and on the
+    /// operands it is given.
+    macro_rules! x87 {
+        ($($operands:tt)*) => {
+            // SAFETY: the instructions read and write only their operands,
+            // which are live locals and references of the enclosing function,
+            // each 16 bytes for a `tbyte` access. They pop what they push, so
+            // the x87 stack stays empty, and every register is declared.
+            unsafe {
+                asm!(
+                    $($operands)*
+                    out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                    out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                    options(nostack),
+                )
+            }
+        };
+    }
+
     #[inline]
     pub fn from_f64(x: f64) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld qword ptr [{x}]",
-                "fstp tbyte ptr [{o}]",
-                x = in(reg) &x,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld qword ptr [{x}]",
+            "fstp tbyte ptr [{o}]",
+            x = in(reg) &x,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -51,34 +65,24 @@ mod imp {
     #[inline]
     pub fn from_i64(x: i64) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fild qword ptr [{x}]",
-                "fstp tbyte ptr [{o}]",
-                x = in(reg) &x,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fild qword ptr [{x}]",
+            "fstp tbyte ptr [{o}]",
+            x = in(reg) &x,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
     #[inline]
     pub fn to_f64(x: &LDouble) -> f64 {
         let mut out = 0.0f64;
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{x}]",
-                "fstp qword ptr [{o}]",
-                x = in(reg) x.0.as_ptr(),
-                o = in(reg) &mut out,
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{x}]",
+            "fstp qword ptr [{o}]",
+            x = in(reg) x.0.as_ptr(),
+            o = in(reg) &mut out,
+        );
         out
     }
 
@@ -87,20 +91,15 @@ mod imp {
             #[inline]
             pub fn $name(a: &LDouble, b: &LDouble) -> LDouble {
                 let mut out = LDouble([0; 16]);
-                unsafe {
-                    asm!(
-                        "fld tbyte ptr [{a}]",
-                        "fld tbyte ptr [{b}]",
-                        $insn,
-                        "fstp tbyte ptr [{o}]",
-                        a = in(reg) a.0.as_ptr(),
-                        b = in(reg) b.0.as_ptr(),
-                        o = in(reg) out.0.as_mut_ptr(),
-                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                        options(nostack),
-                    );
-                }
+                x87!(
+                    "fld tbyte ptr [{a}]",
+                    "fld tbyte ptr [{b}]",
+                    $insn,
+                    "fstp tbyte ptr [{o}]",
+                    a = in(reg) a.0.as_ptr(),
+                    b = in(reg) b.0.as_ptr(),
+                    o = in(reg) out.0.as_mut_ptr(),
+                );
                 out
             }
         };
@@ -116,18 +115,13 @@ mod imp {
     #[inline]
     pub fn sqrt(a: &LDouble) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{a}]",
-                "fsqrt",
-                "fstp tbyte ptr [{o}]",
-                a = in(reg) a.0.as_ptr(),
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{a}]",
+            "fsqrt",
+            "fstp tbyte ptr [{o}]",
+            a = in(reg) a.0.as_ptr(),
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -135,54 +129,44 @@ mod imp {
     /// GNU R's C loops do (`fadd m64` loads each double exactly).
     pub fn sum_from(init: &LDouble, xs: &[f64]) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{i}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fadd qword ptr [{p}]",
-                "add {p}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp tbyte ptr [{o}]",
-                i = in(reg) init.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{i}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fadd qword ptr [{p}]",
+            "add {p}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp tbyte ptr [{o}]",
+            i = in(reg) init.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
     /// `s = init; for x in xs: s *= x`.
     pub fn prod_from(init: &LDouble, xs: &[f64]) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{i}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fmul qword ptr [{p}]",
-                "add {p}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp tbyte ptr [{o}]",
-                i = in(reg) init.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{i}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fmul qword ptr [{p}]",
+            "add {p}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp tbyte ptr [{o}]",
+            i = in(reg) init.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -190,30 +174,25 @@ mod imp {
     pub fn cumsum_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
         assert!(ys.len() >= xs.len());
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{i}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fadd qword ptr [{p}]",
-                "fst qword ptr [{q}]",
-                "add {p}, 8",
-                "add {q}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp tbyte ptr [{o}]",
-                i = in(reg) init.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                q = inout(reg) ys.as_mut_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{i}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fadd qword ptr [{p}]",
+            "fst qword ptr [{q}]",
+            "add {p}, 8",
+            "add {q}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp tbyte ptr [{o}]",
+            i = in(reg) init.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            q = inout(reg) ys.as_mut_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -221,62 +200,52 @@ mod imp {
     pub fn cumprod_from(init: &LDouble, xs: &[f64], ys: &mut [f64]) -> LDouble {
         assert!(ys.len() >= xs.len());
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{i}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fmul qword ptr [{p}]",
-                "fst qword ptr [{q}]",
-                "add {p}, 8",
-                "add {q}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp tbyte ptr [{o}]",
-                i = in(reg) init.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                q = inout(reg) ys.as_mut_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{i}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fmul qword ptr [{p}]",
+            "fst qword ptr [{q}]",
+            "add {p}, 8",
+            "add {q}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp tbyte ptr [{o}]",
+            i = in(reg) init.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            q = inout(reg) ys.as_mut_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
     /// `t = 0; for x in xs: t += ((long double) x - m) * ((long double) x - m)`.
     pub fn sum_sq_dev(m: &LDouble, xs: &[f64]) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fldz",
-                "fld tbyte ptr [{m}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fld qword ptr [{p}]",
-                "fsub st(0), st(1)",
-                "fmul st(0), st(0)",
-                "faddp st(2), st(0)",
-                "add {p}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp st(0)",
-                "fstp tbyte ptr [{o}]",
-                m = in(reg) m.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fldz",
+            "fld tbyte ptr [{m}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fld qword ptr [{p}]",
+            "fsub st(0), st(1)",
+            "fmul st(0), st(0)",
+            "faddp st(2), st(0)",
+            "add {p}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp st(0)",
+            "fstp tbyte ptr [{o}]",
+            m = in(reg) m.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -284,96 +253,81 @@ mod imp {
     pub fn sum_cross_dev(xm: &LDouble, xs: &[f64], ym: &LDouble, ys: &[f64]) -> LDouble {
         assert!(ys.len() >= xs.len());
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fldz",
-                "fld tbyte ptr [{ym}]",
-                "fld tbyte ptr [{xm}]",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fld qword ptr [{p}]",
-                "fsub st(0), st(1)",
-                "fld qword ptr [{q}]",
-                "fsub st(0), st(3)",
-                "fmulp st(1), st(0)",
-                "faddp st(3), st(0)",
-                "add {p}, 8",
-                "add {q}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp st(0)",
-                "fstp st(0)",
-                "fstp tbyte ptr [{o}]",
-                xm = in(reg) xm.0.as_ptr(),
-                ym = in(reg) ym.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                q = inout(reg) ys.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fldz",
+            "fld tbyte ptr [{ym}]",
+            "fld tbyte ptr [{xm}]",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fld qword ptr [{p}]",
+            "fsub st(0), st(1)",
+            "fld qword ptr [{q}]",
+            "fsub st(0), st(3)",
+            "fmulp st(1), st(0)",
+            "faddp st(3), st(0)",
+            "add {p}, 8",
+            "add {q}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp st(0)",
+            "fstp st(0)",
+            "fstp tbyte ptr [{o}]",
+            xm = in(reg) xm.0.as_ptr(),
+            ym = in(reg) ym.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            q = inout(reg) ys.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
     /// `acc[i] += xs[i]` for each `i`.
     pub fn add_each(acc: &mut [LDouble], xs: &[f64]) {
         assert!(acc.len() >= xs.len());
-        unsafe {
-            asm!(
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fld tbyte ptr [{a}]",
-                "fadd qword ptr [{p}]",
-                "fstp tbyte ptr [{a}]",
-                "add {a}, 16",
-                "add {p}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                a = inout(reg) acc.as_mut_ptr() => _,
-                p = inout(reg) xs.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fld tbyte ptr [{a}]",
+            "fadd qword ptr [{p}]",
+            "fstp tbyte ptr [{a}]",
+            "add {a}, 16",
+            "add {p}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            a = inout(reg) acc.as_mut_ptr() => _,
+            p = inout(reg) xs.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+        );
     }
 
     /// `t = 0; for x in xs: t += (long double) x - m` (mean's second pass).
     pub fn sum_dev(m: &LDouble, xs: &[f64]) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{m}]",
-                "fldz",
-                "test {n}, {n}",
-                "jz 3f",
-                "2:",
-                "fld qword ptr [{p}]",
-                "fsub st(0), st(2)",
-                "faddp st(1), st(0)",
-                "add {p}, 8",
-                "dec {n}",
-                "jnz 2b",
-                "3:",
-                "fstp tbyte ptr [{o}]",
-                "fstp st(0)",
-                m = in(reg) m.0.as_ptr(),
-                p = inout(reg) xs.as_ptr() => _,
-                n = inout(reg) xs.len() => _,
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{m}]",
+            "fldz",
+            "test {n}, {n}",
+            "jz 3f",
+            "2:",
+            "fld qword ptr [{p}]",
+            "fsub st(0), st(2)",
+            "faddp st(1), st(0)",
+            "add {p}, 8",
+            "dec {n}",
+            "jnz 2b",
+            "3:",
+            "fstp tbyte ptr [{o}]",
+            "fstp st(0)",
+            m = in(reg) m.0.as_ptr(),
+            p = inout(reg) xs.as_ptr() => _,
+            n = inout(reg) xs.len() => _,
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -382,18 +336,13 @@ mod imp {
     #[inline]
     pub fn rint(a: &LDouble) -> LDouble {
         let mut out = LDouble([0; 16]);
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{a}]",
-                "frndint",
-                "fstp tbyte ptr [{o}]",
-                a = in(reg) a.0.as_ptr(),
-                o = in(reg) out.0.as_mut_ptr(),
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{a}]",
+            "frndint",
+            "fstp tbyte ptr [{o}]",
+            a = in(reg) a.0.as_ptr(),
+            o = in(reg) out.0.as_mut_ptr(),
+        );
         out
     }
 
@@ -404,6 +353,9 @@ mod imp {
             fn powl();
         }
         let mut out = LDouble([0; 16]);
+        // SAFETY: as for `x87!`, and `powl` is C's `long double powl(long
+        // double, long double)`, called with the stack aligned for it (no
+        // `nostack`), its arguments in place and its result popped.
         unsafe {
             // SysV: long double arguments are passed in memory (16 bytes
             // each), the result returned in st(0). The output pointer is
@@ -431,20 +383,15 @@ mod imp {
     #[inline]
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
         let flags: u16;
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{b}]",
-                "fld tbyte ptr [{a}]",
-                "fucompp",
-                "fnstsw ax",
-                a = in(reg) a.0.as_ptr(),
-                b = in(reg) b.0.as_ptr(),
-                out("ax") flags,
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-                options(nostack),
-            );
-        }
+        x87!(
+            "fld tbyte ptr [{b}]",
+            "fld tbyte ptr [{a}]",
+            "fucompp",
+            "fnstsw ax",
+            a = in(reg) a.0.as_ptr(),
+            b = in(reg) b.0.as_ptr(),
+            out("ax") flags,
+        );
         // C3 (bit 14), C2 (bit 10), C0 (bit 8): compares st(0)=a with st(1)=b
         let c0 = flags & 0x0100 != 0;
         let c2 = flags & 0x0400 != 0;

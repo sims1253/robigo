@@ -8,6 +8,7 @@
 //! [`take_warnings`] and emit them against the right call.
 
 #![allow(non_snake_case, clippy::many_single_char_names)]
+#![deny(unsafe_code)]
 
 use std::cell::RefCell;
 
@@ -23,7 +24,9 @@ pub mod fdist;
 pub mod fround;
 pub mod gamma;
 pub mod hyper;
+#[allow(unsafe_code)] // x87 assembly and glibc's `long double` functions
 pub mod ldmath;
+#[allow(unsafe_code)] // x87 assembly
 pub mod ldouble;
 pub mod nbeta;
 pub mod nbinom;
@@ -88,11 +91,13 @@ pub const ML_NEGINF: f64 = f64::NEG_INFINITY;
 // in nmath/cospi.c otherwise. robigo does the same at run time, so one
 // binary runs on any glibc and matches GNU R built for that system.
 
+#[allow(unsafe_code)] // looks up functions of the C library by name
 mod c23 {
     use std::ffi::{CStr, c_char, c_void};
     use std::sync::OnceLock;
 
-    pub type F = unsafe extern "C" fn(f64) -> f64;
+    /// `double f(double)`: these functions accept every double.
+    pub type F = extern "C" fn(f64) -> f64;
 
     #[cfg(target_os = "linux")]
     fn lookup(name: &CStr) -> Option<F> {
@@ -103,6 +108,7 @@ mod c23 {
         // SAFETY: dlsym with a NUL-terminated name; a non-null result is the
         // address of the C library's `double f(double)`.
         let p = unsafe { dlsym(std::ptr::null_mut(), name.as_ptr()) };
+        // SAFETY: as above; `F` is that signature.
         (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, F>(p) })
     }
 
@@ -121,6 +127,7 @@ mod c23 {
     pub static ATANPI: OnceLock<Option<F>> = OnceLock::new();
 }
 
+#[allow(unsafe_code)] // an `extern` block; its functions are all `safe`
 mod libm {
     unsafe extern "C" {
         pub safe fn lgamma_r(x: f64, sign: &mut i32) -> f64;
@@ -136,8 +143,7 @@ mod libm {
 #[inline]
 pub fn sinpi(x: f64) -> f64 {
     match c23::get(&c23::SINPI, c"sinpi") {
-        // SAFETY: the C library's `double sinpi(double)`.
-        Some(f) => unsafe { f(x) },
+        Some(f) => f(x),
         None => r_sinpi(x),
     }
 }
@@ -146,8 +152,7 @@ pub fn sinpi(x: f64) -> f64 {
 #[inline]
 pub fn cospi(x: f64) -> f64 {
     match c23::get(&c23::COSPI, c"cospi") {
-        // SAFETY: the C library's `double cospi(double)`.
-        Some(f) => unsafe { f(x) },
+        Some(f) => f(x),
         None => r_cospi(x),
     }
 }
@@ -156,8 +161,7 @@ pub fn cospi(x: f64) -> f64 {
 #[inline]
 pub fn tanpi(x: f64) -> f64 {
     match c23::get(&c23::TANPI, c"tanpi") {
-        // SAFETY: the C library's `double tanpi(double)`.
-        Some(f) => unsafe { f(x) },
+        Some(f) => f(x),
         None => r_tanpi(x),
     }
 }
@@ -167,8 +171,7 @@ pub fn tanpi(x: f64) -> f64 {
 #[inline]
 pub fn atanpi(x: f64) -> f64 {
     match c23::get(&c23::ATANPI, c"atanpi") {
-        // SAFETY: the C library's `double atanpi(double)`.
-        Some(f) => unsafe { f(x) },
+        Some(f) => f(x),
         None => x.atan() / std::f64::consts::PI,
     }
 }

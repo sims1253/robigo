@@ -155,11 +155,22 @@ scripts/perf.py compare before.json after.json          # the gate
 - Performance: CI compares every push with `main`'s last instruction
   counts.
 
+## Unsafe code
+
+`docs/architecture.md` has the rules; the compiler and clippy enforce them
+through `scripts/lint.sh`. `RString` and the `Rc` alias writes run under Miri:
+
+```
+rustup component add --toolchain nightly miri
+cargo +nightly miri test -p robigo-runtime --lib -- value::
+```
+
 ## CI
 
 `.github/workflows/ci.yml`, on every push and pull request:
 
 1. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+   **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
 2. **build:** release build, base-package natives,
    the binary every job below uses.
 3. **test:** all `cargo test`s (unit, parser oracle, conformance in all

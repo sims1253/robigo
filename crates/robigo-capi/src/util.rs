@@ -1,7 +1,7 @@
 //! util.c and Rinlinedfuns.h: type names, predicates, dimensions; and the
 //! dispatch points to ALTREP classes and finalizers.
 
-use crate::errors::{error_str, error_str_owned};
+use crate::errors::error_str;
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
@@ -81,11 +81,14 @@ pub unsafe extern "C" fn Rf_type2char(t: c_uint) -> *const c_char {
         Some(s) if !s.is_empty() => s.as_ptr(),
         _ => {
             crate::errors::Rf_warning(c"type %d is unimplemented in '%s'".as_ptr(), t as c_int, c"type2char".as_ptr());
-            static mut BUF: [u8; 50] = [0; 50];
+            thread_local! {
+                static BUF: std::cell::UnsafeCell<[u8; 50]> = const { std::cell::UnsafeCell::new([0; 50]) };
+            }
             let s = format!("unknown type #{t}\0");
             let n = s.len().min(49);
-            BUF[..n].copy_from_slice(&s.as_bytes()[..n]);
-            std::ptr::addr_of!(BUF) as *const c_char
+            let buf = BUF.with(|b| b.get()).cast::<u8>();
+            std::ptr::copy_nonoverlapping(s.as_ptr(), buf, n);
+            buf as *const c_char
         }
     }
 }
@@ -288,7 +291,7 @@ pub unsafe extern "C" fn Rf_nrows(s: Sexp) -> c_int {
     if is_vector(s) || Rf_isList(s) != 0 {
         let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
         if t == R_NilValue {
-            return LENGTH(s);
+            return Rf_length(s);
         }
         return *INTEGER(t);
     } else if Rf_isFrame(s) != 0 {
@@ -349,7 +352,8 @@ pub unsafe extern "C" fn IS_SCALAR(x: Sexp, ty: c_int) -> c_int {
     if x.is_null() {
         return 0;
     }
-    (x.typ() as c_int == ty && XLENGTH(x) == 1) as c_int
+    // GNU R's scalar bit is set for vectors of length 1 only
+    (x.typ() as c_int == ty && !matches!(x.typ(), NILSXP | LISTSXP | LANGSXP | DOTSXP) && XLENGTH(x) == 1) as c_int
 }
 
 // R: Rinlinedfuns.h:XTRUELENGTH
@@ -418,41 +422,47 @@ thread_local! {
 /// R: memory.c:RunFinalizers -- nested GC may queue more finalizers but
 /// never recursively enters the finalizer runner.
 pub unsafe fn run_finalizers() {
-    if RUNNING_FINALIZERS.with(|r| r.replace(true)) {
-        return;
-    }
-    struct Running;
-    impl Drop for Running {
-        fn drop(&mut self) {
-            RUNNING_FINALIZERS.with(|r| r.set(false));
-        }
-    }
-    let _running = Running;
     // R: memory.c:RunFinalizers walks the references present at entry.
     // References queued by a nested GC wait for a later safe point.
     let count = core().pending_finalizer_count();
+    if count == 0 || RUNNING_FINALIZERS.with(|r| r.replace(true)) {
+        return;
+    }
     for _ in 0..count {
         let Some(w) = core().pop_finalizable() else { break };
-        Rf_protect(w);
         // R: memory.c:RunFinalizers -- isolate errors from the caller and
         // restore its contexts, condition stacks and visibility afterwards.
+        // Each finalizer has its own context, so a jump stops here (the
+        // caller may have none) and the flag below is always reset.
         let visible = R_Visible;
-        crate::host::op("finalizerBegin\0", &[]);
-        crate::extptr::run_finalizer(w);
-        crate::host::op("finalizerEnd\0", &[]);
+        finalizer_context("finalizerBegin\0");
+        let jumped = crate::errors::protect_run(|| {
+            Rf_protect(w);
+            crate::extptr::run_finalizer(w);
+            Rf_unprotect(1);
+        });
+        if let Some(t) = jumped {
+            (crate::host::host().report)(t);
+        }
+        finalizer_context("finalizerEnd\0");
         R_Visible = visible;
-        Rf_unprotect(1);
     }
+    RUNNING_FINALIZERS.with(|r| r.set(false));
 }
 
-#[allow(dead_code)]
-unsafe fn _unused() -> ! {
-    error_str_owned(String::new())
+/// The host's finalizer context operations; they have nothing to raise.
+unsafe fn finalizer_context(op: &'static str) {
+    let mut out = Sexp::NULL;
+    let t = crate::host::try_op(op, &[], &mut out);
+    if t != 0 {
+        (crate::host::host().discard)(t);
+    }
 }
 
 /// C's `%g` (messages that GNU R formats with it).
 pub fn fmt_g(x: f64) -> String {
     let mut buf = [0u8; 64];
+    // SAFETY: the size is the buffer's, and %g takes the one double passed.
     let n = unsafe { libc::snprintf(buf.as_mut_ptr() as *mut c_char, 64, c"%g".as_ptr(), x) };
     String::from_utf8_lossy(&buf[..n.clamp(0, 63) as usize]).into_owned()
 }

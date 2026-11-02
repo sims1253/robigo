@@ -271,7 +271,7 @@ pub unsafe extern "C" fn Rf_PairToVectorList(x: Sexp) -> Sexp {
         p = p.cdr();
     }
     Rf_protect(x);
-    let xnew = Rf_protect(core().alloc_vector(VECSXP, len));
+    let xnew = Rf_protect(try_alloc_vector(VECSXP, len));
     let mut p = x;
     let mut i = 0;
     while i < len {
@@ -283,7 +283,7 @@ pub unsafe extern "C" fn Rf_PairToVectorList(x: Sexp) -> Sexp {
         i += 1;
     }
     if named {
-        let xnames = Rf_protect(core().alloc_vector(STRSXP, len));
+        let xnames = Rf_protect(try_alloc_vector(STRSXP, len));
         let mut p = x;
         for i in 0..len {
             if p.tag() == R_NilValue {
