@@ -144,3 +144,6 @@ b    2    4    6
 [2,]    8   17   26
 [3,]    9   18   27
 
+[1] "long vectors not supported yet: array.c:1728"
+[1] "long vectors not supported yet: array.c:1728"
+[1] "long vectors not supported yet: array.c:1728"

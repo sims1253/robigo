@@ -1136,6 +1136,11 @@ fn do_aperm(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             *p = (n - 1 - k) as i64;
         }
     } else {
+        // R: array.c:do_aperm `LENGTH(perm)` on a non-vector (symbol,
+        // call, closure, pairlist) is R_BadLongVector.
+        if !perm.is_vector() {
+            return Err(Flow::error("long vectors not supported yet: array.c:1728"));
+        }
         if perm.len() != n {
             return Err(Flow::error(format!("'perm' is of wrong length {} (!= {})", perm.len(), n)));
         }
