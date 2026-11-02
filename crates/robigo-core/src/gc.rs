@@ -155,14 +155,26 @@ fn thread_stack() -> (usize, usize) {
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
-            return (0, 0);
+            no_stack_bounds();
         }
         let mut addr: *mut libc::c_void = std::ptr::null_mut();
         let mut size: libc::size_t = 0;
-        libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
+        let got = libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
         libc::pthread_attr_destroy(&mut attr);
+        if got != 0 {
+            no_stack_bounds();
+        }
         (addr as usize, addr as usize + size)
     }
+}
+
+/// Without its bounds the stack cannot be scanned, and an object held only
+/// by a C local would be freed: stop rather than run without the scan.
+#[cfg(not(target_vendor = "apple"))]
+#[cold]
+fn no_stack_bounds() -> ! {
+    eprintln!("robigo: cannot determine the bounds of the thread's stack");
+    std::process::abort();
 }
 
 #[inline(always)]
@@ -175,6 +187,7 @@ impl Core {
     /// A new heap. The calling thread's stack is the one scanned
     /// conservatively.
     pub fn new() -> Box<Core> {
+        let (stack_lo, stack_top) = thread_stack();
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
@@ -184,8 +197,8 @@ impl Core {
             marked_chars: 0,
             immortal_chars: 0,
             gc_inhibit: 0,
-            stack_top: thread_stack().1,
-            stack_lo: thread_stack().0,
+            stack_top,
+            stack_lo,
             scan_top: usize::MAX,
             torture: std::env::var_os("ROBIGO_GCTORTURE").is_some_and(|v| v != "0"),
             stats: GcStats::default(),
@@ -869,7 +882,7 @@ impl Core {
     pub fn collect(&mut self) -> u64 {
         self.stats.bytes_allocated += self.alloc_since_gc as u64;
         let sp = stack_pointer();
-        if self.stack_top != 0 && (sp < self.stack_lo || sp > self.stack_top) {
+        if sp < self.stack_lo || sp > self.stack_top {
             eprintln!("robigo: the R heap was used from a thread other than the R thread");
             std::process::abort();
         }
