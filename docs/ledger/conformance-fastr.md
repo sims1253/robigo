@@ -63,3 +63,13 @@
   - `crates/robigo-runtime/src/builtins/envir.rs`: `do_set_parent_env` uses the helper and the cycle check.
 - Result: 31,231 of 31,374 pass on this branch (+3 cases, 0 regressions); `parentenvassign` 11/11, `tests/r/basics` unchanged.
 - Status: kept.
+
+## 2026-11-01: round 7 - active bindings and methods native routines
+
+- Topic: `S4/TestS4` (6 cases), `library/stats/TestExternal_*` (3 cases)
+- Changes:
+  - `crates/robigo-runtime/src/builtins/envir.rs`: `do_make_active_binding` ports `R_MakeActiveBinding` (`src/main/envir.c:3460`) — `error()` (context call, not the internal's own), the `symbol already has a regular binding` / `cannot change active binding if binding is locked` / `cannot add bindings to a locked environment` gates in R's order. `do_binding_is_active` ports `R_BindingIsActive` (`envir.c:3518`), also with `error()`, so `.Internal(bindingIsActive(...))` reports `Error: no binding ...` and a closure call keeps its own call.
+  - `crates/robigo-runtime/src/s4.rs`: `slot_name`/`do_slot_assign` install the name like `installTrChar` and reject `""` with `attempt to use zero-length variable name` (`src/main/attrib.c:R_do_slot`).
+  - `crates/robigo-runtime/src/native/methods.rs`: `R_getClassFromCache` rejects `""` the same way, and `R_set_method_dispatch` uses `asBool` (`coerce.c:1837`: `asLogical2(x, 1, NULL)` — an atomic vector longer than one errors with `'length = N' in coercion to 'logical(1)'`, then NA errors with `NA in coercion to boolean`; `NULL` is NA). `tests/r/s4/set-dispatch.R` pins all three errors (no fastr case covers the length arm).
+- Result: 31,240 of 31,374 pass on this branch (+9 cases, 0 regressions). `library/tools/TestExternal_tabExpand` and `library/utils/TestUtils` cases only fail locally: they need the prebuilt native routines CI ships via `ROBIGO_NATIVES`.
+- Status: kept (PR pending).

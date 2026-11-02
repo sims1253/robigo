@@ -216,8 +216,16 @@ fn init_method_dispatch(i: &mut Interp, envir: Value) -> RResult<Value> {
 // R: methods_list_dispatch.c:R_set_method_dispatch
 fn set_method_dispatch(i: &mut Interp, on_off: &Value) -> RResult<Value> {
     let prev = i.s4.quick != StdGeneric::Old;
+    // R: coerce.c:asBool — asLogical2(x, 1, NULL) rejects an atomic vector
+    // longer than one, then errors on NA (NULL is NA).
+    if on_off.is_atomic() && on_off.len() > 1 {
+        return Err(Flow::error(format!("'length = {}' in coercion to 'logical(1)'", on_off.len())));
+    }
     let l = crate::coerce::as_logical(on_off);
-    let value = if l == NA_LOGICAL { prev } else { l != 0 };
+    if l == NA_LOGICAL {
+        return Err(Flow::error("NA in coercion to boolean"));
+    }
+    let value = l != 0;
     if value != prev {
         let ns = i.methods_namespace();
         i.set_standard_generic(if value { StdGeneric::Table } else { StdGeneric::Old }, Some(ns));
@@ -277,7 +285,13 @@ fn get_class_from_cache(i: &mut Interp, class: &Value, table: &Value) -> RResult
             let Some(first) = c.data.first() else { return Ok(Value::Null) };
             let package = package_slot(class);
             let Value::Env(table) = table else { return Err(Flow::error("use of NULL environment is defunct")) };
-            let value = find_var_in_frame(i, table, Sym::new(first.as_deref().unwrap_or("NA")))?;
+            // R: methods_list_dispatch.c:installTrChar rejects ""; NA installs "NA".
+            let name = match first.as_deref() {
+                Some("") => return Err(Flow::error("attempt to use zero-length variable name")),
+                Some(n) => n,
+                None => "NA",
+            };
+            let value = find_var_in_frame(i, table, Sym::new(name))?;
             let Some(value) = value else { return Ok(Value::Null) };
             if let Some(Value::Str(p)) = package {
                 if let Some(Value::Str(d)) = package_slot(&value) {

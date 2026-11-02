@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use super::{arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
-use crate::env::{BIND_ACTIVE, Env};
+use crate::env::{BIND_ACTIVE, BIND_LOCKED, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::{Context, Interp};
 use crate::sym::{Sym, s};
@@ -1008,18 +1008,44 @@ fn do_delayed_assign(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     Ok(Value::Null)
 }
 
-fn do_make_active_binding(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:R_MakeActiveBinding — plain `error()`, so the message is
+    // reported against the context call, not the internal's own call.
     let sym = match arg(&args, 0) {
         Value::Sym(s) => s,
         Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
-        _ => return Err(Flow::error_call(call.clone(), "not a symbol")),
+        _ => return Err(Flow::error("not a symbol")),
     };
     let f = arg(&args, 1);
     if !f.is_function() {
-        return Err(Flow::error_call(call.clone(), "not a function"));
+        return Err(Flow::error("not a function"));
     }
-    let env = env_arg(i, &arg(&args, 2), call, "env")?;
-    env.set_local_flags(sym, f, BIND_ACTIVE);
+    let env = match arg(&args, 2) {
+        Value::Env(e) => e,
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("not an environment")),
+        },
+    };
+    match env.binding_flags(sym) {
+        Some(flags) if flags & BIND_ACTIVE == 0 => {
+            return Err(Flow::error("symbol already has a regular binding"));
+        }
+        Some(flags) if flags & BIND_LOCKED != 0 => {
+            return Err(Flow::error("cannot change active binding if binding is locked"));
+        }
+        Some(_) => {
+            env.set_local_flags(sym, f, BIND_ACTIVE);
+        }
+        None => {
+            // R: envir.c:defineVar fails on a locked environment.
+            if env.0.locked.get() {
+                return Err(Flow::error("cannot add bindings to a locked environment"));
+            }
+            env.set_local_flags(sym, f, BIND_ACTIVE);
+        }
+    }
     Ok(Value::Null)
 }
 
@@ -1093,12 +1119,25 @@ fn do_binding_is_locked(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -
     }
 }
 
-fn do_binding_is_active(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let sym = sym_arg(&arg(&args, 0), call)?;
-    let env = env_arg(i, &arg(&args, 1), call, "env")?;
+fn do_binding_is_active(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:R_BindingIsActive — `error()`, reported against the
+    // context call (`Error: no binding ...` when called from top level).
+    let sym = match arg(&args, 0) {
+        Value::Sym(s) => s,
+        Value::Str(x) if x.data.len() == 1 => Sym::new(x.data[0].as_deref().unwrap_or("")),
+        _ => return Err(Flow::error("not a symbol")),
+    };
+    let env = match arg(&args, 1) {
+        Value::Env(e) => e,
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        v => match i.simple_as_environment(&v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("not an environment")),
+        },
+    };
     match env.binding_flags(sym) {
         Some(f) => Ok(Value::lgl(f & BIND_ACTIVE != 0)),
-        None => Err(Flow::error_call(call.clone(), format!("no binding for \"{}\"", sym))),
+        None => Err(Flow::error(format!("no binding for \"{}\"", sym))),
     }
 }
 

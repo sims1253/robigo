@@ -785,7 +785,13 @@ impl Interp {
     pub fn slot_name(&self, name: &Value) -> RResult<Sym> {
         match name {
             Value::Sym(s) => Ok(*s),
-            Value::Str(v) if v.data.len() == 1 => Ok(Sym::new(v.data[0].as_deref().unwrap_or("NA"))),
+            Value::Str(v) if v.data.len() == 1 => {
+                // R: attrib.c:R_do_slot uses installTrChar, which rejects "".
+                match v.data[0].as_deref().unwrap_or("NA") {
+                    "" => Err(Flow::error("attempt to use zero-length variable name")),
+                    n => Ok(Sym::new(n)),
+                }
+            }
             _ => Err(Flow::error("invalid type or length for slot name")),
         }
     }
@@ -805,7 +811,11 @@ impl Interp {
             return Err(Flow::error("attempt to set slot on NULL object"));
         }
         let name = match name {
-            Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("NA")),
+            Value::Str(v) if v.data.len() == 1 => match v.data[0].as_deref().unwrap_or("NA") {
+                // R: attrib.c:R_do_slot_assign installs the name.
+                "" => return Err(Flow::error("attempt to use zero-length variable name")),
+                n => Sym::new(n),
+            },
             Value::Sym(s) => *s,
             _ => return Err(Flow::error("invalid type or length for slot name")),
         };
