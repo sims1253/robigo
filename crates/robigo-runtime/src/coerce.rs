@@ -330,7 +330,12 @@ pub fn cplx_to_str(z: Complex) -> RStr {
         return None;
     }
     let (r, i) = crate::format::format_complex(&[z], 15, 0, 0, 2);
-    let s = crate::format::encode_complex(z, r, i, "NA");
+    let mut s = crate::format::encode_complex(z, r, i, "NA");
+    // R: format.c:EncodeComplex reads the global `OutDec` like EncodeReal0.
+    let dec = crate::format::out_dec();
+    if dec != "." {
+        s = s.replace('.', &dec);
+    }
     // as.character drops trailing zeros in each part.
     Some(crate::value::RString::from(s.as_str()))
 }

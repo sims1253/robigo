@@ -264,6 +264,16 @@ pub fn encode_real_drop0(x: f64, w: usize, d: usize, e: usize, na: &str) -> Stri
     s
 }
 
+/// [`encode_real_drop0`] with R's `OutDec` separator: `as.character()` of a
+/// number uses the `options("OutDec")` character (format.c:EncodeReal).
+pub fn encode_real_drop0_dec(x: f64, w: usize, d: usize, e: usize, na: &str, dec: &str) -> String {
+    let mut s = encode_real_drop0(x, w, d, e, na);
+    if dec != "." && !dec.is_empty() {
+        s = s.replacen('.', dec, 1);
+    }
+    s
+}
+
 pub fn drop_trailing_zeros(s: &str) -> String {
     let mut s = s.to_string();
     drop_trailing_zeros_in(&mut s);
@@ -296,7 +306,27 @@ pub fn string_from_real(x: f64) -> RStr {
         return None;
     }
     let (w, d, e) = format_real(&[x], 15, 0, 0, 2);
-    rstr(&encode_real_drop0(x, w, d, e, "NA"))
+    rstr(&encode_real_drop0_dec(x, w, d, e, "NA", &out_dec()))
+}
+
+thread_local! {
+    /// R's global `OutDec` (Options), which number-to-string coercion and
+    /// `complex` formatting use. R stores it in a C global, so it is not
+    /// passed down the call chain there either (`EncodeReal0` reads it).
+    static OUT_DEC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// `options(OutDec =)`: the character `EncodeReal0`/`EncodeComplex` use.
+pub fn set_out_dec(s: &str) {
+    OUT_DEC.with(|d| *d.borrow_mut() = s.to_string());
+}
+
+/// The current `OutDec` (default `"."`).
+pub fn out_dec() -> String {
+    OUT_DEC.with(|d| {
+        let s = d.borrow();
+        if s.is_empty() { ".".to_string() } else { s.clone() }
+    })
 }
 
 pub fn index_width(n: usize) -> usize {

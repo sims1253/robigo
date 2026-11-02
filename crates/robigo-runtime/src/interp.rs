@@ -1284,6 +1284,14 @@ impl Interp {
 
     pub fn set_option(&mut self, name: &str, value: Value) -> Value {
         let old = self.get_option(name).unwrap_or(Value::Null);
+        if name == "OutDec" {
+            // R keeps OutDec in a C global that EncodeReal0/EncodeComplex read.
+            if let Value::Str(v) = &value {
+                if let Some(Some(s)) = v.data.first() {
+                    crate::format::set_out_dec(s);
+                }
+            }
+        }
         if value.is_null() {
             self.options.retain(|(n, _)| n != name);
         } else if let Some(slot) = self.options.iter_mut().find(|(n, _)| n == name) {
