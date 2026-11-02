@@ -67,14 +67,14 @@ impl RVal {
 }
 
 #[derive(Clone, Copy)]
-enum Num {
+pub(crate) enum Num {
     D(f64),
     I(i32),
     L(i32),
 }
 
 #[inline(always)]
-fn scalar(r: &RVal) -> Option<Num> {
+pub(crate) fn scalar(r: &RVal) -> Option<Num> {
     match r {
         RVal::D(x) => Some(Num::D(*x)),
         RVal::I(x) => Some(Num::I(*x)),
@@ -285,6 +285,9 @@ struct Vars<'a> {
     /// `run_closure`). (Here rather than a `run_with` parameter, which
     /// costs the dispatch loop a register.)
     unboxed: bool,
+    /// An error of a flush made for native code, for the next `flush` to
+    /// report (it comes right after, at the same op).
+    failed: Option<Box<Flow>>,
 }
 
 impl Vars<'_> {
@@ -295,6 +298,9 @@ impl Vars<'_> {
     fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
         if !self.dirty && !self.vclean {
             return Ok(());
+        }
+        if let Some(e) = self.failed.take() {
+            return Err(*e);
         }
         self.dirty = false;
         self.vclean = false;
@@ -377,7 +383,7 @@ impl Vars<'_> {
 
 /// The value of `sym` if reading it cannot run code: a plain binding, or
 /// an argument whose promise has been forced.
-fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
+pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
     // A plain value (or forced promise's value), unboxed without cloning
     // the vector for scalars.
     #[inline(always)]
@@ -1337,7 +1343,7 @@ fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &RVal) -> bool {
 
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
 /// `val` (see [`super_set_fast`]).
-fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
+pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
     let mut frame = env.0.frame().borrow_mut();
     let Some(b) = frame.get_mut(sym) else { return false };
     if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
@@ -1950,29 +1956,10 @@ fn inline_site_call(
     if info.free_vars && vars.dirty {
         return None;
     }
+    // (The call made if this gives up sets it too.)
+    interp.visible = true;
     if !info.has_calls {
-        return run_inline_with(
-            interp,
-            info,
-            &clo.env,
-            |interp, k| {
-                Some(match &leaves[k] {
-                    InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
-                    InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
-                    InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
-                    InlineArg::Leaf(Leaf::R(_)) => return None,
-                    InlineArg::Arith { op, a, b, sym, memo } => {
-                        if !guard_ok(interp, *sym, env, memo) {
-                            return None;
-                        }
-                        let x = leaf_num(vars, env, regs, a)?;
-                        let y = leaf_num(vars, env, regs, b)?;
-                        arith_fast(*op, x, y)?
-                    }
-                })
-            },
-            0,
-        );
+        return run_inline_with(interp, info, &clo.env, |interp, k| site_arg(interp, &leaves[k], vars, env, regs), 0);
     }
     // As GNU R counts every call, an inline run over the limit gives up
     // and lets the real call raise the error at the same depth.
@@ -1984,25 +1971,117 @@ fn inline_site_call(
         interp,
         info,
         &clo.env,
-        |interp, k| {
-            Some(match &leaves[k] {
-                InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
-                InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
-                InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
-                InlineArg::Leaf(Leaf::R(_)) => return None,
-                InlineArg::Arith { op, a, b, sym, memo } => {
-                    if !guard_ok(interp, *sym, env, memo) {
-                        return None;
-                    }
-                    let x = leaf_num(vars, env, regs, a)?;
-                    let y = leaf_num(vars, env, regs, b)?;
-                    arith_fast(*op, x, y)?
-                }
-            })
-        },
+        |interp, k| site_arg(interp, &leaves[k], vars, env, regs),
         INLINE_DEPTH,
     );
     interp.depth -= 1;
+    r
+}
+
+/// The value of an argument of a call site, without running code.
+#[inline(always)]
+fn site_arg(interp: &mut Interp, a: &InlineArg, vars: &mut Vars<'_>, env: &Env, regs: &[RVal]) -> Option<RVal> {
+    Some(match a {
+        InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
+        InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
+        InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
+        InlineArg::Leaf(Leaf::R(_)) => return None,
+        // Evaluated where the call would force its promise, but only
+        // by a scalar fast path, which has no effects.
+        InlineArg::Arith { op, a, b, sym, memo } => {
+            if !guard_ok(interp, *sym, env, memo) {
+                return None;
+            }
+            let x = leaf_num(vars, env, regs, a)?;
+            let y = leaf_num(vars, env, regs, b)?;
+            arith_fast(*op, x, y)?
+        }
+    })
+}
+
+/// Whether a call of `clo` may run inline: not for a closure already known
+/// not to be pure, or one whose nested calls were seen not to be inlinable,
+/// nor for a traced one, see `inline_site_call`.
+#[inline(always)]
+fn inlineable(clo: &Closure) -> bool {
+    match clo.inline.get() {
+        None => true,
+        Some(None) => false,
+        Some(Some(info)) => info.no_nested.get() != crate::env::search_epoch(),
+    }
+}
+
+/// Make the call of `clo` at `site` without a frame, if it can be: in native
+/// code, or inline (see [`inline_info`]). Out of line: what `run_with` has
+/// around a call costs its dispatch loop.
+#[inline(never)]
+fn frameless_call(
+    interp: &mut Interp,
+    caller: &Code,
+    site: &CallSite,
+    clo: &Rc<Closure>,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+) -> Option<RVal> {
+    let leaves = site.inline_args.as_ref()?;
+    if site.no_native.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize
+        && let Some(v) = native_site_call(interp, caller, site, clo, leaves, vars, env, regs)
+    {
+        return Some(v);
+    }
+    if !inlineable(clo) {
+        return None;
+    }
+    inline_site_call(interp, clo, leaves, vars, env, regs)
+}
+
+/// Run a call of `clo` at a call site as native code ([`crate::jit::closure`]),
+/// if it has (or now gets) such code for these argument types: `None` when
+/// the call has to be made.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn native_site_call(
+    interp: &mut Interp,
+    caller: &Code,
+    site: &CallSite,
+    clo: &Rc<Closure>,
+    leaves: &[InlineArg],
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+) -> Option<RVal> {
+    let Some(Some(code)) = clo.code.get() else { return None };
+    if code.native.never() || leaves.len() != clo.formals.len() || leaves.len() > crate::jit::closure::MAX_ARGS {
+        // (Later calls from here skip this attempt.)
+        site.no_native.set(Rc::as_ptr(&clo.formals) as *const Arg as usize);
+        return None;
+    }
+    if !code.native.counted() {
+        return None;
+    }
+    let mut args: SmallVec<[RVal; crate::jit::closure::MAX_ARGS]> = SmallVec::new();
+    for a in leaves {
+        match site_arg(interp, a, vars, env, regs) {
+            Some(v) => args.push(v),
+            None => {
+                code.native.outcome(false);
+                return None;
+            }
+        }
+    }
+    // Variables of enclosing frames may be this frame's: pending assignments
+    // go first. (The VM does the same before any call, which this may be.)
+    if vars.dirty
+        && code.native.reads_frames()
+        && let Err(e) = vars.flush(interp, env, &caller.vars)
+    {
+        vars.failed = Some(Box::new(e));
+        vars.dirty = true;
+        return None;
+    }
+    let r = crate::jit::closure::call(interp, clo, code, &args, leaves);
+    code.native.outcome(r.is_some());
     r
 }
 
@@ -2643,7 +2722,7 @@ const JIT_THRESHOLD: u32 = 16;
 
 /// Native matrix views accept only a dimension attribute, with validated
 /// storage bounds. No native op can change the dimensions during a loop.
-fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u64)> {
+pub(crate) fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u64)> {
     let attrs = x.attrs.as_ref()?;
     if attrs.1 || attrs.0.len() != 1 || attrs.0[0].0 != s::DIM {
         return None;
@@ -2657,7 +2736,7 @@ fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u64)> {
 }
 
 /// The scalar or vector type of a variable's current value for native code.
-fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
+pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     use crate::jit::JType;
     Some(match v {
         RVal::D(_) => JType::D,
@@ -2684,6 +2763,11 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
 }
 
 /// Whether calls of `clo` can run inline (see [`inline_info`]).
+/// Whether closure bodies may run outside the call machinery at all.
+pub(crate) fn may_inline() -> bool {
+    !crate::typeprof::enabled() && !NO_INLINE.with(|n| *n)
+}
+
 pub(crate) fn inlinable(clo: &Closure) -> bool {
     !clo.jit.traced() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
@@ -2733,8 +2817,9 @@ fn inline_call(
         code: info.code.clone(),
         formal_slots: info.formal_slots.clone(),
         guard_syms: info.guard_syms.clone(),
-        args: leaves.clone(),
+        args: leaves.iter().map(|l| crate::jit::CallArg::Leaf(*l)).collect(),
         clo: clo.clone(),
+        callee: 0,
     })
 }
 
@@ -3017,7 +3102,7 @@ fn call_site_fun(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> R
 
 /// [`call_site_fun`] when it needs no forcing, active bindings or errors
 /// (so it cannot run R code); `None` otherwise.
-fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> Option<Value> {
+pub(crate) fn call_site_fun_fast(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> Option<Value> {
     let mut cur = env.clone();
     while !cur.is_search() {
         if cur.local_may_bind_fun(sym) {
@@ -3190,6 +3275,7 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool
         touched: 0,
         epoch: crate::env::r_epoch(),
         unboxed,
+        failed: None,
     };
     // Valid in the first flush generation (see `run_with`).
     let init = pre as u32;
@@ -3966,24 +4052,24 @@ fn run_with(
                 } else {
                     call_site_fun_fast(interp, *f, site, env)
                 };
-                // A pure closure with plain arguments: run its body inline
-                // (it cannot observe the frame, so nothing needs flushing,
-                // unless it reads variables that pending writes may affect).
-                if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
-                    // (Not for a closure already known not to be pure, or
-                    // one whose nested calls were seen not to be
-                    // inlinable, nor for a traced one, see
-                    // `inline_site_call`.)
-                    let inlineable = match clo.inline.get() {
-                        None => true,
-                        Some(None) => false,
-                        Some(Some(info)) => info.no_nested.get() != crate::env::search_epoch(),
-                    };
-                    if inlineable && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs) {
-                        interp.visible = true;
-                        regs[*dst as usize] = v;
-                        continue;
+                // A call that needs no frame: native code, or the body of a
+                // pure closure inline (it cannot observe the frame, so
+                // nothing needs flushing, unless it reads variables that
+                // pending writes may affect).
+                if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args)
+                    && let Some(v) = if matches!(clo.inline.get(), Some(Some(i)) if !i.has_calls) {
+                        // (A body that small is not worth entering native
+                        // code for: see `jit::closure::new_entry`.)
+                        inline_site_call(interp, clo, leaves, vars, env, regs)
+                    } else if inlineable(clo) || site.no_native.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize
+                    {
+                        frameless_call(interp, code, site, clo, vars, env, regs)
+                    } else {
+                        None
                     }
+                {
+                    regs[*dst as usize] = v;
+                    continue;
                 }
                 flush!();
                 let fun = match fast_fun {

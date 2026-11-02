@@ -166,11 +166,12 @@ conservative stack scan.
   and what the compiler hands back (`Op::Eval`).
 - **Register VM (default):** closures and loops compiled to bytecode with
   guards against rebound functions, unboxed scalars, inline caches.
-- **Native code:** Cranelift for hot loops today; whole closures chosen by
-  sampling with contextual dispatch next; LLVM for the hottest code if it
-  pays. Native code deoptimizes to the VM at op granularity, so results,
-  warnings and errors are always the VM's. On wasm32 the VM is the top
-  tier.
+- **Native code:** Cranelift for hot loops and for hot call trees of
+  closures that compute without touching anything outside (`jit/closure.rs`,
+  specialized on argument types); LLVM for the hottest code if it pays.
+  Loops deoptimize to the VM at op granularity; a call tree is abandoned and
+  replayed by the VM, which nothing can observe. Results, warnings and errors
+  are therefore always the VM's. On wasm32 the VM is the top tier.
 - **Non-local exits** are `Result<_, Flow>` inside robigo; at the C
   boundary, trampolines translate between `Flow` and `Rf_error`/
   `R_ContinueUnwind`/C++ exceptions.

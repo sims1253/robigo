@@ -131,7 +131,7 @@ pub fn search_epoch() -> u64 {
     SEARCH_EPOCH.with(|e| e.get())
 }
 
-fn bump_search_epoch() {
+pub(crate) fn bump_search_epoch() {
     // Frame::drop calls this, and frames held by other thread-locals are
     // dropped during TLS destruction at process exit. A destroyed TLS must
     // not abort the process; no lookup can be cached then anyway.
@@ -670,6 +670,15 @@ impl Env {
 
     fn bump_fn_version(&self) {
         self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+    }
+
+    /// Whether `sym` is bound here to a plain value that assigning can
+    /// replace without running code or failing.
+    pub(crate) fn plain_binding(&self, sym: Sym) -> bool {
+        match self.0.frame().borrow().get(sym) {
+            Some(b) => b.flags == 0 && !function_like(&b.value),
+            None => false,
+        }
     }
 
     /// Could a function lookup of `sym` stop in this frame (a function,
