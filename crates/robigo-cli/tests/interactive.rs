@@ -10,8 +10,13 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// As in conformance.rs: `ROBIGO_CONF_BIN` tests the binary CI ships.
+fn robigo_bin() -> std::path::PathBuf {
+    std::env::var_os("ROBIGO_CONF_BIN").map_or_else(|| env!("CARGO_BIN_EXE_robigo").into(), Into::into)
+}
+
 fn run(input: &str) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_robigo"))
+    let mut child = Command::new(robigo_bin())
         .args(["--vanilla", "--quiet", "--interactive"])
         .env("R_DEFAULT_PACKAGES", "NULL")
         .env("LANGUAGE", "en")
@@ -80,7 +85,7 @@ fn interactive_q_last_error_skips_caller_on_exit() {
 fn run_profile(tag: &str, profile: &str, input: &str) -> std::process::Output {
     let path = std::env::temp_dir().join(format!("robigo-{tag}-{}.Rprofile", std::process::id()));
     std::fs::write(&path, profile).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_robigo"))
+    let mut child = Command::new(robigo_bin())
         .args(["--quiet", "--interactive"])
         .env("R_DEFAULT_PACKAGES", "NULL")
         .env("R_PROFILE_USER", &path)

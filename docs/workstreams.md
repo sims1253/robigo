@@ -42,7 +42,7 @@ how it is measured, and the protocol every agent follows. Read
    benchmark. A CRAN package that does not work is reduced to such a
    case: `tests/cran/packages.tsv` is a gate and lists only packages that
    match GNU R. Log each gap in your ledger with the test's path.
-9. **The machine has 2 cores.** One build at a time (`scripts/build.sh`
+9. **The machine is shared.** One build at a time (`scripts/build.sh`
    waits for the lock). Run corpora with `--filter`; CI runs them whole.
    Leave no background processes behind.
 10. **Report** at the end: PR links, metric before and after, what is

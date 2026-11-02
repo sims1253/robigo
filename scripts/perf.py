@@ -109,6 +109,12 @@ def command(runtime, robigo, file, instr):
     return ["Rscript", "--vanilla", file]
 
 
+def valgrind_path():
+    """$VALGRIND, the private build if there is one, or the one on PATH."""
+    private = os.path.expanduser("~/.cache/rr-tools/bin/valgrind")
+    return os.environ.get("VALGRIND") or (private if os.path.exists(private) else "valgrind")
+
+
 def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None):
     name, _, text, pk = prog
     env = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES=pk, R_HOME=r_home())
@@ -155,7 +161,7 @@ def cmd_run(a):
     progs = programs(c, a.suite, a.filter)
     robigo = robigo_path(a.robigo)
     runtimes = ["robigo", "gnur"] if a.runtime == "both" else [a.runtime]
-    valgrind = os.environ.get("VALGRIND", os.path.expanduser("~/.cache/rr-tools/bin/valgrind"))
+    valgrind = valgrind_path()
     if not os.path.exists(valgrind):
         valgrind = "valgrind"
     jobs = a.jobs if a.metric == "instr" else 1  # wall times need an idle machine
@@ -347,7 +353,7 @@ def cmd_recheck(a):
     slow = {name for name in new if slower(name)}
     if slow:
         robigo = robigo_path(a.robigo)
-        valgrind = os.environ.get("VALGRIND", os.path.expanduser("~/.cache/rr-tools/bin/valgrind"))
+        valgrind = valgrind_path()
         if not os.path.exists(valgrind):
             valgrind = "valgrind"
         progs = [p for p in programs(conf()) if p[0] in slow]
