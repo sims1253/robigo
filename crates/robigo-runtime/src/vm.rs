@@ -1556,6 +1556,16 @@ pub struct Inline {
     /// else).
     pub(crate) guard_syms: Vec<Sym>,
     guards_key: std::cell::Cell<(u64, usize, u32)>,
+    /// The search epoch in which a nested call inside the body was last
+    /// seen not to be inlinable (a builtin target, an unreadable
+    /// argument, a callee that is not itself inlinable): while it holds,
+    /// the body's calls go straight to the real path, as they did before
+    /// nested inlining. `u64::MAX` never holds. Depth-budget exhaustion
+    /// does not set it (recursion reaches the budget on purpose).
+    no_nested: std::cell::Cell<u64>,
+    /// The body contains a call (only such bodies pay for the nested
+    /// inline machinery and its failure memo).
+    pub(crate) has_calls: bool,
     /// The body reads variables other than its formals (through the
     /// closure's environment, which may be the caller's frame).
     pub(crate) free_vars: bool,
@@ -1629,6 +1639,7 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
             | Op::Not { .. }
             | Op::Math1 { .. }
             | Op::Builtin1 { .. }
+            | Op::Call { .. }
             | Op::JumpIfNot { .. }
             | Op::JumpIf { .. }
             | Op::Jump { .. }
@@ -1640,11 +1651,14 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     let free_vars = code.vars.iter().any(|v| !formals.contains(v));
+    let has_calls = code.ops.iter().any(|o| matches!(o, Op::Call { .. }));
     Some(Rc::new(Inline {
         code,
         formal_slots,
         guard_syms,
         guards_key: std::cell::Cell::new((u64::MAX, 0, 0)),
+        no_nested: std::cell::Cell::new(u64::MAX),
+        has_calls,
         free_vars,
     }))
 }
@@ -1660,34 +1674,42 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
 /// The value of argument `k` is `arg(interp, k)`, asked for (after the
 /// guards) only if the body uses that formal.
 #[inline(never)]
-fn run_inline_with(
+/// [`run_inline_with`] with the arguments as values. The recursion of
+/// nested calls goes through here so every level instantiates the same
+/// closure type (a direct recursion would grow one per nesting level).
+fn run_inline_args(interp: &mut Interp, info: &Inline, env: &Env, args: &[RVal], depth: u32) -> Option<RVal> {
+    // The recursion of nested calls goes through here so every level
+    // instantiates the same closure type (a direct recursion would grow
+    // one per nesting level).
+    if info.has_calls {
+        run_inline_nested(interp, info, env, |_, k| Some(args[k].clone()), depth)
+    } else {
+        run_inline_with(interp, info, env, |_, k| Some(args[k].clone()), depth)
+    }
+}
+
+/// The `Op::Call` of an inline run ([`run_inline_with`]): the target is
+/// resolved and, when it is itself pure-inlinable, run inline too;
+/// anything else gives up before anything observable has happened, and
+/// the caller re-runs the whole call for real. Structural failures
+/// (a builtin target, an unreadable argument, a callee that is not
+/// itself inlinable) are remembered per body (`Inline::no_nested`) so
+/// they cost nothing on later calls; depth-budget exhaustion is not
+/// (recursion reaches it on purpose).
+#[cold]
+#[inline(never)]
+fn nested_call_inline(
     interp: &mut Interp,
     info: &Inline,
+    code: &Code,
     env: &Env,
-    mut arg: impl FnMut(&mut Interp, usize) -> Option<RVal>,
-) -> Option<RVal> {
-    let code = &*info.code;
-    // All guards at once, once per search epoch, when that suffices.
-    let mut guarded = false;
-    if env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || locked_to_search(env) {
-        let key = (crate::env::search_epoch(), env.id(), env.fn_version());
-        if info.guards_key.get() != key && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
-            info.guards_key.set(key);
-        }
-        guarded = info.guards_key.get() == key;
-    }
-    let mut regs_buf: SmallVec<[RVal; 16]> = SmallVec::new();
-    let mut slots_buf: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
-    fill_empty(&mut regs_buf, code.nregs, || RVal::V(Value::Null));
-    fill_empty(&mut slots_buf, code.vars.len(), || None);
-    // Plain slices: indexing a SmallVec tests where its data is each time.
-    let regs: &mut [RVal] = &mut regs_buf;
-    let slots: &mut [Option<RVal>] = &mut slots_buf;
-    for (k, slot) in info.formal_slots.iter().enumerate() {
-        if let Some(s) = slot {
-            slots[*s as usize] = Some(arg(interp, k)?);
-        }
-    }
+    slots: &mut [Option<RVal>],
+    regs: &mut [RVal],
+    dst: Reg,
+    f: Sym,
+    site: u32,
+    depth: u32,
+) -> Option<()> {
     fn read(slots: &mut [Option<RVal>], env: &Env, sym: Sym, slot: Slot) -> Option<RVal> {
         let slot = slot as usize;
         if slots[slot].is_none() {
@@ -1695,93 +1717,216 @@ fn run_inline_with(
         }
         slots[slot].clone()
     }
-    let leaf = |slots: &mut [Option<RVal>], regs: &[RVal], l: &Leaf| -> Option<Num> {
-        match l {
-            Leaf::D(x) => Some(Num::D(*x)),
-            Leaf::I(x) => Some(Num::I(*x)),
-            Leaf::Var(sym, slot) => scalar(&read(slots, env, *sym, *slot)?),
-            Leaf::R(r) => scalar(&regs[*r as usize]),
+    if depth == 0 || !interp.call_depth_available() {
+        return None;
+    }
+    let no_nested = |info: &Inline| {
+        info.no_nested.set(crate::env::search_epoch());
+    };
+    let cs = &code.call_sites[site as usize];
+    let Some(leaves) = cs.inline_args.as_ref() else {
+        no_nested(info);
+        return None;
+    };
+    let Some(Value::Closure(clo)) = call_site_fun_fast(interp, f, cs, env) else {
+        no_nested(info);
+        return None;
+    };
+    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {
+        no_nested(info);
+        return None;
+    }
+    let Some(info2) = clo.inline.get_or_init(|| inline_info(&clo)).as_ref() else {
+        no_nested(info);
+        return None;
+    };
+    if info2.no_nested.get() == crate::env::search_epoch() {
+        no_nested(info);
+        return None;
+    }
+    // The arguments read this level's slots and registers; they are
+    // evaluated in call order before the nested run.
+    let mut args: SmallVec<[RVal; 4]> = SmallVec::new();
+    for a in leaves {
+        let v = match a {
+            InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
+            InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
+            InlineArg::Leaf(Leaf::Var(sym, slot)) => read(slots, env, *sym, *slot)?,
+            InlineArg::Leaf(Leaf::R(r)) => regs[*r as usize].clone(),
+            InlineArg::Arith { op, a, b, sym, memo } => {
+                if !guard_ok(interp, *sym, env, memo) {
+                    return None;
+                }
+                let mut num = |l: &Leaf| match l {
+                    Leaf::D(x) => Some(Num::D(*x)),
+                    Leaf::I(x) => Some(Num::I(*x)),
+                    Leaf::Var(sym, slot) => scalar(&read(slots, env, *sym, *slot)?),
+                    Leaf::R(r) => scalar(&regs[*r as usize]),
+                };
+                arith_fast(*op, num(a)?, num(b)?)?
+            }
+        };
+        args.push(v);
+    }
+    interp.depth += 1;
+    let r = run_inline_args(interp, info2, &clo.env, &args, depth - 1);
+    interp.depth -= 1;
+    regs[dst as usize] = r?;
+    Some(())
+}
+
+macro_rules! inline_runner {
+    ($name:ident, $nested:literal) => {
+        fn $name(
+            interp: &mut Interp,
+            info: &Inline,
+            env: &Env,
+            mut arg: impl FnMut(&mut Interp, usize) -> Option<RVal>,
+            depth: u32,
+        ) -> Option<RVal> {
+            let code = &*info.code;
+            // All guards at once, once per search epoch, when that suffices.
+            let mut guarded = false;
+            if env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || locked_to_search(env) {
+                let key = (crate::env::search_epoch(), env.id(), env.fn_version());
+                if info.guards_key.get() != key && info.guard_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
+                    info.guards_key.set(key);
+                }
+                guarded = info.guards_key.get() == key;
+            }
+            let mut regs_buf: SmallVec<[RVal; 16]> = SmallVec::new();
+            let mut slots_buf: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
+            fill_empty(&mut regs_buf, code.nregs, || RVal::V(Value::Null));
+            fill_empty(&mut slots_buf, code.vars.len(), || None);
+            // Plain slices: indexing a SmallVec tests where its data is each time.
+            let regs: &mut [RVal] = &mut regs_buf;
+            let slots: &mut [Option<RVal>] = &mut slots_buf;
+            for (k, slot) in info.formal_slots.iter().enumerate() {
+                if let Some(s) = slot {
+                    slots[*s as usize] = Some(arg(interp, k)?);
+                }
+            }
+            fn read(slots: &mut [Option<RVal>], env: &Env, sym: Sym, slot: Slot) -> Option<RVal> {
+                let slot = slot as usize;
+                if slots[slot].is_none() {
+                    slots[slot] = Some(plain_lookup(env, sym)?);
+                }
+                slots[slot].clone()
+            }
+            let leaf = |slots: &mut [Option<RVal>], regs: &[RVal], l: &Leaf| -> Option<Num> {
+                match l {
+                    Leaf::D(x) => Some(Num::D(*x)),
+                    Leaf::I(x) => Some(Num::I(*x)),
+                    Leaf::Var(sym, slot) => scalar(&read(slots, env, *sym, *slot)?),
+                    Leaf::R(r) => scalar(&regs[*r as usize]),
+                }
+            };
+            let ops = &code.ops;
+            let mut pc = 0;
+            while pc < ops.len() {
+                let op = &ops[pc];
+                pc += 1;
+                match op {
+                    Op::Const { dst, k } => regs[*dst as usize] = unbox(code.consts[*k as usize].clone()),
+                    Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
+                    Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
+                    Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
+                    Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
+                    Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(slots, env, *sym, *slot)?,
+                    Op::Guard { sym, .. } => {
+                        if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                            return None;
+                        }
+                    }
+                    Op::Arith { op, dst, a, b, .. } => {
+                        let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
+                        regs[*dst as usize] = arith_fast(*op, x, y)?;
+                    }
+                    Op::Rel { op, dst, a, b, .. } => {
+                        let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
+                        regs[*dst as usize] = rel_fast(*op, x, y);
+                    }
+                    Op::ArithL { op, dst, a, b, sym, g, .. } => {
+                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                            return None;
+                        }
+                        let x = leaf(slots, regs, a)?;
+                        let y = leaf(slots, regs, b)?;
+                        regs[*dst as usize] = arith_fast(*op, x, y)?;
+                    }
+                    Op::RelL { op, dst, a, b, sym, g, .. } => {
+                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                            return None;
+                        }
+                        let x = leaf(slots, regs, a)?;
+                        let y = leaf(slots, regs, b)?;
+                        regs[*dst as usize] = rel_fast(*op, x, y);
+                    }
+                    Op::Neg { dst, a, .. } => {
+                        regs[*dst as usize] = match scalar(&regs[*a as usize])? {
+                            Num::D(x) => RVal::D(-x),
+                            Num::I(x) | Num::L(x) => RVal::I(if x == NA_INTEGER { x } else { -x }),
+                        };
+                    }
+                    Op::Not { dst, a, .. } => {
+                        regs[*dst as usize] = match scalar(&regs[*a as usize])? {
+                            Num::D(x) => RVal::L(if x.is_nan() { NA_LOGICAL } else { (x == 0.0) as Lgl }),
+                            Num::I(x) | Num::L(x) => {
+                                RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl })
+                            }
+                        };
+                    }
+                    Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
+                    Op::Builtin1 { f, dst, a, .. } => {
+                        // A traced builtin must print where GNU R's GETBUILTIN
+                        // would: leave this to the interpreter.
+                        if crate::builtins::debug::any_prim_traced() {
+                            return None;
+                        }
+                        regs[*dst as usize] = builtin1_fast(*f, &regs[*a as usize])?;
+                    }
+                    Op::JumpIfNot { cond, target, .. } | Op::JumpIf { cond, target, .. } => {
+                        let truth = match regs[*cond as usize] {
+                            RVal::L(x) if x != NA_LOGICAL => x != 0,
+                            _ => return None,
+                        };
+                        if truth == matches!(op, Op::JumpIf { .. }) {
+                            pc = *target as usize;
+                        }
+                    }
+                    Op::Jump { target } => pc = *target as usize,
+                    Op::Visible { .. } => {}
+                    // A call whose target is itself pure-inlinable runs inline
+                    // too; anything else gives up before anything observable
+                    // has happened, and the caller re-runs the call for real.
+                    // Out of line: the op loop's codegen is hot (the call
+                    // machinery lives in `nested_call_inline`).
+                    Op::Call { dst, f, site } => {
+                        if $nested {
+                            nested_call_inline(interp, info, code, env, slots, regs, *dst, *f, *site, depth)?;
+                        } else {
+                            return None;
+                        }
+                    }
+                    Op::Return { src } => {
+                        return Some(std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null)));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)))
         }
     };
-    let ops = &code.ops;
-    let mut pc = 0;
-    while pc < ops.len() {
-        let op = &ops[pc];
-        pc += 1;
-        match op {
-            Op::Const { dst, k } => regs[*dst as usize] = unbox(code.consts[*k as usize].clone()),
-            Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
-            Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
-            Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
-            Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
-            Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(slots, env, *sym, *slot)?,
-            Op::Guard { sym, .. } => {
-                if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
-                    return None;
-                }
-            }
-            Op::Arith { op, dst, a, b, .. } => {
-                let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
-                regs[*dst as usize] = arith_fast(*op, x, y)?;
-            }
-            Op::Rel { op, dst, a, b, .. } => {
-                let (x, y) = (scalar(&regs[*a as usize])?, scalar(&regs[*b as usize])?);
-                regs[*dst as usize] = rel_fast(*op, x, y);
-            }
-            Op::ArithL { op, dst, a, b, sym, g, .. } => {
-                if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
-                    return None;
-                }
-                let x = leaf(slots, regs, a)?;
-                let y = leaf(slots, regs, b)?;
-                regs[*dst as usize] = arith_fast(*op, x, y)?;
-            }
-            Op::RelL { op, dst, a, b, sym, g, .. } => {
-                if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
-                    return None;
-                }
-                let x = leaf(slots, regs, a)?;
-                let y = leaf(slots, regs, b)?;
-                regs[*dst as usize] = rel_fast(*op, x, y);
-            }
-            Op::Neg { dst, a, .. } => {
-                regs[*dst as usize] = match scalar(&regs[*a as usize])? {
-                    Num::D(x) => RVal::D(-x),
-                    Num::I(x) | Num::L(x) => RVal::I(if x == NA_INTEGER { x } else { -x }),
-                };
-            }
-            Op::Not { dst, a, .. } => {
-                regs[*dst as usize] = match scalar(&regs[*a as usize])? {
-                    Num::D(x) => RVal::L(if x.is_nan() { NA_LOGICAL } else { (x == 0.0) as Lgl }),
-                    Num::I(x) | Num::L(x) => RVal::L(if x == NA_INTEGER { NA_LOGICAL } else { (x == 0) as Lgl }),
-                };
-            }
-            Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
-            Op::Builtin1 { f, dst, a, .. } => {
-                // A traced builtin must print where GNU R's GETBUILTIN
-                // would: leave this to the interpreter.
-                if crate::builtins::debug::any_prim_traced() {
-                    return None;
-                }
-                regs[*dst as usize] = builtin1_fast(*f, &regs[*a as usize])?;
-            }
-            Op::JumpIfNot { cond, target, .. } | Op::JumpIf { cond, target, .. } => {
-                let truth = match regs[*cond as usize] {
-                    RVal::L(x) if x != NA_LOGICAL => x != 0,
-                    _ => return None,
-                };
-                if truth == matches!(op, Op::JumpIf { .. }) {
-                    pc = *target as usize;
-                }
-            }
-            Op::Jump { target } => pc = *target as usize,
-            Op::Visible { .. } => {}
-            Op::Return { src } => return Some(std::mem::replace(&mut regs[*src as usize], RVal::V(Value::Null))),
-            _ => return None,
-        }
-    }
-    Some(std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null)))
 }
+
+inline_runner!(run_inline_with, false);
+inline_runner!(run_inline_nested, true);
+
+/// How deep inline runs may nest calls of further pure-inlinable
+/// closures (each level is one Rust frame; beyond this the real call is
+/// made). Deep enough for the recursion of benchmarks, small enough that
+/// the stack cost of an abandoned attempt stays bounded.
+const INLINE_DEPTH: u32 = 12;
 
 /// Run a call of the pure closure `clo` (see [`inline_info`]) with the
 /// arguments `leaves` of its call site inline, if they can be read without
@@ -1797,31 +1942,77 @@ fn inline_site_call(
 ) -> Option<RVal> {
     // (Until GNU R's JIT would have decided about the closure, its calls
     // are counted: see `rjit::jit_check`.)
-    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {
-        return None;
+    // Fast declines first: a body analyzed as not inlinable at all, or
+    // one whose nested calls were seen not to be inlinable (cheaper than
+    // the formals and JIT checks below, and this is the common case).
+    match clo.inline.get() {
+        // A nested call of this body was already seen not to be
+        // inlinable: straight to the real call.
+        Some(Some(info)) if info.no_nested.get() == crate::env::search_epoch() => return None,
+        // Analyzed and not inlinable at all.
+        Some(None) => return None,
+        _ => {}
+    }
+    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {        return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(clo)).as_ref()?;
     if info.free_vars && vars.dirty {
         return None;
     }
-    run_inline_with(interp, info, &clo.env, |interp, k| {
-        Some(match &leaves[k] {
-            InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
-            InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
-            InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
-            InlineArg::Leaf(Leaf::R(_)) => return None,
-            // Evaluated where the call would force its promise, but only
-            // by a scalar fast path, which has no effects.
-            InlineArg::Arith { op, a, b, sym, memo } => {
-                if !guard_ok(interp, *sym, env, memo) {
-                    return None;
+    if !info.has_calls {
+        return run_inline_with(
+            interp,
+            info,
+            &clo.env,
+            |interp, k| {
+                Some(match &leaves[k] {
+                    InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
+                    InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
+                    InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
+                    InlineArg::Leaf(Leaf::R(_)) => return None,
+                    InlineArg::Arith { op, a, b, sym, memo } => {
+                        if !guard_ok(interp, *sym, env, memo) {
+                            return None;
+                        }
+                        let x = leaf_num(vars, env, regs, a)?;
+                        let y = leaf_num(vars, env, regs, b)?;
+                        arith_fast(*op, x, y)?
+                    }
+                })
+            },
+            0,
+        );
+    }
+    // As GNU R counts every call, an inline run over the limit gives up
+    // and lets the real call raise the error at the same depth.
+    if !interp.call_depth_available() {
+        return None;
+    }
+    interp.depth += 1;
+    let r = run_inline_nested(
+        interp,
+        info,
+        &clo.env,
+        |interp, k| {
+            Some(match &leaves[k] {
+                InlineArg::Leaf(Leaf::D(x)) => RVal::D(*x),
+                InlineArg::Leaf(Leaf::I(x)) => RVal::I(*x),
+                InlineArg::Leaf(Leaf::Var(sym, slot)) => read_var(vars, env, *sym, *slot)?.clone(),
+                InlineArg::Leaf(Leaf::R(_)) => return None,
+                InlineArg::Arith { op, a, b, sym, memo } => {
+                    if !guard_ok(interp, *sym, env, memo) {
+                        return None;
+                    }
+                    let x = leaf_num(vars, env, regs, a)?;
+                    let y = leaf_num(vars, env, regs, b)?;
+                    arith_fast(*op, x, y)?
                 }
-                let x = leaf_num(vars, env, regs, a)?;
-                let y = leaf_num(vars, env, regs, b)?;
-                arith_fast(*op, x, y)?
-            }
-        })
-    })
+            })
+        },
+        INLINE_DEPTH,
+    );
+    interp.depth -= 1;
+    r
 }
 
 /// R: compiler/R/cmp.R:safeBaseInternals, cmpSimpleInternal,
@@ -2255,7 +2446,7 @@ fn direct_call(
     let newenv = crate::interp::bind_positional(clo, &promargs);
     let sysparent = interp.call_sysparent(env);
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
-    if clo.jit.unsettled() {
+    if clo.jit.inline_blocked() {
         jit_check(interp, clo);
     }
     let r = match run_closure(interp, code, &newenv, clo, true) {
@@ -2513,7 +2704,7 @@ pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]
     if args.len() != info.formal_slots.len() || clo.jit.inline_blocked() {
         return None;
     }
-    let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()))?;
+    let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()), INLINE_DEPTH)?;
     interp.visible = true;
     Some(v)
 }
@@ -2544,7 +2735,7 @@ fn inline_call(
     }
     // Native code does not count calls: take the loop to call the closure
     // at least twice (GNU R's JIT decides by the second call).
-    while clo.jit.unsettled() {
+    while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
     Some(crate::jit::InlineCall {
