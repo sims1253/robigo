@@ -631,6 +631,7 @@ fn do_sysinfo(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value>
 /// # Safety
 /// No other thread runs C code that reads the locale. Builtins meet this by
 /// holding the thread's `Interp`; embedders call this on the evaluator's.
+#[allow(unsafe_code)]
 pub unsafe fn init_locale() {
     init_locale_on_evaluator();
 }
