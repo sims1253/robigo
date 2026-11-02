@@ -404,6 +404,40 @@ fn mut_lang(l: &Rc<Lang>, f: impl FnOnce(&mut Lang)) {
     unsafe { f(&mut *Rc::as_ptr(l).cast_mut()) }
 }
 
+/// Whether two attribute boxes hold the same objects in the same order.
+/// No box and a blank box are the same thing.
+pub fn same_attrs(a: &AttrBox, b: &AttrBox) -> bool {
+    match (a.as_deref(), b.as_deref()) {
+        (None, None) => true,
+        (Some(x), None) | (None, Some(x)) => x.is_blank(),
+        (Some(x), Some(y)) => {
+            x.1 == y.1
+                && x.0.len() == y.0.len()
+                && x.0.iter().zip(&y.0).all(|((n, v), (m, w))| n == m && v.same_object(w))
+        }
+    }
+}
+
+fn same_cells(a: &[Arg], b: &[Arg]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.tag == y.tag && x.value.same_object(&y.value))
+}
+
+/// Store `new` into `old`, in the buffer it has when the length is the same
+/// (a cons-cell write never moves the other cells): evaluators walk `args`
+/// by slice while the code they run reaches these cells.
+fn rewrite_cells(old: &mut Vec<Arg>, new: Vec<Arg>) {
+    if old.len() != new.len() {
+        *old = new;
+        return;
+    }
+    for (o, n) in old.iter_mut().zip(new) {
+        if !o.value.same_object(&n.value) {
+            o.value = n.value;
+        }
+        o.tag = n.tag;
+    }
+}
+
 // GNU R's compact sequences (altclasses.c compact_intseq / compact_realseq):
 // the vectors `:`, `seq_len`, `seq_along` and compact row names make. They
 // serialize in ALTREP form and go to C as ALTREP objects. GNU R's are
@@ -1143,6 +1177,18 @@ impl Value {
         true
     }
 
+    /// R: memory.c:SET_STRING_ELT, the STRSXP counterpart of
+    /// [`Value::set_vector_elt_through_alias`]. Returns false when `self` is
+    /// not a character vector or `i` is out of range.
+    pub fn set_string_elt_through_alias(&self, i: usize, value: RStr) -> bool {
+        let Value::Str(v) = self else { return false };
+        if i >= v.data.len() {
+            return false;
+        }
+        store_cell_shared(v, i, value);
+        true
+    }
+
     /// R: memory.c:CAR for a pairlist/call cell, 0-based; cell 0 of a call
     /// is the function position.
     pub fn pair_car(&self, cell: usize) -> Option<&Value> {
@@ -1275,9 +1321,12 @@ impl Value {
     /// write-back). Every alias keeps the same object and sees the cells.
     pub fn set_pairlist_cells_through_alias(&self, items: Vec<Arg>, attrs: AttrBox) -> bool {
         let Value::Pairlist(p) = self else { return false };
+        if same_cells(&p.items, &items) && same_attrs(&p.attrs, &attrs) {
+            return true;
+        }
         crate::env::Env::mark_cycle_dirty();
         mut_pairlist(p, |m| {
-            m.items = items;
+            rewrite_cells(&mut m.items, items);
             m.attrs = attrs;
         });
         true
@@ -1294,11 +1343,17 @@ impl Value {
         attrs: AttrBox,
     ) -> bool {
         let Value::Lang(l) = self else { return false };
+        if l.fun.same_object(&fun) && l.fun_tag == fun_tag && same_cells(&l.args, &args) && same_attrs(&l.attrs, &attrs)
+        {
+            return true;
+        }
         crate::env::Env::mark_cycle_dirty();
         mut_lang(l, |m| {
-            m.fun = fun;
+            if !m.fun.same_object(&fun) {
+                m.fun = fun;
+            }
             m.fun_tag = fun_tag;
-            m.args = args;
+            rewrite_cells(&mut m.args, args);
             m.attrs = attrs;
         });
         true
@@ -1694,6 +1749,22 @@ impl Value {
         }
     }
 
+    /// Whether both are one R object, for every type. `ptr_eq` stays
+    /// narrower: `identical()` shortcuts on it and has its own rules for
+    /// the types it leaves out.
+    pub fn same_object(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
+            (Value::Cplx(a), Value::Cplx(b)) => Rc::ptr_eq(a, b),
+            (Value::Raw(a), Value::Raw(b)) => Rc::ptr_eq(a, b),
+            (Value::Expr(a), Value::Expr(b)) => Rc::ptr_eq(a, b),
+            (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
+            (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
+            (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
+            _ => self.ptr_eq(other),
+        }
+    }
+
     pub fn ptr_eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Null, Value::Null) => true,
@@ -1977,6 +2048,51 @@ mod shared_pairlist_tests {
         match v {
             Value::Str(s) => s.data.clone(),
             _ => panic!("not a string vector"),
+        }
+    }
+
+    // A native routine's write-back runs on every pairlist and call argument;
+    // the evaluator can be walking those cells by slice at that moment.
+    fn items_ptr(v: &Value) -> *const Arg {
+        match v {
+            Value::Pairlist(p) => p.items.as_ptr(),
+            Value::Lang(l) => l.args.as_ptr(),
+            _ => panic!("not a cons value"),
+        }
+    }
+
+    #[test]
+    fn rewriting_cells_with_the_same_objects_keeps_the_buffer() {
+        let plist = pl(vec![Value::int(1), Value::lgl(true)]);
+        let before = items_ptr(&plist);
+        let Value::Pairlist(p) = &plist else { panic!() };
+        assert!(plist.set_pairlist_cells_through_alias(p.items.clone(), None));
+        assert_eq!(items_ptr(&plist), before);
+
+        let call = Value::lang(Value::Sym(Sym::new("f")), vec![Arg::pos(Value::int(1))]);
+        let before = items_ptr(&call);
+        let Value::Lang(l) = &call else { panic!() };
+        assert!(call.set_lang_cells_through_alias(l.fun.clone(), None, l.args.clone(), None));
+        assert_eq!(items_ptr(&call), before);
+    }
+
+    #[test]
+    fn rewriting_a_changed_cell_keeps_the_buffer_and_the_other_cells() {
+        let plist = pl(vec![Value::int(1), Value::int(2)]);
+        let alias = plist.clone();
+        let second = elt(&plist, 1);
+        let before = items_ptr(&plist);
+        let cells = vec![Arg::pos(Value::int(9)), Arg::pos(second.clone())];
+        assert!(plist.set_pairlist_cells_through_alias(cells, None));
+        assert_eq!(items_ptr(&plist), before);
+        assert_eq!(int(&elt(&alias, 0)), 9);
+        assert!(elt(&alias, 1).same_object(&second));
+    }
+
+    #[test]
+    fn same_object_sees_every_type_ptr_eq_leaves_out() {
+        for v in [Value::lgl(true), Value::expr_vec(vec![Value::int(1)]), pl(vec![Value::int(1)])] {
+            assert!(v.same_object(&v.clone()));
         }
     }
 

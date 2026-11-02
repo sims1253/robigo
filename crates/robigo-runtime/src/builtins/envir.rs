@@ -932,8 +932,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         match &expr {
             Value::Expr(ev) => {
                 let mut v = Value::Null;
-                for e in ev.data.iter() {
-                    v = i.eval(e, &env)?;
+                // By index and owned: what runs can reach `ev` (GNU R's
+                // loop re-reads VECTOR_ELT each time).
+                let mut k = 0;
+                while let Some(e) = ev.data.get(k).cloned() {
+                    v = i.eval(&e, &env)?;
+                    k += 1;
                 }
                 Ok(v)
             }
