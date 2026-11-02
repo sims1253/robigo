@@ -1771,8 +1771,8 @@ fn bind_name(tag: Option<Sym>, expr: &Value, deparse_level: i32) -> Option<RStr>
             return Some(Some(sym.name()));
         }
     } else if deparse_level == 2 {
-        let d = crate::deparse::deparse_lines(expr, 500, true, crate::deparse::SIMPLEDEPARSE, None);
-        return Some(rstr(d.first().map(|s| s.as_str()).unwrap_or("")));
+        // R: bind.c uses deparse1line(expr, TRUE): 10 bytes plus "...".
+        return Some(rstr(&crate::deparse::deparse_one_line_abbrev(expr)));
     }
     None
 }
