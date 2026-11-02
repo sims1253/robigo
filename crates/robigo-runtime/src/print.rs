@@ -639,7 +639,7 @@ impl Printer {
             let clabw = match cl {
                 Some(cl) => match &cl[j] {
                     None => pp.na_width_noquote,
-                    Some(s) => str_width(s),
+                    Some(s) => str_width(&escape_rstring(s, None)),
                 },
                 None => index_width(j + 1) + 3,
             };
