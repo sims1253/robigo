@@ -703,7 +703,7 @@ impl Interp {
                 // bytecode inlines simple wrappers before forcing X; only
                 // installed (namespace) code observes the inline. Out of
                 // line: candidate calls are rare.
-                if !crate::builtins::debug::closure_traced(c)
+                if !c.jit.traced()
                     && let Some(r) = self.try_inline_call(l, call, env)
                 {
                     return r;

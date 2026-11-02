@@ -58,12 +58,22 @@ const IGNORE: u64 = 5;
 // R: print.c:PrintClosure / serialize.c:ReadItem. A loaded BCODESXP body
 // is printed as bytecode without changing the execution/inheritance state.
 const LOADED_BYTECODE: u64 = 0x80;
-const STATE_MASK: u64 = 0x7f;
+/// debug.c's RTRACE bit (`.primTrace`). It lives here so that the inline
+/// paths' [`JitState::inline_blocked`] refuses traced closures for free;
+/// `duplicate` does not copy it (duplicate.c:142), nor does `Clone`.
+const TRACED: u64 = 0x40;
+const STATE_MASK: u64 = 0x3f;
 
 /// A closure's JIT state: execution state and loaded-bytecode flag in the
 /// low byte, and the [`FROZEN_FUNS`] bound to base in the high bits.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct JitState(Cell<u64>);
+
+impl Clone for JitState {
+    fn clone(&self) -> Self {
+        Self(Cell::new(self.0.get() & !TRACED))
+    }
+}
 
 impl JitState {
     /// R: serialize.c:ReadItem preserves a BCODESXP closure body.
@@ -84,6 +94,24 @@ impl JitState {
         self.0.get() & STATE_MASK < NOJIT
     }
 
+    /// [`Self::unsettled`], or traced: calls must not run inline (a traced
+    /// call prints). One range check: a set [`TRACED`] bit is above it.
+    #[inline(always)]
+    pub fn inline_blocked(&self) -> bool {
+        !(NOJIT..=IGNORE).contains(&(self.0.get() & (STATE_MASK | TRACED)))
+    }
+
+    /// debug.c's RTRACE bit of the closure.
+    #[inline(always)]
+    pub fn traced(&self) -> bool {
+        self.0.get() & TRACED != 0
+    }
+
+    pub fn set_traced(&self, on: bool) {
+        let v = self.0.get() & !TRACED;
+        self.0.set(if on { v | TRACED } else { v });
+    }
+
     /// Whether GNU R's AST interpreter would run this closure's body: it is
     /// not installed bytecode, and the JIT has not compiled it (`IGNORE`
     /// marks closures in a namespace, whose installed bodies are bytecode).
@@ -95,7 +123,7 @@ impl JitState {
     }
 
     fn set(&self, state: u64, mask: u64) {
-        self.0.set(state | (self.0.get() & LOADED_BYTECODE) | (mask << 8));
+        self.0.set(state | (self.0.get() & (LOADED_BYTECODE | TRACED)) | (mask << 8));
     }
 
     /// The frozen set of a compiled closure.

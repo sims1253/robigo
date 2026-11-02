@@ -34,73 +34,28 @@ pub fn any_prim_traced() -> bool {
     ANY_TRACED_BUILTIN.with(|c| c.get())
 }
 
-thread_local! {
-    /// Whether the closure body running now is bytecode in GNU R, whose
-    /// evaluator prints the function's symbol (eval.c:7894); the AST
-    /// interpreter prints the whole call (eval.c:1224). Restored per frame.
-    static COMPILED_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// debug.c's RTRACE bit for closures, keyed by address. It is kept
-    /// aside rather than in `Closure`, which every call and every
-    /// `function` allocates; the entry holds the closure, so its address is
-    /// not reused while it is marked.
-    static TRACED_CLOSURES: std::cell::RefCell<std::collections::HashMap<usize, Value>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    /// `!TRACED_CLOSURES.is_empty() || ANY_TRACED_BUILTIN`, kept in one
-    /// flag: every closure call reads it.
-    static ANY_TRACED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// How a traced function's call is reported from the code running now:
+/// GNU R's bytecode prints the function's symbol (eval.c:7894), its AST
+/// interpreter the whole call (eval.c:1224). The innermost closure frame
+/// says which evaluator GNU R would be in; top level is interpreted.
+pub fn in_compiled_frame(i: &Interp) -> bool {
+    i.frames
+        .iter()
+        .rev()
+        .find(|c| !c.builtin)
+        .is_some_and(|c| matches!(&c.function, Value::Closure(f) if !f.jit.interpreted()))
 }
 
-/// Whether anything is traced: only then do the evaluators' two trace
-/// reports differ, and only then is [`COMPILED_FRAME`] maintained.
-#[inline]
-pub fn any_traced() -> bool {
-    ANY_TRACED.with(|c| c.get())
-}
-
-fn refresh_any_traced() {
-    let any = TRACED_CLOSURES.with(|c| !c.borrow().is_empty()) || any_prim_traced();
-    ANY_TRACED.with(|c| c.set(any));
-}
-
-/// [`COMPILED_FRAME`]: how a traced function's call is reported here.
-pub fn in_compiled_frame() -> bool {
-    COMPILED_FRAME.with(|c| c.get())
-}
-
-/// Enter a closure body; returns the previous frame's value.
-pub fn enter_frame(compiled: bool) -> bool {
-    COMPILED_FRAME.with(|c| c.replace(compiled))
-}
-
-pub fn leave_frame(prev: bool) {
-    COMPILED_FRAME.with(|c| c.set(prev))
-}
-
-/// debug.c's RTRACE bit of a function object. Every call asks, so the
-/// sets are consulted only while something is traced.
+/// debug.c's RTRACE bit of a function object. Every call asks: for a
+/// closure it is a bit of its JIT state; for a builtin the set is consulted
+/// only while some builtin is traced.
 #[inline(always)]
 pub fn is_traced(f: &Value) -> bool {
     match f {
-        Value::Closure(c) => closure_traced(c),
+        Value::Closure(c) => c.jit.traced(),
         Value::Builtin(b) => any_prim_traced() && builtin_traced(b),
         _ => false,
     }
-}
-
-/// [`is_traced`] for a closure.
-#[inline(always)]
-pub fn closure_traced(c: &Closure) -> bool {
-    any_traced() && closure_traced_slow(c)
-}
-
-#[cold]
-#[inline(never)]
-fn closure_traced_slow(c: &Closure) -> bool {
-    TRACED_CLOSURES.with(|t| t.borrow().contains_key(&closure_key(c)))
-}
-
-fn closure_key(c: &Closure) -> usize {
-    c as *const Closure as usize
 }
 
 #[cold]
@@ -134,16 +89,7 @@ fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) 
         }
     }
     match &v {
-        Value::Closure(c) => {
-            let k = closure_key(c);
-            TRACED_CLOSURES.with(|t| {
-                if on {
-                    t.borrow_mut().insert(k, v.clone());
-                } else {
-                    t.borrow_mut().remove(&k);
-                }
-            });
-        }
+        Value::Closure(c) => c.jit.set_traced(on),
         Value::Builtin(b) => {
             let k = builtin_key(b);
             TRACED_BUILTINS.with(|t| {
@@ -157,7 +103,6 @@ fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) 
         }
         _ => return Err(Flow::error("argument must be a function")),
     }
-    refresh_any_traced();
     Ok(Value::Null)
 }
 

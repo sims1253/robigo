@@ -1797,7 +1797,7 @@ fn inline_site_call(
 ) -> Option<RVal> {
     // (Until GNU R's JIT would have decided about the closure, its calls
     // are counted: see `rjit::jit_check`.)
-    if leaves.len() != clo.formals.len() || clo.jit.unsettled() {
+    if leaves.len() != clo.formals.len() || clo.jit.inline_blocked() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(clo)).as_ref()?;
@@ -2490,14 +2490,14 @@ fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
 
 /// Whether calls of `clo` can run inline (see [`inline_info`]).
 pub(crate) fn inlinable(clo: &Closure) -> bool {
-    !crate::builtins::debug::closure_traced(clo) && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
+    !clo.jit.traced() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
 
 /// Call an inlinable closure with pre-unboxed or fast `RVal` argument values,
 /// returning the unboxed `RVal` result directly.
 pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]) -> Option<RVal> {
     let info = clo.inline.get()?.as_ref()?;
-    if crate::builtins::debug::closure_traced(clo) || args.len() != info.formal_slots.len() || clo.jit.unsettled() {
+    if args.len() != info.formal_slots.len() || clo.jit.inline_blocked() {
         return None;
     }
     let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()))?;
@@ -2522,7 +2522,7 @@ fn inline_call(
     }
     let leaves = cs.leaf_args.as_ref()?;
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if crate::builtins::debug::closure_traced(&clo) || leaves.len() != clo.formals.len() {
+    if clo.jit.traced() || leaves.len() != clo.formals.len() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
@@ -2773,9 +2773,38 @@ fn call_sym(call: &Value) -> Value {
 
 /// A traced function's report: the whole call from the AST interpreter
 /// (eval.c:1224), the function's symbol from bytecode (eval.c:7894).
+/// Out of line, as are the other trace helpers: `run_with` must not grow.
+#[cold]
+#[inline(never)]
 fn trace_report(interp: &mut Interp, call: &Value) {
-    let shown = if crate::builtins::debug::in_compiled_frame() { call_sym(call) } else { call.clone() };
+    let shown = if crate::builtins::debug::in_compiled_frame(interp) { call_sym(call) } else { call.clone() };
     crate::builtins::debug::print_trace(interp, &shown);
+}
+
+/// [`trace_report`] for a call of builtin `b`, if it is traced.
+#[cold]
+#[inline(never)]
+fn trace_builtin(interp: &mut Interp, b: &'static Builtin, call: &Value) {
+    if crate::builtins::debug::is_traced(&Value::Builtin(b)) {
+        trace_report(interp, call);
+    }
+}
+
+/// [`trace_builtin`] for a `Builtin1` op, whose builtin is named by `call`.
+#[cold]
+#[inline(never)]
+fn trace_builtin1(interp: &mut Interp, call: &Value) {
+    if let Value::Lang(l) = call
+        && let Some(b) = l.fun_sym().and_then(|s| crate::builtins::lookup_primitive(&s.name()))
+    {
+        trace_builtin(interp, b, call);
+    }
+}
+
+/// [`builtin1_fast`], off while any builtin is traced (see `Op::Builtin1`).
+#[inline(always)]
+fn builtin1_untraced(f: Builtin1, x: &RVal) -> Option<RVal> {
+    if crate::builtins::debug::any_prim_traced() { None } else { builtin1_fast(f, x) }
 }
 
 /// The function a call site calls, memoized like [`guard_ok`]: frames below
@@ -2847,27 +2876,9 @@ pub fn run(interp: &mut Interp, code: &Code, env: &Env) -> RResult<Value> {
 /// code is left unboxed (see [`body_result`]) and a placeholder returned:
 /// nothing runs between the return and the caller taking it.
 pub fn run_closure(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
-    // R: eval.c:1224 / 7894 — a traced function reports as a call in the
-    // AST interpreter, as a symbol in bytecode (see vm::trace_report).
-    // The frame flag is kept only while something is traced, so the common
-    // call stays a tail call into `run_pre`.
-    if crate::builtins::debug::any_traced() {
-        return run_closure_traced(interp, code, env, clo, unboxed);
-    }
     let pre = code.nguards > 0
         && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
     run_pre(interp, code, env, pre, unboxed)
-}
-
-#[cold]
-#[inline(never)]
-fn run_closure_traced(interp: &mut Interp, code: &Code, env: &Env, clo: &Closure, unboxed: bool) -> RResult<Value> {
-    let prev = crate::builtins::debug::enter_frame(!clo.jit.interpreted());
-    let pre = code.nguards > 0
-        && if clo.env.is_search() { fresh_guards_ok(interp, code, clo) } else { fresh_nested_ok(interp, code, clo) };
-    let r = run_pre(interp, code, env, pre, unboxed);
-    crate::builtins::debug::leave_frame(prev);
-    r
 }
 
 #[inline]
@@ -3629,8 +3640,8 @@ fn run_with(
             Op::CallBuiltin { dst, f, args, call } => {
                 flush!();
                 let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
-                if crate::builtins::debug::is_traced(&Value::Builtin(b)) {
-                    trace_report(interp, &code.consts[*call as usize]);
+                if crate::builtins::debug::any_prim_traced() {
+                    trace_builtin(interp, b, &code.consts[*call as usize]);
                 }
                 let argv: Vec<Arg> = code.arglists[*args as usize]
                     .iter()
@@ -3643,28 +3654,15 @@ fn run_with(
                 interp.visible = true;
                 // R: eval.c:7894 (GETBUILTIN) — a traced builtin prints its
                 // symbol, so the no-call fast path is off while one is traced.
-                let fast = if crate::builtins::debug::any_prim_traced() {
-                    None
-                } else {
-                    builtin1_fast(*f, &regs[*a as usize])
-                };
-                regs[*dst as usize] = match fast {
+                regs[*dst as usize] = match builtin1_untraced(*f, &regs[*a as usize]) {
                     Some(v) => {
                         regs[*a as usize] = RVal::I(0);
                         v
                     }
                     None => {
                         flush!();
-                        let c = &code.consts[*call as usize];
-                        let traced = match c {
-                            Value::Lang(l) if crate::builtins::debug::any_prim_traced() => l
-                                .fun_sym()
-                                .and_then(|s| crate::builtins::lookup_primitive(&s.name()))
-                                .is_some_and(|b| crate::builtins::debug::is_traced(&Value::Builtin(b))),
-                            _ => false,
-                        };
-                        if traced {
-                            trace_report(interp, c);
+                        if crate::builtins::debug::any_prim_traced() {
+                            trace_builtin1(interp, &code.consts[*call as usize]);
                         }
                         let x = std::mem::replace(&mut regs[*a as usize], RVal::V(Value::Null));
                         RVal::V(tryop!(call_builtin(interp, &code.consts[*call as usize], vec![x], env)))
@@ -3773,10 +3771,9 @@ fn run_with(
                 // (it cannot observe the frame, so nothing needs flushing,
                 // unless it reads variables that pending writes may affect).
                 if let (Some(Value::Closure(clo)), Some(leaves)) = (&fast_fun, &site.inline_args) {
-                    // (Not for a closure already known not to be pure, nor
-                    // for a traced one: GNU R's compiled code would print.)
-                    if !crate::builtins::debug::closure_traced(clo)
-                        && !matches!(clo.inline.get(), Some(None))
+                    // (Not for a closure already known not to be pure; nor
+                    // for a traced one, see `inline_site_call`.)
+                    if !matches!(clo.inline.get(), Some(None))
                         && let Some(v) = inline_site_call(interp, clo, leaves, vars, env, regs)
                     {
                         interp.visible = true;
@@ -3789,7 +3786,7 @@ fn run_with(
                     Some(f) => f,
                     None => tryop!(call_site_fun(interp, *f, site, env)),
                 };
-                if crate::builtins::debug::any_traced() && crate::builtins::debug::is_traced(&fun) {
+                if crate::builtins::debug::is_traced(&fun) {
                     trace_report(interp, &site.call);
                 }
                 let v = match (&fun, &site.call) {
@@ -3861,8 +3858,8 @@ fn run_with(
             Op::CallSpecial { dst, f, k } => {
                 flush!();
                 let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
-                if crate::builtins::debug::is_traced(&Value::Builtin(b)) {
-                    trace_report(interp, &code.consts[*k as usize]);
+                if crate::builtins::debug::any_prim_traced() {
+                    trace_builtin(interp, b, &code.consts[*k as usize]);
                 }
                 let v = tryop!(interp.eval_special(b, &code.consts[*k as usize], env));
                 regs[*dst as usize] = RVal::V(v);
