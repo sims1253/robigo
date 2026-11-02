@@ -462,6 +462,7 @@ unsafe fn finalizer_context(op: &'static str) {
 /// C's `%g` (messages that GNU R formats with it).
 pub fn fmt_g(x: f64) -> String {
     let mut buf = [0u8; 64];
+    // SAFETY: the size is the buffer's, and %g takes the one double passed.
     let n = unsafe { libc::snprintf(buf.as_mut_ptr() as *mut c_char, 64, c"%g".as_ptr(), x) };
     String::from_utf8_lossy(&buf[..n.clamp(0, 63) as usize]).into_owned()
 }

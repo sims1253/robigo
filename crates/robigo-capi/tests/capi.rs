@@ -1,4 +1,4 @@
-#![allow(static_mut_refs)]
+#![allow(static_mut_refs)] // assert_eq! on the exported statics
 //! libR.so's API driven from Rust with a stub host. The API state is bound
 //! to one thread (docs/core.md §3, §10), so everything runs in one test.
 
@@ -527,16 +527,16 @@ fn the_api() {
 
         // ---- corrupt lengths are R errors: an RAWSXP of 2^47 bytes from the
         // long-vector form, and a length past what ReadLENGTH accepts
-        static mut CORRUPT: Vec<u8> = Vec::new();
-        static mut CORRUPT_POS: usize = 0;
+        thread_local! {
+            static CORRUPT: RefCell<(Vec<u8>, usize)> = const { RefCell::new((Vec::new(), 0)) };
+        }
         unsafe extern "C" fn in_corrupt(_: *mut capi::serialize::InPStream, dst: *mut c_void, n: c_int) {
-            unsafe {
-                assert!(n >= 0, "in_bytes got a negative length");
-                let data = &*(&raw const CORRUPT);
-                let len = (n as usize).min(data.len() - CORRUPT_POS);
-                std::ptr::copy_nonoverlapping(data.as_ptr().add(CORRUPT_POS), dst as *mut u8, len);
-                CORRUPT_POS += len;
-            }
+            assert!(n >= 0, "in_bytes got a negative length");
+            CORRUPT.with_borrow_mut(|(data, pos)| {
+                let len = (n as usize).min(data.len() - *pos);
+                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr().add(*pos), dst as *mut u8, len) };
+                *pos += len;
+            });
         }
         unsafe extern "C" fn read_corrupt(_: *mut c_void) {
             unsafe {
@@ -558,8 +558,7 @@ fn the_api() {
             for word in [2, 0x040500, 0x030500, ty, -1, hi, lo as i32] {
                 bytes.extend_from_slice(&i32::to_be_bytes(word));
             }
-            CORRUPT = bytes;
-            CORRUPT_POS = 0;
+            CORRUPT.set((bytes, 0));
             capi::errors::R_ToplevelExec(read_corrupt, std::ptr::null_mut())
         };
         let top = R_PPStackTop;

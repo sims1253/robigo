@@ -10,8 +10,8 @@ use robigo_core::Sexp;
 use robigo_core::types::*;
 use std::ffi::{CStr, c_char, c_int};
 
-fn lgl(b: bool) -> Sexp {
-    unsafe { crate::list::Rf_ScalarLogical(b as c_int) }
+unsafe fn lgl(b: bool) -> Sexp {
+    crate::list::Rf_ScalarLogical(b as c_int)
 }
 
 unsafe fn int(x: c_int) -> Sexp {

@@ -234,6 +234,6 @@ pub unsafe extern "C" fn R_RunPendingFinalizers() {
 /// R_RunExitFinalizers).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_RunExitFinalizers() {
-    unsafe { core().queue_exit_finalizers() };
+    core().queue_exit_finalizers();
     crate::util::run_finalizers()
 }

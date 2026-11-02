@@ -493,10 +493,10 @@ pub unsafe extern "C" fn R_realloc_gc(p: *mut c_void, n: usize) -> *mut c_void {
 
 /// Stack usage of the R thread (errors.c: R_CStackDir * (start - sp)).
 #[inline(always)]
-fn stack_usage() -> isize {
+unsafe fn stack_usage() -> isize {
     let marker = 0u8;
     let sp = std::hint::black_box(&marker) as *const u8 as usize;
-    unsafe { R_CStackDir as isize * (R_CStackStart as isize - sp as isize) }
+    R_CStackDir as isize * (R_CStackStart as isize - sp as isize)
 }
 
 // R: errors.c:R_SignalCStackOverflow (the condition is reported without a call)

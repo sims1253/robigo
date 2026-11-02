@@ -431,8 +431,8 @@ pub unsafe fn internal(name: &str, args: &[Sexp]) -> Sexp {
     r
 }
 
-fn lgl(b: bool) -> Sexp {
-    unsafe { crate::list::Rf_ScalarLogical(b as c_int) }
+unsafe fn lgl(b: bool) -> Sexp {
+    crate::list::Rf_ScalarLogical(b as c_int)
 }
 
 // R: unique.c:duplicated
