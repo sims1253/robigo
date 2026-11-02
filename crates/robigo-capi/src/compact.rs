@@ -229,7 +229,7 @@ unsafe fn new_seq(cls: ClassT, n: isize, n1: f64, inc: f64) -> Sexp {
     *d = n as f64;
     *d.add(1) = n1;
     *d.add(2) = inc;
-    let ans = crate::altrep::R_new_altrep(cls, info, R_NilValue);
+    let ans = crate::altrep::new_instance(cls, info, R_NilValue);
     // not mutable: modification duplicates (altclasses.c MARK_NOT_MUTABLE)
     ans.set_refcnt(u16::MAX);
     Rf_unprotect(1);

@@ -114,6 +114,41 @@ fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     r
 }
 
+/// Can converting between runtime values and core objects jump? It can
+/// reach a package's ALTREP methods, and `Rf_protect` raises when the stack
+/// is full. There is no context around a conversion (docs/core.md §5:
+/// `robigo_dotcall` has popped its own), so a jump would abort, or land in
+/// a C frame below evaluator frames. Protect-stack depth is a proxy for
+/// the second: a conversion's protections grow with the object's nesting.
+#[inline(always)]
+unsafe fn conversion_can_jump() -> bool {
+    crate::altrep::PACKAGE_ALTREP.load(std::sync::atomic::Ordering::Relaxed) || R_PPStackTop > R_PPStackSize / 2
+}
+
+/// Run a conversion so that a jump out of it becomes an `Err`. Only the
+/// rare case pays for the context; `f` must capture its owned state from
+/// the caller's frame, which the jump does not cross. What `f`'s own
+/// frames built is lost with them (docs/core.md §5's plain frames are the
+/// goal; until the conversions return `Result`, that is a leak).
+#[inline(always)]
+unsafe fn converting<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+    if !conversion_can_jump() {
+        return Ok(f());
+    }
+    converting_in_context(interp, f)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn converting_in_context<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+    INTERP.with(|c| c.set(interp as *mut Interp));
+    let mut out = None;
+    match crate::errors::protect_run(|| out = Some(f())) {
+        None => Ok(out.expect("a conversion that returned left its value")),
+        Some(t) => Err(take_flow(t)),
+    }
+}
+
 fn store_flow(f: Flow) -> usize {
     let t = NEXT_TOKEN.with(|n| {
         let t = n.get();
@@ -1793,18 +1828,18 @@ fn sharing(v: &Value) -> u16 {
 }
 
 /// A glue routine of the graphics engine, called as `.Call` would.
-unsafe fn gr_call(fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
+unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResult<Value> {
     let mut out = Sexp::NULL;
     let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
     let t = crate::dotcode::robigo_dotcall(fun, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
-    result(t, out)
+    result(interp, t, out)
 }
 
-unsafe fn result(t: usize, out: Sexp) -> RResult<Value> {
+unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
-    Ok(from_sexp(out))
+    converting(interp, || from_sexp(out))
 }
 
 unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode::CallInfo) {
@@ -1904,89 +1939,103 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
     ensure_ready(interp);
     let base = R_PPStackTop;
     let res = match r.interface {
-        Interface::Call => {
-            let mut xs = Vec::with_capacity(args.len());
-            for a in &args {
-                // the caller's sharing: a value bound elsewhere (a
-                // variable) is referenced, as in GNU R, so code following
-                // the NAMED/REFCNT protocol duplicates before writing
-                let refs = sharing(&a.value);
-                let x = Rf_protect(to_sexp(&a.value));
-                if refs > 0 && x.refcnt() < refs {
-                    x.set_refcnt(refs);
-                }
-                xs.push(x);
-            }
-            let mut out = Sexp::NULL;
-            let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
-            let t = crate::dotcode::robigo_dotcall(
-                r.addr as *const c_void,
-                xs.as_ptr(),
-                xs.len() as c_int,
-                &mut out,
-                &mut info,
-            );
-            let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
-            let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
-            for (x, value) in &seen {
-                if !xs.contains(x) {
-                    write_back(value, *x, &mut originals);
-                }
-            }
-            let proxies: Vec<_> = PROXIED.with(|m| {
-                PINNED.with(|p| {
-                    let p = p.borrow();
-                    m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
-                })
-            });
-            for (x, value) in &proxies {
-                if !xs.contains(x) {
-                    write_back(value, *x, &mut originals);
-                }
-            }
-            for (a, &x) in args.iter().zip(&xs) {
-                write_back(&a.value, x, &mut originals);
-            }
-            stack_imbalance(interp, ".Call", &info);
-            result(t, out)
-        }
-        Interface::External => {
-            // R: dotcode.c:do_External — the routine gets the whole
-            // argument list, its .NAME first
-            let mut all = vec![Arg::pos(Value::str(&r.name))];
-            all.extend(args.iter().cloned());
-            let list = Rf_protect(args_list(&all, LISTSXP));
-            let mut out = Sexp::NULL;
-            let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
-            // .External2 (PRIMVAL 1): fun(call, op, args, env)
-            let external2 = match call {
-                Value::Lang(l) => match &l.fun {
-                    Value::Sym(s) => &*s.name() == ".External2",
-                    Value::Builtin(b) => b.name == ".External2",
-                    _ => false,
-                },
-                _ => false,
-            };
-            let t = if external2 {
-                let c = Rf_protect(to_sexp(call));
-                let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
-                    Some(b) => to_sexp(&Value::Builtin(b)),
-                    None => R_NilValue,
-                };
-                Rf_protect(op);
-                let rho = Rf_protect(to_sexp(&Value::Env(env.clone())));
-                crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
-            } else {
-                crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
-            };
-            stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
-            result(t, out)
-        }
+        Interface::Call => dot_call(interp, r, &args),
+        Interface::External => dot_external(interp, call, r, &args, env),
         Interface::C | Interface::Fortran => dot_c(interp, call, r, args, env),
     };
     R_PPStackTop = base;
     drain_dead();
     res
+}
+
+/// The argument objects of a `.Call`.
+unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
+    for a in args {
+        // the caller's sharing: a value bound elsewhere (a variable) is
+        // referenced, as in GNU R, so code following the NAMED/REFCNT
+        // protocol duplicates before writing
+        let refs = sharing(&a.value);
+        let x = Rf_protect(to_sexp(&a.value));
+        if refs > 0 && x.refcnt() < refs {
+            x.set_refcnt(refs);
+        }
+        xs.push(x);
+    }
+}
+
+/// What a `.Call` changed in the objects it could reach.
+unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) {
+    let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
+    let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+    for (x, value) in &seen {
+        if !xs.contains(x) {
+            write_back(value, *x, &mut originals);
+        }
+    }
+    let proxies: Vec<_> = PROXIED.with(|m| {
+        PINNED.with(|p| {
+            let p = p.borrow();
+            m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
+        })
+    });
+    for (x, value) in &proxies {
+        if !xs.contains(x) {
+            write_back(value, *x, &mut originals);
+        }
+    }
+    for (a, &x) in args.iter().zip(xs) {
+        write_back(&a.value, x, &mut originals);
+    }
+}
+
+unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Value> {
+    let mut xs = Vec::with_capacity(args.len());
+    converting(interp, || call_args(args, &mut xs))?;
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    let t =
+        crate::dotcode::robigo_dotcall(r.addr as *const c_void, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
+    let back = converting(interp, || write_backs(args, &xs));
+    stack_imbalance(interp, ".Call", &info);
+    if let (0, Err(f)) = (t, back) {
+        return Err(f);
+    }
+    result(interp, t, out)
+}
+
+unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[Arg], env: &Env) -> RResult<Value> {
+    // R: dotcode.c:do_External — the routine gets the whole argument list,
+    // its .NAME first
+    let mut all = vec![Arg::pos(Value::str(&r.name))];
+    all.extend(args.iter().cloned());
+    let list = converting(interp, || Rf_protect(args_list(&all, LISTSXP)))?;
+    let mut out = Sexp::NULL;
+    let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
+    // .External2 (PRIMVAL 1): fun(call, op, args, env)
+    let external2 = match call {
+        Value::Lang(l) => match &l.fun {
+            Value::Sym(s) => &*s.name() == ".External2",
+            Value::Builtin(b) => b.name == ".External2",
+            _ => false,
+        },
+        _ => false,
+    };
+    let t = if external2 {
+        let [c, op, rho] = converting(interp, || {
+            let c = Rf_protect(to_sexp(call));
+            let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
+                Some(b) => to_sexp(&Value::Builtin(b)),
+                None => R_NilValue,
+            };
+            Rf_protect(op);
+            [c, op, Rf_protect(to_sexp(&Value::Env(env.clone())))]
+        })?;
+        crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
+    } else {
+        crate::dotcode::robigo_dotexternal(r.addr as *const c_void, list, &mut out, &mut info)
+    };
+    stack_imbalance(interp, if external2 { ".External2" } else { ".External" }, &info);
+    result(interp, t, out)
 }
 
 /// `.C`/`.Fortran` (dotcode.c do_dotCode): every argument is copied into a
@@ -2149,13 +2198,15 @@ impl NativeBridge for Bridge {
                 Some(b) => Value::Builtin(b),
                 None => Value::Null,
             };
-            let a = [
-                Rf_protect(to_sexp(call)),
-                Rf_protect(to_sexp(&op)),
-                Rf_protect(args_list(args, LISTSXP)),
-                Rf_protect(to_sexp(&Value::Env(env.clone()))),
-            ];
-            let r = gr_call(fun, &a);
+            let a = converting(interp, || {
+                [
+                    Rf_protect(to_sexp(call)),
+                    Rf_protect(to_sexp(&op)),
+                    Rf_protect(args_list(args, LISTSXP)),
+                    Rf_protect(to_sexp(&Value::Env(env.clone()))),
+                ]
+            })?;
+            let r = gr_call(interp, fun, &a);
             R_PPStackTop = base;
             crate::graphics::sync_devices(interp);
             r
@@ -2163,14 +2214,14 @@ impl NativeBridge for Bridge {
     }
 
     fn owned_get(&self, interp: &mut Interp, holder: &Value) -> RResult<Value> {
-        Ok(enter(interp, |_| unsafe { crate::owned::get(holder) }))
+        enter(interp, |interp| unsafe { converting(interp, || crate::owned::get(holder)) })
     }
 
     fn owned_holder(&self, interp: &mut Interp, value: Value) -> RResult<Value> {
-        Ok(enter(interp, |interp| unsafe {
+        enter(interp, |interp| unsafe {
             ensure_ready(interp);
-            wrap_core(to_sexp(&value))
-        }))
+            converting(interp, || wrap_core(to_sexp(&value)))
+        })
     }
 
     fn option_set(&self, name: &str, value: &Value) {
@@ -2180,21 +2231,23 @@ impl NativeBridge for Bridge {
     fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
-            let r = gr_call(crate::graphics::robigo_gr_begin as *const c_void, &[])?;
+            let r = gr_call(interp, crate::graphics::robigo_gr_begin as *const c_void, &[])?;
             Ok(matches!(r, Value::Lgl(v) if v.data.first() == Some(&1)))
         })
     }
 
     fn graphics_end(&self, interp: &mut Interp, call: &Value, op: &Value, args: &[Arg], record: bool) -> RResult<()> {
-        enter(interp, |_| unsafe {
+        enter(interp, |interp| unsafe {
             let base = R_PPStackTop;
-            let xs = [
-                Rf_protect(to_sexp(call)),
-                Rf_protect(to_sexp(op)),
-                Rf_protect(args_list(args, LISTSXP)),
-                Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
-            ];
-            let r = gr_call(crate::graphics::robigo_gr_end as *const c_void, &xs);
+            let xs = converting(interp, || {
+                [
+                    Rf_protect(to_sexp(call)),
+                    Rf_protect(to_sexp(op)),
+                    Rf_protect(args_list(args, LISTSXP)),
+                    Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
+                ]
+            })?;
+            let r = gr_call(interp, crate::graphics::robigo_gr_end as *const c_void, &xs);
             R_PPStackTop = base;
             r.map(|_| ())
         })
@@ -2237,12 +2290,14 @@ impl NativeBridge for Bridge {
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
             let top = R_PPStackTop;
-            let key = Rf_protect(to_sexp(key));
-            let fun = Rf_protect(to_sexp(fun));
-            crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+            let r = converting(interp, || {
+                let key = Rf_protect(to_sexp(key));
+                let fun = Rf_protect(to_sexp(fun));
+                crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+            });
             R_PPStackTop = top;
-        });
-        Ok(())
+            r
+        })
     }
 
     fn run_exit_finalizers(&self, interp: &mut Interp) {

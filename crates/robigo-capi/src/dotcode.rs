@@ -35,6 +35,10 @@ pub unsafe extern "C" fn robigo_dotcall(
     let mut a = [R_NilValue; MAX_ARGS];
     a[..n].copy_from_slice(std::slice::from_raw_parts(args, n));
     let base = R_PPStackTop;
+    // No context is active yet, so an overflow must not jump.
+    if base + n as c_int + PP_HEADROOM > R_PPStackSize {
+        return (crate::host::host().error)(R_NilValue, c"protect(): protection stack overflow".as_ptr());
+    }
     for &x in &a[..n] {
         crate::memory::Rf_protect(x);
     }

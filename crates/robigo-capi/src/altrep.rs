@@ -10,6 +10,7 @@ use crate::state::*;
 use robigo_core::types::*;
 use robigo_core::{Rcomplex, Sexp};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One table for every kind of class; unused slots stay empty. A slot
 /// holds a C function pointer (0: altrep.c's default).
@@ -65,6 +66,13 @@ unsafe fn error_in_class(msg: &str, x: Sexp) -> ! {
     let (c, p) = (name(info.car()), name(info.cdr().car()));
     error_str_owned(format!("{msg} [class: {c}, pkg: {p}]"))
 }
+
+/// A package instantiated an ALTREP class. From then on converting a core
+/// object can run package code (Length, Dataptr, Elt) that may raise, so
+/// the bridge converts inside a context; before that, compact sequences
+/// are the only ALTREP objects and their methods reached by a conversion
+/// cannot raise, and the normal path stays free of the context.
+pub static PACKAGE_ALTREP: AtomicBool = AtomicBool::new(false);
 
 static mut REGISTRY: Vec<Sexp> = Vec::new();
 
@@ -168,6 +176,13 @@ setters! {
 // R: altrep.c:R_new_altrep
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_new_altrep(cls: ClassT, data1: Sexp, data2: Sexp) -> Sexp {
+    PACKAGE_ALTREP.store(true, Ordering::Relaxed);
+    new_instance(cls, data1, data2)
+}
+
+/// An instance of a class of ours (compact sequences), which leaves
+/// [`PACKAGE_ALTREP`] alone.
+pub(crate) unsafe fn new_instance(cls: ClassT, data1: Sexp, data2: Sexp) -> Sexp {
     let class = cls.ptr;
     let t = *(class.attrib_raw().cdr().cdr().car().std_data() as *const i32) as u8;
     let x = core().alloc_node(t, data1, data2, class);
