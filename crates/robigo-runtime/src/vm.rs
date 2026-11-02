@@ -1432,8 +1432,7 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
 #[inline(always)]
 fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
     let epoch = crate::env::search_epoch();
-    // SAFETY: a read of the memo's fields; nothing else accesses it now.
-    let m = unsafe { &*memo.as_ptr() };
+    let m = memo.get();
     if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
         return m.ok;
     }
@@ -1680,25 +1679,8 @@ fn run_inline_with(
     }
     let mut regs_buf: SmallVec<[RVal; 16]> = SmallVec::new();
     let mut slots_buf: SmallVec<[Option<RVal>; 8]> = SmallVec::new();
-    if code.nregs > regs_buf.inline_size() {
-        regs_buf.reserve_exact(code.nregs);
-    }
-    if code.vars.len() > slots_buf.inline_size() {
-        slots_buf.reserve_exact(code.vars.len());
-    }
-    // Initialized in place (see `run_pre`).
-    unsafe {
-        let p = regs_buf.as_mut_ptr();
-        for k in 0..code.nregs {
-            p.add(k).write(RVal::V(Value::Null));
-        }
-        regs_buf.set_len(code.nregs);
-        let p = slots_buf.as_mut_ptr();
-        for k in 0..code.vars.len() {
-            p.add(k).write(None);
-        }
-        slots_buf.set_len(code.vars.len());
-    }
+    fill_empty(&mut regs_buf, code.nregs, || RVal::V(Value::Null));
+    fill_empty(&mut slots_buf, code.vars.len(), || None);
     // Plain slices: indexing a SmallVec tests where its data is each time.
     let regs: &mut [RVal] = &mut regs_buf;
     let mut slots: &mut [Option<RVal>] = &mut slots_buf;
@@ -2924,6 +2906,27 @@ fn guards_hold_fresh(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
         && code.guard_syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env))
 }
 
+/// Give the empty `v` `n` elements of `value()`, written in place
+/// (`resize_with` costs ~25 instructions per element). It reserves only when
+/// the inline buffer is too small: the call costs more than a small
+/// closure's frame setup otherwise.
+#[inline(always)]
+fn fill_empty<A: smallvec::Array>(v: &mut SmallVec<A>, n: usize, value: impl Fn() -> A::Item) {
+    debug_assert!(v.is_empty());
+    if n > v.inline_size() {
+        v.reserve_exact(n);
+    }
+    // SAFETY: the capacity is at least n, and all n elements are written
+    // before the length covers them.
+    unsafe {
+        let p = v.as_mut_ptr();
+        for k in 0..n {
+            p.add(k).write(value());
+        }
+        v.set_len(n);
+    }
+}
+
 fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool) -> RResult<Value> {
     // Registers and slots live on the Rust stack for typical code, so a
     // call does not allocate them.
@@ -2931,27 +2934,8 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool
     // to allocate for.)
     let mut regs: SmallVec<[RVal; 32]> = SmallVec::new();
     let mut slots: SmallVec<[SlotVal; 24]> = SmallVec::new();
-    // (Only when the inline buffers are too small: the call costs more
-    // than a small closure's frame setup otherwise.)
-    if code.nregs > regs.inline_size() {
-        regs.reserve_exact(code.nregs);
-    }
-    if code.vars.len() > slots.inline_size() {
-        slots.reserve_exact(code.vars.len());
-    }
-    // Initialized in place (`resize_with` costs ~25 instructions per element).
-    unsafe {
-        let p = regs.as_mut_ptr();
-        for k in 0..code.nregs {
-            p.add(k).write(RVal::V(Value::Null));
-        }
-        regs.set_len(code.nregs);
-        let p = slots.as_mut_ptr();
-        for k in 0..code.vars.len() {
-            p.add(k).write(SlotVal::Empty);
-        }
-        slots.set_len(code.vars.len());
-    }
+    fill_empty(&mut regs, code.nregs, || RVal::V(Value::Null));
+    fill_empty(&mut slots, code.vars.len(), || SlotVal::Empty);
     let mut vars = Vars {
         slots: &mut slots,
         any: false,
