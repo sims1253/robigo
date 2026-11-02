@@ -24,6 +24,7 @@ builds and copies under a lock; the harnesses below use
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | corpora | `scripts/corpus.py run NAME` | below |
+| fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 
 ### Timezone fixtures
 
@@ -165,13 +166,15 @@ scripts/perf.py compare before.json after.json          # the gate
    the release binary (`ROBIGO_CONF_BIN`).
 3. **corpora:** each corpus (FastR in four shards) against its ratchet.
    Results are artifacts; the summary shows pass counts.
-4. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
+4. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
+   minute each with a fixed seed.
+5. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
    compiled code — installed from source with robigo and compared with
    GNU R's recorded result (§ CRAN packages with compiled code).
-5. **perf:** instruction counts of every benchmark; on pull requests
+6. **perf:** instruction counts of every benchmark; on pull requests
    compared with `main` (fails if slower by more than 0.5% or newly
    wrong); on `main` also GNU R's counts, saved as the next baseline.
-6. **progress** (main only): appends the commit's numbers (instruction
+7. **progress** (main only): appends the commit's numbers (instruction
    counts of every benchmark, passing cases of every corpus and of the
    `tests/r` conformance scripts, the failing case ids of every corpus
    with at most a few hundred — the open gaps —, builtins implemented)

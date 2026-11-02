@@ -66,6 +66,12 @@ pub fn gather_all(x: &Value, idx: &[usize]) -> Value {
     }
 }
 
+/// That `xlengthgets` can allocate its result and its index vector.
+fn check_lengthgets(x: &Value, len: usize) -> RResult<()> {
+    crate::memory::check_vector(len, crate::memory::Elt::of(x))?;
+    crate::memory::check_vector(len, crate::memory::Elt::Cplx)
+}
+
 /// R's `xlengthgets`: truncate or pad with NA, keeping (padded) names.
 pub fn xlengthgets(x: &Value, len: usize) -> Value {
     let n = x.len();
@@ -208,9 +214,14 @@ fn compact_intrange(n1: i64, n2: i64, call: &Value) -> RResult<Value> {
     }
     let up = n1 <= n2;
     let inc = if up { 1 } else { -1 };
+    // Compact sequences are stored expanded here, so unlike GNU R's ALTREP
+    // this is the point where a long one needs its memory.
+    use crate::memory::{Elt, check_vector};
     if n1 <= i32::MIN as i64 || n1 > i32::MAX as i64 || n2 <= i32::MIN as i64 || n2 > i32::MAX as i64 {
+        check_vector(n as usize, Elt::Real)?;
         return Ok(Value::compact_realseq(n as usize, n1 as f64, inc as f64));
     }
+    check_vector(n as usize, Elt::Int)?;
     Ok(Value::compact_intseq(n as usize, n1, inc))
 }
 
@@ -240,6 +251,7 @@ pub fn seq_colon(n1: f64, n2: f64, call: &Value) -> RResult<Value> {
         let s1 = n1 as i64;
         if n1 <= n2 { compact_intrange(s1, s1 + n - 1, call) } else { compact_intrange(s1, s1 - n + 1, call) }
     } else {
+        crate::memory::check_vector(n as usize, crate::memory::Elt::Real)?;
         let v: Vec<f64> = (0..n).map(|k| if n1 <= n2 { n1 + k as f64 } else { n1 - k as f64 }).collect();
         Ok(Value::reals(v))
     }
@@ -361,6 +373,7 @@ fn do_seq(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
         if rout >= XLEN_MAX {
             return Err(err("result would be too long a vector".into()));
         }
+        crate::memory::check_vector(rout as usize, crate::memory::Elt::Real)?;
         lout = Some(rout as i64);
     }
 
@@ -425,11 +438,12 @@ fn do_seq(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
             let ifrom = if miss_from { rfrom as i32 } else { as_integer(from.as_ref().unwrap()) } as i64;
             let iby = as_integer(&by) as i64;
             let nn = n as i64;
+            crate::memory::check_vector(nn as usize + 1, crate::memory::Elt::Int)?;
             let v: Vec<i32> = (0..=nn).map(|k| (ifrom + k * iby) as i32).collect();
             return Ok(Value::ints(v));
         }
         let nn = (n + FEPS) as i32 as i64;
-        let mut ra: Vec<f64> = Vec::with_capacity(nn as usize + 1);
+        let mut ra = crate::memory::try_vec::<f64>(nn as usize + 1, crate::memory::Elt::Real)?;
         if finite_del {
             for k in 0..=nn {
                 ra.push(rfrom + k as f64 * rby);
@@ -724,6 +738,7 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
         }
         if let Some(l) = len {
             if l > 0 && !x.is_null() {
+                check_lengthgets(&x, l)?;
                 return Ok(xlengthgets(&x, l));
             }
         }
@@ -771,6 +786,7 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     }
     let len = if each == 0 { 0 } else { len };
     let each = each.max(1);
+    crate::memory::check_vector(len, crate::memory::Elt::of(&x))?;
     let mut ans = rep4_value(&x, &times, len, each, nt);
     if let Value::Str(xn) = get_attrib(&x, s::NAMES) {
         if !xn.data.is_empty() {
@@ -817,6 +833,8 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         if s1.is_null() {
             return Err(Flow::error("unimplemented type 'NULL' in 'rep2'\n"));
         } else {
+            crate::memory::check_vector(total as usize, crate::memory::Elt::of(s1))?;
+            crate::memory::check_vector(total as usize, crate::memory::Elt::Real)?;
             let idx: Vec<usize> = t.iter().enumerate().flat_map(|(k, &c)| std::iter::repeat_n(k, c as usize)).collect();
             gather_all(s1, &idx)
         }
@@ -843,6 +861,8 @@ fn do_rep_int(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         if s1.is_null() {
             return Err(Flow::error("unimplemented type 'NULL' in 'rep3'\n"));
         } else {
+            crate::memory::check_vector(n * ns, crate::memory::Elt::of(s1))?;
+            crate::memory::check_vector(n * ns, crate::memory::Elt::Real)?;
             let idx: Vec<usize> = (0..n * ns).map(|k| k % ns).collect();
             gather_all(s1, &idx)
         }
@@ -903,10 +923,13 @@ fn do_rep_len(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     let ns = s1.len();
     if ns == 0 {
         if na > 0 {
+            check_lengthgets(s1, na)?;
             return Ok(xlengthgets(s1, na));
         }
         return Ok(s1.clone());
     }
+    crate::memory::check_vector(na, crate::memory::Elt::of(s1))?;
+    crate::memory::check_vector(na, crate::memory::Elt::Real)?;
     let idx: Vec<usize> = (0..na).map(|k| k % ns).collect();
     let mut a = gather_all(s1, &idx);
     factor_class_levels(s1, &mut a);

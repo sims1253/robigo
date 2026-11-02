@@ -327,6 +327,8 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
             i.warning("non-empty data for zero-extent matrix")?;
         }
     }
+    // GNU R has long vectors and only stops at allocVector.
+    crate::memory::check_vector((nr as f64 * nc as f64) as usize, crate::memory::Elt::of(&vals))?;
     if nr as f64 * nc as f64 > i32::MAX as f64 {
         return Err(Flow::error("too many elements specified"));
     }
@@ -336,6 +338,7 @@ fn do_matrix(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         if byrow == 0 {
             repeat_to_len(&vals, n)
         } else {
+            crate::memory::check_vector(n, crate::memory::Elt::Real)?;
             let mut idx = vec![0usize; n];
             let mut sidx = 0;
             for r in 0..nr {
@@ -387,6 +390,9 @@ fn do_array(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         return Err(Flow::error("'dims' cannot be of length 0"));
     }
     let d: f64 = dims.iter().map(|&x| x as f64).product();
+    if d > 0.0 {
+        crate::memory::check_vector(d as usize, crate::memory::Elt::of(&vals))?;
+    }
     if d > i32::MAX as f64 {
         return Err(Flow::error("too many elements specified"));
     }
@@ -438,6 +444,7 @@ fn do_diag(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     if mn > 0 && x.is_empty() {
         return Err(Flow::error("'x' must have positive length"));
     }
+    crate::memory::check_vector((nr as f64 * nc as f64) as usize, crate::memory::Elt::of(&x))?;
     if nr as f64 * nc as f64 > i32::MAX as f64 {
         return Err(Flow::error("too many elements specified"));
     }
@@ -956,6 +963,9 @@ fn matprod(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: u8) -> R
         1 => (ncx, ncy),
         _ => (nrx, nry),
     };
+    // R: array.c:do_matprod allocates its answer before anything else.
+    let elt = if complex { crate::memory::Elt::Cplx } else { crate::memory::Elt::Real };
+    crate::memory::check_vector((zr as f64 * zc as f64) as usize, elt)?;
     let mut ans = if complex {
         Value::cplxs(cprod(op, &cplx_of(&x), nrx, ncx, &cplx_of(&y), nry, ncy))
     } else {

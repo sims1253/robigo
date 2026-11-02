@@ -225,6 +225,40 @@ jobs:
           path: .robigo/results/
           retention-days: 14
 
+  # Mutated scripts and RDS files must never end the process
+  # (scripts/fuzz.py). A fixed seed keeps a pull request from failing on
+  # inputs its change has nothing to do with; main explores new ones.
+  fuzz:
+    needs: build
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: actions/download-artifact@v4
+        with:
+          name: robigo
+          path: dist
+      - run: chmod +x dist/robigo
+      - name: Parser and unserialize
+        env:
+          FUZZ_SEED: ${{ github.event_name == 'pull_request' && '0' || github.run_id }}
+        run: |
+          status=0
+          for target in parse rds; do
+            python3 scripts/fuzz.py "$target" --seconds 60 --jobs "$(nproc)" --robigo dist/robigo --seed "$FUZZ_SEED" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+          done
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: .robigo/fuzz
+
   # CRAN packages with compiled code (tests/cran/packages.tsv), installed
   # from source with robigo's own R_HOME and compared with GNU R 4.5.0's
   # recorded result (scripts/cran-gate.py; docs/verification.md).

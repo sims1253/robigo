@@ -656,6 +656,7 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         }
         return Ok(Value::Null);
     }
+    crate::memory::check_vector(n, crate::memory::Elt::of(x))?;
     length_gets(x, n)
 }
 
@@ -722,6 +723,17 @@ fn do_vector(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         None => return Err(Flow::error("vector: cannot make a vector of mode 'NA'.")),
     };
     let n = len as usize;
+    use crate::memory::{Elt, check_vector};
+    match mode {
+        "logical" => check_vector(n, Elt::Lgl)?,
+        "integer" => check_vector(n, Elt::Int)?,
+        "numeric" | "double" => check_vector(n, Elt::Real)?,
+        "complex" => check_vector(n, Elt::Cplx)?,
+        "character" => check_vector(n, Elt::Str)?,
+        "raw" => check_vector(n, Elt::Raw)?,
+        "list" | "expression" => check_vector(n, Elt::List)?,
+        _ => {}
+    }
     Ok(match mode {
         "logical" => Value::lgls(vec![FALSE; n]),
         "integer" => Value::ints(vec![0; n]),
