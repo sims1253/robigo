@@ -12,3 +12,8 @@ print(conditionCall(r))
 print(sub("[0-9]+", "N", conditionMessage(r)))
 print(tryCatch(g(1), CStackOverflowError = function(e) "c"))
 print(tryCatch(g(1), stackOverflowError = function(e) "so"))
+
+# options(error=) does not run for it, and the session still goes on
+options(error = quote(cat("must not run\n")), show.error.messages = FALSE)
+g(1)
+cat("continued\n")

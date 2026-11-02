@@ -364,7 +364,7 @@ fn validate(i: &mut Interp, name: &str, argi: Value) -> RResult<Value> {
         "error" => {
             if argi.is_function() {
                 Value::lang(argi, vec![])
-            } else if !argi.is_language() {
+            } else if !matches!(argi, Value::Lang(_) | Value::Expr(_)) {
                 return Err(invalid_value(name));
             } else {
                 argi

@@ -1,0 +1,10 @@
+# dump.frames from an options(error=) handler sees the stack of the error.
+f <- function(a) g(a * 2)
+g <- function(b) stop("dumped")
+options(error = function() utils::dump.frames())
+f(21)
+print(class(last.dump))
+print(names(last.dump))
+print(attr(last.dump, "error.message"))
+print(sapply(last.dump, class))
+print(get("b", envir = last.dump[[2]]))
