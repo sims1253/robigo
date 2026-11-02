@@ -14,6 +14,7 @@ use robigo_runtime::interp::Interp;
 use robigo_runtime::native::{Interface, NativeBridge, Routine};
 use robigo_runtime::value::{Arg, Value};
 use std::cell::Cell;
+use std::rc::Rc;
 
 fn routine(interface: Interface, addr: usize) -> Routine {
     Routine { package: "test".into(), name: "test".into(), interface, nargs: -1, addr }
@@ -83,6 +84,43 @@ unsafe extern "C" fn nothing() -> Sexp {
     unsafe { R_NilValue }
 }
 
+// ---- writes that replace what the evaluator may be reading ----------------
+
+unsafe extern "C" fn set_body(f: Sexp, body: Sexp) -> Sexp {
+    unsafe {
+        capi::memory::SET_BODY(f, body);
+        R_NilValue
+    }
+}
+
+unsafe extern "C" fn set_formals(f: Sexp, formals: Sexp) -> Sexp {
+    unsafe {
+        capi::memory::SET_FORMALS(f, formals);
+        R_NilValue
+    }
+}
+
+unsafe extern "C" fn shorten(x: Sexp) -> Sexp {
+    unsafe {
+        capi::memory::SETLENGTH(x, 1);
+        R_NilValue
+    }
+}
+
+unsafe extern "C" fn set_tag_attr(x: Sexp, value: Sexp) -> Sexp {
+    unsafe {
+        capi::attrib::Rf_setAttrib(x, capi::strings::Rf_install(c"tag".as_ptr()), value);
+        R_NilValue
+    }
+}
+
+unsafe extern "C" fn cut_spine(x: Sexp) -> Sexp {
+    unsafe {
+        capi::memory::SETCDR(x, R_NilValue);
+        R_NilValue
+    }
+}
+
 // ---- finalizers -----------------------------------------------------------
 
 thread_local! {
@@ -141,6 +179,90 @@ fn raising_altrep_conversions(i: &mut Interp) {
     assert_eq!(capi::unwind_depth(), 0);
 }
 
+fn eval_text(i: &mut Interp, text: &str) -> Value {
+    let exprs = robigo_runtime::builtins::parsing::parse_text(text, "<text>").ok().expect("parses");
+    let global = i.global.clone();
+    i.eval(&exprs[0], &global).ok().expect("evaluates")
+}
+
+/// What a write-back replaces stays alive until R is back at top level:
+/// the frames walking it can be above the outermost native call
+/// (`f <- function() h(f)` with `h` calling SET_BODY).
+fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
+    let global = i.global.clone();
+    let top_level = |i: &mut Interp| {
+        i.eval_toplevel(&Value::Null, &global, false);
+    };
+
+    // SET_BODY
+    let f = eval_text(i, "function(x) x + 1");
+    let Value::Closure(clo) = &f else { panic!("not a closure") };
+    let Value::Lang(old_body) = &clo.body else { panic!("not a call") };
+    let old_body = Rc::downgrade(old_body);
+    let new_body = eval_text(i, "quote(x * 2)");
+    let addr = set_body as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, addr, vec![f.clone(), new_body])), "(no error)");
+    let Value::Lang(body) = &clo.body else { panic!("not a call") };
+    assert_eq!(body.args.len(), 2, "the closure has its new body");
+    assert!(old_body.upgrade().is_some(), "the old body outlives the native call");
+    top_level(i);
+    assert!(old_body.upgrade().is_none(), "the old body is released at top level");
+
+    // SET_FORMALS: the first formals are shared with the `function` call
+    let pairlist = |name: &str| {
+        let y = Arg::new(Some(robigo_runtime::sym::Sym::new(name)), Value::missing_arg());
+        Value::Pairlist(Rc::new(robigo_runtime::value::Pairlist { items: vec![y], attrs: None }))
+    };
+    let addr = set_formals as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, addr, vec![f.clone(), pairlist("y")])), "(no error)");
+    let formals = Rc::downgrade(&clo.formals);
+    assert_eq!(message(call(i, Interface::Call, addr, vec![f.clone(), pairlist("z")])), "(no error)");
+    assert_eq!(&*clo.formals[0].tag.unwrap().name(), "z");
+    assert!(formals.upgrade().is_some(), "the old formals outlive the native call");
+    top_level(i);
+    assert!(formals.upgrade().is_none(), "the old formals are released at top level");
+
+    // SETLENGTH on a list: its buffer is replaced
+    let (first, second) = (Value::reals(vec![1.0, 2.0]), Value::reals(vec![3.0, 4.0]));
+    let Value::Real(rc) = &second else { unreachable!() };
+    let element = Rc::downgrade(rc);
+    let list = Value::list(vec![first, second]);
+    let addr = shorten as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, addr, vec![list.clone()])), "(no error)");
+    let Value::List(l) = &list else { unreachable!() };
+    assert_eq!(l.data.len(), 1);
+    assert!(element.upgrade().is_some(), "the old buffer outlives the native call");
+    top_level(i);
+    assert!(element.upgrade().is_none(), "the old buffer is released at top level");
+
+    // attributes: the box is replaced
+    let x = Value::reals(vec![1.0]);
+    let addr = set_tag_attr as *const () as usize;
+    let old = Value::reals(vec![2.0]);
+    let Value::Real(rc) = &old else { unreachable!() };
+    let old_attr = Rc::downgrade(rc);
+    assert_eq!(message(call(i, Interface::Call, addr, vec![x.clone(), old])), "(no error)");
+    assert_eq!(message(call(i, Interface::Call, addr, vec![x.clone(), Value::Null])), "(no error)");
+    assert!(x.attrs().is_none_or(|a| a.0.is_empty()), "the attribute is gone");
+    assert!(old_attr.upgrade().is_some(), "the old attributes outlive the native call");
+    top_level(i);
+    assert!(old_attr.upgrade().is_none(), "the old attributes are released at top level");
+
+    // a pairlist whose spine got shorter: the runtime's write-back swaps it
+    let second = Value::reals(vec![3.0, 4.0]);
+    let Value::Real(rc) = &second else { unreachable!() };
+    let element = Rc::downgrade(rc);
+    let cells = vec![Arg::pos(Value::reals(vec![1.0])), Arg::pos(second)];
+    let pairlist = Value::Pairlist(Rc::new(robigo_runtime::value::Pairlist { items: cells, attrs: None }));
+    let addr = cut_spine as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, addr, vec![pairlist.clone()])), "(no error)");
+    let Value::Pairlist(p) = &pairlist else { unreachable!() };
+    assert_eq!(p.items.len(), 1);
+    assert!(element.upgrade().is_some(), "the old spine outlives the native call");
+    top_level(i);
+    assert!(element.upgrade().is_none(), "the old spine is released at top level");
+}
+
 /// A finalizer is C code like any other: gc() must not leave the stack
 /// scan off while it runs, or a collection inside it misses its locals.
 fn finalizers_run_with_the_stack_scanned(i: &mut Interp) {
@@ -163,6 +285,7 @@ fn the_bridge() {
         unsafe { core().set_torture(true) };
     }
     finalizers_run_with_the_stack_scanned(i);
+    replaced_objects_outlive_the_evaluation(i);
     protect_overflow(i);
     raising_altrep_conversions(i);
 }

@@ -23,6 +23,7 @@ use robigo_runtime::interp::Interp;
 use robigo_runtime::native::{Interface, NativeBridge, Routine};
 use robigo_runtime::sym::{Sym, s};
 use robigo_runtime::value::*;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -86,6 +87,36 @@ thread_local! {
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
     static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// What C code replaced in runtime objects (see [`retire`]).
+    static RETIRED: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Replace a field of a runtime object C code changed through an alias,
+/// keeping the old value alive until R is back at top level.
+///
+/// C writes bypass copy-on-modify, but the evaluator walks these objects by
+/// reference: `eval(ex)` walks `ex.data` while `h(ex)` calls a routine on
+/// it, and a closure's body and compiled code are running while
+/// `SET_BODY` replaces them. Those frames can be above the outermost native
+/// call, so nothing short of top level proves they are gone. Only what a
+/// routine changed comes here, and only until the current top-level
+/// expression ends.
+unsafe fn retire<T: 'static>(slot: *mut T, new: T) {
+    let old = std::ptr::replace(slot, new);
+    RETIRED.with(|r| r.borrow_mut().push(Box::new(old)));
+}
+
+/// Move what `slot` holds to [`RETIRED`], leaving a copy for the runtime's
+/// write-back to replace.
+unsafe fn retire_copy<T: Clone + 'static>(slot: *mut T) {
+    retire(slot, (*slot).clone());
+}
+
+/// A closure's compiled forms, which the VM runs by reference.
+unsafe fn retire_code(p: *mut Closure) {
+    retire(&raw mut (*p).code, Default::default());
+    retire(&raw mut (*p).inline, Default::default());
+    retire(&raw mut (*p).defaults, Default::default());
 }
 
 /// Publish `interp` for the callbacks of the C code about to run. The
@@ -1414,40 +1445,35 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
                 Value::Pairlist(p) => p.items.clone(),
                 _ => Vec::new(),
             };
-            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
-            (*p).formals = items.into();
-            (*p).code.take();
-            (*p).inline.take();
-            (*p).defaults.take();
+            let p = Rc::as_ptr(c).cast_mut();
+            retire(&raw mut (*p).formals, items.into());
+            retire_code(p);
         }
         (Value::Closure(c), 1) => {
-            let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
+            let p = Rc::as_ptr(c).cast_mut();
             #[cfg(feature = "bytecode-fidelity")]
             match from_sexp(y) {
                 Value::Bytecode(b) => {
-                    (*p).body = b.expression.clone();
-                    (*p).gnu_bytecode = Some(b);
+                    retire(&raw mut (*p).body, b.expression.clone());
+                    retire(&raw mut (*p).gnu_bytecode, Some(b));
                     (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
                 }
                 val => {
-                    (*p).body = val;
-                    (*p).gnu_bytecode = None;
+                    retire(&raw mut (*p).body, val);
+                    retire(&raw mut (*p).gnu_bytecode, None);
                     (*p).jit = Default::default();
                 }
             }
             #[cfg(not(feature = "bytecode-fidelity"))]
             {
-                (*p).body = from_sexp(y);
+                retire(&raw mut (*p).body, from_sexp(y));
                 (*p).jit = Default::default();
             }
-            (*p).code.take();
-            (*p).inline.take();
-            (*p).defaults.take();
+            retire_code(p);
         }
         (Value::Closure(c), 2) => {
             if let Value::Env(e) = from_sexp(y) {
-                let p = Rc::as_ptr(c) as *mut robigo_runtime::value::Closure;
-                (*p).env = e;
+                retire(&raw mut (*Rc::as_ptr(c).cast_mut()).env, e);
             }
         }
         (Value::Promise(pr), 0) => {
@@ -1458,9 +1484,9 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
             }
         }
         (Value::Promise(pr), 1) => {
-            let p = Rc::as_ptr(pr) as *mut robigo_runtime::value::Promise;
-            (*p).expr = from_sexp(y);
-            (*p).code = None;
+            let p = Rc::as_ptr(pr).cast_mut();
+            retire(&raw mut (*p).expr, from_sexp(y));
+            retire(&raw mut (*p).code, None);
         }
         (Value::Promise(pr), 2) => {
             *pr.env.borrow_mut() = if y == R_NilValue {
@@ -1707,15 +1733,13 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
         let new = box_attrs(x, originals);
         if !same_attrs(&rc.attrs, &new) {
-            let p = Rc::as_ptr(rc) as *mut Vector<T>;
-            (*p).attrs = new;
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }
     }
     // Only what the routine changed is stored, in the buffer the object
     // has: this runs on every argument of every call, and the running R
     // code can be the object itself (`eval(ex)` walks `ex` while `h(ex)`
-    // calls a routine on it), so replacing a buffer here frees memory the
-    // evaluator is reading.
+    // calls a routine on it), so a buffer that must change is retired.
     match v {
         Value::Str(rc) => {
             let same = |a: &RStr, b: &RStr| match (a, b) {
@@ -1733,8 +1757,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 }
             } else {
                 let data = (0..n).map(|j| rstr_of(STRING_ELT(x, j))).collect();
-                let p = Rc::as_ptr(rc) as *mut Vector<RStr>;
-                (*p).data = data;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
         Value::List(rc) | Value::Expr(rc) => {
@@ -1748,28 +1771,41 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 }
             } else {
                 let data = (0..n).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
-                let p = Rc::as_ptr(rc) as *mut Vector<Value>;
-                (*p).data = data;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
         // R: memory.c:SETCAR/SETCDR/SET_TAG on a LISTSXP/LANGSXP chain.
         // The routine mutated the caller's own cells, so the runtime spine
         // is rewritten in place: every alias keeps the object and sees it.
-        Value::Pairlist(_) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
+        Value::Pairlist(rc) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
             let items = pair_items_converted(x, originals);
             let mut attrs = attrs_converted(x, originals);
             if x.gp() & gp::S4 != 0 {
                 attrs.get_or_insert_with(Default::default).1 = true;
             }
+            let p = Rc::as_ptr(rc).cast_mut();
+            if items.len() != rc.items.len() {
+                retire_copy(&raw mut (*p).items);
+            }
+            if !same_attrs(&rc.attrs, &attrs) {
+                retire_copy(&raw mut (*p).attrs);
+            }
             v.set_pairlist_cells_through_alias(items, attrs);
         }
-        Value::Lang(_) if x.typ() == LANGSXP => {
+        Value::Lang(rc) if x.typ() == LANGSXP => {
             let fun = converted(x.car(), originals);
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             let args = pair_items_converted(x.cdr(), originals);
             let mut attrs = attrs_converted(x, originals);
             if x.gp() & gp::S4 != 0 {
                 attrs.get_or_insert_with(Default::default).1 = true;
+            }
+            let p = Rc::as_ptr(rc).cast_mut();
+            if args.len() != rc.args.len() {
+                retire_copy(&raw mut (*p).args);
+            }
+            if !same_attrs(&rc.attrs, &attrs) {
+                retire_copy(&raw mut (*p).attrs);
             }
             v.set_lang_cells_through_alias(fun, fun_tag, args, attrs);
         }
@@ -1798,16 +1834,14 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Closure(rc) => {
             let new = box_attrs(x, originals);
             if !same_attrs(&rc.attrs, &new) {
-                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Closure;
-                (*p).attrs = new;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
             }
         }
         #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) => {
             let new = box_attrs(x, originals);
             if !same_attrs(&rc.attrs, &new) {
-                let p = Rc::as_ptr(rc) as *mut robigo_runtime::value::Bytecode;
-                (*p).attrs = new;
+                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
             }
         }
         Value::Env(e) => {
@@ -2265,6 +2299,15 @@ impl NativeBridge for Bridge {
             R_PPStackTop = base;
             r.map(|_| ())
         })
+    }
+
+    /// No evaluator frame is left, so nothing walks what C code replaced.
+    fn at_top_level(&self) {
+        if RETIRED.with(|r| !r.borrow().is_empty()) {
+            drop(RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut())));
+            // The bridge held the last reference of some of it.
+            robigo_runtime::env::Env::mark_cycle_dirty();
+        }
     }
 
     fn finalizers_active(&self) -> bool {
