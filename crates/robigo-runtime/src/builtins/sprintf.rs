@@ -94,7 +94,8 @@ pub fn cfmt_int(sp: &CSpec, v: i32) -> String {
     // `%d`/`%05d` in hot code. glibc pads with zeros after the sign.
     if matches!(sp.conv, b'd' | b'i') && sp.prec.is_none() && !sp.alt {
         let neg = v < 0;
-        let mut m = (v as i64).unsigned_abs();
+        // u32 holds |i32::MIN|; its at most 10 digits fill `buf` exactly.
+        let mut m = v.unsigned_abs();
         let mut buf = [0u8; 10];
         let mut i = buf.len();
         loop {
@@ -105,45 +106,31 @@ pub fn cfmt_int(sp: &CSpec, v: i32) -> String {
                 break;
             }
         }
-        let digits = &buf[i..];
+        // ASCII digits by construction.
+        let digits = std::str::from_utf8(&buf[i..]).unwrap();
         let sign = if neg {
-            '-'
+            Some('-')
         } else if sp.plus {
-            '+'
+            Some('+')
         } else if sp.space {
-            ' '
+            Some(' ')
         } else {
-            '\0'
+            None
         };
-        let total = digits.len() + usize::from(sign != '\0');
+        let total = digits.len() + usize::from(sign.is_some());
         let width = sp.width;
         let mut out = String::with_capacity(width.max(total));
-        if total >= width {
-            if sign != '\0' {
-                out.push(sign);
-            }
-            out.push_str(std::str::from_utf8(digits).unwrap());
-        } else {
-            let pad = width - total;
-            if sp.minus {
-                if sign != '\0' {
-                    out.push(sign);
-                }
-                out.push_str(std::str::from_utf8(digits).unwrap());
-                out.push_str(&" ".repeat(pad));
-            } else if sp.zero {
-                if sign != '\0' {
-                    out.push(sign);
-                }
-                out.push_str(&"0".repeat(pad));
-                out.push_str(std::str::from_utf8(digits).unwrap());
-            } else {
-                out.push_str(&" ".repeat(pad));
-                if sign != '\0' {
-                    out.push(sign);
-                }
-                out.push_str(std::str::from_utf8(digits).unwrap());
-            }
+        // Padding is ASCII, so byte length is the column count.
+        if total < width && !sp.minus && !sp.zero {
+            out.extend(std::iter::repeat_n(' ', width - total));
+        }
+        out.extend(sign);
+        if total < width && !sp.minus && sp.zero {
+            out.extend(std::iter::repeat_n('0', width - total));
+        }
+        out.push_str(digits);
+        if total < width && sp.minus {
+            out.extend(std::iter::repeat_n(' ', width - total));
         }
         return out;
     }
@@ -777,6 +764,11 @@ mod tests {
         assert_eq!(f("%#o", CArg::Int(8)), "010");
         assert_eq!(f("%x", CArg::Int(-1)), "ffffffff");
         assert_eq!(f("%.0d", CArg::Int(0)), "");
+        assert_eq!(f("%d", CArg::Int(i32::MIN)), "-2147483648");
+        assert_eq!(f("%012d", CArg::Int(i32::MIN)), "-02147483648");
+        assert_eq!(f("%-13d", CArg::Int(i32::MIN)), "-2147483648  ");
+        assert_eq!(f("%+06d", CArg::Int(42)), "+00042");
+        assert_eq!(f("% 6d", CArg::Int(42)), "    42");
     }
 
     #[test]
