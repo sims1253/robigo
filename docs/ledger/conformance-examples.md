@@ -330,3 +330,41 @@ Marked: `tools/xgettext`, `utils/cite`, `tools/bibstyle`,
   robigo printed three and one.
 
 Marked: `base/trace`, `base/make.unique`, `methods/cbind2`.
+
+## 2026-11-02: bytecode inheritance, environment<- decompile, ascii save (5 cases)
+
+- **Closures created by installed (namespace) code printed without bytecode**
+  (`stats/power`, `stats/stepfun`): GNU R runs a namespace function's
+  installed bytecode, and the compiler emits nested `function(...)` literals
+  as MAKECLOSURE constants, so closures a compiled body creates are compiled
+  (`quasi(link = power(1/3))$linkfun` prints `<bytecode: ...>`). robigo's
+  `jit_inherit` gave them IGNORE (no bytecode marker). The IGNORE arm now
+  marks them INHERITED like COMPILED creators.
+- **Formal defaults must stay interpreted** (keeps `utils::strOptions()$formatNum`
+  right, and `make.link`'s closures after their `environment<-`):
+  formals are never compiled, so closures created while a default is forced
+  take no JIT state. `Promise.default` marks them; `force_promise` pushes the
+  promise's env onto a rjit stack and `jit_inherit` leaves closures created
+  there UNSEEN.
+- **`environment<-` decompiles** (builtin.c:do_envirgets: `SET_BODY(s,
+  R_ClosureExpr(s))`): robigo now resets the closure's JIT state (keeping
+  the trace bit), so `make.link`'s `environment(linkfun) <- asNamespace()`
+  closures print without bytecode, matching GNU R.
+- **ASCII serialization entry points** (`base/readRDS`, `base/save`):
+  serialize.rs already had the exact OutInteger/OutReal/OutString ASCII
+  writer (`serialize_ascii`), but `serialize`, `serializeToConn` and
+  `saveToConn` refused `ascii = TRUE`. Wired up (plus R_Serialize's
+  "version %d not supported" after the two format bytes, as in
+  do_save_to_file); asciihex (`%a` reals) still errors explicitly.
+  `unserialize(con)` came in with #249 while this round was in flight.
+
+New test `tests/r/lang/closure-bytecode-inherit.R` (oracle-recorded) covers
+all three rules. Local note: `cargo test -p robigo-runtime`'s two
+`c_library_*_oracle` tests fail on this laptop only (host glibc csqrt is
+1 ulp off the Debian-recorded oracle; same host drift as the missing
+libicuuc.so.76). GNU R 4.5.0's `R_unserialize` errors on character input
+("character vectors are no longer accepted by unserialize()"); robigo's
+`.Internal(unserialize)` still accepts strings (as #249 left it) — left
+alone here.
+
+Metric: gnur-examples 1,098 -> 1,103 marked (base/connections was #249's).

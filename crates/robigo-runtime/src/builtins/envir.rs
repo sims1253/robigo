@@ -211,7 +211,13 @@ fn do_set_environment(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env)
         let Value::Env(e) = e else {
             return Err(Flow::error("use of NULL environment is defunct"));
         };
-        Rc::make_mut(c).env = e;
+        let cc = Rc::make_mut(c);
+        // R: builtin.c:do_envirgets switches a compiled body to its
+        // interpreted version when the environment changes.
+        let traced = cc.jit.traced();
+        cc.jit = crate::vm::JitState::default();
+        cc.jit.set_traced(traced);
+        cc.env = e;
         Ok(f)
     } else if matches!(f, Value::Builtin(_)) && !e.is_null() {
         i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")?;
