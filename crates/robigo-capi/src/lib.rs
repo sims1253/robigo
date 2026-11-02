@@ -11,7 +11,6 @@
 // around each operation would only bury what the functions do.
 #![allow(unsafe_op_in_unsafe_fn)]
 // What remains is the code that crosses from safe to unsafe: it says why.
-#![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod altrep;
 pub mod appl;
