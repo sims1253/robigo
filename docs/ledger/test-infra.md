@@ -138,3 +138,20 @@
 - The corpus ratchets' per-PR diffs now list files instead of lines;
   `scripts/corpus.py absorb` creates a few hundred files for a big
   fastr shard, which is the intended shape.
+
+## CRAN gate time limits (#200)
+
+- A C API bug can present as a hang, and neither `scripts/cran-gate.py`
+  nor the `cran` job had a limit, so a hang lasted GitHub's 6 hours.
+- Measured: the gate step takes 47-61 s on CI for fastmap and digest,
+  compiling included. Limits: 600 s per test step, 900 s per install,
+  overridable through `ROBIGO_CRAN_{TEST,INSTALL}_TIMEOUT`.
+  `timeout-minutes: 60` sits above the worst case of every step hanging,
+  so the per-step outcome is what reports.
+- Measured: `systemd-run --user --scope` execs the command, keeping PID,
+  PGID and SID, so `killpg` reaches the tree under the memory cap too.
+- Sol found the test failing in CI's kind of container: without an init
+  nothing reaps the orphan, and `os.kill(pid, 0)` finds a zombie. The test
+  reads the state from `/proc/PID/stat`. Reproduced in the oracle image.
+- Proved with a hanging fake robigo and a real CRAN fetch: `fastmap 1.2.0:
+  TIMEOUT (install after 2s)`, exit 1, no survivors.
