@@ -1,7 +1,7 @@
 //! Type coercion between vector types (GNU R's coerce.c).
 
 use crate::error::{Flow, RResult};
-use crate::format::string_from_real;
+use crate::format::{string_from_real_dec, string_from_real_default};
 use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
@@ -333,8 +333,8 @@ pub fn cplx_to_str(z: Complex) -> RStr {
     let mut s = crate::format::encode_complex(z, r, i, "NA");
     // R: format.c:EncodeComplex reads the global `OutDec` like EncodeReal0.
     let dec = crate::format::out_dec();
-    if dec != "." {
-        s = s.replace('.', &dec);
+    if !dec.is_default() {
+        s = s.replace('.', dec.as_str());
     }
     // as.character drops trailing zeros in each part.
     Some(crate::value::RString::from(s.as_str()))
@@ -559,7 +559,16 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
         Value::Null => vec![],
         Value::Lgl(x) => x.data.iter().map(|&l| lgl_to_str(l)).collect(),
         Value::Int(x) => x.data.iter().map(|&i| int_to_str(i)).collect(),
-        Value::Real(x) => x.data.iter().map(|&d| string_from_real(d)).collect(),
+        Value::Real(x) => {
+            // R's StringFromReal re-reads the OutDec C global per element;
+            // reading our thread-local once per vector gives the same result.
+            let dec = crate::format::out_dec();
+            if dec.is_default() {
+                x.data.iter().map(|&d| string_from_real_default(d)).collect()
+            } else {
+                x.data.iter().map(|&d| string_from_real_dec(d, dec)).collect()
+            }
+        }
         Value::Cplx(x) => x.data.iter().map(|&z| cplx_to_str(z)).collect(),
         Value::Str(x) => x.data.clone(),
         Value::Raw(x) => x.data.iter().map(|b| rstr(&format!("{:02x}", b))).collect(),
