@@ -109,3 +109,13 @@
 - Gap: `qr()` of a complex matrix still needs `La_qr_cmplx` (zgeqp3); recorded in `tests/r/linalg/qr-cmplx.R` (GNU R 4.5.0 output, deliberately unmarked).
 - Result: 31,259 of 31,374 pass on this branch (+8 cases, 0 regressions); `TestBuiltin_qr` is 18/18.
 - Status: kept (PR pending).
+
+## 2026-11-02: round 10 - pairlists print their attributes
+
+- Topic: `builtins/TestBuiltin_asvector` (4 cases)
+- Diagnosis: `print` rebuilt a pairlist as a plain list to get the `$tag` headers and kept only the derived names, dropping every other attribute. GNU R's `PrintValueRec` (`src/main/print.c:909`) calls `printList` and then falls through to `printAttributes`, which hides only the structural attributes (names for a non-array, dim/dimnames for a list).
+- Changes:
+  - `crates/robigo-runtime/src/print.rs`: the LISTSXP arm now carries the pairlist's attributes (minus the names entry, which is derived from the tags) onto the list it prints.
+  - `tests/r/lang/pairlist-print.R` pins the named and unnamed pairlist cases, both `as.vector` modes, the `parse()` expression, and that a class attribute is still printed after the elements.
+- Result: +4 cases over main (31,263 of 31,374 by the ratchet), 0 regressions; the print/pairlist/aslist slice of the fastr corpus is 416/416.
+- Status: kept (PR pending).
