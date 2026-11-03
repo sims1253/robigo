@@ -296,6 +296,13 @@ impl Env {
         hashed.then(|| self.with_table(|h| h.size as usize))
     }
 
+    /// A hashed environment's `HASHPRI` (`STDVEC_TRUELENGTH` of its table,
+    /// which `R_HashSet` counts per new binding, not per newly used chain).
+    pub fn hash_pri(&self) -> Option<i32> {
+        let hashed = self.0.frame().borrow().hashed;
+        hashed.then(|| self.with_table(|h| h.pri as i32))
+    }
+
     /// The chains of a hashed environment's table, head first (what
     /// `serialize()` writes as its `HASHTAB`).
     pub fn hash_chains(&self) -> Option<Vec<Vec<Sym>>> {
