@@ -239,10 +239,20 @@ fn do_import_into_env(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRe
 
 fn do_attach(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let what = arg(&args, 0);
-    let pos = crate::coerce::as_integer(&arg(&args, 1));
-    let name = arg(&args, 2);
+    // R: envir.c:do_attach — asInteger (whose coercion warnings fire) and
+    // isValidStringF, both with plain error(), reported against the
+    // calling closure.
+    let pos_v = i.coerce(&arg(&args, 1), VType::Int)?;
+    let pos = match &pos_v {
+        Value::Int(v) if !v.data.is_empty() => v.data[0],
+        _ => NA_INTEGER,
+    };
     if pos == NA_INTEGER {
-        return Err(Flow::error_call(call.clone(), "'pos' must be an integer"));
+        return Err(Flow::error("'pos' must be an integer"));
+    }
+    let name = arg(&args, 2);
+    if !matches!(&name, Value::Str(s) if !s.data.is_empty() && s.data[0].is_some()) {
+        return Err(Flow::error("invalid 'name' argument"));
     }
     let new = Env::new(None);
     // R: envir.c:do_attach: the frame is the list's elements in order, or

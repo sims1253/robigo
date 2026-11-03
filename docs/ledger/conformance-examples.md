@@ -345,18 +345,19 @@ character boundary within the 10 bytes). builtin.c:1006's other
 
 Marked: `base/Trig`. Local: fastr's bind/matrix slice 334/336, no regressions.
 
-## 2026-11-02: env.profile (1 case)
+## 2026-11-02: cbind/rbind deparse.level=2 tags are abbreviated (1 case)
 
-`base/environment`'s `with(env.profile(eh), stopifnot(size == length(counts)))`
-failed on a NULL stub (`do_null1` in misc.rs shadowed every other
-registration). Ported envir.c:do_envprofile over robigo's faithful hash-table
-model: size = table size, nchains = the table's HASHPRI (`STDVEC_TRUELENGTH`,
-which R_HashSet increments for every new binding, not every newly-used chain —
-robigo's HashShape.pri already models this), counts = per-chain lengths; NULL
-for an unhashed environment, `argument must be a hashed environment` for a
-non-environment. Verified against the oracle for size 5 grown to 47 with 40
-bindings (nchains 35, identical collision pattern) and a fresh 29-bucket
-table. Marked: `base/environment`.
+`base/Trig`'s dimnames `cos(pi * x...` are not printarray truncation: bind.c
+builds deparse.level=2 tags with `deparse1line(expr, TRUE)`, whose abbrev arm
+(deparse.c:deparse1WithCutoff) keeps the first 10 **bytes** of the deparsed
+first line and appends "..." when it was longer — `cos(pi * x)` (11 bytes)
+becomes `cos(pi * x...`. robigo's `bind_name` deparsed without the abbrev;
+`deparse::deparse_one_line_abbrev` ports it (a mid-character byte cut cannot
+be represented in robigo's UTF-8 strings, so the cut ends at the last
+character boundary within the 10 bytes). builtin.c:1006's other
+`deparse1line(_, TRUE)` user (formals' default display) is not ported yet.
+
+Marked: `base/Trig`. Local: fastr's bind/matrix slice 334/336, no regressions.
 
 ## 2026-11-02: env.profile (1 case)
 

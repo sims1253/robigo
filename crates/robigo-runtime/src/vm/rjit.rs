@@ -109,6 +109,11 @@ impl JitState {
 
     pub fn set_traced(&self, on: bool) {
         let v = self.0.get() & !TRACED;
+        // (Native code for a call tree holding this closure is revalidated.
+        // Only for a change: every guard memo depends on the epoch.)
+        if on != self.traced() {
+            crate::env::bump_search_epoch();
+        }
         self.0.set(if on { v | TRACED } else { v });
     }
 
