@@ -471,6 +471,16 @@ fn complex_assign_inner(
     pre: Option<&[Value]>,
     rhs_call: Option<&Value>,
 ) -> RResult<()> {
+    // In-place path for nested assignments over list containers
+    // (`a$x[[1]] <- v`): R mutates the element without copying. It runs
+    // before any value is acquired (it takes the binding itself and
+    // restores it on every fallback), so no other path pays for it.
+    if levels.len() >= 2 && !superassign && !env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0) {
+        if let Some(r) = complex_assign_inplace(interp, levels, target, rhs.clone(), env, pre) {
+            return r;
+        }
+    }
+
     // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
     // environment. Preserve the error signaled there, including its call.
     let base_val = if superassign {
@@ -501,31 +511,7 @@ fn complex_assign_inner(
         }
     }
 
-    // In-place path for nested assignments over list containers
-    // (`a$x[[1]] <- v`): R mutates the element without copying. It needs
-    // the binding as the only reference, so it runs before `base_val`'s
-    // clone is taken (the general path re-acquires on fallback).
-    if !superassign && !active {
-        drop(base_val);
-        if let Some(r) = complex_assign_inplace(interp, levels, target, rhs.clone(), env, pre) {
-            return r;
-        }
-    } else {
-        drop(base_val);
-    }
-
     // General path, with `*tmp*` bound to intermediate values.
-    let base_val = if superassign {
-        let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        interp.eval(&Value::Sym(target), &parent)?
-    } else if env.has_local(target) {
-        interp.eval(&Value::Sym(target), env)?
-    } else {
-        let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        let v = interp.eval(&Value::Sym(target), &parent)?;
-        interp.define(target, v.clone(), env)?;
-        v
-    };
     let mut vals: Vec<Value> = vec![base_val];
     // Evaluate getters for all levels except the outermost.
     for i in (1..levels.len()).rev() {

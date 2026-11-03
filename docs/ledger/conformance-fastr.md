@@ -188,3 +188,15 @@
 - Verification: `tests/r/lang/complex-assign-inplace.R` (recorded in `robigo-oracle:4.5.0`) — four sink-captured tracemem scenarios print no report, alias isolation, a three-level chain, name-keyed `[[`, `[[<-.foo` dispatch, and error restore — robigo is byte-identical to GNU R on all of them. fastr slices (`TestSimpleLists|TestSimpleAssignment|TestSimple*|classassign|extract_replace|dqr|TestStackBuiltins`): 0 regressions; TestSimpleLists all pass.
 - Perf (callgrind instr, vs a fresh origin/main control): binarytrees +0.012%, closures +0.064%, fannkuch +0.004%, nbody +0.016%.
 - Status: kept (PR pending).
+
+## 2026-11-03: round 17 addendum - the VM tier's register cache blocks uniqueness
+
+(An earlier shape of the change double-evaluated the target for every complex assignment, which CI's perf gate measured as +0.775% on `rbench/shootout/nbody_naive_2` — its hot loop is a `body_v[, i] <<- ...` superassignment. The attempt now runs before any acquisition, so the other paths pay nothing.)
+
+Debugging the stacked tracemem round showed the take-out works at the interpreter level but the element still has count 3 when the replacement runs in the VM tier: `Op::SetDollar`/`SetIndex` code keeps **unboxed register caches** of values it evaluated (`tracemem(b$x)`'s argument and the previous assignment's result sit in `regs` for the life of the code object), so `sole_allocation` fails and the path falls back to the general (copying) path. The interpreter-level path engages only where no register cached the element; GNU R's refcounting has no such holders (its registers PROTECT rather than REFCNT).
+
+Completing the fix for the corpus needs one of:
+- vm.rs register-lifetime work: release (or re-box) element caches around complex assignments — perf-critical (the #252 lesson applies; measure fannkuch/nbody/binarytrees/closures);
+- or an object-model change (elements reachable through shared storage with interior mutability) — a DESIGN DECISION.
+
+Until then #272 stays parked: its 5 `TestSimpleLists` regressions are exactly this copy, now understood and instrumented.
