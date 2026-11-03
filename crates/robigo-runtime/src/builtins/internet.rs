@@ -2,16 +2,18 @@
 //! libcurl.c `in_do_curlDownload`, over the system's libcurl, which is
 //! opened with `dlopen` on first use (robigo does not link against it).
 
-use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_long, c_uint, c_void};
 
 use super::{arg, internal};
 use crate::coerce::{as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
+use crate::sym::Sym;
 use crate::value::*;
 
-pub static DEFS: &[Builtin] = &[internal("curlDownload", do_curldownload, 6)];
+pub static DEFS: &[Builtin] =
+    &[internal("curlDownload", do_curldownload, 6), internal("curlVersion", do_curl_version, 0)];
 
 type Curl = c_void;
 type CurlM = c_void;
@@ -56,6 +58,26 @@ struct CurlMsg {
     msg: c_int,
     easy_handle: *mut Curl,
     result: c_int,
+}
+
+/// `curl_version_info_data` through `libssh_version` (curl.h; every field
+/// beyond it is guarded by `age`, which in_do_curlVersion never reads).
+#[repr(C)]
+struct CurlVersionInfo {
+    age: c_int,
+    version: *const c_char,
+    version_num: c_uint,
+    host: *const c_char,
+    features: c_int,
+    ssl_version: *const c_char,
+    ssl_version_num: c_long,
+    libz_version: *const c_char,
+    protocols: *const *const c_char,
+    ares: *const c_char,
+    ares_num: c_int,
+    libidn: *const c_char,
+    iconv_ver_num: c_int,
+    libssh_version: *const c_char,
 }
 
 #[allow(non_snake_case)]
@@ -125,6 +147,46 @@ fn lib() -> Option<&'static Lib> {
         })
     })
     .as_ref()
+}
+
+/// `libcurlVersion()`: the linked libcurl's version, SSL and libssh versions
+/// and protocols. Without libcurl, an empty string.
+// R: modules/internet/libcurl.c in_do_curlVersion
+fn do_curl_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let cstr = |p: *const c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            // SAFETY: libcurl's strings are NUL-terminated and live forever.
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    let Some(lib) = lib() else { return Ok(Value::strs_from([""])) };
+    // SAFETY: curl_version_info returns a pointer to libcurl's static data.
+    let d = unsafe { (lib.version_info)(CURLVERSION_NOW) as *const CurlVersionInfo };
+    if d.is_null() {
+        return Ok(Value::strs_from([""]));
+    }
+    // SAFETY: `d` is libcurl's static struct, valid for the process.
+    let d = unsafe { &*d };
+    let mut ans = Value::strs_from([cstr(d.version)]);
+    let ssl = if d.ssl_version.is_null() { "none".to_string() } else { cstr(d.ssl_version) };
+    ans.set_attr_raw(Sym::new("ssl_version"), Value::strs_from([ssl]));
+    let ssh = if d.age >= 3 { cstr(d.libssh_version) } else { String::new() };
+    ans.set_attr_raw(Sym::new("libssh_version"), Value::strs_from([ssh]));
+    // SAFETY: protocols is a NULL-terminated array of static strings.
+    let mut protocols = Vec::new();
+    if !d.protocols.is_null() {
+        let mut p = d.protocols;
+        // SAFETY: the array is NULL-terminated.
+        while unsafe { !(*p).is_null() } {
+            // SAFETY: each element is a static NUL-terminated string.
+            protocols.push(cstr(unsafe { *p }));
+            p = unsafe { p.add(1) };
+        }
+    }
+    ans.set_attr_raw(Sym::new("protocols"), Value::strs_from(protocols));
+    Ok(ans)
 }
 
 fn http_errstr(status: c_long) -> &'static str {
