@@ -113,6 +113,11 @@ unsafe fn retire<T: 'static>(slot: *mut T, new: T) {
     RETIRED.with(|r| r.borrow_mut().push(Box::new(old)));
 }
 
+/// [`retire`] for C's promise-field writes (SET_PRCODE).
+pub(crate) unsafe fn retire_field<T: 'static>(slot: *mut T, new: T) {
+    retire(slot, new)
+}
+
 /// Move what `slot` holds to [`RETIRED`], leaving a copy for the runtime's
 /// write-back to replace.
 unsafe fn retire_copy<T: Clone + 'static>(slot: *mut T) {
@@ -579,6 +584,92 @@ fn identical_attrs(a: &AttrBox, b: &AttrBox) -> bool {
 thread_local! {
     static HOST_WEAK_REFS: Cell<bool> = const { Cell::new(false) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
+    /// C-assembled promise nodes converted by `from_sexp`, by node
+    /// address. The weak reference plus the promise's `STORED` entry
+    /// (keyed by the promise's address, the same as the Rc's) keep the
+    /// association exactly as long as anything references the promise:
+    /// `sweep_stored` releases the preserved node once the last
+    /// reference is gone, and a rebuilt entry reads the node's current
+    /// fields, so a reused node address converts correctly.
+    static CPROMISE_MEMO: RefCell<std::collections::HashMap<usize, std::rc::Weak<robigo_runtime::value::Promise>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// The memoized runtime promise of a C-assembled promise node, if any.
+pub(crate) fn cpromise_memo_get(x: Sexp) -> Option<Rc<robigo_runtime::value::Promise>> {
+    CPROMISE_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.get(&x.addr()).and_then(|w| w.upgrade()) {
+            Some(p) => Some(p),
+            None => {
+                m.remove(&x.addr());
+                None
+            }
+        }
+    })
+}
+
+/// Memoize the runtime promise of a C-assembled promise node; `STORED`
+/// keeps the node preserved while anything references the promise.
+pub(crate) fn cpromise_memo_put(x: Sexp, p: &Rc<robigo_runtime::value::Promise>) {
+    // SAFETY: on the R thread; `remember_stored` preserves the node.
+    unsafe { remember_stored(x, &Value::Promise(p.clone())) };
+    CPROMISE_MEMO.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(p)));
+}
+
+/// Drop memo entries whose promise died with their `STORED` entry;
+/// called from the bridge's gc.
+pub(crate) fn cpromise_memo_sweep() {
+    CPROMISE_MEMO.with(|m| m.borrow_mut().retain(|_, w| w.strong_count() > 0));
+}
+
+/// Pull the current fields of a C-assembled promise node into its
+/// memoized runtime promise (C wrote the node through SETCAR/SETCDR/
+/// SET_TAG or the SET_PR* macros).
+pub(crate) unsafe fn sync_promise_from_node(x: Sexp) {
+    let Some(p) = cpromise_memo_get(x) else { return };
+    if x.car() == R_UnboundValue {
+        *p.value.borrow_mut() = robigo_runtime::value::PromiseVal::Unforced;
+    } else {
+        p.set_value(from_sexp(x.car()));
+    }
+    let q = Rc::as_ptr(&p) as *mut robigo_runtime::value::Promise;
+    let new = from_sexp(x.cdr());
+    // SAFETY: on the R thread with no evaluation of `p` in flight; the
+    // replaced fields are retired, not dropped in place.
+    unsafe {
+        retire_field(&raw mut (*q).expr, new);
+        retire_field(&raw mut (*q).code, None);
+    }
+    *p.env.borrow_mut() = match from_sexp(x.tag()) {
+        Value::Env(e) => Some(e),
+        _ => None,
+    };
+}
+
+/// A C-assembled promise became forced (NativeBridge::promise_forced):
+/// write its node's PRVALUE and PRENV from the runtime promise, so C's
+/// field reads through the original node stay in step. Writes the node
+/// directly — the SET_* setters sync the other way and would recurse.
+unsafe fn write_promise_node(p: &robigo_runtime::value::Promise) {
+    let node = STORED.with(|m| m.borrow().get(&(p as *const _ as usize)).map(|e| e.0));
+    let Some(node) = node else { return };
+    let v = match &*p.value.borrow() {
+        robigo_runtime::value::PromiseVal::Boxed(v) => to_sexp(v),
+        robigo_runtime::value::PromiseVal::ScalarInt(i) => to_sexp(&robigo_runtime::value::Value::int(*i)),
+        robigo_runtime::value::PromiseVal::ScalarReal(d) => to_sexp(&robigo_runtime::value::Value::real(*d)),
+        robigo_runtime::value::PromiseVal::ScalarLgl(l) => to_sexp(&robigo_runtime::value::Value::lgl_raw(*l)),
+        robigo_runtime::value::PromiseVal::Unforced => R_UnboundValue,
+    };
+    crate::memory::fix_refcnt(node, node.car(), v);
+    node.set_car_raw(v);
+    let env = p.env.borrow().clone();
+    let t = match env {
+        Some(e) => to_sexp(&Value::Env(e)),
+        None => R_NilValue,
+    };
+    crate::memory::fix_refcnt(node, node.tag(), t);
+    node.set_tag_raw(t);
 }
 
 pub(crate) fn enable_host_weak_refs() {
@@ -789,6 +880,7 @@ fn vector_identity(v: &Value) -> Option<usize> {
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Lang(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Pairlist(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Promise(x) => Rc::as_ptr(x) as *const u8 as usize,
         _ => return None,
     })
 }
@@ -1040,6 +1132,47 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 jit: Default::default(),
             };
             return Value::Closure(Rc::new(clo));
+        }
+        PROMSXP => {
+            // A promise assembled in C (Rf_allocSExp(PROMSXP) + SET_PRVALUE/
+            // SET_PRCODE/SET_PRENV: CAR=PRVALUE, CDR=PRCODE, TAG=PRENV),
+            // rlang's r_env_bind_delayed being the case that matters:
+            // magrittr binds `.` lazily in its pipe masks this way, and
+            // the evaluator must force the binding when R reads it.
+            // The conversion is memoized by node, so every binding of the
+            // same C promise shares one runtime promise (forcing one
+            // forces all, as with one PROMSXP in R), and SET_PRVALUE/
+            // SET_PRCODE/SET_PRENV through the original node update it.
+            // to_sexp maps it back to a proxy whose field reads and
+            // writes stay live. A NULL code expression is a promise of
+            // NULL; an already-set PRVALUE is honored whatever PRCODE
+            // is. Without a forced value or a usable environment there
+            // is nothing to evaluate: keep the node opaque rather than
+            // guess.
+            if let Some(p) = cpromise_memo_get(x) {
+                return Value::Promise(p);
+            }
+            let p = if x.car() == R_UnboundValue {
+                match from_sexp(x.tag()) {
+                    Value::Env(e) => Some(Rc::new(robigo_runtime::value::Promise::new(from_sexp(x.cdr()), e))),
+                    _ => None,
+                }
+            } else {
+                Some(Rc::new(robigo_runtime::value::Promise::forced(from_sexp(x.cdr()), from_sexp(x.car()))))
+            };
+            match p {
+                Some(p) => {
+                    // SAFETY: the promise was just created and has no
+                    // other aliases; `from_c` is a plain bool field.
+                    unsafe {
+                        let q = Rc::as_ptr(&p) as *mut robigo_runtime::value::Promise;
+                        (*q).from_c = true;
+                    }
+                    cpromise_memo_put(x, &p);
+                    Value::Promise(p)
+                }
+                None => wrap_core(x),
+            }
         }
         OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
         _ => return wrap_core(x),
@@ -1323,8 +1456,12 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "defineVar" => {
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
             // C keeps its object for what it binds in an environment it
-            // created and may change it in place (R: envir.c:defineVar).
-            if a[1] != R_NilValue && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+            // created and may change it in place (R: envir.c:defineVar) —
+            // except a promise, which the evaluator forces: from_sexp
+            // turns it into a runtime promise whose to_sexp proxy stays
+            // live for C's PRVALUE/PRCODE/PRENV reads and writes
+            // (rlang's r_env_bind_delayed, magrittr's pipe masks).
+            if a[1] != R_NilValue && a[1].typ() != PROMSXP && !env.0.locked.get() && crate::owned::is_c_env(&env) {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
                 remember_stored(a[1], &val);
@@ -2511,6 +2648,12 @@ impl NativeBridge for Bridge {
         }
     }
 
+    fn promise_forced(&self, p: &robigo_runtime::value::Promise) {
+        // SAFETY: on the R thread; the promise is referenced by its
+        // binding for the duration of the call.
+        unsafe { write_promise_node(p) }
+    }
+
     fn finalizers_active(&self) -> bool {
         HOST_WEAK_REFS.with(|active| active.get())
     }
@@ -2582,6 +2725,7 @@ impl NativeBridge for Bridge {
         // borrow active: the collection starts below.
         unsafe {
             sweep_stored();
+            cpromise_memo_sweep();
             if HOST_WEAK_REFS.with(|active| active.get()) {
                 unpin_cycles();
             }

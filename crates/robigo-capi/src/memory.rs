@@ -1144,6 +1144,12 @@ pub unsafe extern "C" fn SETCAR(x: Sexp, y: Sexp) -> Sexp {
     }
     fix_refcnt(x, x.car(), y);
     x.set_car_raw(y);
+    // A promise node written through the cons setter: keep the
+    // memoized runtime promise in step (GNU R defines SET_PRVALUE as
+    // SETCAR; rlang writes PRCODE/PRENV through CDR/TAG the same way).
+    if x.typ() == PROMSXP {
+        crate::bridge::sync_promise_from_node(x);
+    }
     y
 }
 
@@ -1158,6 +1164,9 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
     }
     fix_refcnt(x, x.cdr(), y);
     x.set_cdr_raw(y);
+    if x.typ() == PROMSXP {
+        crate::bridge::sync_promise_from_node(x);
+    }
     y
 }
 
@@ -1170,6 +1179,9 @@ pub unsafe extern "C" fn SET_TAG(x: Sexp, y: Sexp) {
     }
     fix_refcnt(x, x.tag(), y);
     x.set_tag_raw(y);
+    if x.typ() == PROMSXP {
+        crate::bridge::sync_promise_from_node(x);
+    }
 }
 
 macro_rules! setcxr {

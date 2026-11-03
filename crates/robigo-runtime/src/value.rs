@@ -583,6 +583,10 @@ pub struct Promise {
     /// while forcing it are interpreted (unlike compiled bodies' and
     /// argument promises', which GNU R's compiler compiles).
     pub default: bool,
+    /// Set for a promise assembled in C and converted by the native
+    /// bridge, which keeps the C node's fields in step when it is
+    /// forced (robigo-capi's promise memo).
+    pub from_c: bool,
 }
 
 impl Promise {
@@ -598,6 +602,7 @@ impl Promise {
             forcing: Cell::new(false),
             code,
             default: false,
+            from_c: false,
         }
     }
 
@@ -609,6 +614,7 @@ impl Promise {
             forcing: Cell::new(false),
             code: None,
             default: false,
+            from_c: false,
         }
     }
 
@@ -621,6 +627,7 @@ impl Promise {
             forcing: Cell::new(false),
             code: None,
             default: false,
+            from_c: false,
         }
     }
 
@@ -633,6 +640,7 @@ impl Promise {
             forcing: Cell::new(false),
             code: None,
             default: false,
+            from_c: false,
         }
     }
 
@@ -645,12 +653,24 @@ impl Promise {
             forcing: Cell::new(false),
             code: None,
             default: false,
+            from_c: false,
         }
     }
 
     #[inline(always)]
     pub fn set_value(&self, value: Value) {
         *self.value.borrow_mut() = PromiseVal::Boxed(value);
+        if self.from_c {
+            crate::native::promise_forced(self);
+        }
+    }
+
+    /// After a forcing path cleared the environment: sync the C node's
+    /// PRENV as well (robigo-capi's promise memo).
+    pub fn note_c_forced(&self) {
+        if self.from_c {
+            crate::native::promise_forced(self);
+        }
     }
 
     pub fn value(&self) -> Option<Value> {
