@@ -72,6 +72,67 @@ conformance` (interpreter, VM and VM+JIT against each other).
   (`tests/r/basics/nested-inline-calls.R` pins the rebinding cases it
   can observe).
 
+## 2026-11-02: round 19, whole closures in native code (G8, first stage)
+
+- Why: `scripts/rivals.py` compares robigo with Ř and FastR for the first
+  time. With startup robigo wins 74 of 75 programs; warmed up it was fastest
+  on 31 of 75 (FastR 23, Ř 17, GNU R 4), and the gap was closure calls:
+  `fib(27)` 179 ms, GNU R 134, Ř 107, FastR 17 (median of 7 batches of at least
+  0.5 s, a clock with 1 ms resolution says nothing about a single run).
+  Instruction counts hid it: fib's are level with GNU R's, but the VM's wall
+  time is 1.3x (40% of its indirect branches mispredict).
+- Change: `jit/closure.rs`. A call tree that computes with scalars, reads
+  vectors and uses local variables cannot observe anything or be observed, so
+  it needs no environments, promises or contexts: machine functions per
+  argument types, passing registers, calling each other directly. Leaving is
+  trivial for the same reason: abandon the tree, the VM replays the call
+  (no deopt metadata). Ops native code lacks compile to leaving, so a rare
+  `stop()` does not keep a closure out. Enclosing variables are cells read at
+  entry; `<<-` writes a cell and cells are written back when the tree ends,
+  so abandoning a run after `<<-` leaves no trace. Code hangs off the
+  bytecode, so closures recreated per call share it.
+- Rejected on the way, each measured by the gate:
+  - compiling per closure instance: closures made anew per call never get hot;
+  - native entry for bodies the VM runs inline: entering costs more than the
+    body (`robigo/closures` +7%);
+  - validating the tree per call for closures in frames (`spectralnorm_naive`
+    +8%): memoized on the versions of the function bindings up the chain;
+  - retrying after a flush in `run_with`, and two outlined calls around
+    `Op::Call`: both cost the dispatch loop ~1% (`fannkuch` +0.7%), by
+    register pressure alone. One outlined `frameless_call` fixes it; moving
+    `Result` copies out of it took `closures` from +0.86% to under the limit.
+  - with #258's nested inlining a recursive pure closure is "inlinable", so
+    "inlinable bodies stay in the VM" would have turned this off for what it
+    is for: only bodies without calls stay.
+- Result, instructions against main with #258 (`perf.py compare`, startup
+  included, so understated): 11 faster, 0 slower, geomean 0.962, worst +0.32%.
+  `profiler-shared` -74.0%, `spectralnorm_alt_3` -43.7%, `profiler-rsa` -37.3%,
+  the `fasta` family -8 to -15%, `fib` -16.5% (on top of #258's -51%). Wall time,
+  same method as above: `fib(27)` 179 ms before #258, 52.9 ms with it, 1.58 ms now.
+- CI's paired gate caught what the local one could not: `s4-portfolio` +3.99%
+  after rebasing onto #266, which clones closures through `set_traced`. An
+  epoch bump on every call emptied every guard memo; it bumps on a change now.
+- sol-loop found four observable differences my tests missed, all kept as
+  tests: an argument read eagerly before the callee's `<<-` to it, the first
+  entry skipping the flush of pending assignments, `<<-` of another type
+  storing the wrong bits, and `GetVar` not restoring visibility after an
+  invisible call.
+- Verified: `tests/r/jit/native-closures{,-state}.R` (NA, overflow warnings,
+  the recursion limit, rebinding callees and operators after compilation,
+  abandoned runs after `<<-`, locked and active bindings, frames, vectors,
+  visibility), recorded with GNU R 4.5.0, byte-identical in all tiers.
+- Open: site arguments that are calls (`tak`, `ack`) need strictness: an
+  eager argument can change complexity, as for lazy `tak`. Loops do not yet
+  call native trees. Lists, `c()`, `[<-` and S3 dispatch are next: FastR is
+  ~20x ahead on dispatch. `real/flexclust_kcca` (6.2 s GNU R, 7.6 s robigo)
+  is a real program robigo loses: `apply(m, 1, rank, ties.method = "random")`
+  over 110k rows, where `rank` is 3x GNU R and `order` 1.7x. The sort is
+  not it (`.Internal(radixsort)` 0.9 us of 22): the time is base R's wrappers
+  on the general closure path, which this tier does not reach.
+- Measuring: a single `system.time` of a millisecond says nothing. One reading
+  had `order(y, y)` 9x slower than GNU R and `colSums` 12x; repeated batches
+  said 1.7x and 2.9x.
+
 ## 2026-11-02: round 17, sorted-input fast paths in the radix sort
 
 - Base: main bd4cddb8 (with #206), binaries `.robigo/perf/{base,cand}-r18`

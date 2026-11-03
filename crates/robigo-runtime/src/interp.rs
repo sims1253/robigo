@@ -277,6 +277,17 @@ impl Interp {
         Ok(())
     }
 
+    /// How many nested calls native code may make from here without
+    /// reaching a limit the VM would have to report (see `jit::closure`).
+    pub(crate) fn native_depth(&self) -> i32 {
+        let limit = self.expressions.saturating_sub(self.depth);
+        let stack = match self.stack_limit {
+            0 => 1 << 20,
+            l => l.saturating_sub(self.stack_base.saturating_sub(stack_address())),
+        };
+        crate::jit::closure::depth_budget(limit, stack)
+    }
+
     /// R: options.c:do_options, for `expressions`.
     pub(crate) fn set_expressions(&mut self, limit: usize) {
         self.expressions = limit;
@@ -1295,6 +1306,14 @@ impl Interp {
 
     pub fn set_option(&mut self, name: &str, value: Value) -> Value {
         let old = self.get_option(name).unwrap_or(Value::Null);
+        if name == "OutDec" {
+            // R keeps OutDec in a C global that EncodeReal0/EncodeComplex read.
+            if let Value::Str(v) = &value {
+                if let Some(Some(s)) = v.data.first() {
+                    crate::format::set_out_dec(s);
+                }
+            }
+        }
         if value.is_null() {
             self.options.retain(|(n, _)| n != name);
         } else if let Some(slot) = self.options.iter_mut().find(|(n, _)| n == name) {

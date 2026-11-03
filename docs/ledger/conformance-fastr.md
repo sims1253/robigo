@@ -152,3 +152,16 @@
   - `tests/r/lang/empty-name.R` (recorded in `robigo-oracle:4.5.0`) pins all five sites, the 10000/10001 boundary, and that `parse` itself still accepts the empty lhs.
 - Result: 4 cases pass, 0 regressions (`TestSimpleAssignment|TestSimpleParsing|TestParser` slice green; attach/env2list/ls/postoenv fail for unrelated argument-validation reasons).
 - Status: kept (PR pending).
+
+## 2026-11-03: round 15 - envir/diag argument validation and coercion warnings
+
+- Topic: `TestBuiltin_attach` (2), `TestBuiltin_env2list` (2), `TestBuiltin_ls` (1), `TestBuiltin_postoenv` (1), `TestBuiltin_diag` (2)
+- Diagnosis: five internal argument paths diverged from GNU R's C:
+  - `do_attach` (envir.c:2537): `pos` goes through `asInteger` (so a string `pos` warns `NAs introduced by coercion` before the error) and `name` through `isValidStringF`; both errors are plain `error()` (the attach closure's call), while robigo reported the `.Internal`'s own call and skipped the warning and the name check.
+  - `R_lsInternal3`: a non-environment is a plain `Error: invalid 'envir' argument` (no call), and `all.names`/`sorted` go through `asLogical` with NA as FALSE, not strict validation.
+  - `do_env2list`: a non-environment errors `argument must be an environment` (robigo accepted a list); `all.names`/`sorted` asLogical like ls (robigo rejected `'string'`).
+  - `do_pos2env`: `coerceVector(x, INTSXP)` warns before the per-position validation.
+  - `do_diag`: the default arm is `coerceVector(x, REALSXP)`, so a string `x` warns `NAs introduced by coercion` (robigo coerced quietly).
+- Changes: `builtins/namespace.rs` (`do_attach`), `builtins/envir.rs` (`do_ls`, `do_env2list`, `do_pos_to_env`), `builtins/array.rs` (`do_diag`); `tests/r/env/attach-args.R` (recorded in `robigo-oracle:4.5.0`) pins all five.
+- Result: +8 fastr cases (54/54 slice, 0 regressions; the ls/env/attach neighborhood 242/242); `tests/r/env` conformance 9/9.
+- Status: kept (PR pending).

@@ -132,6 +132,12 @@ scripts/perf.py compare before.json after.json          # the gate
   R's is reported as wrong and not counted.
 - `scripts/idiom-vs-r.py` and `scripts/callgrind-diff.py` measure single
   idioms and where instructions go.
+- `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
+  FastR, run in containers with the clock inside (`rivals.py setup` builds
+  them). It reports one fresh process, startup included, and the fastest
+  warmed-up batch; only batches of 50 ms or more count, so programs that
+  take microseconds are still timed to about 2%. This is the finish line
+  of "the fastest R", which instruction counts against GNU R cannot be.
 
 ## The ratchets
 

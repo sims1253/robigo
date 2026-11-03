@@ -79,4 +79,8 @@ benchmarks = [
   {name = "real/volcano", dir = "Benchmarks/RealThing", file = "volcano.r", param = 1},
   {name = "real/flexclust", dir = "Benchmarks/RealThing", file = "flexclust.r", param = 1},
   {name = "real/flexclust_no_s4", dir = "Benchmarks/RealThing", file = "flexclust_no_s4.r", param = 1},
+  # The two above fail in every R (`kcca` needs k >= 2), so what they measure
+  # is `read.csv`. This runs the clustering, at the smallest size: rebench.conf's
+  # k = 5 takes GNU R 16 s, too much under callgrind.
+  {name = "real/flexclust_kcca", dir = "Benchmarks/RealThing", file = "flexclust_no_s4.r", param = 2},
 ]

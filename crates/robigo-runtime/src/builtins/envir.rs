@@ -711,16 +711,29 @@ fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
 }
 
 fn do_ls(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let env = env_arg(i, &arg(&args, 0), call, "envir")?;
-    let all = lgl_arg(&arg(&args, 1), "all.names")?;
-    let sorted = lgl_arg(&arg(&args, 2), "sorted")?;
+    // R: envir.c:R_lsInternal3 — plain error() (no call); all.names and
+    // sorted go through asLogical, where NA counts as FALSE.
+    let env = env_arg(i, &arg(&args, 0), call, "envir").map_err(|_| Flow::error("invalid 'envir' argument"))?;
+    let all = as_logical(&arg(&args, 1)) == 1;
+    let sorted = as_logical(&arg(&args, 2)) == 1;
     Ok(Value::strs_from(env_names(&env, all, sorted)))
 }
 
-fn do_env2list(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let env = env_arg(i, &arg(&args, 0), call, "x")?;
-    let all = lgl_arg(&arg(&args, 1), "all.names")?;
-    let sorted = lgl_arg(&arg(&args, 2), "sorted")?;
+fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: envir.c:do_env2list — NULL is defunct, anything else that is not
+    // an environment (an S4 object's environment slot included) is a plain
+    // error; all.names and sorted go through asLogical (NA is FALSE).
+    let env = match &arg(&args, 0) {
+        Value::Null => return Err(Flow::error("use of NULL environment is defunct")),
+        Value::Env(e) => e.clone(),
+        v @ Value::Obj(_) => match i.simple_as_environment(v)? {
+            Some(e) => e,
+            None => return Err(Flow::error("argument must be an environment")),
+        },
+        _ => return Err(Flow::error("argument must be an environment")),
+    };
+    let all = as_logical(&arg(&args, 1)) == 1;
+    let sorted = as_logical(&arg(&args, 2)) == 1;
     let names = env_names(&env, all, sorted);
     let mut vals = Vec::new();
     for n in &names {
@@ -1258,8 +1271,16 @@ fn do_search(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> 
 }
 
 fn do_pos_to_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let n = as_integer(&arg(&args, 0));
-    Ok(Value::Env(pos_to_env(i, n, call)?))
+    // R: envir.c:do_pos2env — coerceVector(x, INTSXP), whose coercion
+    // warnings fire, then every position through pos2env.
+    let pos_v = i.coerce(&arg(&args, 0), VType::Int)?;
+    let Value::Int(v) = &pos_v else {
+        return Err(Flow::error_call(call.clone(), "invalid 'pos' argument"));
+    };
+    if v.data.len() != 1 {
+        return Err(Flow::error_call(call.clone(), "invalid 'pos' argument"));
+    }
+    Ok(Value::Env(pos_to_env(i, v.data[0], call)?))
 }
 
 impl Env {
