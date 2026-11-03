@@ -30,5 +30,7 @@ libxml2-dev
 pkg-config
 python3
 util-linux
+# crates/robigo-capi/bench/bench.py runs callgrind in this image
+valgrind
 xz-utils
 zlib1g-dev

@@ -146,6 +146,14 @@ def in_oracle():
            "-e", f"ROBIGO={os.path.abspath(ROBIGO)}", "-v", f"{ROOT}:{ROOT}", "-v", f"{CACHE}:{CACHE}", "-w", ROOT]
     if rv:
         cmd += ["-v", f"{os.path.realpath(rv)}:/usr/local/bin/rv:ro"]
+    # a robigo built in another checkout: its binary, its R_HOME beside it
+    # (<exe>/../home) and its natives, at their own paths
+    extra = {os.path.dirname(os.path.dirname(os.path.abspath(ROBIGO)))}
+    if os.environ.get("ROBIGO_NATIVES"):
+        extra.add(os.path.abspath(os.environ["ROBIGO_NATIVES"]))
+    for d in sorted(extra):
+        if os.path.isdir(d) and not (d + "/").startswith(ROOT + "/"):
+            cmd += ["-v", f"{d}:{d}:ro"]
     for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET"):
         if k in os.environ:
             cmd += ["-e", f"{k}={os.environ[k]}"]
