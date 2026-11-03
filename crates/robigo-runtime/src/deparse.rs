@@ -1256,6 +1256,25 @@ pub fn deparse_one_line(v: &Value) -> String {
     join_lines(&lines)
 }
 
+/// `deparse1line(v, abbrev = TRUE)`: the first line cut to 10 bytes, with
+/// "..." appended when it was longer (R: deparse.c:deparse1WithCutoff's
+/// abbrev arm — strncpy(data, ..., 10); used by bind.c's cbind/rbind tags
+/// via deparse1line(expr, TRUE)). GNU R cuts bytes, possibly mid
+/// character; robigo's strings are UTF-8, so the cut ends at the last
+/// character boundary within those bytes.
+pub fn deparse_one_line_abbrev(v: &Value) -> String {
+    let line = deparse_lines(v, MAX_CUTOFF, true, SIMPLEDEPARSE, None).into_iter().next().unwrap_or_default();
+    let bytes = line.as_bytes();
+    if bytes.len() <= 10 {
+        return line;
+    }
+    let mut end = 10;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &line[..end])
+}
+
 pub fn join_lines(lines: &[String]) -> String {
     // R: deparse.c:deparse1line_ex — lines are concatenated with "\n"
     // between them (strcat(buf, "\n") for every line but the last).
