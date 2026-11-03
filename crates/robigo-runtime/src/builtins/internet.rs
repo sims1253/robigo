@@ -178,10 +178,12 @@ fn do_curl_version(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
     let mut protocols = Vec::new();
     if !d.protocols.is_null() {
         let mut p = d.protocols;
-        // SAFETY: the array is NULL-terminated.
+        // SAFETY: the array is NULL-terminated; each element is a static
+        // NUL-terminated string.
         while unsafe { !(*p).is_null() } {
-            // SAFETY: each element is a static NUL-terminated string.
+            // SAFETY: the element was just checked non-NULL.
             protocols.push(cstr(unsafe { *p }));
+            // SAFETY: still within the array while the element was non-NULL.
             p = unsafe { p.add(1) };
         }
     }
