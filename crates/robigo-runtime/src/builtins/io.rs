@@ -2833,6 +2833,16 @@ fn read_int_bytes(b: &[u8; 8], size: i32, signd: bool, swap: bool) -> i32 {
 /// Decode a double of `size` (4, 8 or 16 x87) bytes, native endianness.
 fn read_real_bytes(b: &[u8], size: i32, swap: bool) -> f64 {
     let size = size as usize;
+    // R: connections.c R_ReadBin's sizeof(long double) case: the 16 bytes
+    // are swapped as a whole, then converted from the x87 80-bit format.
+    if size == 16 {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&b[..16]);
+        if swap {
+            raw.reverse();
+        }
+        return crate::nmath::ldouble::LDouble::from_bytes(raw).to_f64();
+    }
     let mut raw = [0u8; 8];
     raw[..size.min(8)].copy_from_slice(&b[..size.min(8)]);
     if swap && size > 1 {
@@ -2937,12 +2947,21 @@ fn do_writebin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
                     size = 8;
                 }
                 match size {
-                    4 | 8 => {}
+                    4 | 8 | 16 => {}
                     _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
                 }
                 let mut out = vec![0u8; len * size as usize];
                 for (k, &v) in x.data.iter().enumerate() {
-                    let b = if size == 4 { (v as f32).to_le_bytes().to_vec() } else { v.to_le_bytes().to_vec() };
+                    let b: Vec<u8> = if size == 4 {
+                        (v as f32).to_le_bytes().to_vec()
+                    } else if size == 8 {
+                        v.to_le_bytes().to_vec()
+                    } else {
+                        // R: connections.c do_writebin's sizeof(long double):
+                        // (long double) x into a zero-initialized static, of
+                        // which the store writes the x87 80-bit first 10 bytes.
+                        crate::nmath::ldouble::LDouble::from_f64(v).to_bytes().to_vec()
+                    };
                     out[k * size as usize..(k + 1) * size as usize].copy_from_slice(&b);
                 }
                 if swap && size > 1 {

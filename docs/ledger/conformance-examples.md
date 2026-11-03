@@ -384,6 +384,17 @@ internet.rs already opens for curlDownload: the version string, the
 host's libcurl 8.23.0 answers; the oracle's (and CI's) is 8.14.1, so the
 marker is CI's to confirm.
 
+## 2026-11-02: writeBin/readBin size 16, the long-double format (1 case)
+
+`base/readBin`'s `if((s <- .Machine$sizeof.longdouble) > 8)` branch writes
+doubles as C `long double`: connections.c's do_writebin casts into a static
+`long double` (BSS, so its 6-byte tail stays zero) and memcpy's 16 bytes;
+R_ReadBin converts the other way, swapping each 16-byte block as a whole.
+robigo errored with `size 16 is unknown on this machine` (write) and read
+only the first 8 bytes. Both now go through robigo-numerics' x87 `LDouble`
+(`to_bytes`/`from_bytes` added; the 80-bit store matches the zero-tail
+static). Marked: `base/readBin`.
+
 ## 2026-11-03: chooseOpsMethod consulted for incompatible Ops methods (1 case)
 
 `base/chooseOpsMethod`: eval.c's DispatchGroup, when two operands pick
