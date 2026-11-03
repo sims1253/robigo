@@ -1,0 +1,16 @@
+# What scripts/package-suite.py needs on top of ./.github/actions/setup: the
+# system libraries of the pinned packages, and rv to install them.
+name: package-suite
+description: System libraries and rv for the package suite
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y -qq --no-install-recommends $(grep -v '^#' tests/packages/apt.txt) > /dev/null
+        tar=rv-v$RV_VERSION-x86_64-unknown-linux-gnu.tar.gz
+        curl -fsSL -o "/tmp/$tar" "https://github.com/A2-ai/rv/releases/download/v$RV_VERSION/$tar"
+        echo "$RV_SHA256  /tmp/$tar" | sha256sum -c -
+        tar -xzf "/tmp/$tar" -C /usr/local/bin rv
+        rv --version

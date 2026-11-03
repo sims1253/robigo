@@ -317,6 +317,7 @@ jobs:
       - name: Run the CRAN gate
         run: |
           python3 scripts/test-cran-gate.py
+          python3 scripts/test-package-suite.py
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           ROBIGO=dist/robigo python3 scripts/cran-gate.py run | tee -a "$GITHUB_STEP_SUMMARY"

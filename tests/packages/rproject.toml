@@ -1,0 +1,28 @@
+# Written by `scripts/package-suite.py lock`: the selection and its Suggests,
+# so that tests run instead of skipping for lack of a package.
+[project]
+name = "robigo-package-suite"
+r_version = "4.5"
+repositories = [{ alias = "ppm", url = "https://packagemanager.posit.co/cran/__linux__/trixie/2026-11-01" }]
+dependencies = [
+  { name = "rlang", install_suggestions = true },
+  { name = "ggplot2", install_suggestions = true },
+  { name = "cli", install_suggestions = true },
+  { name = "lifecycle", install_suggestions = true },
+  { name = "Rcpp", install_suggestions = true },
+  { name = "R6", install_suggestions = true },
+  { name = "dplyr", install_suggestions = true },
+  { name = "glue", install_suggestions = true },
+  { name = "tibble", install_suggestions = true },
+  { name = "magrittr", install_suggestions = true },
+  { name = "RcppEigen", install_suggestions = true },
+  { name = "scales", install_suggestions = true },
+  { name = "jsonlite", install_suggestions = true },
+  { name = "curl", install_suggestions = true },
+  { name = "purrr", install_suggestions = true },
+  { name = "stringr", install_suggestions = true },
+  { name = "tidyr", install_suggestions = true },
+  { name = "tidyselect", install_suggestions = true },
+  { name = "htmltools", install_suggestions = true },
+  { name = "httr", install_suggestions = true },
+]
