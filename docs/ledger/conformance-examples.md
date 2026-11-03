@@ -368,3 +368,14 @@ libicuuc.so.76). GNU R 4.5.0's `R_unserialize` errors on character input
 alone here.
 
 Metric: gnur-examples 1,098 -> 1,103 marked (base/connections was #249's).
+
+## 2026-11-02: writeBin/readBin size 16, the long-double format (1 case)
+
+`base/readBin`'s `if((s <- .Machine$sizeof.longdouble) > 8)` branch writes
+doubles as C `long double`: connections.c's do_writebin casts into a static
+`long double` (BSS, so its 6-byte tail stays zero) and memcpy's 16 bytes;
+R_ReadBin converts the other way, swapping each 16-byte block as a whole.
+robigo errored with `size 16 is unknown on this machine` (write) and read
+only the first 8 bytes. Both now go through robigo-numerics' x87 `LDouble`
+(`to_bytes`/`from_bytes` added; the 80-bit store matches the zero-tail
+static). Marked: `base/readBin`.

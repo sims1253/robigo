@@ -421,6 +421,19 @@ impl LDouble {
     /// x87 encoding, on every platform).
     pub const ONE: LDouble = LDouble([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f, 0, 0, 0, 0, 0, 0]);
 
+    /// The 16 bytes a C `long double` occupies (`writeBin` size 16). The
+    /// x87 store writes 10; the tail is whatever the slot held, which in
+    /// connections.c's `static long double ld1` is zero.
+    #[inline]
+    pub fn to_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    #[inline]
+    pub fn from_bytes(b: [u8; 16]) -> LDouble {
+        LDouble(b)
+    }
+
     #[inline]
     pub fn from_f64(x: f64) -> LDouble {
         imp::from_f64(x)
