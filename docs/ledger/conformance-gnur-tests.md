@@ -82,3 +82,31 @@ Baseline on `main` (`f523d79a`):
   (all markers + `arith`) is 32/33 with only the environmental `reg-packages`
   failure; `fastr` `TestBuiltin_(format|deparse|print|dput|cat|complex)`
   slice is 453/453. Kept.
+
+## 2026-11-03: `options(OutDec=)` in `as.character()` of doubles/complex (PR #246)
+
+- why: R's `coerce.c:StringFromReal` calls `EncodeRealDrop0(..., OutDec)` and
+  `do_ascomplex`'s `EncodeComplex(..., OutDec)`, so `as.character(1.5)` under
+  `options(OutDec=",")` is `"1,5"`; robigo ignored the option.
+- what:
+  - `format.rs`: `OutDec` is a `Copy` struct stored in a thread-local `Cell`
+    (modeling options.c's `sdec` C global, `strncpy`'d to 10 bytes). R drops
+    trailing zeros before replacing `"."` by `dec` (printutils.c:
+    EncodeRealDrop0), so `encode_real_drop0_dec` follows that order.
+  - Perf: the first version read the option per element through a
+    `RefCell<String>` and cost +0.55%/+0.97% on robigo/csv and robigo/strings.
+    The merged version reads it once per vector in `coerce::to_str`, keeps the
+    default path on the untouched `encode_real_drop0` branch, moves the
+    non-default path into `#[cold] #[inline(never)]` helpers, and pins
+    `encode_real_drop0`/`drop_trailing_zeros_in` as `#[inline(always)]` so the
+    inlined shape matches main's. Final local instr vs main: csv −0.004%,
+    strings −0.012% (perf check green in CI).
+  - callgrind bisect trick: `callgrind_annotate` per-function diffs on a
+    400k-conversion repro showed the residual cost was `drop_trailing_zeros_in`
+    becoming an outlined call (400k × ~17 instr) after the cold caller was
+    added.
+- gap kept: R warns "the decimal mark is more/less than one character wide"
+  when OutDec isn't exactly one character (EncodeReal0); tracked as an
+  unmarked case in tests/r/io/outdec-coerce.R output.
+- result: merged as PR #246. gnur-tests count unchanged (36/59); the fix is
+  covered by tests/r/io/outdec-coerce (GNU R-recorded output).
