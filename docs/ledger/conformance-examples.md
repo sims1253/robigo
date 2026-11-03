@@ -372,6 +372,18 @@ non-environment. Verified against the oracle for size 5 grown to 47 with 40
 bindings (nchains 35, identical collision pattern) and a fresh 29-bucket
 table. Marked: `base/environment`.
 
+## 2026-11-03: libcurlVersion over the dlopen'd libcurl (1 case)
+
+`base/libcurlVersion` was a missing internal. Ported
+modules/internet/libcurl.c's in_do_curlVersion over the libcurl handle
+internet.rs already opens for curlDownload: the version string, the
+`ssl_version` attribute ("none" when NULL), `libssh_version` (empty before
+`age` 3) and the NULL-terminated `protocols` list, from
+`curl_version_info(CURLVERSION_NOW)`'s ABI-stable struct (fields through
+`libssh_version` only). Without libcurl: a single empty string. Locally the
+host's libcurl 8.23.0 answers; the oracle's (and CI's) is 8.14.1, so the
+marker is CI's to confirm.
+
 ## 2026-11-02: writeBin/readBin size 16, the long-double format (1 case)
 
 `base/readBin`'s `if((s <- .Machine$sizeof.longdouble) > 8)` branch writes
