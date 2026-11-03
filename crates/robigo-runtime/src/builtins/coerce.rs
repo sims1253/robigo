@@ -548,7 +548,8 @@ macro_rules! is_fn {
 
 is_fn!(is_null, "is.null", |x| x.is_null());
 is_fn!(is_logical, "is.logical", |x| matches!(x, Value::Lgl(_)));
-is_fn!(is_integer, "is.integer", |x| matches!(x, Value::Int(_)));
+// R: coerce.c:do_is — is.integer is TYPEOF == INTSXP and not a factor.
+is_fn!(is_integer, "is.integer", |x| matches!(x, Value::Int(_)) && !x.inherits("factor"));
 is_fn!(is_double, "is.double", |x| matches!(x, Value::Real(_)));
 is_fn!(is_complex, "is.complex", |x| matches!(x, Value::Cplx(_)));
 is_fn!(is_character, "is.character", |x| matches!(x, Value::Str(_)));
@@ -612,7 +613,10 @@ fn is_array(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     Ok(Value::lgl(args[0].value.get_attr(s::DIM).is_some_and(|d| !d.is_empty())))
 }
 
-fn is_single(_: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn is_single(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: coerce.c:do_is — checkArity runs before the PRIMVAL 999 arm, so
+    // zero arguments are the arity error, not the "single" one.
+    check_arity(&args, 1, "is.single", call)?;
     Err(Flow::error_call(call.clone(), "type \"single\" unimplemented in R"))
 }
 
