@@ -389,3 +389,69 @@ plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
     `cpromise` case pins all of it (shared forcing, SETCAR write,
     PRVALUE after an R-side force, gc() then a C write); capi 26/26,
     conformance green in all three tiers, lint clean.
+
+## 2026-11-03: url() connections (libcurl)
+
+- `url()` was a hard error ("robigo: url() connections are not
+  implemented yet"); jsonlite's test-network-Github.R (7 of its 9
+  remaining failures) needs it.
+- Port: `file://` descriptions delegate to the file connection (class
+  "file", as GNU R), http/https/ftp(s) build class "url-libcurl"
+  connections, fetched into memory at open through a new
+  NativeBridge::fetch_url — libcurl's easy interface in robigo-capi
+  (system libcurl, the stable ABI option numbers), following redirects
+  and failing on HTTP errors; failures warn "cannot open URL '...',
+  reason '<curl message>'" and the open fails, like connections.c.
+  Reads serve from the buffer (whole-resource model, like the gz
+  port); text/binary comes from the open mode; writes error. The
+  `headers` argument is accepted and ignored for now (noted below).
+- Measured: creation/class/isOpen/close, `readBin(url(..., "rb"))`,
+  `readLines(url("https://example.com/"))` (576 chars, GNU R-identical)
+  and the file:// delegation are byte-identical with GNU R 4.5.0 —
+  including GNU R's own error for readBin on a default (text) url
+  connection. `tests/r/io/url-connection.R` (the #215 tracker) passes
+  and is marked, extended with the file:// case (no network in the
+  suite; the CRAN gate exercises the fetch). jsonlite's shim: 1543
+  passed / 8 failed (was 1542/9; the network tests now run). capi
+  corpus 26/26; conformance green in all three tiers; lint clean.
+- Open: the `headers` argument is ignored (CURLOPT_HTTPHEADER), and
+  `method = "internal"`/`"wininet"` are not distinguished.
+  - Sol round 1 (six shoulds) fixed: text/binary now derives from the
+    CURRENT mode in url_open too (open(u, "rb") after a lazy create);
+    write modes print Curl_open's "can only open URLs for reading"
+    (REprintf, no newline) and fail with the generic error;
+    CURLOPT_ACCEPT_ENCODING is gone (R's backend does not decompress,
+    gzip bytes stay gzip); the `timeout` option is honored as
+    curlCommon's connect and transfer timeouts (ms); failures print
+    download_report_url_error's messages verbatim — "cannot open URL
+    '<effective>': HTTP status was '404 Not Found'" from the ported
+    http/ftp_errstr tables, the timeout variant, or the generic
+    "URL '...': status was '<curl msg>'" — and the open fails with
+    "cannot open the connection to '<url>'". A transfer that ends short
+    keeps the bytes received (CURL_PARTIAL_FILE) with the status
+    warning, so partial reads succeed as with the streaming backend;
+    fully streaming Curl_read is still future work. All six cases are
+    byte-identical with GNU R 4.5.0; capi 26/26.
+- Rebased on main (2026-11-06): main's `builtins/internet.rs` already
+  dlopens libcurl for `download.file`, so the fetch moved there
+  (`internet::url_fetch`) and the robigo-capi `#[link(name = "curl")]`
+  bridge is gone. Linking libcurl into the binary had cost every
+  program its loading (CI's perf gate: +0.7% to +7% instructions on all
+  74 benchmarks); with dlopen on first use, 10 of the flagged benchmarks
+  measure within ±0.012% of main. The fetch is Curl_open's: curlCommon
+  (R's user agent, `timeout`, redirects, CA bundle), FAILONERROR,
+  TCP_KEEPALIVE, the `headers` (CURLOPT_HTTPHEADER, no longer ignored),
+  fetchData's multi loop to the end of the transfer and
+  download_report_url_error's warnings verbatim (the old bridge also set
+  the transfer timeout through option 157 instead of
+  CURLOPT_TIMEOUT_MS, 155). do_url follows connections.c's checks:
+  "URL scheme unsupported by this method" for any other scheme or a
+  path, the `wininet`/`internal` method errors, `blocking`, and the
+  object class "url" (the connection class stays "url-libcurl").
+  Network cases (readLines/readBin over https, a 404, an unresolvable
+  host, request headers) are identical with GNU R 4.5.0 apart from the
+  verbose trace GNU R prints when `internet.info` is unset (as under
+  R_DEFAULT_PACKAGES=NULL, main's behaviour too).
+- Open: a transfer that fails after data arrived keeps that data and
+  warns at open; GNU R serves it and then fails the read with "cannot
+  read from connection".
