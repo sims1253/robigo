@@ -556,6 +556,9 @@ pub struct CallSite {
     /// impossible for reasons of the call site and the closure's
     /// definition alone (so later calls of it skip the attempt).
     pub no_eager: std::cell::Cell<usize>,
+    /// The same for native code (`jit::closure`): the formals (address) of
+    /// the last closure that has none here.
+    pub no_native: std::cell::Cell<usize>,
     /// The slot of the function's name, if the code has one (filled in once
     /// compilation is done).
     pub fslot: Option<Slot>,
@@ -666,6 +669,8 @@ pub struct Code {
     pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
+    /// Native code for the whole closure (see `crate::jit::closure`).
+    pub native: crate::jit::closure::NativeSlot,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
     /// Tables of `Switch` ops.
@@ -718,6 +723,7 @@ impl Code {
             guard_syms,
             simple,
             jit: Default::default(),
+            native: Default::default(),
             fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             fresh_nested: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             strict,
@@ -1112,6 +1118,7 @@ impl Compiler {
             }),
             inline_args,
             no_eager: std::cell::Cell::new(0),
+            no_native: std::cell::Cell::new(0),
             fslot: None,
             force,
         });

@@ -27,9 +27,11 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::builtins::arith::{ArithOp, RelOp, myfloor, myfmod, r_pow};
-use crate::compile::{Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot};
+use crate::compile::{Builtin1, Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot};
 use crate::sym::Sym;
 use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL};
+
+pub mod closure;
 
 /// The type of a variable or register in native code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -128,9 +130,30 @@ pub struct InlineCall {
     /// The slot of each formal in the callee's code.
     pub formal_slots: Vec<Option<Slot>>,
     pub guard_syms: Vec<Sym>,
-    /// The arguments (constants and variables of the caller).
-    pub args: Vec<Leaf>,
+    /// The arguments.
+    pub args: Vec<CallArg>,
     pub clo: std::rc::Rc<crate::value::Closure>,
+    /// In a closure compiled whole ([`closure`]): the callee's index in its
+    /// call tree.
+    pub callee: usize,
+}
+
+/// An argument of a call in native code: evaluated by the caller, which is
+/// only unobservable because of what it is (it has no effects and a bounded
+/// cost; whatever would be observable leaves native code instead).
+#[derive(Clone, Copy)]
+pub enum CallArg {
+    Leaf(Leaf),
+    Arith(ArithOp, Leaf, Leaf),
+}
+
+impl CallArg {
+    fn ty(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
+        match self {
+            CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
+            CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
+        }
+    }
 }
 
 /// Register types of an inlined callee for given argument types.
@@ -144,11 +167,22 @@ struct CalleeTy {
 pub struct Inl<'a> {
     calls: &'a HashMap<u32, InlineCall>,
     memo: RefCell<HashMap<(u32, Vec<JType>), Option<std::rc::Rc<CalleeTy>>>>,
+    /// Compiling a closure whole: calls are real calls, whose result types
+    /// come from here.
+    specs: Option<&'a closure::Specs>,
 }
 
 impl<'a> Inl<'a> {
     pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
-        Inl { calls, memo: RefCell::new(HashMap::new()) }
+        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None }
+    }
+
+    /// The type of the result of the call at `site` with these arguments.
+    fn result(&self, site: u32, args: Vec<JType>) -> Option<JType> {
+        match self.specs {
+            Some(s) => s.result(self.calls.get(&site)?.callee, args),
+            None => self.callee(site, args).map(|c| c.result),
+        }
     }
 
     fn callee(&self, site: u32, args: Vec<JType>) -> Option<std::rc::Rc<CalleeTy>> {
@@ -428,7 +462,13 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         Op::Call { dst, site, .. } => {
             if let Some(ic) = inl.calls.get(site) {
                 for a in &ic.args {
-                    leaf_uses(a, &mut u);
+                    match a {
+                        CallArg::Leaf(l) => leaf_uses(l, &mut u),
+                        CallArg::Arith(_, x, y) => {
+                            leaf_uses(x, &mut u);
+                            leaf_uses(y, &mut u);
+                        }
+                    }
                 }
             }
             u.wregs.push(*dst);
@@ -455,6 +495,11 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             u.rregs.push(*a);
             u.wregs.push(*dst);
         }
+        Op::Builtin1 { dst, a, .. } => {
+            u.rregs.push(*a);
+            u.wregs.push(*dst);
+        }
+        Op::SuperSet { src, .. } => u.rregs.push(*src),
         Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => u.rregs.push(*cond),
         Op::AndOrShort { x, dst, .. } => {
             u.rregs.push(*x);
@@ -676,42 +721,7 @@ pub fn compile(
                 return Err(Reject::Never);
             }
         }
-        let rt = |reg: &Reg| st[*reg as usize].unwrap();
-        let lt = |l: &Leaf| leaf_type(l, st, &slot_ty);
-        let ok = match op {
-            Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => rt(cond) == JType::L,
-            Op::AndOrShort { x, .. } => rt(x) == JType::L,
-            Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
-            Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
-            Op::Index2 { slot, i, j, .. } => {
-                matches!(slot_ty[slot], JType::MatD | JType::MatI)
-                    && matches!(lt(i), Some(JType::D | JType::I))
-                    && matches!(lt(j), Some(JType::D | JType::I))
-            }
-            Op::SetIndex2 { val, slot, i, j, .. } => {
-                matches!(lt(i), Some(JType::D | JType::I))
-                    && matches!(lt(j), Some(JType::D | JType::I))
-                    && matches!(
-                        (slot_ty[slot], rt(val)),
-                        (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
-                    )
-            }
-            Op::SetIndex { val, slot, i, .. } => {
-                matches!(lt(i), Some(JType::D | JType::I))
-                    && matches!(
-                        (slot_ty[slot], rt(val)),
-                        (JType::VecD | JType::MatD, JType::D | JType::I | JType::L)
-                            | (JType::VecI | JType::MatI, JType::I | JType::L)
-                    )
-            }
-            // (seq_len only takes the fast path for integers and doubles)
-            Op::ForRange { kind: RangeKind::Colon, a, b, .. } => rt(a).is_scalar() && rt(b).is_scalar(),
-            Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
-            Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
-            Op::GetVar { slot, .. } => slot_ty[slot].is_scalar(),
-            _ => defs(op, st, &slot_ty, &inl).iter().all(|(_, t)| t.is_some()),
-        };
-        if !ok {
+        if !types_ok(op, st, &slot_ty, &inl) {
             if trace() {
                 eprintln!("jit: unsupported types at {}: {:?}", pc, op);
             }
@@ -839,6 +849,46 @@ pub fn compile(
 /// on different paths.
 type RegState = Vec<Option<JType>>;
 
+/// Whether native code can run `op` with these operand types (whose
+/// registers are known to have types).
+fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> bool {
+    let rt = |reg: &Reg| st[*reg as usize].unwrap();
+    let lt = |l: &Leaf| leaf_type(l, st, slot_ty);
+    match op {
+        Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => rt(cond) == JType::L,
+        Op::AndOrShort { x, .. } => rt(x) == JType::L,
+        Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
+        Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
+        Op::Index2 { slot, i, j, .. } => {
+            matches!(slot_ty[slot], JType::MatD | JType::MatI)
+                && matches!(lt(i), Some(JType::D | JType::I))
+                && matches!(lt(j), Some(JType::D | JType::I))
+        }
+        Op::SetIndex2 { val, slot, i, j, .. } => {
+            matches!(lt(i), Some(JType::D | JType::I))
+                && matches!(lt(j), Some(JType::D | JType::I))
+                && matches!(
+                    (slot_ty[slot], rt(val)),
+                    (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
+                )
+        }
+        Op::SetIndex { val, slot, i, .. } => {
+            matches!(lt(i), Some(JType::D | JType::I))
+                && matches!(
+                    (slot_ty[slot], rt(val)),
+                    (JType::VecD | JType::MatD, JType::D | JType::I | JType::L)
+                        | (JType::VecI | JType::MatI, JType::I | JType::L)
+                )
+        }
+        // (seq_len only takes the fast path for integers and doubles)
+        Op::ForRange { kind: RangeKind::Colon, a, b, .. } => rt(a).is_scalar() && rt(b).is_scalar(),
+        Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
+        Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
+        Op::GetVar { slot, .. } => inl.specs.is_some() || slot_ty[slot].is_scalar(),
+        _ => defs(op, st, slot_ty, inl).iter().all(|(_, t)| t.is_some()),
+    }
+}
+
 fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
     match l {
         Leaf::D(_) => Some(JType::D),
@@ -855,15 +905,18 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
     match op {
         Op::Call { dst, site, .. } => {
             let t = inl.calls.get(site).and_then(|ic| {
-                let tys: Option<Vec<JType>> = ic.args.iter().map(|a| leaf_type(a, st, slot_ty)).collect();
-                inl.callee(*site, tys?).map(|c| c.result)
+                let tys: Option<Vec<JType>> = ic.args.iter().map(|a| a.ty(st, slot_ty)).collect();
+                inl.result(*site, tys?)
             });
             vec![(*dst as usize, t)]
         }
         Op::ConstD { dst, .. } => vec![(*dst as usize, Some(JType::D))],
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
         Op::ConstL { dst, .. } => vec![(*dst as usize, Some(JType::L))],
+        Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
         Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_ty.get(slot).copied()))],
+        Op::Builtin1 { f: Builtin1::Length, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::I))],
+        Op::Builtin1 { f: Builtin1::IsNull, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::L))],
         Op::Arith { op, dst, a, b, .. } => {
             let t = match (rt(a), rt(b)) {
                 (Some(x), Some(y)) => arith_type(*op, x, y),
@@ -948,6 +1001,10 @@ fn reg_flow(
         }
         let st = states[pc - r.start].clone().unwrap();
         let op = &ops[pc];
+        // Native code leaves here: nothing after it runs.
+        if inl.specs.is_some() && closure::leaves(op, inl) {
+            continue;
+        }
         let mut assign = |slot: Slot, t: JType| -> Result<(), Reject> {
             match slot_ty.get(&slot) {
                 Some(old) if *old == t => Ok(()),
@@ -974,6 +1031,14 @@ fn reg_flow(
         let mut out = st.clone();
         for (reg, t) in defs(op, &st, slot_ty, inl) {
             out[reg] = t;
+        }
+        if matches!(op, Op::Return { .. }) {
+            continue;
+        }
+        // A call whose result is not known yet: as far as known, it does
+        // not return (a recursive call gets its type from the other paths).
+        if inl.specs.is_some() && matches!(op, Op::Call { dst, .. } if out[*dst as usize].is_none()) {
+            continue;
         }
         successors(op, pc, &mut succ);
         for &t in &succ {
@@ -1003,6 +1068,8 @@ fn reg_flow(
 fn cl_type(t: JType) -> Type {
     match t {
         JType::D => types::F64,
+        // (A pointer to a `VecView`, in a closure compiled whole.)
+        JType::VecD | JType::VecI | JType::MatD | JType::MatI => types::I64,
         _ => types::I32,
     }
 }
@@ -1039,6 +1106,8 @@ struct Gen<'a, 'b> {
     deopt: HashMap<usize, Block>,
     exit: Block,
     helpers: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
+    /// Compiling a closure whole.
+    whole: Option<closure::Whole<'a>>,
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -1090,6 +1159,9 @@ impl Gen<'_, '_> {
 
     /// The block that leaves native code to execute op `pc` in the VM.
     fn deopt_block(&mut self, pc: usize) -> Block {
+        if let Some(w) = &self.whole {
+            return w.bail;
+        }
         let pc = self.deopt_at.unwrap_or(pc);
         if let Some(b) = self.deopt.get(&pc) {
             return *b;
@@ -1130,12 +1202,20 @@ impl Gen<'_, '_> {
         match l {
             Leaf::D(x) => (self.f64c(*x), JType::D),
             Leaf::I(x) => (self.i32c(*x as i64), JType::I),
-            Leaf::Var(_, s) => {
-                let (var, t) = self.v.slot[s];
-                (self.b.use_var(var), t)
-            }
+            Leaf::Var(_, s) => self.var(*s),
             Leaf::R(r) => self.reg(*r),
         }
+    }
+
+    /// The value of variable `s`.
+    fn var(&mut self, s: Slot) -> (CValue, JType) {
+        if self.whole.is_some()
+            && let Some(x) = self.whole_var(s)
+        {
+            return x;
+        }
+        let (var, t) = self.v.slot[&s];
+        (self.b.use_var(var), t)
     }
 
     /// Register `r` before the current op.
@@ -1312,6 +1392,12 @@ impl Gen<'_, '_> {
     fn op(&mut self, pc: usize, op: &Op) {
         let next = pc + 1;
         let mut falls = true;
+        // (As the VM's: an invisible value of a call before it must not last.)
+        if self.whole.is_some()
+            && matches!(op, Op::GetVar { .. } | Op::Index { .. } | Op::Index2 { .. } | Op::Builtin1 { .. })
+        {
+            self.set_visible(true);
+        }
         match op {
             Op::ConstD { dst, x } => {
                 let v = self.f64c(*x);
@@ -1326,9 +1412,18 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, v);
             }
             Op::GetVar { dst, slot, .. } => {
-                let (var, _) = self.v.slot[slot];
-                let x = self.b.use_var(var);
+                let (x, _) = self.var(*slot);
                 self.set_reg(*dst, x);
+            }
+            Op::Visible { on } if self.whole.is_some() => self.set_visible(*on),
+            Op::SuperSet { src, slot, .. } => {
+                let (x, _) = self.reg(*src);
+                self.super_set(*slot, x);
+            }
+            Op::Builtin1 { f, dst, a, .. } => {
+                let (x, t) = self.reg(*a);
+                let v = self.builtin1(*f, x, t, pc);
+                self.set_reg(*dst, v);
             }
             Op::SetVar { src, slot, .. } => {
                 let (x, _) = self.reg(*src);
@@ -1599,11 +1694,34 @@ impl Gen<'_, '_> {
             }
             Op::Call { dst, site, .. } => {
                 let ic = &self.inl.calls[site];
-                let (code, formal_slots, arg_leaves) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
-                let args: Vec<(CValue, JType)> = arg_leaves.iter().map(|a| self.leaf(a)).collect();
+                let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
+                let args: Vec<(CValue, JType)> = arg_list
+                    .iter()
+                    .map(|a| match a {
+                        CallArg::Leaf(l) => self.leaf(l),
+                        CallArg::Arith(op, x, y) => {
+                            let (x, y) = (self.leaf(x), self.leaf(y));
+                            let t = arith_type(*op, x.1, y.1).unwrap();
+                            (self.arith(*op, x, y, pc), t)
+                        }
+                    })
+                    .collect();
+                if self.whole.is_some() {
+                    let v = self.real_call(*site, &args);
+                    self.set_reg(*dst, v);
+                    let n = self.target(next);
+                    self.b.ins().jump(n, &[]);
+                    return;
+                }
+                let args: Vec<(CValue, JType)> = args;
                 let ct = self.inl.callee(*site, args.iter().map(|a| a.1).collect()).unwrap();
                 let v = self.inline_body(pc, &code, &formal_slots, &ct, &args);
                 self.set_reg(*dst, v);
+            }
+            Op::Return { src } if self.whole.is_some() => {
+                let (x, _) = self.reg(*src);
+                self.return_value(x);
+                falls = false;
             }
             Op::Return { src } => {
                 let (rv, after) = self.ret.expect("Return outside an inlined callee");
@@ -1907,6 +2025,7 @@ fn codegen(
                 deopt: HashMap::new(),
                 exit,
                 helpers,
+                whole: None,
             };
             for pc in r.start..r.end {
                 let blk = g.block(pc);

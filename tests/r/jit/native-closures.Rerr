@@ -1,0 +1,7 @@
+There were 50 or more warnings (use warnings() to see the first 50)
+Warning message:
+In a + b : NAs produced by integer overflow
+Warning message:
+In s + i : NAs produced by integer overflow
+Warning message:
+In md(1e+300, 3) : probable complete loss of accuracy in modulus
