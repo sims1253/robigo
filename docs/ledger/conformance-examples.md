@@ -416,3 +416,19 @@ without that step, so the error escaped and the script halted. The walk and
 the unwind mirror `.invokeRestart` (pop through the target, restore the
 expression limit). Nested abort restarts behave exactly as the oracle
 (the recorded test pins the winner). Marked: `base/source`.
+
+## 2026-11-03: gzcon(), the gzip connection wrapper (1 case)
+
+`base/gzcon` needed connections.c's gzconn: a `gzcon` connection wrapping
+any binary connection. Ported as `ConnKind::Gzcon`: opening for read pulls
+the wrapped stream and validates the gzip header (magic, method, reserved
+flag bits, EXTRA/ORIG_NAME/COMMENT/HEAD_CRC skipping) before inflating the
+raw-deflate body and checking the crc trailer — `allowNonCompression`
+serves the stream as-is when the magic is missing (and open fails with
+`file stream does not have gzip magic number` otherwise). Writing emits the
+10-byte header at open, buffers the bytes (writeLines reaches it through
+`con->write`), and close deflates the buffer with raw deflate (deflateInit2
+`-MAX_WBITS`) and appends the little-endian crc32 and length trailer.
+Read-side streaming (sockets) is not streamed — the wrapped stream is read
+whole at open, as robigo's `gzfile()` does; a `gzcon` wrapping a `gzcon`
+warns and returns itself. Marked: `base/gzcon`.

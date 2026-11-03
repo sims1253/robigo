@@ -60,6 +60,7 @@ pub static DEFS: &[Builtin] = &[
     internal("truncate", do_truncate, 1),
     internal("fifo", do_fifo, 4),
     internal("readBin", do_readbin, 6),
+    internal("gzcon", do_gzcon, 4),
     internal("writeBin", do_writebin, 5).custom_vis(),
     internal("readChar", do_readchar, 3),
     internal("writeChar", do_writechar, 5).custom_vis(),
@@ -113,6 +114,23 @@ pub enum ConnKind {
     /// fetched into memory when opened, read from there. `headers` are
     /// the request's extra headers (`url(headers = )`).
     Url { data: Vec<u8>, cur: usize, headers: Vec<String> },
+    /// `gzcon(con, ...)`: a gzip wrapper over another binary connection
+    /// (connections.c's gzconn). Reading pulls the wrapped stream at open
+    /// and decompresses it whole, as `gzfile()` does; writing deflates
+    /// into the wrapped connection and finishes with the gzip trailer at
+    /// close (gzcon_write/gzcon_close).
+    Gzcon {
+        inner: i32,
+        level: u32,
+        allow: bool,
+        /// The decompressed stream, once open for reading.
+        data: Vec<u8>,
+        cur: usize,
+        /// Writing: the uncompressed bytes, deflated with the crc and
+        /// length trailer into the wrapped connection at close.
+        out: Vec<u8>,
+        writing: bool,
+    },
     /// `socketConnection()` and `socketAccept()`.
     Sock(super::sock::SockConn),
     /// `serverSocket()`: open while it exists, it only accepts.
@@ -382,6 +400,7 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
         ConnKind::File { fifo: false, .. } => file_open(i, n),
         ConnKind::Gz { .. } => gz_open(i, n),
         ConnKind::Url { .. } => url_open(i, n),
+        ConnKind::Gzcon { .. } => gzcon_open(i, n),
         ConnKind::Sock(_) => super::sock::sock_open(i, n),
         // open from their creation on (text_open, raw_open)
         ConnKind::Terminal
@@ -822,7 +841,10 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
     }
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
+        ConnKind::Gz { data, cur, .. }
+        | ConnKind::Gzcon { data, cur, .. }
+        | ConnKind::TextIn { data, cur }
+        | ConnKind::Url { data, cur, .. } => {
             out.extend_from_slice(&data[*cur..]);
             *cur = data.len();
         }
@@ -877,6 +899,7 @@ pub fn con_write_bytes_or(
     let byte_kind = matches!(
         i.conns.get(n)?.kind,
         ConnKind::Gz { writing: true, .. }
+            | ConnKind::Gzcon { writing: true, .. }
             | ConnKind::Raw { .. }
             | ConnKind::File { fp: Some(_), .. }
             | ConnKind::Sock(_)
@@ -899,6 +922,12 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<bool> {
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { out, writing: true, .. } => {
+            out.extend_from_slice(bytes);
+            Ok(true)
+        }
+        // R: connections.c:gzcon_write — buffered; the deflate stream, crc
+        // and length are computed over the whole buffer at close.
+        ConnKind::Gzcon { out, writing: true, .. } => {
             out.extend_from_slice(bytes);
             Ok(true)
         }
@@ -940,6 +969,7 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<bool> {
         // R: connections.c null_write
         ConnKind::Gz { writing: false, .. }
         | ConnKind::Url { .. }
+        | ConnKind::Gzcon { writing: false, .. }
         | ConnKind::File { fp: None, .. }
         | ConnKind::Terminal
         | ConnKind::TextIn { .. }
@@ -955,9 +985,14 @@ fn i_tempdir() -> RResult<String> {
 
 /// `con->close(con)`
 pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
+    if matches!(i.conns.get(n)?.kind, ConnKind::Gzcon { .. }) {
+        return gzcon_close(i, n);
+    }
     let con = i.conns.get(n)?;
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_close(i, n),
+        // gzcon_close, above
+        ConnKind::Gzcon { .. } => {}
         ConnKind::File { fp, wbuf, .. } => {
             if let Some(mut f) = fp.take() {
                 let _ = flush_file_wbuf(&mut f, wbuf);
@@ -1076,6 +1111,7 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
             | ConnKind::TextOut { .. }
             | ConnKind::Gz { .. }
             | ConnKind::Url { .. }
+            | ConnKind::Gzcon { .. }
             | ConnKind::Raw { .. }
             | ConnKind::Sock(_)
             | ConnKind::ServSock { .. },
@@ -1141,6 +1177,14 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
         }
         ConnKind::File { .. } => file_fgetc(con),
         ConnKind::Gz { data, cur, .. } => {
+            if *cur >= data.len() {
+                EOF
+            } else {
+                *cur += 1;
+                data[*cur - 1] as i32
+            }
+        }
+        ConnKind::Gzcon { data, cur, .. } => {
             if *cur >= data.len() {
                 EOF
             } else {
@@ -1279,6 +1323,13 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_vfprintf(i, n, text),
         ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
+        // R: scan.c's writeLines goes through con->write (bytes); the
+        // gzcon buffers them for its deflate stream.
+        ConnKind::Gzcon { out, writing: true, .. } => {
+            out.extend_from_slice(text.as_bytes());
+            Ok(())
+        }
+        ConnKind::Gzcon { writing: false, .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
             if !*writing {
                 return Err(Flow::error("cannot write to this connection"));
@@ -1363,6 +1414,7 @@ fn con_fflush(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
         | ConnKind::Url { .. }
+        | ConnKind::Gzcon { .. }
         | ConnKind::Raw { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => {}
@@ -2147,6 +2199,227 @@ fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
 }
 
+/// `gzcon(con, level, allowNonCompressed, text)` — connections.c:do_gzcon.
+fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let icon = con_arg(&arg(&args, 0))?;
+    let level = as_integer(&arg(&args, 1));
+    if level == NA_INTEGER || !(0..=9).contains(&level) {
+        return Err(Flow::error_call(call.clone(), "'level' must be one of 0 ... 9"));
+    }
+    let allow = as_logical(&arg(&args, 2));
+    if allow == NA_LOGICAL {
+        return Err(Flow::error_call(call.clone(), "'allowNonCompression' must be TRUE or FALSE"));
+    }
+    let text = as_logical(&arg(&args, 3));
+    if text == NA_LOGICAL {
+        return Err(Flow::error_call(call.clone(), "'text' must be TRUE or FALSE"));
+    }
+    let (imode, iclass, idesc, inner_open) = {
+        let c = i.conns.get(icon)?;
+        if c.class == "gzcon" {
+            i.warning("this is already a 'gzcon' connection")?;
+            return Ok(arg(&args, 0).clone());
+        }
+        (c.mode.clone(), c.class.clone(), c.description.clone(), c.isopen)
+    };
+    let mode = if imode == "r" || imode.starts_with("rb") {
+        "rb"
+    } else if imode == "w" || imode.starts_with("wb") {
+        "wb"
+    } else {
+        return Err(Flow::error("can only use read- or write- binary connections"));
+    };
+    if iclass == "file" && (imode == "r" || imode == "w") {
+        i.warning("using a text-mode 'file' connection may not work correctly")?;
+    } else if iclass == "textConnection" && imode == "w" {
+        return Err(Flow::error(
+            "cannot create a 'gzcon' connection from a writable textConnection; maybe use rawConnection",
+        ));
+    }
+    let ncon = i.conns.next_connection()?;
+    let kind = ConnKind::Gzcon {
+        inner: icon,
+        level: level as u32,
+        allow: allow == TRUE,
+        data: Vec::new(),
+        cur: 0,
+        out: Vec::new(),
+        writing: false,
+    };
+    let mut con = Connection::new("gzcon", &format!("gzcon({})", idesc), mode, kind);
+    con.text = text == TRUE;
+    con.canseek = false;
+    let v = install_connection(i, ncon, con);
+    if inner_open {
+        let _ = gzcon_open(i, ncon as i32)?;
+    }
+    Ok(v)
+}
+
+/// R: connections.c:gzcon_open — validate the gzip header (or fall back to
+/// reading the stream as-is with `allowNonCompression`), then inflate the
+/// wrapped stream; or write the header for writing.
+fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let inner = {
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { inner, .. } = con.kind else { unreachable!() };
+        inner
+    };
+    let mode = i.conns.get(n)?.mode.clone();
+    let wasopen = i.conns.get(inner)?.isopen;
+    if !wasopen && !open_in_mode(i, inner, &mode)? {
+        return Ok(false);
+    }
+    let canwrite = i.conns.get(inner)?.canwrite;
+    {
+        let con = i.conns.get(n)?;
+        con.isopen = true;
+        con.canwrite = canwrite;
+        con.canread = !canwrite;
+        con.save = -1000;
+    }
+    if !canwrite {
+        // Reading: pull the wrapped stream and inflate it (as gzfile does).
+        let raw = match con_read_all(i, inner) {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
+        let ConnKind::Gzcon { allow, .. } = i.conns.get(n)?.kind else { unreachable!() };
+        let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+            if !allow {
+                i.warning("file stream does not have gzip magic number")?;
+                con_close_raw(i, n)?;
+                return Ok(false);
+            }
+            raw
+        } else if raw.len() < 10 || raw[2] != 8 || raw[3] & 0xe0 != 0 {
+            i.warning("file stream does not have valid gzip header")?;
+            con_close_raw(i, n)?;
+            return Ok(false);
+        } else {
+            // R: gzcon_open skips the header byte by byte; a truncated
+            // header just runs into the end of the stream.
+            let flags = raw[3];
+            let mut p = 10usize; // magic(2) method(1) flags(1) time(4) xfl(1) os(1)
+            if flags & 0x04 != 0 {
+                // EXTRA_FIELD
+                p = match raw.get(p..p + 2) {
+                    Some(b) => p + 2 + u16::from_le_bytes([b[0], b[1]]) as usize,
+                    None => raw.len(),
+                };
+            }
+            for mask in [0x08u8, 0x10] {
+                // ORIG_NAME, COMMENT
+                if flags & mask != 0 {
+                    while p < raw.len() && raw[p] != 0 {
+                        p += 1;
+                    }
+                    p += 1;
+                }
+            }
+            if flags & 0x02 != 0 {
+                p += 2; // HEAD_CRC
+            }
+            let body = &raw[p.min(raw.len())..];
+            // R: connections.c:gzcon_read — inflate until the stream ends or
+            // fails (what was inflated is returned either way); at the end,
+            // the crc trailer is checked (a mismatch is only reported) and
+            // the length is ignored.
+            let mut dec = flate2::Decompress::new(false);
+            let mut data = Vec::with_capacity(body.len() * 4);
+            let ended = loop {
+                if data.len() == data.capacity() {
+                    data.reserve(data.len().max(4096));
+                }
+                let before = (dec.total_in(), dec.total_out());
+                let at = (dec.total_in() as usize).min(body.len());
+                match dec.decompress_vec(&body[at..], &mut data, flate2::FlushDecompress::None) {
+                    Ok(flate2::Status::StreamEnd) => break true,
+                    Ok(_) if (dec.total_in(), dec.total_out()) != before => {}
+                    _ => break false,
+                }
+            };
+            if ended {
+                // gzcon_byte: EOF (-1) past the end of the wrapped stream.
+                let mut t = (dec.total_in() as usize).min(body.len());
+                let mut crc: u64 = 0;
+                for _ in 0..4 {
+                    let b = body.get(t).map_or(u64::MAX, |&b| b as u64);
+                    t += 1;
+                    crc >>= 8;
+                    crc = crc.wrapping_add(b << 24);
+                }
+                let sum = crc32(&data) as u64;
+                if crc != sum {
+                    i.write_err(&format!("crc error {:x} {:x}\n", crc, sum));
+                }
+            }
+            data
+        };
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { data: d, cur, .. } = &mut con.kind else { unreachable!() };
+        *d = data;
+        *cur = 0;
+        if !wasopen {
+            con_close_raw(i, inner)?;
+        }
+    } else {
+        // Writing: the header is gzcon_open's; the body and trailer are
+        // written at close (gzcon_close).
+        con_write_bytes(i, inner, &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3])?;
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { writing, .. } = &mut con.kind else { unreachable!() };
+        *writing = true;
+    }
+    Ok(true)
+}
+
+/// crc32 of `data` (zlib's crc32(0, ...)), little trailer order.
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = flate2::Crc::new();
+    c.update(data);
+    c.sum()
+}
+
+/// R: connections.c:gzcon_close — finish the deflate stream, write the
+/// crc and length trailer, and close the wrapped connection.
+fn gzcon_close(i: &mut Interp, n: i32) -> RResult<()> {
+    let (inner, canwrite) = {
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { inner, .. } = &con.kind else { unreachable!() };
+        (*inner, con.canwrite)
+    };
+    if canwrite {
+        let (raw, level) = {
+            let con = i.conns.get(n)?;
+            let ConnKind::Gzcon { out, level, .. } = &mut con.kind else { unreachable!() };
+            (std::mem::take(out), *level)
+        };
+        let crc = crc32(&raw);
+        let total_in = raw.len() as u32;
+        // deflateInit2(-MAX_WBITS) + deflate(Z_FINISH): the raw deflate
+        // stream of everything buffered, in one go.
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(level));
+        use std::io::Write;
+        enc.write_all(&raw)
+            .and_then(|_| enc.finish())
+            .map_err(|_| Flow::error("writing error whilst flushing 'gzcon' connection"))
+            .and_then(|body| {
+                con_write_bytes(i, inner, &body).and(con_write_bytes(i, inner, &{
+                    let mut trailer = Vec::with_capacity(8);
+                    trailer.extend_from_slice(&crc.to_le_bytes());
+                    trailer.extend_from_slice(&total_in.to_le_bytes());
+                    trailer
+                }))
+            })?;
+    }
+    if i.conns.get(inner)?.isopen {
+        con_close_raw(i, inner)?;
+    }
+    i.conns.get(n)?.isopen = false;
+    Ok(())
+}
+
 fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let fname = match call {
         Value::Lang(l) => l.fun_sym().map(|s| s.name().to_string()).unwrap_or_default(),
@@ -2841,8 +3114,8 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
     let r#where = pos_arg;
     let con = i.conns.get(n)?;
     match con.kind {
-        // R: connections.c null_seek — fifos and url-libcurl cannot seek.
-        ConnKind::File { fifo: true, .. } | ConnKind::Url { .. } => {
+        // R: connections.c null_seek — fifos, url-libcurl and gzcon cannot seek.
+        ConnKind::File { fifo: true, .. } | ConnKind::Url { .. } | ConnKind::Gzcon { .. } => {
             Err(Flow::error("'seek' not enabled for this connection"))
         }
         ConnKind::File { fifo: false, .. } => file_seek(con, r#where, origin, rw),
@@ -2997,6 +3270,7 @@ fn con_truncate(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
         | ConnKind::Url { .. }
+        | ConnKind::Gzcon { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => return Err(Flow::error("truncation not enabled for this connection")),
         ConnKind::Native { .. } => return native_bridge()?.conn_truncate(i, n),
@@ -3049,6 +3323,12 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
         ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
+            let take = (buf.len() - used).min(data.len() - *cur);
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
+            *cur += take;
+            Ok(used + take)
+        }
+        ConnKind::Gzcon { data, cur, .. } => {
             let take = (buf.len() - used).min(data.len() - *cur);
             buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
             *cur += take;
