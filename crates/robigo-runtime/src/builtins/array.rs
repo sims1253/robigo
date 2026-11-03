@@ -424,7 +424,7 @@ fn do_array(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 }
 
 /// R: array.c:do_diag
-fn do_diag(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_diag(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let nr = as_integer(&arg(&args, 1));
     if nr == NA_INTEGER {
@@ -449,6 +449,12 @@ fn do_diag(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         return Err(Flow::error("too many elements specified"));
     }
     let (nr, nc) = (nr as usize, nc as usize);
+    // R: array.c:do_diag — every other type goes through coerceVector(x,
+    // REALSXP), whose coercion warnings fire.
+    let x = match &x {
+        Value::Real(_) | Value::Cplx(_) | Value::Int(_) | Value::Lgl(_) | Value::Raw(_) => x,
+        v => i.coerce(v, VType::Real)?,
+    };
     let nx = x.len();
     macro_rules! mk {
         ($data:expr, $zero:expr, $ctor:ident) => {{
@@ -466,10 +472,7 @@ fn do_diag(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         Value::Int(v) => mk!(&v.data, 0, ints),
         Value::Lgl(v) => mk!(&v.data, 0, lgls),
         Value::Raw(v) => mk!(&v.data, 0u8, raws),
-        _ => {
-            let r = reals_of(&x);
-            mk!(&r, 0.0, reals)
-        }
+        _ => unreachable!("diag coerces every other type to real"),
     };
     ans.set_attr_raw(s::DIM, Value::ints(vec![nr as i32, nc as i32]));
     Ok(ans)
