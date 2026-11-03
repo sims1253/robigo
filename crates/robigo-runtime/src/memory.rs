@@ -96,8 +96,122 @@ fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
         return Err(Flow::error("vector is too large"));
     }
-    let probed = n.checked_mul(elt.rust_size()).is_some_and(|b| Vec::<u8>::new().try_reserve_exact(b).is_ok());
+    let Some(bytes) = n.checked_mul(elt.rust_size()) else {
+        return Err(cannot_allocate(n, elt.r_size()));
+    };
+    // An overcommitting kernel lets try_reserve_exact succeed for far more
+    // memory than the process may touch, so bound the request by the limits
+    // the kernel actually enforces (cgroup, RLIMIT_AS) first.
+    if bytes > available_bytes() {
+        return Err(cannot_allocate(n, elt.r_size()));
+    }
+    let probed = Vec::<u8>::new().try_reserve_exact(bytes).is_ok();
     if probed { Ok(()) } else { Err(cannot_allocate(n, elt.r_size())) }
+}
+
+/// The bytes this process may still allocate: the smallest of the cgroup
+/// memory limit less its current usage and `RLIMIT_AS`.
+/// Read once per probe; all of it is off any hot path.
+#[cold]
+fn available_bytes() -> usize {
+    let mut best = usize::MAX;
+    if let Some(cg) = cgroup_limit() {
+        best = best.min(cg);
+    }
+    if let Some(as_lim) = rlimit_as() {
+        best = best.min(as_lim);
+    }
+    best
+}
+
+/// The cgroup memory ceiling minus what that cgroup already uses, walking up
+/// v2's hierarchy (the tightest ancestor wins); v1 falls back to
+/// memory.limit_in_bytes. `None` when no limit is in place.
+#[cold]
+fn cgroup_limit() -> Option<usize> {
+    let line = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let mut best: Option<(usize, std::path::PathBuf)> = None;
+    // v2: every "0::/path" line; v1: the "N:memory:/path" line.
+    for entry in line.lines() {
+        let mut it = entry.splitn(3, ':');
+        let hier = it.next()?;
+        let subsys = it.next().unwrap_or("");
+        let path = it.next().unwrap_or("");
+        if hier == "0" && path.is_empty() {
+            continue;
+        }
+        if hier != "0" && !subsys.split(',').any(|s| s == "memory") {
+            continue;
+        }
+        let mut dir = std::path::PathBuf::from("/sys/fs/cgroup").join(path.trim_start_matches('/'));
+        loop {
+            if let Some(l) = read_limit(&dir) {
+                if best.as_ref().is_none_or(|(b, _)| l < *b) {
+                    best = Some((l, dir.clone()));
+                }
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+    best.map(|(l, dir)| l.saturating_sub(current_usage(&dir).unwrap_or(0)))
+}
+
+#[cold]
+fn read_limit(dir: &std::path::Path) -> Option<usize> {
+    // cgroup v2
+    if let Ok(s) = std::fs::read_to_string(dir.join("memory.max")) {
+        let s = s.trim();
+        if s != "max" {
+            if let Ok(n) = s.parse::<usize>() {
+                return Some(n);
+            }
+        }
+        return None;
+    }
+    // cgroup v1
+    if let Ok(s) = std::fs::read_to_string(dir.join("memory.limit_in_bytes")) {
+        // The v1 default is a near-ULONG_MAX number, not a real limit.
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n < usize::MAX / 4 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+#[cold]
+fn current_usage(dir: &std::path::Path) -> Option<usize> {
+    if let Ok(s) = std::fs::read_to_string(dir.join("memory.current")) {
+        return s.trim().parse::<usize>().ok();
+    }
+    if let Ok(s) = std::fs::read_to_string(dir.join("memory.usage_in_bytes")) {
+        return s.trim().parse::<usize>().ok();
+    }
+    None
+}
+
+/// The soft `RLIMIT_AS` (`ulimit -v`), read from /proc like the rest so the
+/// crate stays free of unsafe. MemAvailable stays out of this: it is
+/// advisory, and treating it as a ceiling would reject requests the kernel
+/// still satisfies (GNU R's malloc prays the same way when nothing enforces
+/// a limit).
+#[cold]
+fn rlimit_as() -> Option<usize> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    for line in limits.lines() {
+        if let Some(rest) = line.strip_prefix("Max address space") {
+            let soft = rest.split_whitespace().next()?;
+            if soft == "unlimited" {
+                return None;
+            }
+            let kb: usize = soft.trim_end_matches(" KB").parse().ok()?;
+            return kb.checked_mul(1024);
+        }
+    }
+    None
 }
 
 /// A vector of capacity `n`, failing like R's allocVector. Unserialize makes

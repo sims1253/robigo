@@ -82,3 +82,64 @@ Baseline on `main` (`f523d79a`):
   (all markers + `arith`) is 32/33 with only the environmental `reg-packages`
   failure; `fastr` `TestBuiltin_(format|deparse|print|dput|cat|complex)`
   slice is 453/453. Kept.
+
+## 2026-11-03: `options(OutDec=)` in `as.character()` of doubles/complex (PR #246)
+
+- why: R's `coerce.c:StringFromReal` calls `EncodeRealDrop0(..., OutDec)` and
+  `do_ascomplex`'s `EncodeComplex(..., OutDec)`, so `as.character(1.5)` under
+  `options(OutDec=",")` is `"1,5"`; robigo ignored the option.
+- what:
+  - `format.rs`: `OutDec` is a `Copy` struct stored in a thread-local `Cell`
+    (modeling options.c's `sdec` C global, `strncpy`'d to 10 bytes). R drops
+    trailing zeros before replacing `"."` by `dec` (printutils.c:
+    EncodeRealDrop0), so `encode_real_drop0_dec` follows that order.
+  - Perf: the first version read the option per element through a
+    `RefCell<String>` and cost +0.55%/+0.97% on robigo/csv and robigo/strings.
+    The merged version reads it once per vector in `coerce::to_str`, keeps the
+    default path on the untouched `encode_real_drop0` branch, moves the
+    non-default path into `#[cold] #[inline(never)]` helpers, and pins
+    `encode_real_drop0`/`drop_trailing_zeros_in` as `#[inline(always)]` so the
+    inlined shape matches main's. Final local instr vs main: csv −0.004%,
+    strings −0.012% (perf check green in CI).
+  - callgrind bisect trick: `callgrind_annotate` per-function diffs on a
+    400k-conversion repro showed the residual cost was `drop_trailing_zeros_in`
+    becoming an outlined call (400k × ~17 instr) after the cold caller was
+    added.
+- gap kept: R warns "the decimal mark is more/less than one character wide"
+  when OutDec isn't exactly one character (EncodeReal0); tracked as an
+  unmarked case in tests/r/io/outdec-coerce.R output.
+- result: merged as PR #246. gnur-tests count unchanged (36/59); the fix is
+  covered by tests/r/io/outdec-coerce (GNU R-recorded output).
+
+## 2026-11-03: honest allocation probe (`primitives` OOM, PR pending)
+
+- why: `gnur-tests/primitives` died with the 3 GB cgroup OOM-killing robigo
+  (exit 137) inside the "testing non-generic 'seq_along'" iteration — the
+  case that previously made robigo grow to 8 GB and get the desktop killed.
+- bisect: loop 1's `length` iteration leaves `length.testit` (body `"OK"`)
+  behind; loop 2's `seq_along(x)` then dispatches `length` exactly like
+  `seq.c:do_seq_along`, `asInteger("OK")` gives NA + the coercion warning,
+  and `R_compact_intrange(1, NA_INTEGER)` asks for a descending realseq of
+  length 2147483650. GNU R stores that as ALTREP and never touches it; robigo
+  materialises compact sequences, so `compact_realseq` collected 17 GB.
+- what: `memory.rs:probe_vector` now bounds the request by the honest limits
+  before asking the allocator: the cgroup memory ceiling minus its usage
+  (walking v2's hierarchy, v1's memory.limit_in_bytes) and RLIMIT_AS via
+  /proc/self/limits (the crate denies unsafe, so no getrlimit).
+  Overcommitting kernels let `try_reserve_exact` succeed for far more than
+  the process may touch, which is why the probe never fired; now the request
+  fails with R's own `memory.c:allocVector3` message ("cannot allocate
+  vector of size 16.0 Gb") and `try()` can catch it. MemAvailable stays out
+  of the bound: it is advisory, and the first version that counted it
+  regressed fastr's serialize(1:2147483649) — GNU R answers that from a
+  virtual sequence while CI's roomier runner still materialises it.
+- result: `primitives` runs to its last loop (no OOM); remaining diffs are
+  new root causes: (1) `abs(zZ = NULL)` through an `.ArgsEnv` stub must be
+  "unused argument (zZ = NULL)" but robigo positional-matches and evaluates
+  abs(NULL) → "non-numeric argument to mathematical function"; (2) robigo
+  does not print the `tracemem[0x.. -> 0x..]: ...` line the transcript
+  expects.
+- gap: `tests/r/vectors/giant-seq-gap.R` records GNU R answering
+  `length(1:-2147483648L)` with 2147483650 from a virtual sequence; robigo
+  errors with the allocation message instead. The faithful fix is lazy
+  compact sequences (ALTREP-like), which is an object-model change.
