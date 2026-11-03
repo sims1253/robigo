@@ -586,6 +586,10 @@ impl Core {
         // (the payload is not on this heap: a node, as GNU R counts a
         // custom allocator's vector)
         let x = self.alloc_object(t, EXTDATA_SIZE, 0);
+        // The payload lives elsewhere but is this object's to keep alive:
+        // it counts towards the next collection like an inline one, or a
+        // loop of small EXTDATA objects would hold their buffers unboundedly.
+        self.alloc_since_gc += n.saturating_mul(crate::elt_size(t));
         // SAFETY: EXTDATA_SIZE covers every field written, up to +56.
         unsafe {
             x.set_flags(flags::EXTDATA);

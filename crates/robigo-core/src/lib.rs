@@ -70,6 +70,14 @@ pub mod flags {
     pub const NO_TRACKREFS: u8 = 0x80;
 }
 
+/// Bits of the header's `extra` word above GNU R's debug, trace and step
+/// bits (0..2), which C sets through masked accessors only.
+pub mod extra {
+    /// An EXTDATA vector whose owner word belongs to the host bridge: a
+    /// runtime vector shared with C zero-copy.
+    pub const HOST_OWNED: u16 = 1 << 15;
+}
+
 /// GNU R's sxpinfo.gp bits that the core itself uses (Defn.h).
 pub mod gp {
     pub const BYTES: u16 = 1 << 1;
