@@ -383,3 +383,17 @@ internet.rs already opens for curlDownload: the version string, the
 `libssh_version` only). Without libcurl: a single empty string. Locally the
 host's libcurl 8.23.0 answers; the oracle's (and CI's) is 8.14.1, so the
 marker is CI's to confirm.
+
+## 2026-11-03: chooseOpsMethod consulted for incompatible Ops methods (1 case)
+
+`base/chooseOpsMethod`: eval.c's DispatchGroup, when two operands pick
+different Ops-group methods (not identical, not the difftime special cases),
+asks `base::chooseOpsMethod` before giving up — S3 dispatch on the first
+object's class (R_chooseOpsMethod evaluates
+`base::chooseOpsMethod(x, y, mx, my, cl, rev)` in a fresh child of the
+caller), then the other way with `rev = TRUE`; only when both refuse does it
+warn `Incompatible methods ("<l>", "<r>") for "<op>"` — a call-less warning
+(`Warning: ...`, not `Warning in ...`). robigo warned via warningcall and
+dropped to the default arithmetic without asking, so chooseOpsMethod methods
+were never selected and the example's stopifnot failed. Marked:
+`base/chooseOpsMethod`.
