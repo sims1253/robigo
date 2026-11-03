@@ -105,7 +105,7 @@ fn as_i32(n: Num) -> i32 {
 /// Scalar arithmetic; `None` means "use the general builtin" (e.g. on
 /// integer overflow, which needs a warning).
 #[inline(always)]
-fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
+pub(crate) fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
     if matches!(a, Num::D(_)) || matches!(b, Num::D(_)) {
         if op == ArithOp::Mod && crate::builtins::arith::fmod_warns(as_f64(a), as_f64(b)) {
             return None;
@@ -167,7 +167,7 @@ fn arith_fast(op: ArithOp, a: Num, b: Num) -> Option<RVal> {
 }
 
 #[inline(always)]
-fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
+pub(crate) fn rel_fast(op: RelOp, a: Num, b: Num) -> RVal {
     if matches!(a, Num::D(_)) || matches!(b, Num::D(_)) {
         let (x, y) = (as_f64(a), as_f64(b));
         return RVal::L(if x.is_nan() || y.is_nan() { NA_LOGICAL } else { op.test(x, y) as Lgl });
@@ -530,10 +530,10 @@ fn signal_var(interp: &mut Interp, r: RResult<(Value, bool)>) -> RResult<(Value,
     }
 }
 
-/// A 0-based index from an in-range positive scalar index.
+/// An index value as `scalar_index` reads it.
 #[inline(always)]
-fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
-    let num = |r: &RVal| match r {
+fn index_num(r: &RVal) -> Option<f64> {
+    match r {
         RVal::D(x) => Some(*x),
         RVal::I(x) if *x != NA_INTEGER => Some(*x as f64),
         RVal::V(Value::Real(v)) if v.data.len() == 1 && v.attrs.is_none() => Some(v.data[0]),
@@ -541,7 +541,23 @@ fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Opti
             Some(v.data[0] as f64)
         }
         _ => None,
-    };
+    }
+}
+
+/// `x[[i]]` / `x[i]` through `Op::Index`'s fast path: `None` where it would
+/// take the slow one.
+#[inline]
+pub(crate) fn index_value(x: &RVal, i: &RVal, two: bool) -> Option<RVal> {
+    let i = index_num(i)?;
+    // NaN fails both comparisons.
+    let ix = (1.0..4503599627370496.0).contains(&i).then_some(i.trunc() - 1.0)?;
+    element(x, ix as usize, two)
+}
+
+/// A 0-based index from an in-range positive scalar index.
+#[inline(always)]
+fn scalar_index(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<f64> {
+    let num = index_num;
     let x = match i {
         Leaf::D(x) => *x,
         Leaf::I(x) => *x as f64,
@@ -1071,7 +1087,7 @@ fn type_name_value(name: &'static str) -> Value {
 
 /// [`Builtin1`] without a call: for values that are not objects, or
 /// whatever the builtin does not dispatch on. `None`: call the builtin.
-fn builtin1_fast(f: Builtin1, x: &RVal) -> Option<RVal> {
+pub(crate) fn builtin1_fast(f: Builtin1, x: &RVal) -> Option<RVal> {
     let v = match x {
         RVal::V(v) => v,
         RVal::D(d) => {
@@ -1771,6 +1787,18 @@ fn nested_call_inline(
                 };
                 arith_fast(*op, num(a)?, num(b)?)?
             }
+            InlineArg::Index { x, slot, i, two, sym, memo } => {
+                if !guard_ok(interp, *sym, env, memo) {
+                    return None;
+                }
+                let iv = match i {
+                    Leaf::D(v) => RVal::D(*v),
+                    Leaf::I(v) => RVal::I(*v),
+                    Leaf::Var(sym, slot) => read(slots, env, *sym, *slot)?,
+                    Leaf::R(r) => regs[*r as usize].clone(),
+                };
+                index_value(&read(slots, env, *x, *slot)?, &iv, *two)?
+            }
         };
         args.push(v);
     }
@@ -1996,6 +2024,24 @@ fn site_arg(interp: &mut Interp, a: &InlineArg, vars: &mut Vars<'_>, env: &Env, 
             let y = leaf_num(vars, env, regs, b)?;
             arith_fast(*op, x, y)?
         }
+        InlineArg::Index { x, slot, i, two, sym, memo } => {
+            if !guard_ok(interp, *sym, env, memo) {
+                return None;
+            }
+            let iv = leaf_rval(vars, env, regs, i)?;
+            index_value(read_var(vars, env, *x, *slot)?, &iv, *two)?
+        }
+    })
+}
+
+/// A leaf's value, if reading it cannot run code.
+#[inline(always)]
+fn leaf_rval(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], l: &Leaf) -> Option<RVal> {
+    Some(match l {
+        Leaf::D(x) => RVal::D(*x),
+        Leaf::I(x) => RVal::I(*x),
+        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot)?.clone(),
+        Leaf::R(r) => regs[*r as usize].clone(),
     })
 }
 
@@ -2070,19 +2116,36 @@ fn native_site_call(
             }
         }
     }
-    // Variables of enclosing frames may be this frame's: pending assignments
-    // go first. (The VM does the same before any call, which this may be.)
+    use crate::jit::closure::Run;
+    // A closure defined in this frame, as usual for one reading its
+    // variables, sees its pending assignments: they go first. (Other
+    // closures of the tree are checked by `call`.)
     if vars.dirty
         && code.native.reads_frames()
+        && crate::jit::closure::on_chain(&clo.env, env)
         && let Err(e) = vars.flush(interp, env, &caller.vars)
     {
         vars.failed = Some(Box::new(e));
         vars.dirty = true;
         return None;
     }
-    let r = crate::jit::closure::call(interp, clo, code, &args, leaves);
-    code.native.outcome(r.is_some());
-    r
+    let mut r = crate::jit::closure::call(interp, clo, code, &args, leaves, vars.dirty.then_some(env));
+    if let Run::Flush = r {
+        // The tree reads variables of this frame: pending assignments go
+        // first. (The VM does the same before any call, which this may be.)
+        if let Err(e) = vars.flush(interp, env, &caller.vars) {
+            vars.failed = Some(Box::new(e));
+            vars.dirty = true;
+            return None;
+        }
+        r = crate::jit::closure::call(interp, clo, code, &args, leaves, None);
+    }
+    let v = match r {
+        Run::Done(v) => Some(v),
+        _ => None,
+    };
+    code.native.outcome(v.is_some());
+    v
 }
 
 /// R: compiler/R/cmp.R:safeBaseInternals, cmpSimpleInternal,
@@ -2635,6 +2698,17 @@ fn eager_args(
                 }
                 let (Some(x), Some(y)) = (leaf_num(vars, env, regs, a), leaf_num(vars, env, regs, b)) else { break };
                 match arith_fast(*op, x, y) {
+                    Some(v) => v,
+                    None => break,
+                }
+            }
+            InlineArg::Index { x, slot, i, two, sym, memo } => {
+                if !guard_ok(interp, *sym, env, memo) {
+                    break;
+                }
+                let Some(iv) = leaf_rval(vars, env, regs, i) else { break };
+                let Some(xv) = read_var(vars, env, *x, *slot) else { break };
+                match index_value(xv, &iv, *two) {
                     Some(v) => v,
                     None => break,
                 }
