@@ -51,6 +51,9 @@ pub enum JType {
     /// A matrix with only a dim attribute.
     MatD,
     MatI,
+    /// Any value, held in an `RVal` slot of the frame (in a closure compiled
+    /// whole): native code knows it by the slot's address.
+    Dyn,
 }
 
 impl JType {
@@ -145,6 +148,8 @@ pub struct InlineCall {
 pub enum CallArg {
     Leaf(Leaf),
     Arith(ArithOp, Leaf, Leaf),
+    /// `x[[i]]` (`two`) or `x[i]` of variable slot `x`.
+    Index(Slot, Leaf, bool),
 }
 
 impl CallArg {
@@ -152,6 +157,17 @@ impl CallArg {
         match self {
             CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
             CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
+            CallArg::Index(x, i, _) => {
+                if !matches!(leaf_type(i, st, slot_ty)?, JType::D | JType::I) {
+                    return None;
+                }
+                match slot_ty.get(x)? {
+                    JType::VecD => Some(JType::D),
+                    JType::VecI => Some(JType::I),
+                    JType::Dyn => Some(JType::Dyn),
+                    _ => None,
+                }
+            }
         }
     }
 }
@@ -411,6 +427,9 @@ fn new_module() -> JITModule {
     for (name, f, _, _) in HELPERS {
         jb.symbol(*name, *f);
     }
+    for (name, f, _, _) in closure::DYN_HELPERS {
+        jb.symbol(*name, *f);
+    }
     JITModule::new(jb)
 }
 
@@ -468,12 +487,31 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
                             leaf_uses(x, &mut u);
                             leaf_uses(y, &mut u);
                         }
+                        CallArg::Index(x, i, _) => {
+                            u.rslots.push(*x);
+                            leaf_uses(i, &mut u);
+                        }
                     }
                 }
             }
             u.wregs.push(*dst);
         }
-        Op::ConstD { dst, .. } | Op::ConstI { dst, .. } | Op::ConstL { dst, .. } => u.wregs.push(*dst),
+        Op::ConstD { dst, .. }
+        | Op::ConstI { dst, .. }
+        | Op::ConstL { dst, .. }
+        | Op::Const { dst, .. }
+        | Op::Null { dst } => u.wregs.push(*dst),
+        Op::Subset { dst, x, i, .. } => {
+            u.rregs.extend([*x, *i]);
+            u.wregs.push(*dst);
+        }
+        Op::SubsetObj { x, .. } => u.rregs.push(*x),
+        Op::CallBuiltin { dst, args, .. } => {
+            if let Some(code) = inl.specs.and_then(|s| s.code()) {
+                u.rregs.extend(code.arglists[*args as usize].iter().map(|(_, r)| *r));
+            }
+            u.wregs.push(*dst);
+        }
         Op::GetVar { dst, slot, .. } => {
             u.rslots.push(*slot);
             u.wregs.push(*dst);
@@ -855,7 +893,9 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
     let rt = |reg: &Reg| st[*reg as usize].unwrap();
     let lt = |l: &Leaf| leaf_type(l, st, slot_ty);
     match op {
-        Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => rt(cond) == JType::L,
+        Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => {
+            rt(cond) == JType::L || (inl.specs.is_some() && rt(cond) == JType::Dyn)
+        }
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
         Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
@@ -900,6 +940,11 @@ fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<
 
 /// The registers an op defines and their types (`None`: unknown).
 fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Vec<(usize, Option<JType>)> {
+    if inl.specs.is_some()
+        && let Some(d) = closure::dyn_defs(op, st, slot_ty, inl)
+    {
+        return d;
+    }
     let rt = |r: &Reg| st[*r as usize];
     let scalar = |t: Option<JType>| t.filter(|t| t.is_scalar());
     match op {
@@ -1019,7 +1064,7 @@ fn reg_flow(
         match op {
             Op::SetVar { src, slot, .. } => {
                 if let Some(t) = st[*src as usize] {
-                    if !t.is_scalar() {
+                    if !t.is_scalar() && !(inl.specs.is_some() && t == JType::Dyn) {
                         return Err(Reject::Never);
                     }
                     assign(*slot, t)?;
@@ -1069,7 +1114,7 @@ fn cl_type(t: JType) -> Type {
     match t {
         JType::D => types::F64,
         // (A pointer to a `VecView`, in a closure compiled whole.)
-        JType::VecD | JType::VecI | JType::MatD | JType::MatI => types::I64,
+        JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::Dyn => types::I64,
         _ => types::I32,
     }
 }
@@ -1221,6 +1266,9 @@ impl Gen<'_, '_> {
     /// Register `r` before the current op.
     fn reg(&mut self, r: Reg) -> (CValue, JType) {
         let t = self.state(self.cur)[r as usize].unwrap();
+        if t == JType::Dyn {
+            return (self.dyn_reg(r), t);
+        }
         let var = self.v.reg[&(r, t)];
         (self.b.use_var(var), t)
     }
@@ -1228,6 +1276,10 @@ impl Gen<'_, '_> {
     /// Define register `r` (with the type the current op gives it).
     fn set_reg(&mut self, r: Reg, x: CValue) {
         let t = self.cur_defs.iter().find(|(k, _)| *k == r as usize).and_then(|(_, t)| *t).unwrap();
+        if t == JType::Dyn {
+            // (Written in place, through `dyn_reg`.)
+            return;
+        }
         let var = self.v.reg[&(r, t)];
         self.b.def_var(var, x);
     }
@@ -1394,9 +1446,28 @@ impl Gen<'_, '_> {
         let mut falls = true;
         // (As the VM's: an invisible value of a call before it must not last.)
         if self.whole.is_some()
-            && matches!(op, Op::GetVar { .. } | Op::Index { .. } | Op::Index2 { .. } | Op::Builtin1 { .. })
+            && matches!(
+                op,
+                Op::GetVar { .. }
+                    | Op::Index { .. }
+                    | Op::Index2 { .. }
+                    | Op::Builtin1 { .. }
+                    | Op::Subset { .. }
+                    | Op::CallBuiltin { .. }
+            )
         {
             self.set_visible(true);
+        }
+        if self.whole.is_some() {
+            match self.dyn_op(pc, op) {
+                Some(true) => {
+                    let n = self.target(next);
+                    self.b.ins().jump(n, &[]);
+                    return;
+                }
+                Some(false) => return,
+                None => {}
+            }
         }
         match op {
             Op::ConstD { dst, x } => {
@@ -1697,17 +1768,19 @@ impl Gen<'_, '_> {
                 let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
                 let args: Vec<(CValue, JType)> = arg_list
                     .iter()
-                    .map(|a| match a {
+                    .enumerate()
+                    .map(|(k, a)| match a {
                         CallArg::Leaf(l) => self.leaf(l),
                         CallArg::Arith(op, x, y) => {
                             let (x, y) = (self.leaf(x), self.leaf(y));
                             let t = arith_type(*op, x.1, y.1).unwrap();
                             (self.arith(*op, x, y, pc), t)
                         }
+                        CallArg::Index(x, i, two) => self.index_arg(k, *x, i, *two, pc),
                     })
                     .collect();
                 if self.whole.is_some() {
-                    let v = self.real_call(*site, &args);
+                    let v = self.real_call(*site, *dst, &args);
                     self.set_reg(*dst, v);
                     let n = self.target(next);
                     self.b.ins().jump(n, &[]);
