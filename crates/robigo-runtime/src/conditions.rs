@@ -354,12 +354,66 @@ impl Interp {
         }
         // R: errors.c:restore_inError
         self.restore_expressions();
+        // R: errors.c:jump_to_top_ex ends in try_jump_to_restart: an
+        // unhandled error invokes the innermost "browser", "tryRestart" or
+        // "abort" restart (source(catch.aborts = TRUE) relies on this).
+        if let Some(f) = self.try_jump_to_restart() {
+            return f;
+        }
         Flow::Error(Box::new(RError {
             message: msg.to_string(),
             call: Some(call.clone()),
             signaled: true,
             classes: vec![],
         }))
+    }
+
+    /// R: errors.c:try_jump_to_restart — invoke the innermost restart named
+    /// "browser", "tryRestart" or "abort", unwinding as `.invokeRestart`
+    /// does; `None` when the stack has none (or its exit is NULL).
+    fn try_jump_to_restart(&mut self) -> Option<Flow> {
+        let mut cur = self.restarts.clone();
+        while let Some(node) = cur.clone() {
+            let name = match &node.restart {
+                Value::List(l) => match l.data.first() {
+                    Some(Value::Str(s)) => s.data.first().and_then(|x| x.as_deref()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if name.is_some_and(|n| n == "browser" || n == "tryRestart" || n == "abort") {
+                let Value::List(l) = &node.restart else { return None };
+                let Value::Env(exit) = &l.data[1] else { return None };
+                // Pop this restart and everything above it, as .invokeRestart
+                // does (the found node is identified by its exit env).
+                let is_target = |n: &Rc<RestartNode>| match &n.restart {
+                    Value::List(rl) => matches!(&rl.data[1], Value::Env(x) if x.ptr_eq(exit)),
+                    _ => false,
+                };
+                let mut depth = 0usize;
+                let mut cur = self.restarts.clone();
+                let found = loop {
+                    let Some(n) = cur else { break false };
+                    if is_target(&n) {
+                        break true;
+                    }
+                    depth += 1;
+                    cur = n.next.clone();
+                };
+                if !found {
+                    return None;
+                }
+                let mut rest = self.restarts.clone();
+                for _ in 0..=depth {
+                    rest = rest.and_then(|n| n.next.clone());
+                }
+                self.restarts = rest;
+                self.restore_expressions();
+                return Some(Flow::Return(Value::Null, exit.clone()));
+            }
+            cur = node.next.clone();
+        }
+        None
     }
 
     /// R: errors.c:jump_to_top_ex -- evaluate `options("error")` with the
