@@ -861,9 +861,6 @@ fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     });
     Ok(Value::pairlist(deparsed.collect()))
 }
-fn do_null1(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
-}
 fn do_null_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Null)
 }
