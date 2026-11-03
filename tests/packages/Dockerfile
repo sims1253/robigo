@@ -7,5 +7,5 @@ ENV DEBIAN_FRONTEND=noninteractive
 COPY apt.txt /tmp/apt.txt
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends r-base-core=4.5.0-3 r-base-dev \
-      $(grep -v '^#' /tmp/apt.txt) \
+      $(sed -e 's/#.*//' /tmp/apt.txt) \
  && R --version | head -1

@@ -18,9 +18,11 @@ on:
       - scripts/package-suite.py
       - scripts/test-package-suite.py
       - .github/workflows/packages.yml
+      - .github/actions/package-suite/**
 
+# A spot check of a few packages does not queue behind the nightly.
 concurrency:
-  group: packages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  group: packages-${{ github.event_name == 'pull_request' && github.ref || inputs.packages || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -36,16 +38,16 @@ env:
   LC_ALL: C.UTF-8
   TZ: UTC
   ROBIGO_PKG_ORACLE: "1"
-  RV_VERSION: "0.23.3"
-  RV_SHA256: 749ffd6cfd78b10834e11074f62e347e7d214b50ee1356de557733633aa5cf87
 
 jobs:
   binary:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       run: ${{ steps.find.outputs.run }}
       sha: ${{ steps.find.outputs.sha }}
       full: ${{ steps.find.outputs.full }}
+      packages: ${{ steps.find.outputs.packages }}
     steps:
       - id: find
         env:
@@ -57,14 +59,26 @@ jobs:
           read -r run sha < <(gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" \
             --jq '.workflow_runs[0] | "\(.id) \(.head_sha)"')
+          if [ -z "$run" ] || [ "$run" = null ]; then
+            echo "no successful CI run on main" >&2
+            exit 1
+          fi
+          # ci.yml keeps the binary for 7 days: fail here, not hours in
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+            --jq '.artifacts[] | select(.name == "robigo" and .expired == false) | .id' | grep -q . ||
+            { echo "CI run $run has no live robigo artifact" >&2; exit 1; }
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # all of them (an empty list), or a few with no history recorded
           full=true
-          if [ "$EVENT" = pull_request ] || [ -n "$PACKAGES" ]; then full=false; fi
+          if [ "$EVENT" = pull_request ]; then PACKAGES=magrittr; fi
+          if [ -n "$PACKAGES" ]; then full=false; fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
 
   unit:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test-package-suite.py
@@ -77,7 +91,9 @@ jobs:
         shard: [1, 2, 3, 4]
     # Above the suite's own budget of 30 minutes a package, plus setup.
     timeout-minutes: 240
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    # The container gets SYS_ADMIN and NET_ADMIN (below), so a pull
+    # request's code never runs on a self-hosted machine.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container:
       image: debian:trixie
       # Tests run in a network namespace of their own (unshare -n).
@@ -102,15 +118,17 @@ jobs:
           scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
       - name: Run
         env:
-          PACKAGES: ${{ needs.binary.outputs.full == 'true' && '' || inputs.packages || 'magrittr' }}
+          PACKAGES: ${{ needs.binary.outputs.packages }}
           SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
           if [ -z "$PACKAGES" ]; then
-            python3 scripts/package-suite.py run --shard "$SHARD/4" --out "out/packages.shard${SHARD}of4.json" |
+            python3 scripts/package-suite.py run --shard "$SHARD/$SHARDS" --out "out/packages.shard${SHARD}of${SHARDS}.json" |
               tee -a "$GITHUB_STEP_SUMMARY"
           elif [ "$SHARD" = 1 ]; then
-            python3 scripts/package-suite.py run $PACKAGES --out out/packages.json | tee -a "$GITHUB_STEP_SUMMARY"
+            read -ra names <<< "$PACKAGES"
+            python3 scripts/package-suite.py run "${names[@]}" --out out/packages.json | tee -a "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
@@ -157,7 +175,7 @@ jobs:
     # Merges into the commit's line of the history and republishes the page.
     # An incomplete run is recorded too: it sets no score, and says so.
     needs: [binary, measure, install]
-    if: ${{ !cancelled() && needs.binary.outputs.full == 'true' }}
+    if: ${{ !cancelled() && needs.binary.outputs.full == 'true' && needs.measure.result != 'skipped' }}
     runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 15
