@@ -258,9 +258,24 @@ pub fn encode_real_dec(x: f64, w: usize, d: usize, e: usize, na: &str, dec: &str
 }
 
 /// `EncodeRealDrop0`: like [`encode_real0`] but dropping trailing zeros.
+#[inline(always)]
 pub fn encode_real_drop0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
     let mut s = encode_real0(x, w, d, e, na);
     drop_trailing_zeros_in(&mut s);
+    s
+}
+
+/// [`encode_real_drop0`] with R's `OutDec` separator: `as.character()` of a
+/// number uses the `options("OutDec")` character (format.c:EncodeReal).
+pub fn encode_real_drop0_dec(x: f64, w: usize, d: usize, e: usize, na: &str, dec: OutDec) -> String {
+    // R: printutils.c:EncodeRealDrop0 drops trailing zeros before replacing
+    // "." by `dec`. Written out rather than wrapping `encode_real_drop0` so
+    // the hot default path keeps its single-caller inlining.
+    let mut s = encode_real0(x, w, d, e, na);
+    drop_trailing_zeros_in(&mut s);
+    if !dec.is_default() {
+        s = s.replace('.', dec.as_str());
+    }
     s
 }
 
@@ -273,6 +288,7 @@ pub fn drop_trailing_zeros(s: &str) -> String {
 /// Drop the zeros at the end of the digits after the decimal point (and
 /// the point if none remain).
 // R: printutils.c:dropTrailing0
+#[inline(always)]
 fn drop_trailing_zeros_in(s: &mut String) {
     let Some(dot) = s.find('.') else { return };
     let bytes = s.as_bytes();
@@ -292,11 +308,71 @@ fn drop_trailing_zeros_in(s: &mut String) {
 /// `as.character()` of a double: 15 significant digits, trailing zeros
 /// dropped.
 pub fn string_from_real(x: f64) -> RStr {
+    let dec = out_dec();
+    if dec.is_default() { string_from_real_default(x) } else { string_from_real_dec(x, dec) }
+}
+
+/// [`string_from_real`] with the default `OutDec`: identical to R's
+/// `coerce.c:StringFromReal` before `OutDec` is consulted.
+pub fn string_from_real_default(x: f64) -> RStr {
     if is_na_real(x) {
         return None;
     }
     let (w, d, e) = format_real(&[x], 15, 0, 0, 2);
     rstr(&encode_real_drop0(x, w, d, e, "NA"))
+}
+
+/// [`string_from_real`] under a non-default `OutDec`; off the hot path.
+#[cold]
+#[inline(never)]
+pub fn string_from_real_dec(x: f64, dec: OutDec) -> RStr {
+    if is_na_real(x) {
+        return None;
+    }
+    let (w, d, e) = format_real(&[x], 15, 0, 0, 2);
+    rstr(&encode_real_drop0_dec(x, w, d, e, "NA", dec))
+}
+
+/// R's global `OutDec`: `static char sdec[11]` in options.c, which
+/// `EncodeReal0` and `EncodeComplex` read. It is copied by value, like the
+/// C global, so reading it costs a thread-local load rather than an
+/// allocation on the number-to-string hot path.
+#[derive(Clone, Copy)]
+pub struct OutDec {
+    len: u8,
+    bytes: [u8; 10],
+}
+
+impl OutDec {
+    const DEFAULT: OutDec = OutDec { len: 1, bytes: [b'.', 0, 0, 0, 0, 0, 0, 0, 0, 0] };
+
+    /// `strcmp(OutDec, ".") == 0`: the common case.
+    pub fn is_default(&self) -> bool {
+        self.len == 1 && self.bytes[0] == b'.'
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or(".")
+    }
+}
+
+thread_local! {
+    static OUT_DEC: std::cell::Cell<OutDec> = const { std::cell::Cell::new(OutDec::DEFAULT) };
+}
+
+/// `options(OutDec =)`: the character `EncodeReal0`/`EncodeComplex` use.
+// R: options.c:do_options — `strncpy(sdec, CHAR(STRING_ELT(argi, 0)), 10)`.
+pub fn set_out_dec(s: &str) {
+    let b = s.as_bytes();
+    let n = b.len().min(10);
+    let mut bytes = [0u8; 10];
+    bytes[..n].copy_from_slice(&b[..n]);
+    OUT_DEC.with(|d| d.set(OutDec { len: n as u8, bytes }));
+}
+
+/// The current `OutDec` (default `"."`).
+pub fn out_dec() -> OutDec {
+    OUT_DEC.with(|d| d.get())
 }
 
 pub fn index_width(n: usize) -> usize {
