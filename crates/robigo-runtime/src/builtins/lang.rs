@@ -656,9 +656,30 @@ fn complex_assign_inplace(
         return None;
     }
     // Walk the getters, taking every element out of its (now uniquely
-    // held) container. `slots[k]` is the element's slot in `containers[k]`.
+    // held) container. `slots[k]` is containers[k+1]'s slot in
+    // containers[k]. Every exit after a take-out heals the chain first:
+    // a fallback that left holes would drop data.
     let mut containers: Vec<Value> = vec![std::mem::replace(&mut root, Value::Null)];
     let mut slots: Vec<usize> = Vec::new();
+    /// Put every taken element back into its slot and the binding back;
+    /// `err` distinguishes a fallback (None) from a propagated error.
+    fn leave(
+        env: &Env,
+        target: Sym,
+        containers: &mut Vec<Value>,
+        slots: &[usize],
+        err: Option<Flow>,
+    ) -> Option<RResult<()>> {
+        for j in (1..containers.len()).rev() {
+            let v = containers[j].clone();
+            match &mut containers[j - 1] {
+                Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slots[j - 1]] = v,
+                _ => unreachable!("complex_assign_inplace containers are lists"),
+            }
+        }
+        env.set_local(target, containers.remove(0));
+        err.map(Err)
+    }
     for k in 1..n {
         let l = levels[n - k].clone();
         let is_dollar = matches!(&l.fun, Value::Sym(f) if *f == s::DOLLAR);
@@ -667,14 +688,10 @@ fn complex_assign_inplace(
         if is_dollar {
             // `$` is a special: its name argument stays unevaluated.
             argv.extend(extra.iter().cloned());
-        } else {
-            match interp.eval_args(&extra, env, &Value::Null) {
-                Ok(mut ev) => argv.append(&mut ev),
-                Err(f) => {
-                    restore(env, containers.remove(0));
-                    return Some(Err(f));
-                }
-            }
+        } else if let Err(f) = interp.eval_args(&extra, env, &Value::Null) {
+            return leave(env, target, &mut containers, &slots, Some(f));
+        } else if let Ok(mut ev) = interp.eval_args(&extra, env, &Value::Null) {
+            argv.append(&mut ev);
         }
         let Value::Builtin(b) = interp.find_fun(if is_dollar { s::DOLLAR } else { s::BRACKET2 }, env).ok()? else {
             unreachable!("checked above");
@@ -682,14 +699,10 @@ fn complex_assign_inplace(
         let gcall = Value::lang(l.fun.clone(), argv.clone());
         let got = match interp.invoke_builtin(b, &gcall, argv, env) {
             Ok(v) => v,
-            Err(f) => {
-                restore(env, containers.remove(0));
-                return Some(Err(f));
-            }
+            Err(f) => return leave(env, target, &mut containers, &slots, Some(f)),
         };
         if got.is_object() {
-            restore(env, containers.remove(0));
-            return None;
+            return leave(env, target, &mut containers, &slots, None);
         }
         // Find the slot by allocation identity and take the element out of
         // the container (whose only other holders are aliases outside our
@@ -703,25 +716,19 @@ fn complex_assign_inplace(
             _ => None,
         };
         let Some(i) = slot else {
-            restore(env, containers.remove(0));
-            return None;
+            return leave(env, target, &mut containers, &slots, None);
         };
         let element = match containers.last_mut().unwrap() {
             Value::List(rc) | Value::Expr(rc) => std::mem::replace(&mut Rc::make_mut(rc).data[i], Value::Null),
             _ => unreachable!(),
         };
-        // Only a uniquely-held element can be modified in place; otherwise
-        // the general path's copy is GNU R's, too.
-        if !sole_allocation(&element) {
-            match containers.last_mut().unwrap() {
-                Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[i] = element,
-                _ => unreachable!(),
-            }
-            restore(env, containers.remove(0));
-            return None;
-        }
         slots.push(i);
         containers.push(element);
+    }
+    // Only a uniquely-held innermost element can be modified in place;
+    // otherwise the general path's copy is GNU R's, too.
+    if !sole_allocation(containers.last().unwrap()) {
+        return leave(env, target, &mut containers, &slots, None);
     }
     // The innermost replacement runs on the (uniquely held) element.
     crate::builtins::subassign::clear_restore();
@@ -766,9 +773,7 @@ fn complex_assign_inplace(
         }
     };
     if let Err(f) = r {
-        heal_chain(&mut containers, &slots, Value::Null);
-        restore(env, containers.remove(0));
-        return Some(Err(f));
+        return leave(env, target, &mut containers, &slots, Some(f));
     }
     if setter.kind == BuiltinKind::Special {
         argv[0].value = quote_if_needed(argv[0].value.clone());
@@ -783,28 +788,13 @@ fn complex_assign_inplace(
             // The replacement owned the element; subassign hands it back
             // unchanged on error, so put it back where it came from.
             let back = crate::builtins::subassign::take_restore().unwrap_or(Value::Null);
-            heal_chain(&mut containers, &slots, back);
-            restore(env, containers.remove(0));
-            return Some(Err(f));
+            *containers.last_mut().unwrap() = back;
+            return leave(env, target, &mut containers, &slots, Some(f));
         }
     };
-    heal_chain(&mut containers, &slots, new_element);
-    restore(env, containers.remove(0));
+    *containers.last_mut().unwrap() = new_element;
+    leave(env, target, &mut containers, &slots, None);
     Some(Ok(()))
-}
-
-/// Put `last` back into the innermost container and work upwards, so every
-/// taken-out element lands in its own slot again.
-fn heal_chain(containers: &mut [Value], slots: &[usize], last: Value) {
-    let mut cur = last;
-    for k in (0..containers.len()).rev() {
-        let slot = slots[k];
-        match &mut containers[k] {
-            Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slot] = cur,
-            _ => unreachable!("complex_assign_inplace containers are lists"),
-        }
-        cur = containers[k].clone();
-    }
 }
 
 /// Whether `v` is the only handle to its allocation (R's `MAYBE_SHARED`
