@@ -510,9 +510,20 @@ impl Interp {
                 } else if lname == "Ops.difftime" && matches!(rname.as_str(), "+.POSIXt" | "+.Date") {
                     lsxp = None;
                 } else if !crate::builtins::identical::identical(l, r) {
-                    let msg = format!("Incompatible methods (\"{}\", \"{}\") for \"{}\"", lname, rname, generic);
-                    self.warningcall(call, msg)?;
-                    return Ok(None);
+                    // R: eval.c — R_chooseOpsMethod consults
+                    // base::chooseOpsMethod; when both directions refuse,
+                    // warning() without a call.
+                    if self.choose_ops_method(&args[0].value, &args[1].value, l, r, call, false, env)? {
+                        rsxp = None;
+                    } else if self.choose_ops_method(&args[1].value, &args[0].value, r, l, call, true, env)? {
+                        lsxp = None;
+                    } else {
+                        self.warning(format!(
+                            "Incompatible methods (\"{}\", \"{}\") for \"{}\"",
+                            lname, rname, generic
+                        ))?;
+                        return Ok(None);
+                    }
                 }
             }
         }
@@ -562,6 +573,59 @@ impl Interp {
     }
 
     #[allow(clippy::type_complexity)]
+    /// `eval.c:R_chooseOpsMethod` — consult `base::chooseOpsMethod` with
+    /// S3 dispatch on the first object's class; NULL counts as FALSE,
+    /// anything else as its logical value.
+    fn choose_ops_method(
+        &mut self,
+        x: &Value,
+        y: &Value,
+        mx: &Value,
+        my: &Value,
+        cl: &Value,
+        rev: bool,
+        env: &Env,
+    ) -> RResult<bool> {
+        // base::chooseOpsMethod: the base namespace's binding, forced.
+        if self.base_binding(Sym::new("chooseOpsMethod")).is_none() {
+            return Ok(false);
+        }
+        // R: eval.c — defineVar into R_NewEnv(rho); the generic dispatches
+        // on the class of `x`.
+        let newenv = Env::new(Some(env.clone()));
+        for (name, v) in
+            [("x", x.clone()), ("y", y.clone()), ("mx", mx.clone()), ("my", my.clone()), ("cl", cl.clone())]
+        {
+            newenv.bind_new(Sym::new(name), v, 0);
+        }
+        newenv.bind_new(Sym::new("rev"), Value::lgl(rev), 0);
+        let call = Value::lang(
+            Value::Sym(Sym::new("chooseOpsMethod")),
+            [
+                Arg::pos(Value::Sym(Sym::new("x"))),
+                Arg::pos(Value::Sym(Sym::new("y"))),
+                Arg::pos(Value::Sym(Sym::new("mx"))),
+                Arg::pos(Value::Sym(Sym::new("my"))),
+                Arg::pos(Value::Sym(Sym::new("cl"))),
+                Arg::pos(Value::Sym(Sym::new("rev"))),
+            ]
+            .to_vec(),
+        );
+        let pargs: Vec<Arg> = [
+            ("x", x.clone()),
+            ("y", y.clone()),
+            ("mx", mx.clone()),
+            ("my", my.clone()),
+            ("cl", cl.clone()),
+            ("rev", Value::lgl(rev)),
+        ]
+        .into_iter()
+        .map(|(n, v)| Arg::new(Some(Sym::new(n)), Value::Promise(Rc::new(Promise::forced(Value::Sym(Sym::new(n)), v)))))
+        .collect();
+        let ans = self.dispatch_s3_temp_context("chooseOpsMethod", x, &call, pargs, &newenv)?;
+        Ok(matches!(ans, Some(v) if crate::coerce::as_logical(&v) == TRUE))
+    }
+
     fn findmethod(
         &mut self,
         class: &[crate::value::RString],
