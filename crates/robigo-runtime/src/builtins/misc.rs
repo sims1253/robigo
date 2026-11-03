@@ -66,7 +66,6 @@ pub static DEFS: &[Builtin] = &[
     internal("asCharacterFactor", do_as_character_factor, 1),
     internal("interruptsSuspended", do_false_any, -1),
     internal("activeBindingFunction", do_active_binding_function, 2),
-    internal("env.profile", do_null1, 1),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
     #[cfg(not(feature = "bytecode-fidelity"))]
@@ -861,9 +860,6 @@ fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         Arg::pos(Value::strs_from(text.iter().map(String::as_str)))
     });
     Ok(Value::pairlist(deparsed.collect()))
-}
-fn do_null1(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
 }
 fn do_null_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Null)

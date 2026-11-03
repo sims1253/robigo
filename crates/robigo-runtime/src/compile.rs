@@ -612,6 +612,17 @@ pub enum InlineArg {
         sym: Sym,
         memo: std::cell::Cell<GuardMemo>,
     },
+    /// `x[[i]]` (`two`) or `x[i]` of a variable `x`, evaluated eagerly only
+    /// where it takes the scalar fast path of `Op::Index` and `sym` (`[[` or
+    /// `[`) resolves to base's.
+    Index {
+        x: Sym,
+        slot: Slot,
+        i: Leaf,
+        two: bool,
+        sym: Sym,
+        memo: std::cell::Cell<GuardMemo>,
+    },
 }
 
 /// The jump targets of a compiled `switch` (R: eval.c:do_switch).
@@ -1030,6 +1041,26 @@ impl Compiler {
         }
         let Value::Lang(l) = e else { return None };
         let h = head(l)?;
+        let memo = || {
+            std::cell::Cell::new(GuardMemo {
+                epoch: u64::MAX,
+                env: 0,
+                version: 0,
+                search: 0,
+                ok: false,
+                outer: 0,
+                outer_version: 0,
+            })
+        };
+        let two = h.with_name(|n| n == "[[");
+        if (two || h.with_name(|n| n == "[")) && plain_args(l, 2) {
+            let (Some(Leaf::Var(x, slot)), Some(i @ (Leaf::D(_) | Leaf::I(_) | Leaf::Var(..)))) =
+                (self.leaf(&l.args[0].value), self.leaf(&l.args[1].value))
+            else {
+                return None;
+            };
+            return Some(InlineArg::Index { x, slot, i, two, sym: h, memo: memo() });
+        }
         let op = arith_op(&h.name())?;
         if !plain_args(l, 2) {
             return None;
@@ -1094,7 +1125,7 @@ impl Compiler {
             a.iter()
                 .map(|a| match a {
                     InlineArg::Leaf(l) => Some(*l),
-                    InlineArg::Arith { .. } => None,
+                    InlineArg::Arith { .. } | InlineArg::Index { .. } => None,
                 })
                 .collect::<Option<Vec<_>>>()
         });
@@ -1113,8 +1144,12 @@ impl Compiler {
             codes,
             memo: Default::default(),
             leaf_args,
+            // (Not for element reads: `vm::caller_promargs` gains nothing by
+            // them, they are for calls that run without a frame.)
             eager: inline_args.as_ref().is_some_and(|a| {
-                (1..=4).contains(&a.len()) && a.iter().any(|x| !matches!(x, InlineArg::Leaf(Leaf::D(_) | Leaf::I(_))))
+                (1..=4).contains(&a.len())
+                    && a.iter().any(|x| !matches!(x, InlineArg::Leaf(Leaf::D(_) | Leaf::I(_))))
+                    && !a.iter().any(|x| matches!(x, InlineArg::Index { .. }))
             }),
             inline_args,
             no_eager: std::cell::Cell::new(0),

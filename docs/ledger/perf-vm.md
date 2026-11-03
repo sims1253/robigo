@@ -72,6 +72,46 @@ conformance` (interpreter, VM and VM+JIT against each other).
   (`tests/r/basics/nested-inline-calls.R` pins the rebinding cases it
   can observe).
 
+## 2026-11-03: round 20, values of any type in native closures
+
+- Why: the sequential four-way scoreboard (`rivals.py`, repeated batches)
+  had robigo fastest at peak on 29 of 76; `binarytrees`, `Storage`, `Bounce`
+  were spending their time in the VM because native code knew only scalars
+  and vectors. `binarytrees(10)` peak: robigo 315 ms, FastR 63, Ř 209,
+  GNU R 361.
+- Change (`jit/closure.rs`): `JType::Dyn`, a value of any type in an `RVal`
+  slot of the native frame (a stack slot, initialized at entry, released at
+  every exit including abandoning). Helpers are the VM's own fast paths
+  (`arith_fast`, `rel_fast`, `index_value`, `builtin1_fast`) and fail where
+  the VM would take a slow path, which abandons the tree. `list()` and `c()`
+  of scalars, `[[`/`[` with an object check, `Const`/`Null`, conditions.
+  Dyn formals are the caller's slots (copied before being assigned); a Dyn
+  result is written to the caller's slot. `InlineArg::Index`: `f(x[[i]])`
+  is an eager argument, like `n - 1`, through `Op::Index`'s fast path.
+- Rejected on the way, all measured:
+  - an uninitialized slot for a Dyn result: helpers assign, dropping what
+    the slot held (broke `binarytrees`);
+  - element-read arguments on `caller_promargs`' eager path (`fannkuch`
+    +1.4%): only native and inline calls use them;
+  - trees whose loops contain an op that leaves (`queens` +1.2%: compiled,
+    then abandoned every run);
+  - a flush for every call of a tree with cells (`profiler-shared` +3.7%):
+    only when the caller's frame is on a closure's chain. That was also the
+    largest win: `profiler-shared` -12.5%, `fasta*` -4 to -13%;
+  - SmallVecs in the entry (capacity checks, 35M on `profiler-shared`), and
+    `call` not inlined into `native_site_call`.
+- Result against main: 14 faster, 0 slower, geomean 0.968. `robigo/binarytrees`
+  -69.5%, `rbench` `binarytrees` -36.6%, `spectralnorm_alt_3` -11.4%,
+  `profiler-shared` -12.5%. Peak `binarytrees(10)`: 315 -> 55.8 ms (FastR 63).
+- Verified: `tests/r/jit/native-closures-lists.R` (trees, `[[` errors, S3
+  dispatch, `c()` coercions and NA, `list()` taking its arguments, overflow,
+  conditions, assigned formals, enclosing lists, visibility, rebound `list`
+  and `c`), byte-identical in all tiers.
+- Gap found (interpreter tier only, not a native one): a traced primitive
+  called from a closure GNU R has compiled prints `trace: c`; robigo's AST
+  interpreter prints the call. It cannot be a `tests/r` script, which must
+  agree across tiers (`compiled_matches_interpreted`).
+
 ## 2026-11-02: round 19, whole closures in native code (G8, first stage)
 
 - Why: `scripts/rivals.py` compares robigo with Ř and FastR for the first

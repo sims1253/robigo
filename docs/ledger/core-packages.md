@@ -342,3 +342,50 @@ plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
     any data error is status 1), the bzip2 path reports bzlib's codes
     (magic -5, data -4, end-of-stream -7), all pinned in
     `memdecompress.R` (GNU R-recorded, byte-identical).
+
+## 2026-11-02: C-assembled promises bind as runtime promises
+
+- rlang's `r_env_bind_delayed` (magrittr's pipe masks bind `.` with it)
+  assembles a PROMSXP with `Rf_allocSExp` + `SET_PRVALUE/SET_PRCODE/
+  SET_PRENV` and defines it. robigo's bridge stored C-env bindings as
+  opaque `wrap_core` proxies, so R-level reads of `.` saw an unforced
+  promise object instead of forcing it: "object of type 'promise' is
+  not subsettable", "invalid 'envir' argument of type 'promise'",
+  vctrs' "Can't splice an object of type <promise>".
+- Fix: `from_sexp` converts an assembled PROMSXP to a runtime `Promise`
+  (mirroring the CLOSXP arm: CAR=PRVALUE, CDR=PRCODE, TAG=PRENV;
+  opaque when the code expression is unusable), and `defineVar` no
+  longer c-owns promise nodes — the proxy layer keeps them live for C
+  (`to_sexp` of a runtime promise is a proxy whose PRVALUE/PRCODE/
+  PRENV read and write through).
+- Measured: magrittr 2.0.5 shim 48 passed / 5 failed (GNU R 53/0; was
+  12/13 with the leak, halt before #205) — the 5 left are pipe
+  visibility (`withVisible` through the C pipe), a separate gap. Every
+  promise-leak repro (subset, math, `%$%`/with, splice, compound)
+  matches GNU R byte-for-byte; rlang's shim no longer crashes (suite
+  still running after 25 min, vctrs-class slowness). Conformance green
+  in all three tiers; capi corpus 25/25 + the new `cpromise` case
+  (C-assembled promise pinned, ratcheted).
+  - Sol round 1 fixed: the conversion is memoized by node
+    (CPROMISE_MEMO, cleared on gc as an implementation cache), so all
+    bindings of one C promise share one runtime promise and forcing
+    happens once (GNU R's shared-PROMSXP semantics), and
+    SET_PRVALUE/SET_PRCODE/SET_PRENV through the original node update
+    the memoized promise; NULL code is a promise of NULL and an
+    already-set PRVALUE is honored whatever PRCODE is. The extended
+    `cpromise` case pins shared bindings with an observable side
+    effect, the retained-node write, NULL code and a pre-forced value;
+    capi corpus 26/26, conformance green in all three tiers.
+  - Sol round 2 fixed, promise-node identity now both ways: the memo is
+    node → weak reference plus a `STORED` entry (which preserves the
+    node while anything references the promise and releases both in
+    `sweep_stored`), so the association survives gc() instead of being
+    cleared; the cons setters (SETCAR/SETCDR/SET_TAG, which the SET_PR*
+    macros expand to) sync a memoized promise node behind a PROMSXP
+    type gate; and the runtime writes a forced C promise's node through
+    a new NativeBridge::promise_forced hook, gated by a `from_c` flag on
+    the promise (out of line, free for ordinary promises), so
+    PRVALUE/PRENV reads through the original node stay in step. The
+    `cpromise` case pins all of it (shared forcing, SETCAR write,
+    PRVALUE after an R-side force, gc() then a C write); capi 26/26,
+    conformance green in all three tiers, lint clean.

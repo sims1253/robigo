@@ -93,6 +93,11 @@ pub trait NativeBridge: Sync {
     ) -> RResult<Value>;
     /// R is at top level: no evaluator frame exists (`eval_toplevel`).
     fn at_top_level(&self) {}
+    /// A promise assembled in C was forced (or its environment cleared)
+    /// by the runtime: keep the C node's PRVALUE/PRENV in step. The
+    /// reference's address is the promise's identity, stable across `Rc`
+    /// clones.
+    fn promise_forced(&self, _p: &crate::value::Promise) {}
     /// Whether runtime weak keys require clearing implementation caches.
     fn finalizers_active(&self) -> bool {
         false
@@ -168,6 +173,16 @@ pub fn set_bridge(b: &'static dyn NativeBridge) {
 
 pub fn bridge() -> Option<&'static dyn NativeBridge> {
     BRIDGE.get().copied()
+}
+
+/// A C-assembled promise became forced (robigo-capi's promise memo);
+/// out of line — only C promises reach it.
+#[cold]
+#[inline(never)]
+pub fn promise_forced(p: &crate::value::Promise) {
+    if let Some(b) = bridge() {
+        b.promise_forced(p);
+    }
 }
 
 /// Whether GNU R's build registers routines for this DLL name (its
