@@ -27,6 +27,7 @@ pub static DEFS: &[Builtin] = &[
     internal("Sys.info", do_sysinfo, 0),
     internal("Sys.getlocale", do_getlocale, 1),
     internal("Sys.setlocale", do_setlocale, 2),
+    internal("setTimeLimit", do_settimelimit, 3).invisible(),
     super::prim("proc.time", do_proctime, 0),
     internal("date", do_date, 0),
     internal("commandArgs", do_command_args, 0),
@@ -2047,4 +2048,35 @@ fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
     let mut ans = Value::strs_from(vals);
     ans.set_attr_raw(s::NAMES, Value::strs_from(names));
     Ok(ans)
+}
+
+thread_local! {
+    /// sysutils.c's cpuLimitValue / elapsedLimitValue and the session
+    /// limits (cpuLimit2 / elapsedLimit2). Stored as R's set-time-limit
+    /// state; the evaluator does not yet poll them (R_CheckTimeLimits).
+    pub static TIME_LIMITS: std::cell::Cell<(f64, f64, f64, f64)> =
+        const { std::cell::Cell::new((-1.0, -1.0, -1.0, -1.0)) };
+}
+
+// R: sysutils.c:do_setTimeLimit — finite positive limits are kept, anything
+// else disables; `transient` restores the previous values (limits apply to
+// the next top-level computation only).
+fn do_settimelimit(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let cpu = as_real(&arg(&args, 0));
+    let elapsed = as_real(&arg(&args, 1));
+    let transient = as_logical(&arg(&args, 2));
+    TIME_LIMITS.with(|t| {
+        let (old_cpu, old_elapsed, session_cpu, session_elapsed) = t.get();
+        let limit = |v: f64| if v.is_finite() && v > 0.0 { v } else { -1.0 };
+        let (cpu, elapsed) = (limit(cpu), limit(elapsed));
+        // resetTimeLimits(): a session limit keeps applying.
+        let (cpu, elapsed) =
+            if session_cpu > 0.0 || session_elapsed > 0.0 { (session_cpu, session_elapsed) } else { (cpu, elapsed) };
+        t.set(if transient == 1 {
+            (old_cpu, old_elapsed, session_cpu, session_elapsed)
+        } else {
+            (cpu, elapsed, session_cpu, session_elapsed)
+        });
+    });
+    Ok(Value::Null)
 }

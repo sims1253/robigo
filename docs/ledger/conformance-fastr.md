@@ -165,3 +165,18 @@
 - Changes: `builtins/namespace.rs` (`do_attach`), `builtins/envir.rs` (`do_ls`, `do_env2list`, `do_pos_to_env`), `builtins/array.rs` (`do_diag`); `tests/r/env/attach-args.R` (recorded in `robigo-oracle:4.5.0`) pins all five.
 - Result: +8 fastr cases (54/54 slice, 0 regressions; the ls/env/attach neighborhood 242/242); `tests/r/env` conformance 9/9.
 - Status: kept (PR pending).
+
+## 2026-11-03: round 16 - is.* predicates and time limits
+
+- Topic: `TestBuiltin_isinteger` (1), `TestBuiltin_isSingle` (1), `TestBuiltin_setTimeLimit` (1), plus markers absorbed for `TestBuiltin_isarray`/`TestBuiltin_ismatrix`/`TestBuiltin_pcre_config` (3, passing on main).
+- Diagnosis:
+  - `is.integer(factor(...))` returned TRUE: `do_is`'s INTSXP arm is `TYPEOF == INTSXP && !inherits("factor")` (coerce.c:2057).
+  - `is.single()` with zero arguments reported the constant "single" error instead of the arity error: `checkArity` runs first.
+  - `setTimeLimit`/`setSessionTimeLimit` had no internals. Ported `do_setTimeLimit` and `do_setSessionTimeLimit` (sysutils.c:2837/2867): finite positive limits are kept, anything else disables, `transient` restores, session limits are absolute against proc.time. The limits are stored (sysutils.c's `cpuLimitValue`/`elapsedLimitValue`/`cpuLimit2`/`elapsedLimit2`); the evaluator does not poll them yet (R_CheckTimeLimits), which no corpus case observes.
+- Changes: `builtins/coerce.rs` (`is_integer`, `is_single`), `builtins/sysutils.rs` (the two internals); `tests/r/basics/is-predicates.R` (recorded in `robigo-oracle:4.5.0`).
+- Result: +3 fixed, +3 absorbed, 92/92 slice, 0 regressions.
+- Status: kept (PR pending).
+
+## 2026-11-03: deferred — in-place hand-off for complex assignment (blocks #272)
+
+`a$x[[1]] <- v` with a uniquely-held container: GNU R mutates the element in place (the replacement path uses `lazy_duplicate`, which only ENSURE_NAMEDMAXes — duplicate.c:171 — and never copies or reports), while robigo's general complex-assign path extracts `a$x` into `*tmp*` keeping the container's reference, so `Rc::make_mut` duplicates (and #272's report correctly fires, regressing 5 `TestSimpleLists` cases that the invisible copy used to pass). Fix plan: hand the replacement its object uniquely when the container is uniquely held — take the element out of the container (AGENTS.md §5) for the `$`/`[[` getter levels, restore on error, write back through the existing setter chain. Also a perf win (one copy per complex assignment).
