@@ -3611,11 +3611,25 @@ fn jit_enter(
         let Op::Call { f, .. } = code.ops.iter().find(|o| matches!(o, Op::Call { site: s2, .. } if s2 == site))? else {
             return None;
         };
-        match call_site_fun_fast(interp, *f, cs, env) {
-            Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => {}
+        // The same closure, or another instance of it (one made by each call
+        // of an enclosing function, say): native code depends only on its
+        // body and formals, the guards on its environment.
+        let c = match call_site_fun_fast(interp, *f, cs, env) {
+            Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => c,
+            Some(Value::Closure(c))
+                if Rc::ptr_eq(&c.formals, &clo.formals)
+                    && matches!((c.code.get(), clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
+                    && !c.jit.traced() =>
+            {
+                // (Native code does not count calls: see `inline_call`.)
+                while c.jit.unsettled() {
+                    jit_check(interp, &c);
+                }
+                c
+            }
             _ => return None,
-        }
-        if !syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
+        };
+        if !syms.iter().all(|s| interp.resolves_to_base(*s, &c.env)) {
             return None;
         }
     }
