@@ -27,6 +27,8 @@ pub static DEFS: &[Builtin] = &[
     internal("Sys.info", do_sysinfo, 0),
     internal("Sys.getlocale", do_getlocale, 1),
     internal("Sys.setlocale", do_setlocale, 2),
+    internal("setTimeLimit", do_settimelimit, 3).invisible(),
+    internal("setSessionTimeLimit", do_setsessiontimelimit, 2).invisible(),
     super::prim("proc.time", do_proctime, 0),
     internal("date", do_date, 0),
     internal("commandArgs", do_command_args, 0),
@@ -2047,4 +2049,63 @@ fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
     let mut ans = Value::strs_from(vals);
     ans.set_attr_raw(s::NAMES, Value::strs_from(names));
     Ok(ans)
+}
+
+thread_local! {
+    /// sysutils.c's cpuLimitValue / elapsedLimitValue and the session
+    /// limits (cpuLimit2 / elapsedLimit2). Stored as R's set-time-limit
+    /// state; the evaluator does not yet poll them (R_CheckTimeLimits).
+    pub static TIME_LIMITS: std::cell::Cell<(f64, f64, f64, f64)> =
+        const { std::cell::Cell::new((-1.0, -1.0, -1.0, -1.0)) };
+}
+
+// R: sysutils.c:do_setTimeLimit — finite positive limits are kept, anything
+// else disables; `transient` restores the previous values (limits apply to
+// the next top-level computation only).
+fn do_settimelimit(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let cpu = as_real(&arg(&args, 0));
+    let elapsed = as_real(&arg(&args, 1));
+    let transient = as_logical(&arg(&args, 2));
+    TIME_LIMITS.with(|t| {
+        let (old_cpu, old_elapsed, session_cpu, session_elapsed) = t.get();
+        let limit = |v: f64| if v.is_finite() && v > 0.0 { v } else { -1.0 };
+        let (cpu, elapsed) = (limit(cpu), limit(elapsed));
+        // resetTimeLimits(): a session limit keeps applying.
+        let (cpu, elapsed) =
+            if session_cpu > 0.0 || session_elapsed > 0.0 { (session_cpu, session_elapsed) } else { (cpu, elapsed) };
+        t.set(if transient == 1 {
+            (old_cpu, old_elapsed, session_cpu, session_elapsed)
+        } else {
+            (cpu, elapsed, session_cpu, session_elapsed)
+        });
+    });
+    Ok(Value::Null)
+}
+
+// R: sysutils.c:do_setSessionTimeLimit — limits are absolute against the
+// current proc.time().
+fn do_setsessiontimelimit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let cpu = as_real(&arg(&args, 0));
+    let elapsed = as_real(&arg(&args, 1));
+    let limit = |v: f64| if v.is_finite() && v > 0.0 { v } else { -1.0 };
+    TIME_LIMITS.with(|t| {
+        let (_, _, mut s_cpu, mut s_elapsed) = t.get();
+        let (c, e) = (limit(cpu), limit(elapsed));
+        if c > 0.0 || e > 0.0 {
+            let (selfu, child) = (crate::sys::rusage(libc::RUSAGE_SELF), crate::sys::rusage(libc::RUSAGE_CHILDREN));
+            let t = |tv: &libc::timeval| tv.tv_sec as f64 + 1e-3 * (tv.tv_usec / 1000) as f64;
+            if c > 0.0 {
+                s_cpu = c + t(&selfu.ru_utime) + t(&selfu.ru_stime) + t(&child.ru_utime) + t(&child.ru_stime);
+            }
+            if e > 0.0 {
+                let et = i.start_time.elapsed().as_secs_f64();
+                s_elapsed = e + et;
+            }
+        } else {
+            s_cpu = -1.0;
+            s_elapsed = -1.0;
+        }
+        t.set((-1.0, -1.0, s_cpu, s_elapsed));
+    });
+    Ok(Value::Null)
 }
