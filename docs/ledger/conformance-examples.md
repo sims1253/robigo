@@ -359,6 +359,19 @@ character boundary within the 10 bytes). builtin.c:1006's other
 
 Marked: `base/Trig`. Local: fastr's bind/matrix slice 334/336, no regressions.
 
+## 2026-11-02: env.profile (1 case)
+
+`base/environment`'s `with(env.profile(eh), stopifnot(size == length(counts)))`
+failed on a NULL stub (`do_null1` in misc.rs shadowed every other
+registration). Ported envir.c:do_envprofile over robigo's faithful hash-table
+model: size = table size, nchains = the table's HASHPRI (`STDVEC_TRUELENGTH`,
+which R_HashSet increments for every new binding, not every newly-used chain —
+robigo's HashShape.pri already models this), counts = per-chain lengths; NULL
+for an unhashed environment, `argument must be a hashed environment` for a
+non-environment. Verified against the oracle for size 5 grown to 47 with 40
+bindings (nchains 35, identical collision pattern) and a fresh 29-bucket
+table. Marked: `base/environment`.
+
 ## 2026-11-02: writeBin/readBin size 16, the long-double format (1 case)
 
 `base/readBin`'s `if((s <- .Machine$sizeof.longdouble) > 8)` branch writes
