@@ -788,13 +788,24 @@ fn complex_assign_inplace(
             // The replacement owned the element; subassign hands it back
             // unchanged on error, so put it back where it came from.
             let back = crate::builtins::subassign::take_restore().unwrap_or(Value::Null);
-            *containers.last_mut().unwrap() = back;
+            return_into_slot(&mut containers, &slots, back);
             return leave(env, target, &mut containers, &slots, Some(f));
         }
     };
-    *containers.last_mut().unwrap() = new_element;
+    return_into_slot(&mut containers, &slots, new_element);
     leave(env, target, &mut containers, &slots, None);
     Some(Ok(()))
+}
+
+/// The element the innermost replacement received (by `pop`, its sole
+/// owner) is back as its result: fill the slot it was taken from, in the
+/// last remaining container.
+fn return_into_slot(containers: &mut [Value], slots: &[usize], v: Value) {
+    let slot = *slots.last().expect("a take-out happened");
+    match containers.last_mut().expect("the root container") {
+        Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slot] = v,
+        _ => unreachable!("complex_assign_inplace containers are lists"),
+    }
 }
 
 /// Whether `v` is the only handle to its allocation (R's `MAYBE_SHARED`
