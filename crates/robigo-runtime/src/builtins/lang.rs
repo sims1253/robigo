@@ -629,12 +629,14 @@ fn complex_assign_inplace(
             return None;
         }
     }
-    let setter_sym = match &levels[0].fun {
-        Value::Sym(f) => *f,
+    // The innermost level's head is the *getter* (`[[`, `[`, `$`, ...);
+    // its replacement function is what runs on the element.
+    let setter_sym = match assign_fun(&levels[0].fun) {
+        Ok(Value::Sym(f)) => f,
         _ => return None,
     };
     let setter: &'static Builtin = match interp.find_fun(setter_sym, env) {
-        Ok(Value::Builtin(bb)) if bb.kind == BuiltinKind::Builtin => bb,
+        Ok(Value::Builtin(bb)) if bb.kind == BuiltinKind::Builtin || is_inplace_special(bb.name) => bb,
         _ => return None,
     };
     // Take the binding: the sole robigo reference to the container (other
@@ -728,22 +730,52 @@ fn complex_assign_inplace(
     let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
     let mut argv = Vec::with_capacity(extra.len() + 2);
     argv.push(Arg::pos(element));
-    let mut idx_failed = None;
-    if let Some(vals) = pre {
+    // The setter's argument conventions, as in fast_replace: builtin
+    // replacements take evaluated arguments; specials take them
+    // unevaluated (`$<-`'s name as-is, others evaluated here and quoted,
+    // the object and the value quoted).
+    let r = if let Some(vals) = pre {
         for (a, v) in extra.iter().zip(vals.iter()) {
-            argv.push(Arg::new(a.tag, v.clone()));
+            let v = if setter.kind == BuiltinKind::Special { quote_if_needed(v.clone()) } else { v.clone() };
+            argv.push(Arg::new(a.tag, v));
         }
-    } else if let Err(f) = interp.eval_args(&extra, env, &Value::Null) {
-        idx_failed = Some(f);
+        Ok(())
+    } else if setter.kind == BuiltinKind::Special {
+        if setter.name == "$<-" {
+            argv.extend(extra.iter().cloned());
+            Ok(())
+        } else {
+            match crate::builtins::subset::eval_keep_missing(interp, &extra, env) {
+                Ok(ev) => {
+                    for e in ev {
+                        let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
+                        argv.push(Arg::new(e.tag, v));
+                    }
+                    Ok(())
+                }
+                Err(f) => Err(f),
+            }
+        }
     } else {
-        argv.extend(interp.eval_args(&extra, env, &Value::Null).unwrap_or_default());
-    }
-    if let Some(f) = idx_failed {
+        match interp.eval_args(&extra, env, &Value::Null) {
+            Ok(mut ev) => {
+                argv.append(&mut ev);
+                Ok(())
+            }
+            Err(f) => Err(f),
+        }
+    };
+    if let Err(f) = r {
         heal_chain(&mut containers, &slots, Value::Null);
         restore(env, containers.remove(0));
         return Some(Err(f));
     }
-    argv.push(Arg::new(Some(s::VALUE), rhs));
+    if setter.kind == BuiltinKind::Special {
+        argv[0].value = quote_if_needed(argv[0].value.clone());
+        argv.push(Arg::new(Some(s::VALUE), quote_if_needed(rhs)));
+    } else {
+        argv.push(Arg::new(Some(s::VALUE), rhs));
+    }
     let scall = Value::lang(Value::Sym(setter_sym), argv.clone());
     let new_element = match interp.invoke_builtin(setter, &scall, argv, env) {
         Ok(v) => v,
