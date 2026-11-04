@@ -3164,9 +3164,7 @@ fn jit_enter(
     }
     for t in &jl.seq_lengths {
         let n = if *t == JType::D { Num::D(1.0) } else { Num::I(1) };
-        if seq_length_range(interp, env, n).is_none() {
-            return None;
-        }
+        seq_length_range(interp, env, n)?;
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
