@@ -30,6 +30,28 @@ all three tiers.
 - Calls with named arguments (`f(a = x)`, everywhere in methods) took the
   general `match_args` path: 0.32 us against 0.21 us positional, GNU R 0.22.
 
+## 2026-11-04: named arguments and `...` without match_args (kept)
+
+- why: a call with a tagged argument or to a closure with `...` took the
+  general path (`call_closure_ex` -> `match_args`, three passes, a
+  `Vec<Option<Value>>`, partial matching by name); methods' code calls
+  almost everything that way (`getClassDef(classi, where = where)`,
+  `new(Class, ...)`, `initialize(value, ...)`, `try(expr, silent = TRUE)`).
+  `h3(a = x)` cost 3,786 instructions and 0.32 us against 3,123 and 0.21 us
+  positional.
+- what: `interp::bind_exact`, matchArgs_NR for the case where partial
+  matching has nothing to do: tags name formals exactly, a tag that names
+  none goes to `...` unless it is a prefix of an unmatched formal before
+  `...` (then the general path runs, as it does for every error). Compiled
+  calls then take `direct_call`'s frame/context path (`vm::tagged_call`);
+  `apply_closure_ex` uses it too.
+- result: `perf.py compare` against main: 45 faster, 0 slower; s4-new
+  -1.0%, s4-valid -0.9%, s4-portfolio -0.9%, the binarytrees family and
+  lapply -0.6..-0.8%. `h3(a = x)` 0.37 -> 0.28 us.
+- verified: `tests/r/basics/named-arg-matching.R` (exact, partial and
+  positional mixes, `...` before and after formals, errors, laziness,
+  sys.call/match.call/substitute/nargs, `..N`), byte-identical in all tiers.
+
 ## 2026-11-04: Value::clone without a jump table (kept)
 
 - why: the derived `Clone` of `Value` dispatched on the variant through a

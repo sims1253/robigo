@@ -1038,6 +1038,15 @@ impl Interp {
             let sysparent = self.call_sysparent(callenv);
             return self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed);
         }
+        if let Some(newenv) = bind_exact(clo, &promargs) {
+            if let Some(vars) = dispatch_vars {
+                for (k, v) in vars {
+                    newenv.set_local(k, v);
+                }
+            }
+            let sysparent = self.call_sysparent(callenv);
+            return self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed);
+        }
         let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
         let bind = |k: usize, tag: Sym, f: &Arg, a: Option<Value>| match a {
             Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
@@ -1556,6 +1565,103 @@ pub(crate) fn bind_positional(clo: &Closure, promargs: &[Arg]) -> Env {
         }
     }
     newenv
+}
+
+/// A new frame for a call of `clo` when R's argument matching needs no
+/// partial matching: every tagged argument names a formal other than `...`
+/// exactly, or (with `...`) names no formal before `...` that is still
+/// unmatched even partially, and goes to `...`; untagged arguments fill the
+/// unmatched formals before `...` in order, the rest goes to `...`.
+/// `None` for anything else, which `match_args` handles, errors included.
+// R: match.c:matchArgs_NR
+pub(crate) fn bind_exact(clo: &Closure, promargs: &[Arg]) -> Option<Env> {
+    const FREE: u8 = u8::MAX;
+    let nf = clo.formals.len();
+    let dots = clo.formals.iter().position(|f| f.tag == Some(s::DOTS));
+    if nf >= FREE as usize || promargs.len() >= FREE as usize || (dots.is_none() && promargs.len() > nf) {
+        return None;
+    }
+    let mut map: SmallVec<[u8; 16]> = smallvec::smallvec![FREE; nf];
+    // Arguments left for `...`.
+    let mut rest: SmallVec<[bool; 16]> = smallvec::smallvec![false; promargs.len()];
+    let mut any_rest = false;
+    // Pass 1: exact matching by tag.
+    for (i, a) in promargs.iter().enumerate() {
+        if let Some(t) = a.tag {
+            match clo.formals.iter().position(|f| f.tag == Some(t) && t != s::DOTS) {
+                Some(k) => {
+                    if map[k] != FREE {
+                        return None;
+                    }
+                    map[k] = i as u8;
+                }
+                None => {
+                    dots?;
+                    rest[i] = true;
+                    any_rest = true;
+                }
+            }
+        }
+    }
+    let ndots = dots.unwrap_or(nf);
+    // Pass 2 would match a remaining tag partially to a formal before `...`.
+    if any_rest {
+        for (i, a) in promargs.iter().enumerate() {
+            if !rest[i] {
+                continue;
+            }
+            let t = a.tag.unwrap();
+            let tname = t.name();
+            if tname.is_empty() {
+                return None;
+            }
+            if (0..ndots).any(|k| map[k] == FREE && clo.formals[k].tag.unwrap().name().starts_with(&*tname)) {
+                return None;
+            }
+        }
+    }
+    // Pass 3: positional matching up to `...`.
+    let mut k = 0;
+    for (i, a) in promargs.iter().enumerate() {
+        if a.tag.is_none() {
+            while k < ndots && map[k] != FREE {
+                k += 1;
+            }
+            if k == ndots {
+                dots?;
+                rest[i] = true;
+                any_rest = true;
+                continue;
+            }
+            map[k] = i as u8;
+            k += 1;
+        }
+    }
+    let newenv = Env::with_capacity(Some(clo.env.clone()), nf);
+    for (k, f) in clo.formals.iter().enumerate() {
+        let tag = f.tag.unwrap();
+        if Some(k) == dots {
+            let v = if any_rest {
+                let args: Vec<Arg> = promargs.iter().zip(&rest).filter(|(_, r)| **r).map(|(a, _)| a.clone()).collect();
+                Value::Dots(Rc::new(args))
+            } else {
+                Value::missing_arg()
+            };
+            newenv.bind_arg(tag, v, 0);
+            continue;
+        }
+        match promargs.get(map[k] as usize).map(|a| &a.value) {
+            Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v.clone(), 0),
+            _ => {
+                if !f.value.is_missing_arg() {
+                    newenv.bind_arg(tag, default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
+                } else {
+                    newenv.bind_arg(tag, Value::missing_arg(), 0);
+                }
+            }
+        }
+    }
+    Some(newenv)
 }
 
 pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
