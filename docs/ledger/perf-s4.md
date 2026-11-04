@@ -30,6 +30,30 @@ all three tiers.
 - Calls with named arguments (`f(a = x)`, everywhere in methods) took the
   general `match_args` path: 0.32 us against 0.21 us positional, GNU R 0.22.
 
+## 2026-11-04: `function` compiled to MakeClosure (kept)
+
+- why: compiled code evaluated `function(x) ...` as a call of the special
+  (`CallSpecial`: flush, the call's arguments copied, `do_function` looking
+  its formals up in a thread-local table): 1,180 instructions per closure
+  against GNU R's 364 (MAKECLOSURE). methods makes several per operation
+  (`validObject`'s `anyStrings`, `tryCatch`'s three helpers, `try`'s
+  handler).
+- what: `Op::MakeClosure`, its formals converted once at compile time
+  (`ClosureTemplate`), no flush (making a closure runs no R code; the
+  closure reads the frame only from a call, which flushes), the `function`
+  binding guarded as before; `do_function` and the op share `make_closure`.
+- result: 1,180 -> 488 instructions per closure; `validObject` 168.2K ->
+  166.0K. `perf.py compare`: 0 faster, 1 slower: `convolution_v` +0.61%,
+  all of it `memset` in the allocator (+2.9M: a 2.7 MB `matrix(0, ...)`
+  lands on a reused block that must be zeroed instead of fresh pages, as
+  the allocation sequence changed); its R code makes no closures in the
+  loop.
+- verified: `tests/r/basics/compiled-closure-creation.R` in all tiers.
+- gap (interpreter tier only, so no `tests/r` script, which must agree
+  across tiers): `m <- function() { for (i in 1) local(2); 1 }; m()` fails
+  with "attempt to apply non-function" under `ROBIGO_COMPILE=0`; the VM and
+  GNU R return 1.
+
 ## 2026-11-04: named arguments and `...` without match_args (kept)
 
 - why: a call with a tagged argument or to a closure with `...` took the

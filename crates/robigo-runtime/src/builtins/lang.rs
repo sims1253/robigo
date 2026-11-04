@@ -248,6 +248,18 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
+    let srcref = args.get(2).map(|a| &a.value).filter(|v| !v.is_null());
+    Ok(make_closure(interp, formals, body, srcref, env))
+}
+
+/// The closure `do_function` makes (also compiled code's `MakeClosure`).
+pub(crate) fn make_closure(
+    interp: &Interp,
+    formals: Rc<[Arg]>,
+    body: Value,
+    srcref: Option<&Value>,
+    env: &Env,
+) -> Value {
     let clo = Closure {
         #[cfg(feature = "bytecode-fidelity")]
         gnu_bytecode: None,
@@ -256,17 +268,14 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         env: env.clone(),
         // R: eval.c:do_function -- CADDR(args) belongs to the closure,
         // independently of the source references attached to its body.
-        attrs: args
-            .get(2)
-            .filter(|a| !a.value.is_null())
-            .map(|a| Box::new(Attrs(vec![(s::SRCREF, a.value.clone())], false))),
+        attrs: srcref.map(|v| Box::new(Attrs(vec![(s::SRCREF, v.clone())], false))),
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),
         jit: Default::default(),
     };
     crate::vm::jit_inherit(interp, &clo, env);
-    Ok(Value::Closure(Rc::new(clo)))
+    Value::Closure(Rc::new(clo))
 }
 
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
