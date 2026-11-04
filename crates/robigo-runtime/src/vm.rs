@@ -2949,6 +2949,7 @@ pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
                 JType::VecI
             }
         }
+        RVal::V(Value::Cplx(z)) if z.data.len() == 1 && z.attrs.is_none() => JType::C,
         RVal::V(Value::Real(x)) if jit_matrix_dims(x).is_some() => JType::MatD,
         RVal::V(Value::Int(x)) if jit_matrix_dims(x).is_some() => JType::MatI,
         _ => return None,
@@ -3206,6 +3207,17 @@ fn jit_enter(
                 return None;
             }
         }
+        if s.ty == JType::C {
+            match cur.as_ref() {
+                Some(RVal::V(Value::Cplx(z))) if z.data.len() == 1 && z.attrs.is_none() => {
+                    vals[s.idx] = z.data[0].re.to_bits();
+                    vals[s.idx + 1] = z.data[0].im.to_bits();
+                }
+                _ if s.needs_entry => return None,
+                _ => {}
+            }
+            continue;
+        }
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
@@ -3235,7 +3247,7 @@ fn jit_enter(
     // Write the variables back as pending assignments.
     let split_tys = if jl.split_tys.is_empty() { None } else { jl.split_tys.get(&ret) };
     for (k, s) in jl.slots.iter().enumerate() {
-        if !s.written || !s.ty.is_scalar() {
+        if !s.written || !s.ty.is_value() {
             continue;
         }
         let assigned = s.needs_entry || s.flag.is_some_and(|f| vals[f] != 0);
@@ -3252,6 +3264,7 @@ fn jit_enter(
         let v = match ty {
             JType::D => RVal::D(f64::from_bits(b)),
             JType::I => RVal::I(b as i32),
+            JType::C => RVal::V(Value::cplx(Complex::new(f64::from_bits(b), f64::from_bits(vals[s.idx + 1])))),
             _ => RVal::L(b as i32),
         };
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
@@ -3274,6 +3287,7 @@ fn jit_enter(
             JType::I => RVal::I(b as i32),
             JType::L => RVal::L(b as i32),
             JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+            JType::C => RVal::V(Value::cplx(Complex::new(f64::from_bits(b), f64::from_bits(vals[idx + 1])))),
             _ => continue,
         };
     }
@@ -3281,7 +3295,14 @@ fn jit_enter(
         eprintln!("jit: loop at {} continues in the VM at {}", enter, p);
     }
     let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
-    Some((Outcome::Deopt(p), nested))
+    // Left at an op native code does not have, after a whole iteration (the
+    // head reached again): enter again at the next back edge.
+    let nested: Vec<(u32, u32, u32)> = nested;
+    // Left at an op native code does not have, at the loop's own level,
+    // after a whole iteration (the head reached again): enter again at the
+    // next back edge.
+    let resume = nested.is_empty() && jl.leaves.contains(&ret) && vals[jl.heads] >= 2;
+    Some((Outcome::Deopt(p, if resume { JIT_THRESHOLD - 1 } else { JIT_THRESHOLD + 1 }), nested))
 }
 
 /// The head symbol of a call constant: what GNU R prints when tracing in
@@ -3675,11 +3696,11 @@ fn run_with(
                     pc = rec.brk as usize + 1;
                     continue;
                 }
-                Some((crate::jit::Outcome::Deopt(p), nested)) => {
+                Some((crate::jit::Outcome::Deopt(p, count), nested)) => {
                     for (e, b, n) in nested {
                         loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1 });
                     }
-                    loops.last_mut().unwrap().count = JIT_THRESHOLD + 1;
+                    loops.last_mut().unwrap().count = count;
                     pc = p;
                     continue;
                 }

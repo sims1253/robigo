@@ -54,6 +54,9 @@ pub enum JType {
     /// Any value, held in an `RVal` slot of the frame (in a closure compiled
     /// whole): native code knows it by the slot's address.
     Dyn,
+    /// A complex scalar, as an f64x2 (real part in lane 0); two values of
+    /// the value buffer.
+    C,
     /// (Only as a variable's type in a loop's analysis.) A variable assigned
     /// scalars of different types: its type at each op is an entry of the
     /// register state, like a register's (see [`split_index`]).
@@ -63,6 +66,20 @@ pub enum JType {
 impl JType {
     pub fn is_scalar(self) -> bool {
         matches!(self, JType::D | JType::I | JType::L)
+    }
+
+    /// A scalar or complex value: a variable native code can hold.
+    pub fn is_value(self) -> bool {
+        self.is_scalar() || self == JType::C
+    }
+
+    /// Entries of the value buffer a value of this type takes.
+    pub fn width(self) -> usize {
+        match self {
+            JType::Range => 3,
+            JType::C => 2,
+            _ => 1,
+        }
     }
 
     pub fn is_vector(self) -> bool {
@@ -83,7 +100,8 @@ impl JType {
             JType::MatD => 6,
             JType::MatI => 7,
             JType::Dyn => 8,
-            JType::Split => 9,
+            JType::C => 9,
+            JType::Split => 10,
         }
     }
 }
@@ -157,6 +175,12 @@ pub struct JitLoop {
     /// Per value native code returns (an op index or [`EXIT`]): the type of
     /// each variable of `slots` with `split` there.
     pub split_tys: HashMap<u32, Vec<Option<JType>>>,
+    /// Native code leaves at these ops (calls it cannot run, ...) whenever
+    /// it reaches them, on a path that is not every iteration's; the VM
+    /// then enters again at the next back edge.
+    pub leaves: Vec<u32>,
+    /// Where native code counts the times it reached the loop's head.
+    pub heads: usize,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -232,11 +256,14 @@ pub struct Inl<'a> {
     /// Compiling a closure whole: calls are real calls, whose result types
     /// come from here.
     specs: Option<&'a closure::Specs>,
+    /// The code of the loop compiled (not of its callees, nor of a closure
+    /// compiled whole).
+    code: Option<&'a Code>,
 }
 
 impl<'a> Inl<'a> {
     pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
-        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None }
+        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None, code: None }
     }
 
     /// The type of the result of the call at `site` with these arguments.
@@ -385,8 +412,40 @@ fn not_now(site: u32) -> Reject {
 pub enum Outcome {
     /// The loop finished: continue after its `LoopExit`.
     Exited,
-    /// Continue in the VM at this op.
-    Deopt(usize),
+    /// Continue in the VM at this op, the innermost active loop's count set
+    /// to this (below the threshold when native code left there on purpose,
+    /// at an op it does not have, after a whole iteration: it runs again
+    /// from the next back edge).
+    Deopt(usize, u32),
+}
+
+/// In a loop (not a closure compiled whole), an op native code does not
+/// have, which it leaves at, for the VM to run (see [`JitLoop::leaves`]).
+fn loop_leaves(op: &Op, inl: &Inl) -> bool {
+    inl.specs.is_none()
+        && match op {
+            Op::Call { site, .. } => !inl.calls.contains_key(site),
+            Op::CallBuiltin { .. } => conversion(op, inl).is_none(),
+            Op::Eval { .. } | Op::CallSpecial { .. } => true,
+            _ => false,
+        }
+}
+
+/// In a loop, `as.integer(x)` or `as.double(x)` (`as.numeric`) of one
+/// argument, which native code has for scalars: the builtin, the
+/// argument's register and whether the result is an integer.
+fn conversion(op: &Op, inl: &Inl) -> Option<(Reg, bool)> {
+    let (Op::CallBuiltin { f, args, .. }, Some(code)) = (op, inl.code) else { return None };
+    let crate::value::Value::Builtin(b) = &code.consts[*f as usize] else { return None };
+    let int = match b.name {
+        "as.integer" => true,
+        "as.double" | "as.numeric" => false,
+        _ => return None,
+    };
+    match code.arglists[*args as usize].as_slice() {
+        [(None, r)] => Some((*r, int)),
+        _ => None,
+    }
 }
 
 thread_local! {
@@ -453,6 +512,9 @@ extern "C" fn h_cos(x: f64) -> f64 {
 extern "C" fn h_tan(x: f64) -> f64 {
     x.tan()
 }
+extern "C" fn h_hypot(x: f64, y: f64) -> f64 {
+    x.hypot(y)
+}
 
 const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
     ("robigo_pow", h_pow as *const u8, &[types::F64, types::F64], types::F64),
@@ -466,6 +528,7 @@ const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
     ("robigo_sin", h_sin as *const u8, &[types::F64], types::F64),
     ("robigo_cos", h_cos as *const u8, &[types::F64], types::F64),
     ("robigo_tan", h_tan as *const u8, &[types::F64], types::F64),
+    ("robigo_hypot", h_hypot as *const u8, &[types::F64, types::F64], types::F64),
 ];
 
 fn new_module() -> JITModule {
@@ -569,7 +632,8 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         }
         Op::SubsetObj { x, .. } => u.rregs.push(*x),
         Op::CallBuiltin { dst, args, .. } => {
-            if let Some(code) = inl.specs.and_then(|s| s.code()) {
+            let whole = inl.specs.and_then(|s| s.code());
+            if let Some(code) = whole.as_deref().or(inl.code) {
                 u.rregs.extend(code.arglists[*args as usize].iter().map(|(_, r)| *r));
             }
             u.wregs.push(*dst);
@@ -682,6 +746,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Index { .. }
         | Op::Index2 { .. }
         | Op::SetIndex2 { .. } => true,
+        // (Complex scalars; other constants have no type.)
+        Op::Const { .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
@@ -701,6 +767,10 @@ fn supported(op: &Op, r: &Region) -> bool {
 }
 
 fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
+    // Complex `+ - *` with complex, double or integer operands.
+    if (a == JType::C || b == JType::C) && a.is_value() && b.is_value() && a != JType::L && b != JType::L {
+        return matches!(op, ArithOp::Plus | ArithOp::Minus | ArithOp::Times).then_some(JType::C);
+    }
     if !a.is_scalar() || !b.is_scalar() {
         return None;
     }
@@ -723,7 +793,10 @@ pub fn precheck(code: &Code, enter: usize) -> bool {
     if r.end > code.ops.len() || r.start >= r.end {
         return false;
     }
-    code.ops[r.start..r.end].iter().all(|op| matches!(op, Op::Call { .. }) || supported(op, &r))
+    code.ops[r.start..r.end].iter().all(|op| {
+        matches!(op, Op::Call { .. } | Op::CallBuiltin { .. } | Op::Eval { .. } | Op::CallSpecial { .. })
+            || supported(op, &r)
+    })
 }
 
 /// Compile the loop starting at the `LoopEnter` op `enter`. `entry(slot)`
@@ -736,7 +809,8 @@ pub fn compile(
     live_in: &dyn Fn(Reg) -> Option<JType>,
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
-    let inl = Inl::new(&calls);
+    let mut inl = Inl::new(&calls);
+    inl.code = Some(code);
     SPLITS.with(|m| m.borrow_mut().clear());
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
     let r = Region { start: enter + 1, end: brk as usize };
@@ -749,7 +823,7 @@ pub fn compile(
     for pc in r.start..r.end {
         let op = &ops[pc];
         let inline_call = matches!(op, Op::Call { site, .. } if calls.contains_key(site));
-        if !inline_call && !supported(op, &r) {
+        if !inline_call && !supported(op, &r) && !loop_leaves(op, &inl) && conversion(op, &inl).is_none() {
             if trace() {
                 eprintln!("jit: unsupported at {}: {:?}", pc, op);
             }
@@ -858,9 +932,33 @@ pub fn compile(
                 return Err(Reject::Never);
             }
         }
-        if !types_ok(op, st, &slot_ty, &inl) {
+        if !loop_leaves(op, &inl) && !types_ok(op, st, &slot_ty, &inl) {
             if trace() {
                 eprintln!("jit: unsupported types at {}: {:?}", pc, op);
+            }
+            return Err(Reject::Never);
+        }
+    }
+
+    // Ops native code leaves at: only on paths that are not every
+    // iteration's (some path from the loop's head comes back to it).
+    let Op::LoopEnter { nxt, .. } = ops[enter] else { unreachable!() };
+    let leaves: Vec<u32> = (r.start..r.end)
+        .filter(|&pc| states[pc - r.start].is_some() && loop_leaves(&ops[pc], &inl))
+        .map(|pc| pc as u32)
+        .collect();
+    if !leaves.is_empty() {
+        let mut succ = Vec::new();
+        let back = (r.start + 1..r.end).any(|pc| {
+            if states[pc - r.start].is_none() || loop_leaves(&ops[pc], &inl) {
+                return false;
+            }
+            successors(&ops[pc], pc, &mut succ);
+            succ.contains(&(nxt as usize))
+        });
+        if !back {
+            if trace() {
+                eprintln!("jit: every iteration leaves native code");
             }
             return Err(Reject::Never);
         }
@@ -940,14 +1038,14 @@ pub fn compile(
         if ne && entry(s) != Some(ty) {
             return Err(not_now(9));
         }
-        let idx = if ty.is_scalar() {
-            nvals += 1;
-            nvals - 1
+        let idx = if ty.is_value() {
+            nvals += ty.width();
+            nvals - ty.width()
         } else {
             nvecs += 1;
             nvecs - 1
         };
-        let flag = if written[s as usize] && !ne && ty.is_scalar() {
+        let flag = if written[s as usize] && !ne && ty.is_value() {
             nvals += 1;
             Some(nvals - 1)
         } else {
@@ -965,14 +1063,20 @@ pub fn compile(
             split,
         });
     }
-    let mut reg_idx = HashMap::new();
+    // A register's place holds its widest type's value (registers are
+    // reused with other types).
+    let mut width: Vec<usize> = vec![0; code.nregs];
+    let mut order: Vec<Reg> = Vec::new();
+    let mut see = |reg: usize, t: JType| {
+        if width[reg] == 0 {
+            order.push(reg as Reg);
+        }
+        width[reg] = width[reg].max(t.width());
+    };
     for st in states.iter().flatten() {
         for (reg, t) in st.iter().take(code.nregs).enumerate() {
             if let Some(t) = t {
-                if let std::collections::hash_map::Entry::Vacant(e) = reg_idx.entry(reg as Reg) {
-                    e.insert(nvals);
-                    nvals += if *t == JType::Range { 3 } else { 1 };
-                }
+                see(reg, *t);
             }
         }
     }
@@ -980,16 +1084,32 @@ pub fn compile(
     for pc in r.start..r.end {
         if let Some(st) = &states[pc - r.start] {
             for (reg, t) in defs(&ops[pc], st, &slot_ty, &inl) {
-                if let (Some(t), std::collections::hash_map::Entry::Vacant(e)) = (t, reg_idx.entry(reg as Reg)) {
-                    e.insert(nvals);
-                    nvals += if t == JType::Range { 3 } else { 1 };
+                if let Some(t) = t {
+                    see(reg, t);
                 }
             }
         }
     }
-
+    let mut reg_idx = HashMap::new();
+    for reg in order {
+        reg_idx.insert(reg, nvals);
+        nvals += width[reg as usize];
+    }
+    let heads = nvals;
+    nvals += 1;
     let mut deopt_regs = HashMap::new();
-    let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
+    let func = codegen(
+        code,
+        &r,
+        &slots,
+        &slot_ty,
+        &states,
+        &reg_idx,
+        &live,
+        &mut deopt_regs,
+        &inl,
+        (!leaves.is_empty()).then_some((nxt as usize, heads)),
+    )?;
     // The type of each variable that changes type where native code
     // returns: it must have one there.
     let mut split_tys = HashMap::new();
@@ -1032,6 +1152,8 @@ pub fn compile(
         calls,
         seq_lengths,
         split_tys,
+        leaves,
+        heads,
     })
 }
 
@@ -1046,7 +1168,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
     let lt = |l: &Leaf| leaf_type(l, st, slot_ty);
     match op {
         Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => {
-            rt(cond) == JType::L || (inl.specs.is_some() && rt(cond) == JType::Dyn)
+            rt(cond).is_scalar() || (inl.specs.is_some() && rt(cond) == JType::Dyn)
         }
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
@@ -1076,7 +1198,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::ForRange { kind: RangeKind::Colon, a, b, .. } => rt(a).is_scalar() && rt(b).is_scalar(),
         Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
         Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
-        Op::GetVar { slot, .. } => inl.specs.is_some() || slot_type(*slot, st, slot_ty).is_some_and(|t| t.is_scalar()),
+        Op::GetVar { slot, .. } => inl.specs.is_some() || slot_type(*slot, st, slot_ty).is_some_and(|t| t.is_value()),
         _ => defs(op, st, slot_ty, inl).iter().all(|(_, t)| t.is_some()),
     }
 }
@@ -1130,8 +1252,14 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::ConstD { dst, .. } => vec![(*dst as usize, Some(JType::D))],
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
         Op::ConstL { dst, .. } => vec![(*dst as usize, Some(JType::L))],
+        Op::Const { dst, k } => {
+            let c = matches!(inl.code.and_then(|c| c.consts.get(*k as usize)), Some(crate::value::Value::Cplx(z)) if z.data.len() == 1 && z.attrs.is_none());
+            vec![(*dst as usize, c.then_some(JType::C))]
+        }
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
-        Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_type(*slot, st, slot_ty)))],
+        Op::GetVar { dst, slot, .. } => {
+            vec![(*dst as usize, slot_type(*slot, st, slot_ty).filter(|t| t.is_value()))]
+        }
         Op::Builtin1 { f: Builtin1::Length, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::I))],
         Op::Builtin1 { f: Builtin1::IsNull, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::L))],
         Op::Arith { op, dst, a, b, .. } => {
@@ -1159,6 +1287,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Neg { dst, a, .. } => {
             let t = match rt(a) {
                 Some(JType::D) => Some(JType::D),
+                Some(JType::C) => Some(JType::C),
                 Some(JType::I | JType::L) => Some(JType::I),
                 _ => None,
             };
@@ -1170,6 +1299,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Math1 { f, dst, a, .. } => {
             let t = match (f, rt(a)) {
                 (Math1::Abs, Some(JType::I | JType::L)) => Some(JType::I),
+                (Math1::Abs, Some(JType::C)) => Some(JType::D),
                 (_, Some(JType::D | JType::I | JType::L)) => Some(JType::D),
                 _ => None,
             };
@@ -1179,6 +1309,13 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Bitwise { dst, a, b, .. } => {
             let ok = matches!(rt(a), Some(JType::D | JType::I)) && matches!(rt(b), Some(JType::D | JType::I));
             vec![(*dst as usize, ok.then_some(JType::I))]
+        }
+        Op::CallBuiltin { dst, .. } if inl.specs.is_none() => {
+            let t = conversion(op, inl).and_then(|(a, int)| {
+                scalar(rt(&a))?;
+                Some(if int { JType::I } else { JType::D })
+            });
+            vec![(*dst as usize, t)]
         }
         Op::ForRange { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
         Op::ForSeqLength { seq, len, .. } => {
@@ -1228,7 +1365,7 @@ fn reg_flow(
         let st = states[pc - r.start].clone().unwrap();
         let op = &ops[pc];
         // Native code leaves here: nothing after it runs.
-        if inl.specs.is_some() && closure::leaves(op, inl) {
+        if (inl.specs.is_some() && closure::leaves(op, inl)) || loop_leaves(op, inl) {
             continue;
         }
         let mut split_writes: Vec<(u16, JType)> = Vec::new();
@@ -1259,7 +1396,7 @@ fn reg_flow(
         match op {
             Op::SetVar { src, slot, .. } => {
                 if let Some(t) = st[*src as usize] {
-                    if !t.is_scalar() && !(inl.specs.is_some() && t == JType::Dyn) {
+                    if !t.is_value() && !(inl.specs.is_some() && t == JType::Dyn) {
                         return Err(Reject::Never);
                     }
                     assign(*slot, t)?;
@@ -1318,9 +1455,33 @@ fn reg_flow(
 fn cl_type(t: JType) -> Type {
     match t {
         JType::D => types::F64,
+        JType::C => types::F64X2,
         // (A pointer to a `VecView`, in a closure compiled whole.)
         JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::Dyn => types::I64,
         _ => types::I32,
+    }
+}
+
+/// Flags of the value buffer's loads and stores of type `t` (8-byte
+/// aligned, so a complex value's 16 bytes are not).
+fn val_flags(t: JType) -> MemFlagsData {
+    if t == JType::C {
+        let mut f = MemFlagsData::new();
+        f.set_notrap();
+        f
+    } else {
+        MemFlagsData::trusted()
+    }
+}
+
+fn zero_of(b: &mut FunctionBuilder, t: JType) -> CValue {
+    match t {
+        JType::D => b.ins().f64const(0.0),
+        JType::C => {
+            let z = b.ins().f64const(0.0);
+            b.ins().splat(types::F64X2, z)
+        }
+        _ => b.ins().iconst(types::I32, 0),
     }
 }
 
@@ -1370,6 +1531,9 @@ struct Gen<'a, 'b> {
     helpers: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
     /// Compiling a closure whole.
     whole: Option<closure::Whole<'a>>,
+    /// In a loop: a count of the times its head was reached, and where it
+    /// is stored.
+    heads: Option<(Variable, usize)>,
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -1387,13 +1551,17 @@ impl Gen<'_, '_> {
     /// the value buffer. Returns those registers.
     fn store_all(&mut self, pc: Option<usize>) -> Vec<(Reg, JType)> {
         let mf = MemFlagsData::trusted();
+        if let Some((hv, idx)) = self.heads {
+            let n = self.b.use_var(hv);
+            self.b.ins().store(mf, n, self.vals, (idx * 8) as i32);
+        }
         // (Where native code returns at the region's end, or at an op it
         // cannot reach, the variables are as at the end.)
         let at = pc.unwrap_or(self.start + self.blocks.len() - 1);
         for s in self.slots {
-            if let Some((var, _)) = self.v.slot.get(&s.slot) {
+            if let Some((var, t)) = self.v.slot.get(&s.slot) {
                 let x = self.b.use_var(*var);
-                self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
+                self.b.ins().store(val_flags(*t), x, self.vals, (s.idx * 8) as i32);
             }
             if let Some((k, vs)) = self.v.split.get(&s.slot).copied()
                 && let Some(t) = self.states[at - self.start].as_ref().and_then(|st| st[k as usize])
@@ -1423,7 +1591,7 @@ impl Gen<'_, '_> {
             } else {
                 let var = self.v.reg[&(reg, t)];
                 let x = self.b.use_var(var);
-                self.b.ins().store(mf, x, self.vals, (idx * 8) as i32);
+                self.b.ins().store(val_flags(t), x, self.vals, (idx * 8) as i32);
             }
             live.push((reg, t));
         }
@@ -1557,6 +1725,63 @@ impl Gen<'_, '_> {
         }
     }
 
+    /// A complex value from its parts.
+    fn cplx(&mut self, re: CValue, im: CValue) -> CValue {
+        let v = self.b.ins().splat(types::F64X2, re);
+        self.b.ins().insertlane(v, im, 1)
+    }
+
+    /// A complex operand: as `vm::slow::cplx_scalar`, a double or integer
+    /// `x` is `x + 0i` (an integer NA leaves).
+    fn to_cplx(&mut self, x: CValue, t: JType, pc: usize) -> CValue {
+        match t {
+            JType::C => x,
+            JType::D => {
+                let zero = self.f64c(0.0);
+                self.cplx(x, zero)
+            }
+            _ => {
+                let na = self.is_na_i(x);
+                self.deopt_if(na, pc);
+                let d = self.b.ins().fcvt_from_sint(types::F64, x);
+                let zero = self.f64c(0.0);
+                self.cplx(d, zero)
+            }
+        }
+    }
+
+    /// Complex `+ - *` (`vm::slow::complex_op`). A NaN part in the result
+    /// leaves: which operand's NaN payload survives, and `__muldc3`'s
+    /// recovery of infinities, are the VM's to compute. Without NaN, the
+    /// IEEE results do not depend on the order of the operands.
+    fn complex_arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
+        let x = self.to_cplx(a.0, a.1, pc);
+        let y = self.to_cplx(b.0, b.1, pc);
+        let r = match op {
+            ArithOp::Plus => self.b.ins().fadd(x, y),
+            ArithOp::Minus => self.b.ins().fsub(x, y),
+            _ => {
+                // R: libgcc2.c:__muldc3 (x = ac - bd, y = ad + bc)
+                let a = self.b.ins().extractlane(x, 0);
+                let b = self.b.ins().extractlane(x, 1);
+                let c = self.b.ins().extractlane(y, 0);
+                let d = self.b.ins().extractlane(y, 1);
+                let ac = self.b.ins().fmul(a, c);
+                let bd = self.b.ins().fmul(b, d);
+                let ad = self.b.ins().fmul(a, d);
+                let bc = self.b.ins().fmul(b, c);
+                let re = self.b.ins().fsub(ac, bd);
+                let im = self.b.ins().fadd(ad, bc);
+                self.cplx(re, im)
+            }
+        };
+        let re = self.b.ins().extractlane(r, 0);
+        let im = self.b.ins().extractlane(r, 1);
+        let nan = self.b.ins().fcmp(FloatCC::Unordered, re, im);
+        self.deopt_if(nan, pc);
+        r
+    }
+
     /// An integer from an integer or double (`coerce.c:IntegerFromReal`);
     /// leaves at `pc` where the coercion warns.
     fn to_int(&mut self, x: CValue, t: JType, pc: usize) -> CValue {
@@ -1578,6 +1803,9 @@ impl Gen<'_, '_> {
 
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
     fn arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
+        if a.1 == JType::C || b.1 == JType::C {
+            return self.complex_arith(op, a, b, pc);
+        }
         if a.1 == JType::D || b.1 == JType::D {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
@@ -1741,6 +1969,11 @@ impl Gen<'_, '_> {
                 None => {}
             }
         }
+        if loop_leaves(op, self.inl) {
+            let d = self.deopt_block(pc);
+            self.b.ins().jump(d, &[]);
+            return;
+        }
         match op {
             Op::ConstD { dst, x } => {
                 let v = self.f64c(*x);
@@ -1752,6 +1985,14 @@ impl Gen<'_, '_> {
             }
             Op::ConstL { dst, x } => {
                 let v = self.i32c(*x as i64);
+                self.set_reg(*dst, v);
+            }
+            Op::Const { dst, k } => {
+                let crate::value::Value::Cplx(z) = &self.inl.code.unwrap().consts[*k as usize] else { unreachable!() };
+                let z = z.data[0];
+                let re = self.f64c(z.re);
+                let im = self.f64c(z.im);
+                let v = self.cplx(re, im);
                 self.set_reg(*dst, v);
             }
             Op::GetVar { dst, slot, .. } => {
@@ -1802,7 +2043,7 @@ impl Gen<'_, '_> {
             }
             Op::Neg { dst, a, .. } => {
                 let (x, t) = self.reg(*a);
-                let v = if t == JType::D {
+                let v = if t == JType::D || t == JType::C {
                     self.b.ins().fneg(x)
                 } else {
                     let na = self.is_na_i(x);
@@ -1828,7 +2069,12 @@ impl Gen<'_, '_> {
             }
             Op::Math1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
-                let v = if *f == Math1::Abs {
+                let v = if *f == Math1::Abs && t == JType::C {
+                    // vm::slow::math1_slow: hypot of the parts
+                    let re = self.b.ins().extractlane(x, 0);
+                    let im = self.b.ins().extractlane(x, 1);
+                    self.call("robigo_hypot", &[re, im])
+                } else if *f == Math1::Abs {
                     if t == JType::D {
                         self.b.ins().fabs(x)
                     } else {
@@ -1855,6 +2101,13 @@ impl Gen<'_, '_> {
                     self.deopt_if(bad, pc);
                     r
                 };
+                self.set_reg(*dst, v);
+            }
+            Op::CallBuiltin { dst, .. } => {
+                // R: coerce.c:coerceVector (IntegerFromReal and friends)
+                let (a, int) = conversion(op, self.inl).unwrap();
+                let (x, t) = self.reg(a);
+                let v = if int { self.to_int(x, t, pc) } else { self.to_f64(x, t) };
                 self.set_reg(*dst, v);
             }
             Op::Bitwise { op: bop, dst, a, b, .. } => {
@@ -1935,10 +2188,19 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, v);
             }
             Op::JumpIf { cond, target, .. } | Op::JumpIfNot { cond, target, .. } => {
-                let (c, _) = self.reg(*cond);
-                // NA: the VM signals the error.
-                let na = self.is_na_i(c);
-                self.deopt_if(na, pc);
+                let (c, ct) = self.reg(*cond);
+                // NA: the VM signals the error. (R: eval.c:asLogicalNoNA:
+                // an integer or double is TRUE when not zero.)
+                let c = if ct == JType::D {
+                    let na = self.b.ins().fcmp(FloatCC::Unordered, c, c);
+                    self.deopt_if(na, pc);
+                    let zero = self.f64c(0.0);
+                    self.b.ins().fcmp(FloatCC::NotEqual, c, zero)
+                } else {
+                    let na = self.is_na_i(c);
+                    self.deopt_if(na, pc);
+                    c
+                };
                 let t = self.target(*target as usize);
                 let n = self.target(next);
                 if matches!(op, Op::JumpIf { .. }) {
@@ -2176,7 +2438,7 @@ impl Gen<'_, '_> {
         let mut reg = HashMap::new();
         for (r, t) in pairs {
             let var = self.b.declare_var(cl_type(t));
-            let z = if t == JType::D { self.f64c(0.0) } else { self.i32c(0) };
+            let z = zero_of(&mut self.b, t);
             self.b.def_var(var, z);
             reg.insert((r, t), var);
         }
@@ -2271,6 +2533,8 @@ fn codegen(
     live: &[(Reg, JType)],
     deopt_regs: &mut HashMap<u32, Vec<(Reg, JType)>>,
     inl: &Inl,
+    // (Only loops native code leaves on purpose count: see `JitLoop::heads`.)
+    heads: Option<(usize, usize)>,
 ) -> Result<LoopFn, Reject> {
     MODULE.with(|m| {
         let mut m = m.borrow_mut();
@@ -2325,10 +2589,10 @@ fn codegen(
                     let x = b.ins().load(cl_type(s.ty), mf, vals, (s.idx * 8) as i32);
                     b.def_var(split_var(&vs, s.ty), x);
                     v.split.insert(s.slot, (k, vs));
-                } else if s.ty.is_scalar() {
+                } else if s.ty.is_value() {
                     let ty = cl_type(s.ty);
                     let var = b.declare_var(ty);
-                    let x = b.ins().load(ty, mf, vals, (s.idx * 8) as i32);
+                    let x = b.ins().load(ty, val_flags(s.ty), vals, (s.idx * 8) as i32);
                     b.def_var(var, x);
                     v.slot.insert(s.slot, (var, s.ty));
                     if let Some(fi) = s.flag {
@@ -2398,19 +2662,17 @@ fn codegen(
                 } else {
                     let ty = cl_type(t);
                     let var = b.declare_var(ty);
-                    let x = if li {
-                        b.ins().load(ty, mf, vals, (idx * 8) as i32)
-                    } else if t == JType::D {
-                        b.ins().f64const(0.0)
-                    } else {
-                        b.ins().iconst(types::I32, 0)
-                    };
+                    let x =
+                        if li { b.ins().load(ty, val_flags(t), vals, (idx * 8) as i32) } else { zero_of(&mut b, t) };
                     b.def_var(var, x);
                     v.reg.insert((reg, t), var);
                 }
             }
             let blocks: Vec<Block> = (r.start..=r.end).map(|_| b.create_block()).collect();
             let exit = b.create_block();
+            let hv = b.declare_var(types::I64);
+            let z = b.ins().iconst(types::I64, 0);
+            b.def_var(hv, z);
             b.ins().jump(blocks[0], &[]);
             let mut g = Gen {
                 b,
@@ -2430,7 +2692,10 @@ fn codegen(
                 exit,
                 helpers,
                 whole: None,
+                heads: None,
             };
+            g.heads = heads.map(|(_, idx)| (hv, idx));
+            let head = heads.map_or(usize::MAX, |(h, _)| h);
             for pc in r.start..r.end {
                 let blk = g.block(pc);
                 g.b.switch_to_block(blk);
@@ -2439,6 +2704,11 @@ fn codegen(
                     let d = g.deopt_block(pc);
                     g.b.ins().jump(d, &[]);
                     continue;
+                }
+                if pc == head {
+                    let n = g.b.use_var(hv);
+                    let n = g.b.ins().iadd_imm_s(n, 1);
+                    g.b.def_var(hv, n);
                 }
                 g.cur = pc;
                 g.cur_defs = defs(&code.ops[pc], g.state(pc), slot_ty, inl);

@@ -859,12 +859,13 @@ pub fn as_condition(interp: &mut Interp, v: &Value, call: &Value) -> RResult<boo
     };
     let _ = interp;
     if cond == NA_LOGICAL {
+        // R: eval.c:asLogicalNoNA (only a logical NA is a missing value)
         let msg = if len == 0 {
             "argument is of length zero"
-        } else if matches!(v, Value::Str(_)) {
-            "argument is not interpretable as logical"
-        } else {
+        } else if matches!(v, Value::Lgl(_)) {
             "missing value where TRUE/FALSE needed"
+        } else {
+            "argument is not interpretable as logical"
         };
         return Err(Flow::error_call(call.clone(), msg));
     }

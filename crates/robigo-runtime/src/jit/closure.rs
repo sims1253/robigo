@@ -1215,6 +1215,7 @@ fn define(
         b.set_cold_block(bail);
         b.ins().jump(blocks[0], &[]);
         let mut g = Gen {
+            heads: None,
             b,
             v,
             slots: &[],
