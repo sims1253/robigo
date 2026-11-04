@@ -50,7 +50,7 @@ use super::{
     new_module, reg_flow, successors, trace, types_ok, uses,
 };
 use crate::builtins::arith::{ArithOp, RelOp};
-use crate::compile::{Builtin1, Code, InlineArg, Leaf, Op, RangeKind, Reg, Slot};
+use crate::compile::{Builtin1, Code, InlineArg, Leaf, NativeArg, Op, RangeKind, Reg, Slot};
 use crate::env::{Env, bump_r_epoch, search_epoch};
 use crate::interp::Interp;
 use crate::sym::Sym;
@@ -509,14 +509,15 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                 Op::ArithL { sym, .. } | Op::RelL { sym, .. } | Op::Guard { sym, .. } => guards.push(*sym),
                 Op::Call { f, site, .. } => {
                     let cs = &code.call_sites[*site as usize];
-                    let Some(iargs) = &cs.inline_args else { continue };
+                    let n = cs.inline_args.as_ref().map(Vec::len).or(cs.native_args.as_ref().map(Vec::len));
+                    let Some(nargs) = n else { continue };
                     if code.vars.contains(f) || cs.force != 0 {
                         continue;
                     }
                     let Some(Value::Closure(callee)) = call_site_fun_fast(interp, *f, cs, &clo.env) else { continue };
                     // (Not settled: the VM still counts its calls. This site
                     // leaves native code; it was hardly reached so far.)
-                    if iargs.len() != callee.formals.len() || callee.jit.inline_blocked() {
+                    if nargs != callee.formals.len() || callee.jit.inline_blocked() {
                         continue;
                     }
                     let Some((ccode, cslots)) = shape(&callee) else { continue };
@@ -528,20 +529,11 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             clos.len() - 1
                         }
                     };
-                    let mut args = Vec::with_capacity(iargs.len());
-                    for a in iargs {
-                        args.push(match a {
-                            InlineArg::Leaf(l) => CallArg::Leaf(*l),
-                            InlineArg::Arith { op, a, b, sym, .. } => {
-                                guards.push(*sym);
-                                CallArg::Arith(*op, *a, *b)
-                            }
-                            InlineArg::Index { slot, i, two, sym, .. } => {
-                                guards.push(*sym);
-                                CallArg::Index(*slot, *i, *two)
-                            }
-                        });
-                    }
+                    let args: Vec<CallArg> = match (&cs.inline_args, &cs.native_args) {
+                        (Some(a), _) => a.iter().map(|a| call_arg(a, &mut guards)).collect(),
+                        (None, Some(a)) => a.iter().map(|a| native_call_arg(a, &mut guards)).collect(),
+                        (None, None) => unreachable!(),
+                    };
                     sites.push((*site, *f));
                     calls.insert(
                         *site,
@@ -636,6 +628,35 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
     Ok((funs, cells))
 }
 
+/// A site argument as native code evaluates it; the functions it guards go
+/// to `guards`.
+fn call_arg(a: &InlineArg, guards: &mut Vec<Sym>) -> CallArg {
+    match a {
+        InlineArg::Leaf(l) => CallArg::Leaf(*l),
+        InlineArg::Arith { op, a, b, sym, .. } => {
+            guards.push(*sym);
+            CallArg::Arith(*op, *a, *b)
+        }
+        InlineArg::Index { slot, i, two, sym, .. } => {
+            guards.push(*sym);
+            CallArg::Index(*slot, *i, *two)
+        }
+    }
+}
+
+/// The same for an argument of `CallSite::native_args`.
+fn native_call_arg(a: &NativeArg, guards: &mut Vec<Sym>) -> CallArg {
+    match a {
+        NativeArg::Plain(a) => call_arg(a, guards),
+        NativeArg::Nested(n) => {
+            guards.push(n.sym);
+            let a = native_call_arg(&n.a, guards);
+            let b = n.b.as_ref().map(|b| native_call_arg(b, guards));
+            CallArg::Nested(Rc::new((n.op, a, b)))
+        }
+    }
+}
+
 fn written_leaf(l: &Leaf, cells: &[CellDef]) -> bool {
     matches!(l, Leaf::Var(sym, _) if cells.iter().any(|c| c.written && c.sym == *sym))
 }
@@ -647,6 +668,9 @@ fn reads_written(a: &CallArg, code: &Code, cells: &[CellDef]) -> bool {
         CallArg::Arith(_, x, y) => written_leaf(x, cells) || written_leaf(y, cells),
         CallArg::Index(x, i, _) => {
             written_leaf(&Leaf::Var(code.vars[*x as usize], *x), cells) || written_leaf(i, cells)
+        }
+        CallArg::Nested(n) => {
+            reads_written(&n.1, code, cells) || n.2.as_ref().is_some_and(|b| reads_written(b, code, cells))
         }
     }
 }
