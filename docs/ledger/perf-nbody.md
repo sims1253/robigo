@@ -228,3 +228,9 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   removed binding, instances seeing different values, `[[` rebound where
   the closure lives, a closure in the loop's own frame), recorded with GNU
   R 4.5.0, byte-identical in all three tiers. Conformance: as main.
+- Review (sol-loop, gpt-6.1-sol): round 1 found a blocker. The identity
+  check rejected a closure defined in the loop's own frame but not one
+  whose environment only reaches that frame further up (`local(function(i)
+  x + i)`): it read `x` from the environment while the loop's newer value
+  was still pending in the VM (15450 instead of GNU R's 15750). Both
+  checks now use `closure::on_chain`; the case is in the test.

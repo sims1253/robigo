@@ -80,3 +80,18 @@ same <- function() {
   s
 }
 print(same())
+# a closure whose environment encloses the loop's frame: the loop's
+# pending assignments are what it must read
+encl <- function() {
+  x <- 1
+  f <- local(function(i) x + i)
+  out <- 0
+  for (j in 1:3) {
+    x <- j
+    s <- 0
+    for (i in 1:100) s <- s + f(i)
+    out <- out + s
+  }
+  out
+}
+print(encl())

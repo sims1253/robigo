@@ -3507,11 +3507,12 @@ fn inline_call(
         None => loop_inline_info(&clo)?,
     };
     // Free variables are read once, at the loop's entry, from the
-    // closure's environment: not the loop's own frame (whose variables
-    // native code may hold pending), and plain scalars or vectors.
+    // closure's environment: one that does not reach the loop's own frame
+    // (whose variables may be pending in the VM), and plain scalars or
+    // vectors.
     let mut free = Vec::new();
     if info.free_vars {
-        if clo.env.id() == env.id() {
+        if crate::jit::closure::on_chain(&clo.env, env) {
             return None;
         }
         for (s, sym) in info.code.vars.iter().enumerate() {
@@ -3754,7 +3755,7 @@ fn jit_enter(
     let mut held: SmallVec<[RVal; 4]> = SmallVec::new();
     for (site, sym, ty, idx) in &jl.free {
         let (_, c) = instances.iter().find(|(s, _)| s == site)?;
-        if c.env.id() == env.id() {
+        if crate::jit::closure::on_chain(&c.env, env) {
             return None;
         }
         let v = plain_lookup(&c.env, *sym)?;
