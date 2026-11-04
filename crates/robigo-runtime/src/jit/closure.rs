@@ -228,6 +228,8 @@ struct Fun {
     guards: Vec<Sym>,
     /// Variables of enclosing environments: slot to [`Entry::cells`] index.
     cells: HashMap<Slot, usize>,
+    /// By slot: local variables only assigned (see [`Inl::is_dead`]).
+    dead: Vec<bool>,
 }
 
 /// A variable of an enclosing environment.
@@ -562,6 +564,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
         let inl = Inl::new(&calls);
         let mut assigned: Vec<Sym> = formals.clone();
         let mut read: Vec<Slot> = Vec::new();
+        let mut set: Vec<Slot> = Vec::new();
         let mut supers: Vec<(Sym, Slot)> = Vec::new();
         for op in &code.ops {
             if !native_op(op) {
@@ -569,7 +572,10 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             }
             let u = uses(op, &inl);
             assigned.extend(u.wslots.iter().map(|s| code.vars[*s as usize]));
-            read.extend(u.rslots);
+            read.extend(u.rslots.iter().copied());
+            if let Op::SetVar { slot, .. } = op {
+                set.push(*slot);
+            }
             if let Op::SuperSet { sym, slot, .. } = op {
                 supers.push((*sym, *slot));
             }
@@ -589,11 +595,20 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             cells[k].written |= written;
             k
         };
-        for s in read {
+        for &s in &read {
             let sym = code.vars[s as usize];
             if !assigned.contains(&sym) {
                 fcells.insert(s, cell_for(sym, false));
             }
+        }
+        // A local nothing reads: native code does not assign it (nothing
+        // can see the frame of a closure run natively, and a run that leaves
+        // is replayed by the VM). Its type may change, as in `x <- 0;
+        // for (i in 1:n) x <- i`.
+        let mut dead = vec![false; code.vars.len()];
+        for s in &set {
+            let sym = code.vars[*s as usize];
+            dead[*s as usize] = !read.contains(s) && !formals.contains(&sym) && !supers.iter().any(|(y, _)| *y == sym);
         }
         for (sym, slot) in supers {
             // (`<<-` of a name that is also a local stays in the VM.)
@@ -609,6 +624,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             sites,
             guards,
             cells: fcells,
+            dead,
         });
     }
     // Arguments are read at the call. That is only unobservable if nothing
@@ -751,6 +767,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
     let code = &*fun.code;
     let mut inl = Inl::new(&fun.calls);
     inl.specs = Some(specs);
+    inl.dead = &fun.dead;
     let mut slot_ty: HashMap<Slot, JType> = HashMap::new();
     for (k, s) in fun.formal_slots.iter().enumerate() {
         if let Some(s) = s {
@@ -997,6 +1014,7 @@ fn define(
     let mut fbc = FunctionBuilderContext::new();
     let mut inl = Inl::new(&fun.calls);
     inl.specs = Some(specs);
+    inl.dead = &fun.dead;
     set_written(fun, cells, cell_ty, specs);
     let empty_regs = HashMap::new();
     {
@@ -1248,6 +1266,11 @@ fn define(
                 g.b.ins().jump(bail, &[]);
                 continue;
             }
+            if let Op::LoopEnter { brk, .. } = code.ops[pc]
+                && let Some(ls) = loop_summary(code, fl, &inl, &g.v, pc, brk as usize)
+            {
+                g.summarized_loop(&ls, brk as usize);
+            }
             g.cur = pc;
             g.cur_defs = defs(&code.ops[pc], g.state(pc), &fl.slot_ty, &inl);
             g.op(pc, &code.ops[pc]);
@@ -1272,11 +1295,19 @@ fn define(
         g.b.seal_all_blocks();
         g.b.finalize(tcfg);
     }
+    let dump = std::env::var_os("ROBIGO_JIT_DUMP").is_some();
+    if dump {
+        eprintln!("{}", ctx.func.display());
+        ctx.set_disasm(true);
+    }
     if let Err(e) = module.define_function(id, &mut ctx) {
         if trace() {
             eprintln!("jit: closure: codegen failed: {:?}", e);
         }
         return Err(Reject::Never);
+    }
+    if dump && let Some(cc) = ctx.compiled_code() {
+        eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
     module.clear_context(&mut ctx);
     Ok(())
@@ -1947,6 +1978,7 @@ unsafe extern "C" fn h_d_c(argv: *const *mut RVal, n: i64, dst: *mut RVal) -> i3
 
 /// Native-code helpers for values of any type, as `crate::jit::HELPERS`.
 pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
+    ("robigo_summary", h_summary as *const u8, &[types::I64, types::I64, types::I64], Some(types::I32)),
     ("robigo_d_init", h_d_init as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_release", h_d_release as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_copy", h_d_copy as *const u8, &[types::I64, types::I64], None),
@@ -2212,5 +2244,153 @@ impl Gen<'_, '_> {
         let o = self.i32c(k as i64);
         let r = self.hcall(if arith { "robigo_d_arith" } else { "robigo_d_rel" }, &[o, pa, pb, d]).unwrap();
         self.failed(r, pc);
+    }
+}
+
+/// A loop of a closure compiled whole that has a closed form
+/// ([`super::summary`]): its variables and registers, in the order of the
+/// value buffer the summary runs on.
+pub(super) struct LoopSum {
+    sum: &'static super::summary::Summary,
+    /// (slot, type, assigned by the loop)
+    slots: Vec<(Slot, JType, bool)>,
+    /// (register, type): a `for` sequence and its index.
+    regs: Vec<(Reg, JType)>,
+    nvals: usize,
+}
+
+/// The closed form of the loop at `pc` (a `LoopEnter`, `brk` its
+/// `LoopExit`), if all it uses are scalar locals.
+fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usize) -> Option<LoopSum> {
+    if !super::summaries() || brk > code.ops.len() || pc + 1 >= brk {
+        return None;
+    }
+    let mut list: Vec<Slot> = Vec::new();
+    let mut wr: Vec<Slot> = Vec::new();
+    for q in pc + 1..brk {
+        let op = &code.ops[q];
+        if matches!(op, Op::LoopEnter { .. } | Op::Call { .. }) || fl.bail[q] {
+            return None;
+        }
+        let u = uses(op, inl);
+        for s in u.rslots.iter().chain(&u.wslots) {
+            if !list.contains(s) {
+                list.push(*s);
+            }
+        }
+        wr.extend(u.wslots);
+    }
+    list.sort();
+    let mut slots = Vec::new();
+    let mut infos = Vec::new();
+    for (k, s) in list.iter().enumerate() {
+        // Plain scalar locals only (not cells, vectors or values of any type).
+        let (_, t) = v.slot.get(s)?;
+        if !t.is_scalar() || fl.slot_ty.get(s) != Some(t) {
+            return None;
+        }
+        let written = wr.contains(s);
+        slots.push((*s, *t, written));
+        infos.push(super::SlotInfo {
+            slot: *s,
+            sym: code.vars[*s as usize],
+            ty: *t,
+            idx: k,
+            // (Every local has a value here: zero where unset, which the
+            // closure never reads.)
+            needs_entry: true,
+            written,
+            flag: None,
+            writable: false,
+        });
+    }
+    let mut nvals = slots.len();
+    let mut regs = Vec::new();
+    let mut reg_idx = HashMap::new();
+    if let Op::ForStep { seq, idx, .. } = code.ops[brk - 1] {
+        let st = fl.states[pc].as_ref()?;
+        if st[seq as usize] != Some(JType::Range) || st[idx as usize] != Some(JType::I) {
+            return None;
+        }
+        regs.push((seq, JType::Range));
+        regs.push((idx, JType::I));
+        reg_idx.insert(seq, nvals);
+        reg_idx.insert(idx, nvals + 3);
+        nvals += 4;
+    }
+    let sum = super::summary::analyze(code, pc + 1, brk, &infos, &fl.slot_ty, &reg_idx, &regs, inl)?;
+    if trace() {
+        eprintln!("jit: closure loop at {} has a closed form", pc);
+    }
+    // Native code is never freed (the module keeps every function), and
+    // neither is the summary it refers to.
+    let sum: &'static super::summary::Summary = Box::leak(Box::new(sum));
+    Some(LoopSum { sum, slots, regs, nvals })
+}
+
+/// Runs a loop's closed form on its value buffer: nonzero if it applied.
+///
+/// # Safety
+///
+/// `s` is a summary and `vals` points to `n` values laid out for it.
+unsafe extern "C" fn h_summary(s: *const super::summary::Summary, vals: *mut u64, n: i64) -> i32 {
+    // SAFETY: the caller's contract.
+    let (s, vals) = unsafe { (&*s, std::slice::from_raw_parts_mut(vals, n as usize)) };
+    s.run(vals) as i32
+}
+
+impl Gen<'_, '_> {
+    /// Before the loop whose `LoopExit` is `brk`: run its closed form, and
+    /// continue after the loop if it applied.
+    fn summarized_loop(&mut self, ls: &LoopSum, brk: usize) {
+        let mf = MemFlagsData::trusted();
+        let ss =
+            self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (ls.nvals * 8) as u32, 3));
+        let ptr = types::I64;
+        let buf = self.b.ins().stack_addr(ptr, ss, 0);
+        let mut k = 0;
+        for (s, t, _) in &ls.slots {
+            let (var, _) = self.v.slot[s];
+            let x = self.b.use_var(var);
+            let x = if *t == JType::D { x } else { self.b.ins().sextend(types::I64, x) };
+            self.b.ins().store(mf, x, buf, k * 8);
+            k += 1;
+        }
+        for (r, t) in &ls.regs {
+            if *t == JType::Range {
+                let (a, b2, c) = self.v.range[r];
+                for var in [a, b2, c] {
+                    let x = self.b.use_var(var);
+                    self.b.ins().store(mf, x, buf, k * 8);
+                    k += 1;
+                }
+            } else {
+                let var = self.v.reg[&(*r, *t)];
+                let x = self.b.use_var(var);
+                let x = self.b.ins().sextend(types::I64, x);
+                self.b.ins().store(mf, x, buf, k * 8);
+                k += 1;
+            }
+        }
+        let sp = self.b.ins().iconst(ptr, ls.sum as *const _ as i64);
+        let n = self.b.ins().iconst(types::I64, ls.nvals as i64);
+        let f = self.helpers["robigo_summary"];
+        let c = self.b.ins().call(f, &[sp, buf, n]);
+        let ok = self.b.inst_results(c)[0];
+        let done = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.ins().brif(ok, done, &[], cont, &[]);
+        self.b.switch_to_block(done);
+        for (k, (s, t, written)) in ls.slots.iter().enumerate() {
+            if !*written {
+                continue;
+            }
+            let x = self.b.ins().load(cl_type(*t), mf, buf, (k * 8) as i32);
+            let (var, _) = self.v.slot[s];
+            self.b.def_var(var, x);
+        }
+        let exit = self.block(brk);
+        self.b.ins().jump(exit, &[]);
+        self.b.switch_to_block(cont);
     }
 }

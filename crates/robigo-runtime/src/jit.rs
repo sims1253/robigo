@@ -32,6 +32,7 @@ use crate::sym::Sym;
 use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL};
 
 pub mod closure;
+pub mod summary;
 
 /// The type of a variable or register in native code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -124,6 +125,8 @@ pub struct JitLoop {
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
     pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+    /// The loop's closed form, tried before the native code.
+    pub summary: Option<summary::Summary>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -199,11 +202,19 @@ pub struct Inl<'a> {
     /// Compiling a closure whole: calls are real calls, whose result types
     /// come from here.
     specs: Option<&'a closure::Specs>,
+    /// Compiling a closure whole: by slot, local variables nothing reads
+    /// (their assignments are not executed).
+    dead: &'a [bool],
 }
 
 impl<'a> Inl<'a> {
     pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
-        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None }
+        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None, dead: &[] }
+    }
+
+    /// Whether variable `s` is never read (so assigning it does nothing).
+    pub fn is_dead(&self, s: Slot) -> bool {
+        self.dead.get(s as usize).copied().unwrap_or(false)
     }
 
     /// The type of the result of the call at `site` with these arguments.
@@ -354,6 +365,12 @@ thread_local! {
     static MODULE: RefCell<Option<JITModule>> = const { RefCell::new(None) };
     static ENABLED: bool = std::env::var("ROBIGO_JIT").map(|v| v != "0").unwrap_or(true);
     static TRACE: bool = std::env::var_os("ROBIGO_JIT_TRACE").is_some();
+    static SUMMARIES: bool = std::env::var("ROBIGO_JIT_SUMMARY").map(|v| v != "0").unwrap_or(true);
+}
+
+/// Whether loops are summarized in closed form (`ROBIGO_JIT_SUMMARY=0`: no).
+pub fn summaries() -> bool {
+    SUMMARIES.with(|e| *e)
 }
 
 /// Whether hot loops are compiled to native code (`ROBIGO_JIT=0`: no).
@@ -541,7 +558,9 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         }
         Op::SetVar { src, slot, .. } => {
             u.rregs.push(*src);
-            u.wslots.push(*slot);
+            if !inl.is_dead(*slot) {
+                u.wslots.push(*slot);
+            }
         }
         Op::Arith { dst, a, b, .. } | Op::Rel { dst, a, b, .. } => {
             u.rregs.extend([*a, *b]);
@@ -902,8 +921,16 @@ pub fn compile(
 
     let mut deopt_regs = HashMap::new();
     let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
+    let summary = if calls.is_empty() && nested.is_empty() && summaries() {
+        summary::analyze(code, r.start, r.end, &slots, &slot_ty, &reg_idx, &live, &inl)
+    } else {
+        None
+    };
+    if trace() && summary.is_some() {
+        eprintln!("jit: loop at {} has a closed form", enter);
+    }
     let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls })
+    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls, summary })
 }
 
 /// Register types before an op: `None` for undefined, or different types
@@ -1085,6 +1112,7 @@ fn reg_flow(
             }
         };
         match op {
+            Op::SetVar { slot, .. } if inl.is_dead(*slot) => {}
             Op::SetVar { src, slot, .. } => {
                 if let Some(t) = st[*src as usize] {
                     if !t.is_scalar() && !(inl.specs.is_some() && t == JType::Dyn) {
@@ -1510,6 +1538,13 @@ impl Gen<'_, '_> {
             )
         {
             self.set_visible(true);
+        }
+        if let Op::SetVar { slot, .. } = op
+            && self.inl.is_dead(*slot)
+        {
+            let n = self.target(next);
+            self.b.ins().jump(n, &[]);
+            return;
         }
         if self.whole.is_some() {
             match self.dyn_op(pc, op) {
@@ -2182,11 +2217,21 @@ fn codegen(
         let id = module
             .declare_function(&format!("robigo_loop_{}", n), Linkage::Local, &ctx.func.signature)
             .map_err(|_| Reject::Never)?;
+        let dump = std::env::var_os("ROBIGO_JIT_DUMP").is_some();
+        if dump {
+            eprintln!("{}", ctx.func.display());
+            ctx.set_disasm(true);
+        }
         if let Err(e) = module.define_function(id, &mut ctx) {
             if trace() {
                 eprintln!("jit: codegen failed: {:?}", e);
             }
             return Err(Reject::Never);
+        }
+        if dump {
+            if let Some(cc) = ctx.compiled_code() {
+                eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
+            }
         }
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;

@@ -1,0 +1,7 @@
+Warning messages:
+1: In s + 1L : NAs produced by integer overflow
+2: In s + 1L : NAs produced by integer overflow
+3: In s + 1L : NAs produced by integer overflow
+Error in while (i < n) { : missing value where TRUE/FALSE needed
+Calls: w1
+Execution halted

@@ -3070,9 +3070,13 @@ fn jit_enter(
             _ => return None,
         }
     }
-    // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and the
-    // vectors they view are held by `regs` and `vars` for the whole call.
-    let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) };
+    // A closed form, where it applies, leaves `vals` as the native code would.
+    let ret = match &jl.summary {
+        Some(sm) if sm.run(&mut vals) => crate::jit::EXIT,
+        // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and
+        // the vectors they view are held by `regs` and `vars` for the whole call.
+        _ => unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) },
+    };
     // Write the variables back as pending assignments.
     for s in &jl.slots {
         if !s.written || !s.ty.is_scalar() {
