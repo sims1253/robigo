@@ -272,6 +272,10 @@ impl Frame {
         Some(b)
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Forget every binding: the sweep of a frame no live environment
     /// reaches (memory.c's sweep frees the unreachable cells).
     pub(crate) fn clear(&mut self) {
