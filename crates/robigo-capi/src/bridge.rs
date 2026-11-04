@@ -423,6 +423,11 @@ fn kept_count() -> usize {
 }
 
 fn drain_dead() {
+    for owner in DEAD_SHARED.with(|d| std::mem::take(&mut *d.borrow_mut())) {
+        // SAFETY: `owner` came from Box::into_raw in `shared_atomic`, and
+        // the collector released its object once.
+        drop(unsafe { Box::from_raw(owner as *mut Value) });
+    }
     let dead = DEAD.with(|d| std::mem::take(&mut *d.borrow_mut()));
     let had = !dead.is_empty();
     for h in dead {
@@ -933,9 +938,15 @@ unsafe fn atomic<T: Copy>(t: u8, data: &[T]) -> Sexp {
 /// vector whose buffer the core object points into, kept alive until the
 /// collector finds the core object dead.
 unsafe extern "C" fn release_shared(owner: usize) {
-    // SAFETY: `owner` came from Box::into_raw in `shared_atomic`, and the
-    // collector calls this once per object.
-    drop(unsafe { Box::from_raw(owner as *mut Value) });
+    // The collector is sweeping: dropping the vector here could run code
+    // that reaches the core (its attributes can hold proxies), so it waits
+    // for the next safe point, as dead proxies do.
+    DEAD_SHARED.with(|d| d.borrow_mut().push(owner));
+}
+
+thread_local! {
+    /// Owners of zero-copy vectors the collector found dead.
+    static DEAD_SHARED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
 /// An atomic vector handed to C as itself, as GNU R does (docs/core.md §6):
@@ -952,10 +963,17 @@ unsafe extern "C" fn release_shared(owner: usize) {
 /// lives. C's writes go through a raw pointer, as `write_back`'s did; no
 /// runtime borrow of the elements lasts across a native call.
 unsafe fn shared_atomic<T>(t: u8, v: &Value, data: &[T]) -> Sexp {
+    // C writes in place into what it believes no one else references
+    // (NAMED/REFCNT, e.g. a fresh eval result). The runtime's holders of
+    // the vector are references: one for a temporary nobody else sees
+    // (C may reuse it, nothing else changes), more for a vector bound to
+    // a variable or held by a list (C code following the protocol copies).
+    let holders = sharing(v) as usize + 1;
     let owner = Box::into_raw(Box::new(v.clone())) as usize;
     let x = core().alloc_extdata(t, data.as_ptr() as *mut u8, data.len(), owner, Some(release_shared));
     // marks the owner word as this bridge's (any other EXTDATA's is not a Box<Value>)
     x.set_extra(x.extra() | robigo_core::extra::HOST_OWNED);
+    x.set_refcnt(holders.min(u16::MAX as usize) as u16);
     x
 }
 
