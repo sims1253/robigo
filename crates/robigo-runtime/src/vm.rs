@@ -2888,6 +2888,22 @@ fn loop_state(code: &Code, enter: u32) -> (bool, u32, bool) {
     }
 }
 
+/// What a function lookup from `env` depends on: the search epoch and the
+/// identity and function-binding version of each frame from `env` up to
+/// the search path, when there are at most `FRAMES_KEY` of them.
+fn frames_key(env: &Env) -> crate::jit::FramesKey {
+    let mut frames = [(0usize, 0u32); crate::jit::FRAMES_KEY];
+    let mut cur = env.clone();
+    for f in frames.iter_mut() {
+        if cur.is_search() {
+            return Some((crate::env::search_epoch(), frames));
+        }
+        *f = (cur.id(), cur.fn_version());
+        cur = cur.parent()?;
+    }
+    cur.is_search().then(|| (crate::env::search_epoch(), frames))
+}
+
 /// Record that loop `enter` ran `count` iterations without getting hot.
 /// Only a loop with a loop inside carries its count over: entering native
 /// code costs more than a few iterations of a flat loop, but it saves the
@@ -3134,16 +3150,30 @@ fn jit_enter(
         }
     };
     // Guards: native code assumes them, and that its inlined calls still
-    // call the same closures (whose guards hold).
-    for (sym, at) in &jl.guards {
-        if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
-            return None;
+    // call the same closures (whose guards hold). What is looked up from
+    // `env` holds while the search path and the function bindings of the
+    // frames between `env` and it do not change: checked once for them.
+    let key = frames_key(env);
+    let checked = key.is_some() && jl.checked.get() == key;
+    if !checked {
+        for (sym, at) in &jl.guards {
+            if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
+                return None;
+            }
         }
     }
     for (site, clo, syms) in &jl.calls {
         let cs = &code.call_sites[*site as usize];
         if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
             return None;
+        }
+        // (The callee's operators are looked up from its own environment,
+        // which the key does not cover: every time.)
+        if !syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
+            return None;
+        }
+        if checked {
+            continue;
         }
         let Op::Call { f, .. } = code.ops.iter().find(|o| matches!(o, Op::Call { site: s2, .. } if s2 == site))? else {
             return None;
@@ -3152,9 +3182,6 @@ fn jit_enter(
             Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => {}
             _ => return None,
         }
-        if !syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
-            return None;
-        }
         for a in cs.inline_args.iter().flatten() {
             if let InlineArg::Arith { sym, memo, .. } | InlineArg::Index { sym, memo, .. } = a
                 && !guard_ok(interp, *sym, env, memo)
@@ -3162,6 +3189,9 @@ fn jit_enter(
                 return None;
             }
         }
+    }
+    if !checked && key.is_some() {
+        jl.checked.set(key);
     }
     for t in &jl.seq_lengths {
         let n = if *t == JType::D { Num::D(1.0) } else { Num::I(1) };

@@ -181,7 +181,18 @@ pub struct JitLoop {
     pub leaves: Vec<u32>,
     /// Where native code counts the times it reached the loop's head.
     pub heads: usize,
+    /// What its guards and calls were last found to hold for (see
+    /// `vm::frames_key`).
+    pub checked: std::cell::Cell<FramesKey>,
 }
+
+/// Frames between a loop's environment and the search path that
+/// [`FramesKey`] covers.
+pub const FRAMES_KEY: usize = 3;
+
+/// The search epoch, and the (id, function-binding version) of each frame
+/// from an environment up to the search path; `None`: more frames.
+pub type FramesKey = Option<(u64, [(usize, u32); FRAMES_KEY])>;
 
 /// A call of a pure closure (see `vm::inline_info`) without free
 /// variables, run inline in native code.
@@ -1154,6 +1165,7 @@ pub fn compile(
         split_tys,
         leaves,
         heads,
+        checked: std::cell::Cell::new(None),
     })
 }
 
