@@ -6,13 +6,14 @@
 //! crates/robigo-runtime/src/s4.rs.
 
 use crate::attrib::{Rf_getAttrib, Rf_setAttrib, install_attrib};
+use crate::coerce::Rf_asChar;
 use crate::envir::{R_FindNamespace, Rf_eval};
 use crate::errors::{error_str, error_str_owned};
-use crate::list::{Rf_ScalarLogical, Rf_lang2, Rf_lang3};
+use crate::list::{Rf_ScalarLogical, Rf_lang2, Rf_lang3, Rf_lang6};
 use crate::memory::*;
 use crate::state::*;
-use crate::strings::{Rf_installTrChar, Rf_mkString};
-use crate::util::type_to_char;
+use crate::strings::{Rf_ScalarString, Rf_installTrChar, Rf_mkChar, Rf_mkString};
+use crate::util::{Rf_type2str, type_to_char};
 use robigo_core::types::*;
 use robigo_core::{Sexp, gp};
 use std::ffi::{CStr, c_char, c_int};
@@ -36,24 +37,153 @@ unsafe fn methods_namespace() -> Sexp {
 }
 
 /// The first element of `R_data_class(obj, FALSE)`.
-// R: attrib.c:R_data_class
 unsafe fn data_class1(obj: Sexp) -> String {
-    let klass = Rf_getAttrib(obj, R_ClassSymbol);
-    if klass != R_NilValue && LENGTH(klass) > 0 {
-        return chars(STRING_ELT(klass, 0));
+    chars(STRING_ELT(R_data_class(obj, 0), 0))
+}
+
+/// The class of a call: its function's name for the syntactic calls,
+/// otherwise `"call"`.
+// R: attrib.c:lang2str
+unsafe fn lang2str(obj: Sexp) -> Sexp {
+    let symb = CAR(obj);
+    if symb.typ() == SYMSXP {
+        for name in ["if", "for", "while", "(", "{", "=", "<-"] {
+            if symb == sym(name) {
+                return PRINTNAME(symb);
+            }
+        }
     }
-    let dim = Rf_getAttrib(obj, R_DimSymbol);
-    let nd = if dim == R_NilValue { 0 } else { LENGTH(dim) };
-    if nd > 0 {
-        return if nd == 2 { "matrix".into() } else { "array".into() };
+    PRINTNAME(sym("call"))
+}
+
+// R: attrib.c:R_data_class
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_data_class(obj: Sexp, single_string: c_int) -> Sexp {
+    let mut klass = Rf_getAttrib(obj, R_ClassSymbol);
+    let n = Rf_length(klass);
+    if n == 1 || (n > 0 && single_string == 0) {
+        return klass;
     }
-    match obj.typ() {
-        CLOSXP | SPECIALSXP | BUILTINSXP => "function".into(),
-        REALSXP => "numeric".into(),
-        SYMSXP => "name".into(),
-        LANGSXP => "call".into(),
-        _ => type_to_char(obj).into(),
+    if n == 0 {
+        let dim = Rf_getAttrib(obj, R_DimSymbol);
+        let nd = Rf_length(dim);
+        if nd > 0 {
+            if nd == 2 {
+                if single_string != 0 {
+                    klass = Rf_mkChar(c"matrix".as_ptr());
+                } else {
+                    // R >= 4.0.0: class(<matrix>) |-> c("matrix", "array")
+                    klass = Rf_protect(Rf_allocVector(STRSXP as _, 2));
+                    SET_STRING_ELT(klass, 0, Rf_mkChar(c"matrix".as_ptr()));
+                    SET_STRING_ELT(klass, 1, Rf_mkChar(c"array".as_ptr()));
+                    Rf_unprotect(1);
+                    return klass;
+                }
+            } else {
+                klass = Rf_mkChar(c"array".as_ptr());
+            }
+        } else {
+            klass = match obj.typ() {
+                CLOSXP | SPECIALSXP | BUILTINSXP => Rf_mkChar(c"function".as_ptr()),
+                REALSXP => Rf_mkChar(c"numeric".as_ptr()),
+                SYMSXP => Rf_mkChar(c"name".as_ptr()),
+                LANGSXP => lang2str(obj),
+                OBJSXP => Rf_mkChar(if IS_S4_OBJECT(obj) != 0 { c"S4" } else { c"object" }.as_ptr()),
+                t => Rf_type2str(t as _),
+            };
+        }
+    } else {
+        klass = Rf_asChar(klass);
     }
+    Rf_protect(klass);
+    let value = Rf_ScalarString(klass);
+    Rf_unprotect(1);
+    value
+}
+
+/// Whether the C string `s` is one of `valid` (a `""`-terminated array):
+/// its index, if so.
+unsafe fn valid_index(s: &CStr, valid: *const *const c_char) -> Option<c_int> {
+    let mut ans = 0;
+    loop {
+        let v = CStr::from_ptr(*valid.add(ans));
+        if v.is_empty() {
+            return None;
+        }
+        if v == s {
+            return Some(ans as c_int);
+        }
+        ans += 1;
+    }
+}
+
+/// The index of `class(x)` in `valid`, a `""`-terminated array, looking
+/// also among the non-virtual superclasses of an S4 class (defined in
+/// `rho`, else found by `.classEnv`); -1 if none matches. Rinternals.h
+/// declares it, but GNU R's libR does not export it.
+// R: objects.c:R_check_class_and_super
+unsafe fn check_class_and_super(x: Sexp, valid: *const *const c_char, mut rho: Sexp) -> c_int {
+    if OBJECT(x) == 0 {
+        return -1;
+    }
+    let clattr = Rf_getAttrib(x, R_ClassSymbol);
+    let cl = Rf_protect(Rf_asChar(clattr));
+    let class = CStr::from_ptr(R_CHAR(cl));
+    if let Some(ans) = valid_index(class, valid) {
+        Rf_unprotect(1); // cl
+        return ans;
+    }
+    // if not found directly, then look for a match among the nonvirtual
+    // superclasses, possibly after finding the environment 'rho' in which
+    // class(x) is defined
+    if IS_S4_OBJECT(x) != 0 {
+        if rho.is_null() {
+            let pkg = Rf_getAttrib(clattr, R_PackageSymbol);
+            if pkg != R_NilValue {
+                let cl_env_call = Rf_protect(Rf_lang2(sym(".classEnv"), clattr));
+                rho = Rf_eval(cl_env_call, methods_namespace());
+                Rf_unprotect(1); // cl_env_call
+                if rho.typ() != ENVSXP {
+                    error_str("could not find correct environment; please report!")
+                }
+            } else {
+                rho = R_GlobalEnv;
+            }
+        }
+        Rf_protect(rho);
+        let class_def = Rf_protect(R_getClassDef(R_CHAR(cl)));
+        let class_exts = Rf_protect(R_do_slot(class_def, sym("contains")));
+        // .selectSuperClasses(getClassDef(class)@contains,
+        //                     dropVirtual = TRUE, namesOnly = TRUE,
+        //                     directOnly = FALSE, simpleOnly = TRUE):
+        let call = Rf_protect(Rf_lang6(
+            sym(".selectSuperClasses"),
+            class_exts,
+            Rf_ScalarLogical(1),
+            Rf_ScalarLogical(1),
+            Rf_ScalarLogical(0),
+            Rf_ScalarLogical(1),
+        ));
+        let super_cl = Rf_eval(call, rho);
+        Rf_unprotect(3); // call, class_exts, class_def
+        Rf_protect(super_cl);
+        for i in 0..LENGTH(super_cl) {
+            let s_class = CStr::from_ptr(R_CHAR(STRING_ELT(super_cl, i as isize)));
+            if let Some(ans) = valid_index(s_class, valid) {
+                Rf_unprotect(3); // super_cl, rho, cl
+                return ans;
+            }
+        }
+        Rf_unprotect(2); // super_cl, rho
+    }
+    Rf_unprotect(1); // cl
+    -1
+}
+
+// R: objects.c:R_check_class_etc
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_check_class_etc(x: Sexp, valid: *const *const c_char) -> c_int {
+    check_class_and_super(x, valid, Sexp::NULL)
 }
 
 // R: objects.c:R_do_MAKE_CLASS
@@ -120,7 +250,7 @@ pub unsafe extern "C" fn R_do_slot(obj: Sexp, name: Sexp) -> Sexp {
             if klass != R_NilValue {
                 return klass;
             }
-            return Rf_mkString(std::ffi::CString::new(data_class1(obj)).unwrap().as_ptr());
+            return R_data_class(obj, 0);
         }
         if name == R_NamesSymbol && obj.typ() == VECSXP {
             return value;

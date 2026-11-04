@@ -14,8 +14,6 @@ pub static STUBS: &[&str] = &[
     "R_ShowMessage",
     "R_cairoCdynload",
     "R_checkActivity",
-    "R_check_class_etc",
-    "R_data_class",
     "R_deferred_default_method",
     "R_execMethod",
     "R_findVarLocInFrame",
@@ -73,16 +71,6 @@ pub unsafe extern "C" fn R_cairoCdynload() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_checkActivity() {
     not_implemented("R_checkActivity")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_check_class_etc() {
-    not_implemented("R_check_class_etc")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_data_class() {
-    not_implemented("R_data_class")
 }
 
 #[unsafe(no_mangle)]
