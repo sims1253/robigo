@@ -214,7 +214,12 @@ impl Builder<'_> {
                     regs.insert(*dst, n);
                 }
                 Op::SetVar { slot, .. } if self.inl.is_dead(*slot) => {}
-                Op::SetVar { src, slot, .. } => {
+                // In a loop (not a closure compiled whole, where it is a
+                // cell), `<<-` assigns the variable that stands for the
+                // enclosing binding, written back at the loop's exit.
+                Op::SetVar { src, slot, .. } | Op::SuperSet { src, slot, .. }
+                    if !matches!(op, Op::SuperSet { .. }) || self.inl.specs.is_none() =>
+                {
                     let n = *regs.get(src)?;
                     slots.insert(*slot, n);
                 }
