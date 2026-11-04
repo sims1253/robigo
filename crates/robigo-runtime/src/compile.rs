@@ -1239,7 +1239,14 @@ impl Compiler {
                 }
                 let n = l.args.len();
                 for (i, a) in l.args.iter().enumerate() {
-                    self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
+                    let last = i + 1 == n;
+                    self.expr(&a.value, dst, if last { w } else { Want::Effect });
+                    // R: eval.c:do_begin / bcEval POP — a statement's value
+                    // is dead once the next one starts; a register that
+                    // kept it would keep it alive across a gc() (#357).
+                    if !last && matches!(a.value, Value::Lang(_)) {
+                        self.emit(Op::Null { dst });
+                    }
                 }
                 let end = self.here();
                 self.patch(g, end);
