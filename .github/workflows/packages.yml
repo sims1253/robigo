@@ -97,8 +97,9 @@ jobs:
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
     container:
       image: debian:trixie
-      # Tests run in a network namespace of their own (unshare -n).
-      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN
+      # Tests run in a network namespace of their own (unshare -n). The test
+      # servers' names lead to its loopback (SERVERS in scripts/package-suite.py).
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7

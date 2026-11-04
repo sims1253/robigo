@@ -215,9 +215,8 @@ def userns():
 class Server(unittest.TestCase):
     """A package's test server runs in the worker's own network namespace."""
 
-    def run_worker(self, worker, server_cmd, port, d, hosts=()):
-        server = {"port": port, "cmd": server_cmd, "hosts": list(hosts), "log": os.path.join(d, "server.log"),
-                  "limit": 20}
+    def run_worker(self, worker, server_cmd, port, d):
+        server = {"port": port, "cmd": server_cmd, "log": os.path.join(d, "server.log"), "limit": 20}
         if userns():
             cmd = suite.offline(worker, server)
             self.assertEqual(cmd[:2], ["unshare", "-n"])
@@ -270,29 +269,25 @@ class Server(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("unreachable", log)
 
-    @unittest.skipUnless(userns(), "needs a network and a mount namespace")
-    def test_the_server_answers_to_its_names(self):
-        port = free_port()
-        with tempfile.TemporaryDirectory() as d:
-            status, rc, _ = self.run_worker(self.fetch(f"http://httpbin.org:{port}/"), self.http_server(port), port, d,
-                                            hosts=["httpbin.org"])
-            log = read(os.path.join(d, "log"))
-            self.assertEqual((status, rc), (None, 0), log)
-            self.assertEqual(log.strip(), "200")
-        # only in the worker's namespace
-        self.assertNotIn("httpbin.org", read("/etc/hosts"))
-
-    def test_no_names_no_mount_namespace(self):
-        server, _ = suite.server_of({"server": "httpbin"}, "log")
-        self.assertIn("-m", suite.offline(["R"], server)[:3])
-        self.assertEqual(suite.offline(["R"])[:3], ["unshare", "-n", "python3"])
-        self.assertEqual(suite.offline(["R"], dict(server, hosts=[]))[:3], ["unshare", "-n", "python3"])
+    def test_the_servers_names_must_lead_to_the_loopback(self):
+        servers = dict(suite.SERVERS)
+        try:
+            suite.SERVERS["loop"] = dict(suite.SERVERS["httpbin"], hosts=["localhost"])
+            suite.SERVERS["nowhere"] = dict(suite.SERVERS["httpbin"], hosts=["no-such-host.invalid"])
+            suite.check_hosts({"a": {"server": "loop"}, "b": {"server": ""}, "c": {}})
+            with self.assertRaises(SystemExit) as e:
+                suite.check_hosts({"a": {"server": "loop"}, "b": {"server": "nowhere"}})
+            self.assertIn("--add-host no-such-host.invalid:127.0.0.1", str(e.exception))
+        finally:
+            suite.SERVERS.clear()
+            suite.SERVERS.update(servers)
 
     def test_httpbin_is_what_curls_helper_probes(self):
         # curl's helper probes http://httpbin.org/get whatever HTTPBIN_TEST_SERVER says
         server, env = suite.server_of({"server": "httpbin"}, "/x/server.log")
-        self.assertEqual((server["port"], server["hosts"], server["log"]), (80, ["httpbin.org"], "/x/server.log"))
+        self.assertEqual((server["port"], server["log"]), (80, "/x/server.log"))
         self.assertIn("httpbin.core", server["cmd"])
+        self.assertEqual(suite.SERVERS["httpbin"]["hosts"], ["httpbin.org"])
         self.assertEqual(env, {"HTTPBIN_TEST_SERVER": "http://httpbin.org"})
 
     def test_no_server_by_default(self):

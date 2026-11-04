@@ -80,9 +80,12 @@ GREEN_FLOOR = 0.8
 # Test servers a package's tests talk to, by the name in selection.tsv's
 # `server` column: started on the loopback of the file's own network
 # namespace before R, for GNU R and robigo alike, so the tests still never
-# reach the internet. `hosts` resolve to that loopback, through an /etc/hosts
-# of the worker's own (a mount namespace), and `env` is what the tests read
-# to find the server.
+# reach the internet. `hosts` resolve to 127.0.0.1 in the whole oracle (an
+# /etc/hosts of the worker's own would need a mount, which the container's
+# AppArmor profile refuses): `docker run --add-host` here, the container's
+# options in .github/workflows/packages.yml. In a worker without the server
+# nothing listens there, so those names still lead nowhere. `env` is what
+# the tests read to find the server.
 #
 # httpbin is python3-httpbin, pinned in apt.txt. curl's helper reads
 # HTTPBIN_TEST_SERVER, but it evaluates `Sys.getenv(, find_test_server())`,
@@ -160,6 +163,7 @@ def in_oracle():
     os.makedirs(CACHE, exist_ok=True)
     rv = shutil.which("rv")
     cmd = ["docker", "run", "--rm", "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "-e", "ROBIGO_PKG_ORACLE=1",
+           *[f"--add-host={h}:127.0.0.1" for s in SERVERS.values() for h in s["hosts"]],
            "-e", f"ROBIGO_PKG_CACHE={CACHE}", "-e", f"ROBIGO_PKG_CHOWN={os.getuid()}:{os.getgid()}",
            "-e", f"ROBIGO={os.path.abspath(ROBIGO)}", "-v", f"{ROOT}:{ROOT}", "-v", f"{CACHE}:{CACHE}", "-w", ROOT]
     if rv:
@@ -404,12 +408,6 @@ except PermissionError:
         raise
 server = json.loads(sys.argv[1])
 if server:
-    if server["hosts"]:
-        # the namespace's own /etc/hosts: what was there, and the server's names
-        hosts = os.path.join(os.path.dirname(server["log"]), "hosts")
-        with open("/etc/hosts") as f, open(hosts, "w") as out:
-            out.write(f.read().rstrip("\\n") + "\\n127.0.0.1 " + " ".join(server["hosts"]) + "\\n")
-        subprocess.run(["mount", "--bind", hosts, "/etc/hosts"], check=True)
     with open(server["log"], "wb") as out:
         p = subprocess.Popen(server["cmd"], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
     deadline = time.time() + server["limit"]
@@ -435,9 +433,8 @@ def engine_cmd(engine):
 
 def offline(cmd, server=None):
     """`cmd` in a network namespace of its own, after `server` is listening on
-    its loopback; and in a mount namespace of its own when the server has
-    names to resolve."""
-    return ["unshare", "-n"] + (["-m"] if server and server["hosts"] else []) + in_namespace(cmd, server)
+    its loopback."""
+    return ["unshare", "-n"] + in_namespace(cmd, server)
 
 
 def in_namespace(cmd, server=None):
@@ -452,8 +449,21 @@ def server_of(row, log):
     if name not in SERVERS:
         die(f"unknown test server {name!r} in selection.tsv")
     spec = SERVERS[name]
-    return {"port": spec["port"], "cmd": spec["cmd"], "hosts": spec["hosts"], "log": log,
-            "limit": SERVER_START_LIMIT}, spec["env"]
+    return {"port": spec["port"], "cmd": spec["cmd"], "log": log, "limit": SERVER_START_LIMIT}, spec["env"]
+
+
+def check_hosts(names):
+    """The test servers' names must lead to the loopback, or their packages
+    would score whatever the probes of their helpers find."""
+    for server in sorted({row.get("server", "") for row in names.values()} - {""}):
+        for host in SERVERS[server]["hosts"]:
+            try:
+                addr = socket.gethostbyname(host)
+            except OSError:
+                addr = None
+            if addr != "127.0.0.1":
+                die(f"{host} resolves to {addr}, not 127.0.0.1: the oracle needs `--add-host {host}:127.0.0.1` "
+                    f"(the {server} test server)")
 
 
 def group_rss(pgid):
@@ -649,6 +659,7 @@ def cmd_record(a):
     in_oracle()
     sync()
     sel = selection()
+    check_hosts({p: sel[p] for p in a.packages or sel})
     for pkg in a.packages or sel:
         runs = []
         for i in range(a.runs):
@@ -852,6 +863,7 @@ def cmd_run(a):
     names = a.packages or list(sel)
     if a.shard:
         names = shard_of(names, a.shard)
+    check_hosts({p: sel[p] for p in names})
     i, n = (int(x) for x in a.shard.split("/")) if a.shard else (1, 1)
     canary = check_canary()
     valid = canary[0] == canary[1]
@@ -941,6 +953,7 @@ def cmd_show(a):
     in_oracle()
     sync()
     sel = selection()
+    check_hosts({a.package: sel[a.package]})
     exp, exp_files = read_expected(a.package)
     limits = {f: d["seconds"] for f, d in exp_files.items()}
     only = {f for f in exp_files if fnmatch.fnmatch(f, a.file)} if a.file else None

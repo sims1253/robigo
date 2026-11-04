@@ -32,9 +32,19 @@ started before R and killed with the file, the same for GNU R and robigo:
 
 | `server` | what | the tests find it by |
 |---|---|---|
-| `httpbin` | `python3-httpbin` 0.10.2 (Debian trixie, pinned in `apt.txt`) on `127.0.0.1:8080` | `HTTPBIN_TEST_SERVER=http://127.0.0.1:8080` |
+| `httpbin` | `python3-httpbin` 0.10.2 (Debian trixie, pinned in `apt.txt`) on `127.0.0.1:80`, as `httpbin.org` | `HTTPBIN_TEST_SERVER=http://httpbin.org` |
 
-curl uses it. Tests that name a host of the internet themselves
+curl uses it. Its helper reads `HTTPBIN_TEST_SERVER`, but through
+`Sys.getenv("HTTPBIN_TEST_SERVER", find_test_server())`, and `Sys.getenv`
+forces its default: the helper probes its fallback list whatever the
+variable says, and stops when none of them answers. The last of the list is
+`http://httpbin.org`, so that is the server's name. The name resolves to
+127.0.0.1 in the whole oracle (`docker run --add-host`, and the options of
+the CI container in `.github/workflows/packages.yml`); an `/etc/hosts` of each
+worker's own would need a mount, which Docker's AppArmor profile refuses. A
+worker without the server has nothing listening there, so the name still
+leads nowhere, and the harness stops when the name does not resolve to the
+loopback. Tests that name a host of the internet themselves
 (`https://httpbin.org`, `https://google.com`) still find no network: GNU R
 fails or skips them, so they are not scored. httr's tests are such: most of
 them call `skip("httpbin is not reliable")` before anything else, and the rest
