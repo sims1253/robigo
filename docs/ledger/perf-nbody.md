@@ -159,3 +159,19 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   dimnames, zero extents, NA/NaN payloads, copies, accumulation and
   multiply-add chains, `tsp` and classed vectors), recorded with GNU R
   4.5.0, byte-identical in all three tiers. Conformance: as main.
+
+## 2026-11-04: rejected and open
+
+- Rejected: hashing the compact-sequence registry's addresses without
+  SipHash (`value.rs` `Registry`). `seq_len(5L)` 2181 -> 2031 instructions
+  (-7%), but no benchmark moved by more than 0.42% (geomean -0.01%).
+- Open, measured: robigo's builtin calls cost about twice GNU R's
+  (`seq_len(5)` 115 vs 45 ns, `dn[-id]` 240 vs 105, `dim(z) <- dn` 225 vs
+  110, `x[m] <- 0` 415 vs 100, `is.data.frame(x)` 395 vs 240). Of
+  `seq_len(5)`'s 2.2k instructions, ~500 are the flush `Op::CallBuiltin`
+  does first (`Vars::flush`, then `set_var`/`binding_flags` writing the
+  locals back). It is conservative because a builtin may signal, and a
+  calling handler could inspect the frame. A lazy flush (or a list of
+  builtins that cannot signal for the argument types at hand) is what
+  `nbody_2`'s remaining gap needs: `colSums` 3.6 us (GNU R 2.3), `diag<-`
+  3.8 us (GNU R 1.8), both spread flat over base-closure execution.
