@@ -68,3 +68,30 @@ against GNU R 4.5.0, Ř and FastR; gate: conformance (all tiers),
 - Open: the closure tier's spilled loop invariants (regalloc2; every
   closure-tier loop pays it); the call path above; `vectorFor` and
   `superWhile` (#294).
+
+## 2026-11-04: round 2, vectorFor (#337)
+
+- Why: vectorFor peak 2.63 ms, Ř 1.97. `perf`: 80% in the native loop
+  (~5 cycles per element), 9% memmove, 6.5% memset.
+- Changes, each measured:
+  - integer index in native code (`Gen::index`): was int -> double ->
+    range check -> trunc -> saturating convert -> -1 -> bounds check; now
+    `i - 1` and one unsigned compare (NA, 0, negatives are below 1 and
+    leave as before). 2.63 -> 1.39 ms.
+  - the memmove was the first `x[[1]] <- 1L` coercing logical to integer
+    by copying. Making the coercion reuse an unshared logical vector
+    (`Lgl` is `i32`) did nothing at first: the vector was shared with VM
+    register 0, which kept the value of `x <- vector(...)`, and with the
+    VM's clean slot cache. `SetVar { moves }` moves a value whose
+    assignment is a statement (`Want::Effect`); `set_index_slow` empties
+    the (just flushed) cache before the complex assignment. 1.39 -> 1.15 ms.
+  - left: the memset of `vector(length = n)` (13%) and a 2-cycle store
+    loop.
+- Result: vectorFor peak 1.15 ms (Ř 1.97); `perf.py compare`: 11 faster
+  (convolution -13.9%, nbody -13.5%, matrixFor -5.8%), 0 slower, worst
+  +0.21%. rbench `convolution` peak 2.56 -> 1.32 ms.
+- vectorFor shot: 0.043 s here (GNU R 0.082); the scoreboard's 0.2 s did
+  not reproduce.
+- Not done: `ROBIGO_CONF_UPDATE=1` over the whole suite also adds markers
+  for scripts that pass on this VM but are not ratcheted; only this
+  round's markers were kept.
