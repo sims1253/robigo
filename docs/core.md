@@ -238,9 +238,14 @@ anywhere else — a Rust `Vec`, a `HashMap`, a VM register file or JIT
 cache in heap memory, a C global — is invisible and will be freed.
 Every off-stack container of `Sexp`s is therefore either a traced R
 object (a VECSXP), protected for its lifetime, or registered with a root
-callback. `ROBIGO_GCTORTURE=1` collects on every allocation and poisons
-freed slots, so a violation fails at once instead of rarely; CI runs the
-core and capi tests (and later the capi corpus) under it.
+callback. gctorture collects on every allocation and poisons freed
+slots, so a violation fails at once instead of rarely; CI runs the core
+and capi tests (and later the capi corpus) under it. It is GNU R's
+(memory.c `gc_force_wait`/`gc_force_gap`, `Core::gc_torture`):
+`gctorture(TRUE)` and `gctorture2(step, wait)` set it from R, and
+`R_GCTORTURE=step` (or `ROBIGO_GCTORTURE`) with `R_GCTORTURE_WAIT` from
+the environment; `gctorture2`'s `inhibit_release` acts only in GNU R's
+PROTECTCHECK builds, so it is checked and ignored.
 
 Symbols and the immortal constants are never marked (block immortal
 counts), but their fields can change (a symbol's value, attributes put

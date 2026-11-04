@@ -2714,6 +2714,16 @@ impl NativeBridge for Bridge {
         });
     }
 
+    fn gc_torture(&self, gap: i32, wait: i32) -> (i32, i32) {
+        // SAFETY: on the R thread (the builtin's), no collector borrow
+        // active; the heap is created here if no C code has run yet, so
+        // that the setting holds from its first allocation.
+        let c = unsafe { crate::state::core() };
+        let old = c.torture_counters();
+        c.gc_torture(gap, wait);
+        old
+    }
+
     fn gc(&self, interp: &mut Interp) {
         if !READY.with(|r| r.get()) {
             // No C objects or proxies exist yet: the runtime's own graph is

@@ -123,6 +123,10 @@ pub trait NativeBridge: Sync {
     fn run_exit_finalizers(&self, _interp: &mut Interp) {}
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// `gctorture()`/`gctorture2()`: set the C heap's forced collections
+    /// (`Core::gc_torture`: every `gap` allocations, the first after
+    /// `wait`), returning the old (wait, gap) counters.
+    fn gc_torture(&self, gap: i32, wait: i32) -> (i32, i32);
     /// A `.Internal` GNU R implements in its graphics engine (C code in
     /// libR: `recordGraphics`), called with the evaluated arguments.
     fn c_internal(

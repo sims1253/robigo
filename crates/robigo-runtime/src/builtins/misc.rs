@@ -50,8 +50,8 @@ pub static DEFS: &[Builtin] = &[
     internal("gc", do_gc, 3),
     prim("gc.time", do_gc_time, -1),
     internal("gcinfo", do_false, 1),
-    internal("gctorture", do_false, 1).invisible(),
-    internal("gctorture2", do_zero, 3),
+    internal("gctorture", do_gctorture, 1).invisible(),
+    internal("gctorture2", do_gctorture2, 3),
     internal("mem.maxVSize", do_inf, 1),
     internal("mem.maxNSize", do_inf, 1),
     internal("reg.finalizer", do_reg_finalizer, 3),
@@ -655,6 +655,56 @@ fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::reals(vec![NA_REAL; 14]))
 }
 
+thread_local! {
+    /// gctorture's (wait, gap) without the native bridge: no C heap exists
+    /// to collect, but the settings read back as set.
+    static TORTURE: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// memory.c:R_gc_torture on the C heap; returns the old (wait, gap).
+fn gc_torture(gap: i32, wait: i32) -> (i32, i32) {
+    match crate::native::bridge() {
+        Some(b) => b.gc_torture(gap, wait),
+        None => TORTURE.with(|t| {
+            let old = t.get();
+            let (mut w, mut g) = old;
+            if gap >= 0 {
+                (w, g) = (gap, gap);
+            }
+            if gap > 0 && wait > 0 {
+                w = wait;
+            }
+            t.set((w, g));
+            old
+        }),
+    }
+}
+
+// R: memory.c:do_gctorture
+fn do_gctorture(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    crate::builtins::character::check_arity_internal(&args, 1, "gctorture")?;
+    let on = arg(&args, 0);
+    let gap = if matches!(on, Value::Lgl(_)) {
+        // asRbool errors on NA, so GNU R's NA branch is unreachable
+        crate::builtins::summary::as_bool2(&on, call)? as i32
+    } else {
+        as_integer_scalar(i, &on)?
+    };
+    let (old_wait, _) = gc_torture(gap, 0);
+    Ok(Value::lgl(old_wait > 0))
+}
+
+// R: memory.c:do_gctorture2
+fn do_gctorture2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    crate::builtins::character::check_arity_internal(&args, 3, "gctorture2")?;
+    let gap = as_integer_scalar(i, &arg(&args, 0))?;
+    let wait = as_integer_scalar(i, &arg(&args, 1))?;
+    // inhibit_release only acts in a PROTECTCHECK build; it is still checked
+    crate::builtins::summary::as_bool2(&arg(&args, 2), call)?;
+    let (_, old_gap) = gc_torture(gap, wait);
+    Ok(Value::int(old_gap))
+}
+
 fn do_gc_time(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::reals(vec![0.0; 5]))
 }
@@ -869,9 +919,6 @@ fn do_false(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_false_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::lgl(false))
-}
-fn do_zero(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::int(0))
 }
 fn do_zero1(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::int(0))

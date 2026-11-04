@@ -842,3 +842,54 @@ fn host_release_runs_once_dead() {
     }
     assert_eq!(HOST_RELEASED.load(std::sync::atomic::Ordering::SeqCst), 7);
 }
+
+/// gctorture2(step, wait): the first forced collection after `wait`
+/// allocations, then one every `step` (memory.c FORCE_GC).
+#[test]
+fn gctorture_counts_allocations() {
+    let mut c = Core::new();
+    let collections = |c: &Core| c.stats.collections;
+    let allocs = |c: &mut Core, n: usize| {
+        for _ in 0..n {
+            c.alloc_vector(INTSXP, 1);
+        }
+    };
+    // step 3, wait 5
+    c.gc_torture(3, 5);
+    assert_eq!(c.torture_counters(), (5, 3));
+    assert!(c.torture());
+    let n0 = collections(&c);
+    allocs(&mut c, 4);
+    assert_eq!(collections(&c), n0);
+    allocs(&mut c, 1);
+    assert_eq!(collections(&c), n0 + 1);
+    allocs(&mut c, 2);
+    assert_eq!(collections(&c), n0 + 1);
+    allocs(&mut c, 1);
+    assert_eq!(collections(&c), n0 + 2);
+    allocs(&mut c, 6);
+    assert_eq!(collections(&c), n0 + 4);
+    // NA and negative steps change nothing; a wait without a step is ignored
+    c.gc_torture(i32::MIN, 7);
+    c.gc_torture(-1, 7);
+    assert_eq!(c.torture_counters().1, 3);
+    c.gc_torture(0, 7);
+    assert_eq!(c.torture_counters(), (0, 0));
+    assert!(!c.torture());
+    let n1 = collections(&c);
+    allocs(&mut c, 100);
+    assert_eq!(collections(&c), n1);
+    // gctorture(TRUE): every allocation
+    c.set_torture(true);
+    allocs(&mut c, 10);
+    assert_eq!(collections(&c), n1 + 10);
+    // large vectors (past MAX_MEDIUM) take their own path and count too
+    c.gc_torture(3, 5);
+    let n2 = collections(&c);
+    for _ in 0..5 {
+        c.alloc_vector(REALSXP, 10_000);
+    }
+    assert_eq!(collections(&c), n2 + 1);
+    assert_eq!(c.torture_counters(), (3, 3));
+    c.set_torture(false);
+}

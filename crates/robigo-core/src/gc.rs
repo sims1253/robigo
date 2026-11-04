@@ -61,6 +61,36 @@ fn gc_min() -> usize {
     *V.get_or_init(|| std::env::var("ROBIGO_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(2 << 20))
 }
 
+/// C's `atoi`: optional blanks and sign, then digits; 0 if none.
+fn atoi(s: &str) -> i32 {
+    let s = s.trim_start();
+    let (neg, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let mut n: i64 = 0;
+    for b in digits.bytes().take_while(u8::is_ascii_digit) {
+        n = (n * 10 + (b - b'0') as i64).min(i32::MAX as i64 + 1);
+    }
+    (if neg { -n } else { n }).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// The torture counters the environment asks for: `(wait, gap)`.
+// R: memory.c:init_gctorture (R_GCTORTURE, R_GCTORTURE_WAIT; robigo's
+// ROBIGO_GCTORTURE is read when R_GCTORTURE is not set)
+fn torture_from_env() -> (i32, i32) {
+    let Some(arg) = std::env::var("R_GCTORTURE").or_else(|_| std::env::var("ROBIGO_GCTORTURE")).ok() else {
+        return (0, 0);
+    };
+    let gap = atoi(&arg);
+    if gap <= 0 {
+        return (0, 0);
+    }
+    let wait = std::env::var("R_GCTORTURE_WAIT").map(|w| atoi(&w)).unwrap_or(0);
+    (if wait > 0 { wait } else { gap }, gap)
+}
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -86,8 +116,12 @@ pub struct Core {
     /// stack top by default; the embedder narrows it to the C segments
     /// (0: no stack scan) — see [`Core::set_scan_top`]
     scan_top: usize,
-    /// collect on every allocation and poison freed slots (ROBIGO_GCTORTURE)
-    torture: bool,
+    /// gctorture (memory.c's gc_force_wait, gc_force_gap): while
+    /// `force_wait > 0`, every allocation counts it down and collects when
+    /// it reaches 0, then waits `force_gap` allocations for the next one;
+    /// freed slots are poisoned while `force_gap > 0` (R_GCTORTURE)
+    force_wait: i32,
+    force_gap: i32,
     pub stats: GcStats,
 
     // the immortal constants
@@ -225,7 +259,8 @@ impl Core {
             stack_top,
             stack_lo,
             scan_top: usize::MAX,
-            torture: std::env::var_os("ROBIGO_GCTORTURE").is_some_and(|v| v != "0"),
+            force_wait: 0,
+            force_gap: 0,
             stats: GcStats::default(),
             nil: Sexp::NULL,
             na_string: Sexp::NULL,
@@ -269,6 +304,8 @@ impl Core {
             c.unbound = c.new_symbol(blank);
             c.missing_arg = c.new_symbol(blank);
         }
+        // like InitMemory: once the constants exist
+        (c.force_wait, c.force_gap) = torture_from_env();
         c
     }
 
@@ -357,7 +394,9 @@ impl Core {
     /// flags, attributes R_NilValue).
     #[inline(always)]
     pub(crate) fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
-        if (self.alloc_since_gc >= self.gc_threshold || self.torture) && self.gc_inhibit == 0 {
+        if ((self.force_wait > 0 && self.force_gc()) || self.alloc_since_gc >= self.gc_threshold)
+            && self.gc_inhibit == 0
+        {
             self.collect();
         }
         let size = size.max(16);
@@ -454,7 +493,10 @@ impl Core {
         }
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
         let x = if bytes > crate::heap::MAX_MEDIUM {
-            if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
+            // R: memory.c:allocVector3, `if (FORCE_GC || ...)` on this path too
+            if ((self.force_wait > 0 && self.force_gc()) || self.alloc_since_gc >= self.gc_threshold)
+                && self.gc_inhibit == 0
+            {
                 self.collect();
             }
             let p = match self.heap.try_alloc_large(bytes) {
@@ -744,13 +786,47 @@ impl Core {
         (self.stack_lo, self.stack_top)
     }
 
-    /// Whether collections run on every allocation (ROBIGO_GCTORTURE).
-    pub fn torture(&self) -> bool {
-        self.torture
+    /// gctorture's countdown, once per allocation while it is on.
+    // R: memory.c:FORCE_GC
+    #[cold]
+    #[inline(never)]
+    fn force_gc(&mut self) -> bool {
+        self.force_wait -= 1;
+        if self.force_wait > 0 {
+            return false;
+        }
+        self.force_wait = self.force_gap;
+        true
     }
 
+    /// Whether gctorture is on (`gctorture()`'s result: a forced
+    /// collection is pending).
+    pub fn torture(&self) -> bool {
+        self.force_wait > 0
+    }
+
+    /// Collect on every allocation (`gctorture(on)`).
     pub fn set_torture(&mut self, on: bool) {
-        self.torture = on;
+        self.gc_torture(on as i32, 0);
+    }
+
+    /// The torture counters: (allocations until the next forced
+    /// collection, allocations between them); (0, 0) when off.
+    pub fn torture_counters(&self) -> (i32, i32) {
+        (self.force_wait, self.force_gap)
+    }
+
+    /// Collect every `gap` allocations, the first after `wait` of them
+    /// (`gap` 0 turns torture off; negative or NA values change nothing).
+    // R: memory.c:R_gc_torture (without PROTECTCHECK: no inhibit_release)
+    pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        if gap >= 0 {
+            self.force_wait = gap;
+            self.force_gap = gap;
+        }
+        if gap > 0 && wait > 0 {
+            self.force_wait = wait;
+        }
     }
 
     /// Weak references still waiting for their key to die (for
@@ -1252,7 +1328,7 @@ impl Core {
                                 (*b).start_set(g);
                             } else {
                                 self.on_death(p);
-                                if self.torture {
+                                if self.force_gap > 0 {
                                     // poison: a use after free reads garbage
                                     // types and pointers, and fails loudly
                                     std::ptr::write_bytes(p.add(16), 0xDB, csize as usize - 16);
