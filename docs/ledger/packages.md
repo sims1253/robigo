@@ -91,6 +91,11 @@ Causes, most blocks first:
    `R_check_class_etc` not implemented (45, RcppEigen through Matrix).
 5. S4 on jsonlite's generics (34): "no applicable method for `@`
    applied to an object of class nonstandardGenericFunction".
+   testthat's `env_clone()` of the namespace passes every closure through
+   C, and the bridge's proxy of a closure lacked the S4 bit; reading the
+   proxy back cleared it on the generic itself. Fixed by
+   `track/packages-capi-s4-bit` (capi case `s4bit`): jsonlite 56 / 56,
+   green.
 6. Found while bisecting, not yet counted:
    - ggplot2's `+` fails on robigo with "Incompatible methods
      (Ops.S7_object, +.gg)"; GNU R 4.5's `chooseOpsMethod` resolves it.

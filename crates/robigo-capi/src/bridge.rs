@@ -483,8 +483,14 @@ unsafe fn proxy(v: &Value) -> Sexp {
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
     };
-    if attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
+    // and its S4 bit (IS_S4_OBJECT, a bit of the object's gp field in
+    // GNU R, so one with the object): `write_back` reads both back
+    let s4 = v.is_s4();
+    if s4 || attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
         pushing_attrs(|| set_attrs(x, attrs.as_ref()));
+        if s4 {
+            SET_S4_OBJECT(x);
+        }
         if matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
             agree_attrs(x);
         }
@@ -544,13 +550,7 @@ unsafe fn push_attrs(v: &Value, x: Sexp) {
         return;
     }
     let attrs = v.ref_attrs().map(Box::new);
-    let current = {
-        let mut a = attrs_from(x);
-        if x.gp() & gp::S4 != 0 {
-            a.get_or_insert_with(Default::default).1 = true;
-        }
-        a
-    };
+    let current = attrs_with_s4(x);
     if identical_attrs(&attrs, &current) {
         return;
     }
@@ -797,7 +797,7 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
     }
     core().preserve(x);
     let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag()) } else { Value::Null };
-    let attrs = attrs_from(x);
+    let attrs = attrs_with_s4(x);
     agree_attrs(x);
     let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(CoreRef(x))) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
@@ -947,6 +947,9 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         Value::Pairlist(p) => {
             let r = args_list(&p.items, LISTSXP);
             set_attrs(r, p.attrs.as_deref());
+            if v.is_s4() {
+                SET_S4_OBJECT(r);
+            }
             return r;
         }
         Value::Lang(l) => {
@@ -958,6 +961,9 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
                 SET_TAG(r, sym_sexp(tag));
             }
             set_attrs(r, l.attrs.as_deref());
+            if v.is_s4() {
+                SET_S4_OBJECT(r);
+            }
             return r;
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => {
@@ -987,6 +993,17 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
 }
 
 // ---- SEXP -> Value ---------------------------------------------------------
+
+/// `attrs_from` with the object's S4 bit, for the values built with their
+/// attributes in place.
+unsafe fn attrs_with_s4(x: Sexp) -> AttrBox {
+    let mut a = attrs_from(x);
+    // (A CHARSXP's gp bits are its encoding.)
+    if x.typ() != CHARSXP && x.gp() & gp::S4 != 0 {
+        a.get_or_insert_with(Default::default).1 = true;
+    }
+    a
+}
 
 unsafe fn attrs_from(x: Sexp) -> AttrBox {
     if x.typ() == CHARSXP {
@@ -1095,13 +1112,13 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         CHARSXP => wrap_core(x),
         LISTSXP | DOTSXP => {
             let items = items_of(x);
-            return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_from(x) }));
+            return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_with_s4(x) }));
         }
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
-            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_from(x), fun_tag }));
+            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_with_s4(x), fun_tag }));
         }
         CLOSXP => {
             // A closure assembled in C (Rf_allocSExp(CLOSXP) + SET_FORMALS/
@@ -1125,7 +1142,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 formals,
                 body: from_sexp(x.cdr()),
                 env,
-                attrs: attrs_from(x),
+                attrs: attrs_with_s4(x),
                 code: Default::default(),
                 inline: Default::default(),
                 defaults: Default::default(),
