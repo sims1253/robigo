@@ -1,0 +1,36 @@
+# System packages of the suite's oracle: the compilers and headers `R CMD
+# INSTALL` needs, and the shared libraries the pinned binary packages link
+# against (without them sf, units, igraph, gert and V8 fail to load and their
+# tests skip or error under GNU R too).
+build-essential
+ca-certificates
+cmake
+curl
+git
+libcairo2-dev
+libcurl4-openssl-dev
+libfontconfig1-dev
+libfreetype-dev
+libfribidi-dev
+libgdal36
+libgeos-c1t64
+libgit2-1.9
+libglpk40
+libharfbuzz-dev
+libicu-dev
+libjpeg-dev
+libnode115
+libpng-dev
+libproj25
+libssl-dev
+libtiff-dev
+libudunits2-0
+libwebp-dev
+libxml2-dev
+pkg-config
+python3
+util-linux
+# crates/robigo-capi/bench/bench.py runs callgrind in this image
+valgrind
+xz-utils
+zlib1g-dev

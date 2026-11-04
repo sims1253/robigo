@@ -110,6 +110,83 @@ Package sources are downloaded into `~/.cache/robigo-cran` (`src/`,
 `build/`, `lib/` for robigo, `lib-oracle/` for GNU R) and are never
 committed.
 
+### Top CRAN packages
+
+`scripts/package-suite.py` runs the own test suites of the most used CRAN
+packages, the ones with over 900,000 downloads in 30 days and over 500
+packages using them (20 at snapshot 2026-11-01), and scores robigo against
+GNU R's outcome of every test block. The score and the per-package table are
+on the progress page. `tests/packages/README.md` lists the files.
+
+```sh
+scripts/package-suite.py run                  # all of them, compare, ratchet
+scripts/package-suite.py run magrittr R6      # some of them
+scripts/package-suite.py show R6 --file 'test-finalizer'   # what differs, ranked
+scripts/package-suite.py install              # the tree from source, with robigo
+scripts/package-suite.py record [PKG...]      # GNU R, three times
+```
+
+It runs in `robigo-oracle:4.5.0`, built on demand from
+`tests/packages/Dockerfile`. It finds robigo in `.robigo/bin` with `$ROBIGO`
+and the natives in `$ROBIGO_NATIVES`, as CI does, and it needs `.robigo/home`
+built inside the image (`scripts/robigo-home.sh`).
+
+What is measured:
+
+- **Real frameworks.** The tests run under real testthat and tinytest, not the
+  counting shim of `tests/cran`, so the numbers of the two are not comparable.
+- **Same library.** `tests/packages/rv.lock` pins the 221 packages of the tree
+  (the selection, its Suggests, their dependencies) at one PPM snapshot. GNU R
+  and robigo load the same GNU-built binaries, so a difference can only come
+  from the runtime. Whether those packages also build from source with robigo
+  is the second number, `install`; rv does not build them, because a source
+  install has to go through `robigo CMD INSTALL`.
+- **One process per test file.** `tests/packages/runner.R` streams events as
+  they happen and uses no package that is under test, and a supervisor kills a
+  file at 3 GB or at `max(60 s, 20 × GNU R's time)`. A crash costs one file. The
+  block running at the time is `interrupted` and the rest `notrun`.
+- **No network, snapshots on.** Every worker runs with `NOT_CRAN=true`, `CI=true`,
+  a fresh `$HOME` and only a loopback interface. `NOT_CRAN=true` matters: a
+  CRAN-style run skips the snapshot tests, which are the ones that compare
+  output exactly.
+
+A block **matches** when its pass, fail, error, skip and warning counts and
+its skip reasons all equal GNU R's. So an extra warning, a lost expectation
+and a skip GNU R did not take are all differences.
+
+- Scored: blocks GNU R runs clean in all three recordings.
+- Not scored: blocks GNU R fails, skips, or does not repeat. A block GNU R
+  skips that fails on robigo counts as `skip_diverged`.
+- A package is **green** when every scored block matches, nothing diverged,
+  every file finished, and at least 80% of its blocks are scored. curl scores
+  nothing yet: its helper needs a live HTTP test server.
+
+The headline is the share of scored blocks that match, across all packages,
+with the green count beside it. A package at 0/20 green has no gradient; a block
+share moves with every fix.
+
+The canary is checked first: `tests/packages/canary` has one test per outcome,
+including an unexported function through testthat's cloned namespace and a
+snapshot both ways. If it fails, the run is invalid: it cannot update the
+ratchet, it sets no score, and the page says so. A bug in how robigo runs
+testthat must not look like thousands of failing packages.
+
+`passing/` is a ratchet like the corpora's. A lost marker is retried once, so
+a difference that does not repeat is reported as `flaky`, not as a regression.
+A failing block is not a gap to record under protocol rule 8 by itself; the
+cause it points to is (`docs/workstreams.md`).
+
+The suites take hours, so they run nightly on the binary of main's newest
+green CI run (`.github/workflows/packages.yml`, four shards) and do not gate
+merges. A score is comparable only with scores from the same kind of machine.
+Time limits scale with GNU R's recorded times, so a faster machine loses fewer
+files to timeouts: the same main binary scores 5,222 blocks on 2 cores and
+5,729 on 8. The nightly always runs on the same runner type, so its trend is
+consistent; compare a local run with a local run. The result merges into that commit's line of the history. A pull
+request that touches the harness tries it on magrittr. Examples and vignettes
+are not part of this metric: examples can follow as a corpus, like
+`cran-purer`, and vignettes mostly test pandoc and knitr.
+
 ## Performance
 
 `scripts/perf.py` runs the benchmark suites in `benchmarks/benchmarks.toml`

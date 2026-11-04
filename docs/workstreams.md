@@ -41,7 +41,8 @@ how it is measured, and the protocol every agent follows. Read
    (`compiled_matches_interpreted` runs every script). A slow path gets a
    benchmark. A CRAN package that does not work is reduced to such a
    case: `tests/cran/packages.tsv` is a gate and lists only packages that
-   match GNU R. Log each gap in your ledger with the test's path.
+   match GNU R. A failing block of the package suite is not a gap by
+   itself, the cause behind it is, once someone works on it. Log each gap in your ledger with the test's path.
 9. **The machine is shared.** One build at a time (`scripts/build.sh`
    waits for the lock). Run corpora with `--filter`; CI runs them whole.
    Leave no background processes behind.
@@ -52,6 +53,20 @@ how it is measured, and the protocol every agent follows. Read
 
 Status: **open** (start now), **later** (after the named goalpost,
 `docs/design.md` §5.6).
+
+### packages: the most used CRAN packages' test suites — open
+
+- **Goal:** every test of the packages in `tests/packages/selection.tsv` behaves
+  as under GNU R 4.5.0, and the whole dependency tree installs from source.
+- **Owns:** `tests/packages/`, `scripts/package-suite.py`,
+  `.github/workflows/packages.yml`, the package section of `scripts/history.py`,
+  `tests/cran/`, `scripts/cran-gate.py`.
+- **Metric:** the share of scored test blocks matching GNU R and the packages
+  green (`scripts/package-suite.py run`, the progress page); packages that
+  install from source and load. Work the cause list from the top: one runtime
+  fix tends to move many blocks. A package that goes green moves to the
+  `tests/cran` gate, which runs on pull requests.
+- **Ledger:** `docs/ledger/packages.md`.
 
 ### cli: R's command line and transcripts — open
 

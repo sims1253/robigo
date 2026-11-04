@@ -14,10 +14,14 @@ image per merge). A line holds what CI measured for that commit:
 - `corpora`: passing and scored cases of every corpus (scripts/corpus.py),
   and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs);
 - `gaps`: the failing case ids of every corpus with at most GAPS_MAX of them;
+- `packages`: the most used CRAN packages' own test suites against GNU R's
+  outcome of every test block (scripts/package-suite.py), measured nightly,
+  so only some commits have it;
 - `builtins`: GNU R's .Primitive/.Internal functions robigo implements.
 
 `add` reads a directory of CI artifacts (perf.json, corpus result files,
-the robigo binary) and records one commit. `sync` does the same for every
+package-suite results, the robigo binary) and records one commit, merging
+with what the history already holds for it. `sync` does the same for every
 main CI run whose artifacts still exist and that the history lacks: the
 backfill, and the repair when a CI run did not record itself. `render`
 writes the site that CI publishes on GitHub Pages: an SVG of speed and one
@@ -48,6 +52,7 @@ CORPORA = {
     "gnur-demos": "GNU R's demos",
     "r-intro": "An Introduction to R",
     "cran-purer": "Pure-R CRAN packages",
+    "packages": "Top CRAN packages' tests",
     "capi": "C API",
     "conformance": "Conformance scripts",
 }
@@ -55,6 +60,8 @@ CORPORA = {
 # at most this many, so the page can list them (known failures that agents
 # add as unmarked conformance scripts or corpus cases show up here).
 GAPS_MAX = 500
+# Failure causes of the package suite kept per commit, most blocks first.
+PACKAGE_CAUSES = 30
 BUILTINS_LABEL = ".Primitive/.Internal builtins"
 # Benchmark groups by name prefix, in display order.
 GROUPS = [
@@ -112,12 +119,46 @@ def builtin_names():
         return [line.split("\t")[0] for line in f if line.strip()]
 
 
+def packages_from(docs, install):
+    """The package suite's result files of one run, as one history value.
+
+    Complete only if every shard reported. A run with a broken canary, or an
+    incomplete one, is recorded but sets no score: a missing shard must not
+    look like a smaller denominator.
+    """
+    n = docs[0]["shard"][1]
+    complete = {d["shard"][0] for d in docs} == set(range(1, n + 1))
+    valid = all(d["valid"] for d in docs)
+    pkgs = {k: v for d in docs for k, v in d["pkgs"].items()}
+    causes = {}
+    for d in docs:
+        for why, count, names in d["causes"]:
+            c = causes.setdefault(why, [0, set()])
+            c[0] += count
+            c[1] |= set(names)
+    out = {"snapshot": docs[0]["snapshot"], "lock": docs[0]["lock"], "selection": docs[0]["selection"],
+           "valid": valid, "complete": complete,
+           "canary": [sum(d["canary"][0] for d in docs), sum(d["canary"][1] for d in docs)], "pkgs": pkgs,
+           "score": [sum(p["m"] for p in pkgs.values()), sum(p["n"] for p in pkgs.values())],
+           "green": sum(1 for p in pkgs.values() if p["green"]),
+           "regressions": sum(len(d["regressions"]) for d in docs),
+           "causes": [[w, c[0], sorted(c[1])] for w, c in
+                      sorted(causes.items(), key=lambda kv: (-kv[1][0], kv[0]))[:PACKAGE_CAUSES]]}
+    for d in docs:
+        if "loads" in d:
+            out["loads"] = [len(d["loads"]), len(d["closure"])]
+    if install:
+        out["installs"] = [sum(1 for v in install["state"].values() if v == "ok"), len(install["state"])]
+    return out
+
+
 def entry_from(d, sha, date, title, run=None):
     """One history line from a directory of CI artifacts (any layout)."""
     e = {"sha": sha, "date": date, "title": title}
     if run:
         e["run"] = int(run)
     corpora, shards, failing = {}, {}, {}
+    package_docs, package_install = [], None
     for top, _, files in os.walk(d):
         for fn in files:
             path = os.path.join(top, fn)
@@ -140,6 +181,12 @@ def entry_from(d, sha, date, title, run=None):
                         s = doc.get("summary")
                     except (ValueError, AttributeError):
                         continue
+                if doc.get("kind") == "packages":
+                    package_docs.append(doc)
+                    continue
+                if doc.get("kind") == "package-install":
+                    package_install = doc
+                    continue
                 if not isinstance(s, dict) or "corpus" not in s:
                     continue
                 c = corpora.setdefault(s["corpus"], [0, 0])
@@ -168,22 +215,43 @@ def entry_from(d, sha, date, title, run=None):
                 if len(failing.get(k, [])) == n - p and 0 < n - p <= GAPS_MAX}
         if gaps:
             e["gaps"] = gaps
+    if package_docs:
+        pk = e["packages"] = packages_from(package_docs, package_install)
+        if pk["complete"] and pk["valid"] and pk["score"][1]:
+            e.setdefault("corpora", {})["packages"] = pk["score"]
     return e
+
+
+def merge_entry(old, new):
+    """What CI measured of one commit at different times: the nightly package
+    suite and the commit's own run arrive in either order."""
+    out = {**old, **new}
+    if "corpora" in old and "corpora" in new:
+        out["corpora"] = {**old["corpora"], **new["corpora"]}
+    # a broken or partial nightly does not replace a good one of the commit
+    if "packages" in old and "packages" in new and old["packages"]["valid"] and old["packages"]["complete"] \
+            and not (new["packages"]["valid"] and new["packages"]["complete"]):
+        out["packages"] = old["packages"]
+    return out
 
 
 def cmd_add(a):
     entries = load(a.history)
     date, title = commit_meta(a.commit, a.repo)
     e = entry_from(a.dir, a.commit, date, title, a.run)
-    if not ({"perf", "corpora", "builtins"} & e.keys()):
+    if not ({"perf", "corpora", "builtins", "packages"} & e.keys()):
         sys.exit(f"nothing to record in {a.dir}")
+    old = next((x for x in entries if x["sha"] == a.commit), None)
+    if old:
+        e = merge_entry(old, e)
     save(a.history, [x for x in entries if x["sha"] != a.commit] + [e])
-    print(f"recorded {a.commit[:12]}: " + ", ".join(k for k in ("perf", "corpora", "builtins") if k in e))
+    print(f"recorded {a.commit[:12]}: " + ", ".join(k for k in ("perf", "corpora", "builtins", "packages") if k in e))
 
 
 def cmd_sync(a):
     entries = load(a.history)
-    have = {e["sha"] for e in entries}
+    # a commit the nightly package suite recorded still lacks its own run
+    have = {e["sha"] for e in entries if {"perf", "builtins"} & e.keys()}
     runs = json.loads(gh("api", f"repos/{a.repo}/actions/workflows/ci.yml/runs?branch=main&status=completed"
                                 f"&per_page={min(a.limit, 100)}", "--jq", ".workflow_runs"))
     added = 0
@@ -201,6 +269,10 @@ def cmd_sync(a):
             e = entry_from(tmp, r["head_sha"], date, title, r["id"])
         if not ({"perf", "corpora", "builtins"} & e.keys()):
             continue
+        old = next((x for x in entries if x["sha"] == e["sha"]), None)
+        if old:
+            e = merge_entry(old, e)
+            entries.remove(old)
         entries.append(e)
         have.add(e["sha"])
         added += 1
@@ -238,7 +310,9 @@ def series(entries):
                     out.setdefault("group:" + label, []).append((i, geomean(list(s.values())), f"{len(s)} of {n}"))
         for k, (p, n) in e.get("corpora", {}).items():
             if n:
-                out.setdefault("corpus:" + k, []).append((i, p / n, f"{p:,} of {n:,} cases"))
+                what = f"{p:,} of {n:,} tests, snapshot {e['packages']['snapshot']}" if k == "packages" \
+                    else f"{p:,} of {n:,} cases"
+                out.setdefault("corpus:" + k, []).append((i, p / n, what))
         if "builtins" in e:
             p, n = e["builtins"]
             out.setdefault("builtins", []).append((i, p / n, f"{p} of {n}"))
@@ -452,16 +526,21 @@ def badge(label, message):
     return {"schemaVersion": 1, "label": label, "message": message, "color": "2a78d6", "cacheSeconds": 3600}
 
 
-def sparkline(pts, n):
+def sparkline(pts, n, log=True):
+    """`log` for speedups; shares (which can be 0) go on a linear 0..1 scale."""
     if not pts:
         return ""
     w, h = 96, 20
-    lo, hi = min(v for _, v, _ in pts), max(v for _, v, _ in pts)
-    # Each line on its own log range, but at least 1.25×, so noise stays flat.
-    lo, hi = math.log(lo), math.log(hi)
-    pad = max(0.0, math.log(1.25) - (hi - lo)) / 2
-    lo, hi = lo - pad, hi + pad
-    xy = [(w * i / max(n - 1, 1), h - 2 - (h - 4) * (math.log(v) - lo) / (hi - lo)) for i, v, _ in pts]
+    f = math.log if log else (lambda v: v)
+    if log:
+        lo, hi = min(v for _, v, _ in pts), max(v for _, v, _ in pts)
+        # Each line on its own log range, but at least 1.25×, so noise stays flat.
+        lo, hi = math.log(lo), math.log(hi)
+        pad = max(0.0, math.log(1.25) - (hi - lo)) / 2
+        lo, hi = lo - pad, hi + pad
+    else:
+        lo, hi = 0.0, 1.0
+    xy = [(w * i / max(n - 1, 1), h - 2 - (h - 4) * (f(v) - lo) / (hi - lo)) for i, v, _ in pts]
     d = " ".join(f"{'M' if k == 0 else 'L'}{x:.1f},{y:.1f}" for k, (x, y) in enumerate(xy))
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><path d="{d}" fill="none" '
             f'stroke="var(--line)" stroke-width="1.5" stroke-linejoin="round"/></svg>')
@@ -516,6 +595,7 @@ a program whose output differs from GNU R's does not count.</p>
 {groups}
 <h2>Compatibility</h2>
 {compat}
+{packages}
 <h2>Benchmarks at <code>{sha7}</code></h2>
 <div class="scroll"><table>
 <tr><th>benchmark</th><th class="n">vs GNU R</th><th>trend</th><th class="n">robigo instr</th>
@@ -588,6 +668,65 @@ def gap_path(corpus, cid):
         if p.endswith(".R") and os.path.isfile(os.path.join(ROOT, p)):
             return p
     return None
+
+
+def packages_section(entries, repo_url):
+    """The package suite: what is green, what is close, and what blocks the rest."""
+    measured = [(i, e) for i, e in enumerate(entries) if "packages" in e]
+    if not measured:
+        return ""
+    e, pk = measured[-1][1], measured[-1][1]["packages"]
+    rows = []
+    for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
+        hist = [(i, x["packages"]["pkgs"][name]["m"] / x["packages"]["pkgs"][name]["n"], "") for i, x in measured
+                if x["packages"]["pkgs"].get(name, {}).get("n")]
+        unfinished = sum(v for k, v in p["files"].items() if k != "done")
+        state = "green" if p["green"] else "no tests scored" if not p["n"] else \
+            f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else ""
+        ratio = f'{p["s"] / p["gnu_s"]:.1f}×' if p["gnu_s"] else ""
+        rows.append(f'<tr><td>{E(name)} <span class="meta">{E(p["v"])}</span></td><td class="n">{p["m"]:,}</td>'
+                    f'<td class="n">{p["n"]:,}</td><td class="n">{fmt_pct(p["m"] / p["n"]) if p["n"] else ""}</td>'
+                    f'<td>{sparkline(hist, len(entries), log=False)}</td>'
+                    f'<td class="n">{ratio}</td><td class="note">{E(state)}</td></tr>')
+    causes = "".join(f'<tr><td class="n">{c:,}</td><td>{E(", ".join(names))}</td>'
+                     f'<td style="white-space:normal">{E(why[:200])}</td></tr>' for why, c, names in pk["causes"])
+    m, n = pk["score"]
+    extra = []
+    if "loads" in pk:
+        extra.append(f"{pk['loads'][0]} of {pk['loads'][1]} packages of the dependency tree load")
+    if "installs" in pk:
+        extra.append(f"{pk['installs'][0]} of {pk['installs'][1]} install from source")
+    notes = []
+    if not pk["valid"]:
+        notes.append(f"The harness's canary failed ({pk['canary'][0]} of {pk['canary'][1]}): "
+                     "these numbers are not trustworthy and set no score.")
+    if not pk["complete"]:
+        notes.append("Some shards did not report: this run is incomplete and sets no score.")
+    if pk["regressions"]:
+        notes.append(f"{pk['regressions']} tests regressed against the ratchet.")
+    previous = next((x["packages"]["snapshot"] for _, x in reversed(measured)
+                     if x["packages"]["snapshot"] != pk["snapshot"]), None)
+    if previous:
+        notes.append(f"The packages moved from snapshot {previous} to {pk['snapshot']}: "
+                     "new versions bring new tests, so the score is not comparable across that step.")
+    return f"""<h2>Top CRAN packages at <code>{e["sha"][:7]}</code></h2>
+<p><strong>{fmt_pct(m / n) if n else "no score"}</strong> of {n:,} test blocks behave as under GNU R, and
+<strong>{pk["green"]} of {pk["selection"]}</strong> packages are fully green{"; " + "; ".join(extra) if extra else ""}.
+Packages with over 900,000 downloads a month and over 500 packages using them, at PPM snapshot {E(pk["snapshot"])}.
+Their own test suites run nightly under real testthat and tinytest. A block counts when its outcome matches GNU R 4.5.0's
+recording, and a package is green when every block does (see
+<a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a>).</p>
+{"".join(f"<p><strong>{E(x)}</strong></p>" for x in notes)}
+<div class="scroll"><table>
+<tr><th>package</th><th class="n">matching</th><th class="n">scored</th><th class="n">share</th><th>trend</th>
+<th class="n">time vs GNU R</th><th></th></tr>
+{"".join(rows)}
+</table></div>
+<details><summary>What fails most</summary>
+<div class="scroll"><table>
+<tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>
+{causes}
+</table></div></details>"""
 
 
 def figure(make, *args):
@@ -672,7 +811,7 @@ def cmd_render(a):
         font=FONT, repo_url=a.repo_url, sha=last["sha"], sha7=last["sha"][:7], date=last["date"][:10],
         speed=figure(speed_svg, entries, ser), groups=figure(groups_svg, entries, ser),
         compat=figure(compat_svg, entries, ser), bench_rows="\n".join(rows), corpus_rows="\n".join(crows),
-        gaps=gaps, gap_sha7=(corp_e or last)["sha"][:7],
+        gaps=gaps, gap_sha7=(corp_e or last)["sha"][:7], packages=packages_section(entries, a.repo_url),
         n_commits=len(entries), corpus_heads="".join(f'<th class="n">{E(k)}</th>' for k in cnames),
         history_rows="\n".join(hrows))
     with open(os.path.join(a.out, "index.html"), "w") as f:

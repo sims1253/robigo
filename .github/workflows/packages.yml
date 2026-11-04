@@ -1,0 +1,230 @@
+# The most used CRAN packages' own test suites on robigo, against GNU R's
+# recorded outcomes (scripts/package-suite.py, docs/verification.md). Hours of
+# compute, so nightly on the binary main's CI built, and it does not gate
+# merges. A pull request touching the harness tries it on one small package.
+name: packages
+
+on:
+  schedule:
+    - cron: "30 2 * * *" # daily 02:30 UTC
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Packages to run instead of all of them (no history is recorded)
+        default: ""
+  pull_request:
+    paths:
+      - tests/packages/**
+      - scripts/package-suite.py
+      - scripts/test-package-suite.py
+      - .github/workflows/packages.yml
+      - .github/actions/package-suite/**
+
+# A spot check of a few packages does not queue behind the nightly.
+concurrency:
+  group: packages-${{ github.event_name == 'pull_request' && github.ref || inputs.packages || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  LANGUAGE: en
+  LC_ALL: C.UTF-8
+  TZ: UTC
+  ROBIGO_PKG_ORACLE: "1"
+
+jobs:
+  binary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+      sha: ${{ steps.find.outputs.sha }}
+      full: ${{ steps.find.outputs.full }}
+      packages: ${{ steps.find.outputs.packages }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          # The newest main commit whose CI finished builds what gets measured.
+          read -r run sha < <(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" \
+            --jq '.workflow_runs[0] | "\(.id) \(.head_sha)"')
+          if [ -z "$run" ] || [ "$run" = null ]; then
+            echo "no successful CI run on main" >&2
+            exit 1
+          fi
+          # ci.yml keeps the binary for 7 days: fail here, not hours in
+          live=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "robigo" and .expired == false)] | length')
+          if [ "$live" = 0 ]; then echo "CI run $run has no live robigo artifact" >&2; exit 1; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # all of them (an empty list), or a few with no history recorded
+          full=true
+          if [ "$EVENT" = pull_request ]; then PACKAGES=magrittr; fi
+          PACKAGES=$(printf '%s' "$PACKAGES" | tr -s '\n\r\t' '   ')  # one line in GITHUB_OUTPUT
+          if [ -n "$PACKAGES" ]; then full=false; fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
+
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/test-package-suite.py
+
+  measure:
+    needs: [binary, unit]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # Above the suite's own budget of 30 minutes a package, plus setup.
+    timeout-minutes: 240
+    # The container gets SYS_ADMIN and NET_ADMIN (below), so a pull
+    # request's code never runs on a self-hosted machine.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container:
+      image: debian:trixie
+      # Tests run in a network namespace of their own (unshare -n).
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: ./.github/actions/package-suite
+      - uses: actions/download-artifact@v8
+        with:
+          name: robigo
+          path: dist
+          run-id: ${{ needs.binary.outputs.run }}
+          github-token: ${{ github.token }}
+      - run: chmod +x dist/robigo
+      - name: robigo's R_HOME
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
+      - name: Run
+        env:
+          PACKAGES: ${{ needs.binary.outputs.packages }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
+          if [ -z "$PACKAGES" ]; then
+            python3 scripts/package-suite.py run --shard "$SHARD/$SHARDS" --out "out/packages.shard${SHARD}of${SHARDS}.json" |
+              tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SHARD" = 1 ]; then
+            read -ra names <<< "$PACKAGES"
+            python3 scripts/package-suite.py run "${names[@]}" --out out/packages.json | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: packages-${{ matrix.shard }}
+          path: out
+          if-no-files-found: ignore
+
+  install:
+    # The other half of a package's compatibility: the suites above run on
+    # GNU R's binaries, this builds the same tree from source with robigo.
+    needs: [binary, unit]
+    if: ${{ needs.binary.outputs.full == 'true' }}
+    timeout-minutes: 240
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: ./.github/actions/package-suite
+      - uses: actions/download-artifact@v8
+        with:
+          name: robigo
+          path: dist
+          run-id: ${{ needs.binary.outputs.run }}
+          github-token: ${{ github.token }}
+      - run: chmod +x dist/robigo
+      - name: Install from source
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
+          python3 scripts/package-suite.py install --out out/package-install.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: packages-install
+          path: out
+          if-no-files-found: ignore
+
+  record:
+    # Merges into the commit's line of the history and republishes the page.
+    # An incomplete run is recorded too: it sets no score, and says so.
+    needs: [binary, measure, install]
+    if: ${{ !cancelled() && needs.binary.outputs.full == 'true' && needs.measure.result != 'skipped' }}
+    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    container: debian:trixie
+    timeout-minutes: 15
+    concurrency:
+      group: progress
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git gh python3 ca-certificates > /dev/null
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: artifacts
+      - name: Record on progress-data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.binary.outputs.sha }}
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for try in 1 2 3 4 5; do
+            rm -rf data && git worktree prune
+            git fetch -q --depth 1 origin +refs/heads/progress-data:refs/remotes/origin/progress-data
+            git worktree add -q --detach data origin/progress-data
+            # a failure is not "nothing new": it must not deploy the old page green
+            python3 scripts/history.py add data/history.jsonl artifacts --commit "$SHA" \
+              --run "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || exit 1
+            git -C data add history.jsonl
+            if git -C data diff --cached --quiet; then break; fi
+            git -C data commit -q -m "history: packages at ${SHA::12}"
+            if git -C data push -q origin HEAD:refs/heads/progress-data; then break; fi
+            if [ "$try" = 5 ]; then exit 1; fi
+            sleep $((try * 5))   # another run pushed first: redo on top of it
+          done
+      - run: python3 scripts/history.py render data/history.jsonl --out site --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5
