@@ -755,7 +755,14 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let names = env_names(&env, all, sorted);
     let mut vals = Vec::new();
     for n in &names {
-        let v = env.get_local(Sym::new(n)).unwrap_or(Value::Null);
+        let sym = Sym::new(n);
+        let v = env.get_local(sym).unwrap_or(Value::Null);
+        // R: envir.c:FrameValues — BINDING_VALUE calls an active binding
+        // (a C-owned variable's included, which reads C's object).
+        if env.binding_flags(sym).is_some_and(|f| f & BIND_ACTIVE != 0) {
+            vals.push(i.call_value(&v, vec![], &env)?);
+            continue;
+        }
         vals.push(i.force(v)?);
     }
     let mut v = Value::list(vals);

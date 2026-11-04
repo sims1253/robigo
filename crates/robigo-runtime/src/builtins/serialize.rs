@@ -36,11 +36,11 @@ fn do_serialize(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let format = as_integer(&arg(&args, 2));
     let version = serialize_version_arg(&arg(&args, 3))?;
     let bytes = match format {
-        3 => crate::serialize::serialize_binary(&object, version),
-        1 => crate::serialize::serialize_ascii(&object, version),
+        3 => serialize_r(i, &object, version, crate::serialize::Format::Binary)?,
+        1 => serialize_r(i, &object, version, crate::serialize::Format::Ascii)?,
         2 => return Err(Flow::error("robigo: asciihex serialization is not implemented yet")),
         _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
-        _ => crate::serialize::serialize_version(&object, version),
+        _ => serialize_r(i, &object, version, crate::serialize::Format::Xdr)?,
     };
     match arg(&args, 1) {
         Value::Null => Ok(Value::raws(bytes)),
@@ -63,11 +63,19 @@ fn do_serializeb(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     let format = if xdr == 0 { 3 } else { 0 };
     let version = serialize_version_arg(&arg(&args, 3))?;
     let bytes = match format {
-        3 => crate::serialize::serialize_binary(&object, version),
+        3 => serialize_r(i, &object, version, crate::serialize::Format::Binary)?,
         _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
-        _ => crate::serialize::serialize_version(&object, version),
+        _ => serialize_r(i, &object, version, crate::serialize::Format::Xdr)?,
     };
     write_to_conn(i, n, &bytes, format)
+}
+
+/// Serialize from R: a C-owned binding is read through its binding
+/// function, as R reads the variable (`serialize::OwnedReader`).
+fn serialize_r(i: &mut Interp, v: &Value, version: i32, format: crate::serialize::Format) -> RResult<Vec<u8>> {
+    let g = i.global.clone();
+    let mut read = |f: &Value| -> RResult<Value> { i.call_value(f, vec![], &g) };
+    crate::serialize::serialize_with(v, version, format, None, Some(&mut read))
 }
 
 /// The `version` argument shared by all entry points (R: `bad version value`).
@@ -158,11 +166,8 @@ fn do_serialize_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
         write_to_conn(i, con, if ascii != 0 { b"A\n" } else { b"X\n" }, if ascii != 0 { 1 } else { 0 })?;
         return Err(Flow::error(format!("version {version} not supported")));
     }
-    let bytes = if ascii != 0 {
-        crate::serialize::serialize_ascii(&object, version)
-    } else {
-        crate::serialize::serialize_version(&object, version)
-    };
+    let fmt = if ascii != 0 { crate::serialize::Format::Ascii } else { crate::serialize::Format::Xdr };
+    let bytes = serialize_r(i, &object, version, fmt)?;
     write_to_conn(i, con, &bytes, if ascii != 0 { 1 } else { 0 })
 }
 
@@ -278,11 +283,8 @@ fn do_save_to_conn(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
             items.push(Arg::new(Some(sym), val));
         }
         let object = Value::pairlist(items);
-        let bytes = if ascii != 0 {
-            crate::serialize::serialize_ascii(&object, version)
-        } else {
-            crate::serialize::serialize_version(&object, version)
-        };
+        let fmt = if ascii != 0 { crate::serialize::Format::Ascii } else { crate::serialize::Format::Xdr };
+        let bytes = serialize_r(i, &object, version, fmt)?;
         io::con_write_bytes(i, con, &bytes)
     })();
     if !wasopen {
@@ -565,12 +567,21 @@ fn do_lazy_load_db_insert_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &E
     let hook = arg(&args, 4);
     let version = crate::serialize::default_serialize_version();
     let bytes = if hook.is_null() {
-        crate::serialize::serialize_version(&value, version)
+        serialize_r(i, &value, version, crate::serialize::Format::Xdr)?
     } else {
         // R: serialize.c:CallHook — FUN(x) evaluated in the global environment
         let g = i.global.clone();
-        let mut call_hook = |x: &Value| -> RResult<Value> { i.call_value(&hook, vec![Arg::pos(x.clone())], &g) };
-        crate::serialize::serialize_hooked(&value, version, &mut call_hook)?
+        let i = std::cell::RefCell::new(i);
+        let mut call_hook =
+            |x: &Value| -> RResult<Value> { i.borrow_mut().call_value(&hook, vec![Arg::pos(x.clone())], &g) };
+        let mut read = |f: &Value| -> RResult<Value> { i.borrow_mut().call_value(f, vec![], &g) };
+        crate::serialize::serialize_with(
+            &value,
+            version,
+            crate::serialize::Format::Xdr,
+            Some(&mut call_hook),
+            Some(&mut read),
+        )?
     };
     let bytes = match compress {
         3 => compress3(&bytes),
@@ -735,11 +746,8 @@ fn do_save_to_file(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         return Err(Flow::error(format!("version {version} not supported")));
     }
     let object = arg(&args, 0);
-    let bytes = if ascii {
-        crate::serialize::serialize_ascii(&object, version)
-    } else {
-        crate::serialize::serialize_version(&object, version)
-    };
+    let fmt = if ascii { crate::serialize::Format::Ascii } else { crate::serialize::Format::Xdr };
+    let bytes = serialize_r(i, &object, version, fmt)?;
     write_save_bytes(&mut file, &bytes)?;
     file.close();
     Ok(Value::Null)
