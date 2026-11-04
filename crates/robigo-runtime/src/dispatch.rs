@@ -410,10 +410,17 @@ impl Interp {
         pargs: Vec<Arg>,
         env: &Env,
     ) -> RResult<Option<Value>> {
+        // R: eval.c:DispatchOrEval — begincontext(CTXT_RETURN, call, rho1,
+        // rho, pargs, op): a function context, so sys.calls(),
+        // sys.function() and parent.frame() see it as GNU R's do (rlang's
+        // error_call() climbs from an S3 method to this frame's call).
         let rho1 = Env::new(Some(env.clone()));
+        let op = crate::s4::prim_op(generic)
+            .or_else(|| crate::builtins::lookup_internal(generic))
+            .map_or(Value::Null, Value::Builtin);
         self.frames.push(Context {
             call: call.clone(),
-            function: Value::Null,
+            function: op,
             cloenv: rho1.clone(),
             sysparent: env.clone(),
             promargs: pargs.clone(),
@@ -421,7 +428,7 @@ impl Interp {
             handlers: self.handlers.clone(),
             restarts: self.restarts.clone(),
             generic: false,
-            builtin: true,
+            builtin: false,
         });
         let base = self.base.clone();
         let r = self.usemethod(generic, obj, call, pargs, &rho1, env, &base);
