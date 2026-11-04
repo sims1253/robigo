@@ -1,8 +1,16 @@
 # x[i] and x[i] <- v with index vectors in compiled code (the VM's
 # element-by-element paths and everything they leave to `[` and `[<-`).
 show <- function(x) cat(deparse(x), "\n")
-get <- function(x, i) x[i]
+# (The arguments forced first, so that `x[i]` finds values, not promises.)
+get <- function(x, i) {
+    x
+    i
+    x[i]
+}
 set <- function(x, i, v) {
+    x
+    i
+    v
     x[i] <- v
     x
 }
