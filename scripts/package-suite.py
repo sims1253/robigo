@@ -77,9 +77,26 @@ PACKAGE_BUDGET = int(os.environ.get("ROBIGO_PKG_BUDGET", 1800))
 GNU_RUNS = 3
 GREEN_FLOOR = 0.8
 
-# Suites that cannot run here: recorded as they are, scoring nothing, and
-# never green. curl's helper needs a live HTTP test server (HTTPBIN_TEST_SERVER).
-UNSCORED = {"curl"}
+# Test servers a package's tests talk to, by the name in selection.tsv's
+# `server` column: started on the loopback of the file's own network
+# namespace before R, for GNU R and robigo alike, so the tests still never
+# reach the internet. `hosts` resolve to 127.0.0.1 in the whole oracle (an
+# /etc/hosts of the worker's own would need a mount, which the container's
+# AppArmor profile refuses): `docker run --add-host` here, the container's
+# options in .github/workflows/packages.yml. In a worker without the server
+# nothing listens there, so those names still lead nowhere. `env` is what
+# the tests read to find the server.
+#
+# httpbin is python3-httpbin, pinned in apt.txt. curl's helper reads
+# HTTPBIN_TEST_SERVER, but it evaluates `Sys.getenv(, find_test_server())`,
+# and Sys.getenv forces its default: the helper probes its fallback list
+# whatever the variable says, and stops if none answers. The last of that
+# list is http://httpbin.org, so the server is httpbin.org on port 80.
+SERVERS = {
+    "httpbin": {"port": 80, "cmd": ["python3", "-I", "-m", "httpbin.core", "--host", "127.0.0.1", "--port", "80"],
+                "hosts": ["httpbin.org"], "env": {"HTTPBIN_TEST_SERVER": "http://httpbin.org"}},
+}
+SERVER_START_LIMIT = 60
 
 # Outcomes of the canary's tests: (pass, fail, error, skip, warn).
 CANARY = {
@@ -146,6 +163,7 @@ def in_oracle():
     os.makedirs(CACHE, exist_ok=True)
     rv = shutil.which("rv")
     cmd = ["docker", "run", "--rm", "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "-e", "ROBIGO_PKG_ORACLE=1",
+           *[f"--add-host={h}:127.0.0.1" for s in SERVERS.values() for h in s["hosts"]],
            "-e", f"ROBIGO_PKG_CACHE={CACHE}", "-e", f"ROBIGO_PKG_CHOWN={os.getuid()}:{os.getgid()}",
            "-e", f"ROBIGO={os.path.abspath(ROBIGO)}", "-v", f"{ROOT}:{ROOT}", "-v", f"{CACHE}:{CACHE}", "-w", ROOT]
     if rv:
@@ -281,11 +299,11 @@ def cmd_select(a):
         f.write(f"# CRAN packages with over {ENTER['downloads']:,} downloads in 30 days ({window}) and over "
                 f"{ENTER['used_by']} packages using them,\n# at PPM snapshot {a.snapshot}. Written by "
                 "`scripts/package-suite.py select`.\n")
-        f.write("package\tversion\tdownloads\tused_by\tframework\tfilter\tenv\n")
+        f.write("package\tversion\tdownloads\tused_by\tframework\tfilter\tenv\tserver\n")
         for name, version, dl, used in rows:
             prev = old.get(name, {})
             f.write(f"{name}\t{version}\t{dl}\t{used}\t{prev.get('framework', 'testthat')}\t"
-                    f"{prev.get('filter', '')}\t{prev.get('env', '')}\n")
+                    f"{prev.get('filter', '')}\t{prev.get('env', '')}\t{prev.get('server', '')}\n")
     print(f"{len(rows)} packages, downloads {window}")
 
 
@@ -375,12 +393,36 @@ def sync():
 # ------------------------------------------------------------------- workers
 
 # Tests run without a network, with a working loopback: the results must not
-# depend on what the internet does that day.
+# depend on what the internet does that day. argv: the test server to start
+# first as JSON (`server_of`, or null), then the worker's command. The server
+# stays in the worker's process group, so the supervisor counts its memory
+# and kills it with the file.
 OFFLINE = """
-import fcntl, os, socket, struct, sys
+import fcntl, json, os, socket, struct, subprocess, sys, time
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-fcntl.ioctl(s, 0x8914, struct.pack("16sh", b"lo", 0x1 | 0x8 | 0x40))  # SIOCSIFFLAGS: up, loopback, running
-os.execvp(sys.argv[1], sys.argv[1:])
+try:
+    fcntl.ioctl(s, 0x8914, struct.pack("16sh", b"lo", 0x1 | 0x8 | 0x40))  # SIOCSIFFLAGS: up, loopback, running
+except PermissionError:
+    # outside a namespace of its own (the unit tests): fine if lo is up
+    if not struct.unpack("16sh", fcntl.ioctl(s, 0x8913, struct.pack("16sh", b"lo", 0)))[1] & 0x1:
+        raise
+server = json.loads(sys.argv[1])
+if server:
+    with open(server["log"], "wb") as out:
+        p = subprocess.Popen(server["cmd"], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+    deadline = time.time() + server["limit"]
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", server["port"]), timeout=1).close()
+            break
+        except OSError:
+            if p.poll() is not None or time.time() > deadline:
+                p.kill()
+                tail = open(server["log"], errors="replace").read()[-300:]
+                sys.exit(f"package-suite: the test server {server['cmd'][0]} did not start on port "
+                         f"{server['port']}: {tail}")
+            time.sleep(0.05)
+os.execvp(sys.argv[2], sys.argv[2:])
 """
 
 
@@ -389,8 +431,41 @@ def engine_cmd(engine):
     return [r, "--vanilla", "--quiet", "--no-echo", "-f", RUNNER]
 
 
-def offline(cmd):
-    return ["unshare", "-n", "python3", "-I", "-c", OFFLINE] + cmd
+def offline(cmd, server=None):
+    """`cmd` in a network namespace of its own, after `server` is listening on
+    its loopback."""
+    return ["unshare", "-n"] + in_namespace(cmd, server)
+
+
+def in_namespace(cmd, server=None):
+    return ["python3", "-I", "-c", OFFLINE, json.dumps(server)] + cmd
+
+
+def server_of(row, log):
+    """The test server of a selection row: (argument of `offline`, its environment)."""
+    name = row.get("server", "")
+    if not name:
+        return None, {}
+    if name not in SERVERS:
+        die(f"unknown test server {name!r} in selection.tsv")
+    spec = SERVERS[name]
+    return {"port": spec["port"], "cmd": spec["cmd"], "log": log, "limit": SERVER_START_LIMIT}, spec["env"]
+
+
+def check_hosts(names):
+    """The test servers' names must lead to the loopback, or their packages
+    would score whatever the probes of their helpers find."""
+    for server in sorted({row.get("server", "") for row in names.values()} - {""}):
+        if server not in SERVERS:
+            die(f"unknown test server {server!r} in selection.tsv")
+        for host in SERVERS[server]["hosts"]:
+            try:
+                addr = socket.gethostbyname(host)
+            except OSError:
+                addr = None
+            if addr != "127.0.0.1":
+                die(f"{host} resolves to {addr}, not 127.0.0.1: the oracle needs `--add-host {host}:127.0.0.1` "
+                    f"(the {server} test server)")
 
 
 def group_rss(pgid):
@@ -498,15 +573,20 @@ def run_file(engine, pkg, row, path, lib, limit):
                    PKG_SUITE_FILE=os.path.join(tests, os.path.basename(path)), PKG_SUITE_OUT=events,
                    PKG_SUITE_FRAMEWORK=row["framework"])
         env.pop("R_HOME", None)
+        server, server_env = server_of(row, os.path.join(tmp, "server.log"))
+        env.update(server_env)
         for kv in filter(None, row.get("env", "").split(",")):
             k, v = kv.split("=", 1)
             env[k] = v
-        status, rc, secs = supervise(offline(engine_cmd(engine)), env, tests, os.path.join(tmp, "log"), limit)
+        status, rc, secs = supervise(offline(engine_cmd(engine), server), env, tests, os.path.join(tmp, "log"), limit)
         keep = os.environ.get("ROBIGO_PKG_KEEP_LOGS")
         if keep:
             # the worker's own output (compiler errors, crashes) for a look later
             os.makedirs(keep, exist_ok=True)
-            shutil.copy(os.path.join(tmp, "log"), os.path.join(keep, f"{engine}-{pkg}-{file_key(path)}.log"))
+            name = f"{engine}-{pkg}-{file_key(path)}"
+            shutil.copy(os.path.join(tmp, "log"), os.path.join(keep, f"{name}.log"))
+            if server:
+                shutil.copy(os.path.join(tmp, "server.log"), os.path.join(keep, f"{name}.server.log"))
         blocks, done, abort = parse_events(events)
         if status is None:
             if rc == 0 and done:
@@ -581,6 +661,7 @@ def cmd_record(a):
     in_oracle()
     sync()
     sel = selection()
+    check_hosts({p: sel[p] for p in a.packages or sel})
     for pkg in a.packages or sel:
         runs = []
         for i in range(a.runs):
@@ -589,7 +670,7 @@ def cmd_record(a):
             bad = {k: r[0] for k, r in runs[-1].items() if r[0] != "done"}
             print(f"{pkg}: GNU R run {i + 1}/{a.runs}: {blocks} blocks, "
                   f"{sum(r[1] for r in runs[-1].values()):.0f}s" + (f", not done: {bad}" if bad else ""), flush=True)
-            if not blocks and pkg not in UNSCORED:
+            if not blocks:
                 die(f"GNU R ran no test of {pkg}: {bad}")
         write_expected(pkg, runs)
     hand_back(EXPECTED, CACHE)
@@ -784,6 +865,7 @@ def cmd_run(a):
     names = a.packages or list(sel)
     if a.shard:
         names = shard_of(names, a.shard)
+    check_hosts({p: sel[p] for p in names})
     i, n = (int(x) for x in a.shard.split("/")) if a.shard else (1, 1)
     canary = check_canary()
     valid = canary[0] == canary[1]
@@ -873,6 +955,7 @@ def cmd_show(a):
     in_oracle()
     sync()
     sel = selection()
+    check_hosts({a.package: sel[a.package]})
     exp, exp_files = read_expected(a.package)
     limits = {f: d["seconds"] for f, d in exp_files.items()}
     only = {f for f in exp_files if fnmatch.fnmatch(f, a.file)} if a.file else None

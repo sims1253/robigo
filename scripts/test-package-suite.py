@@ -194,6 +194,138 @@ class Supervise(unittest.TestCase):
             suite.MEMORY_CAP = cap
 
 
+def read(path):
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
+def free_port():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def userns():
+    """Can this user make a network namespace (as the oracle's root can)?"""
+    import subprocess
+    try:
+        return subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode == 0
+    except OSError:  # no unshare here
+        return False
+
+
+def alive(pid):
+    """Is `pid` a process that has not exited (a zombie has)?"""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+class Server(unittest.TestCase):
+    """A package's test server runs in the worker's own network namespace."""
+
+    def run_worker(self, worker, server_cmd, port, d):
+        server = {"port": port, "cmd": server_cmd, "log": os.path.join(d, "server.log"), "limit": 20}
+        if userns():
+            cmd = suite.offline(worker, server)
+            self.assertEqual(cmd[:2], ["unshare", "-n"])
+            cmd[1] = "-rn"  # the oracle's `unshare -n`, without root
+        else:
+            cmd = suite.in_namespace(worker, server)
+        return suite.supervise(cmd, dict(os.environ), d, os.path.join(d, "log"), 60)
+
+    def http_server(self, port):
+        return [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)]
+
+    def fetch(self, url):
+        return [sys.executable, "-c", f"import urllib.request; print(urllib.request.urlopen({url!r}).status)"]
+
+    def test_the_worker_reaches_its_server(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            status, rc, _ = self.run_worker(self.fetch(f"http://127.0.0.1:{port}/"),
+                                            self.http_server(port), port, d)
+            log = read(os.path.join(d, "log"))
+            self.assertEqual((status, rc), (None, 0), log)
+            self.assertEqual(log.strip(), "200")
+            self.assertIn("GET / ", read(os.path.join(d, "server.log")))
+
+    def test_the_server_goes_with_the_file(self):
+        # the witness is the server's pid: in a namespace of its own, its port
+        # is not visible from here whether it still runs or not
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "pid")
+            server = [sys.executable, "-c", "import http.server, os, sys\n"
+                      "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+                      "http.server.HTTPServer(('127.0.0.1', int(sys.argv[2])), "
+                      "http.server.SimpleHTTPRequestHandler).serve_forever()", pidfile, str(port)]
+            _, rc, _ = self.run_worker(["true"], server, port, d)
+            self.assertEqual(rc, 0, read(os.path.join(d, "log")))  # the server did start
+            pid = int(read(pidfile))
+        deadline = time.time() + 10
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(alive(pid), f"the server {pid} outlived its file")
+
+    def test_a_server_that_does_not_start_stops_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, rc, _ = self.run_worker(["true"], [sys.executable, "-c", "print('no such port'); exit(3)"],
+                                       free_port(), d)
+            log = read(os.path.join(d, "log"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("did not start", log)
+        self.assertIn("no such port", log)
+
+    @unittest.skipUnless(userns(), "needs a network namespace")
+    def test_still_no_network(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            _, rc, _ = self.run_worker(self.fetch("http://192.0.2.1/"), self.http_server(port), port, d)
+            log = read(os.path.join(d, "log"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("unreachable", log)
+
+    def test_the_servers_names_must_lead_to_the_loopback(self):
+        servers = dict(suite.SERVERS)
+        try:
+            suite.SERVERS["loop"] = dict(suite.SERVERS["httpbin"], hosts=["localhost"])
+            suite.SERVERS["nowhere"] = dict(suite.SERVERS["httpbin"], hosts=["no-such-host.invalid"])
+            suite.check_hosts({"a": {"server": "loop"}, "b": {"server": ""}, "c": {}})
+            with self.assertRaises(SystemExit) as e:
+                suite.check_hosts({"a": {"server": "loop"}, "b": {"server": "nowhere"}})
+            self.assertIn("--add-host no-such-host.invalid:127.0.0.1", str(e.exception))
+            with self.assertRaises(SystemExit) as e:
+                suite.check_hosts({"a": {"server": "httbin"}})  # a typo in selection.tsv
+            self.assertIn("unknown test server 'httbin'", str(e.exception))
+        finally:
+            suite.SERVERS.clear()
+            suite.SERVERS.update(servers)
+
+    def test_httpbin_is_what_curls_helper_probes(self):
+        # curl's helper probes http://httpbin.org/get whatever HTTPBIN_TEST_SERVER says
+        server, env = suite.server_of({"server": "httpbin"}, "/x/server.log")
+        self.assertEqual((server["port"], server["log"]), (80, "/x/server.log"))
+        self.assertIn("httpbin.core", server["cmd"])
+        self.assertEqual(suite.SERVERS["httpbin"]["hosts"], ["httpbin.org"])
+        self.assertEqual(env, {"HTTPBIN_TEST_SERVER": "http://httpbin.org"})
+
+    def test_no_server_by_default(self):
+        self.assertEqual(suite.server_of({"server": ""}, "log"), (None, {}))
+        self.assertEqual(suite.server_of({}, "log"), (None, {}))  # the canary's row
+        with self.assertRaises(SystemExit):
+            suite.server_of({"server": "ftp"}, "log")
+
+    def test_the_selection_names_known_servers(self):
+        rows = suite.selection()
+        self.assertEqual(rows["curl"]["server"], "httpbin")
+        for name, row in rows.items():
+            self.assertIn(row["server"], {""} | set(suite.SERVERS), name)
+
+
 class History(unittest.TestCase):
     def doc(self, shard, m=1, n=2, valid=True, pkg="p"):
         return {"kind": "packages", "snapshot": "2026-11-01", "lock": "l", "selection": 2, "valid": valid,
