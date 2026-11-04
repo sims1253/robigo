@@ -137,7 +137,8 @@ def packages_from(docs, install):
             c[0] += count
             c[1] |= set(names)
     out = {"snapshot": docs[0]["snapshot"], "lock": docs[0]["lock"], "selection": docs[0]["selection"],
-           "valid": valid, "complete": complete, "canary": docs[0]["canary"], "pkgs": pkgs,
+           "valid": valid, "complete": complete,
+           "canary": [sum(d["canary"][0] for d in docs), sum(d["canary"][1] for d in docs)], "pkgs": pkgs,
            "score": [sum(p["m"] for p in pkgs.values()), sum(p["n"] for p in pkgs.values())],
            "green": sum(1 for p in pkgs.values() if p["green"]),
            "regressions": sum(len(d["regressions"]) for d in docs),
@@ -227,6 +228,10 @@ def merge_entry(old, new):
     out = {**old, **new}
     if "corpora" in old and "corpora" in new:
         out["corpora"] = {**old["corpora"], **new["corpora"]}
+    # a broken or partial nightly does not replace a good one of the commit
+    if "packages" in old and "packages" in new and old["packages"]["valid"] and old["packages"]["complete"] \
+            and not (new["packages"]["valid"] and new["packages"]["complete"]):
+        out["packages"] = old["packages"]
     return out
 
 
@@ -245,7 +250,8 @@ def cmd_add(a):
 
 def cmd_sync(a):
     entries = load(a.history)
-    have = {e["sha"] for e in entries}
+    # a commit the nightly package suite recorded still lacks its own run
+    have = {e["sha"] for e in entries if {"perf", "builtins"} & e.keys()}
     runs = json.loads(gh("api", f"repos/{a.repo}/actions/workflows/ci.yml/runs?branch=main&status=completed"
                                 f"&per_page={min(a.limit, 100)}", "--jq", ".workflow_runs"))
     added = 0
@@ -263,6 +269,10 @@ def cmd_sync(a):
             e = entry_from(tmp, r["head_sha"], date, title, r["id"])
         if not ({"perf", "corpora", "builtins"} & e.keys()):
             continue
+        old = next((x for x in entries if x["sha"] == e["sha"]), None)
+        if old:
+            e = merge_entry(old, e)
+            entries.remove(old)
         entries.append(e)
         have.add(e["sha"])
         added += 1

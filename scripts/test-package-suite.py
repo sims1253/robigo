@@ -225,6 +225,19 @@ class History(unittest.TestCase):
         e = self.entry([self.doc([1, 1], m=0, n=5)])
         self.assertIn("Top CRAN packages", history.packages_section([e, e], "https://x"))
 
+    def test_a_broken_nightly_keeps_the_good_one(self):
+        good = {"sha": "x", "packages": {"valid": True, "complete": True, "score": [5, 9]}, "corpora": {"packages": [5, 9]}}
+        bad = {"sha": "x", "packages": {"valid": False, "complete": True, "score": [0, 9]}}
+        merged = history.merge_entry(good, bad)
+        self.assertEqual(merged["packages"]["score"], [5, 9])
+        self.assertEqual(merged["corpora"]["packages"], [5, 9])
+
+    def test_the_canary_adds_up_over_shards(self):
+        docs = [self.doc([1, 2]), self.doc([2, 2], pkg="q")]
+        docs[1]["canary"] = [8, 9]
+        docs[1]["valid"] = False
+        self.assertEqual(history.packages_from(docs, None)["canary"], [17, 18])
+
     def test_merge_keeps_what_the_other_run_measured(self):
         night = {"sha": "x", "packages": {}, "corpora": {"packages": [1, 2]}}
         day = {"sha": "x", "perf": {}, "corpora": {"fastr": [3, 4]}}
