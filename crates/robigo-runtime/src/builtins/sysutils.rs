@@ -74,15 +74,9 @@ pub static DEFS: &[Builtin] = &[
 fn cairo_build() -> [bool; 4] {
     static BUILD: std::sync::OnceLock<[bool; 4]> = std::sync::OnceLock::new();
     *BUILD.get_or_init(|| {
-        let Some(home) = std::env::var_os("R_HOME") else { return [false; 4] };
-        let module = std::path::Path::new(&home).join("library/grDevices/libs/cairo.so");
-        if !module.is_file() {
-            return [false; 4];
-        }
-        let found = crate::native::dynamic_names(
-            &module.to_string_lossy(),
-            &[b"png_create_write_struct", b"jpeg_CreateCompress", b"TIFFOpen"],
-        );
+        let Some(module) = crate::native::cairo_module() else { return [false; 4] };
+        let found =
+            crate::native::dynamic_names(&module, &[b"png_create_write_struct", b"jpeg_CreateCompress", b"TIFFOpen"]);
         [true, found[0], found[1], found[2]]
     })
 }

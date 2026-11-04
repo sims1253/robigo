@@ -294,13 +294,31 @@ fn dynamic_strings(path: &str) -> Option<Vec<u8>> {
 /// `natives/<pkg>/<pkg>.so` beside the executable's directory
 /// (`.robigo/bin/robigo`, `.robigo/natives`).
 pub fn robigo_native(pkg: &str) -> Option<String> {
+    robigo_module(pkg, pkg)
+}
+
+/// robigo's build of a shared object a base package keeps in its libs/,
+/// such as grDevices' cairo module: `$ROBIGO_NATIVES/<pkg>/<module>.so`,
+/// else `natives/<pkg>/<module>.so` beside the executable's directory.
+pub fn robigo_module(pkg: &str, module: &str) -> Option<String> {
     let dir = match std::env::var("ROBIGO_NATIVES") {
         Ok(d) => std::path::PathBuf::from(d),
         Err(_) => std::env::current_exe().ok()?.parent()?.parent()?.join("natives"),
     };
-    let so = dir.join(pkg).join(format!("{pkg}.so"));
+    let so = dir.join(pkg).join(format!("{module}.so"));
     let so = so.to_str()?.to_string();
     is_robigo_build(&so).then_some(so)
+}
+
+/// The file to load for GNU R's grDevices cairo module, which GNU R finds
+/// at R_HOME/library/grDevices/libs/cairo.so: there when R_HOME is a
+/// robigo home with robigo's build of it, else robigo's build itself (the
+/// R_HOME may be GNU R's, whose module is linked against GNU R's libR).
+pub fn cairo_module() -> Option<String> {
+    let home = std::env::var_os("R_HOME")?;
+    let path = std::path::Path::new(&home).join("library/grDevices/libs/cairo.so");
+    let path = path.to_str()?.to_string();
+    if is_robigo_build(&path) { Some(path) } else { robigo_module("grDevices", "cairo") }
 }
 
 /// The payload of a DLL's `info` external pointer.

@@ -319,14 +319,22 @@ pub unsafe extern "C" fn robigo_dll_open(
 }
 
 // R: Rdynload.c:R_cairoCdynload — AddDLL of grDevices' cairo module,
-// R_HOME/library/grDevices/libs/cairo.so (scripts/build-natives.sh builds
-// it from GNU R's sources): a warning, not an error, when it cannot be
-// loaded. Once open it is also registered with the host as dyn.load does,
-// so that getLoadedDLLs() lists "cairo", as in GNU R.
+// R_HOME/library/grDevices/libs/cairo.so: robigo's build of it from GNU
+// R's sources (scripts/build-natives.sh), found as the base packages'
+// shared objects are (native::cairo_module). A warning, not an error,
+// when it cannot be loaded. Once open it is also registered with the host
+// as dyn.load does, so that getLoadedDLLs() lists "cairo", as in GNU R.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_cairoCdynload(local: c_int, now: c_int) -> c_int {
     let Some(home) = std::env::var_os("R_HOME") else { return 0 };
-    let path = format!("{}/library/grDevices/libs/cairo.so", home.to_string_lossy());
+    let path = robigo_runtime::native::cairo_module()
+        .unwrap_or_else(|| format!("{}/library/grDevices/libs/cairo.so", home.to_string_lossy()));
+    if !std::path::Path::new(&path).is_file() {
+        crate::errors::warning_owned(format!(
+            "unable to load shared object '{path}':\n  {path}: cannot open shared object file: No such file or directory"
+        ));
+        return 0;
+    }
     let cpath = CString::new(path.as_str()).unwrap_or_default();
     let mut err = [0 as c_char; 2048];
     let mut token = 0usize;

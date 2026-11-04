@@ -147,6 +147,9 @@ cairo_module() {
             -I"$RSRC/src/include" -I"$RSRC/src/main" $(subst CAIRO_CPPFLAGS) $(subst BITMAP_CPPFLAGS) \
             -I"$RSRC/src/modules/X11" -I"$csrc" -c "$f" -o "$cobj/$(basename "${f%.c}").o" 2>> "$cobj/cc.log"
     done
+    # the marker robigo looks for before loading it (native::cairo_module)
+    echo 'int robigo_base_native = 1;' > "$cobj/robigo-marker.c"
+    $CC $CFLAGS -c "$cobj/robigo-marker.c" -o "$cobj/robigo-marker.o"
     $CC -shared -o "$out/grDevices/cairo.so" "$cobj"/*.o $(subst BITMAP_LIBS) $(subst CAIRO_LIBS) $LINKFLAGS
     echo "build-natives: $out/grDevices/cairo.so"
 }
