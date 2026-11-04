@@ -51,6 +51,15 @@ Baseline (main 5ce8d760, seconds, peak / shot):
   -> 0.99 s / 24 MB; a frame with a local closure x2M 1.21 s / 792 MB ->
   0.43 s / 24 MB; `stopifnot(TRUE)` x300k 374 MB -> 26 MB; `rank(random)`
   x100k 4.02 s / 344 MB -> 3.70 s / 43 MB.
+- CI's paired gate (startup cache on) flags `lm` +1.04%, `s4-valid` +0.71%,
+  `s4-new` +0.56%. On `s4-valid` the check runs 11,173 times (1.7M
+  instructions self), the rest is drops and `mi_free` of the freed frames.
+  Rejected, measured: skipping the walk for frames never given a default
+  promise or a closure (a flag set by `default_arg` and `function`):
+  -0.1M, the frames that reach the check almost all have one; counting
+  them instead, to skip frames with more outside references than inner
+  ones: +0.9M (the increment on every default promise costs more than the
+  walks it saves). The walks mostly succeed: the cost is the freeing.
 - Verified: `tests/r/basics/frame-self-cycles.R` (defaults escaping through
   closures and `environment()`, `delayedAssign` into another env,
   `reg.finalizer` on a frame, `on.exit` and `sys.frame` during the call,
