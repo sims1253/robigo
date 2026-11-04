@@ -307,3 +307,7 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   character arguments, NaN and NA together, three arguments and `na.rm`,
   a rebound `min`), recorded with GNU R 4.5.0, byte-identical in all
   three tiers. Conformance: as main.
+- Review (sol-loop, gpt-6.1-sol, 1 round): approved with one nit, fixed:
+  a loop compiled before `.primTrace(min)` stopped printing `trace: min`.
+  Such loops now stay in the VM while a primitive is traced (as whole
+  native closures do); the case is in the test.

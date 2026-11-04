@@ -3742,6 +3742,10 @@ fn jit_enter(
             }
         }
     };
+    // (A traced primitive prints when called: the VM must make the calls.)
+    if jl.builtins && crate::builtins::debug::any_prim_traced() {
+        return None;
+    }
     // Guards: native code assumes them, and that its inlined calls still
     // call the same closures (whose guards hold).
     for (sym, at) in &jl.guards {

@@ -134,6 +134,8 @@ pub struct JitLoop {
     /// The free variables of those closures: call site, name, type, and the
     /// index of the value (scalars) or view (vectors) it is passed in.
     pub free: Vec<(u32, Sym, JType, usize)>,
+    /// The loop calls builtins (`min`/`max`), which print when traced.
+    pub builtins: bool,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -757,6 +759,7 @@ pub fn compile(
         return Err(Reject::Never);
     }
     let ops = &code.ops[..];
+    let builtins = (r.start..r.end).any(|pc| min_max(&ops[pc], &inl).is_some());
     let mut nested = Vec::new();
     let mut guards = Vec::new();
     for pc in r.start..r.end {
@@ -1044,7 +1047,7 @@ pub fn compile(
         .collect();
     nulled.sort_unstable();
     nulled.dedup();
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nulled, nvals, nvecs, nested, guards, calls, free })
+    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nulled, nvals, nvecs, nested, guards, calls, free, builtins })
 }
 
 /// Register types before an op: `None` for undefined, or different types

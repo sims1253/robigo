@@ -39,3 +39,10 @@ reb <- function() {
   s
 }
 print(reb())
+# a traced min prints at every call, in a loop that ran natively before
+tr <- function() { s <- 0; for (i in 1:20) s <- s + min(i, 7); s }
+print(tr())
+invisible(.primTrace(min))
+print(tr())
+invisible(.primUntrace(min))
+print(tr())
