@@ -736,7 +736,15 @@ pub(crate) fn dispatch_xlength(i: &mut Interp, x: &Value, call: &Value, env: &En
         // DispatchOrEval internal generic: length
         if let Some(len) = i.try_dispatch("length", call, &[Arg::pos(x.clone())], env)? {
             return Ok(match &len {
-                Value::Real(r) if !r.data.is_empty() => r.data[0] as i64,
+                // C's (R_xlen_t) cast: NaN is negative on GNU R's targets,
+                // where Rust's `as` would give 0 (an empty result)
+                Value::Real(r) if !r.data.is_empty() => {
+                    if r.data[0].is_nan() {
+                        i64::MIN
+                    } else {
+                        r.data[0] as i64
+                    }
+                }
                 _ => crate::coerce::as_integer(&len) as i64,
             });
         }
