@@ -1055,14 +1055,33 @@ pub(super) fn rconn_fgetc(con: &mut Connection) -> i32 {
 /// (R: connections.c:stdout_vfprintf); `stderr()` writes where messages go,
 /// the connection of `sink(type = "message")` if there is one
 /// (stderr_vfprintf calls REvprintf_internal, which follows R_ErrorCon).
+#[inline(always)]
 pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
+    if n == 2 && i.conns.error_con != 2 {
+        stderr_sunk(i, text);
+        return Ok(());
+    }
+    conn_print(i, n, text)
+}
+
+/// `stderr()`'s writes under `sink(type = "message")`, out of line.
+#[cold]
+#[inline(never)]
+fn stderr_sunk(i: &mut Interp, text: &str) {
+    reprintf_sink(i, text);
+}
+
+/// conn_write once `stderr()` is the terminal: the terminals write to the
+/// process streams directly.
+fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     match n {
         1 => {
             let _ = i.out.write_all(text.as_bytes());
             return Ok(());
         }
         2 => {
-            i.write_err(text);
+            let _ = i.out.flush();
+            let _ = i.err.write_all(text.as_bytes());
             return Ok(());
         }
         _ => {}
