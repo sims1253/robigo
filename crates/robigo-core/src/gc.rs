@@ -493,7 +493,10 @@ impl Core {
         }
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
         let x = if bytes > crate::heap::MAX_MEDIUM {
-            if self.alloc_since_gc >= self.gc_threshold && self.gc_inhibit == 0 {
+            // R: memory.c:allocVector3, `if (FORCE_GC || ...)` on this path too
+            if ((self.force_wait > 0 && self.force_gc()) || self.alloc_since_gc >= self.gc_threshold)
+                && self.gc_inhibit == 0
+            {
                 self.collect();
             }
             let p = match self.heap.try_alloc_large(bytes) {

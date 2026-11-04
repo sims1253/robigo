@@ -883,5 +883,13 @@ fn gctorture_counts_allocations() {
     c.set_torture(true);
     allocs(&mut c, 10);
     assert_eq!(collections(&c), n1 + 10);
+    // large vectors (past MAX_MEDIUM) take their own path and count too
+    c.gc_torture(3, 5);
+    let n2 = collections(&c);
+    for _ in 0..5 {
+        c.alloc_vector(REALSXP, 10_000);
+    }
+    assert_eq!(collections(&c), n2 + 1);
+    assert_eq!(c.torture_counters(), (3, 3));
     c.set_torture(false);
 }
