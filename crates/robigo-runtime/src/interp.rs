@@ -30,6 +30,10 @@ pub struct Context {
     pub builtin: bool,
 }
 
+/// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
+/// and the inline (`None`: never inline here).
+pub type SiExprMemo = (std::rc::Weak<Closure>, std::rc::Weak<Lang>, Option<crate::compile::SiInline>);
+
 pub struct Interp {
     /// Numeric kernels read this at entry; specialized code must key on it.
     pub numerics: robigo_numerics::policy::NumericPolicy,
@@ -100,10 +104,12 @@ pub struct Interp {
     pub si_ready: bool,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
-    /// expression: the inline, or never-inline. The key's addresses stay
-    /// valid because the value holds both alive (freed addresses could
-    /// otherwise be reused by unrelated calls).
-    pub si_expr_memo: HashMap<(usize, usize), Option<(crate::compile::SiInline, Rc<Closure>, Rc<Lang>)>>,
+    /// expression: the inline, or never-inline. The value holds both
+    /// weakly, which keeps their allocations and so the key's addresses
+    /// valid (freed addresses could otherwise be reused by unrelated
+    /// calls) without keeping the caller's environment alive; `gc()`
+    /// drops the entries of dead callers.
+    pub si_expr_memo: HashMap<(usize, usize), SiExprMemo>,
     /// Cache of function lookups through the search path, keyed by symbol
     /// and starting environment, valid for `fun_cache_epoch`.
     pub fun_cache: HashMap<(Sym, usize), Value, crate::env::FastHash>,

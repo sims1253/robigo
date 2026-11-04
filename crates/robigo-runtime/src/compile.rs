@@ -525,10 +525,14 @@ pub struct SiInline {
 }
 
 /// The write-once resolution of a [`CallSite::si`] call site: the caller
-/// closure it was resolved for (held alive, so its address cannot be
-/// reused), whether that caller is namespace-scoped, and the inline
-/// (`None`: never inline here).
-pub type SiMemo = Option<(Rc<Closure>, bool, Option<SiInline>)>;
+/// closure it was resolved for, whether that caller is namespace-scoped,
+/// and the inline (`None`: never inline here). The caller is held weakly:
+/// GNU R inlines at compile time and keeps no reference to the caller, so
+/// this cache must not keep it, its environment or what that reaches
+/// alive (R6's clone() left every cloned object unfinalizable). The weak
+/// reference still keeps the allocation, so its address is not reused
+/// while the memo names it.
+pub type SiMemo = Option<(std::rc::Weak<Closure>, bool, Option<SiInline>)>;
 
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
