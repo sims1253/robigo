@@ -13,7 +13,7 @@ print(msgs)
 print(utils::capture.output(message("captured"), type = "message"))
 print(utils::capture.output(cat("a", "b\n", file = stderr()), type = "message"))
 print(utils::capture.output(suppressMessages(message("hidden")), type = "message"))
-# stdout() ignores the output sinks
+# cat() to stdout() goes where the output sink sends it
 out <- utils::capture.output(cat("to stdout()\n", file = stdout()), cat("sunk\n"))
 print(out)
 # a file connection is flushed after each message
