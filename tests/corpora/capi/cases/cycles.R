@@ -70,5 +70,6 @@ local({
     h <- .Call("cycles_make", "weak-mode cycle")
     self <- environment()
 })
+invisible(NULL)  # .Last.value no longer holds local()'s environment
 invisible(gc())
 cat("after one more gc()\n")
