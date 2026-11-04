@@ -41,3 +41,13 @@ SEXP capi_print(SEXP x) {
     R_ProcessEvents();
     return mkString("printed");
 }
+
+// R_Busy: bit64 marks its long sorts busy; the standard (non-GUI)
+// interface ignores it. R: unix/system.c:R_Busy, unix/sys-std.c:Rstd_Busy
+void R_Busy(int which);  // exported, declared only in Defn.h
+
+SEXP capi_busy(void) {
+    R_Busy(1);
+    R_Busy(0);
+    return mkString("not busy");
+}

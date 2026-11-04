@@ -322,6 +322,11 @@ pub unsafe extern "C" fn R_FlushConsole() {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ProcessEvents() {}
 
+// R: unix/system.c:R_Busy — ptr_R_Busy, which is unix/sys-std.c:Rstd_Busy
+// for the standard interface: it ignores the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_Busy(_which: c_int) {}
+
 // R: errors.c:R_CheckUserInterrupt — robigo has no asynchronous
 // interrupts yet; the flag is honoured if a package sets it.
 #[unsafe(no_mangle)]
