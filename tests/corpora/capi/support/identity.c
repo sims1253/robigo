@@ -11,6 +11,8 @@ static void put(SEXP x, SEXP v, int k) {
         INTEGER(x)[0] = Rf_asInteger(v) + k;
     else if (TYPEOF(x) == REALSXP)
         REAL(x)[0] = Rf_asReal(v) + k;
+    else if (TYPEOF(x) == LGLSXP)
+        LOGICAL(x)[0] = Rf_asLogical(v);
     else
         Rf_error("not a number");
 }

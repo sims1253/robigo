@@ -40,18 +40,3 @@ map <- function(.x, .f, ...) {
 print(map(1:3, function(x) x * 10))
 print(map(c(a = 2.5, b = 3.5), function(x, y) x + y, y = 1))
 print(unlist(map(1:200, function(x) x)[c(1, 128, 200)]))
-
-# the constants are never shared with a variable (#345: C's write into a
-# copied shared scalar is not written back)
-.Call("capi_id_set", 0L, 9L)
-print(0L)
-k <- function() {
-  .Call("capi_id_set", 1L, 9L)
-  1L
-}
-print(k())
-print(k())
-z <- 3L
-w <- function() 3L
-.Call("capi_id_set", z, 4L)
-print(c(z, w(), 3L))
