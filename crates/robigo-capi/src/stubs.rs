@@ -213,4 +213,3 @@ pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
 pub unsafe extern "C" fn utf8Valid() {
     not_implemented("utf8Valid")
 }
-
