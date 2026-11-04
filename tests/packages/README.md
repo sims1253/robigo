@@ -11,6 +11,7 @@ tool.
 | `sources.tsv` | the selection's source tarballs, with checksums (rv's binaries carry no tests and `rv.lock` no checksums) | `lock` |
 | `expected/<pkg>.jsonl.gz` | GNU R's outcome of every test file and block, recorded three times | `record`, which runs GNU R only |
 | `passing/<pkg>/<file>/<id>.pass` | the ratchet: one empty marker per block that matches | `run --update` |
+| `own-skips.tsv` | skip reasons a package's own code always takes, each citing its source line; such blocks leave the green floor's denominator | by hand |
 | `runner.R` | runs one test file in one process and streams events | |
 | `canary/` | a package with one test per outcome, to check the harness on robigo | |
 | `Dockerfile`, `apt.txt` | `robigo-oracle:4.5.0` and the system libraries the pinned packages link against, and the pinned test servers | |
@@ -52,6 +53,22 @@ name their hosts, so httr runs without a server. A new server is an entry of
 `SERVERS` in `scripts/package-suite.py` and a pinned package in `apt.txt`;
 its responses are part of the recorded outcomes, so changing its version
 means recording its packages again.
+
+## Skips of the package's own
+
+A package is green only when at least 80% of its blocks are scored, so that a
+package whose tests mostly skip here (a missing Suggests, no network) does not
+look done. Some skips have nothing to do with the machine: httr's
+`skip_httpbin()` is `skip("httpbin is not reliable")`, called unconditionally.
+`own-skips.tsv` lists such reasons for each package and version. A block GNU R
+records as skipped, steadily and only for listed reasons, leaves the floor's
+denominator. It is still scored as a block that robigo must skip the same way.
+An entry needs a comment citing the line of the package's source that makes
+the skip unconditional. `skip_on_ci()`, `skip_if_not_installed()`,
+`skip_if_offline()` and tests of internet hosts are never listed: those are
+exactly what the floor is for. The unit tests check that every entry has its
+comment, matches the selection's version and appears in the recording, so a
+new snapshot has to check the entries again.
 
 ## Moving to a new snapshot
 

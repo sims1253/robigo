@@ -1,0 +1,16 @@
+# Skips a package's own test code always takes, whatever the machine: a block
+# GNU R records as skipped for one of these reasons leaves the denominator of
+# the 80% green floor (docs/verification.md). It is still a block, and robigo
+# must still skip it the same way. Kept by hand, one reason per line, each
+# under a comment citing the line of the package's source that makes it
+# unconditional. Environment skips (skip_on_ci, missing Suggests, hosts of the
+# internet) never go here: the floor exists for them. An entry applies to its
+# version only, so a new snapshot has to check it again.
+package	version	reason
+# tests/testthat/helper.R:1: skip_httpbin <- function() skip("httpbin is not reliable"),
+# at 20 call sites in test-body, test-config, test-content, test-http-error,
+# test-http-head, test-oauth and test-response, none of them under a condition
+httr	1.4.9	Reason: httpbin is not reliable
+# tests/testthat/test-header.r:17: skip("Currently broken"), the first line of
+# "All headers captures headers from redirects"
+httr	1.4.9	Reason: Currently broken

@@ -161,7 +161,14 @@ and a skip GNU R did not take are all differences.
 - Not scored: blocks GNU R fails, skips, or does not repeat. A block GNU R
   skips that fails on robigo counts as `skip_diverged`.
 - A package is **green** when every scored block matches, nothing diverged,
-  every file finished, and at least 80% of its blocks are scored.
+  every file finished, and at least 80% of its blocks are scored. The floor
+  is there for what this machine cannot run (a missing Suggests, the
+  network). A block GNU R skips steadily for a reason the package's own code
+  always takes leaves the floor's denominator: `tests/packages/own-skips.tsv`
+  lists those reasons by hand, each with the source line that makes it
+  unconditional. Such a block is still a block, and robigo must skip it the
+  same way or it diverges. httr is the case: 33 of its 96 blocks call
+  `skip("httpbin is not reliable")` or `skip("Currently broken")`.
 
 The headline is the share of scored blocks that match, across all packages,
 with the green count beside it. A package at 0/20 green has no gradient; a block
