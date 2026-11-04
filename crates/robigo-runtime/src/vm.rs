@@ -641,20 +641,9 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
 pub(crate) const DEAD: RVal = RVal::I(0);
 
 /// Move a register's value out, leaving it dead.
-/// (A scalar is copied: left in the register, it holds nothing.)
 #[inline(always)]
 fn take_reg(regs: &mut [RVal], r: Reg) -> RVal {
-    let x = &mut regs[r as usize];
-    if let RVal::V(_) = x { std::mem::replace(x, DEAD) } else { x.clone() }
-}
-
-/// Clear a register whose value a store has copied (elements into a
-/// vector): it is dead in effect position.
-#[inline(always)]
-fn drop_reg(regs: &mut [RVal], r: Reg) {
-    if let RVal::V(_) = regs[r as usize] {
-        regs[r as usize] = DEAD;
-    }
+    std::mem::replace(&mut regs[r as usize], DEAD)
 }
 
 /// The general case of `Op::SetIndex`/`Op::SetIndex2`/`Op::SetDollar`
@@ -904,7 +893,7 @@ fn range_subset(x: &RVal, start: i64, step: i64, n: u64) -> Option<RVal> {
 /// `x[a:b] <- val` in place: `x` a non-object vector, the range within
 /// it, `val` of x's type (or an integer into a double vector) and of
 /// length 1 or the range's length. Otherwise false (use `[<-`).
-fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
+fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &mut RVal, take: bool) -> bool {
     if x.is_object() {
         return false;
     }
@@ -917,7 +906,7 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
         }
     }
     let fits = |len: usize| len == n || len == 1;
-    match (x, val) {
+    match (x, &*val) {
         (Value::Real(v), RVal::D(d)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*d]),
         (Value::Real(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[int_to_real(*i)]),
         (Value::Int(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*i]),
@@ -939,6 +928,10 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
             fill(&mut Rc::make_mut(v).data, n, pos, &s.data)
         }
         _ => return false,
+    }
+    // (The elements are copied: in effect position the value is dead.)
+    if take {
+        *val = DEAD;
     }
     true
 }
@@ -4024,13 +4017,7 @@ fn run_with(
                     (Some((start, step, n)), _) if own_var(vars, env, *x, *slot) => {
                         match &mut vars.slots[*slot as usize] {
                             SlotVal::Dirty(RVal::V(xv)) => {
-                                let done = set_range(xv, start, step, n, &regs[*val as usize]);
-                                // (The elements are copied: in effect
-                                // position the value itself is dead.)
-                                if done && *take {
-                                    drop_reg(regs, *val);
-                                }
-                                done
+                                set_range(xv, start, step, n, &mut regs[*val as usize], *take)
                             }
                             _ => false,
                         }
