@@ -5,6 +5,7 @@ Warning messages:
 There were 50 or more warnings (use warnings() to see the first 50)
 There were 24 warnings (use warnings() to see them)
 There were 50 or more warnings (use warnings() to see the first 50)
+There were 50 or more warnings (use warnings() to see the first 50)
 Error in while (i < n) { : missing value where TRUE/FALSE needed
 Calls: w1
 Execution halted
