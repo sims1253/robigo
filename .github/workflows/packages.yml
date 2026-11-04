@@ -64,9 +64,9 @@ jobs:
             exit 1
           fi
           # ci.yml keeps the binary for 7 days: fail here, not hours in
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.name == "robigo" and .expired == false) | .id' | grep -q . ||
-            { echo "CI run $run has no live robigo artifact" >&2; exit 1; }
+          live=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "robigo" and .expired == false)] | length')
+          if [ "$live" = 0 ]; then echo "CI run $run has no live robigo artifact" >&2; exit 1; fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           # all of them (an empty list), or a few with no history recorded
