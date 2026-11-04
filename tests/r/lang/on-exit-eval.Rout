@@ -1,0 +1,23 @@
+deferred
+after eval
+eval exit
+in f
+in local
+local exit
+after local
+zero
+one
+two
+[1] 42
+exit
+exit
+$value
+[1] 8
+
+$visible
+[1] TRUE
+
+cleanup
+[1] "boom"
+inside: mocked 
+outside: original 
