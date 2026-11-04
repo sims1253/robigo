@@ -96,6 +96,9 @@ thread_local! {
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
     static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// Core copies of values C looked up (see [`looked_up`]), preserved
+    /// while the runtime value lives: core address -> (copy, is it alive?).
+    static KEPT: RefCell<HashMap<usize, (Sexp, Box<dyn Fn() -> bool>)>> = RefCell::new(HashMap::new());
     /// What C code replaced in runtime objects (see [`retire`]).
     static RETIRED: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
 }
@@ -283,6 +286,7 @@ fn only_stored(v: &Value) -> bool {
 }
 
 unsafe fn sweep_stored() {
+    sweep_kept();
     let dead: Vec<Sexp> = STORED.with(|m| {
         let mut m = m.borrow_mut();
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
@@ -413,7 +417,7 @@ unsafe fn reclaim_host_cycles() {
 }
 
 fn kept_count() -> usize {
-    STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len())
+    STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len()) + KEPT.with(|m| m.borrow().len())
 }
 
 fn drain_dead() {
@@ -1300,14 +1304,65 @@ unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
 /// (Promises are not: their `STORED` entries are C-assembled nodes.)
 unsafe fn looked_up(v: &Value) -> Sexp {
     let x = to_sexp(v);
-    if !matches!(v, Value::Promise(_)) && !x.has_flag(flags::HOST) {
-        if let Some(k) = vector_identity(v) {
-            if STORED.with(|m| m.borrow().get(&k).map(|e| e.0)) != Some(x) {
-                remember_stored(x, v);
-            }
+    if x.has_flag(flags::HOST) || KEPT.with(|m| m.borrow().contains_key(&x.addr())) {
+        return x;
+    }
+    let alive: Option<Box<dyn Fn() -> bool>> = match v {
+        Value::Lgl(r) | Value::Int(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
         }
+        Value::Real(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Cplx(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Str(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Raw(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::List(r) | Value::Expr(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Pairlist(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Lang(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        Value::Obj(r) => {
+            let w = Rc::downgrade(r);
+            Some(Box::new(move || w.strong_count() > 0))
+        }
+        _ => None,
+    };
+    if let Some(alive) = alive {
+        core().preserve(x);
+        KEPT.with(|m| m.borrow_mut().insert(x.addr(), (x, alive)));
     }
     x
+}
+
+/// Drop `KEPT` entries whose runtime value died.
+unsafe fn sweep_kept() {
+    let dead: Vec<Sexp> = KEPT.with(|m| {
+        let mut m = m.borrow_mut();
+        let keys: Vec<usize> = m.iter().filter(|(_, e)| !(e.1)()).map(|(k, _)| *k).collect();
+        keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
+    });
+    for x in dead {
+        core().release(x);
+    }
 }
 
 /// A variable's value for C; a list is noted, in case C changes it in
