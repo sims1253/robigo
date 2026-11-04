@@ -24,4 +24,4 @@ NULL
 NULL
 [1] TRUE
 [1] 10100
-[1] 1
+[1] "not a closure"

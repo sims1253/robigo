@@ -24,5 +24,5 @@ vis <- function() function() 1
 withVisible(vis())$visible
 mkmany <- function(n) { s <- 0; for (i in seq_len(n)) { g <- function(v) v * i; s <- s + g(2) }; s }
 print(mkmany(100))
-rebound <- function() { `function` <- function(...) "not a closure"; 1 }
+rebound <- function() { `function` <- function(...) "not a closure"; function() 1 }
 print(rebound())
