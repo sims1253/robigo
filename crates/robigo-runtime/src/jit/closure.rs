@@ -221,6 +221,31 @@ struct Valid {
     /// All the closures are defined on the search path: the epoch is all
     /// that can change.
     search: bool,
+    /// Then their environments (search-path environments: they live on).
+    envs: SmallVec<[Env; 4]>,
+}
+
+/// The closures of a tree, or for a tree on the search path just their
+/// environments: what a run needs of them.
+enum Insts {
+    Closures(SmallVec<[Rc<Closure>; 4]>),
+    Envs(SmallVec<[Env; 4]>),
+}
+
+impl Insts {
+    fn len(&self) -> usize {
+        match self {
+            Insts::Closures(c) => c.len(),
+            Insts::Envs(e) => e.len(),
+        }
+    }
+
+    fn env(&self, k: usize) -> &Env {
+        match self {
+            Insts::Closures(c) => &c[k].env,
+            Insts::Envs(e) => &e[k],
+        }
+    }
 }
 
 /// Changes whenever a function binding changes between `env` and the
@@ -1611,18 +1636,21 @@ fn run(
     // The closures, cheaply if nothing changed since the last run.
     let epoch = search_epoch();
     let key = Rc::as_ptr(clo) as usize;
-    let memo: Option<SmallVec<[Rc<Closure>; 4]>> = e.valid.borrow().as_ref().and_then(|v| {
+    // (The closures' environments are what is needed.)
+    let memo: Option<Insts> = e.valid.borrow().as_ref().and_then(|v| {
         if v.root != key || v.epoch != epoch {
             return None;
         }
-        // (Without cells nothing below needs the closures themselves.)
-        if v.search && e.cells.is_empty() {
-            return Some(SmallVec::new());
+        // On the search path the epoch says it all: the closures are the
+        // same (the weak references keep their addresses from being
+        // reused, so the root is the same closure).
+        if v.search {
+            return Some(Insts::Envs(v.envs.clone()));
         }
         let i: Option<SmallVec<[Rc<Closure>; 4]>> = v.insts.iter().map(|w| w.upgrade()).collect();
         let i = i?;
         let versions = i.iter().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(chain_version(&c.env)));
-        (versions == v.versions).then_some(i)
+        (versions == v.versions).then_some(Insts::Closures(i))
     });
     let insts = match memo {
         Some(i) => i,
@@ -1631,8 +1659,10 @@ fn run(
             let versions = i.iter().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(chain_version(&c.env)));
             let insts = i.iter().map(Rc::downgrade).collect();
             let search = i.iter().all(|c| c.env.is_search());
-            *e.valid.borrow_mut() = Some(Valid { root: key, epoch, versions, insts, search });
-            i.into_iter().collect()
+            let kept =
+                if search && !e.cells.is_empty() { i.iter().map(|c| c.env.clone()).collect() } else { SmallVec::new() };
+            *e.valid.borrow_mut() = Some(Valid { root: key, epoch, versions, insts, search, envs: kept });
+            Insts::Closures(i.into_iter().collect())
         }
     };
     // The arguments and cells, and their types.
@@ -1687,7 +1717,7 @@ fn run(
     // (Pending assignments of the caller's frame matter only if a cell may be
     // one of its variables.)
     if let Some(caller) = pending
-        && insts.iter().any(|c| on_chain(&c.env, caller))
+        && (0..insts.len()).any(|k| on_chain(insts.env(k), caller))
     {
         *flush = true;
         return None;
@@ -1700,9 +1730,9 @@ fn run(
         held.reserve(e.cells.len());
     }
     for c in &e.cells {
-        let env = &insts[c.users[0]].env;
+        let env = insts.env(c.users[0]);
         for u in &c.users[1..] {
-            if !owner(env, c.sym)?.ptr_eq(&owner(&insts[*u].env, c.sym)?) {
+            if !owner(env, c.sym)?.ptr_eq(&owner(insts.env(*u), c.sym)?) {
                 return None;
             }
         }
@@ -1789,7 +1819,7 @@ fn run(
     let mut wrote = false;
     for (c, t) in e.cells.iter().zip(&cell_ty) {
         if c.written && ctx[c.off + 1] != 0 {
-            let o = owner(&insts[c.users[0]].env, c.sym)?;
+            let o = owner(insts.env(c.users[0]), c.sym)?;
             set_plain_in_place(&o, c.sym, &from_bits(*t, ctx[c.off]));
             wrote = true;
         }
