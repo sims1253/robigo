@@ -118,9 +118,15 @@ sources() {
         sed -e 's/@BUILD_AQUA_TRUE@/#/' -e 's/#.*//'
 }
 
-# a substitution configure made (config.status), e.g. CAIRO_CPPFLAGS
+# a substitution configure made (config.status), e.g. CAIRO_CPPFLAGS;
+# long values are split over lines as "part"\ / "part"
 subst() {
-    sed -n "s/^S\[\"$1\"\]=\"\(.*\)\"$/\1/p" "$build/config.status"
+    sed -n "/^S\[\"$1\"\]=/{
+        :a
+        /\\\\$/{N; s/\"\\\\\n\"//; ba
+        }
+        s/^[^=]*=\"//; s/\"$//; p
+    }" "$build/config.status"
 }
 
 # grDevices' cairo devices live in a module of their own, cairo.so next to
@@ -138,7 +144,7 @@ cairo_module() {
     rm -rf "$cobj" && mkdir -p "$cobj"
     for f in "$csrc/cairoBM.c" "$RSRC/src/modules/X11/rbitmap.c"; do
         $CC $CFLAGS -DTESTING_WRITE_BARRIER -DHAVE_CONFIG_H -I"$build/src/include" \
-            -I"$RSRC/src/include" -I"$RSRC/src/main" $(subst CAIRO_CPPFLAGS) \
+            -I"$RSRC/src/include" -I"$RSRC/src/main" $(subst CAIRO_CPPFLAGS) $(subst BITMAP_CPPFLAGS) \
             -I"$RSRC/src/modules/X11" -I"$csrc" -c "$f" -o "$cobj/$(basename "${f%.c}").o" 2>> "$cobj/cc.log"
     done
     $CC -shared -o "$out/grDevices/cairo.so" "$cobj"/*.o $(subst BITMAP_LIBS) $(subst CAIRO_LIBS) $LINKFLAGS
