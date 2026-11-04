@@ -2178,7 +2178,8 @@ pub fn snapshot_simple_internals(interp: &mut Interp) {
 
 /// The caller of a call that may inline: top-level calls are never
 /// compiled in GNU R and stay generic. Otherwise the caller closure
-/// (cloned; the memo holds it alive so its address cannot be reused),
+/// (cloned; the memo holds it weakly, which keeps its allocation, and so
+/// its address, from being reused),
 /// whether it is namespace-scoped (R: getInlineInfo finds a locked
 /// namespace above it, so the call inlines without a guard), and whether
 /// it runs as compiled code (R: R_CheckJIT timing; first calls of small
