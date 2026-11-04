@@ -120,6 +120,93 @@ class Green(unittest.TestCase):
         self.assertFalse(self.summary(exp, got)["green"])
 
 
+class OwnSkips(unittest.TestCase):
+    """Skips the package's own code always takes leave the floor's denominator."""
+    ROW = {"version": "1.0"}
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path, suite.OWN_SKIPS = suite.OWN_SKIPS, os.path.join(self.dir.name, "own-skips.tsv")
+        with open(suite.OWN_SKIPS, "w") as f:
+            f.write("# a comment\npackage\tversion\treason\n# why\np\t1.0\tReason: never\nq\t1.0\tReason: other\n"
+                    "p\t0.9\tReason: old\n")
+
+    def tearDown(self):
+        suite.OWN_SKIPS = self.path
+        self.dir.cleanup()
+
+    def mostly_skipped(self, reasons, got_skip=True, unstable=False):
+        exp, got = recorded(), [block()]
+        for i in range(9):
+            exp.update(recorded(test=f"s{i}", passed=0, skip=1, reasons=reasons, unstable=unstable))
+            got.append(block(test=f"s{i}", passed=0, skip=1, reasons=reasons) if got_skip else
+                       block(test=f"s{i}", passed=0, error=1, msg="boom"))
+        files = {"test-a": {"file": "test-a", "seconds": 1, "status": "done", "stable": True}}
+        return suite.summarize("p", self.ROW, exp, files, {"test-a": ("done", 1, got, None)})[0]
+
+    def test_reasons_of_this_package_and_version(self):
+        self.assertEqual(suite.own_skips("p", "1.0"), {"Reason: never"})
+        self.assertEqual(suite.own_skips("p", "0.9"), {"Reason: old"})
+        self.assertEqual(suite.own_skips("r", "1.0"), set())
+
+    def test_an_own_skip_leaves_the_floor(self):
+        s = self.mostly_skipped(["Reason: never"])
+        self.assertEqual((s["own_skips"], s["blocks"], s["n"]), (9, 10, 1))
+        self.assertTrue(s["green"])
+
+    def test_another_packages_or_versions_reason_does_not(self):
+        self.assertFalse(self.mostly_skipped(["Reason: other"])["green"])
+        self.assertFalse(self.mostly_skipped(["Reason: old"])["green"])
+        self.assertEqual(self.mostly_skipped(["Reason: other"])["own_skips"], 0)
+
+    def test_an_unlisted_reason_beside_a_listed_one_does_not(self):
+        self.assertFalse(self.mostly_skipped(["Reason: never", "Reason: offline"])["green"])
+
+    def test_an_unstable_skip_does_not(self):
+        self.assertFalse(self.mostly_skipped(["Reason: never"], unstable=True)["green"])
+
+    def test_robigo_must_still_skip_it(self):
+        s = self.mostly_skipped(["Reason: never"], got_skip=False)
+        self.assertEqual(s["skip_diverged"], 9)
+        self.assertFalse(s["green"])
+
+    def test_a_block_that_ran_before_skipping_is_not_an_own_skip(self):
+        self.assertFalse(suite.own_skip({"outcome": [1, 0, 0, 1, 0, ["Reason: never"]], "unstable": False},
+                                        {"Reason: never"}))
+
+
+class OwnSkipsFile(unittest.TestCase):
+    """tests/packages/own-skips.tsv itself."""
+
+    def entries(self):
+        out, comment = [], False
+        with open(suite.OWN_SKIPS) as f:
+            for line in f:
+                if line.startswith("#"):
+                    comment = True
+                elif line.strip() and not line.startswith("package\t"):
+                    out.append((line.rstrip("\n").split("\t"), comment))
+                    comment = False
+        return out
+
+    def test_every_entry_cites_its_source(self):
+        for fields, comment in self.entries():
+            self.assertEqual(len(fields), 3, fields)
+            self.assertTrue(comment, f"{fields} has no comment citing the package's source")
+
+    def test_every_entry_is_of_the_selection(self):
+        sel = suite.selection()
+        for (pkg, version, reason), _ in self.entries():
+            self.assertIn(pkg, sel)
+            self.assertEqual(version, sel[pkg]["version"], f"{pkg}: an entry of another version")
+            self.assertTrue(reason.startswith("Reason: "), reason)
+
+    def test_every_entry_is_recorded(self):
+        for (pkg, version, reason), _ in self.entries():
+            exp, _ = suite.read_expected(pkg)
+            self.assertTrue(any(reason in e["outcome"][5] for e in exp.values()), f"{pkg}: no block skips for {reason!r}")
+
+
 class Events(unittest.TestCase):
     def parse(self, lines):
         with tempfile.TemporaryDirectory() as d:

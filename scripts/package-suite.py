@@ -43,6 +43,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR = os.path.join(ROOT, "tests", "packages")
 SELECTION = os.path.join(DIR, "selection.tsv")
 SOURCES = os.path.join(DIR, "sources.tsv")
+OWN_SKIPS = os.path.join(DIR, "own-skips.tsv")
 PROJECT = os.path.join(DIR, "rproject.toml")
 LOCK = os.path.join(DIR, "rv.lock")
 EXPECTED = os.path.join(DIR, "expected")
@@ -764,8 +765,29 @@ def markers(pkg):
     return out
 
 
+def own_skips(pkg, version):
+    """The skip reasons `pkg`'s own code always takes (own-skips.tsv)."""
+    out = set()
+    with open(OWN_SKIPS) as f:
+        lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
+    for p, v, reason in lines[1:]:
+        if p == pkg and v == version:
+            out.add(reason)
+    return out
+
+
+def own_skip(e, reasons):
+    """Did GNU R skip this block, steadily, for a reason of the package's own?"""
+    p, f, err, s, _, why = e["outcome"]
+    return not e["unstable"] and p == f == err == 0 and s > 0 and bool(why) and set(why) <= reasons
+
+
 def summarize(pkg, row, exp, exp_files, got):
     rows, extra = compare(exp, exp_files, got)
+    # the floor guards against what this machine cannot run, not against
+    # tests the package's authors switched off everywhere
+    reasons = own_skips(pkg, row["version"])
+    own = sum(1 for r in rows.values() if own_skip(r["expected"], reasons))
     scored = {k: r for k, r in rows.items() if r["scored"]}
     matching = {k for k, r in scored.items() if r["state"] == "match"}
     diverged = [k for k, r in rows.items() if not r["scored"] and not r["expected"]["unstable"]
@@ -780,8 +802,8 @@ def summarize(pkg, row, exp, exp_files, got):
     # a block GNU R does not have (an error outside any test, say) is a
     # difference too, though it has nothing to be scored against
     green = bool(scored) and len(matching) == len(scored) and not diverged and not extra and \
-        set(files) <= {"done"} and len(scored) >= GREEN_FLOOR * len(rows)
-    return {"v": row["version"], "m": len(matching), "n": len(scored), "blocks": len(rows),
+        set(files) <= {"done"} and len(scored) >= GREEN_FLOOR * (len(rows) - own)
+    return {"v": row["version"], "m": len(matching), "n": len(scored), "blocks": len(rows), "own_skips": own,
             "unstable": sum(1 for r in rows.values() if r["expected"]["unstable"]),
             "skip_diverged": len(diverged), "extra": len(extra), "files": files,
             "s": round(sum(g[1] for g in got.values()), 1),
