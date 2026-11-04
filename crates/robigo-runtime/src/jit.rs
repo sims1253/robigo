@@ -144,12 +144,14 @@ pub struct InlineCall {
 /// An argument of a call in native code: evaluated by the caller, which is
 /// only unobservable because of what it is (it has no effects and a bounded
 /// cost; whatever would be observable leaves native code instead).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum CallArg {
     Leaf(Leaf),
     Arith(ArithOp, Leaf, Leaf),
     /// `x[[i]]` (`two`) or `x[i]` of variable slot `x`.
     Index(Slot, Leaf, bool),
+    /// `compile::NestedArith`: `a op b`, or `-a` without `b`.
+    Nested(std::rc::Rc<(ArithOp, CallArg, Option<CallArg>)>),
 }
 
 impl CallArg {
@@ -157,6 +159,17 @@ impl CallArg {
         match self {
             CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
             CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
+            CallArg::Nested(n) => {
+                let a = n.1.ty(st, slot_ty)?;
+                match &n.2 {
+                    Some(b) => arith_type(n.0, a, b.ty(st, slot_ty)?),
+                    None => match a {
+                        JType::D => Some(JType::D),
+                        JType::I | JType::L => Some(JType::I),
+                        _ => None,
+                    },
+                }
+            }
             CallArg::Index(x, i, _) => {
                 if !matches!(leaf_type(i, st, slot_ty)?, JType::D | JType::I) {
                     return None;
@@ -475,23 +488,33 @@ fn leaf_uses(l: &Leaf, u: &mut Uses) {
     }
 }
 
+fn arg_uses(a: &CallArg, u: &mut Uses) {
+    match a {
+        CallArg::Leaf(l) => leaf_uses(l, u),
+        CallArg::Arith(_, x, y) => {
+            leaf_uses(x, u);
+            leaf_uses(y, u);
+        }
+        CallArg::Index(x, i, _) => {
+            u.rslots.push(*x);
+            leaf_uses(i, u);
+        }
+        CallArg::Nested(n) => {
+            arg_uses(&n.1, u);
+            if let Some(b) = &n.2 {
+                arg_uses(b, u);
+            }
+        }
+    }
+}
+
 fn uses(op: &Op, inl: &Inl) -> Uses {
     let mut u = Uses::default();
     match op {
         Op::Call { dst, site, .. } => {
             if let Some(ic) = inl.calls.get(site) {
                 for a in &ic.args {
-                    match a {
-                        CallArg::Leaf(l) => leaf_uses(l, &mut u),
-                        CallArg::Arith(_, x, y) => {
-                            leaf_uses(x, &mut u);
-                            leaf_uses(y, &mut u);
-                        }
-                        CallArg::Index(x, i, _) => {
-                            u.rslots.push(*x);
-                            leaf_uses(i, &mut u);
-                        }
-                    }
+                    arg_uses(a, &mut u);
                 }
             }
             u.wregs.push(*dst);
@@ -1295,6 +1318,36 @@ impl Gen<'_, '_> {
         self.b.ins().select(na, nar, f)
     }
 
+    /// The value of argument `k` of the call at `pc`.
+    fn call_arg(&mut self, k: usize, a: &CallArg, pc: usize) -> (CValue, JType) {
+        match a {
+            CallArg::Leaf(l) => self.leaf(l),
+            CallArg::Arith(op, x, y) => {
+                let (x, y) = (self.leaf(x), self.leaf(y));
+                let t = arith_type(*op, x.1, y.1).unwrap();
+                (self.arith(*op, x, y, pc), t)
+            }
+            CallArg::Index(x, i, two) => self.index_arg(k, *x, i, *two, pc),
+            CallArg::Nested(n) => {
+                let x = self.call_arg(k, &n.1, pc);
+                match &n.2 {
+                    Some(b) => {
+                        let y = self.call_arg(k, b, pc);
+                        let t = arith_type(n.0, x.1, y.1).unwrap();
+                        (self.arith(n.0, x, y, pc), t)
+                    }
+                    // (As `Op::Neg`.)
+                    None if x.1 == JType::D => (self.b.ins().fneg(x.0), JType::D),
+                    None => {
+                        let na = self.is_na_i(x.0);
+                        let neg = self.b.ins().ineg(x.0);
+                        (self.b.ins().select(na, x.0, neg), JType::I)
+                    }
+                }
+            }
+        }
+    }
+
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
     fn arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
         if a.1 == JType::D || b.1 == JType::D {
@@ -1766,19 +1819,8 @@ impl Gen<'_, '_> {
             Op::Call { dst, site, .. } => {
                 let ic = &self.inl.calls[site];
                 let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
-                let args: Vec<(CValue, JType)> = arg_list
-                    .iter()
-                    .enumerate()
-                    .map(|(k, a)| match a {
-                        CallArg::Leaf(l) => self.leaf(l),
-                        CallArg::Arith(op, x, y) => {
-                            let (x, y) = (self.leaf(x), self.leaf(y));
-                            let t = arith_type(*op, x.1, y.1).unwrap();
-                            (self.arith(*op, x, y, pc), t)
-                        }
-                        CallArg::Index(x, i, two) => self.index_arg(k, *x, i, *two, pc),
-                    })
-                    .collect();
+                let args: Vec<(CValue, JType)> =
+                    arg_list.iter().enumerate().map(|(k, a)| self.call_arg(k, a, pc)).collect();
                 if self.whole.is_some() {
                     let v = self.real_call(*site, *dst, &args);
                     self.set_reg(*dst, v);

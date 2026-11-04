@@ -549,6 +549,10 @@ pub struct CallSite {
     /// operations on leaves (for running pure closures inline: see
     /// `vm::inline_arg`).
     pub inline_args: Option<Vec<InlineArg>>,
+    /// Where `inline_args` is `None` because some argument is arithmetic of
+    /// arithmetic: the arguments as native code evaluates them. Only native
+    /// call trees take such calls (`jit::closure`); the VM makes them.
+    pub native_args: Option<Vec<NativeArg>>,
     /// `inline_args` has one to four arguments, one of them not a constant:
     /// the caller may evaluate some itself (`vm::caller_promargs`).
     pub eager: bool,
@@ -624,6 +628,27 @@ pub enum InlineArg {
         memo: std::cell::Cell<GuardMemo>,
     },
 }
+
+/// An argument of a call in a native call tree: an [`InlineArg`], or
+/// arithmetic of arithmetic (`2L * item - 1L`, `-i`), evaluated eagerly on
+/// the terms of `InlineArg::Arith`, operator by operator.
+pub enum NativeArg {
+    Plain(InlineArg),
+    Nested(Box<NestedArith>),
+}
+
+/// `a op b`, or `-a` when `b` is absent, with operands that are leaves or
+/// arithmetic themselves (not element reads), at most [`NESTED_DEPTH`]
+/// operators deep.
+pub struct NestedArith {
+    pub op: ArithOp,
+    pub a: NativeArg,
+    pub b: Option<NativeArg>,
+    pub sym: Sym,
+}
+
+/// How deep a [`NestedArith`] argument may be.
+const NESTED_DEPTH: usize = 3;
 
 /// The jump targets of a compiled `switch` (R: eval.c:do_switch).
 #[derive(Debug)]
@@ -1070,6 +1095,31 @@ impl Compiler {
         Some(InlineArg::Arith { op, a, b, sym: h, memo: std::cell::Cell::new(memo) })
     }
 
+    /// `e` as a [`NativeArg`], if it can be one, `depth` operators down.
+    fn native_arg(&mut self, e: &Value, depth: usize) -> Option<NativeArg> {
+        if let Some(a) = self.inline_arg(e) {
+            return match a {
+                InlineArg::Index { .. } if depth > 0 => None,
+                a => Some(NativeArg::Plain(a)),
+            };
+        }
+        if depth + 1 >= NESTED_DEPTH {
+            return None;
+        }
+        let Value::Lang(l) = e else { return None };
+        let h = head(l)?;
+        let op = arith_op(&h.name())?;
+        let (a, b) = if op == ArithOp::Minus && plain_args(l, 1) {
+            (self.native_arg(&l.args[0].value, depth + 1)?, None)
+        } else if plain_args(l, 2) {
+            let a = self.native_arg(&l.args[0].value, depth + 1)?;
+            (a, Some(self.native_arg(&l.args[1].value, depth + 1)?))
+        } else {
+            return None;
+        };
+        Some(NativeArg::Nested(Box::new(NestedArith { op, a, b, sym: h })))
+    }
+
     /// `e` as a [`Leaf`], if it is one.
     fn leaf(&mut self, e: &Value) -> Option<Leaf> {
         match e {
@@ -1121,6 +1171,11 @@ impl Compiler {
         } else {
             None
         };
+        let native_args = if inline_args.is_none() && l.args.iter().all(|a| a.tag.is_none()) {
+            l.args.iter().map(|a| self.native_arg(&a.value, 0)).collect::<Option<Vec<_>>>()
+        } else {
+            None
+        };
         let leaf_args = inline_args.as_ref().and_then(|a| {
             a.iter()
                 .map(|a| match a {
@@ -1152,6 +1207,7 @@ impl Compiler {
                     && !a.iter().any(|x| matches!(x, InlineArg::Index { .. }))
             }),
             inline_args,
+            native_args,
             no_eager: std::cell::Cell::new(0),
             no_native: std::cell::Cell::new(0),
             fslot: None,
