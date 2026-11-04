@@ -149,11 +149,19 @@ def in_oracle():
     # a robigo built in another checkout: its binary, its R_HOME beside it
     # (<exe>/../home) and its natives, at their own paths
     extra = {os.path.dirname(os.path.dirname(os.path.abspath(ROBIGO)))}
+    # where --out writes, so the result outlives the container
+    for i, arg in enumerate(sys.argv):
+        out = arg.split("=", 1)[1] if arg.startswith("--out=") else \
+            sys.argv[i + 1] if arg == "--out" and i + 1 < len(sys.argv) else None
+        if out:
+            d = os.path.dirname(os.path.abspath(out))
+            os.makedirs(d, exist_ok=True)
+            extra.add(d)
     if os.environ.get("ROBIGO_NATIVES"):
         extra.add(os.path.abspath(os.environ["ROBIGO_NATIVES"]))
     for d in sorted(extra):
-        if os.path.isdir(d) and not (d + "/").startswith(ROOT + "/"):
-            cmd += ["-v", f"{d}:{d}:ro"]
+        if os.path.isdir(d) and not (d + "/").startswith(ROOT + "/") and not (d + "/").startswith(CACHE + "/"):
+            cmd += ["-v", f"{d}:{d}"]
     for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET", "ROBIGO_PKG_JOBS"):
         if k in os.environ:
             cmd += ["-e", f"{k}={os.environ[k]}"]
