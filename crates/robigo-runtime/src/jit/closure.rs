@@ -1710,7 +1710,7 @@ fn run(
     for (c, t) in e.cells.iter().zip(&cell_ty) {
         if c.written && ctx[c.off + 1] != 0 {
             let o = owner(&insts[c.users[0]].env, c.sym)?;
-            set_plain_in_place(&o, c.sym, &mut from_bits(*t, ctx[c.off]), false);
+            set_plain_in_place(&o, c.sym, &from_bits(*t, ctx[c.off]));
             wrote = true;
         }
     }
