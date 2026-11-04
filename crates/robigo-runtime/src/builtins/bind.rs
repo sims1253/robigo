@@ -673,9 +673,9 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     if !is_list && !(x.is_null() || x.is_atomic()) {
         return Err(Flow::error("'x' must be a list or atomic vector"));
     }
-    let x_len = dispatch_xlength(i, &x, call, env)?;
+    let x_len = result_length(dispatch_xlength(i, &x, call, env)?, crate::memory::Elt::Int)?;
     let mut ans = if is_list {
-        let mut lens = Vec::with_capacity(x_len.max(0) as usize);
+        let mut lens = Vec::with_capacity(x_len as usize);
         let mut long = false;
         for k in 0..x_len {
             let l = get_element_length(i, &x, k, call, env)?;
@@ -688,7 +688,7 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         if long { lengths_long(i, &x, call, env)? } else { Value::ints(lens) }
     } else {
         // atomic: every element has length 1
-        Value::ints(vec![1; x_len.max(0) as usize])
+        Value::ints(vec![1; x_len as usize])
     };
     let dim = get_attrib(&x, s::DIM);
     if !dim.is_null() {
@@ -707,11 +707,22 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     Ok(ans)
 }
 
+/// The result's length: a dispatched `length()` decides it, so it is
+/// checked as `allocVector` checks it (a negative or NA length errors, a
+/// length that cannot be allocated is R's allocation error).
+fn result_length(n: i64, elt: crate::memory::Elt) -> RResult<i64> {
+    if n < 0 {
+        return Err(Flow::error("negative length vectors are not allowed"));
+    }
+    crate::memory::check_vector(n as usize, elt)?;
+    Ok(n)
+}
+
 /// `lengths()` when an element is longer than `INT_MAX`: doubles.
 // R: array.c:do_lengths_long
 fn lengths_long(i: &mut Interp, x: &Value, call: &Value, env: &Env) -> RResult<Value> {
-    let x_len = dispatch_xlength(i, x, call, env)?;
-    let mut out = Vec::with_capacity(x_len.max(0) as usize);
+    let x_len = result_length(dispatch_xlength(i, x, call, env)?, crate::memory::Elt::Real)?;
+    let mut out = Vec::with_capacity(x_len as usize);
     for k in 0..x_len {
         out.push(get_element_length(i, x, k, call, env)? as f64);
     }
