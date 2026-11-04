@@ -351,9 +351,13 @@ pub enum JitSlot {
     /// Not compiled yet: this many attempts failed for the values seen.
     Failed(u8),
     Never,
-    /// Not tried yet: the back edges of entries that ended before the
-    /// threshold, summed (a short loop run often is hot too).
-    Heat(u32),
+    /// Not tried yet: the back edges of the entries that ended before the
+    /// threshold, summed, and the number of those entries (a short loop run
+    /// often is hot too).
+    Heat {
+        back: u32,
+        entries: u32,
+    },
 }
 
 /// Why a loop was not compiled.

@@ -38,3 +38,13 @@ profiles are in `docs/ledger/perf-nbody.md`.
   with `JIT_HEAT` at 1024 the test's short loops no longer reached native
   code; they now run past it (the JIT trace shows them compiled, and a
   deopt).
+- Found by the stacked gate against main 1e285547: `robigo/fannkuch` +0.7%
+  (+1.0% at this level). Its `while (r != 1)` and `for (i in 1:r)` loops,
+  eight ops and one or two iterations per entry, reached the heat and ran
+  natively 108k times, each entry costing more than the iterations saved.
+  Heat now also counts entries, and a loop compiles by heat only if it
+  averages `JIT_HEAT_WORK` (64) ops per entry (back edges per entry times
+  body length); `nbody_naive`'s loops have 100-300. `robigo/fannkuch`
+  +1.0% -> +0.4%, `nbody_naive` -24.2% (was -24.3%); `fasta_naive` loses
+  the -6% it had from heat (a light short loop).
+

@@ -3472,6 +3472,12 @@ const JIT_THRESHOLD: u32 = 16;
 /// compiling its inner loops before the outer one).
 const JIT_HEAT: u32 = 1024;
 
+/// Ops per entry (its back edges per entry times the length of its body)
+/// a loop compiled by heat must average: entering native code costs more
+/// than a few ops in the VM (`robigo/fannkuch` +0.7% entering two loops of
+/// eight ops and one or two iterations natively 108k times).
+const JIT_HEAT_WORK: u64 = 64;
+
 /// Add the back edges of an entry of the loop at `enter` that ended below
 /// the threshold to its heat.
 #[cold]
@@ -3481,9 +3487,12 @@ fn loop_heat(code: &Code, enter: u32, count: u32) {
     let mut cache = code.jit.borrow_mut();
     match cache.get_mut(&enter) {
         None => {
-            cache.insert(enter, JitSlot::Heat(count));
+            cache.insert(enter, JitSlot::Heat { back: count, entries: 1 });
         }
-        Some(JitSlot::Heat(h)) => *h = h.saturating_add(count),
+        Some(JitSlot::Heat { back, entries }) => {
+            *back = back.saturating_add(count);
+            *entries = entries.saturating_add(1);
+        }
         Some(_) => {}
     }
 }
@@ -5174,8 +5183,13 @@ fn run_with(
                 let (go, heat) = if gs.jit_on {
                     match code.jit.borrow().get(&((pc - 1) as u32)) {
                         Some(crate::jit::JitSlot::Ready(_)) => (true, false),
-                        Some(crate::jit::JitSlot::Heat(h)) => (*h >= JIT_HEAT, true),
-                        None => (false, true),
+                        // (Hot but too little work per entry: no more counting.)
+                        Some(crate::jit::JitSlot::Heat { back, entries }) if *back >= JIT_HEAT => {
+                            let body = (*brk as u64).saturating_sub(pc as u64 - 1);
+                            let go = *back as u64 * body >= JIT_HEAT_WORK * *entries as u64;
+                            (go, false)
+                        }
+                        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
                         Some(_) => (false, false),
                     }
                 } else {
