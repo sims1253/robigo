@@ -2178,7 +2178,8 @@ pub fn snapshot_simple_internals(interp: &mut Interp) {
 
 /// The caller of a call that may inline: top-level calls are never
 /// compiled in GNU R and stay generic. Otherwise the caller closure
-/// (cloned; the memo holds it alive so its address cannot be reused),
+/// (cloned; the memo holds it weakly, which keeps its allocation, and so
+/// its address, from being reused),
 /// whether it is namespace-scoped (R: getInlineInfo finds a locked
 /// namespace above it, so the call inlines without a guard), and whether
 /// it runs as compiled code (R: R_CheckJIT timing; first calls of small
@@ -2416,7 +2417,7 @@ fn try_inline_site(
     let hit = {
         let memo = site.si_memo.borrow();
         match memo.as_ref() {
-            Some((c, n, r)) if Rc::ptr_eq(c, &caller) && *n == ns => Some(r.clone()),
+            Some((c, n, r)) if std::ptr::eq(c.as_ptr(), Rc::as_ptr(&caller)) && *n == ns => Some(r.clone()),
             _ => None,
         }
     };
@@ -2438,7 +2439,7 @@ fn try_inline_site(
                 fun: fsym,
                 args: map,
             });
-            *site.si_memo.borrow_mut() = Some((caller, ns, resolved.clone()));
+            *site.si_memo.borrow_mut() = Some((Rc::downgrade(&caller), ns, resolved.clone()));
             let inline = resolved?;
             let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
@@ -2483,12 +2484,13 @@ pub(crate) fn try_inline_expr(
     }
     // Record-first per caller, as for compiled call sites (GNU R
     // compiles once): the definition and argument map, or never-inline.
-    // The value holds caller and expression alive, so a key hit is
-    // always the same objects (freed addresses could otherwise be
-    // reused by unrelated calls).
+    // The value holds caller and expression weakly (see SiMemo): their
+    // allocations stay, so a key hit is always the same objects (freed
+    // addresses could otherwise be reused by unrelated calls), but not
+    // the objects; gc() drops the entries of dead callers.
     let key = (Rc::as_ptr(&caller) as usize, Rc::as_ptr(l) as usize);
-    if let Some(hit) = interp.si_expr_memo.get(&key).cloned() {
-        let (inline, _, _) = hit?;
+    if let Some((_, _, hit)) = interp.si_expr_memo.get(&key) {
+        let inline = hit.clone()?;
         if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
             return None;
         }
@@ -2499,7 +2501,7 @@ pub(crate) fn try_inline_expr(
         fun: fsym,
         args: map,
     });
-    interp.si_expr_memo.insert(key, resolved.clone().map(|inline| (inline, caller, l.clone())));
+    interp.si_expr_memo.insert(key, (Rc::downgrade(&caller), Rc::downgrade(l), resolved.clone()));
     let inline = resolved?;
     Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
 }

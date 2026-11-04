@@ -649,6 +649,8 @@ fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
         i.fun_cache.clear();
     }
     crate::vm::clear_gc_caches();
+    // The simple-.Internal memo holds its callers weakly; forget the dead.
+    i.si_expr_memo.retain(|_, (caller, expr, _)| caller.strong_count() != 0 && expr.strong_count() != 0);
     if let Some(b) = crate::native::bridge() {
         b.gc(i);
     }
