@@ -154,7 +154,7 @@ def in_oracle():
     for d in sorted(extra):
         if os.path.isdir(d) and not (d + "/").startswith(ROOT + "/"):
             cmd += ["-v", f"{d}:{d}:ro"]
-    for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET"):
+    for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET", "ROBIGO_PKG_JOBS"):
         if k in os.environ:
             cmd += ["-e", f"{k}={os.environ[k]}"]
     os.execvp("docker", cmd + [IMAGE, "python3", os.path.abspath(__file__)] + sys.argv[1:])
@@ -521,7 +521,9 @@ def outcome(b):
 
 
 def jobs():
-    return max(1, os.cpu_count() or 1)
+    """Workers at once: one per core, or $ROBIGO_PKG_JOBS. Each may use up to
+    MEMORY_CAP, so a machine with less than that per core wants fewer."""
+    return max(1, int(os.environ.get("ROBIGO_PKG_JOBS") or os.cpu_count() or 1))
 
 
 def run_package(engine, pkg, row, lib, limits=None, only=None):
