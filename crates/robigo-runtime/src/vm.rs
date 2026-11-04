@@ -929,6 +929,11 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     }
     match (x, val) {
         (Value::Real(v), RVal::D(d)) => Rc::make_mut(v).data[i] = *d,
+        // `x[[i]] <- y` takes the element of a length-one `y` whatever its
+        // attributes (a 1 x 1 matrix from `%*%`, say). R: subassign.c:SubAssign2
+        (Value::Real(v), RVal::V(yv @ Value::Real(y))) if two && y.data.len() == 1 && !yv.is_object() => {
+            Rc::make_mut(v).data[i] = y.data[0]
+        }
         (Value::Real(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = int_to_real(*n),
         (Value::Int(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = *n,
         (Value::Lgl(v), RVal::L(n)) => Rc::make_mut(v).data[i] = *n,
@@ -3017,8 +3022,29 @@ fn jit_enter(
             }
             _ => return None,
         };
-        if !syms.iter().all(|s| interp.resolves_to_base(*s, &c.env)) {
-            return None;
+        // (Memoized as in the inline runner: once per search epoch and the
+        // environment's function bindings.)
+        let env2 = &c.env;
+        let info = match c.inline.get() {
+            Some(Some(info))
+                if env2.is_search()
+                    || env2.parent_ref().as_ref().is_some_and(|p| p.is_search())
+                    || locked_to_search(env2) =>
+            {
+                Some(info)
+            }
+            _ => None,
+        };
+        let key = (crate::env::search_epoch(), env2.id(), env2.fn_version());
+        if !info.is_some_and(|i| i.guards_key.get() == key) {
+            if !syms.iter().all(|s| interp.resolves_to_base(*s, env2)) {
+                return None;
+            }
+            if let Some(i) = info
+                && i.guard_syms == *syms
+            {
+                i.guards_key.set(key);
+            }
         }
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
