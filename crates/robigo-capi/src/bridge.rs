@@ -2933,15 +2933,6 @@ impl NativeBridge for Bridge {
             robigo_runtime::reachability::reclaim_cycles();
             return;
         }
-        // SAFETY: on the R thread, with libR ready (READY), and no collector
-        // borrow active: the collection starts below.
-        unsafe {
-            sweep_stored();
-            cpromise_memo_sweep();
-            if HOST_WEAK_REFS.with(|active| active.get()) {
-                unpin_cycles();
-            }
-        };
         let outer = INTERP.with(|c| c.get().is_null());
         // GNU R's collection finds everything unreachable at once. Here a
         // runtime cycle can hold core objects (an external pointer in a
@@ -2952,7 +2943,24 @@ impl NativeBridge for Bridge {
         // of everything that became unreachable.
         // R: memory.c:R_gc_internal
         loop {
-            GRAPH_MARK.with(|on| on.set(true));
+            // What only the bridge holds, or only dead cycles pin, goes
+            // first (a reclaimed cycle can leave more of it for the next
+            // round).
+            // SAFETY: on the R thread, with libR ready (READY), and no
+            // collector borrow active: the collection starts below.
+            unsafe {
+                sweep_stored();
+                cpromise_memo_sweep();
+                if HOST_WEAK_REFS.with(|active| active.get()) {
+                    unpin_cycles();
+                }
+            };
+            // Only a collection a reclamation follows needs the graph: with
+            // no change since the last one, a gc() loop stays cheap. (A
+            // proxy that a count marks and that dies later only delays its
+            // cycle's reclamation, never frees what C holds.)
+            let reclaiming = robigo_runtime::reachability::reclaim_pending();
+            GRAPH_MARK.with(|on| on.set(reclaiming));
             // SAFETY: the R thread with `interp` current.
             enter(interp, |_| unsafe {
                 // gc() from R with no C code active: nothing on the
