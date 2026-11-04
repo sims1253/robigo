@@ -118,3 +118,22 @@ Causes, most blocks first:
     would track nearly everything and compare whole columns at every
     callback.
   - Max chose zero-copy, which reverses council item 22.
+
+## 2026-11-04: on more machines (boat.dev VMs)
+
+- The same main binary scores 5,729 of 8,617 blocks on an 8-vCPU VM, against
+  5,222 on the 2-core dev machine. Time limits scale with GNU R's times
+  recorded on the dev machine, so the faster machine loses fewer files.
+  Decision: a score is compared only with scores from the same kind of machine
+  (docs/verification.md). The nightly always uses one runner type.
+- Harness fixes found there, all on this branch:
+  - `--out` outside the checkout and the cache is mounted.
+  - A robigo from another checkout gets its R_HOME's headers mounted too;
+    without them, every test that compiles C++ at run time failed.
+  - `ROBIGO_PKG_JOBS` caps the workers.
+  - `ROBIGO_PKG_KEEP_LOGS` keeps each worker's output.
+- tidyr's `test-pivot-wide.R` segfaults on main every time (#167).
+- Issues filed from the suite: #302 to #306 and #310. #303's fix is zero-copy
+  bridge arguments (local branch `track/bridge-zero-copy`): net +275 blocks,
+  dplyr +245, but it reaches #167's crash sooner in tidyr, so it waits on
+  #167.

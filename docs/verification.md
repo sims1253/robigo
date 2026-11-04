@@ -178,7 +178,11 @@ cause it points to is (`docs/workstreams.md`).
 
 The suites take hours, so they run nightly on the binary of main's newest
 green CI run (`.github/workflows/packages.yml`, four shards) and do not gate
-merges. The result merges into that commit's line of the history. A pull
+merges. A score is comparable only with scores from the same kind of machine.
+Time limits scale with GNU R's recorded times, so a faster machine loses fewer
+files to timeouts: the same main binary scores 5,222 blocks on 2 cores and
+5,729 on 8. The nightly always runs on the same runner type, so its trend is
+consistent; compare a local run with a local run. The result merges into that commit's line of the history. A pull
 request that touches the harness tries it on magrittr. Examples and vignettes
 are not part of this metric: examples can follow as a corpus, like
 `cran-purer`, and vignettes mostly test pandoc and knitr.
