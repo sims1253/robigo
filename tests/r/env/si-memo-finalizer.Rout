@@ -1,0 +1,5 @@
+identical in a loop: during 1, after 1
+identical, no loop: during 1, after 1
+inherits in a loop: during 1, after 1
+typeof in lapply: during 1, after 1
+identical, hot caller: during 1, after 1
