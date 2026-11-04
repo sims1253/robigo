@@ -25,8 +25,8 @@ pub struct Context {
     /// Set while a method dispatched from this frame runs (`CTXT_GENERIC`);
     /// the method then inherits this frame's `sysparent`.
     pub generic: bool,
-    /// Builtin frames are only pushed for internal dispatch; they are
-    /// skipped by `sys.call()` and friends.
+    /// A builtin's context (R's `CTXT_BUILTIN`, which `.Call` and friends
+    /// get): not a function context, so `sys.call()` and friends skip it.
     pub builtin: bool,
 }
 
