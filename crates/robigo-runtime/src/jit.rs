@@ -1208,6 +1208,87 @@ struct Gen<'a, 'b> {
 
 const NA_I32: i64 = NA_INTEGER as i64;
 
+/// Ops of `ops[start..end]` that native code jumps to from elsewhere than
+/// the op before them.
+fn jump_targets(ops: &[Op], start: usize, end: usize) -> Vec<bool> {
+    let mut t = vec![false; end + 1];
+    let mut succ = Vec::new();
+    for (pc, op) in ops.iter().enumerate().take(end).skip(start) {
+        successors(op, pc, &mut succ);
+        for &q in &succ {
+            if q != pc + 1 && q <= end {
+                t[q] = true;
+            }
+        }
+    }
+    t
+}
+
+/// Whether an op after the jump at `pc` may read register `reg`, in
+/// `ops[..end]`; leaving the ops, `out` says.
+fn live_after(ops: &[Op], pc: usize, end: usize, reg: Reg, out: bool, inl: &Inl) -> bool {
+    let mut seen = vec![false; end + 1];
+    let mut work = Vec::new();
+    let mut succ = Vec::new();
+    successors(&ops[pc], pc, &mut succ);
+    work.extend_from_slice(&succ);
+    while let Some(q) = work.pop() {
+        if q >= end {
+            if out {
+                return true;
+            }
+            continue;
+        }
+        if std::mem::replace(&mut seen[q], true) {
+            continue;
+        }
+        let u = uses(&ops[q], inl);
+        if u.rregs.contains(&reg) {
+            return true;
+        }
+        if u.wregs.contains(&reg) {
+            continue;
+        }
+        successors(&ops[q], q, &mut succ);
+        work.extend_from_slice(&succ);
+    }
+    false
+}
+
+/// Whether the comparison at `pc` only decides the jump right after it, so
+/// [`Gen::compare_branch`] can branch on it directly: scalar operands, the
+/// jump not reached from elsewhere and run natively with the result as its
+/// condition.
+fn fusable<'s>(
+    ops: &[Op],
+    pc: usize,
+    end: usize,
+    targets: &[bool],
+    state: impl Fn(usize) -> Option<&'s RegState>,
+    slot_ty: &HashMap<Slot, JType>,
+) -> bool {
+    if pc + 1 >= end || targets[pc + 1] {
+        return false;
+    }
+    let (dst, scalar) = match &ops[pc] {
+        Op::Rel { dst, a, b, .. } => {
+            let Some(st) = state(pc) else { return false };
+            (*dst, [st[*a as usize], st[*b as usize]].iter().all(|t| t.is_some_and(|t| t.is_scalar())))
+        }
+        Op::RelL { dst, a, b, .. } => {
+            let Some(st) = state(pc) else { return false };
+            (
+                *dst,
+                [leaf_type(a, st, slot_ty), leaf_type(b, st, slot_ty)].iter().all(|t| t.is_some_and(|t| t.is_scalar())),
+            )
+        }
+        _ => return false,
+    };
+    scalar
+        && matches!(ops[pc + 1], Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } if cond == dst)
+        && state(pc + 1).is_some_and(|st| st[dst as usize] == Some(JType::L))
+}
+
 impl Gen<'_, '_> {
     fn block(&self, pc: usize) -> Block {
         self.blocks[pc - self.start]
@@ -1439,7 +1520,15 @@ impl Gen<'_, '_> {
 
     /// `vm::rel_fast`.
     fn rel(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> CValue {
-        let c = if a.1 == JType::D || b.1 == JType::D {
+        let c = self.compare(op, a, b);
+        let t = self.b.ins().uextend(types::I32, c.1);
+        let na = self.i32c(NA_LOGICAL as i64);
+        self.b.ins().select(c.0, na, t)
+    }
+
+    /// The comparison `rel` makes a logical of: (NA, TRUE).
+    fn compare(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> (CValue, CValue) {
+        if a.1 == JType::D || b.1 == JType::D {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
             let na = self.b.ins().fcmp(FloatCC::Unordered, x, y);
@@ -1467,10 +1556,47 @@ impl Gen<'_, '_> {
             };
             let t = self.b.ins().icmp(cc, a.0, b.0);
             (na, t)
+        }
+    }
+
+    /// A comparison (op `pc`) and the jump after it on its result (see
+    /// [`fusable`]): one branch on the comparison where the VM would make
+    /// a logical and test it. Its register still gets the logical; where it
+    /// is NA, native code leaves at the jump, whose error the VM raises.
+    /// (`live`: some op after the jump may read the register.)
+    fn compare_branch(&mut self, pc: usize, rel: &Op, jump: &Op, live: bool) {
+        let (op, dst, x, y) = match rel {
+            Op::Rel { op, dst, a, b, .. } => (*op, *dst, self.reg(*a), self.reg(*b)),
+            Op::RelL { op, dst, a, b, .. } => (*op, *dst, self.leaf(a), self.leaf(b)),
+            _ => unreachable!(),
         };
-        let t = self.b.ins().uextend(types::I32, c.1);
-        let na = self.i32c(NA_LOGICAL as i64);
-        self.b.ins().select(c.0, na, t)
+        let (na, t) = self.compare(op, x, y);
+        let on_na = self.b.create_block();
+        let ok = self.b.create_block();
+        self.b.set_cold_block(on_na);
+        self.b.ins().brif(na, on_na, &[], ok, &[]);
+        self.b.switch_to_block(on_na);
+        let nal = self.i32c(NA_LOGICAL as i64);
+        self.set_reg(dst, nal);
+        let d = self.deopt_block(pc + 1);
+        self.b.ins().jump(d, &[]);
+        self.b.switch_to_block(ok);
+        if live {
+            let v = self.b.ins().uextend(types::I32, t);
+            self.set_reg(dst, v);
+        }
+        let (target, taken_if_true) = match jump {
+            Op::JumpIf { target, .. } => (*target as usize, true),
+            Op::JumpIfNot { target, .. } => (*target as usize, false),
+            _ => unreachable!(),
+        };
+        let tb = self.target(target);
+        let nb = self.target(pc + 2);
+        if taken_if_true {
+            self.b.ins().brif(t, tb, &[], nb, &[]);
+        } else {
+            self.b.ins().brif(t, nb, &[], tb, &[]);
+        }
     }
 
     /// A 0-based index from `i` (`vm::scalar_index`), checked against the
@@ -2177,7 +2303,14 @@ fn codegen(
                 helpers,
                 whole: None,
             };
+            let targets = jump_targets(&code.ops, r.start, r.end);
+            let mut fused = false;
             for pc in r.start..r.end {
+                if std::mem::take(&mut fused) {
+                    // (The jump's block is never entered: not even generated,
+                    // so it does not add a way into its deopt block.)
+                    continue;
+                }
                 let blk = g.block(pc);
                 g.b.switch_to_block(blk);
                 if g.states[pc - r.start].is_none() {
@@ -2188,6 +2321,14 @@ fn codegen(
                 }
                 g.cur = pc;
                 g.cur_defs = defs(&code.ops[pc], g.state(pc), slot_ty, inl);
+                if fusable(&code.ops, pc, r.end, &targets, |q| g.states[q - r.start].as_ref(), slot_ty) {
+                    let (Op::Rel { dst, .. } | Op::RelL { dst, .. }) = code.ops[pc] else { unreachable!() };
+                    let live = live_after(&code.ops, pc + 1, code.ops.len(), dst, dst == code.result, inl);
+                    g.compare_branch(pc, &code.ops[pc], &code.ops[pc + 1], live);
+                    // (The jump's own block is not reached.)
+                    fused = true;
+                    continue;
+                }
                 g.op(pc, &code.ops[pc]);
             }
             let last = g.block(r.end);
