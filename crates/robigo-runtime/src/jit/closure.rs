@@ -2117,14 +2117,10 @@ impl Gen<'_, '_> {
                 let d = self.dyn_reg(*dst);
                 self.hcall("robigo_d_null", &[d]);
             }
-            // A dead register: only its slot, if it has one (it holds a
-            // value of any type elsewhere), may keep a value alive (#357).
-            Op::Null { dst, dead: true } => {
-                if self.whole.as_ref().unwrap().dyn_regs.contains_key(dst) {
-                    let d = self.dyn_reg(*dst);
-                    self.hcall("robigo_d_null", &[d]);
-                }
-            }
+            // The clear of a dead register (#357): nothing to do, as native
+            // code runs no R code (no gc() can see the frame: native code
+            // leaves first, and leaving releases the frame).
+            Op::Null { dead: true, .. } => {}
             Op::Arith { op: o, dst, a, b, .. } if rt(a) == dy || rt(b) == dy => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
                 self.dyn_arith(true, ARITH.iter().position(|v| v == o).unwrap(), x, y, *dst, pc);

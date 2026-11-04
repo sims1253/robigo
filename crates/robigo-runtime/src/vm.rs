@@ -641,9 +641,11 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
 pub(crate) const DEAD: RVal = RVal::I(0);
 
 /// Move a register's value out, leaving it dead.
+/// (A scalar is copied: left in the register, it holds nothing.)
 #[inline(always)]
 fn take_reg(regs: &mut [RVal], r: Reg) -> RVal {
-    std::mem::replace(&mut regs[r as usize], DEAD)
+    let x = &mut regs[r as usize];
+    if let RVal::V(_) = x { std::mem::replace(x, DEAD) } else { x.clone() }
 }
 
 /// Clear a register whose value a store has copied (elements into a
@@ -966,7 +968,7 @@ fn set_element(x: &mut Value, i: usize, val: &mut RVal, two: bool, take: bool) -
 /// out of its register, which must not keep it alive (#357).
 #[inline(always)]
 fn stored(val: &mut RVal, take: bool) -> Value {
-    if take { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
+    if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
 }
 
 /// `forceAndCall`: force the first `n` promise arguments.
@@ -4192,7 +4194,7 @@ fn run_with(
                         None
                     }
                 {
-                    regs[*dst as usize] = v;
+                    regs[*dst as usize] = if site.effect { DEAD } else { v };
                     continue;
                 }
                 flush!();
@@ -4234,7 +4236,8 @@ fn run_with(
                     }
                     _ => RVal::V(tryop!(interp.eval(&site.call, env))),
                 };
-                regs[*dst as usize] = v;
+                // (In effect position the value is dead: #357.)
+                regs[*dst as usize] = if site.effect { DEAD } else { v };
             }
             Op::ForSeqLength { len, seq, call } => {
                 let n = match leaf_num(vars, env, regs, len) {

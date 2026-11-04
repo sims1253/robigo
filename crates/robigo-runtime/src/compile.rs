@@ -589,6 +589,10 @@ pub struct CallSite {
     /// `forceAndCall(force, f, ...)`: the number of promise arguments of a
     /// closure forced before the call.
     pub force: u32,
+    /// In effect position: the VM leaves the destination register dead
+    /// instead of storing the value (the call's own `POP`, #357; see
+    /// `Compiler::discard`), saving an `Op::Null` per call.
+    pub effect: bool,
 }
 
 /// The variables `ops` read, in order, before the first operation that may
@@ -1232,6 +1236,7 @@ impl Compiler {
             no_native: std::cell::Cell::new(0),
             fslot: None,
             force,
+            effect: false,
         });
         let site = (self.call_sites.len() - 1) as u32;
         self.emit(Op::Call { dst, f, site });
@@ -1251,7 +1256,9 @@ impl Compiler {
     /// control flow (`{`, `if`, loops) leaves nothing of its own: only an
     /// op that last wrote a value to `dst` needs the clear. Jumps to the
     /// end of the expression (a guard's fallback, `&&`'s short cut, ...)
-    /// land on it too.
+    /// land on it too. A closure call (`Op::Call`) clears it itself
+    /// (`CallSite::effect`): there an extra op would cost more than the
+    /// clear.
     fn discard(&mut self, dst: Reg, w: Want) {
         if w != Want::Effect {
             return;
@@ -1286,7 +1293,12 @@ impl Compiler {
             ) => *d == dst,
             _ => false,
         };
-        if value {
+        if let Some(Op::Call { site, dst: d, .. }) = self.ops.last()
+            && *d == dst
+        {
+            let site = *site as usize;
+            self.call_sites[site].effect = true;
+        } else if value {
             self.emit(Op::Null { dst, dead: true });
         }
     }
