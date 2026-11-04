@@ -586,12 +586,7 @@ pub unsafe extern "C" fn ALTREP(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ATTRIB(x: Sexp) -> Sexp {
-    if x.typ() == CHARSXP {
-        return R_NilValue;
-    }
-    // the cells C code can write in place
-    crate::bridge::touch_attrs(x);
-    x.attrib_raw()
+    if x.typ() == CHARSXP { R_NilValue } else { x.attrib_raw() }
 }
 
 #[unsafe(no_mangle)]
@@ -1153,6 +1148,9 @@ pub unsafe extern "C" fn SETCAR(x: Sexp, y: Sexp) -> Sexp {
         set_field(x, 0, y);
         return y;
     }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
+    }
     fix_refcnt(x, x.car(), y);
     x.set_car_raw(y);
     // A promise node written through the cons setter: keep the
@@ -1173,6 +1171,9 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
         set_field(x, 1, y);
         return y;
     }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
+    }
     fix_refcnt(x, x.cdr(), y);
     x.set_cdr_raw(y);
     if x.typ() == PROMSXP {
@@ -1187,6 +1188,9 @@ pub unsafe extern "C" fn SET_TAG(x: Sexp, y: Sexp) {
     if x.has_flag(flags::HOST) {
         set_field(x, 2, y);
         return;
+    }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
     }
     fix_refcnt(x, x.tag(), y);
     x.set_tag_raw(y);

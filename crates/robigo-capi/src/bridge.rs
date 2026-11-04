@@ -16,7 +16,7 @@ use crate::host::{Host, robigo_capi_init, robigo_host_proxy, robigo_set_global};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
-use robigo_core::{Rcomplex, Sexp, flags, gp};
+use robigo_core::{Rcomplex, Sexp, extra, flags, gp};
 use robigo_runtime::env::Env;
 use robigo_runtime::error::{Flow, RResult};
 use robigo_runtime::interp::Interp;
@@ -60,7 +60,7 @@ thread_local! {
     /// [`write_back`]); empty if absent. Addresses, not values: a
     /// reference from here would count as the runtime holding what the
     /// attributes refer to.
-    static SYNCED_ATTRS: RefCell<HashMap<usize, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
+    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced>> = RefCell::new(HashMap::new());
     /// A `push_attrs` is running: attributes can refer back to the object.
     static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
     static NEXT_HANDLE: Cell<usize> = const { Cell::new(1) };
@@ -94,6 +94,10 @@ thread_local! {
     /// Handles of the proxies whose attributes C code reached through the
     /// API since a `.Call` last wrote back (see [`touch_attrs`]).
     static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Attribute cells of proxies, as [`agree_attrs`] last recorded them
+    /// -> the handles of the proxies whose lists they are in (one, unless
+    /// C code shares a list). Each has [`extra::WATCHED`] set.
+    static WATCHED_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
     /// `STORED` + `PINNED` entries above which a native call's exit sweeps
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
@@ -518,23 +522,106 @@ unsafe fn attr_cells(x: Sexp) -> Vec<(usize, usize)> {
     cells
 }
 
-unsafe fn attrs_agreed(x: Sexp) -> bool {
-    let cells = attr_cells(x);
-    SYNCED_ATTRS.with(|m| m.borrow().get(&x.addr()).map_or(cells.is_empty(), |c| *c == cells))
+/// What [`agree_attrs`] recorded of an object's attributes.
+struct Synced {
+    /// [`attr_cells`]
+    cells: Vec<(usize, usize)>,
+    /// a proxy's attribute cells, watched, and its handle (else empty, 0)
+    spine: Vec<usize>,
+    handle: usize,
 }
 
+unsafe fn attrs_agreed(x: Sexp) -> bool {
+    let cells = attr_cells(x);
+    SYNCED_ATTRS.with(|m| m.borrow().get(&x.addr()).map_or(cells.is_empty(), |c| c.cells == cells))
+}
+
+/// The two sides agree on `x`'s attributes as they are now. For a proxy,
+/// its attribute cells are watched from here on: C code can keep them
+/// (from `ATTRIB` in an earlier call, or as `installAttrib` walks them) and
+/// write them with SETCAR/SETCDR/SET_TAG, which then mark the proxy for
+/// the next write-back ([`watched_cell_written`]).
 unsafe fn agree_attrs(x: Sexp) {
     let cells = attr_cells(x);
     if cells.is_empty() {
         forget_attrs(x);
+        return;
+    }
+    let (spine, handle) = if x.has_flag(flags::HOST) {
+        let h = robigo_core::Core::host_handle(x);
+        let mut spine = Vec::new();
+        let mut a = x.attrib_raw();
+        while a != R_NilValue && !a.is_null() {
+            a.set_extra(a.extra() | extra::WATCHED);
+            spine.push(a.addr());
+            a = a.cdr();
+        }
+        WATCHED_CELLS.with(|m| {
+            let mut m = m.borrow_mut();
+            for &c in &spine {
+                let owners = m.entry(c).or_default();
+                if !owners.contains(&h) {
+                    owners.push(h);
+                }
+            }
+        });
+        (spine, h)
     } else {
-        SYNCED_ATTRS.with(|m| m.borrow_mut().insert(x.addr(), cells));
+        (Vec::new(), 0)
+    };
+    let new = Synced { cells, spine: spine.clone(), handle };
+    let old = SYNCED_ATTRS.with(|m| m.borrow_mut().insert(x.addr(), new));
+    if let Some(old) = old {
+        // (the same address can be another proxy by now)
+        let still = |c: &usize| old.handle == handle && spine.contains(c);
+        unwatch(old.handle, old.spine.into_iter().filter(|c| !still(c)));
     }
 }
 
 fn forget_attrs(x: Sexp) {
     // (The map is gone at thread exit, when `CoreRef`s still drop.)
-    let _ = SYNCED_ATTRS.try_with(|m| m.borrow_mut().remove(&x.addr()));
+    if let Ok(Some(old)) = SYNCED_ATTRS.try_with(|m| m.borrow_mut().remove(&x.addr())) {
+        unwatch(old.handle, old.spine.into_iter());
+    }
+}
+
+/// Stop mapping cells to the proxy with handle `h`. Their headers keep the
+/// bit: a cell no longer in the list can be dead and its slot reused by
+/// now, so only [`watched_cell_written`] clears it, on a cell C still
+/// writes.
+fn unwatch(h: usize, cells: impl Iterator<Item = usize>) {
+    let _ = WATCHED_CELLS.try_with(|m| {
+        let mut m = m.borrow_mut();
+        for c in cells {
+            if let Some(owners) = m.get_mut(&c) {
+                owners.retain(|&o| o != h);
+                if owners.is_empty() {
+                    m.remove(&c);
+                }
+            }
+        }
+    });
+}
+
+/// SETCAR, SETCDR or SET_TAG wrote a cell with [`extra::WATCHED`]: the
+/// proxies whose attribute lists it is in need a write-back.
+#[cold]
+pub(crate) unsafe fn watched_cell_written(cell: Sexp) {
+    if PUSHING_ATTRS.try_with(|p| p.get()).unwrap_or(false) {
+        return;
+    }
+    let found = WATCHED_CELLS
+        .try_with(|m| {
+            let m = m.borrow();
+            let Some(owners) = m.get(&cell.addr()) else { return false };
+            let _ = ATTRS_TOUCHED.try_with(|t| t.borrow_mut().extend(owners.iter().copied()));
+            true
+        })
+        .unwrap_or(true);
+    if !found {
+        // a cell that left its list: nobody watches it any more
+        cell.set_extra(cell.extra() & !extra::WATCHED);
+    }
 }
 
 fn pushing_attrs(f: impl FnOnce()) {
@@ -1220,6 +1307,7 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
     guarded(|| {
+        drain_touched();
         let e = from_sexp(expr);
         let rho = match env_of(env) {
             Ok(r) => r,
@@ -1242,6 +1330,7 @@ unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
 
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
     guarded(|| {
+        drain_touched();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let r = if call.is_null() {
             with_interp(|i| i.warning(m))
@@ -1261,6 +1350,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 /// default handler's traceback includes them.
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
     guarded(|| {
+        drain_touched();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
         let f = match f {
@@ -1356,6 +1446,9 @@ pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
 
 /// Host operations by name (`host::op`).
 unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
+    // (lookups force promises and call active bindings, `internal` and
+    // `applyBuiltin` run builtins that can dispatch to R code)
+    drain_touched();
     Ok(match name {
         "envlength" => {
             let e = env_of(a[0])?;
@@ -2179,16 +2272,18 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     }
 }
 
-/// C code reached the attributes of `x` through the API: `ATTRIB` (the
-/// only way to the attribute cells, which `installAttrib` and C code write
-/// with `SETCAR`/`SETCDR`), `SET_ATTRIB`, or the object and S4 bits. When
-/// `x` is a proxy, the `.Call` that returns next brings its runtime object
-/// up to date (`write_backs`). C code can hold a proxy in a static and
-/// write to it in a later call, but every such write starts here, so this
-/// is what that call writes back, not every proxy there is.
+/// C code wrote the attributes of `x` through the API: `SET_ATTRIB` (which
+/// `installAttrib` calls for a first attribute), or the object and S4
+/// bits. When `x` is a proxy, the `.Call` that returns next, or R code the
+/// routine runs before that, brings its runtime object up to date
+/// ([`write_back_touched`]). Writes to the attribute cells are noted by
+/// [`watched_cell_written`]. C code can hold a proxy in a static and write
+/// to it in a later call, but every such write goes through one of these,
+/// so this is what that call writes back, not every proxy there is.
 #[inline]
 pub(crate) unsafe fn touch_attrs(x: Sexp) {
-    if x.has_flag(flags::HOST) {
+    // (the bridge's own push agrees when it is done)
+    if x.has_flag(flags::HOST) && !PUSHING_ATTRS.try_with(|p| p.get()).unwrap_or(false) {
         let h = robigo_core::Core::host_handle(x);
         // (finalizers at thread exit can run C code after the set is gone)
         let _ = ATTRS_TOUCHED.try_with(|t| t.borrow_mut().insert(h));
@@ -2363,6 +2458,42 @@ unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
     }
 }
 
+/// The attributes C code wrote to proxies it keeps, into their runtime
+/// objects: the proxies [`touch_attrs`] and [`watched_cell_written`] noted
+/// (a scan of all of them per call made a file of rlang tests quadratic in
+/// the environments it had created). The arguments `xs` are left to the
+/// caller.
+unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>) {
+    let touched = ATTRS_TOUCHED.with(|t| std::mem::take(&mut *t.borrow_mut()));
+    if touched.is_empty() {
+        return;
+    }
+    let proxies: Vec<_> = PROXIED.with(|m| {
+        PINNED.with(|p| {
+            let (m, p) = (m.borrow(), p.borrow());
+            touched.iter().filter_map(|h| Some((*p.get(h)?, m.get(h)?.1.clone()))).collect()
+        })
+    });
+    for (x, value) in &proxies {
+        if !xs.contains(x) {
+            write_back(value, *x, originals);
+        }
+    }
+}
+
+/// Before C code runs R code (`Rf_eval`, a condition's handlers, a forced
+/// promise or active binding): what it wrote to the attributes of proxies
+/// so far, so that R code sees it as GNU R's would, on its one object.
+pub(crate) unsafe fn drain_touched() {
+    // (not in the middle of the bridge's own push of a runtime object's
+    // attributes: the core side is half written)
+    if ATTRS_TOUCHED.with(|t| t.borrow().is_empty()) || PUSHING_ATTRS.with(|p| p.get()) {
+        return;
+    }
+    let mut originals: HashMap<_, _> = SEEN.with(|m| m.borrow().values().map(|(x, v)| (x.addr(), v.clone())).collect());
+    write_back_touched(&[], &mut originals);
+}
+
 /// What a `.Call` changed in the objects it could reach.
 unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
     let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
@@ -2372,21 +2503,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
             write_back(value, *x, &mut originals);
         }
     }
-    // Of the proxies C code keeps, the ones whose attributes it reached
-    // (`touch_attrs`): a scan of all of them per call made a file of rlang
-    // tests quadratic in the environments it had created.
-    let touched = ATTRS_TOUCHED.with(|t| std::mem::take(&mut *t.borrow_mut()));
-    let proxies: Vec<_> = PROXIED.with(|m| {
-        PINNED.with(|p| {
-            let (m, p) = (m.borrow(), p.borrow());
-            touched.iter().filter_map(|h| Some((*p.get(h)?, m.get(h)?.1.clone()))).collect()
-        })
-    });
-    for (x, value) in &proxies {
-        if !xs.contains(x) {
-            write_back(value, *x, &mut originals);
-        }
-    }
+    write_back_touched(xs, &mut originals);
     for (a, &x) in args.iter().zip(xs) {
         write_back(&a.value, x, &mut originals);
     }
