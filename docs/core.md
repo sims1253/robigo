@@ -467,6 +467,27 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
+**Scalar variables.** A variable's binding holds its own object: binding
+a scalar (the VM's `set_var` and its flush, `Env::set_local_flags`)
+never binds one of the shared small integers (`Value::for_binding`), and
+the VM's in-place update of an unshared scalar keeps a counter
+allocation-free afterwards. The VM's slots and registers only cache the
+unboxed value. Where a read escapes towards C (an argument of `.Call` &
+co, a promise of the variable, an argument a caller forces for a callee
+that can reach native code), it is the binding's object
+(`vm::escaping_read`), and a `.Call` returning bumps the epoch so cached
+slots read the binding again. So what C writes into a variable's value
+is what R reads through the variable: after the call (the bridge's
+write-back of copied arguments), and during the call's callbacks once
+the bridge hands atomic vectors over as themselves (#364), which purrr's
+map needs: it writes its index `i` before each callback. GNU R's byte
+code is finer: a *reassigned* scalar lives in an unboxed binding cell
+whose value `GETVAR` pushes without boxing the cell (eval.c `SETVAR`,
+`DO_GETVAR`), so there a loop variable or `i <- i + 1L` passed straight
+to `.Call` is a fresh box and C's write is lost; robigo shows it
+(`tests/corpora/capi/cases/identity-unboxed.R`, GNU R's output recorded,
+not ratcheted).
+
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* do not reach the
 caller's object; `NAMED`/`MAYBE_SHARED` on arguments report "shared"

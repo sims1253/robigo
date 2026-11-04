@@ -709,7 +709,7 @@ impl Promise {
         match &*b {
             PromiseVal::Boxed(v) => Some(v.clone()),
             PromiseVal::ScalarInt(i) => {
-                let v = Value::int(*i);
+                let v = Value::int_fresh(*i);
                 *b = PromiseVal::Boxed(v.clone());
                 Some(v)
             }
@@ -1080,8 +1080,18 @@ const SMALL_INTS: usize = 128;
 thread_local! {
     static SCALARS: Scalars = Scalars {
         lgl: [0, 1, NA_LOGICAL].map(|x| Value::Lgl(Rc::new(Vector::new(vec![x])))),
-        int: (0..SMALL_INTS as i32).map(|i| Value::Int(Rc::new(Vector::new(vec![i])))).collect(),
+        int: (0..SMALL_INTS as i32)
+            .map(|i| {
+                let rc = Rc::new(Vector::new(vec![i]));
+                SHARED_INTS.with(|p| p[i as usize].set(Rc::as_ptr(&rc) as usize));
+                Value::Int(rc)
+            })
+            .collect(),
     };
+    /// The addresses of the shared small integers (0 until they exist), to
+    /// recognize one without the lazily initialized `SCALARS`.
+    static SHARED_INTS: [std::cell::Cell<usize>; SMALL_INTS] =
+        const { [const { std::cell::Cell::new(0) }; SMALL_INTS] };
 }
 
 impl Value {
@@ -1096,6 +1106,37 @@ impl Value {
                 SCALARS.with(|c| matches!(&c.int[x.data[0] as usize], Value::Int(y) if Rc::ptr_eq(x, y)))
             }
             _ => false,
+        }
+    }
+
+    /// The integer of one of the process-wide shared small-integer
+    /// scalars (`Value::int`), if `self` is one.
+    #[inline(always)]
+    pub fn shared_int(&self) -> Option<i32> {
+        match self {
+            Value::Int(x) if Rc::strong_count(x) > 1 && x.data.len() == 1 => {
+                let i = x.data[0];
+                ((0..SMALL_INTS as i32).contains(&i)
+                    && SHARED_INTS.with(|p| p[i as usize].get() == Rc::as_ptr(x) as usize))
+                .then_some(i)
+            }
+            _ => None,
+        }
+    }
+
+    /// `self` as a variable binds it: the shared small integers are
+    /// replaced by an object of their own. GNU R allocates every integer
+    /// scalar (`ScalarInteger`, and `R_expand_binding_value` boxing an
+    /// unboxed binding cell), so native code that writes into a variable's
+    /// value (purrr's map writes its loop index `i`) changes that variable
+    /// only. The logical constants stay shared, as GNU R's
+    /// `ScalarLogical` shares `R_TrueValue` & co.
+    // R: memory.c:R_expand_binding_value
+    #[inline(always)]
+    pub fn for_binding(self) -> Value {
+        match self.shared_int() {
+            Some(i) => Value::int_fresh(i),
+            None => self,
         }
     }
 
@@ -1129,6 +1170,12 @@ impl Value {
         if (0..SMALL_INTS as i32).contains(&i) {
             return SCALARS.with(|c| c.int[i as usize].clone());
         }
+        Value::Int(Rc::new(Vector::new(vec![i])))
+    }
+
+    /// An integer scalar of its own, never one of the shared ones.
+    #[inline]
+    pub fn int_fresh(i: i32) -> Value {
         Value::Int(Rc::new(Vector::new(vec![i])))
     }
 

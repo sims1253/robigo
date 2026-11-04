@@ -201,12 +201,14 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                     Value::Promise(q) => {
                         let is_unforced = match &*q.value.borrow() {
                             crate::value::PromiseVal::Boxed(v) => return Some(v.clone()),
-                            crate::value::PromiseVal::ScalarInt(i) => return Some(Value::int(*i)),
-                            crate::value::PromiseVal::ScalarReal(d) => return Some(Value::real(*d)),
-                            crate::value::PromiseVal::ScalarLgl(l) => return Some(Value::lgl_raw(*l)),
                             crate::value::PromiseVal::Unforced => true,
+                            _ => false,
                         };
-                        if is_unforced && q.code.is_none() && !q.forcing.get() {
+                        if !is_unforced {
+                            // (Boxed once: the promise's value is one object.)
+                            return q.value();
+                        }
+                        if q.code.is_none() && !q.forcing.get() {
                             if let Value::Sym(next_sym) = q.expr {
                                 let next_env = q.env.borrow().clone();
                                 if let Some(next_env) = next_env {
@@ -522,12 +524,15 @@ impl Interp {
     }
 
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
-        match &*p.value.borrow() {
+        let unboxed = match &*p.value.borrow() {
             crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
-            crate::value::PromiseVal::ScalarInt(i) => return Ok(Value::int(*i)),
-            crate::value::PromiseVal::ScalarReal(d) => return Ok(Value::real(*d)),
-            crate::value::PromiseVal::ScalarLgl(l) => return Ok(Value::lgl_raw(*l)),
-            crate::value::PromiseVal::Unforced => {}
+            crate::value::PromiseVal::Unforced => false,
+            _ => true,
+        };
+        if unboxed {
+            // (Boxed once: the promise's value is one object, which native
+            // code may write into.)
+            return Ok(p.value().unwrap_or(Value::Null));
         }
         if p.forcing.get() {
             return Err(Flow::error(
