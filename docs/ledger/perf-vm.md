@@ -72,6 +72,22 @@ conformance` (interpreter, VM and VM+JIT against each other).
   (`tests/r/basics/nested-inline-calls.R` pins the rebinding cases it
   can observe).
 
+## 2026-11-03: round 21, loops that assign with `<<-`
+
+- Why: `simple/superWhile` (`while (x < n) x <<- x + 1` in a closure called
+  once) was 66x behind Ř at peak: the closure is not hot, its loop is, and
+  the loop JIT rejected `Op::SuperSet`.
+- Change: in a loop the slot of a superassigned scalar stands for the
+  binding `<<-` assigns; read at entry like any variable, written back at
+  exit and deopt through `super_set_fast` with the VM's slot emptied, as
+  `Op::SuperSet` does. Rejected when the body assigns the name locally
+  anywhere (the first cut checked only the loop and let `x <- 1; for (...)
+  x <<- x + 1` read the wrong `x`), when the frame has a local binding or a
+  pending local value, or when the binding is not plain.
+- Result: `superWhile` -57% instructions (startup included); the loop alone,
+  3e7 iterations: 2.05 s -> 0.03 s. Gate: 1 faster, 0 slower.
+- Verified: `tests/r/jit/loop-superassign.R`, all tiers.
+
 ## 2026-11-03: round 20, values of any type in native closures
 
 - Why: the sequential four-way scoreboard (`rivals.py`, repeated batches)

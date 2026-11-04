@@ -1357,6 +1357,19 @@ fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &RVal) -> bool {
     set_plain_in_place(&interp.global, sym, val)
 }
 
+/// Whether [`super_set_fast`] of a scalar to `sym` from `env` cannot fail:
+/// the binding it assigns exists and is plain.
+fn super_target_plain(interp: &Interp, env: &Env, sym: Sym) -> bool {
+    let mut cur = env.parent();
+    while let Some(e) = cur {
+        if e.has_local(sym) {
+            return e.plain_binding(sym);
+        }
+        cur = e.parent();
+    }
+    interp.global.plain_binding(sym)
+}
+
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
 /// `val` (see [`super_set_fast`]).
 pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
@@ -3041,7 +3054,16 @@ fn jit_enter(
             continue;
         }
         let cur = read_var(vars, env, s.sym, s.slot).cloned();
-        if s.written {
+        if s.superset {
+            // The variable is the binding `<<-` assigns: the frame must not
+            // have one of its own, and writing it back must not fail.
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_))
+                || env.has_local(s.sym)
+                || !super_target_plain(interp, env, s.sym)
+            {
+                return None;
+            }
+        } else if s.written {
             let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
             if !deferrable(env, s.sym, &RVal::I(0), pending) {
                 return None;
@@ -3092,6 +3114,13 @@ fn jit_enter(
             JType::I => RVal::I(b as i32),
             _ => RVal::L(b as i32),
         };
+        if s.superset {
+            // As `Op::SuperSet` does (checked above not to fail).
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let done = super_set_fast(interp, env, s.sym, &v);
+            debug_assert!(done);
+            continue;
+        }
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
         vars.any = true;
         vars.dirty = true;

@@ -83,6 +83,9 @@ pub struct SlotInfo {
     pub flag: Option<usize>,
     /// For vectors: written in place.
     pub writable: bool,
+    /// Assigned with `<<-`: the variable is the binding of an enclosing
+    /// environment, written back there.
+    pub superset: bool,
 }
 
 /// A view of a vector's data passed to native code.
@@ -658,6 +661,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Index2 { .. }
         | Op::SetIndex2 { .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
+        // (Of a scalar: see `compile`.)
+        Op::SuperSet { .. } => true,
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
         | Op::JumpIf { target, .. }
@@ -690,6 +695,16 @@ fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
 /// Compile the loop starting at the `LoopEnter` op `enter`. `entry(slot)`
 /// gives the type of a variable's current value (`None`: unbound or not
 /// representable); `live_in(reg)` that of a register set before the loop.
+/// [`uses`] in a loop: `sym <<- x` writes the loop variable that stands for
+/// the binding it assigns.
+fn luses(op: &Op, inl: &Inl) -> Uses {
+    let mut u = uses(op, inl);
+    if let Op::SuperSet { slot, .. } = op {
+        u.wslots.push(*slot);
+    }
+    u
+}
+
 pub fn compile(
     code: &Code,
     enter: usize,
@@ -741,7 +756,7 @@ pub fn compile(
         }
     }
     for pc in r.start..r.end {
-        for s in uses(&ops[pc], &inl).rslots {
+        for s in luses(&ops[pc], &inl).rslots {
             if let std::collections::hash_map::Entry::Vacant(e) = slot_ty.entry(s) {
                 if let Some(t) = entry(s) {
                     e.insert(t);
@@ -757,7 +772,7 @@ pub fn compile(
     let mut written = vec![false; code.nregs];
     let mut live = Vec::new();
     for pc in r.start..r.end {
-        let u = uses(&ops[pc], &inl);
+        let u = luses(&ops[pc], &inl);
         for reg in u.rregs {
             if written[reg as usize] {
                 continue;
@@ -787,7 +802,7 @@ pub fn compile(
     for pc in r.start..r.end {
         let Some(st) = &states[pc - r.start] else { continue };
         let op = &ops[pc];
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
                 return Err(not_now(8));
@@ -824,7 +839,7 @@ pub fn compile(
         }
         let Some(mut sd) = state[pc - r.start].clone() else { continue };
         let op = &ops[pc];
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in &u.rslots {
             if !sd[*s as usize] {
                 needs_entry[*s as usize] = true;
@@ -852,11 +867,26 @@ pub fn compile(
     let mut written = vec![false; nslots];
     let mut writable = vec![false; nslots];
     for pc in r.start..r.end {
-        for s in uses(&ops[pc], &inl).wslots {
+        for s in luses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
         if let Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } = &ops[pc] {
             writable[*slot as usize] = true;
+        }
+    }
+    // A variable assigned with `<<-` is the enclosing binding (`vm::jit_enter`
+    // checks that the frame has none of its own): the body must not also
+    // assign it locally, in the loop or anywhere else.
+    let mut supersets: Vec<Slot> = Vec::new();
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } = &ops[pc] {
+            supersets.push(*slot);
+        }
+    }
+    for pc in 0..ops.len() {
+        if !matches!(ops[pc], Op::SuperSet { .. }) && uses(&ops[pc], &inl).wslots.iter().any(|s| supersets.contains(s))
+        {
+            return Err(Reject::Never);
         }
     }
 
@@ -894,6 +924,7 @@ pub fn compile(
             written: written[s as usize],
             flag,
             writable: writable[s as usize],
+            superset: supersets.contains(&s),
         });
     }
     let mut reg_idx = HashMap::new();
@@ -1122,6 +1153,15 @@ fn reg_flow(
                 }
             }
             Op::ForStep { slot, .. } => assign(*slot, JType::I)?,
+            // (In a loop; in a closure compiled whole the slot is a cell.)
+            Op::SuperSet { src, slot, .. } if inl.specs.is_none() => {
+                if let Some(t) = st[*src as usize] {
+                    if !t.is_scalar() {
+                        return Err(Reject::Never);
+                    }
+                    assign(*slot, t)?;
+                }
+            }
             _ => {}
         }
         let mut out = st.clone();
@@ -1575,9 +1615,19 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, x);
             }
             Op::Visible { on } if self.whole.is_some() => self.set_visible(*on),
-            Op::SuperSet { src, slot, .. } => {
+            Op::SuperSet { src, slot, .. } if self.whole.is_some() => {
                 let (x, _) = self.reg(*src);
                 self.super_set(*slot, x);
+            }
+            // In a loop, the variable that stands for the binding.
+            Op::SuperSet { src, slot, .. } => {
+                let (x, _) = self.reg(*src);
+                let (var, _) = self.v.slot[slot];
+                self.b.def_var(var, x);
+                if let Some(f) = self.v.flag.get(slot).copied() {
+                    let one = self.b.ins().iconst(types::I64, 1);
+                    self.b.def_var(f, one);
+                }
             }
             Op::Builtin1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
