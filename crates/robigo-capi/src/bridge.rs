@@ -1460,8 +1460,17 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             // except a promise, which the evaluator forces: from_sexp
             // turns it into a runtime promise whose to_sexp proxy stays
             // live for C's PRVALUE/PRCODE/PRENV reads and writes
-            // (rlang's r_env_bind_delayed, magrittr's pipe masks).
-            if a[1] != R_NilValue && a[1].typ() != PROMSXP && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+            // (rlang's r_env_bind_delayed, magrittr's pipe masks) — and
+            // an environment or a symbol, which from_sexp does not copy:
+            // the binding holds C's object itself. Bound C-owned, the
+            // variable would read as an active binding, which GNU R's is
+            // not: rlang's env_clone() of a namespace (testthat's test
+            // environment) would lose `.__NAMESPACE__.` to R_IsNamespaceEnv.
+            if a[1] != R_NilValue
+                && !matches!(a[1].typ(), PROMSXP | ENVSXP | SYMSXP)
+                && !env.0.locked.get()
+                && crate::owned::is_c_env(&env)
+            {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
                 remember_stored(a[1], &val);
