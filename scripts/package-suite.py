@@ -456,6 +456,8 @@ def check_hosts(names):
     """The test servers' names must lead to the loopback, or their packages
     would score whatever the probes of their helpers find."""
     for server in sorted({row.get("server", "") for row in names.values()} - {""}):
+        if server not in SERVERS:
+            die(f"unknown test server {server!r} in selection.tsv")
         for host in SERVERS[server]["hosts"]:
             try:
                 addr = socket.gethostbyname(host)

@@ -209,7 +209,19 @@ def free_port():
 def userns():
     """Can this user make a network namespace (as the oracle's root can)?"""
     import subprocess
-    return subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode == 0
+    except OSError:  # no unshare here
+        return False
+
+
+def alive(pid):
+    """Is `pid` a process that has not exited (a zombie has)?"""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
 
 
 class Server(unittest.TestCase):
@@ -242,18 +254,27 @@ class Server(unittest.TestCase):
             self.assertIn("GET / ", read(os.path.join(d, "server.log")))
 
     def test_the_server_goes_with_the_file(self):
-        import socket
+        # the witness is the server's pid: in a namespace of its own, its port
+        # is not visible from here whether it still runs or not
         port = free_port()
         with tempfile.TemporaryDirectory() as d:
-            self.run_worker(["true"], self.http_server(port), port, d)
-        time.sleep(0.5)
-        with self.assertRaises(OSError):
-            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            pidfile = os.path.join(d, "pid")
+            server = [sys.executable, "-c", "import http.server, os, sys\n"
+                      "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+                      "http.server.HTTPServer(('127.0.0.1', int(sys.argv[2])), "
+                      "http.server.SimpleHTTPRequestHandler).serve_forever()", pidfile, str(port)]
+            _, rc, _ = self.run_worker(["true"], server, port, d)
+            self.assertEqual(rc, 0, read(os.path.join(d, "log")))  # the server did start
+            pid = int(read(pidfile))
+        deadline = time.time() + 10
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(alive(pid), f"the server {pid} outlived its file")
 
     def test_a_server_that_does_not_start_stops_the_file(self):
         with tempfile.TemporaryDirectory() as d:
-            status, rc, _ = self.run_worker(["true"], [sys.executable, "-c", "print('no such port'); exit(3)"],
-                                            free_port(), d)
+            _, rc, _ = self.run_worker(["true"], [sys.executable, "-c", "print('no such port'); exit(3)"],
+                                       free_port(), d)
             log = read(os.path.join(d, "log"))
         self.assertNotEqual(rc, 0)
         self.assertIn("did not start", log)
@@ -263,8 +284,7 @@ class Server(unittest.TestCase):
     def test_still_no_network(self):
         port = free_port()
         with tempfile.TemporaryDirectory() as d:
-            status, rc, _ = self.run_worker(self.fetch("http://192.0.2.1/"),
-                                            self.http_server(port), port, d)
+            _, rc, _ = self.run_worker(self.fetch("http://192.0.2.1/"), self.http_server(port), port, d)
             log = read(os.path.join(d, "log"))
         self.assertNotEqual(rc, 0)
         self.assertIn("unreachable", log)
@@ -278,6 +298,9 @@ class Server(unittest.TestCase):
             with self.assertRaises(SystemExit) as e:
                 suite.check_hosts({"a": {"server": "loop"}, "b": {"server": "nowhere"}})
             self.assertIn("--add-host no-such-host.invalid:127.0.0.1", str(e.exception))
+            with self.assertRaises(SystemExit) as e:
+                suite.check_hosts({"a": {"server": "httbin"}})  # a typo in selection.tsv
+            self.assertIn("unknown test server 'httbin'", str(e.exception))
         finally:
             suite.SERVERS.clear()
             suite.SERVERS.update(servers)
