@@ -1,8 +1,9 @@
-# Gap: a finalizer must run during the gc(full = TRUE) that follows the
-# object's scope ending. robigo still sees the object reachable (the
-# dead `local()` frame's value register), so the finalizer fires at a
-# later gc instead (R6's finalizer tests). Counters, not prints, so the
-# output cannot shift between the interpreted, compiled and JIT tiers.
+# A finalizer must run during the gc(full = TRUE) that follows the
+# object's scope ending: the `local()` call's value is dead once the
+# statement is done (R: bcEval POP; the VM clears its register, #357), so
+# it does not keep the object reachable (R6's finalizer tests). Counters,
+# not prints, so the output cannot shift between the interpreted,
+# compiled and JIT tiers.
 n <- new.env(parent = globalenv())
 n$k <- 0L
 mk <- function() {
