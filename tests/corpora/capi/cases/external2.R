@@ -12,7 +12,7 @@ print(unlist(withVisible(.External2("ext2_eval"))))
 # through a closure, as magrittr's pipes call it; top level prints only
 # visible results
 f <- function(...) .External2("ext2_eval", ...)
-f(quote(d <- 7))
+f(quote(d <<- 7))
 f(quote(8))
 f(quote(invisible(9)))
 print(c(a, b, v, d))
@@ -21,3 +21,4 @@ print(c(a, b, v, d))
 print(unlist(withVisible(.External("ext1_eval", quote(e <- 10)))))
 g <- function(...) .External("ext1_eval", ...)
 g(quote(h <- 11))
+print(c(e, h))
