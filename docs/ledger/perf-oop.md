@@ -47,6 +47,13 @@ VM's (`~/oopwork/rivals-here.json`):
     through `vm::call_native_rval` (counted and given up like a call site's
     `native_site_call`), so `FUN(X[[i]])` runs as native code when it can.
     The VM's frames are flushed: the builtin's own call was a real call.
+- Sol review: after a fallback call (warm-up, or a run that left native code)
+  `FUN` or `X` may have been rebound in lapply's frame, say by
+  `assign("FUN", ..., parent.frame())` on a rare path; GNU R evaluates
+  `FUN(X[[i]], ...)` again for every element. The native path now checks both
+  bindings after each fallback (a lookup in the frame, forcing nothing) and
+  stops when either changed (`tests/r/jit/native-closures-setindex.R`, which
+  the first cut failed).
 - Rejected on the way: the root's per-formal flags as a `Vec<bool>` read in
   the native entry: `profiler-shared` +0.60% (bounds checks, inlined into
   `native_site_call`); a bit mask: +0.09%.

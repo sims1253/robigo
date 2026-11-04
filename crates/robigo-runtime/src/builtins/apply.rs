@@ -159,6 +159,24 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     Ok(Some(FastApply::Multi(FastClosure { clo: c, args, x_slot })))
 }
 
+/// After a call of `FUN(X[[i]], ...)` was made: whether `FUN` and `X` are
+/// still the closure `c` and the vector `xx`, as the native path assumes.
+/// (A closure with native code can run any R code where it leaves native
+/// code, rebinding them in `rho`, say with `assign(..., parent.frame())`.)
+/// (Looked up in `rho`'s own frame, where lapply's formals and `FUN <-
+/// match.fun(FUN)` are, without forcing anything: anything else is `false`.)
+fn native_still_valid(fcall: &Value, rho: &Env, c: &Rc<Closure>, xx: &Value) -> bool {
+    let Value::Lang(l) = fcall else { return false };
+    let Value::Sym(f) = &l.fun else { return false };
+    let Value::Lang(xi) = &l.args[0].value else { return false };
+    let Value::Sym(x) = &xi.args[0].value else { return false };
+    let value = |sym: Sym| match rho.get_local(sym)? {
+        Value::Promise(p) => p.value(),
+        v => Some(v),
+    };
+    matches!(value(*f), Some(Value::Closure(c2)) if Rc::ptr_eq(&c2, c)) && value(*x).is_some_and(|v| v.same_object(xx))
+}
+
 /// `xx[[k + 1]]` of a plain vector or list as an `RVal` (see [`inline_fun`]).
 #[inline]
 fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
@@ -200,6 +218,12 @@ fn call_fun(
             if let Some(v) = crate::vm::call_native_rval(i, c, &[element_rval(xx, k)]) {
                 return Ok(v.into_value());
             }
+            rho.set_local(isym, Value::int(k as i32 + 1));
+            let v = force_and_call(i, fcall, 1, rho)?;
+            if !native_still_valid(fcall, rho, c, xx) {
+                *fast = None;
+            }
+            return Ok(v);
         }
         None => {}
     }
@@ -249,14 +273,15 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
             }
         }
         Some(FastApply::Native(c)) => {
+            let mut valid = true;
             for k in 0..n {
-                let rk = element_rval(&xx, k);
-                if let Some(v) = crate::vm::call_native_rval(i, &c, &[rk]) {
+                if valid && let Some(v) = crate::vm::call_native_rval(i, &c, &[element_rval(&xx, k)]) {
                     out.push(v.into_value());
-                } else {
-                    rho.set_local(isym, Value::int(k as i32 + 1));
-                    out.push(force_and_call(i, &fcall, 1, rho)?);
+                    continue;
                 }
+                rho.set_local(isym, Value::int(k as i32 + 1));
+                out.push(force_and_call(i, &fcall, 1, rho)?);
+                valid = valid && native_still_valid(&fcall, rho, &c, &xx);
             }
         }
         None => {

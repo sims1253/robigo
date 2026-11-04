@@ -141,3 +141,28 @@ xs <- rep(list(c(1, 2)), 700)
 xs[[690]] <- c(1, 2, 3)
 r <- lapply(xs, who)
 r[[690]]
+
+# A native FUN that, part way through (where it leaves native code), rebinds
+# FUN or X in lapply's frame: the later elements see the new bindings.
+swap <- function(v) {
+    v[1] <- v[1] * 2
+    if (v[2] == 650) assign("FUN", function(x) 999, envir = parent.frame())
+    v
+}
+xs <- lapply(1:700, function(k) c(1, k))
+r <- lapply(xs, swap)
+r[[649]]
+r[[650]]
+r[[651]]
+r[[700]]
+s <- sapply(xs, function(v) { v[1] <- v[1] + 1; if (v[2] == 680) assign("FUN", function(x) -1, envir = parent.frame()); v[1] })
+s[c(1, 679, 680, 681, 700)]
+redo <- function(v) {
+    v[1] <- v[1] + 10
+    if (v[2] == 600) assign("X", lapply(1:700, function(k) c(100, k)), envir = parent.frame())
+    v
+}
+r <- lapply(xs, redo)
+r[[600]]
+r[[601]]
+r[[700]]
