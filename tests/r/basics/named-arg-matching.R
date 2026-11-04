@@ -82,3 +82,12 @@ run7 <- function() {
   print(after(verbose = TRUE))
 }
 run7()
+## Repeated formal names (as.function allows them): a tag matching two
+## formals is an error, positional matching is not.
+dup <- as.function(alist(x = 1, x = 2, x))
+run8 <- function() {
+  print(tryCatch(dup(x = 3), error = conditionMessage))
+  print(dup(3))
+  print(dup())
+}
+run8()

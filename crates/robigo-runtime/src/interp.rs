@@ -1590,7 +1590,9 @@ pub(crate) fn bind_exact(clo: &Closure, promargs: &[Arg]) -> Option<Env> {
         if let Some(t) = a.tag {
             match clo.formals.iter().position(|f| f.tag == Some(t) && t != s::DOTS) {
                 Some(k) => {
-                    if map[k] != FREE {
+                    // A formal matched twice, or a tag matching two formals
+                    // (`as.function` allows repeated names): errors.
+                    if map[k] != FREE || clo.formals[k + 1..].iter().any(|f| f.tag == Some(t)) {
                         return None;
                     }
                     map[k] = i as u8;
