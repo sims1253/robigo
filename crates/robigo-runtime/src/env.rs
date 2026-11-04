@@ -571,6 +571,8 @@ impl Env {
         if cycle_value(&value) {
             trace::cycle_changed();
         }
+        // (A variable's value is its own object: `Value::for_binding`.)
+        let value = value.for_binding();
         let mut f = self.0.frame().borrow_mut();
         let search = f.search;
         if let Some(b) = f.get_mut(sym) {
@@ -620,7 +622,7 @@ impl Env {
         }
         let mut f = self.0.frame().borrow_mut();
         f.close_base();
-        f.push_new(sym, value, flags);
+        f.push_new(sym, value.for_binding(), flags);
     }
 
     /// Move a value out of a binding, leaving `NULL` behind, so that the

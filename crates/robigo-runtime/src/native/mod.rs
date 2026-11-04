@@ -594,7 +594,12 @@ pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, en
     let ported = PORTS_FIRST.contains(&&*r.package) && (is_internal_alias(r) || port_of(r).is_some());
     if r.addr != 0 && !ported {
         if let Some(b) = bridge() {
-            return b.invoke(interp, call, r, args, env);
+            let r = b.invoke(interp, call, r, args, env);
+            // C may have written into the objects of variables (an argument,
+            // or one it found with findVar) without running R code: values
+            // the VM caches unboxed must be read again.
+            crate::env::bump_r_epoch();
+            return r;
         }
     }
     if is_internal_alias(r) {
