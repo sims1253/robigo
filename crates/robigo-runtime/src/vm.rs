@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use crate::builtins::arith::{ArithOp, RelOp, int_to_real, myfmod, r_pow, real_op};
 use crate::compile::{
-    Builtin1, CallSite, Code, GuardMemo, InlineArg, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, SiArg, SiInline, Slot,
-    compile_body, compile_loop,
+    BitOp, Builtin1, CallSite, Code, GuardMemo, InlineArg, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, SiArg, SiInline,
+    Slot, compile_body, compile_loop,
 };
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -1203,6 +1203,73 @@ fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
     Some(RVal::D(r))
 }
 
+/// `.Internal(bitwiseAnd(a, b))` etc. on integer and double scalars;
+/// `None` for anything else, and where the coercion to integer warns.
+// R: relop.c:bitwiseAnd etc., coerce.c:IntegerFromReal
+#[inline]
+pub(crate) fn bitwise_fast(op: BitOp, a: &RVal, b: &RVal) -> Option<RVal> {
+    let int = |x: Num| -> Option<i32> {
+        match x {
+            Num::I(i) => Some(i),
+            Num::D(d) if d.is_nan() => Some(NA_INTEGER),
+            Num::D(d) if d >= i32::MAX as f64 + 1.0 || d <= i32::MIN as f64 => None,
+            Num::D(d) => Some(d as i32),
+            Num::L(_) => None,
+        }
+    };
+    let (x, y) = (int(scalar(a)?)?, int(scalar(b)?)?);
+    let na = x == NA_INTEGER || y == NA_INTEGER;
+    Some(RVal::I(match op {
+        _ if na => NA_INTEGER,
+        BitOp::And => x & y,
+        BitOp::Or => x | y,
+        BitOp::Xor => x ^ y,
+        BitOp::ShiftL | BitOp::ShiftR if !(0..=31).contains(&y) => NA_INTEGER,
+        BitOp::ShiftL => ((x as u32) << y) as i32,
+        BitOp::ShiftR => ((x as u32) >> y) as i32,
+    }))
+}
+
+/// [`bitwise_fast`] for inline runs, out of line (their op loop's codegen
+/// is hot); `None` while a builtin is traced.
+#[inline(never)]
+fn bitwise_inline(op: BitOp, a: &RVal, b: &RVal) -> Option<RVal> {
+    if crate::builtins::debug::any_prim_traced() {
+        return None;
+    }
+    bitwise_fast(op, a, b)
+}
+
+/// `Op::Bitwise` by its fast path, if it applies.
+#[inline(never)]
+fn bitwise_regs(regs: &mut [RVal], op: &Op) -> bool {
+    let Op::Bitwise { op, dst, a, b, .. } = *op else { unreachable!() };
+    let Some(v) = bitwise_inline(op, &regs[a as usize], &regs[b as usize]) else { return false };
+    // Drop operand references so bindings stay unshared.
+    regs[a as usize] = RVal::I(0);
+    regs[b as usize] = RVal::I(0);
+    regs[dst as usize] = v;
+    true
+}
+
+/// `Op::Bitwise` by its builtin.
+#[cold]
+#[inline(never)]
+fn bitwise_op(interp: &mut Interp, code: &Code, regs: &mut [RVal], op: &Op, env: &Env) -> RResult<()> {
+    let Op::Bitwise { dst, a, b, f, call, .. } = *op else { unreachable!() };
+    let Value::Builtin(bi) = &code.consts[f as usize] else { unreachable!() };
+    if crate::builtins::debug::any_prim_traced() {
+        trace_builtin(interp, bi, &code.consts[call as usize]);
+    }
+    let argv = vec![
+        Arg::new(None, std::mem::replace(&mut regs[a as usize], RVal::I(0)).into_value()),
+        Arg::new(None, std::mem::replace(&mut regs[b as usize], RVal::I(0)).into_value()),
+    ];
+    let r = interp.invoke_builtin(bi, &code.consts[call as usize], argv, env);
+    regs[dst as usize] = RVal::V(signal(interp, r)?);
+    Ok(())
+}
+
 /// `from:to` as an integer range, when R's `:` gives an integer
 /// sequence (R: seq.c:seq_colon); `None` otherwise.
 fn colon_range(n1: f64, n2: f64) -> Option<(i64, i64, u64)> {
@@ -1585,8 +1652,8 @@ pub struct Inline {
     /// nested inlining. `u64::MAX` never holds. Depth-budget exhaustion
     /// does not set it (recursion reaches the budget on purpose).
     no_nested: std::cell::Cell<u64>,
-    /// The body contains a call (only such bodies pay for the nested
-    /// inline machinery and its failure memo).
+    /// The body contains a call or a bitwise op (only such bodies pay for
+    /// the nested inline machinery and its failure memo).
     pub(crate) has_calls: bool,
     /// The body reads variables other than its formals (through the
     /// closure's environment, which may be the caller's frame).
@@ -1660,6 +1727,7 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
             | Op::Neg { .. }
             | Op::Not { .. }
             | Op::Math1 { .. }
+            | Op::Bitwise { .. }
             | Op::Builtin1 { .. }
             | Op::Call { .. }
             | Op::JumpIfNot { .. }
@@ -1673,7 +1741,10 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     let free_vars = code.vars.iter().any(|v| !formals.contains(v));
-    let has_calls = code.ops.iter().any(|o| matches!(o, Op::Call { .. }));
+    // (Bitwise ops run in the runner of bodies with calls, so that the
+    // other one keeps its codegen: one more arm there cost tiny closures
+    // ~1%.)
+    let has_calls = code.ops.iter().any(|o| matches!(o, Op::Call { .. } | Op::Bitwise { .. }));
     Some(Rc::new(Inline {
         code,
         formal_slots,
@@ -1911,6 +1982,10 @@ macro_rules! inline_runner {
                         };
                     }
                     Op::Math1 { f, dst, a, .. } => regs[*dst as usize] = math1_fast(*f, scalar(&regs[*a as usize])?)?,
+                    // (Only in the runner of bodies with calls: see `has_calls`.)
+                    Op::Bitwise { op, dst, a, b, .. } if $nested => {
+                        regs[*dst as usize] = bitwise_inline(*op, &regs[*a as usize], &regs[*b as usize])?;
+                    }
                     Op::Builtin1 { f, dst, a, .. } => {
                         // A traced builtin must print where GNU R's GETBUILTIN
                         // would: leave this to the interpreter.
@@ -2782,7 +2857,9 @@ fn unforced_promise(env: &Env, sym: Sym) -> bool {
 }
 
 /// An active loop: break and next targets, its `LoopEnter` index and how
-/// often its back edge ran in this entry.
+/// often its back edge ran (in this entry, and in earlier ones while not
+/// compiled yet: then `enter` has `LOOP_COLD`, and the count is recorded
+/// at its exit).
 #[derive(Clone, Copy)]
 struct LoopRec {
     brk: u32,
@@ -2791,8 +2868,50 @@ struct LoopRec {
     count: u32,
 }
 
+const LOOP_COLD: u32 = 1 << 31;
+
+/// At the entry of loop `enter`: whether it runs natively, its count so
+/// far, and whether its count is to be recorded at its exit.
+#[inline(never)]
+fn loop_state(code: &Code, enter: u32) -> (bool, u32, bool) {
+    match code.jit.borrow().get(&enter) {
+        Some(crate::jit::JitSlot::Ready(_)) => (true, 0, false),
+        // (Compiled at the next back edge once its entries add up.)
+        Some(crate::jit::JitSlot::Cold(n)) => {
+            (false, if *n >= JIT_COLD_THRESHOLD { JIT_THRESHOLD - 1 } else { 0 }, true)
+        }
+        Some(crate::jit::JitSlot::Flat) => (false, 0, false),
+        None => (false, 0, true),
+        // (Tried again when one entry runs long enough.)
+        Some(crate::jit::JitSlot::Failed(n)) if *n < 3 => (false, 0, false),
+        Some(_) => (false, JIT_THRESHOLD + 1, false),
+    }
+}
+
+/// Record that loop `enter` ran `count` iterations without getting hot.
+/// Only a loop with a loop inside carries its count over: entering native
+/// code costs more than a few iterations of a flat loop, but it saves the
+/// entries of the inner loop at every iteration of the outer one.
+#[cold]
+#[inline(never)]
+fn loop_cold(code: &Code, enter: u32, count: u32) {
+    let mut jit = code.jit.borrow_mut();
+    if let Some(crate::jit::JitSlot::Cold(n)) = jit.get_mut(&enter) {
+        *n += count;
+        return;
+    }
+    let Op::LoopEnter { brk, .. } = code.ops[enter as usize] else { return };
+    let nested = code.ops[enter as usize + 1..brk as usize].iter().any(|o| matches!(o, Op::LoopEnter { .. }));
+    jit.insert(enter, if nested { crate::jit::JitSlot::Cold(count) } else { crate::jit::JitSlot::Flat });
+}
+
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
+
+/// Iterations of a loop with loops inside over all its entries before it
+/// is compiled, when no entry alone reaches [`JIT_THRESHOLD`]: such a loop
+/// is big, and compiling it costs as much as a few hundred iterations.
+const JIT_COLD_THRESHOLD: u32 = 256;
 
 /// Native matrix views accept only a dimension attribute, with validated
 /// storage bounds. No native op can change the dimensions during a loop.
@@ -2873,7 +2992,10 @@ fn inline_call(
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
     }
-    let leaves = cs.leaf_args.as_ref()?;
+    // (Arguments `a op b` and `x[[i]]` are evaluated by native code where
+    // their fast paths apply, as for a closure compiled whole; their
+    // operators are guarded at entry, see `jit_enter`.)
+    let leaves = cs.inline_args.as_ref()?;
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
     if clo.jit.traced() || leaves.len() != clo.formals.len() {
         return None;
@@ -2891,7 +3013,14 @@ fn inline_call(
         code: info.code.clone(),
         formal_slots: info.formal_slots.clone(),
         guard_syms: info.guard_syms.clone(),
-        args: leaves.iter().map(|l| crate::jit::CallArg::Leaf(*l)).collect(),
+        args: leaves
+            .iter()
+            .map(|a| match a {
+                InlineArg::Leaf(l) => crate::jit::CallArg::Leaf(*l),
+                InlineArg::Arith { op, a, b, .. } => crate::jit::CallArg::Arith(*op, *a, *b),
+                InlineArg::Index { slot, i, two, .. } => crate::jit::CallArg::Index(*slot, *i, *two),
+            })
+            .collect(),
         clo: clo.clone(),
         callee: 0,
     })
@@ -2911,6 +3040,18 @@ fn jit_enter(
 ) -> Option<(crate::jit::Outcome, Vec<(u32, u32, u32)>)> {
     use crate::jit::{JType, JitSlot, Outcome, Reject};
     let key = enter as u32;
+    // A loop the interpreter started (a loop compiled alone) steps through
+    // its sequence as a vector: a compact integer sequence is the range
+    // native code takes, element for element.
+    // (Loops inside set up their own sequences: only the loop's own step,
+    // the op before its `LoopExit`.)
+    if let Op::LoopEnter { brk, .. } = code.ops[enter]
+        && let Some(Op::ForStep { seq, .. }) = code.ops.get((brk as usize).wrapping_sub(1))
+        && let RVal::V(Value::Int(v)) = &regs[*seq as usize]
+        && let Some((n, first, inc)) = crate::value::compact_intseq_of(v)
+    {
+        regs[*seq as usize] = RVal::Range { start: first as i64, step: inc as i64, n: n as u64 };
+    }
     let state = match code.jit.borrow().get(&key) {
         Some(JitSlot::Ready(l)) => Some(l.clone()),
         Some(JitSlot::Never) => return None,
@@ -2922,6 +3063,13 @@ fn jit_enter(
         None => {
             // Types of the variables' current values, and of the for
             // sequences set up before the loop.
+            if !crate::jit::precheck(code, enter) {
+                if crate::jit::trace() {
+                    eprintln!("jit: loop at {} cannot be compiled (an op it does not have)", enter);
+                }
+                code.jit.borrow_mut().insert(key, JitSlot::Never);
+                return None;
+            }
             let mut types: Vec<Option<JType>> = Vec::with_capacity(code.vars.len());
             for (s, sym) in code.vars.iter().enumerate() {
                 types.push(read_var(vars, env, *sym, s as Slot).and_then(jit_type));
@@ -3006,6 +3154,19 @@ fn jit_enter(
         if !syms.iter().all(|s| interp.resolves_to_base(*s, &clo.env)) {
             return None;
         }
+        for a in cs.inline_args.iter().flatten() {
+            if let InlineArg::Arith { sym, memo, .. } | InlineArg::Index { sym, memo, .. } = a
+                && !guard_ok(interp, *sym, env, memo)
+            {
+                return None;
+            }
+        }
+    }
+    for t in &jl.seq_lengths {
+        let n = if *t == JType::D { Num::D(1.0) } else { Num::I(1) };
+        if seq_length_range(interp, env, n).is_none() {
+            return None;
+        }
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
@@ -3074,7 +3235,8 @@ fn jit_enter(
     // vectors they view are held by `regs` and `vars` for the whole call.
     let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) };
     // Write the variables back as pending assignments.
-    for s in &jl.slots {
+    let split_tys = if jl.split_tys.is_empty() { None } else { jl.split_tys.get(&ret) };
+    for (k, s) in jl.slots.iter().enumerate() {
         if !s.written || !s.ty.is_scalar() {
             continue;
         }
@@ -3082,8 +3244,14 @@ fn jit_enter(
         if !assigned {
             continue;
         }
+        // (A variable that changes type has the type it has where native
+        // code returned.)
+        let ty = match (s.split, split_tys) {
+            (true, Some(t)) => t[k].unwrap_or(s.ty),
+            _ => s.ty,
+        };
         let b = vals[s.idx];
-        let v = match s.ty {
+        let v = match ty {
             JType::D => RVal::D(f64::from_bits(b)),
             JType::I => RVal::I(b as i32),
             _ => RVal::L(b as i32),
@@ -3503,7 +3671,7 @@ fn run_with(
     macro_rules! jit_loop {
         () => {{
             let rec = *loops.last().unwrap();
-            match jit_enter(interp, code, rec.enter as usize, env, regs, &mut vars) {
+            match jit_enter(interp, code, (rec.enter & !LOOP_COLD) as usize, env, regs, &mut vars) {
                 Some((crate::jit::Outcome::Exited, _)) => {
                     loops.pop();
                     pc = rec.brk as usize + 1;
@@ -4009,6 +4177,13 @@ fn run_with(
                 let r = interp.invoke_builtin(b, &code.consts[*call as usize], argv, env);
                 regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
             }
+            // (Out of line: the dispatch loop's codegen is hot.)
+            Op::Bitwise { .. } => {
+                if !bitwise_regs(regs, op) {
+                    flush!();
+                    tryop!(bitwise_op(interp, code, regs, op, env));
+                }
+            }
             Op::Builtin1 { f, dst, a, call } => {
                 interp.visible = true;
                 // R: eval.c:7894 (GETBUILTIN) — a traced builtin prints its
@@ -4251,14 +4426,30 @@ fn run_with(
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {
-                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
-                // A loop compiled on an earlier entry runs natively at once.
-                if jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_))) {
+                let enter = (pc - 1) as u32;
+                // A loop compiled on an earlier entry runs natively at once;
+                // one not compiled yet continues counting from its earlier
+                // entries (see `Op::LoopExit`).
+                let (ready, count, cold) = if jit_on { loop_state(code, enter) } else { (false, 0, false) };
+                loops.push(LoopRec {
+                    brk: *brk,
+                    nxt: *nxt,
+                    enter: if cold { enter | LOOP_COLD } else { enter },
+                    count,
+                });
+                if ready {
                     jit_loop!();
                 }
             }
             Op::LoopExit => {
-                loops.pop();
+                // A loop entered often for a few iterations each time gets
+                // hot too: its count carries over to the next entry.
+                if let Some(rec) = loops.pop()
+                    && rec.enter & LOOP_COLD != 0
+                    && rec.count < JIT_THRESHOLD
+                {
+                    loop_cold(code, rec.enter & !LOOP_COLD, rec.count);
+                }
             }
             Op::ForInit { seq, call } => {
                 if matches!(regs[*seq as usize], RVal::Range { .. }) {

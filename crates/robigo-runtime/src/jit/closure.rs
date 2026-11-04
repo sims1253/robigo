@@ -174,7 +174,7 @@ struct Last {
 /// Types as one number, if they fit (`MAX_ARGS` of them do).
 #[inline(always)]
 fn pack(tys: &[JType]) -> Option<u64> {
-    (tys.len() <= MAX_ARGS).then(|| tys.iter().fold(tys.len() as u64, |a, t| (a << 7) | (*t as u64 + 1)))
+    (tys.len() <= MAX_ARGS).then(|| tys.iter().fold(tys.len() as u64, |a, t| (a << 7) | (t.code() as u64 + 1)))
 }
 
 /// A validated tree: its root, the search epoch, the versions of the
@@ -769,7 +769,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
         if rounds > 20 {
             return Err(Reject::Never);
         }
-        if let Some(st) = reg_flow(&code.ops, &r, &entry, &mut slot_ty, &inl)? {
+        if let Some(st) = reg_flow(&code.ops, &r, &entry, &mut slot_ty, &inl, &mut Vec::new())? {
             break st;
         }
     };
@@ -1022,6 +1022,7 @@ fn define(
             flag: HashMap::new(),
             reg: HashMap::new(),
             range: HashMap::new(),
+            split: HashMap::new(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -1115,7 +1116,7 @@ fn define(
                 }
             }
         }
-        pairs.sort_by_key(|(r, t)| (*r, *t as u8));
+        pairs.sort_by_key(|(r, t)| (*r, t.code()));
         pairs.dedup();
         for (reg, t) in pairs {
             if t == JType::Dyn {
@@ -2053,7 +2054,8 @@ impl Gen<'_, '_> {
     /// An argument `x[[i]]` / `x[i]` of call argument `k`.
     pub(super) fn index_arg(&mut self, k: usize, x: Slot, i: &Leaf, two: bool, pc: usize) -> (CValue, JType) {
         let iv = self.leaf(i);
-        let (xv, t) = self.var(x);
+        // (In a loop, a vector is only a view: no `Dyn`.)
+        let (xv, t) = if self.v.vec.contains_key(&x) { (iv.0, JType::VecD) } else { self.var(x) };
         if t == JType::Dyn {
             let f = self.to_f64(iv.0, iv.1);
             let dst = self.tmp(k);

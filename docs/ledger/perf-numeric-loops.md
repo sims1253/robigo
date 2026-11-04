@@ -1,0 +1,140 @@
+# perf-numeric-loops: FastR's numeric loop wins
+
+Metric: `scripts/rivals.py` peak wall time (fastest warmed-up iteration)
+against GNU R 4.5.0, Ř and FastR on `mandelbrot_naive_ascii`,
+`mandelbrot_noout`, `mandelbrot_noout_naive`, `awf/Mandelbrot`,
+`real/convolution`, `real/convolution_slow` and `shootout/spectralnorm`.
+Gate: `scripts/perf.py compare` of instruction counts against main (no
+benchmark more than 0.5% slower) and conformance in all three tiers.
+
+Start (main bf7332ee, this VM; rivals from `~/rivals-baseline.json`), peak ms:
+
+| benchmark | robigo | GNU R | Ř | FastR |
+|---|---|---|---|---|
+| mandelbrot_naive_ascii | 40.0 | 53.0 | 16.9 | 4.47 |
+| mandelbrot_noout | 14.3 | 20.1 | 19.4 | 7.88 |
+| mandelbrot_noout_naive | 18.8 | 17.4 | 18.7 | 9.94 |
+| awf/Mandelbrot | 0.199 | 0.465 | 0.153 | 0.0332 |
+| convolution | 2.52 | 42.3 | 1.53 | 1.17 |
+| convolution_slow | 5.19 | 59.5 | 21.5 | 2.42 |
+| spectralnorm | 21.3 | 50.0 | 1.05 | 0.535 |
+
+Where the time goes (perf, release build, benchmark body repeated):
+
+- `mandelbrot_noout`: complex vector `z * z + c`, 3.4M multiplications per
+  call; 1.33M of them take `__muldc3`'s recovery of infinities (escaped
+  points sit at Inf + NaN i), each a call of `cmul_recover`: 53% of the
+  time in the two. The rest is the VM around 13,050 vector iterations and
+  the per-row vector code.
+- `mandelbrot_noout_naive`: `Z^2` (two `cmul`s per element through
+  `cpow`/`r_cpow_n`, 32%), `X[, , k] <- v` through the general array
+  assignment (a flat index vector of 52,900 entries per call, 17%),
+  `hypot` (20%, glibc's, which GNU R calls too) and `exp` (17%).
+- `mandelbrot_naive_ascii`: scalar complex arithmetic in the VM
+  (`leaf_op_slow`/`complex_op`): native loops have no complex type.
+- `awf/Mandelbrot`: only the innermost loop is native; the pixel loop calls
+  `bitwShiftL`/`bitwXor` (closures over `.Internal`, not inlinable), and
+  14-iteration loops never reach the 16-iteration threshold in one entry.
+- `convolution`: 93% in the native loop already, but its code is poor:
+  integer indexes go through a double conversion and back, NA and overflow
+  checks on loop variables that cannot be NA, values spilled around the
+  back edge.
+- `convolution_slow`: as above, plus the outer loop over
+  `seq(length = nx)` stays in the VM (`ForSeqLength` is not native).
+- `spectralnorm`: the helper closure recreated per call (#296), then the
+  outer loop (`double(n)`, `%*%`) in the VM.
+
+## 2026-11-04: complex vector kernels (noout -9%, noout_naive -40%)
+
+- What (`builtins/complex.rs`, `arith.rs`, `subassign.rs`):
+  - `complex::pair`: `__muldc3` on two elements at a time, the products as
+    packed SSE2 `mulpd`/`subpd`/`addpd` in inline assembly with the
+    scalar code's operand order (each lane follows the scalar NaN rules),
+    and the recovery of infinities branch-free over both lanes, kept where
+    a lane needs it. Equal-length `*` uses it.
+  - Integer powers `z^k` (`k` in 2..65536, one exponent for all
+    elements): `R_cpow_n`'s multiplication schedule run on two elements at
+    once (a pair with a zero goes through `cpow`, which has its own case).
+  - `x[, , k] <- y` (whole leading dimensions, in-range scalar trailing
+    subscripts, a double or integer `y` of the block's length and type):
+    one copy of the block instead of a flat index per element.
+- Rejected, measured:
+  - The two-lane products built from `[Complex; 2]` arrays: LLVM moved
+    them through the stack with overlapping loads (store-forwarding
+    stalls), noout 14.3 -> 26.5 ms. Loading the slices directly fixed it.
+  - The recovery as an out-of-line function: 21.7% of noout in the call
+    alone; inlined.
+  - Always computing the recovery (no branch on "any lane NaN + NaN i"):
+    noout 13.1 -> 19.3 ms; the branch stays.
+  - `exp()` returning +0 below -746 without glibc (whose underflow path
+    sets errno): no measurable gain on noout_naive, `robigo/vecarith`
+    +1.76% instructions. Dropped.
+- Result, peak ms (rivals.py): `mandelbrot_noout` 14.3 -> 13.0,
+  `mandelbrot_noout_naive` 18.8 -> 11.4 (now faster than GNU R and Ř;
+  FastR 7.9 / 9.9), `mandelbrot_ascii` 11.3 -> 10.7. Instructions against
+  main: 3 faster (`mandelbrot_noout_naive` -31.0%, `mandelbrot_noout`
+  -8.4%, `mandelbrot_ascii` -6.8%), 0 slower.
+- Verified: unit tests `pair_cmul_matches_cmul` (all 169 x 169 pairs of
+  special values, both lanes, mixed with recovering partners) and
+  `pair_cpow_n_matches_cpow` against the scalar kernels, and the GNU R
+  oracle test of complex arithmetic; `tests/r/math/complex-vector-mul-pow.R`
+  and `tests/r/vectors/array-block-assign.R` recorded with GNU R 4.5.0,
+  byte-identical in all tiers.
+- Open: what is left of noout is about half the VM around vector code
+  (13,050 iterations of `z <- z * z + c; i <- i + 1L` with `iter` a global)
+  and half the multiplications' recovery; noout_naive is a third `hypot`
+  and `exp` from glibc, which GNU R calls too.
+
+## 2026-11-04: native loops: bitwise ops, loops of loops, `seq(length = n)`, variables that change type (awf 2.9x, convolution 2x)
+
+- What (`jit.rs`, `jit/closure.rs`, `vm.rs`, `compile.rs`):
+  - `.Internal(bitwiseAnd(a, b))` etc. compile to `Op::Bitwise`: unboxed in
+    the VM, in inline runs of `bitwAnd` and friends (whose bodies are
+    pure now), and in native loops (doubles to integers as
+    `IntegerFromReal`, leaving where that warns; NA and shifts outside
+    0..31 give NA).
+  - Calls run inline in a native loop may have arguments `a op b` and
+    `x[[i]]` (`bitwShiftL(byteAcc, 8 - bitNum)`), as in closures compiled
+    whole; their operators are guarded at entry.
+  - A loop with a loop inside carries its iteration count over its
+    entries: compiled once they add up to 256 (or one entry reaches 16).
+    awf/Mandelbrot's pixel loop has 14 iterations per row, so it never
+    got hot. Loops without loops inside do not: entering native code costs
+    more than a few iterations of a flat loop (`robigo/nbody` +2% when
+    they did).
+  - A variable assigned scalars of different types (awf's `byteAcc`: a
+    double, briefly an integer from `bitwShiftL`) gets its type per op,
+    like a register, with a Cranelift variable per type; where native code
+    returns, the VM gets the value with the type it has there
+    (`JitLoop::split_tys`). It must have one type wherever native code can
+    return.
+  - `for (i in seq(length = n))` is a native range (`ForSeqLength`), with
+    `vm::seq_length_range`'s method checks made at entry.
+  - A loop the interpreter started steps over its sequence as a vector:
+    a compact integer sequence becomes the range native code takes.
+  - An index `x[i]` checks `i - 1 < length` once, unsigned, instead of a
+    round trip through a double and three comparisons.
+- Rejected, measured:
+  - Carrying counts for every loop: `robigo/nbody` +2.0%, `fannkuch`
+    +0.6% (short flat loops compiled and entered at every call).
+  - Cross-entry threshold 16 for loops of loops: awf's one-call run +4.4%
+    instructions (13M to compile the pixel loop, ~6x the inner loop's).
+  - The bitwise arm in the inline runner without calls: `robigo/closures`
+    +0.9% (LLVM stopped inlining `run_inline_with` into
+    `inline_site_call`); bitwise bodies take the nested runner. In
+    `run_with` the op is two out-of-line calls (fast path, builtin):
+    inline, the dispatch loop cost fannkuch +0.4% with the JIT off.
+- Result, peak ms (rivals.py): awf/Mandelbrot 0.104 -> 0.036 (FastR
+  0.033, Ř 0.153), convolution 2.52 -> 1.27 (FastR 1.17, Ř 1.53),
+  convolution_slow 5.19 -> 2.34 (FastR 2.42: now the fastest).
+  Instructions against main: 15 faster, 0 slower: `spectralnorm_naive`
+  -74%, `convolution_slow` -15%, `convolution` -14%, `nbody_naive` -14%,
+  `robigo/nbody` -13%, `vectorFor` -13%, `fannkuchredux_naive` -7.5%.
+- Verified: `tests/r/jit/loop-bitwise.R`, `loop-split-types.R`,
+  `loop-seq-length.R`, recorded with GNU R 4.5.0, byte-identical in all
+  tiers.
+- Open: awf's row loop stays in the VM: `sum` is a double at its entry
+  and an integer after the first byte, so its type at the loop head
+  differs between entry and back edge (a second version of the loop for
+  the new types would take it). Registers merging types (`v <- if (c)
+  NaN else i`) still reject a loop.

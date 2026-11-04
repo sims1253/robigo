@@ -27,7 +27,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::builtins::arith::{ArithOp, RelOp, myfloor, myfmod, r_pow};
-use crate::compile::{Builtin1, Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot};
+use crate::compile::{BitOp, Builtin1, Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, Slot};
 use crate::sym::Sym;
 use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL};
 
@@ -54,6 +54,10 @@ pub enum JType {
     /// Any value, held in an `RVal` slot of the frame (in a closure compiled
     /// whole): native code knows it by the slot's address.
     Dyn,
+    /// (Only as a variable's type in a loop's analysis.) A variable assigned
+    /// scalars of different types: its type at each op is this entry of the
+    /// register state, like a register's.
+    Split(u16),
 }
 
 impl JType {
@@ -63,6 +67,23 @@ impl JType {
 
     pub fn is_vector(self) -> bool {
         matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI)
+    }
+
+    /// A small number per type (for keys and orders); no `Split` reaches
+    /// the places that use it.
+    pub fn code(self) -> u8 {
+        match self {
+            JType::D => 0,
+            JType::I => 1,
+            JType::L => 2,
+            JType::Range => 3,
+            JType::VecD => 4,
+            JType::VecI => 5,
+            JType::MatD => 6,
+            JType::MatI => 7,
+            JType::Dyn => 8,
+            JType::Split(_) => 9,
+        }
     }
 }
 
@@ -82,6 +103,10 @@ pub struct SlotInfo {
     pub flag: Option<usize>,
     /// For vectors: written in place.
     pub writable: bool,
+    /// A variable whose type changes in the loop ([`JType::Split`]): `ty` is
+    /// its type at entry; the type it has where native code returns is in
+    /// [`JitLoop::split_tys`].
+    pub split: bool,
 }
 
 /// A view of a vector's data passed to native code.
@@ -124,6 +149,13 @@ pub struct JitLoop {
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
     pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+    /// The types of the lengths of `for (i in seq(length = n))` loops in
+    /// the region: `seq.default` must be the method for them (see
+    /// `vm::seq_length_range`).
+    pub seq_lengths: Vec<JType>,
+    /// Per value native code returns (an op index or [`EXIT`]): the type of
+    /// each variable of `slots` with `split` there.
+    pub split_tys: HashMap<u32, Vec<Option<JType>>>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -277,6 +309,7 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             | Op::Neg { .. }
             | Op::Not { .. }
             | Op::Math1 { .. }
+            | Op::Bitwise { .. }
             | Op::Jump { .. }
             | Op::Visible { .. }
             | Op::Guard { .. } => {}
@@ -324,6 +357,11 @@ pub enum JitSlot {
     Ready(std::rc::Rc<JitLoop>),
     /// Not compiled yet: this many attempts failed for the values seen.
     Failed(u8),
+    /// Not tried yet: the back edge ran this often in earlier entries.
+    Cold(u32),
+    /// Not tried yet, and a loop without loops inside: only one entry that
+    /// runs long enough compiles it.
+    Flat,
     Never,
 }
 
@@ -543,7 +581,7 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             u.rregs.push(*src);
             u.wslots.push(*slot);
         }
-        Op::Arith { dst, a, b, .. } | Op::Rel { dst, a, b, .. } => {
+        Op::Arith { dst, a, b, .. } | Op::Rel { dst, a, b, .. } | Op::Bitwise { dst, a, b, .. } => {
             u.rregs.extend([*a, *b]);
             u.wregs.push(*dst);
         }
@@ -580,6 +618,10 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         Op::ForInit { seq, .. } => {
             u.rregs.push(*seq);
             u.wregs.push(*seq + 1);
+        }
+        Op::ForSeqLength { len, seq, .. } => {
+            leaf_uses(len, &mut u);
+            u.wregs.push(*seq);
         }
         Op::ForStep { seq, idx, slot, .. } => {
             u.rregs.extend([*seq, *idx]);
@@ -630,6 +672,7 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Neg { .. }
         | Op::Not { .. }
         | Op::Math1 { .. }
+        | Op::Bitwise { .. }
         | Op::AndOrArg { .. }
         | Op::AndOr { .. }
         | Op::ForInit { .. }
@@ -646,6 +689,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::AndOrShort { target, .. } => inside(*target),
         Op::ForStep { body, .. } => inside(*body),
         Op::ForRange { kind, .. } => *kind != RangeKind::SeqAlong,
+        // (Whether `seq.default` is the method is checked at entry.)
+        Op::ForSeqLength { .. } => true,
         // (`x[[i]] <- v` too: on the attribute-free double and integer
         // vectors and in-range scalar indices native code handles, it does
         // what `x[i] <- v` does; anything else deoptimizes.)
@@ -666,6 +711,18 @@ fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
             _ => JType::I,
         }
     })
+}
+
+/// Whether the loop at `enter` has only ops native code supports, calls
+/// aside (which it runs inline if their closures allow: deciding that costs
+/// more, so this is asked first).
+pub fn precheck(code: &Code, enter: usize) -> bool {
+    let Op::LoopEnter { brk, .. } = code.ops[enter] else { return false };
+    let r = Region { start: enter + 1, end: brk as usize };
+    if r.end > code.ops.len() || r.start >= r.end {
+        return false;
+    }
+    code.ops[r.start..r.end].iter().all(|op| matches!(op, Op::Call { .. }) || supported(op, &r))
 }
 
 /// Compile the loop starting at the `LoopEnter` op `enter`. `entry(slot)`
@@ -755,12 +812,23 @@ pub fn compile(
         }
     }
     let mut rounds = 0;
+    let mut splits: Vec<Slot> = Vec::new();
     let states = loop {
         rounds += 1;
         if rounds > 20 {
             return Err(Reject::Never);
         }
-        if let Some(st) = reg_flow(ops, &r, &entry_state, &mut slot_ty, &inl)? {
+        let known = splits.len();
+        let st = reg_flow(ops, &r, &entry_state, &mut slot_ty, &inl, &mut splits)?;
+        // Variables found to change type: their type becomes part of the
+        // state (after the registers), starting as at entry.
+        for &sl in &splits[known..] {
+            slot_ty.insert(sl, JType::Split(entry_state.len() as u16));
+            entry_state.push(entry(sl).filter(|t| t.is_scalar()));
+        }
+        if let Some(st) = st
+            && splits.len() == known
+        {
             break st;
         }
     };
@@ -772,6 +840,11 @@ pub fn compile(
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
                 return Err(not_now(8));
+            }
+        }
+        for s in &u.rslots {
+            if slot_type(*s, st, &slot_ty).is_none() {
+                return Err(not_now(10));
             }
         }
         for reg in &u.rregs {
@@ -848,7 +921,18 @@ pub fn compile(
     let mut slot_list: Vec<Slot> = slot_ty.keys().copied().collect();
     slot_list.sort();
     for s in slot_list {
-        let ty = slot_ty[&s];
+        let split = matches!(slot_ty[&s], JType::Split(_));
+        // (A variable that changes type has a value at entry, whose type
+        // native code takes from there: one without would need its type
+        // where native code returns before the first assignment.)
+        let ty = if split {
+            match entry(s) {
+                Some(t) if t.is_scalar() && needs_entry[s as usize] => t,
+                _ => return Err(not_now(11)),
+            }
+        } else {
+            slot_ty[&s]
+        };
         let ne = needs_entry[s as usize] || ty.is_vector();
         if ne && entry(s) != Some(ty) {
             return Err(not_now(9));
@@ -875,11 +959,12 @@ pub fn compile(
             written: written[s as usize],
             flag,
             writable: writable[s as usize],
+            split,
         });
     }
     let mut reg_idx = HashMap::new();
     for st in states.iter().flatten() {
-        for (reg, t) in st.iter().enumerate() {
+        for (reg, t) in st.iter().take(code.nregs).enumerate() {
             if let Some(t) = t {
                 if let std::collections::hash_map::Entry::Vacant(e) = reg_idx.entry(reg as Reg) {
                     e.insert(nvals);
@@ -902,8 +987,49 @@ pub fn compile(
 
     let mut deopt_regs = HashMap::new();
     let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
+    // The type of each variable that changes type where native code
+    // returns: it must have one there.
+    let mut split_tys = HashMap::new();
+    if slots.iter().any(|s| s.split) {
+        let at = |pc: usize| -> Option<Vec<Option<JType>>> {
+            let st = states[pc - r.start].as_ref()?;
+            Some(slots.iter().map(|s| if s.split { slot_type(s.slot, st, &slot_ty) } else { None }).collect())
+        };
+        let mut exits: Vec<(u32, usize)> = deopt_regs.keys().map(|&pc| (pc, pc as usize)).collect();
+        exits.push((EXIT, r.end));
+        for (key, pc) in exits {
+            if let Some(tys) = at(pc) {
+                if slots.iter().zip(&tys).any(|(s, t)| s.split && t.is_none()) {
+                    return Err(not_now(12));
+                }
+                split_tys.insert(key, tys);
+            }
+        }
+    }
     let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls })
+    let mut seq_lengths = Vec::new();
+    for pc in r.start..r.end {
+        if let (Op::ForSeqLength { len, .. }, Some(st)) = (&ops[pc], &states[pc - r.start])
+            && let Some(t) = leaf_type(len, st, &slot_ty)
+            && !seq_lengths.contains(&t)
+        {
+            seq_lengths.push(t);
+        }
+    }
+    Ok(JitLoop {
+        func,
+        slots,
+        reg_idx,
+        live_in: live,
+        deopt_regs,
+        nvals,
+        nvecs,
+        nested,
+        guards,
+        calls,
+        seq_lengths,
+        split_tys,
+    })
 }
 
 /// Register types before an op: `None` for undefined, or different types
@@ -947,7 +1073,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::ForRange { kind: RangeKind::Colon, a, b, .. } => rt(a).is_scalar() && rt(b).is_scalar(),
         Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
         Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
-        Op::GetVar { slot, .. } => inl.specs.is_some() || slot_ty[slot].is_scalar(),
+        Op::GetVar { slot, .. } => inl.specs.is_some() || slot_type(*slot, st, slot_ty).is_some_and(|t| t.is_scalar()),
         _ => defs(op, st, slot_ty, inl).iter().all(|(_, t)| t.is_some()),
     }
 }
@@ -956,8 +1082,16 @@ fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<
     match l {
         Leaf::D(_) => Some(JType::D),
         Leaf::I(_) => Some(JType::I),
-        Leaf::Var(_, s) => slot_ty.get(s).copied(),
+        Leaf::Var(_, s) => slot_type(*s, st, slot_ty),
         Leaf::R(reg) => st[*reg as usize],
+    }
+}
+
+/// The type of variable `s` before an op (with state `st`).
+fn slot_type(s: Slot, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
+    match slot_ty.get(&s) {
+        Some(JType::Split(k)) => st.get(*k as usize).copied().flatten(),
+        t => t.copied(),
     }
 }
 
@@ -982,7 +1116,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
         Op::ConstL { dst, .. } => vec![(*dst as usize, Some(JType::L))],
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
-        Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_ty.get(slot).copied()))],
+        Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_type(*slot, st, slot_ty)))],
         Op::Builtin1 { f: Builtin1::Length, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::I))],
         Op::Builtin1 { f: Builtin1::IsNull, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::L))],
         Op::Arith { op, dst, a, b, .. } => {
@@ -1027,7 +1161,15 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             vec![(*dst as usize, t)]
         }
         Op::AndOrShort { dst, .. } | Op::AndOr { dst, .. } => vec![(*dst as usize, Some(JType::L))],
+        Op::Bitwise { dst, a, b, .. } => {
+            let ok = matches!(rt(a), Some(JType::D | JType::I)) && matches!(rt(b), Some(JType::D | JType::I));
+            vec![(*dst as usize, ok.then_some(JType::I))]
+        }
         Op::ForRange { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
+        Op::ForSeqLength { seq, len, .. } => {
+            let ok = matches!(leaf_type(len, st, slot_ty), Some(JType::D | JType::I));
+            vec![(*seq as usize, ok.then_some(JType::Range))]
+        }
         Op::ForInit { seq, .. } => vec![(*seq as usize + 1, Some(JType::I))],
         Op::ForStep { idx, .. } => vec![(*idx as usize, Some(JType::I))],
         Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
@@ -1051,6 +1193,7 @@ fn reg_flow(
     entry: &RegState,
     slot_ty: &mut HashMap<Slot, JType>,
     inl: &Inl,
+    splits: &mut Vec<Slot>,
 ) -> Result<Option<Vec<Option<RegState>>>, Reject> {
     let n = r.end - r.start + 1;
     let mut states: Vec<Option<RegState>> = vec![None; n];
@@ -1073,9 +1216,23 @@ fn reg_flow(
         if inl.specs.is_some() && closure::leaves(op, inl) {
             continue;
         }
+        let mut split_writes: Vec<(u16, JType)> = Vec::new();
         let mut assign = |slot: Slot, t: JType| -> Result<(), Reject> {
             match slot_ty.get(&slot) {
+                Some(JType::Split(k)) => {
+                    split_writes.push((*k, t));
+                    Ok(())
+                }
                 Some(old) if *old == t => Ok(()),
+                // In a loop, a variable may hold scalars of different types
+                // at different ops: its type is tracked like a register's.
+                Some(old) if inl.specs.is_none() && old.is_scalar() && t.is_scalar() => {
+                    if !splits.contains(&slot) {
+                        splits.push(slot);
+                    }
+                    new_slot = true;
+                    Ok(())
+                }
                 Some(_) => Err(not_now(3)),
                 None => {
                     slot_ty.insert(slot, t);
@@ -1099,6 +1256,9 @@ fn reg_flow(
         let mut out = st.clone();
         for (reg, t) in defs(op, &st, slot_ty, inl) {
             out[reg] = t;
+        }
+        for (k, t) in split_writes {
+            out[k as usize] = Some(t);
         }
         if matches!(op, Op::Return { .. }) {
             continue;
@@ -1152,6 +1312,18 @@ struct Vars {
     /// Per register and type: one variable, or three for a range.
     reg: HashMap<(Reg, JType), Variable>,
     range: HashMap<Reg, (Variable, Variable, Variable)>,
+    /// Variables that change type: their entry in the register state and
+    /// a variable per scalar type (see [`split_var`]).
+    split: HashMap<Slot, (u16, [Variable; 3])>,
+}
+
+/// Which of a split variable's three variables holds a value of type `t`.
+fn split_var(vs: &[Variable; 3], t: JType) -> Variable {
+    match t {
+        JType::D => vs[0],
+        JType::I => vs[1],
+        _ => vs[2],
+    }
 }
 
 struct Gen<'a, 'b> {
@@ -1193,9 +1365,18 @@ impl Gen<'_, '_> {
     /// the value buffer. Returns those registers.
     fn store_all(&mut self, pc: Option<usize>) -> Vec<(Reg, JType)> {
         let mf = MemFlagsData::trusted();
+        // (Where native code returns at the region's end, or at an op it
+        // cannot reach, the variables are as at the end.)
+        let at = pc.unwrap_or(self.start + self.blocks.len() - 1);
         for s in self.slots {
             if let Some((var, _)) = self.v.slot.get(&s.slot) {
                 let x = self.b.use_var(*var);
+                self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
+            }
+            if let Some((k, vs)) = self.v.split.get(&s.slot).copied()
+                && let Some(t) = self.states[at - self.start].as_ref().and_then(|st| st[k as usize])
+            {
+                let x = self.b.use_var(split_var(&vs, t));
                 self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
             }
             if let (Some(f), Some(idx)) = (self.v.flag.get(&s.slot), s.flag) {
@@ -1206,7 +1387,9 @@ impl Gen<'_, '_> {
         let mut live = Vec::new();
         let Some(pc) = pc else { return live };
         let st = self.state(pc).clone();
-        for (reg, t) in st.iter().enumerate() {
+        // (The types of variables that change type follow the registers.)
+        let nregs = self.v.split.values().map(|(k, _)| *k as usize).min().unwrap_or(st.len());
+        for (reg, t) in st.iter().take(nregs).enumerate() {
             let (Some(t), Some(idx)) = (*t, self.reg_idx.get(&(reg as Reg)).copied()) else { continue };
             let reg = reg as Reg;
             if t == JType::Range {
@@ -1282,6 +1465,10 @@ impl Gen<'_, '_> {
         {
             return x;
         }
+        if let Some((k, vs)) = self.v.split.get(&s).copied() {
+            let t = self.state(self.cur)[k as usize].unwrap();
+            return (self.b.use_var(split_var(&vs, t)), t);
+        }
         let (var, t) = self.v.slot[&s];
         (self.b.use_var(var), t)
     }
@@ -1346,6 +1533,25 @@ impl Gen<'_, '_> {
                 }
             }
         }
+    }
+
+    /// An integer from an integer or double (`coerce.c:IntegerFromReal`);
+    /// leaves at `pc` where the coercion warns.
+    fn to_int(&mut self, x: CValue, t: JType, pc: usize) -> CValue {
+        if t != JType::D {
+            return x;
+        }
+        let na = self.b.ins().fcmp(FloatCC::Unordered, x, x);
+        let hi = self.f64c(i32::MAX as f64 + 1.0);
+        let lo = self.f64c(i32::MIN as f64);
+        let ge = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, x, hi);
+        let le = self.b.ins().fcmp(FloatCC::LessThanOrEqual, x, lo);
+        let out = self.b.ins().bor(ge, le);
+        self.deopt_if(out, pc);
+        // (NaN converts to 0 here, and is replaced.)
+        let i = self.b.ins().fcvt_to_sint_sat(types::I32, x);
+        let nai = self.i32c(NA_I32);
+        self.b.ins().select(na, nai, i)
     }
 
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
@@ -1448,23 +1654,14 @@ impl Gen<'_, '_> {
     /// A 0-based index from `i` (`vm::scalar_index`), checked against the
     /// length; leaves at `pc` otherwise.
     fn index(&mut self, i: (CValue, JType), len: CValue, pc: usize) -> CValue {
-        let f = match i.1 {
-            JType::D => i.0,
-            _ => {
-                let na = self.is_na_i(i.0);
-                self.deopt_if(na, pc);
-                self.b.ins().fcvt_from_sint(types::F64, i.0)
-            }
+        // One unsigned comparison leaves for everything but 1..=len: an
+        // integer NA, 0 and negatives wrap around; a double is truncated
+        // toward zero (as `vm::scalar_index`), NaN converting to 0 and
+        // infinities saturating.
+        let k = match i.1 {
+            JType::D => self.b.ins().fcvt_to_sint_sat(types::I64, i.0),
+            _ => self.b.ins().sextend(types::I64, i.0),
         };
-        let one = self.f64c(1.0);
-        let lim = self.f64c(4503599627370496.0);
-        let ge = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, f, one);
-        let lt = self.b.ins().fcmp(FloatCC::LessThan, f, lim);
-        let ok = self.b.ins().band(ge, lt);
-        let bad = self.b.ins().bxor_imm_s(ok, 1);
-        self.deopt_if(bad, pc);
-        let t = self.b.ins().trunc(f);
-        let k = self.b.ins().fcvt_to_sint_sat(types::I64, t);
         let k = self.b.ins().iadd_imm_s(k, -1);
         let out = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, k, len);
         self.deopt_if(out, pc);
@@ -1550,8 +1747,11 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, v);
             }
             Op::SetVar { src, slot, .. } => {
-                let (x, _) = self.reg(*src);
-                let (var, _) = self.v.slot[slot];
+                let (x, t) = self.reg(*src);
+                let var = match self.v.split.get(slot) {
+                    Some((_, vs)) => split_var(vs, t),
+                    None => self.v.slot[slot].0,
+                };
                 self.b.def_var(var, x);
                 if let Some(f) = self.v.flag.get(slot).copied() {
                     let one = self.b.ins().iconst(types::I64, 1);
@@ -1633,6 +1833,30 @@ impl Gen<'_, '_> {
                     self.deopt_if(bad, pc);
                     r
                 };
+                self.set_reg(*dst, v);
+            }
+            Op::Bitwise { op: bop, dst, a, b, .. } => {
+                let (x, tx) = self.reg(*a);
+                let (y, ty) = self.reg(*b);
+                let x = self.to_int(x, tx, pc);
+                let y = self.to_int(y, ty, pc);
+                // R: relop.c:bitwiseAnd etc.
+                let nx = self.is_na_i(x);
+                let ny = self.is_na_i(y);
+                let mut na = self.b.ins().bor(nx, ny);
+                let r = match bop {
+                    BitOp::And => self.b.ins().band(x, y),
+                    BitOp::Or => self.b.ins().bor(x, y),
+                    BitOp::Xor => self.b.ins().bxor(x, y),
+                    BitOp::ShiftL | BitOp::ShiftR => {
+                        let out = self.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, y, 31);
+                        na = self.b.ins().bor(na, out);
+                        // (In range, so the masked shift is the shift.)
+                        if *bop == BitOp::ShiftL { self.b.ins().ishl(x, y) } else { self.b.ins().ushr(x, y) }
+                    }
+                };
+                let nai = self.i32c(NA_I32);
+                let v = self.b.ins().select(na, nai, r);
                 self.set_reg(*dst, v);
             }
             Op::AndOrArg { dst, a, .. } => {
@@ -1757,6 +1981,32 @@ impl Gen<'_, '_> {
                 self.b.def_var(vt, step);
                 self.b.def_var(vn, n);
             }
+            Op::ForSeqLength { len, seq, .. } => {
+                // vm::seq_length_range: `seq_len(n)` for an integer n >= 0,
+                // a double rounded up and within 0..=INT_MAX.
+                let (x, t) = self.leaf(len);
+                let n = if t == JType::D {
+                    let c = self.b.ins().ceil(x);
+                    let zero = self.f64c(0.0);
+                    let lim = self.f64c(i32::MAX as f64);
+                    let ge = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, c, zero);
+                    let le = self.b.ins().fcmp(FloatCC::LessThanOrEqual, c, lim);
+                    let ok = self.b.ins().band(ge, le);
+                    let bad = self.b.ins().bxor_imm_s(ok, 1);
+                    self.deopt_if(bad, pc);
+                    self.b.ins().fcvt_to_sint_sat(types::I64, c)
+                } else {
+                    // (NA is negative.)
+                    let neg = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, x, 0);
+                    self.deopt_if(neg, pc);
+                    self.b.ins().sextend(types::I64, x)
+                };
+                let one = self.b.ins().iconst(types::I64, 1);
+                let (vs, vt, vn) = self.v.range[seq];
+                self.b.def_var(vs, one);
+                self.b.def_var(vt, one);
+                self.b.def_var(vn, n);
+            }
             Op::ForInit { seq, .. } => {
                 let z = self.i32c(0);
                 self.set_reg(*seq + 1, z);
@@ -1786,7 +2036,10 @@ impl Gen<'_, '_> {
                 let off = self.b.ins().imul(i, st);
                 let e = self.b.ins().iadd(s, off);
                 let e = self.b.ins().ireduce(types::I32, e);
-                let (var, _) = self.v.slot[slot];
+                let var = match self.v.split.get(slot) {
+                    Some((_, vs)) => split_var(vs, JType::I),
+                    None => self.v.slot[slot].0,
+                };
                 self.b.def_var(var, e);
                 if let Some(f) = self.v.flag.get(slot).copied() {
                     let one = self.b.ins().iconst(types::I64, 1);
@@ -1896,7 +2149,7 @@ impl Gen<'_, '_> {
                 }
             }
         }
-        pairs.sort_by_key(|(r, t)| (*r, *t as u8));
+        pairs.sort_by_key(|(r, t)| (*r, t.code()));
         pairs.dedup();
         let mut reg = HashMap::new();
         for (r, t) in pairs {
@@ -1912,6 +2165,7 @@ impl Gen<'_, '_> {
         let saved_reg = std::mem::replace(&mut self.v.reg, reg);
         let saved_slot = std::mem::replace(&mut self.v.slot, slot);
         let saved_flag = std::mem::take(&mut self.v.flag);
+        let saved_split = std::mem::take(&mut self.v.split);
         let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
         let (saved_start, saved_cur, saved_exit, saved_deopt, saved_ret) =
             (self.start, self.cur, self.exit, self.deopt_at, self.ret);
@@ -1950,6 +2204,7 @@ impl Gen<'_, '_> {
         self.v.reg = saved_reg;
         self.v.slot = saved_slot;
         self.v.flag = saved_flag;
+        self.v.split = saved_split;
         self.blocks = saved_blocks;
         self.start = saved_start;
         self.cur = saved_cur;
@@ -2034,9 +2289,21 @@ fn codegen(
                 flag: HashMap::new(),
                 reg: HashMap::new(),
                 range: HashMap::new(),
+                split: HashMap::new(),
             };
             for s in slots {
-                if s.ty.is_scalar() {
+                if s.split {
+                    let Some(JType::Split(k)) = slot_ty.get(&s.slot).copied() else { unreachable!() };
+                    let vs = [b.declare_var(types::F64), b.declare_var(types::I32), b.declare_var(types::I32)];
+                    let z = b.ins().f64const(0.0);
+                    b.def_var(vs[0], z);
+                    let z = b.ins().iconst(types::I32, 0);
+                    b.def_var(vs[1], z);
+                    b.def_var(vs[2], z);
+                    let x = b.ins().load(cl_type(s.ty), mf, vals, (s.idx * 8) as i32);
+                    b.def_var(split_var(&vs, s.ty), x);
+                    v.split.insert(s.slot, (k, vs));
+                } else if s.ty.is_scalar() {
                     let ty = cl_type(s.ty);
                     let var = b.declare_var(ty);
                     let x = b.ins().load(ty, mf, vals, (s.idx * 8) as i32);
@@ -2074,7 +2341,7 @@ fn codegen(
             let mut pairs: Vec<(Reg, JType)> = Vec::new();
             for (k, st) in states.iter().enumerate() {
                 let Some(st) = st else { continue };
-                for (reg, t) in st.iter().enumerate() {
+                for (reg, t) in st.iter().take(code.nregs).enumerate() {
                     if let Some(t) = t {
                         pairs.push((reg as Reg, *t));
                     }
@@ -2087,7 +2354,7 @@ fn codegen(
                     }
                 }
             }
-            pairs.sort_by_key(|(r, t)| (*r, *t as u8));
+            pairs.sort_by_key(|(r, t)| (*r, t.code()));
             pairs.dedup();
             for (reg, t) in pairs {
                 let li = live.iter().any(|(r2, t2)| *r2 == reg && *t2 == t);
@@ -2182,11 +2449,22 @@ fn codegen(
         let id = module
             .declare_function(&format!("robigo_loop_{}", n), Linkage::Local, &ctx.func.signature)
             .map_err(|_| Reject::Never)?;
+        // `ROBIGO_JIT_DISASM=1`: the IR and the machine code of each loop.
+        let disasm = std::env::var_os("ROBIGO_JIT_DISASM").is_some();
+        if disasm {
+            ctx.set_disasm(true);
+            eprintln!("{}", ctx.func.display());
+        }
         if let Err(e) = module.define_function(id, &mut ctx) {
             if trace() {
                 eprintln!("jit: codegen failed: {:?}", e);
             }
             return Err(Reject::Never);
+        }
+        if disasm {
+            if let Some(cc) = ctx.compiled_code() {
+                eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
+            }
         }
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;

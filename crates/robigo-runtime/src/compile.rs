@@ -85,6 +85,28 @@ pub enum Math1 {
     Tan,
 }
 
+/// `.Internal(bitwiseAnd(a, b))` and the other two-argument bitwise
+/// internals, with an unboxed fast path (see `vm::bitwise_fast`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitOp {
+    And,
+    Or,
+    Xor,
+    ShiftL,
+    ShiftR,
+}
+
+fn bitop(name: &str) -> Option<BitOp> {
+    Some(match name {
+        "bitwiseAnd" => BitOp::And,
+        "bitwiseOr" => BitOp::Or,
+        "bitwiseXor" => BitOp::Xor,
+        "bitwiseShiftL" => BitOp::ShiftL,
+        "bitwiseShiftR" => BitOp::ShiftR,
+        _ => return None,
+    })
+}
+
 /// The sequences a `for` loop can step through without allocating them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RangeKind {
@@ -290,6 +312,17 @@ pub enum Op {
         dst: Reg,
         f: u32,
         args: u32,
+        call: u32,
+    },
+    /// `.Internal(bitwiseAnd(a, b))` etc. (the builtin `consts[f]`, the
+    /// inner call `consts[call]`): unboxed for integer and double scalars,
+    /// otherwise the builtin.
+    Bitwise {
+        op: BitOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        f: u32,
         call: u32,
     },
     /// `sqrt(a)` etc. on an attribute-free scalar; otherwise the builtin.
@@ -1866,6 +1899,25 @@ impl Compiler {
                 self.expr(&il.args[0].value, a, Want::Value);
                 let call = self.konst(l.args[0].value.clone());
                 self.emit(Op::Builtin1 { f: Builtin1::Typeof, dst, a, call });
+                self.vis(w, true);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            ".Internal"
+                if plain_args(l, 1)
+                    && matches!(&l.args[0].value, Value::Lang(il) if plain_args(il, 2) && head(il).is_some_and(|f| bitop(&f.name()).is_some()))
+                    && internal_call(&l.args[0].value).is_some() =>
+            {
+                let (b, inner) = internal_call(&l.args[0].value).unwrap();
+                let op = bitop(&head(inner).unwrap().name()).unwrap();
+                let g = self.guard(h, whole, dst);
+                let a = self.reg();
+                self.expr(&inner.args[0].value, a, Want::Value);
+                let b2 = self.reg();
+                self.expr(&inner.args[1].value, b2, Want::Value);
+                let f = self.konst(Value::Builtin(b));
+                let call = self.konst(l.args[0].value.clone());
+                self.emit(Op::Bitwise { op, dst, a, b: b2, f, call });
                 self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
