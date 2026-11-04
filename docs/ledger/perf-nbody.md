@@ -310,4 +310,7 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
 - Review (sol-loop, gpt-6.1-sol, 1 round): approved with one nit, fixed:
   a loop compiled before `.primTrace(min)` stopped printing `trace: min`.
   Such loops now stay in the VM while a primitive is traced (as whole
-  native closures do); the case is in the test.
+  native closures do). Proved by hand, not in `tests/r`: robigo's
+  interpreter tier prints `trace: min(i, 7)` where compiled code (GNU R's
+  and robigo's) prints `trace: min`, the gap the perf-vm ledger records;
+  20 `trace: min` lines like GNU R, 0 before.
