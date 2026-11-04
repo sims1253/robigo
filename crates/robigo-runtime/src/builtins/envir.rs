@@ -1150,7 +1150,7 @@ fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) ->
 
 // R: envir.c:R_MakeActiveBinding
 pub(crate) fn make_active_binding(sym: Sym, fun: Value, env: &Env) -> RResult<()> {
-    match env.binding_flags(sym) {
+    match crate::native::r_binding_flags(env, sym) {
         Some(f) if f & BIND_ACTIVE == 0 => Err(Flow::error("symbol already has a regular binding")),
         Some(f) if f & BIND_LOCKED != 0 => Err(Flow::error("cannot change active binding if binding is locked")),
         _ if env.set_local_flags(sym, fun, BIND_ACTIVE) => Ok(()),
@@ -1244,7 +1244,7 @@ fn do_binding_is_active(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
             None => return Err(Flow::error("not an environment")),
         },
     };
-    match env.binding_flags(sym) {
+    match crate::native::r_binding_flags(&env, sym) {
         Some(f) => Ok(Value::lgl(f & BIND_ACTIVE != 0)),
         None => Err(Flow::error(format!("no binding for \"{}\"", sym))),
     }

@@ -854,7 +854,7 @@ fn do_active_binding_function(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &
         _ => return Err(Flow::error_call(call.clone(), "not a symbol")),
     };
     let Value::Env(e) = arg(&args, 1) else { return Err(Flow::error_call(call.clone(), "not an environment")) };
-    match e.binding_flags(sym) {
+    match crate::native::r_binding_flags(&e, sym) {
         Some(f) if f & crate::env::BIND_ACTIVE != 0 => Ok(e.get_local(sym).unwrap()),
         Some(_) => Err(Flow::error_call(call.clone(), format!("no active binding for \"{}\"", sym))),
         None => Err(Flow::error_call(call.clone(), format!("no binding for \"{}\"", sym))),

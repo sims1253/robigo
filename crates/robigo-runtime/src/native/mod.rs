@@ -639,6 +639,19 @@ pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, holder: Valu
     env.set_local_flags(sym, f, crate::env::BIND_ACTIVE);
 }
 
+/// The flags of `sym`'s binding in `env` as R sees them. A C-owned variable
+/// is an active binding only inside robigo: in GNU R it is an ordinary
+/// value binding, so `bindingIsActive()` and its C counterpart must say so
+/// (rlang's `env_clone()` would otherwise copy it as an active binding,
+/// and testthat's clone of a namespace would stop being a namespace).
+pub fn r_binding_flags(env: &crate::env::Env, sym: crate::sym::Sym) -> Option<u8> {
+    let flags = env.binding_flags(sym)?;
+    if flags & crate::env::BIND_ACTIVE != 0 && env.get_local(sym).is_some_and(|f| c_owned_holder(&f).is_some()) {
+        return Some(flags & !crate::env::BIND_ACTIVE);
+    }
+    Some(flags)
+}
+
 /// The holder of a C-owned variable's object, given its binding function.
 pub fn c_owned_holder(f: &Value) -> Option<Value> {
     match f {
