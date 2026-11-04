@@ -295,10 +295,18 @@ impl Vars<'_> {
     /// values stay cached, as do other scalars (until R code actually
     /// runs, see `get`); cached vectors are dropped so that the binding
     /// holds the only reference and R code can modify it in place.
+    #[inline(always)]
     fn flush(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
         if !self.dirty && !self.vclean {
             return Ok(());
         }
+        self.flush_pending(interp, env, syms)
+    }
+
+    /// The work of [`Self::flush`], out of line: the dispatch loop has a
+    /// flush before every op that may run R code.
+    #[inline(never)]
+    fn flush_pending(&mut self, interp: &mut Interp, env: &Env, syms: &[Sym]) -> RResult<()> {
         if let Some(e) = self.failed.take() {
             return Err(*e);
         }
@@ -941,6 +949,117 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
         _ => return false,
     }
     true
+}
+
+// The fast paths of the store ops, out of line: they are large, and the
+// dispatch loop's register allocation is shared by all its ops. Each
+// returns whether it did the store; if not, the op flushes and takes the
+// general path (`set_index_slow`).
+
+/// `Op::SetIndex`: an in-range scalar or range index into a plain local
+/// vector.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_index_fast(
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    i: &Leaf,
+    two: bool,
+) -> bool {
+    let range = match (i, two) {
+        (Leaf::R(r), false) => match regs[*r as usize] {
+            RVal::Range { start, step, n } => Some((start, step, n)),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (range, scalar_index(vars, env, regs, i)) {
+        (Some((start, step, n)), _) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &regs[val as usize]),
+            _ => false,
+        },
+        (None, Some(ix)) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[val as usize], two),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `Op::SetIndex2`: in-range scalar indices into a plain local matrix.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_index2_fast(
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    i: &Leaf,
+    j: &Leaf,
+    two: bool,
+) -> bool {
+    match (scalar_index(vars, env, regs, i), scalar_index(vars, env, regs, j)) {
+        (Some(a), Some(b)) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
+                Some(off) => set_element(xv, off, &regs[val as usize], two),
+                None => false,
+            },
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `Op::SetDollar`: an existing element of a plain local list.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_dollar_fast(
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    name: u32,
+) -> bool {
+    let Value::Str(nm) = &code.consts[name as usize] else { unreachable!() };
+    own_var(vars, env, x, slot)
+        && match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &regs[val as usize]),
+            _ => false,
+        }
+}
+
+/// `Op::SuperSetIndex`: an element of the vector `x <<- ` would assign.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn super_set_index_fast(
+    interp: &Interp,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    i: &Leaf,
+    two: bool,
+) -> bool {
+    // (The current frame's cached copy of `x` would make the vector look
+    // shared, and may be stale afterwards.)
+    if !matches!(vars.slots[slot as usize], SlotVal::Dirty(_)) {
+        vars.slots[slot as usize] = SlotVal::Empty;
+    }
+    match scalar_index(vars, env, regs, i) {
+        Some(ix) => super_set_element(interp, env, x, ix as usize, &regs[val as usize], two),
+        None => false,
+    }
 }
 
 /// `forceAndCall`: force the first `n` promise arguments.
@@ -2793,6 +2912,19 @@ struct LoopRec {
     count: u32,
 }
 
+/// Where an error of an op leaves the dispatch loop: `break`/`next` of
+/// this frame's innermost loop continue at its exit or next target;
+/// anything else propagates.
+#[cold]
+#[inline(never)]
+fn unwind_to(f: Flow, env: &Env, loops: &[LoopRec]) -> Result<usize, Flow> {
+    match (&f, loops.last()) {
+        (Flow::Break(e), Some(l)) if e.ptr_eq(env) => Ok(l.brk as usize),
+        (Flow::Next(e), Some(l)) if e.ptr_eq(env) => Ok(l.nxt as usize),
+        _ => Err(f),
+    }
+}
+
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
 
@@ -3169,6 +3301,211 @@ fn builtin1_untraced(f: Builtin1, x: &RVal) -> Option<RVal> {
 /// the search path are checked directly, the search-path lookup is cached
 /// against the search epoch (only when it needs no forcing or active
 /// bindings, i.e. when [`Interp::search_fun`] answers it).
+/// `Op::Switch` on the value `xv`: the code to continue at, `None` where
+/// `switch_slow` must signal an error or a warning.
+// R: eval.c:do_switch
+#[inline(never)]
+fn switch_target(xv: &Value, t: &crate::compile::SwitchTable) -> Option<u32> {
+    if !xv.is_vector() || xv.len() != 1 || xv.inherits("factor") {
+        return None;
+    }
+    Some(match xv {
+        Value::Str(sv) => {
+            // pmatch() compares CHAR(): NA_STRING is "NA".
+            let key: &str = sv.data[0].as_deref().unwrap_or("NA");
+            match t.names.iter().position(|n| n.is_some_and(|n| n.with_name(|m| m == key))) {
+                Some(k) => t.by_name[k],
+                None => t.default.unwrap_or(t.null),
+            }
+        }
+        _ => {
+            let k = crate::coerce::as_integer(xv);
+            if k != NA_INTEGER && k >= 1 && k as usize <= t.by_number.len() {
+                t.by_number[k as usize - 1]?
+            } else {
+                t.null
+            }
+        }
+    })
+}
+
+/// [`switch_target`] where it signals (after a flush): the errors, and the
+/// warning for a factor, which then switches on its codes. The outer error
+/// leaves the dispatch loop at once (as `return signal(...)` there); the
+/// inner one is the warning's, which may unwind to a loop of the frame.
+#[cold]
+#[inline(never)]
+fn switch_slow(
+    interp: &mut Interp,
+    call: &Value,
+    t: &crate::compile::SwitchTable,
+    xv: &Value,
+) -> Result<RResult<u32>, Flow> {
+    if !xv.is_vector() || xv.len() != 1 {
+        signal(interp, Err(Flow::error_call(call.clone(), "EXPR must be a length 1 vector")))?;
+        unreachable!("an error signals");
+    }
+    if xv.inherits("factor") {
+        let r = interp.warningcall(
+            call,
+            "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
+        );
+        if let Err(e) = signal(interp, r.map(|_| Value::Null)) {
+            return Ok(Err(e));
+        }
+    }
+    let k = crate::coerce::as_integer(xv);
+    if k != NA_INTEGER && k >= 1 && k as usize <= t.by_number.len() {
+        return match t.by_number[k as usize - 1] {
+            Some(c) => Ok(Ok(c)),
+            None => {
+                signal(interp, Err(Flow::error("empty alternative in numeric switch")))?;
+                unreachable!("an error signals");
+            }
+        };
+    }
+    Ok(Ok(t.null))
+}
+
+/// `x$name` where `dollar_fast` does not do (after a flush): the default
+/// method, or for an object, `$` dispatching on `x`'s value.
+#[inline(never)]
+fn dollar_slow(interp: &mut Interp, xv: Value, input: &RStr, call: &Value, env: &Env) -> RResult<RVal> {
+    if !xv.is_object() {
+        let r = crate::builtins::subset::subset3_dflt(interp, &xv, input, call);
+        return Ok(unbox(signal(interp, r)?));
+    }
+    // R_DispatchOrEvalSP with `x` evaluated.
+    let Value::Lang(l) = call else { unreachable!() };
+    let args = vec![
+        Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv)))),
+        Arg::new(l.args[1].tag, Value::strs(vec![input.clone()])),
+    ];
+    let b = crate::builtins::lookup_primitive("$").expect("$ builtin");
+    let r = interp.invoke_builtin(b, call, args, env);
+    Ok(RVal::V(signal(interp, r)?))
+}
+
+/// `object@name` where `slot_read_fast` does not do (after a flush): `@`
+/// with the object's value.
+#[inline(never)]
+fn slot_read_slow(interp: &mut Interp, xv: Value, call: &Value, env: &Env) -> RResult<RVal> {
+    let Value::Lang(l) = call else { unreachable!() };
+    let args = vec![
+        Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv)))),
+        l.args[1].clone(),
+    ];
+    let b = crate::builtins::lookup_primitive("@").expect("@ builtin");
+    let r = interp.invoke_builtin(b, call, args, env);
+    Ok(unbox(signal(interp, r)?))
+}
+
+/// The sequence `Op::ForInit` iterates over (not a range): a factor's
+/// levels as strings; an error (to signal) unless it is a vector, NULL or
+/// a pairlist.
+#[inline(never)]
+fn for_seq(seq: &RVal, call: &Value) -> RResult<Value> {
+    let mut v = seq.to_value();
+    if v.inherits("factor") {
+        v = crate::builtins::envir::as_character_factor(&v)?;
+    }
+    if !(v.is_vector() || v.is_null() || matches!(v, Value::Pairlist(_))) {
+        return Err(Flow::error_call(call.clone(), "invalid for() loop sequence"));
+    }
+    Ok(v)
+}
+
+/// Element `i` of a `for` sequence (`None` past its end).
+#[inline(never)]
+fn for_element(sv: &Value, i: usize) -> Option<RVal> {
+    if i >= sv.len() {
+        return None;
+    }
+    Some(match sv {
+        Value::Int(x) => RVal::I(x.data[i]),
+        Value::Real(x) => RVal::D(x.data[i]),
+        Value::Lgl(x) => RVal::L(x.data[i]),
+        Value::Str(x) => RVal::V(Value::strs(vec![x.data[i].clone()])),
+        Value::Cplx(x) => RVal::V(Value::cplx(x.data[i])),
+        Value::Raw(x) => RVal::V(Value::raws(vec![x.data[i]])),
+        Value::List(x) | Value::Expr(x) => RVal::V(x.data[i].clone()),
+        Value::Pairlist(p) => RVal::V(p.items[i].value.clone()),
+        _ => unreachable!(),
+    })
+}
+
+/// The general case of `Op::Call` (after a flush): find the function
+/// (`fast_fun` if already found) and call it.
+#[inline(never)]
+fn call_op(
+    interp: &mut Interp,
+    site: &CallSite,
+    f: Sym,
+    fast_fun: Option<Value>,
+    env: &Env,
+    vars: &mut Vars<'_>,
+    regs: &[RVal],
+) -> RResult<RVal> {
+    let fun = match fast_fun {
+        Some(f) => f,
+        None => call_site_fun(interp, f, site, env)?,
+    };
+    if crate::builtins::debug::is_traced(&fun) {
+        trace_report(interp, &site.call);
+    }
+    Ok(match (&fun, &site.call) {
+        (Value::Closure(clo), Value::Lang(l)) => closure_call(interp, site, clo, l, env, vars, regs)?,
+        // A builtin (say the value of a variable): its arguments through
+        // their bytecode, left to right, as evalList.
+        (Value::Builtin(b), Value::Lang(l))
+            if b.kind == crate::value::BuiltinKind::Builtin
+                && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
+        {
+            // (As `eval` of the call would: cached variables are stale if an
+            // argument assigns one.)
+            crate::env::bump_r_epoch();
+            let mut argv = Vec::with_capacity(l.args.len());
+            for (a, c) in l.args.iter().zip(&site.codes) {
+                let v = match c {
+                    Some(c) => match run_simple(interp, c, env) {
+                        Some(v) => v,
+                        None => run(interp, c, env)?,
+                    },
+                    None => interp.eval(&a.value, env)?,
+                };
+                argv.push(Arg::new(a.tag, v));
+            }
+            let r = interp.invoke_builtin(b, &site.call, argv, env);
+            RVal::V(signal(interp, r)?)
+        }
+        _ => RVal::V(interp.eval(&site.call, env)?),
+    })
+}
+
+/// `Op::CallBuiltin` (after a flush): the builtin `consts[f]` with the
+/// values of `arglists[args]`, which are moved out of their registers.
+#[inline(never)]
+fn call_builtin_op(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    f: u32,
+    args: u32,
+    call: u32,
+) -> RResult<Value> {
+    let Value::Builtin(b) = &code.consts[f as usize] else { unreachable!() };
+    if crate::builtins::debug::any_prim_traced() {
+        trace_builtin(interp, b, &code.consts[call as usize]);
+    }
+    let argv: Vec<Arg> = code.arglists[args as usize]
+        .iter()
+        .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
+        .collect();
+    let r = interp.invoke_builtin(b, &code.consts[call as usize], argv, env);
+    signal(interp, r)
+}
+
 fn call_site_fun(interp: &mut Interp, sym: Sym, site: &CallSite, env: &Env) -> RResult<Value> {
     match call_site_fun_fast(interp, sym, site, env) {
         Some(f) => Ok(f),
@@ -3400,19 +3737,19 @@ fn run_with(
     let mut loops: Vec<LoopRec> = Vec::new();
     let ops = &code.ops;
     let mut pc: usize = 0;
+    // (The error path is one out-of-line function: the dispatch loop has
+    // dozens of these.)
     macro_rules! tryop {
         ($e:expr) => {
             match $e {
                 Ok(v) => v,
-                Err(Flow::Break(e)) if e.ptr_eq(env) && !loops.is_empty() => {
-                    pc = loops.last().unwrap().brk as usize;
-                    continue;
-                }
-                Err(Flow::Next(e)) if e.ptr_eq(env) && !loops.is_empty() => {
-                    pc = loops.last().unwrap().nxt as usize;
-                    continue;
-                }
-                Err(f) => return Err(f),
+                Err(f) => match unwind_to(f, env, &loops) {
+                    Ok(p) => {
+                        pc = p;
+                        continue;
+                    }
+                    Err(f) => return Err(f),
+                },
             }
         };
     }
@@ -3750,25 +4087,9 @@ fn run_with(
                 let call = &code.consts[*call as usize];
                 regs[*dst as usize] = match (xv.is_object(), dollar_fast(&xv, input)) {
                     (false, Some(v)) => unbox(v),
-                    (false, None) => {
+                    _ => {
                         flush!();
-                        let r = crate::builtins::subset::subset3_dflt(interp, &xv, input, call);
-                        unbox(tryop!(signal(interp, r)))
-                    }
-                    (true, _) => {
-                        // R_DispatchOrEvalSP with `x` evaluated.
-                        flush!();
-                        let Value::Lang(l) = call else { unreachable!() };
-                        let args = vec![
-                            Arg::new(
-                                l.args[0].tag,
-                                Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv))),
-                            ),
-                            Arg::new(l.args[1].tag, Value::strs(vec![input.clone()])),
-                        ];
-                        let b = crate::builtins::lookup_primitive("$").expect("$ builtin");
-                        let r = interp.invoke_builtin(b, call, args, env);
-                        RVal::V(tryop!(signal(interp, r)))
+                        tryop!(dollar_slow(interp, xv, input, call, env))
                     }
                 };
             }
@@ -3788,17 +4109,7 @@ fn run_with(
                     None => {
                         flush!();
                         let xv = std::mem::replace(&mut regs[*object as usize], RVal::I(0)).into_value();
-                        let Value::Lang(l) = call else { unreachable!() };
-                        let args = vec![
-                            Arg::new(
-                                l.args[0].tag,
-                                Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xv))),
-                            ),
-                            l.args[1].clone(),
-                        ];
-                        let b = crate::builtins::lookup_primitive("@").expect("@ builtin");
-                        let r = interp.invoke_builtin(b, call, args, env);
-                        unbox(tryop!(signal(interp, r)))
+                        tryop!(slot_read_slow(interp, xv, call, env))
                     }
                 };
             }
@@ -3815,48 +4126,19 @@ fn run_with(
                 interp.visible = true;
             }
             Op::Switch { x, table, call } => {
-                // R: eval.c:do_switch
-                let call = &code.consts[*call as usize];
-                let t = &code.switches[*table as usize];
-                let xv = regs[*x as usize].to_value();
-                regs[*x as usize] = RVal::I(0);
-                if !xv.is_vector() || xv.len() != 1 {
-                    flush!();
-                    return signal(interp, Err(Flow::error_call(call.clone(), "EXPR must be a length 1 vector")));
-                }
-                if xv.inherits("factor") {
-                    flush!();
-                    let r = interp.warningcall(
-                        call,
-                        "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
-                    );
-                    tryop!(signal(interp, r.map(|_| Value::Null)));
-                }
-                interp.visible = true;
-                pc = match &xv {
-                    Value::Str(sv) => {
-                        // pmatch() compares CHAR(): NA_STRING is "NA".
-                        let key: &str = sv.data[0].as_deref().unwrap_or("NA");
-                        match t.names.iter().position(|n| n.is_some_and(|n| n.with_name(|m| m == key))) {
-                            Some(k) => t.by_name[k],
-                            None => t.default.unwrap_or(t.null),
-                        }
-                    }
-                    _ => {
-                        let k = crate::coerce::as_integer(&xv);
-                        if k != NA_INTEGER && k >= 1 && k as usize <= t.by_number.len() {
-                            match t.by_number[k as usize - 1] {
-                                Some(c) => c,
-                                None => {
-                                    flush!();
-                                    return signal(interp, Err(Flow::error("empty alternative in numeric switch")));
-                                }
-                            }
-                        } else {
-                            t.null
+                let xv = std::mem::replace(&mut regs[*x as usize], RVal::I(0)).into_value();
+                pc = match switch_target(&xv, &code.switches[*table as usize]) {
+                    Some(p) => p,
+                    None => {
+                        // An error or a warning to signal.
+                        flush!();
+                        match switch_slow(interp, &code.consts[*call as usize], &code.switches[*table as usize], &xv) {
+                            Ok(r) => tryop!(r),
+                            Err(e) => return Err(e),
                         }
                     }
                 } as usize;
+                interp.visible = true;
             }
             Op::SubsetObj { dst, x, two, k, end } => {
                 if matches!(&regs[*x as usize], RVal::V(v) if v.is_object()) {
@@ -3918,17 +4200,7 @@ fn run_with(
                 tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
             }
             Op::SetIndex2 { val, x, slot, i, j, two, k } => {
-                let done = match (scalar_index(vars, env, regs, i), scalar_index(vars, env, regs, j)) {
-                    (Some(a), Some(b)) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
-                        SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
-                            Some(off) => set_element(xv, off, &regs[*val as usize], *two),
-                            None => false,
-                        },
-                        _ => false,
-                    },
-                    _ => false,
-                };
-                if !done {
+                if !set_index2_fast(vars, env, regs, *val, *x, *slot, i, j, *two) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k, false));
                 }
@@ -3946,70 +4218,26 @@ fn run_with(
                 }
             }
             Op::SuperSetIndex { val, x, slot, i, two, k } => {
-                // (The current frame's cached copy of `x` would make the
-                // vector look shared, and may be stale afterwards.)
-                if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
-                    vars.slots[*slot as usize] = SlotVal::Empty;
-                }
-                let done = match scalar_index(vars, env, regs, i) {
-                    Some(ix) => super_set_element(interp, env, *x, ix as usize, &regs[*val as usize], *two),
-                    None => false,
-                };
-                if !done {
+                if !super_set_index_fast(interp, vars, env, regs, *val, *x, *slot, i, *two) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, true));
                 }
             }
             Op::SetDollar { val, x, slot, name, k } => {
-                let Value::Str(nm) = &code.consts[*name as usize] else { unreachable!() };
-                let done = own_var(vars, env, *x, *slot)
-                    && match &mut vars.slots[*slot as usize] {
-                        SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &regs[*val as usize]),
-                        _ => false,
-                    };
-                if !done {
+                if !set_dollar_fast(code, vars, env, regs, *val, *x, *slot, *name) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
                 }
             }
             Op::SetIndex { val, x, slot, i, two, k } => {
-                let range = match (i, *two) {
-                    (Leaf::R(r), false) => match regs[*r as usize] {
-                        RVal::Range { start, step, n } => Some((start, step, n)),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let done = match (range, scalar_index(vars, env, regs, i)) {
-                    (Some((start, step, n)), _) if own_var(vars, env, *x, *slot) => {
-                        match &mut vars.slots[*slot as usize] {
-                            SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &regs[*val as usize]),
-                            _ => false,
-                        }
-                    }
-                    (None, Some(ix)) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
-                        SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[*val as usize], *two),
-                        _ => false,
-                    },
-                    _ => false,
-                };
-                if !done {
+                if !set_index_fast(vars, env, regs, *val, *x, *slot, i, *two) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false));
                 }
             }
             Op::CallBuiltin { dst, f, args, call } => {
                 flush!();
-                let Value::Builtin(b) = &code.consts[*f as usize] else { unreachable!() };
-                if crate::builtins::debug::any_prim_traced() {
-                    trace_builtin(interp, b, &code.consts[*call as usize]);
-                }
-                let argv: Vec<Arg> = code.arglists[*args as usize]
-                    .iter()
-                    .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
-                    .collect();
-                let r = interp.invoke_builtin(b, &code.consts[*call as usize], argv, env);
-                regs[*dst as usize] = RVal::V(tryop!(signal(interp, r)));
+                regs[*dst as usize] = RVal::V(tryop!(call_builtin_op(interp, code, env, regs, *f, *args, *call)));
             }
             Op::Builtin1 { f, dst, a, call } => {
                 interp.visible = true;
@@ -4148,44 +4376,7 @@ fn run_with(
                     continue;
                 }
                 flush!();
-                let fun = match fast_fun {
-                    Some(f) => f,
-                    None => tryop!(call_site_fun(interp, *f, site, env)),
-                };
-                if crate::builtins::debug::is_traced(&fun) {
-                    trace_report(interp, &site.call);
-                }
-                let v = match (&fun, &site.call) {
-                    (Value::Closure(clo), Value::Lang(l)) => {
-                        tryop!(closure_call(interp, site, clo, l, env, vars, regs))
-                    }
-                    // A builtin (say the value of a variable): its arguments
-                    // through their bytecode, left to right, as evalList.
-                    (Value::Builtin(b), Value::Lang(l))
-                        if b.kind == crate::value::BuiltinKind::Builtin
-                            && l.args
-                                .iter()
-                                .all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
-                    {
-                        // (As `eval` of the call would: cached variables
-                        // are stale if an argument assigns one.)
-                        crate::env::bump_r_epoch();
-                        let mut argv = Vec::with_capacity(l.args.len());
-                        for (a, c) in l.args.iter().zip(&site.codes) {
-                            let v = match c {
-                                Some(c) => match run_simple(interp, c, env) {
-                                    Some(v) => v,
-                                    None => tryop!(run(interp, c, env)),
-                                },
-                                None => tryop!(interp.eval(&a.value, env)),
-                            };
-                            argv.push(Arg::new(a.tag, v));
-                        }
-                        let r = interp.invoke_builtin(b, &site.call, argv, env);
-                        RVal::V(tryop!(signal(interp, r)))
-                    }
-                    _ => RVal::V(tryop!(interp.eval(&site.call, env))),
-                };
+                let v = tryop!(call_op(interp, site, *f, fast_fun, env, vars, regs));
                 regs[*dst as usize] = v;
             }
             Op::ForSeqLength { len, seq, call } => {
@@ -4267,21 +4458,13 @@ fn run_with(
                     regs[*seq as usize + 1] = RVal::I(0);
                     continue;
                 }
-                let mut v = regs[*seq as usize].to_value();
-                if v.inherits("factor") {
-                    v = match crate::builtins::envir::as_character_factor(&v) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            flush!();
-                            return signal(interp, Err(e));
-                        }
-                    };
-                }
-                if !(v.is_vector() || v.is_null() || matches!(v, Value::Pairlist(_))) {
-                    flush!();
-                    let c = code.consts[*call as usize].clone();
-                    return signal(interp, Err(Flow::error_call(c, "invalid for() loop sequence")));
-                }
+                let v = match for_seq(&regs[*seq as usize], &code.consts[*call as usize]) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        flush!();
+                        return signal(interp, Err(e));
+                    }
+                };
                 regs[*seq as usize] = RVal::V(v);
                 regs[*seq as usize + 1] = RVal::I(0);
             }
@@ -4305,20 +4488,7 @@ fn run_with(
                     continue;
                 }
                 let RVal::V(sv) = &regs[*seq as usize] else { unreachable!() };
-                if i >= sv.len() {
-                    continue;
-                }
-                let elt = match sv {
-                    Value::Int(x) => RVal::I(x.data[i]),
-                    Value::Real(x) => RVal::D(x.data[i]),
-                    Value::Lgl(x) => RVal::L(x.data[i]),
-                    Value::Str(x) => RVal::V(Value::strs(vec![x.data[i].clone()])),
-                    Value::Cplx(x) => RVal::V(Value::cplx(x.data[i])),
-                    Value::Raw(x) => RVal::V(Value::raws(vec![x.data[i]])),
-                    Value::List(x) | Value::Expr(x) => RVal::V(x.data[i].clone()),
-                    Value::Pairlist(p) => RVal::V(p.items[i].value.clone()),
-                    _ => unreachable!(),
-                };
+                let Some(elt) = for_element(sv, i) else { continue };
                 regs[*idx as usize] = RVal::I(i as i32 + 1);
                 assign!(*var, *slot, elt);
                 pc = *body as usize;
