@@ -275,3 +275,7 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   locked and active bindings, a short loop whose types change), recorded
   with GNU R 4.5.0, byte-identical in all three tiers. Conformance: as
   main.
+- Review (sol-loop, gpt-6.1-sol, 1 round): approved with one nit, fixed:
+  with `JIT_HEAT` at 1024 the test's short loops no longer reached native
+  code; they now run past it (the JIT trace shows them compiled, and a
+  deopt).
