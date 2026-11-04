@@ -126,6 +126,9 @@ pub struct SlotInfo {
     /// its type at entry; the type it has where native code returns is in
     /// [`JitLoop::split_tys`].
     pub split: bool,
+    /// An integer or logical variable whose value at entry native code
+    /// takes not to be NA (see [`nonna_flow`]): entering with NA is refused.
+    pub nonna: bool,
 }
 
 /// A view of a vector's data passed to native code.
@@ -817,6 +820,7 @@ pub fn compile(
     code: &Code,
     enter: usize,
     entry: &dyn Fn(Slot) -> Option<JType>,
+    entry_nonna: &dyn Fn(Slot) -> bool,
     live_in: &dyn Fn(Reg) -> Option<JType>,
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
@@ -1072,6 +1076,7 @@ pub fn compile(
             flag,
             writable: writable[s as usize],
             split,
+            nonna: ne && !split && matches!(ty, JType::I | JType::L) && entry_nonna(s),
         });
     }
     // A register's place holds its widest type's value (registers are
@@ -1106,6 +1111,12 @@ pub fn compile(
         reg_idx.insert(reg, nvals);
         nvals += width[reg as usize];
     }
+    let mut entry_nn = vec![false; code.vars.len()];
+    for s in slots.iter().filter(|s| s.nonna) {
+        entry_nn[s.slot as usize] = true;
+    }
+    let split: Vec<Slot> = slots.iter().filter(|s| s.split).map(|s| s.slot).collect();
+    let nn = nonna_flow(ops, &r, code.nregs, entry_nn, &split, &states, &slot_ty, &inl);
     let heads = nvals;
     nvals += 1;
     let mut deopt_regs = HashMap::new();
@@ -1120,6 +1131,7 @@ pub fn compile(
         &mut deopt_regs,
         &inl,
         (!leaves.is_empty()).then_some((nxt as usize, heads)),
+        nn,
     )?;
     // The type of each variable that changes type where native code
     // returns: it must have one there.
@@ -1546,6 +1558,131 @@ struct Gen<'a, 'b> {
     /// In a loop: a count of the times its head was reached, and where it
     /// is stored.
     heads: Option<(Variable, usize)>,
+    /// In a loop (not in a callee run inline): which registers and
+    /// variables hold no NA before each op (see [`nonna_flow`]).
+    nn: Vec<Option<NonNa>>,
+    /// Whether the operands of the integer operation being translated are
+    /// known not to be NA.
+    nn_args: (bool, bool),
+}
+
+/// Registers and variables known to hold no NA (integer or logical).
+type NonNa = (Vec<bool>, Vec<bool>);
+
+/// Which integer and logical registers and variables cannot be NA before
+/// each op of the region, a forward analysis: loop variables, constants,
+/// checked integer `+ - *` of such values (an overflow leaves native code;
+/// otherwise NA comes only from an NA operand), comparisons of them, and
+/// variables NA-free at entry (`SlotInfo::nonna`, checked at entry).
+#[allow(clippy::too_many_arguments)]
+fn nonna_flow(
+    ops: &[Op],
+    r: &Region,
+    nregs: usize,
+    entry_slots: Vec<bool>,
+    split: &[Slot],
+    states: &[Option<RegState>],
+    slot_ty: &HashMap<Slot, JType>,
+    inl: &Inl,
+) -> Vec<Option<NonNa>> {
+    let n = r.end - r.start + 1;
+    let mut out: Vec<Option<NonNa>> = vec![None; n];
+    out[0] = Some((vec![false; nregs], entry_slots));
+    let mut work = vec![r.start];
+    let mut succ = Vec::new();
+    let mut steps = 0;
+    while let Some(pc) = work.pop() {
+        steps += 1;
+        if steps > 200_000 {
+            // (Not converged: no facts at all.)
+            return vec![None; n];
+        }
+        if pc >= r.end {
+            continue;
+        }
+        let Some((regs, sl)) = out[pc - r.start].clone() else { continue };
+        let op = &ops[pc];
+        if loop_leaves(op, inl) {
+            continue;
+        }
+        let Some(st) = &states[pc - r.start] else { continue };
+        let int = |t: Option<JType>| matches!(t, Some(JType::I | JType::L));
+        let leaf = |l: &Leaf| match l {
+            Leaf::I(x) => *x != NA_INTEGER,
+            Leaf::D(_) => false,
+            Leaf::Var(_, s) => sl.get(*s as usize).copied().unwrap_or(false) && int(slot_type(*s, st, slot_ty)),
+            Leaf::R(x) => regs[*x as usize] && int(st[*x as usize]),
+        };
+        let (mut r2, mut s2) = (regs.clone(), sl.clone());
+        // Every register the op defines is unknown unless set below.
+        for (d, _) in defs(op, st, slot_ty, inl) {
+            if d < nregs {
+                r2[d] = false;
+            }
+        }
+        let mut exhausted = None;
+        match op {
+            Op::ConstI { dst, x } => r2[*dst as usize] = *x != NA_INTEGER,
+            Op::ConstL { dst, x } => r2[*dst as usize] = *x != NA_LOGICAL,
+            Op::GetVar { dst, slot, .. } => {
+                r2[*dst as usize] =
+                    sl.get(*slot as usize).copied().unwrap_or(false) && int(slot_type(*slot, st, slot_ty));
+            }
+            Op::SetVar { src, slot, .. } => {
+                if (*slot as usize) < s2.len() {
+                    s2[*slot as usize] = regs[*src as usize] && int(st[*src as usize]);
+                }
+            }
+            Op::ForStep { idx, slot, .. } => {
+                exhausted = Some((r2.clone(), s2.clone()));
+                r2[*idx as usize] = true;
+                if (*slot as usize) < s2.len() {
+                    s2[*slot as usize] = true;
+                }
+            }
+            Op::Arith { op: ArithOp::Plus | ArithOp::Minus | ArithOp::Times, dst, a, b, .. } => {
+                r2[*dst as usize] = leaf(&Leaf::R(*a)) && leaf(&Leaf::R(*b));
+            }
+            Op::ArithL { op: ArithOp::Plus | ArithOp::Minus | ArithOp::Times, dst, a, b, .. } => {
+                r2[*dst as usize] = leaf(a) && leaf(b);
+            }
+            Op::Rel { dst, a, b, .. } => r2[*dst as usize] = leaf(&Leaf::R(*a)) && leaf(&Leaf::R(*b)),
+            Op::RelL { dst, a, b, .. } => r2[*dst as usize] = leaf(a) && leaf(b),
+            _ => {}
+        }
+        // (A variable whose type changes is never known.)
+        for s in split {
+            if (*s as usize) < s2.len() {
+                s2[*s as usize] = false;
+            }
+        }
+        successors(op, pc, &mut succ);
+        for &t in &succ {
+            if t > r.end || t < r.start {
+                continue;
+            }
+            let (rr, ss) = match &exhausted {
+                Some(e) if t == pc + 1 => e.clone(),
+                _ => (r2.clone(), s2.clone()),
+            };
+            let k = t - r.start;
+            let merged = match &out[k] {
+                None => Some((rr, ss)),
+                Some((or, os)) => {
+                    let m: NonNa = (
+                        or.iter().zip(&rr).map(|(a, b)| *a && *b).collect(),
+                        os.iter().zip(&ss).map(|(a, b)| *a && *b).collect(),
+                    );
+                    (m != (or.clone(), os.clone())).then_some(m)
+                }
+            };
+            if let Some(m) = merged {
+                out[k] = Some(m);
+                work.push(t);
+            }
+        }
+    }
+    out
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -1696,6 +1833,14 @@ impl Gen<'_, '_> {
         self.b.def_var(var, x);
     }
 
+    /// [`Self::to_f64`] of a value known not to be NA when `nonna`.
+    fn to_f64_nn(&mut self, x: CValue, t: JType, nonna: bool) -> CValue {
+        if nonna && t != JType::D {
+            return self.b.ins().fcvt_from_sint(types::F64, x);
+        }
+        self.to_f64(x, t)
+    }
+
     /// `int_to_real`: NA becomes NA_REAL.
     fn to_f64(&mut self, x: CValue, t: JType) -> CValue {
         if t == JType::D {
@@ -1819,8 +1964,9 @@ impl Gen<'_, '_> {
             return self.complex_arith(op, a, b, pc);
         }
         if a.1 == JType::D || b.1 == JType::D {
-            let x = self.to_f64(a.0, a.1);
-            let y = self.to_f64(b.0, b.1);
+            let (nx, ny) = self.nn_args;
+            let x = self.to_f64_nn(a.0, a.1, nx);
+            let y = self.to_f64_nn(b.0, b.1, ny);
             return match op {
                 ArithOp::Plus => self.b.ins().fadd(x, y),
                 ArithOp::Minus => self.b.ins().fsub(x, y),
@@ -1839,6 +1985,21 @@ impl Gen<'_, '_> {
         }
         let (x, y) = (a.0, b.0);
         match op {
+            ArithOp::Plus | ArithOp::Minus | ArithOp::Times if self.nn_args == (true, true) => {
+                // (No NA operand: only an overflow, which leaves.)
+                let wx = self.b.ins().sextend(types::I64, x);
+                let wy = self.b.ins().sextend(types::I64, y);
+                let w = match op {
+                    ArithOp::Plus => self.b.ins().iadd(wx, wy),
+                    ArithOp::Minus => self.b.ins().isub(wx, wy),
+                    _ => self.b.ins().imul(wx, wy),
+                };
+                let hi = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, w, i32::MAX as i64);
+                let lo = self.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, w, i32::MIN as i64);
+                let ovf = self.b.ins().bor(hi, lo);
+                self.deopt_if(ovf, pc);
+                self.b.ins().ireduce(types::I32, w)
+            }
             ArithOp::Plus | ArithOp::Minus | ArithOp::Times => {
                 let nx = self.is_na_i(x);
                 let ny = self.is_na_i(y);
@@ -1879,9 +2040,10 @@ impl Gen<'_, '_> {
 
     /// `vm::rel_fast`.
     fn rel(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> CValue {
+        let (nna, nnb) = self.nn_args;
         let c = if a.1 == JType::D || b.1 == JType::D {
-            let x = self.to_f64(a.0, a.1);
-            let y = self.to_f64(b.0, b.1);
+            let x = self.to_f64_nn(a.0, a.1, nna);
+            let y = self.to_f64_nn(b.0, b.1, nnb);
             let na = self.b.ins().fcmp(FloatCC::Unordered, x, y);
             let cc = match op {
                 RelOp::Eq => FloatCC::Equal,
@@ -1906,6 +2068,10 @@ impl Gen<'_, '_> {
                 RelOp::Ge => IntCC::SignedGreaterThanOrEqual,
             };
             let t = self.b.ins().icmp(cc, a.0, b.0);
+            if nna && nnb {
+                // (Neither operand NA.)
+                return self.b.ins().uextend(types::I32, t);
+            }
             (na, t)
         };
         let t = self.b.ins().uextend(types::I32, c.1);
@@ -1928,6 +2094,20 @@ impl Gen<'_, '_> {
         let out = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, k, len);
         self.deopt_if(out, pc);
         k
+    }
+
+    /// Whether leaf `l` is an integer or logical known not to be NA before
+    /// the current op (in a loop, not in a callee run inline).
+    fn nn_leaf(&self, l: &Leaf) -> bool {
+        let Some((regs, slots)) = self.nn.get(self.cur.wrapping_sub(self.start)).and_then(|x| x.as_ref()) else {
+            return false;
+        };
+        match l {
+            Leaf::I(x) => *x != NA_INTEGER,
+            Leaf::D(_) => false,
+            Leaf::Var(_, s) => slots.get(*s as usize).copied().unwrap_or(false),
+            Leaf::R(r) => regs.get(*r as usize).copied().unwrap_or(false),
+        }
     }
 
     fn element_offset(&mut self, op: &Op, slot: Slot, lv: Variable, pc: usize) -> CValue {
@@ -2035,22 +2215,30 @@ impl Gen<'_, '_> {
             }
             Op::Arith { op, dst, a, b, .. } => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
+                self.nn_args = (self.nn_leaf(&Leaf::R(*a)), self.nn_leaf(&Leaf::R(*b)));
                 let v = self.arith(*op, x, y, pc);
+                self.nn_args = (false, false);
                 self.set_reg(*dst, v);
             }
             Op::ArithL { op, dst, a, b, .. } => {
                 let (x, y) = (self.leaf(a), self.leaf(b));
+                self.nn_args = (self.nn_leaf(a), self.nn_leaf(b));
                 let v = self.arith(*op, x, y, pc);
+                self.nn_args = (false, false);
                 self.set_reg(*dst, v);
             }
             Op::Rel { op, dst, a, b, .. } => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
+                self.nn_args = (self.nn_leaf(&Leaf::R(*a)), self.nn_leaf(&Leaf::R(*b)));
                 let v = self.rel(*op, x, y);
+                self.nn_args = (false, false);
                 self.set_reg(*dst, v);
             }
             Op::RelL { op, dst, a, b, .. } => {
                 let (x, y) = (self.leaf(a), self.leaf(b));
+                self.nn_args = (self.nn_leaf(a), self.nn_leaf(b));
                 let v = self.rel(*op, x, y);
+                self.nn_args = (false, false);
                 self.set_reg(*dst, v);
             }
             Op::Neg { dst, a, .. } => {
@@ -2201,9 +2389,12 @@ impl Gen<'_, '_> {
             }
             Op::JumpIf { cond, target, .. } | Op::JumpIfNot { cond, target, .. } => {
                 let (c, ct) = self.reg(*cond);
+                let known = self.nn_leaf(&Leaf::R(*cond));
                 // NA: the VM signals the error. (R: eval.c:asLogicalNoNA:
                 // an integer or double is TRUE when not zero.)
-                let c = if ct == JType::D {
+                let c = if known && ct != JType::D {
+                    c
+                } else if ct == JType::D {
                     let na = self.b.ins().fcmp(FloatCC::Unordered, c, c);
                     self.deopt_if(na, pc);
                     let zero = self.f64c(0.0);
@@ -2378,8 +2569,24 @@ impl Gen<'_, '_> {
                     return;
                 }
                 let args: Vec<(CValue, JType)> = args;
+                // (Which arguments cannot be NA: the callee's facts start
+                // from them.)
+                let arg_nn: Vec<bool> = arg_list
+                    .iter()
+                    .zip(&args)
+                    .map(|(a, (_, t))| {
+                        matches!(t, JType::I | JType::L)
+                            && match a {
+                                CallArg::Leaf(l) => self.nn_leaf(l),
+                                CallArg::Arith(ArithOp::Plus | ArithOp::Minus | ArithOp::Times, x, y) => {
+                                    self.nn_leaf(x) && self.nn_leaf(y)
+                                }
+                                _ => false,
+                            }
+                    })
+                    .collect();
                 let ct = self.inl.callee(*site, args.iter().map(|a| a.1).collect()).unwrap();
-                let v = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+                let v = self.inline_body(pc, &code, &formal_slots, &ct, &args, &arg_nn);
                 self.set_reg(*dst, v);
             }
             Op::Return { src } if self.whole.is_some() => {
@@ -2414,6 +2621,7 @@ impl Gen<'_, '_> {
         formal_slots: &[Option<Slot>],
         ct: &CalleeTy,
         args: &[(CValue, JType)],
+        arg_nn: &[bool],
     ) -> CValue {
         let len = code.ops.len();
         let res = self.b.declare_var(cl_type(ct.result));
@@ -2462,6 +2670,23 @@ impl Gen<'_, '_> {
         let saved_slot = std::mem::replace(&mut self.v.slot, slot);
         let saved_flag = std::mem::take(&mut self.v.flag);
         let saved_split = std::mem::take(&mut self.v.split);
+        let mut entry_nn = vec![false; code.vars.len()];
+        for (k, s) in formal_slots.iter().enumerate() {
+            if let (Some(s), true) = (s, arg_nn.get(k).copied().unwrap_or(false)) {
+                entry_nn[*s as usize] = true;
+            }
+        }
+        let callee_nn = nonna_flow(
+            &code.ops,
+            &Region { start: 0, end: len },
+            code.nregs,
+            entry_nn,
+            &[],
+            &ct.states,
+            &ct.slot_ty,
+            self.inl,
+        );
+        let saved_nn = std::mem::replace(&mut self.nn, callee_nn);
         let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
         let (saved_start, saved_cur, saved_exit, saved_deopt, saved_ret) =
             (self.start, self.cur, self.exit, self.deopt_at, self.ret);
@@ -2501,6 +2726,7 @@ impl Gen<'_, '_> {
         self.v.slot = saved_slot;
         self.v.flag = saved_flag;
         self.v.split = saved_split;
+        self.nn = saved_nn;
         self.blocks = saved_blocks;
         self.start = saved_start;
         self.cur = saved_cur;
@@ -2547,6 +2773,7 @@ fn codegen(
     inl: &Inl,
     // (Only loops native code leaves on purpose count: see `JitLoop::heads`.)
     heads: Option<(usize, usize)>,
+    nn: Vec<Option<NonNa>>,
 ) -> Result<LoopFn, Reject> {
     MODULE.with(|m| {
         let mut m = m.borrow_mut();
@@ -2705,6 +2932,8 @@ fn codegen(
                 helpers,
                 whole: None,
                 heads: None,
+                nn,
+                nn_args: (false, false),
             };
             g.heads = heads.map(|(_, idx)| (hv, idx));
             let head = heads.map_or(usize::MAX, |(h, _)| h);

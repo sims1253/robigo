@@ -1216,6 +1216,8 @@ fn define(
         b.ins().jump(blocks[0], &[]);
         let mut g = Gen {
             heads: None,
+            nn: Vec::new(),
+            nn_args: (false, false),
             b,
             v,
             slots: &[],

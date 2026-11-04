@@ -3115,7 +3115,24 @@ fn jit_enter(
                     }
                 }
             }
-            let r = crate::jit::compile(code, enter, &|s| types[s as usize], &|r| live.get(&r).copied(), calls);
+            // (Integer and logical values that are not NA: native code may
+            // take them not to be, see `SlotInfo::nonna`.)
+            let nonna: Vec<bool> = code
+                .vars
+                .iter()
+                .enumerate()
+                .map(|(s, sym)| {
+                    matches!(read_var(vars, env, *sym, s as Slot).and_then(scalar), Some(Num::I(x) | Num::L(x)) if x != NA_INTEGER)
+                })
+                .collect();
+            let r = crate::jit::compile(
+                code,
+                enter,
+                &|s| types[s as usize],
+                &|s| nonna[s as usize],
+                &|r| live.get(&r).copied(),
+                calls,
+            );
             let mut cache = code.jit.borrow_mut();
             match r {
                 Ok(l) => {
@@ -3250,6 +3267,8 @@ fn jit_enter(
         }
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
+            // (A value native code takes not to be NA: see `SlotInfo::nonna`.)
+            (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) if s.nonna && x == NA_INTEGER => None,
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
             _ => None,
         };
