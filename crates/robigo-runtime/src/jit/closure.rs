@@ -1183,7 +1183,25 @@ fn define(
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (nframe * RVAL) as u32, 3));
             let base = b.ins().stack_addr(ptr, ss, 0);
             let n = b.ins().iconst(types::I64, nframe as i64);
+            // Scalars defined so far (arguments, cells) go around the call
+            // through memory, explicitly: live across it, they would be
+            // spilled, and the register allocator then stores and reloads
+            // them in every iteration of the loops that read them.
+            let mut around: Vec<(Variable, Type)> =
+                v.slot.values().filter(|(_, t)| t.is_scalar()).map(|(var, t)| (*var, cl_type(*t))).collect();
+            around.sort_by_key(|(var, _)| var.as_u32());
+            let keep = (!around.is_empty()).then(|| {
+                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (around.len() * 8) as u32, 3))
+            });
+            for (k, (var, _)) in around.iter().enumerate() {
+                let x = b.use_var(*var);
+                b.ins().stack_store(ptr, x, keep.unwrap(), (k * 8) as i32);
+            }
             b.ins().call(helpers["robigo_d_init"], &[base, n]);
+            for (k, (var, ty)) in around.iter().enumerate() {
+                let x = b.ins().stack_load(ptr, *ty, keep.unwrap(), (k * 8) as i32);
+                b.def_var(*var, x);
+            }
             let sa =
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (MAX_ARGS * 8) as u32, 3));
             (Some(base), Some(b.ins().stack_addr(ptr, sa, 0)))
