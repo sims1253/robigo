@@ -951,14 +951,15 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     true
 }
 
-// The fast paths of the store ops, out of line: they are large, and the
-// dispatch loop's register allocation is shared by all its ops. Each
+// The fast paths of the store ops, out of line (but `x[i] <- v`'s): they
+// are large, and the dispatch loop's register allocation is shared by all
+// its ops. Each
 // returns whether it did the store; if not, the op flushes and takes the
 // general path (`set_index_slow`).
 
 /// `Op::SetIndex`: an in-range scalar or range index into a plain local
-/// vector.
-#[inline(never)]
+/// vector. (Inline: the commonest store, in hot loops.)
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn set_index_fast(
     vars: &mut Vars<'_>,
@@ -2912,6 +2913,67 @@ struct LoopRec {
     count: u32,
 }
 
+/// The state of `run_with`'s guard memo (`checked`) and native loops. Kept
+/// in memory (its re-check is out of line, so it has an address): the
+/// dispatch loop has more loop-carried values than registers, and which
+/// get spilled otherwise depends on the whole function, so that a change
+/// to one op moved the cost of all others (#357's calibration).
+struct GuardState {
+    /// The `flush!()` generation: a guard that held in it needs no new
+    /// check (only R code, always run after a flush, rebinds functions).
+    generation: u32,
+    /// Where `env`, its parent or the parent's parent is on the search
+    /// path, whether guards hold depends only on the search epoch and the
+    /// function bindings of `env` and its parent: R code that ran (after a
+    /// flush) invalidates them only if one changed. Elsewhere (more deeply
+    /// nested closures) every flush does.
+    stable: bool,
+    /// A flush happened since `token` was taken (`stable` only).
+    recheck: bool,
+    token: (u64, u32),
+    /// Native loops are on.
+    jit_on: bool,
+}
+
+impl GuardState {
+    fn new(env: &Env) -> Self {
+        GuardState {
+            generation: 1,
+            stable: env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env),
+            recheck: false,
+            token: (crate::env::search_epoch(), env.fn_version()),
+            jit_on: crate::jit::enabled(),
+        }
+    }
+
+    /// Before anything that may run R code.
+    #[inline(always)]
+    fn flushed(&mut self) {
+        if self.stable {
+            self.recheck = true;
+        } else {
+            self.generation = self.generation.wrapping_add(1).max(1);
+        }
+    }
+
+    /// Before relying on `checked`: start a new generation if R code that
+    /// ran since the last flush changed a function binding.
+    #[inline(never)]
+    fn revalidate(&mut self, env: &Env, code: &Code) {
+        self.recheck = false;
+        let now = (crate::env::search_epoch(), env.fn_version());
+        if now != self.token {
+            // A new local function binding (say a helper defined in the
+            // body) matters only if it binds a guarded name.
+            let local_only = now.0 == self.token.0;
+            self.token = now;
+            if !local_only || code.guard_syms.iter().any(|s| env.local_may_bind_fun(*s)) {
+                self.generation = self.generation.wrapping_add(1).max(1);
+            }
+        }
+    }
+}
+
 /// Where an error of an op leaves the dispatch loop: `break`/`next` of
 /// this frame's innermost loop continue at its exit or next target;
 /// anything else propagates.
@@ -3723,15 +3785,9 @@ fn run_with(
     // in the current generation needs no new check.
     checked: &mut [u32],
 ) -> RResult<Value> {
-    let mut generation: u32 = 1;
-    // Where `env`, its parent or the parent's parent is on the search path,
-    // whether guards hold depends only on the search epoch and the function
-    // bindings of `env` and its parent: R code that ran (after a flush)
-    // invalidates them only if one changed. Elsewhere (more deeply nested
-    // closures) every flush does.
-    let stable = env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env);
-    let mut token = (crate::env::search_epoch(), env.fn_version());
-    let mut recheck = false;
+    // (In memory, not registers: the dispatch loop needs those for its hot
+    // values; see `GuardState`.)
+    let mut gs = GuardState::new(env);
     interp.visible = true;
     // Active loops.
     let mut loops: Vec<LoopRec> = Vec::new();
@@ -3756,11 +3812,7 @@ fn run_with(
     // Before anything that may run R code or signal.
     macro_rules! flush {
         () => {{
-            if stable {
-                recheck = true;
-            } else {
-                generation = generation.wrapping_add(1).max(1);
-            }
+            gs.flushed();
             tryop!(vars.flush(interp, env, &code.vars))
         }};
     }
@@ -3768,18 +3820,8 @@ fn run_with(
     // ran since the last flush changed a function binding.
     macro_rules! revalidate {
         () => {{
-            if recheck {
-                recheck = false;
-                let now = (crate::env::search_epoch(), env.fn_version());
-                if now != token {
-                    // A new local function binding (say a helper defined in
-                    // the body) matters only if it binds a guarded name.
-                    let local_only = now.0 == token.0;
-                    token = now;
-                    if !local_only || code.guard_syms.iter().any(|s| env.local_may_bind_fun(*s)) {
-                        generation = generation.wrapping_add(1).max(1);
-                    }
-                }
+            if gs.recheck {
+                gs.revalidate(env, code);
             }
         }};
     }
@@ -3791,9 +3833,9 @@ fn run_with(
             if g != NO_GUARD {
                 revalidate!();
             }
-            if g != NO_GUARD && checked[g as usize] != generation {
+            if g != NO_GUARD && checked[g as usize] != gs.generation {
                 if guard_ok(interp, *$sym, env, &code.guard_memo[pc - 1]) {
-                    checked[g as usize] = generation;
+                    checked[g as usize] = gs.generation;
                 } else {
                     if std::env::var_os("ROBIGO_VM_TRACE").is_some() {
                         eprintln!("vm: guard failed for {}", $sym);
@@ -3834,7 +3876,6 @@ fn run_with(
             };
         }};
     }
-    let jit_on = crate::jit::enabled();
     // Run the innermost loop natively from its head (the op being executed
     // is at the head or the back edge, so the VM state is that of the loop
     // between iterations) if it compiles; continue after it or where the
@@ -3863,7 +3904,7 @@ fn run_with(
     // Count iterations of the innermost loop; at the threshold, try native.
     macro_rules! back_edge {
         () => {{
-            if jit_on {
+            if gs.jit_on {
                 if let Some(rec) = loops.last_mut() {
                     rec.count += 1;
                     if rec.count == JIT_THRESHOLD {
@@ -4033,12 +4074,12 @@ fn run_with(
             }
             Op::Guard { sym, dst, k, skip, g } => {
                 revalidate!();
-                if checked[*g as usize] == generation {
+                if checked[*g as usize] == gs.generation {
                     continue;
                 }
                 let ok = guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]);
                 if ok {
-                    checked[*g as usize] = generation;
+                    checked[*g as usize] = gs.generation;
                 } else {
                     if std::env::var_os("ROBIGO_VM_TRACE").is_some() {
                         eprintln!("vm: guard failed for {}", sym);
@@ -4446,7 +4487,8 @@ fn run_with(
             Op::LoopEnter { brk, nxt } => {
                 loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
                 // A loop compiled on an earlier entry runs natively at once.
-                if jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_))) {
+                if gs.jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_)))
+                {
                     jit_loop!();
                 }
             }
