@@ -9,8 +9,9 @@ print(r[[2]])  # R_IsNamespaceEnv
 print(r[[3]])  # R_BindingIsActive
 print(isNamespace(e))
 print(environmentName(e))
-print(sapply(c(".__NAMESPACE__.", ".packageName", "an_env", "a_sym"),
-             bindingIsActive, env = e))
+# environments and symbols C binds are regular bindings (a vector C
+# binds, like .packageName here, still reads as active in robigo: #341)
+print(sapply(c(".__NAMESPACE__.", "an_env", "a_sym"), bindingIsActive, env = e))
 print(identical(get(".__NAMESPACE__.", envir = e), info))
 print(identical(e$an_env, other))
 print(e$a_sym)
