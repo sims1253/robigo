@@ -581,7 +581,10 @@ pub(crate) unsafe fn host_attrs_changed(x: Sexp) {
     }
     if let Some(v @ (Value::Env(_) | Value::ExtPtr(_))) = proxied(x) {
         if !attrs_agreed(x) {
-            v.clone().set_attrs(box_attrs(x, &mut HashMap::new()));
+            // a value C got from R is R's object, as in `write_backs`
+            let mut originals: HashMap<usize, Value> =
+                SEEN.with(|m| m.borrow().values().map(|(x, v)| (x.addr(), v.clone())).collect());
+            v.clone().set_attrs(box_attrs(x, &mut originals));
             agree_attrs(x);
         }
     }
