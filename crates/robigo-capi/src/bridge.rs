@@ -1460,8 +1460,17 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             // except a promise, which the evaluator forces: from_sexp
             // turns it into a runtime promise whose to_sexp proxy stays
             // live for C's PRVALUE/PRCODE/PRENV reads and writes
-            // (rlang's r_env_bind_delayed, magrittr's pipe masks).
-            if a[1] != R_NilValue && a[1].typ() != PROMSXP && !env.0.locked.get() && crate::owned::is_c_env(&env) {
+            // (rlang's r_env_bind_delayed, magrittr's pipe masks). Only a
+            // vector's contents are C's to write in place (REAL(),
+            // SET_VECTOR_ELT): an environment, a closure or a symbol is
+            // the same object on both sides, and binding it plainly keeps
+            // what R inspects GNU R's (isNamespace() of rlang's
+            // env_clone() of a namespace, testthat's test environment).
+            let vector = matches!(
+                a[1].typ(),
+                LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP
+            );
+            if vector && !env.0.locked.get() && crate::owned::is_c_env(&env) {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
                 remember_stored(a[1], &val);
