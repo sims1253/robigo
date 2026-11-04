@@ -1466,10 +1466,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             // the same object on both sides, and binding it plainly keeps
             // what R inspects GNU R's (isNamespace() of rlang's
             // env_clone() of a namespace, testthat's test environment).
-            let vector = matches!(
-                a[1].typ(),
-                LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP
-            );
+            let vector = matches!(a[1].typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP);
             if vector && !env.0.locked.get() && crate::owned::is_c_env(&env) {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
