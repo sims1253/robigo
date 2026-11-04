@@ -351,6 +351,9 @@ pub enum JitSlot {
     /// Not compiled yet: this many attempts failed for the values seen.
     Failed(u8),
     Never,
+    /// Not tried yet: the back edges of entries that ended before the
+    /// threshold, summed (a short loop run often is hot too).
+    Heat(u32),
 }
 
 /// Why a loop was not compiled.
@@ -629,7 +632,7 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             leaf_uses(i, &mut u);
             u.wregs.push(*dst);
         }
-        Op::SetIndex { val, slot, i, .. } => {
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
             u.rregs.push(*val);
             leaf_uses(i, &mut u);
             // The vector is read and modified in place, not reassigned.
@@ -681,6 +684,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         // vectors and in-range scalar indices native code handles, it does
         // what `x[i] <- v` does; anything else deoptimizes.)
         Op::SetIndex { .. } => true,
+        // (On the enclosing binding's vector in place: see `compile`.)
+        Op::SuperSetIndex { .. } => true,
         _ => false,
     }
 }
@@ -751,6 +756,7 @@ pub fn compile(
     for pc in r.start..r.end {
         if let Op::Index { slot, .. }
         | Op::SetIndex { slot, .. }
+        | Op::SuperSetIndex { slot, .. }
         | Op::Index2 { slot, .. }
         | Op::SetIndex2 { slot, .. } = &ops[pc]
         {
@@ -877,23 +883,40 @@ pub fn compile(
         for s in luses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
-        if let Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } = &ops[pc] {
+        if let Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } | Op::SuperSetIndex { slot, .. } = &ops[pc] {
             writable[*slot as usize] = true;
         }
     }
     // A variable assigned with `<<-` is the enclosing binding (`vm::jit_enter`
     // checks that the frame has none of its own): the body must not also
     // assign it locally, in the loop or anywhere else.
+    // The same for `x[[i]] <<- v` (a vector written in place, `vm::jit_enter`
+    // views the binding): nothing may assign or modify the local `x`.
     let mut supersets: Vec<Slot> = Vec::new();
     for pc in r.start..r.end {
-        if let Op::SuperSet { slot, .. } = &ops[pc] {
+        if let Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } = &ops[pc] {
             supersets.push(*slot);
         }
     }
     for pc in 0..ops.len() {
-        if !matches!(ops[pc], Op::SuperSet { .. }) && uses(&ops[pc], &inl).wslots.iter().any(|s| supersets.contains(s))
-        {
+        let local_write = match &ops[pc] {
+            Op::SuperSet { .. } | Op::SuperSetIndex { .. } => false,
+            Op::SetIndex { slot, .. }
+            | Op::SetIndex2 { slot, .. }
+            | Op::SetComplex { slot, .. }
+            | Op::SetDollar { slot, .. } => supersets.contains(slot),
+            op => uses(op, &inl).wslots.iter().any(|s| supersets.contains(s)),
+        };
+        if local_write {
             return Err(Reject::Never);
+        }
+    }
+    // A vector both `<<-`-assigned and scalar `<<-`-assigned: not here.
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } = &ops[pc] {
+            if slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
+                return Err(Reject::Never);
+            }
         }
     }
 
@@ -1027,7 +1050,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                     (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
                 )
         }
-        Op::SetIndex { val, slot, i, .. } => {
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
             matches!(lt(i), Some(JType::D | JType::I))
                 && matches!(
                     (slot_ty[slot], rt(val)),
@@ -1590,7 +1613,7 @@ impl Gen<'_, '_> {
 
     fn element_offset(&mut self, op: &Op, slot: Slot, lv: Variable, pc: usize) -> CValue {
         let (i, j) = match op {
-            Op::Index { i, .. } | Op::SetIndex { i, .. } => (i, None),
+            Op::Index { i, .. } | Op::SetIndex { i, .. } | Op::SuperSetIndex { i, .. } => (i, None),
             Op::Index2 { i, j, .. } | Op::SetIndex2 { i, j, .. } => (i, Some(j)),
             _ => unreachable!(),
         };
@@ -1933,7 +1956,7 @@ impl Gen<'_, '_> {
                 let x = self.b.ins().load(ty, MemFlagsData::trusted(), addr, 0);
                 self.set_reg(*dst, x);
             }
-            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } => {
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } | Op::SuperSetIndex { val, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
                 let k = self.element_offset(op, *slot, lv, pc);
                 let (x, xt) = self.reg(*val);

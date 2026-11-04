@@ -1906,6 +1906,38 @@ fn super_target_plain(interp: &Interp, env: &Env, sym: Sym) -> bool {
     interp.global.plain_binding(sym)
 }
 
+/// A writable view of the vector of the binding `x[[i]] <<- v` assigns
+/// from `env` (see [`super_set_element`]), unshared first: a plain binding
+/// of a vector of native type `ty` that is not an object.
+fn super_vec_view(interp: &Interp, env: &Env, sym: Sym, ty: crate::jit::JType) -> Option<crate::jit::VecView> {
+    use crate::jit::JType;
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let b = frame.get_mut(sym)?;
+    if b.flags != 0 || b.value.is_object() || jit_type(&RVal::V(b.value.clone())) != Some(ty) {
+        return None;
+    }
+    macro_rules! view {
+        ($x:expr) => {{
+            let (nrow, ncol) = jit_matrix_dims($x).unwrap_or((0, 0));
+            let v = Rc::make_mut($x);
+            Some(crate::jit::VecView { ptr: v.data.as_mut_ptr() as *mut u8, len: v.data.len() as u64, nrow, ncol })
+        }};
+    }
+    match (&mut b.value, ty) {
+        (Value::Real(x), JType::VecD | JType::MatD) => view!(x),
+        (Value::Int(x), JType::VecI | JType::MatI) => view!(x),
+        _ => None,
+    }
+}
+
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
 /// `val` (see [`super_set_fast`]; `take`: moved out, see [`stored`]).
 pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool) -> bool {
@@ -3352,6 +3384,8 @@ struct LoopRec {
     nxt: u32,
     enter: u32,
     count: u32,
+    /// Its back edges count toward `JitSlot::Heat` when it ends.
+    heat: bool,
 }
 
 /// The state of `run_with`'s guard memo (`checked`) and native loops. Kept
@@ -3430,6 +3464,22 @@ fn unwind_to(f: Flow, env: &Env, loops: &[LoopRec]) -> Result<usize, Flow> {
 
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
+
+/// Add the back edges of an entry of the loop at `enter` that ended below
+/// the threshold to its heat.
+#[cold]
+#[inline(never)]
+fn loop_heat(code: &Code, enter: u32, count: u32) {
+    use crate::jit::JitSlot;
+    let mut cache = code.jit.borrow_mut();
+    match cache.get_mut(&enter) {
+        None => {
+            cache.insert(enter, JitSlot::Heat(count));
+        }
+        Some(JitSlot::Heat(h)) => *h = h.saturating_add(count),
+        Some(_) => {}
+    }
+}
 
 /// Native matrix views accept only a dimension attribute, with validated
 /// storage bounds. No native op can change the dimensions during a loop.
@@ -3704,6 +3754,19 @@ fn jit_enter(
     vals.resize(jl.nvals, 0);
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
     for s in &jl.slots {
+        if s.ty.is_vector() && s.superset {
+            // `x[[i]] <<- v`: the binding `<<-` assigns, viewed in place (the
+            // frame has none of its own, and its cached copy is dropped so
+            // that the binding's vector is not shared through it).
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_)) || env.has_local(s.sym) {
+                return None;
+            }
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let view = super_vec_view(interp, env, s.sym, s.ty)?;
+            debug_assert_eq!(vecs.len(), s.idx);
+            vecs.push(view);
+            continue;
+        }
         if s.ty.is_vector() {
             let ok = match read_var(vars, env, s.sym, s.slot) {
                 Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
@@ -4466,7 +4529,7 @@ fn run_with(
                 }
                 Some((crate::jit::Outcome::Deopt(p), nested)) => {
                     for (e, b, n) in nested {
-                        loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1 });
+                        loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1, heat: false });
                     }
                     loops.last_mut().unwrap().count = JIT_THRESHOLD + 1;
                     pc = p;
@@ -5099,15 +5162,29 @@ fn run_with(
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {
-                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
-                // A loop compiled on an earlier entry runs natively at once.
-                if gs.jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_)))
-                {
+                // A loop compiled on an earlier entry runs natively at once,
+                // and so does one whose short entries add up to the threshold.
+                let (go, heat) = if gs.jit_on {
+                    match code.jit.borrow().get(&((pc - 1) as u32)) {
+                        Some(crate::jit::JitSlot::Ready(_)) => (true, false),
+                        Some(crate::jit::JitSlot::Heat(h)) => (*h >= JIT_THRESHOLD, true),
+                        None => (false, true),
+                        Some(_) => (false, false),
+                    }
+                } else {
+                    (false, false)
+                };
+                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0, heat });
+                if go {
                     jit_loop!();
                 }
             }
             Op::LoopExit => {
-                loops.pop();
+                if let Some(rec) = loops.pop() {
+                    if rec.heat && rec.count > 0 && rec.count < JIT_THRESHOLD {
+                        loop_heat(code, rec.enter, rec.count);
+                    }
+                }
             }
             Op::ForInit { seq, call } => {
                 if matches!(regs[*seq as usize], RVal::Range { .. }) {
