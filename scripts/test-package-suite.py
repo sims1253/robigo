@@ -107,6 +107,10 @@ class Green(unittest.TestCase):
         self.assertEqual(s["skip_diverged"], 1)
         self.assertFalse(s["green"])
 
+    def test_an_extra_block_is_not_green(self):
+        got = {"test-a": ("done", 1, [block(), block(test="(outside any test)", passed=0, error=1, msg="x")], None)}
+        self.assertFalse(self.summary(recorded(), got)["green"])
+
     def test_mostly_skipped_is_not_green(self):
         exp = recorded()
         for i in range(9):
@@ -137,9 +141,36 @@ class Events(unittest.TestCase):
         self.assertNotEqual(suite.block_id("f", blocks[0]), suite.block_id("f", blocks[1]))
         self.assertTrue(done)
 
+    def test_nested_blocks(self):
+        blocks, _, _ = self.parse(['{"e":"start","test":"outer"}', '{"e":"start","test":"inner"}',
+                                   '{"e":"result","kind":"success"}', '{"e":"end"}',
+                                   '{"e":"result","kind":"failure","msg":"x"}', '{"e":"end"}', '{"e":"done"}'])
+        self.assertEqual([(b["test"], b["pass"], b["fail"], b["open"]) for b in blocks],
+                         [("outer", 0, 1, False), ("inner", 1, 0, False)])
+
     def test_a_result_outside_any_test(self):
         blocks, _, _ = self.parse(['{"e":"result","kind":"error","msg":"top"}'])
         self.assertEqual((blocks[0]["test"], blocks[0]["error"], blocks[0]["open"]), ("(outside any test)", 1, False))
+
+
+class Canary(unittest.TestCase):
+    def good(self):
+        return [block(test=t, passed=o[0], fail=o[1], error=o[2], skip=o[3], warn=o[4]) for t, o in suite.CANARY.items()]
+
+    def test_all_expected(self):
+        n = len(suite.CANARY)
+        self.assertEqual(suite.canary_score("done", self.good()), [n, n])
+
+    def test_a_crashed_file_fails(self):
+        self.assertEqual(suite.canary_score("crash", self.good())[0], 0)
+
+    def test_an_open_block_fails(self):
+        blocks = self.good()
+        blocks[0]["open"] = True
+        self.assertLess(suite.canary_score("done", blocks)[0], len(suite.CANARY))
+
+    def test_an_unexpected_block_fails(self):
+        self.assertEqual(suite.canary_score("done", self.good() + [block(test="other")])[0], 0)
 
 
 class Supervise(unittest.TestCase):

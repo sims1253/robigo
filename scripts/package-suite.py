@@ -433,7 +433,9 @@ def supervise(cmd, env, cwd, log, limit):
 
 def parse_events(path):
     """Blocks of a worker's event stream, and how the stream ended."""
-    blocks, seen, cur, ended, abort = [], {}, None, None, None
+    # a stack: describe() and it() nest, and a parent's results after a
+    # child are the parent's
+    blocks, seen, stack, ended, abort = [], {}, [], None, None
 
     def block(test):
         n = seen[test] = seen.get(test, 0) + 1
@@ -450,12 +452,12 @@ def parse_events(path):
                 continue  # the line being written when the process died
             e = ev["e"]
             if e == "start":
-                cur = block(ev["test"])
+                stack.append(block(ev["test"]))
             elif e == "end":
-                if cur:
-                    cur["open"] = False
-                cur = None
+                if stack:
+                    stack.pop()["open"] = False
             elif e == "result":
+                cur = stack[-1] if stack else None
                 b = cur or block("(outside any test)")
                 k = {"success": "pass", "failure": "fail", "error": "error", "skip": "skip",
                      "warning": "warn"}[ev["kind"]]
@@ -690,7 +692,9 @@ def summarize(pkg, row, exp, exp_files, got):
     for k, r in scored.items():
         if k not in matching:
             causes[r["why"]] = causes.get(r["why"], 0) + 1
-    green = bool(scored) and len(matching) == len(scored) and not diverged and \
+    # a block GNU R does not have (an error outside any test, say) is a
+    # difference too, though it has nothing to be scored against
+    green = bool(scored) and len(matching) == len(scored) and not diverged and not extra and \
         set(files) <= {"done"} and len(scored) >= GREEN_FLOOR * len(rows)
     return {"v": row["version"], "m": len(matching), "n": len(scored), "blocks": len(rows),
             "unstable": sum(1 for r in rows.values() if r["expected"]["unstable"]),
@@ -707,12 +711,22 @@ def check_canary():
     path = os.path.join(CANARY_SRC, "tests", "testthat", "test-canary.R")
     status, _, blocks, abort = run_file("robigo", "pkgsuitecanary", row, path,
                                         f"{canary_library()}:{library()}", 300)
-    have = {b["test"]: tuple(outcome(b)[:5]) for b in blocks}
+    if abort:
+        print(f"canary: {status}: {normalize(abort)}", flush=True)
+    return canary_score(status, blocks)
+
+
+def canary_score(status, blocks):
+    """[matching, total]: a test counts when it ran to its end with the
+    expected outcome, in a file that finished, with nothing else in it."""
+    have = {b["test"]: tuple(outcome(b)[:5]) for b in blocks if not b["open"]}
     bad = {t: have.get(t) for t, want in CANARY.items() if have.get(t) != want}
     for t, h in bad.items():
         print(f"canary: {t!r}: expected {CANARY[t]}, got {h}", flush=True)
-    if abort:
-        print(f"canary: {status}: {normalize(abort)}", flush=True)
+    extra = [b["test"] for b in blocks if b["test"] not in CANARY]
+    if status != "done" or extra or len(blocks) != len(CANARY):
+        print(f"canary: file {status}, unexpected blocks {extra}", flush=True)
+        return [0, len(CANARY)]
     return [len(CANARY) - len(bad), len(CANARY)]
 
 
