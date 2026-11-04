@@ -2811,6 +2811,22 @@ pub(crate) fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u6
     Some((nr as u64, nc as u64))
 }
 
+/// The value of a number of native code (`crate::jit::JType::N`) by its tag.
+fn number(x: f64, tag: u64) -> RVal {
+    if tag as u32 != 0 { RVal::I(x as i32) } else { RVal::D(x) }
+}
+
+/// [`jit_type`] in a native loop, which also reads and assigns elements of
+/// character vectors and matrices.
+fn loop_type(v: &RVal) -> Option<crate::jit::JType> {
+    use crate::jit::JType;
+    jit_type(v).or(match v {
+        RVal::V(Value::Str(x)) if x.attrs.is_none() => Some(JType::VecS),
+        RVal::V(Value::Str(x)) if jit_matrix_dims(x).is_some() => Some(JType::MatS),
+        _ => None,
+    })
+}
+
 /// The scalar or vector type of a variable's current value for native code.
 pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     use crate::jit::JType;
@@ -2995,7 +3011,7 @@ fn jit_enter(
             // sequences set up before the loop.
             let mut types: Vec<Option<JType>> = Vec::with_capacity(code.vars.len());
             for (s, sym) in code.vars.iter().enumerate() {
-                types.push(read_var(vars, env, *sym, s as Slot).and_then(jit_type));
+                types.push(read_var(vars, env, *sym, s as Slot).and_then(loop_type));
             }
             let Op::LoopEnter { brk, .. } = code.ops[enter] else { return None };
             let mut live: HashMap<Reg, JType> = HashMap::default();
@@ -3117,7 +3133,7 @@ fn jit_enter(
     for s in &jl.slots {
         if s.ty.is_vector() {
             let ok = match read_var(vars, env, s.sym, s.slot) {
-                Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
+                Some(RVal::V(v)) => !v.is_object() && loop_type(&RVal::V(v.clone())) == Some(s.ty),
                 _ => false,
             };
             if !ok || (s.writable && !own_var(vars, env, s.sym, s.slot)) {
@@ -3138,6 +3154,17 @@ fn jit_enter(
                     let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
                     crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
                 }
+                SlotVal::Dirty(RVal::V(Value::Str(x))) | SlotVal::Clean(RVal::V(Value::Str(x)))
+                    if matches!(s.ty, JType::VecS | JType::MatS) =>
+                {
+                    let d = if s.writable {
+                        Rc::make_mut(x).data.as_mut_ptr()
+                    } else {
+                        x.data.as_ptr() as *mut crate::value::RStr
+                    };
+                    let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
+                }
                 _ => return None,
             };
             debug_assert_eq!(vecs.len(), s.idx);
@@ -3154,6 +3181,15 @@ fn jit_enter(
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
+            // A number: an integer (never NA, see `JType::N`) or a double.
+            (JType::N, Some(Num::I(x))) if x != NA_INTEGER => {
+                vals[s.tag.unwrap()] = 1;
+                Some((x as f64).to_bits())
+            }
+            (JType::N, Some(Num::D(x))) => {
+                vals[s.tag.unwrap()] = 0;
+                Some(x.to_bits())
+            }
             _ => None,
         };
         match bits {
@@ -3200,7 +3236,7 @@ fn jit_enter(
     }
     // Write the variables back as pending assignments.
     for s in &jl.slots {
-        if !s.written || !s.ty.is_scalar() {
+        if !s.written || !(s.ty.is_scalar() || s.ty == JType::N) {
             continue;
         }
         let assigned = s.needs_entry || s.flag.is_some_and(|f| vals[f] != 0);
@@ -3211,6 +3247,7 @@ fn jit_enter(
         let v = match s.ty {
             JType::D => RVal::D(f64::from_bits(b)),
             JType::I => RVal::I(b as i32),
+            JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
         };
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
@@ -3233,6 +3270,14 @@ fn jit_enter(
             JType::I => RVal::I(b as i32),
             JType::L => RVal::L(b as i32),
             JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+            JType::N => number(f64::from_bits(b), vals[idx + 1]),
+            JType::S => {
+                // SAFETY: a string register holds the address of an element
+                // of a character vector the loop was entered with, which its
+                // variable still holds (only scalars were written back).
+                let e = unsafe { (*(b as usize as *const crate::value::RStr)).clone() };
+                RVal::V(Value::Str(Rc::new(crate::value::Vector::new(vec![e]))))
+            }
             _ => continue,
         };
     }

@@ -1024,6 +1024,8 @@ fn define(
             reg: HashMap::new(),
             range: HashMap::new(),
             cells: Vec::new(),
+            slot_tag: HashMap::new(),
+            reg_tag: HashMap::new(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
