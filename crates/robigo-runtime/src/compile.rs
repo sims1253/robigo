@@ -1027,12 +1027,18 @@ fn seq_length_form(e: &Value) -> Option<(Sym, &Value)> {
         return None;
     }
     let v = &l.args[0].value;
-    let leaf = match v {
+    leaf_shape(v).then_some((h, v))
+}
+
+/// What [`Compiler::leaf`] converts: a variable, or a length-1 numeric
+/// constant without attributes. (The forms above match only these, so the
+/// compiler's conversions of their operands cannot fail.)
+fn leaf_shape(v: &Value) -> bool {
+    match v {
         Value::Sym(s) => is_var(*s),
         Value::Real(_) | Value::Int(_) => v.len() == 1 && v.attrs().is_none(),
         _ => false,
-    };
-    leaf.then_some((h, v))
+    }
 }
 
 /// `seq(from, to, by)` with three positional arguments, each a variable, a
@@ -1044,11 +1050,7 @@ fn seq_by_form(e: &Value) -> Option<(Sym, [&Value; 3], Vec<Sym>)> {
     if &*h.name() != "seq" || !plain_args(l, 3) {
         return None;
     }
-    let leaf = |v: &Value| match v {
-        Value::Sym(s) => is_var(*s),
-        Value::Real(_) | Value::Int(_) => v.len() == 1 && v.attrs().is_none(),
-        _ => false,
-    };
+    let leaf = leaf_shape;
     let mut ops = Vec::new();
     for a in &l.args {
         let v = &a.value;
