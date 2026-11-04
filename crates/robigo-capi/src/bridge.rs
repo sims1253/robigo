@@ -82,6 +82,8 @@ thread_local! {
     /// with `Rf_findVarInFrame`). The entry holds the value too, so a
     /// runtime-side change copies it (a new identity, so no stale object
     /// is handed out); `gc()` drops entries whose value only it still holds.
+    /// Vectors C looked up (`findVar`, `R_getVar`) are kept the same way
+    /// (see [`looked_up`]).
     static STORED: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
     /// Proxies kept preserved while their runtime object is referenced
     /// from anywhere but `PROXIED` (handle -> proxy): C code keeps
@@ -1288,10 +1290,30 @@ unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     Ok(Some(v))
 }
 
+/// The core object of a value C code looked up in an environment. C code
+/// keeps such objects in statics without protecting them, which GNU R
+/// allows while the binding holds the object: rlang caches
+/// `rlang_zap = rlang_ns_get("zap!")` and compares arguments against it
+/// (`value == rlang_zap`) and returns it in other results. A vector's core
+/// object is a copy, so it is remembered as `STORED` is: it stays alive,
+/// and the same object, as long as the runtime value is referenced.
+/// (Promises are not: their `STORED` entries are C-assembled nodes.)
+unsafe fn looked_up(v: &Value) -> Sexp {
+    let x = to_sexp(v);
+    if !matches!(v, Value::Promise(_)) && !x.has_flag(flags::HOST) {
+        if let Some(k) = vector_identity(v) {
+            if STORED.with(|m| m.borrow().get(&k).map(|e| e.0)) != Some(x) {
+                remember_stored(x, v);
+            }
+        }
+    }
+    x
+}
+
 /// A variable's value for C; a list is noted, in case C changes it in
 /// place (crate::owned).
 unsafe fn found(v: &Value, env: &Env, sym: Sym) -> Sexp {
-    let x = to_sexp(v);
+    let x = looked_up(v);
     if matches!(v, Value::List(_)) && CALL_DEPTH.with(|d| d.get()) > 0 {
         crate::owned::note_origin(x, env, sym);
     }
@@ -1535,7 +1557,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 cur = if inherits { e.parent() } else { None };
             }
             match found {
-                Some(v) => to_sexp(&with_interp(|i| i.force(v))?),
+                Some(v) => looked_up(&with_interp(|i| i.force(v))?),
                 None if a[3] != R_UnboundValue => a[3],
                 None => return Err(Flow::error(format!("object '{}' not found", sym.name()))),
             }
