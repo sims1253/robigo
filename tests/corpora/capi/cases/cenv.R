@@ -7,7 +7,7 @@ ns <- new.env()
 assign(".__NAMESPACE__.", info, envir = ns)
 assign(".packageName", "fakepkg", envir = ns)
 assign("x", c(1, 2, 3), envir = ns)
-assign("f", function() x, envir = ns)
+assign("f", function() 1, envir = ns)
 print(isNamespace(ns))
 
 cl <- .Call("capi_cenv_clone", ns)
@@ -29,4 +29,5 @@ print(cl$f())
 # assigning from R replaces the value
 cl$x <- 10
 print(cl$x)
+print(cl$f())
 print(bindingIsActive("x", cl))
