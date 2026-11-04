@@ -55,10 +55,11 @@ thread_local! {
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
     /// proxy handle -> (identity, the runtime object)
     static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::new());
-    /// Core object of an environment or external pointer -> its attribute
-    /// cells when the two sides last agreed (see [`push_attrs`]); empty if
-    /// absent. Addresses, not values: a reference from here would count as
-    /// the runtime holding what the attributes refer to.
+    /// Proxy (environment, external pointer, closure) -> its attribute
+    /// cells when the two sides last agreed (see [`push_attrs`],
+    /// [`write_back`]); empty if absent. Addresses, not values: a
+    /// reference from here would count as the runtime holding what the
+    /// attributes refer to.
     static SYNCED_ATTRS: RefCell<HashMap<usize, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
     /// A `push_attrs` is running: attributes can refer back to the object.
     static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
@@ -491,9 +492,7 @@ unsafe fn proxy(v: &Value) -> Sexp {
         if s4 {
             SET_S4_OBJECT(x);
         }
-        if matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
-            agree_attrs(x);
-        }
+        agree_attrs(x);
     }
     x
 }
@@ -546,6 +545,11 @@ fn pushing_attrs(f: impl FnOnce()) {
 /// code did to `v`, before C reads it. A routine's own writes win: they
 /// reach `v` when it returns (`write_back`).
 unsafe fn push_attrs(v: &Value, x: Sexp) {
+    // (A proxied closure cannot change: the proxy table shares it, so R's
+    // `attr<-` copies it.)
+    if !matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
+        return;
+    }
     if PUSHING_ATTRS.with(|p| p.get()) || (!v.has_attrs() && attr_cells(x).is_empty()) || !attrs_agreed(x) {
         return;
     }
@@ -2151,18 +2155,16 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Cplx(rc) => attrs(rc, x, originals),
         Value::Str(rc) => attrs(rc, x, originals),
         Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
-        Value::Closure(rc) => {
-            let new = box_attrs(x, originals);
-            if !same_attrs(&rc.attrs, &new) {
-                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
-            }
+        // A proxy's attributes are copies made when it was created: only
+        // what the routine itself wrote comes back (see `agree_attrs`).
+        Value::Closure(rc) if !attrs_agreed(x) => {
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
+            agree_attrs(x);
         }
         #[cfg(feature = "bytecode-fidelity")]
-        Value::Bytecode(rc) => {
-            let new = box_attrs(x, originals);
-            if !same_attrs(&rc.attrs, &new) {
-                retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
-            }
+        Value::Bytecode(rc) if !attrs_agreed(x) => {
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
+            agree_attrs(x);
         }
         // Only what the routine itself wrote: `x` is behind a runtime
         // object R code can have changed since (see `push_attrs`).
