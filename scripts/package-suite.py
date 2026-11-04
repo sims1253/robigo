@@ -136,9 +136,13 @@ def in_oracle():
         return
     if not shutil.which("docker"):
         die("needs docker, or $ROBIGO_PKG_ORACLE set inside an equivalent environment")
-    if subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True).returncode != 0:
+    # the image is rebuilt when its definition changes (an apt.txt edit)
+    want = sha(open(os.path.join(DIR, "Dockerfile")).read() + open(os.path.join(DIR, "apt.txt")).read())
+    have = subprocess.run(["docker", "image", "inspect", "-f", '{{index .Config.Labels "robigo.oracle"}}', IMAGE],
+                          capture_output=True, text=True).stdout.strip()
+    if have != want:
         print(f"building {IMAGE}", flush=True)
-        subprocess.run(["docker", "build", "-q", "-t", IMAGE, DIR], check=True)
+        subprocess.run(["docker", "build", "-q", "--build-arg", f"ORACLE_ID={want}", "-t", IMAGE, DIR], check=True)
     os.makedirs(CACHE, exist_ok=True)
     rv = shutil.which("rv")
     cmd = ["docker", "run", "--rm", "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "-e", "ROBIGO_PKG_ORACLE=1",
@@ -791,7 +795,12 @@ def cmd_run(a):
         limits = {f: d["seconds"] for f, d in exp_files.items()}
         got = run_package("robigo", pkg, sel[pkg], library(), limits)
         s, matching, causes, rows = summarize(pkg, sel[pkg], exp, exp_files, got)
-        lost = sorted(markers(pkg) - matching)
+        # a marker whose block is not in this recording is from another
+        # snapshot: it cannot regress here (README: moving to a new snapshot)
+        stale = sorted(b for b in markers(pkg) - matching if b not in exp)
+        if stale:
+            print(f"{pkg}: {len(stale)} markers have no recorded block (another snapshot?)", flush=True)
+        lost = sorted(b for b in markers(pkg) - matching if b in exp)
         if lost:
             # Twice before it counts: a difference that does not repeat is
             # flakiness, itself worth a look, not a regression.

@@ -221,6 +221,10 @@ class History(unittest.TestCase):
         self.assertNotIn("corpora", self.entry([self.doc([1, 1], valid=False)]))
         self.assertNotIn("corpora", self.entry([self.doc([1, 2])]))
 
+    def test_a_package_matching_nothing_renders(self):
+        e = self.entry([self.doc([1, 1], m=0, n=5)])
+        self.assertIn("Top CRAN packages", history.packages_section([e, e], "https://x"))
+
     def test_merge_keeps_what_the_other_run_measured(self):
         night = {"sha": "x", "packages": {}, "corpora": {"packages": [1, 2]}}
         day = {"sha": "x", "perf": {}, "corpora": {"fastr": [3, 4]}}

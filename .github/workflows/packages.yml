@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
           # ci.yml keeps the binary for 7 days: fail here, not hours in
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
             --jq '.artifacts[] | select(.name == "robigo" and .expired == false) | .id' | grep -q . ||
             { echo "CI run $run has no live robigo artifact" >&2; exit 1; }
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -72,6 +72,7 @@ jobs:
           # all of them (an empty list), or a few with no history recorded
           full=true
           if [ "$EVENT" = pull_request ]; then PACKAGES=magrittr; fi
+          PACKAGES=$(printf '%s' "$PACKAGES" | tr -s '\n\r\t' '   ')  # one line in GITHUB_OUTPUT
           if [ -n "$PACKAGES" ]; then full=false; fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
@@ -211,8 +212,9 @@ jobs:
             rm -rf data && git worktree prune
             git fetch -q --depth 1 origin +refs/heads/progress-data:refs/remotes/origin/progress-data
             git worktree add -q --detach data origin/progress-data
+            # a failure is not "nothing new": it must not deploy the old page green
             python3 scripts/history.py add data/history.jsonl artifacts --commit "$SHA" \
-              --run "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+              --run "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || exit 1
             git -C data add history.jsonl
             if git -C data diff --cached --quiet; then break; fi
             git -C data commit -q -m "history: packages at ${SHA::12}"

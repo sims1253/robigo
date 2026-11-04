@@ -2,5 +2,7 @@ Package: pkgsuitecanary
 Title: Known Outcomes for the Package Suite's Harness
 Version: 1.0.0
 Description: One test per outcome the harness must report. See tests/packages/README.md.
-License: GPL-2 | file LICENSE
+License: GPL-2
+Author: robigo
+Maintainer: robigo <noreply@example.invalid>
 Encoding: UTF-8

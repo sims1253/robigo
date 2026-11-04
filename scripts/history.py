@@ -516,16 +516,21 @@ def badge(label, message):
     return {"schemaVersion": 1, "label": label, "message": message, "color": "2a78d6", "cacheSeconds": 3600}
 
 
-def sparkline(pts, n):
+def sparkline(pts, n, log=True):
+    """`log` for speedups; shares (which can be 0) go on a linear 0..1 scale."""
     if not pts:
         return ""
     w, h = 96, 20
-    lo, hi = min(v for _, v, _ in pts), max(v for _, v, _ in pts)
-    # Each line on its own log range, but at least 1.25×, so noise stays flat.
-    lo, hi = math.log(lo), math.log(hi)
-    pad = max(0.0, math.log(1.25) - (hi - lo)) / 2
-    lo, hi = lo - pad, hi + pad
-    xy = [(w * i / max(n - 1, 1), h - 2 - (h - 4) * (math.log(v) - lo) / (hi - lo)) for i, v, _ in pts]
+    f = math.log if log else (lambda v: v)
+    if log:
+        lo, hi = min(v for _, v, _ in pts), max(v for _, v, _ in pts)
+        # Each line on its own log range, but at least 1.25×, so noise stays flat.
+        lo, hi = math.log(lo), math.log(hi)
+        pad = max(0.0, math.log(1.25) - (hi - lo)) / 2
+        lo, hi = lo - pad, hi + pad
+    else:
+        lo, hi = 0.0, 1.0
+    xy = [(w * i / max(n - 1, 1), h - 2 - (h - 4) * (f(v) - lo) / (hi - lo)) for i, v, _ in pts]
     d = " ".join(f"{'M' if k == 0 else 'L'}{x:.1f},{y:.1f}" for k, (x, y) in enumerate(xy))
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><path d="{d}" fill="none" '
             f'stroke="var(--line)" stroke-width="1.5" stroke-linejoin="round"/></svg>')
@@ -671,7 +676,7 @@ def packages_section(entries, repo_url):
         ratio = f'{p["s"] / p["gnu_s"]:.1f}×' if p["gnu_s"] else ""
         rows.append(f'<tr><td>{E(name)} <span class="meta">{E(p["v"])}</span></td><td class="n">{p["m"]:,}</td>'
                     f'<td class="n">{p["n"]:,}</td><td class="n">{fmt_pct(p["m"] / p["n"]) if p["n"] else ""}</td>'
-                    f'<td>{sparkline(hist, len(entries))}</td>'
+                    f'<td>{sparkline(hist, len(entries), log=False)}</td>'
                     f'<td class="n">{ratio}</td><td class="note">{E(state)}</td></tr>')
     causes = "".join(f'<tr><td class="n">{c:,}</td><td>{E(", ".join(names))}</td>'
                      f'<td style="white-space:normal">{E(why[:200])}</td></tr>' for why, c, names in pk["causes"])
