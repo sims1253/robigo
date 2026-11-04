@@ -232,3 +232,24 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   empty inputs, lists, encodings), recorded with GNU R 4.5.0, identical in
   all tiers and to main; the FastR corpus slices for cat/paste/format/print/
   sprintf/strsplit/writeLines/printing/connections: 591/592, 0 regressions.
+
+## 2026-11-04: integer indices and `%%` in native loops without floating point
+
+- Why: the Cranelift IR of fastaredux_naive's loop (dumped locally) showed
+  every integer index going int -> f64, two float range checks, `trunc`,
+  f64 -> int, and every integer `%%` (the generator's `%% 139968L`) a call
+  of `h_imod`.
+- What (`jit.rs`): an integer index is `i - 1` compared unsigned against
+  the length (NA and anything below 1 wrap around, so they leave native code
+  as before); `x %% y` on integers is `urem` when `x >= 0` and `y > 0`
+  (neither is NA then, the result is `h_imod`'s), the helper otherwise, in a
+  cold block.
+- Result: gate against main bf7332ee: 7 faster, 0 slower: `convolution`
+  -13.9%, `robigo/nbody` -13.5%, `vectorFor` -13.4%, `matrixFor` -5.8%,
+  `convolution_slow` -4.8%, `fannkuchredux_naive` -1.2%,
+  `spectralnorm_alt_3` -1.2%; worst +0.02%.
+- Verified: `tests/r/jit/loop-int-index-mod.R` (reads, writes and matrix
+  reads with NA, zero, negative and past-the-end integer indices, growth,
+  `%%` over every sign combination, zero and NA, the fasta generator),
+  recorded with GNU R 4.5.0, identical in all tiers; all ratcheted
+  `tests/r/jit` scripts.
