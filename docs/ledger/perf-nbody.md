@@ -90,3 +90,12 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   three tiers. Conformance: as main. `vectors/giant-seq-gap.R` (a 16 GB
   `1:-2147483648`, not ratcheted) can differ between tiers under memory
   pressure on this VM, with main's binary too.
+- Review (sol-loop, gpt-6.1-sol, 1 round): approved with two nits.
+  Fixed: the fast path read extents whose `dim` vector has names (it now
+  declines them). That showed a gap in robigo's `[` itself, which drops
+  those names in every tier: `tests/r/subset/dim-names-slice.R`, no ratchet
+  marker. Declined: an RHS that rebinds `[<-` is not seen because the
+  setter's guard runs before the RHS. `main`'s `Op::SetIndex2` does the same
+  (`m[1, 1] <- { \`[<-\` <- function(x, ..., value) x; 1 }` writes 1, GNU R
+  leaves 0); a gap of the VM's setter guards, not fixable as a `tests/r`
+  script since the tiers differ.

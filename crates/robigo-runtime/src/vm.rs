@@ -1105,8 +1105,9 @@ fn plain_dims(attrs: &AttrBox) -> Option<&[i32]> {
     if a.1 || a.0.len() != 1 || a.0[0].0 != s::DIM {
         return None;
     }
+    // (Extents with names, say from a deserialized array, name a slice's.)
     let Value::Int(d) = &a.0[0].1 else { return None };
-    Some(&d.data)
+    d.attrs.is_none().then_some(&d.data[..])
 }
 
 /// The scalar indices of an [`Op::IndexN`] (`None` for an empty one), all
