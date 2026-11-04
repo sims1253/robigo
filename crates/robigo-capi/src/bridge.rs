@@ -288,13 +288,15 @@ fn only_stored(v: &Value) -> bool {
     }
 }
 
-unsafe fn sweep_stored() {
+/// Returns how many core objects it released.
+unsafe fn sweep_stored() -> usize {
     let dead: Vec<Sexp> = STORED.with(|m| {
         let mut m = m.borrow_mut();
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
         keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
     });
     let removed_stored = !dead.is_empty();
+    let mut released = dead.len();
     for x in dead {
         core().release(x);
     }
@@ -306,6 +308,7 @@ unsafe fn sweep_stored() {
         });
         handles.into_iter().filter_map(|h| p.remove(&h)).collect()
     });
+    released += unpinned.len();
     for x in unpinned {
         core().release(x);
     }
@@ -315,11 +318,13 @@ unsafe fn sweep_stored() {
         robigo_runtime::env::Env::mark_cycle_dirty();
     }
     SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
+    released
 }
 
 /// Drop preservation pins whose only remaining owners are runtime cycles.
 /// Called before entering a collection, with no collector borrow active.
-unsafe fn unpin_cycles() {
+/// Returns how many it dropped.
+unsafe fn unpin_cycles() -> usize {
     let dead = PROXIED.with(|m| {
         let proxies = m.borrow();
         let mut graph = robigo_runtime::reachability::ObjectGraph::default();
@@ -350,9 +355,22 @@ unsafe fn unpin_cycles() {
             handles.into_iter().filter_map(|h| pins.remove(&h)).collect::<Vec<_>>()
         })
     });
+    let released = dead.len();
     for x in dead {
         core().release(x);
     }
+    released
+}
+
+/// What only the bridge holds, or only dead cycles pin, before a
+/// collection: how many core objects that released.
+unsafe fn sweep_bridge_holds() -> usize {
+    let mut released = sweep_stored();
+    cpromise_memo_sweep();
+    if HOST_WEAK_REFS.with(|active| active.get()) {
+        released += unpin_cycles();
+    }
+    released
 }
 
 /// The runtime allocation graph over the proxy table, after a collection.
@@ -671,6 +689,9 @@ thread_local! {
     /// graph, so that every proxy left afterwards is one the core heap
     /// keeps (see [`reclaim_host_cycles`]).
     static GRAPH_MARK: Cell<bool> = const { Cell::new(false) };
+    /// Core objects the runtime let go of (`CoreRef`s dropped): a
+    /// reclamation that dropped none freed nothing a collection could find.
+    static CORE_RELEASES: Cell<u64> = const { Cell::new(0) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
     /// C-assembled promise nodes converted by `from_sexp`, by node
     /// address. The weak reference plus the promise's `STORED` entry
@@ -874,6 +895,7 @@ impl Drop for CoreRef {
             // that holds runtime values.
             unsafe { core().release(self.0) };
         }
+        let _ = CORE_RELEASES.try_with(|n| n.set(n.get() + 1));
         let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
         });
@@ -2942,19 +2964,10 @@ impl NativeBridge for Bridge {
         // while that frees something, so that one gc() runs the finalizers
         // of everything that became unreachable.
         // R: memory.c:R_gc_internal
+        // SAFETY: on the R thread, with libR ready (READY), and no
+        // collector borrow active: the collection starts below.
+        unsafe { sweep_bridge_holds() };
         loop {
-            // What only the bridge holds, or only dead cycles pin, goes
-            // first (a reclaimed cycle can leave more of it for the next
-            // round).
-            // SAFETY: on the R thread, with libR ready (READY), and no
-            // collector borrow active: the collection starts below.
-            unsafe {
-                sweep_stored();
-                cpromise_memo_sweep();
-                if HOST_WEAK_REFS.with(|active| active.get()) {
-                    unpin_cycles();
-                }
-            };
             // Only a collection a reclamation follows needs the graph: with
             // no change since the last one, a gc() loop stays cheap. (A
             // proxy that a count marks and that dies later only delays its
@@ -2980,9 +2993,19 @@ impl NativeBridge for Bridge {
             // After the collection and its finalizers: the weak-reference
             // round is over, so what only dead cycles reach can be
             // reclaimed.
+            let before = CORE_RELEASES.with(|n| n.get());
             // SAFETY: the collection and its finalizers are over, and no
             // collector borrow is active.
             if unsafe { reclaim_host_cycles() } == 0 {
+                break;
+            }
+            // Collect again only if the reclaimed cycles let go of core
+            // objects: wrapped pointers they held, or what the bridge kept
+            // for them (a cycle of plain R objects frees nothing there).
+            let dropped = CORE_RELEASES.with(|n| n.get()) - before;
+            // SAFETY: as above.
+            let swept = unsafe { sweep_bridge_holds() };
+            if dropped == 0 && swept == 0 {
                 break;
             }
         }
