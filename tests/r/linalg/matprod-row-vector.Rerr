@@ -1,0 +1,3 @@
+Warning message:
+In matrix(c(1, 1, 2, -1, 1, -1, 0, 0, 3), 2) :
+  data length [9] is not a sub-multiple or multiple of the number of rows [2]
