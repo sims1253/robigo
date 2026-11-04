@@ -29,27 +29,38 @@ pub static DEFS: &[Builtin] = &[
 /// Coerce the elements of paste()'s list argument to character, as
 /// do_paste does: `as.character()` for objects, the print name for
 /// symbols, `coerceVector()` otherwise.
-fn paste_args(interp: &mut Interp, x: &Value, env: &Env, name: &str) -> RResult<Vec<Vec<RStr>>> {
+/// (Character vectors are borrowed: their strings as they are.)
+fn paste_args<'a>(
+    interp: &mut Interp,
+    x: &'a Value,
+    env: &Env,
+    name: &str,
+) -> RResult<Vec<std::borrow::Cow<'a, [RStr]>>> {
+    use std::borrow::Cow;
     let Value::List(l) = x else {
         return Err(Flow::error("invalid first argument"));
     };
+    // (No borrow lives while an `as.character` method runs: R code, or
+    // native code it calls, may write those strings in place.)
+    let runs_code = l.data.iter().any(|x| !matches!(x, Value::Str(_)) && x.is_object());
     let mut out = Vec::with_capacity(l.data.len());
     for xj in &l.data {
         let v = match xj {
-            Value::Str(s) => s.data.clone(),
-            Value::Sym(sy) => vec![Some(sy.name())],
+            Value::Str(s) if !runs_code => Cow::Borrowed(&s.data[..]),
+            Value::Str(s) => Cow::Owned(s.data.clone()),
+            Value::Sym(sy) => Cow::Owned(vec![Some(sy.name())]),
             xj if xj.is_object() => {
                 let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(xj.clone())]);
                 match interp.eval(&call, env)? {
-                    Value::Str(s) => s.data.clone(),
+                    Value::Str(s) => Cow::Owned(s.data.clone()),
                     _ => return Err(Flow::error(format!("non-string argument to .Internal({})", name))),
                 }
             }
             xj if xj.is_vector() || xj.is_null() || matches!(xj, Value::Lang(_) | Value::Pairlist(_)) => {
                 let mut w = CoerceWarnings::default();
                 match coerce_vector(xj, VType::Str, &mut w)? {
-                    Value::Str(s) => s.data.clone(),
-                    Value::Null => vec![],
+                    Value::Str(s) => Cow::Owned(s.data.clone()),
+                    Value::Null => Cow::Owned(vec![]),
                     _ => return Err(Flow::error(format!("non-string argument to .Internal({})", name))),
                 }
             }
@@ -192,7 +203,7 @@ fn do_filepath(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRe
     for xj in &l.data {
         let one = Value::list(vec![xj.clone()]);
         let mut p = paste_args(interp, &one, env, "file.path")?;
-        let p = p.pop().unwrap();
+        let p = p.pop().unwrap().into_owned();
         if p.is_empty() {
             return Ok(Value::strs(vec![]));
         }
