@@ -50,9 +50,23 @@ Baseline (main 5ce8d760, seconds, peak / shot):
   directly: NULL -> first choice, identical -> first, else exact then
   unique partial match. Everything else, including every error, is the
   real call. Interpreter tier untouched (same answers, slower).
-- Result (release, `rkparts.R`): `match.arg` 4.40 -> 0.19 µs, `sort.list`
-  12.3 -> 5.3 µs, `order(x, y)` 9.9 -> 7.2 µs, `rank(random)` 33.6 ->
-  17.6 µs. Peak `flexclust_kcca` 3.68 -> 2.26 s (GNU R 4.12, Ř 5.45).
+- Result (release, `rkparts.R`, against main): `match.arg` 4.64 -> 0.17
+  µs, `sort.list` 12.7 -> 4.9 µs, `order(x, y)` 10.2 -> 6.7 µs,
+  `rank(random)` 36.1 -> 17.4 µs (local GNU R 4.5.0: 23.2). Peak
+  (`rivals.py`): `flexclust_kcca` 4.43 -> 2.12 s (GNU R 4.12, Ř 5.45),
+  `sortorder` 0.025 -> 0.022 s (GNU R 0.026). Instructions against main:
+  4 faster (`flexclust_kcca` -29.6%, `csv` -2.0%, `sortorder` -1.6%,
+  `mandelbrot_ascii` -0.5%), 0 slower.
+- Cheaper on the way: the caller's unforced default is filled with the
+  choices just read instead of running `c()` through the VM (-2.7k
+  instructions per `order` call), and the base-binding check is memoized
+  on the search epoch.
+- Found by the gate: `robigo/csv` measured +15.8% under `perf.py` (from a
+  fresh temporary directory; +0.7% elsewhere). Not this change's code:
+  `Scan::extract` allocated and freed a String per field, and in that heap
+  state mimalloc took and returned a fresh page for those blocks over and
+  over (`mi_page_free_list_extend` +43M). The field is now borrowed unless
+  it needs repair: csv -2.0% and no longer sensitive to the heap.
 - Verified: `tests/r/lang/match-arg-fast.R` (exact/partial/ambiguous/NULL,
   every error and its call, attributes, a promise with side effects, a
   frame-local and a global `c`, a user `match.arg`, a symbol that is not a
