@@ -2908,10 +2908,11 @@ fn inline_call(
 /// checks the bindings again whenever it is entered.)
 #[cold]
 #[allow(clippy::type_complexity)]
-fn loop_callee(
-    clo: &Closure,
-) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, Vec<(Slot, Sym, crate::jit::JType, bool)>)> {
-    if !may_inline() || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
+fn loop_callee(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, Vec<crate::jit::CalleeCell>)> {
+    // (Untagged formals come from the C API's `R_mkClosure`.)
+    if !may_inline()
+        || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || f.tag.is_none() || !f.value.is_missing_arg())
+    {
         return None;
     }
     let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
@@ -2955,7 +2956,12 @@ fn loop_callee(
             continue;
         }
         let t = plain_lookup(&clo.env, *sym).as_ref().and_then(jit_type).filter(|t| t.is_scalar())?;
-        cells.push((k as Slot, *sym, t, written.contains(&(k as Slot))));
+        cells.push(crate::jit::CalleeCell {
+            slot: k as Slot,
+            sym: *sym,
+            ty: t,
+            written: written.contains(&(k as Slot)),
+        });
     }
     Some((code, formal_slots, guard_syms, cells))
 }

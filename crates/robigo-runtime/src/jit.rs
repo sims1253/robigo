@@ -141,10 +141,22 @@ pub struct InlineCall {
     /// In a closure compiled whole ([`closure`]): the callee's index in its
     /// call tree.
     pub callee: usize,
-    /// In a loop: the callee's variables of its enclosing environments
-    /// (its slot, the symbol, the type of the value, assigned with `<<-`).
-    /// They are the loop's [`LoopCell`]s.
-    pub cells: Vec<(Slot, Sym, JType, bool)>,
+    /// In a loop: the callee's variables of its enclosing environments,
+    /// which are the loop's [`LoopCell`]s.
+    pub cells: Vec<CalleeCell>,
+}
+
+/// A variable of an enclosing environment that a closure called inline
+/// from a loop reads (see [`LoopCell`]).
+#[derive(Clone, Copy)]
+pub struct CalleeCell {
+    /// Its slot in the callee's code.
+    pub slot: Slot,
+    pub sym: Sym,
+    /// The type of its value.
+    pub ty: JType,
+    /// Assigned with `<<-`.
+    pub written: bool,
 }
 
 /// A variable of an enclosing environment of closures a loop calls inline:
@@ -259,8 +271,8 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             slot_ty.insert(*s, *args.get(k)?);
         }
     }
-    for (s, _, t, _) in &ic.cells {
-        slot_ty.insert(*s, *t);
+    for c in &ic.cells {
+        slot_ty.insert(c.slot, c.ty);
     }
     let empty = HashMap::new();
     let inl = Inl::new(&empty);
@@ -318,8 +330,8 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             }
             // Into a cell, keeping its type.
             Op::SuperSet { src, slot, .. } => {
-                let cell = ic.cells.iter().find(|c| c.0 == *slot)?;
-                if !cell.3 || st[*src as usize] != Some(cell.2) {
+                let cell = ic.cells.iter().find(|c| c.slot == *slot)?;
+                if !cell.written || st[*src as usize] != Some(cell.ty) {
                     return None;
                 }
             }
@@ -719,14 +731,14 @@ pub fn compile(
     let mut sites: Vec<u32> = calls.keys().copied().collect();
     sites.sort();
     for site in sites {
-        for (_, sym, ty, written) in &calls[&site].cells {
-            match cells.iter_mut().find(|c| c.sym == *sym) {
-                Some(c) if c.ty != *ty => return Err(not_now(10)),
+        for cc in &calls[&site].cells {
+            match cells.iter_mut().find(|c| c.sym == cc.sym) {
+                Some(c) if c.ty != cc.ty => return Err(not_now(10)),
                 Some(c) => {
-                    c.written |= *written;
+                    c.written |= cc.written;
                     c.sites.push(site);
                 }
-                None => cells.push(LoopCell { sym: *sym, ty: *ty, idx: 0, written: *written, sites: vec![site] }),
+                None => cells.push(LoopCell { sym: cc.sym, ty: cc.ty, idx: 0, written: cc.written, sites: vec![site] }),
             }
         }
     }
@@ -1945,7 +1957,7 @@ impl Gen<'_, '_> {
         call: usize,
         code: &Code,
         formal_slots: &[Option<Slot>],
-        cells: &[(Slot, Sym, JType, bool)],
+        cells: &[CalleeCell],
         ct: &CalleeTy,
         args: &[(CValue, JType)],
     ) -> CValue {
@@ -1965,14 +1977,18 @@ impl Gen<'_, '_> {
         }
         // Its cells: copies, which become the cells' values if it completes.
         let mut copies: Vec<(Variable, Variable)> = Vec::new();
-        for (s, sym, t, written) in cells {
-            let k = self.cells.iter().position(|c| c.sym == *sym).unwrap();
+        for cc in cells {
+            let k = self
+                .cells
+                .iter()
+                .position(|c| c.sym == cc.sym)
+                .expect("a callee's cell is one of the loop's (`compile` collects them all)");
             let cell = self.v.cells[k];
-            let var = self.b.declare_var(cl_type(*t));
+            let var = self.b.declare_var(cl_type(cc.ty));
             let x = self.b.use_var(cell);
             self.b.def_var(var, x);
-            slot.insert(*s, (var, *t));
-            if *written {
+            slot.insert(cc.slot, (var, cc.ty));
+            if cc.written {
                 copies.push((cell, var));
             }
         }
