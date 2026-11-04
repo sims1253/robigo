@@ -1665,6 +1665,11 @@ impl Gen<'_, '_> {
             }
             ArithOp::Div | ArithOp::Pow => unreachable!("a double, not a number"),
         };
+        // An integer has no negative zero (`0L * -1L`): `+ 0.0` turns -0 into
+        // 0 and keeps every other value.
+        let zero = self.f64c(0.0);
+        let rz = self.b.ins().fadd(r, zero);
+        let r = self.b.ins().select(int, rz, r);
         (r, tag)
     }
 

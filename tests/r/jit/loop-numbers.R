@@ -138,3 +138,16 @@ dp <- function() {
     c(x, typeof(x))
 }
 print(dp())
+
+# No negative zero while integer: 0L * -1L is 0L.
+nz <- function() {
+    x <- 0L
+    y <- double(30)
+    for (i in 1:30) {
+        if (i %% 2L == 0L) x <- 0L else x <- 0
+        x <- x * -1L
+        y[[i]] <- 1 / x
+    }
+    c(y[[29]], y[[30]])
+}
+print(nz())
