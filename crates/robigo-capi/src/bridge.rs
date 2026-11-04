@@ -25,7 +25,7 @@ use robigo_runtime::sym::{Sym, s};
 use robigo_runtime::value::*;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::rc::{Rc, Weak};
 
@@ -91,6 +91,9 @@ thread_local! {
     /// their bindings. `gc()` unpins the others; the collector then frees
     /// them and `release_proxy` forgets them.
     static PINNED: RefCell<HashMap<usize, Sexp>> = RefCell::new(HashMap::new());
+    /// Handles of the proxies whose attributes C code reached through the
+    /// API since a `.Call` last wrote back (see [`touch_attrs`]).
+    static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// `STORED` + `PINNED` entries above which a native call's exit sweeps
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
@@ -2176,6 +2179,22 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     }
 }
 
+/// C code reached the attributes of `x` through the API: `ATTRIB` (the
+/// only way to the attribute cells, which `installAttrib` and C code write
+/// with `SETCAR`/`SETCDR`), `SET_ATTRIB`, or the object and S4 bits. When
+/// `x` is a proxy, the `.Call` that returns next brings its runtime object
+/// up to date (`write_backs`). C code can hold a proxy in a static and
+/// write to it in a later call, but every such write starts here, so this
+/// is what that call writes back, not every proxy there is.
+#[inline]
+pub(crate) unsafe fn touch_attrs(x: Sexp) {
+    if x.has_flag(flags::HOST) {
+        let h = robigo_core::Core::host_handle(x);
+        // (finalizers at thread exit can run C code after the set is gone)
+        let _ = ATTRS_TOUCHED.try_with(|t| t.borrow_mut().insert(h));
+    }
+}
+
 /// References to an argument's object besides the argument list itself.
 fn sharing(v: &Value) -> u16 {
     let n = match v {
@@ -2353,10 +2372,14 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
             write_back(value, *x, &mut originals);
         }
     }
+    // Of the proxies C code keeps, the ones whose attributes it reached
+    // (`touch_attrs`): a scan of all of them per call made a file of rlang
+    // tests quadratic in the environments it had created.
+    let touched = ATTRS_TOUCHED.with(|t| std::mem::take(&mut *t.borrow_mut()));
     let proxies: Vec<_> = PROXIED.with(|m| {
         PINNED.with(|p| {
-            let p = p.borrow();
-            m.borrow().iter().filter_map(|(h, (_, v))| p.get(h).map(|&x| (x, v.clone()))).collect()
+            let (m, p) = (m.borrow(), p.borrow());
+            touched.iter().filter_map(|h| Some((*p.get(h)?, m.get(h)?.1.clone()))).collect()
         })
     });
     for (x, value) in &proxies {

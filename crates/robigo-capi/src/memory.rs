@@ -545,6 +545,7 @@ pub unsafe extern "C" fn OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_OBJECT(x: Sexp, v: c_int) {
+    crate::bridge::touch_attrs(x);
     x.set_flag(flags::OBJECT, v != 0)
 }
 
@@ -555,11 +556,13 @@ pub unsafe extern "C" fn IS_S4_OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_S4_OBJECT(x: Sexp) {
+    crate::bridge::touch_attrs(x);
     x.set_gp(x.gp() | gp::S4)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNSET_S4_OBJECT(x: Sexp) {
+    crate::bridge::touch_attrs(x);
     x.set_gp(x.gp() & !gp::S4)
 }
 
@@ -570,6 +573,8 @@ pub unsafe extern "C" fn LEVELS(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SETLEVELS(x: Sexp, v: c_int) -> c_int {
+    // the S4 bit is one of the levels
+    crate::bridge::touch_attrs(x);
     x.set_gp(v as u16);
     v
 }
@@ -581,7 +586,12 @@ pub unsafe extern "C" fn ALTREP(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ATTRIB(x: Sexp) -> Sexp {
-    if x.typ() == CHARSXP { R_NilValue } else { x.attrib_raw() }
+    if x.typ() == CHARSXP {
+        return R_NilValue;
+    }
+    // the cells C code can write in place
+    crate::bridge::touch_attrs(x);
+    x.attrib_raw()
 }
 
 #[unsafe(no_mangle)]
@@ -604,6 +614,7 @@ pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
         // R: attrib.c:installAttrib
         error_str("cannot set attribute on a CHARSXP")
     }
+    crate::bridge::touch_attrs(x);
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);
 }
