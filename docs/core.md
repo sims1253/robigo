@@ -480,13 +480,22 @@ slots read the binding again. So what C writes into a variable's value
 is what R reads through the variable: after the call (the bridge's
 write-back of copied arguments), and during the call's callbacks once
 the bridge hands atomic vectors over as themselves (#364), which purrr's
-map needs: it writes its index `i` before each callback. GNU R's byte
-code is finer: a *reassigned* scalar lives in an unboxed binding cell
-whose value `GETVAR` pushes without boxing the cell (eval.c `SETVAR`,
-`DO_GETVAR`), so there a loop variable or `i <- i + 1L` passed straight
-to `.Call` is a fresh box and C's write is lost; robigo shows it
-(`tests/corpora/capi/cases/identity-unboxed.R`, GNU R's output recorded,
-not ratcheted).
+map needs: it writes its index `i` before each callback. A literal
+passed straight to C is one of the shared scalars when it is a small
+integer or a logical: C gets a copy, and its write is not carried back
+(the bridge's `write_back` skips `Value::is_shared_scalar`), so it does
+not change every other `0L` or `TRUE`.
+
+Known differences (scalar variables): GNU R disagrees with itself where
+C writes into a *reassigned* scalar (`i <- i + 1L`, a `for` variable)
+passed straight to `.Call`. Its interpreter keeps the write; its byte
+code loses it, since such a scalar lives in an unboxed binding cell that
+`GETVAR` pushes as a fresh box (eval.c `SETVAR`, `DO_GETVAR`). robigo
+keeps the write in every tier
+(`tests/corpora/capi/cases/identity-unboxed.R` records GNU R's byte-code
+output, not ratcheted). Logical variables stay bound to the shared
+`TRUE`/`FALSE`/`NA` (as `ScalarLogical` gives them), so C's write into
+one is lost where GNU R's parsed `TRUE` is an object of its own.
 
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* do not reach the

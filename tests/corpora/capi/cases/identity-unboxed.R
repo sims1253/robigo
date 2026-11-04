@@ -49,3 +49,12 @@ expanded <- function() {
   i
 }
 print(expanded())
+
+# a logical variable: GNU R's parser gives each TRUE its own object
+# (gram.c mkTrue), robigo binds the shared TRUE, which C gets as a copy
+lg <- function() {
+  b <- TRUE
+  .Call("capi_id_set", b, FALSE)
+  b
+}
+print(lg())
