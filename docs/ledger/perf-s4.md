@@ -30,6 +30,33 @@ all three tiers.
 - Calls with named arguments (`f(a = x)`, everywhere in methods) took the
   general `match_args` path: 0.32 us against 0.21 us positional, GNU R 0.22.
 
+## 2026-11-04: measured, not changed
+
+- PGO (scripts/pgo-build.sh's training, this branch): cycles -13% on
+  `validObject`, -8% on `setClass`, -14% on `new`, -15% on generic
+  dispatch (min of 3, `perf stat`); instructions -11..-15%. The nightly
+  binary is built that way; `rivals.py` measures `scripts/build.sh`'s,
+  which is not. Most of the IPC gap to GNU R above is code layout.
+- Smaller inline buffers in `vm::run_pre` (registers 32 -> 16, slots
+  24 -> 12, guard marks 128 -> 32; the frame 2.6 KB -> 1.3 KB): no cycle
+  change outside noise, +0.1-0.3% instructions. Rejected.
+- Call frames indexed only past 20 bindings: no cycle change (the -8%
+  measured earlier with 32 did not repeat; cycles on this VM vary by +-5%
+  between runs), +0.1% startup instructions. Rejected.
+- `try(x, silent = TRUE)` is 46.7K instructions (GNU R 42.4K) and 28% of
+  `validObject`. 10% of it is guard checking: `tryCatch`'s helpers are
+  closures defined in its frame, so every call is a new chain of frames
+  and `guard_ok_slow` walks it for each guard (17 walks, 66
+  `local_may_bind_fun` per `try`). GNU R decides this at compile time for
+  namespace code. Left to perf-vm (guards).
+- The loop JIT has no `SlotRead`: s4-slot-read's 10,000 `x@x` run in the
+  VM at 427 instructions each (35 ns, GNU R 34 ns). Native code would need
+  `Dyn` variables in loops (only whole-closure native code has them).
+- Per call, robigo's machinery is not the instruction problem:
+  `h3(x)` 3,123 instructions vs GNU R 3,769, generic dispatch 10.7K vs
+  12.0K; the same R-level work (21 frames per `validObject`, 663 per
+  `setClass` in both) runs at lower IPC.
+
 ## 2026-11-04: `function` compiled to MakeClosure (kept)
 
 - why: compiled code evaluated `function(x) ...` as a call of the special
