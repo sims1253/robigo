@@ -3003,8 +3003,10 @@ impl NativeBridge for Bridge {
             // objects: wrapped pointers they held, or what the bridge kept
             // for them (a cycle of plain R objects frees nothing there).
             let dropped = CORE_RELEASES.with(|n| n.get()) - before;
+            // (Pins only reclaimed cycles held are left to the next gc():
+            // finding them takes another graph, and they only wait.)
             // SAFETY: as above.
-            let swept = unsafe { sweep_bridge_holds() };
+            let swept = unsafe { sweep_stored() };
             if dropped == 0 && swept == 0 {
                 break;
             }
