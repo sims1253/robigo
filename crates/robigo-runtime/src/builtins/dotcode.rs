@@ -21,7 +21,9 @@ pub static DEFS: &[Builtin] = &[
     prim(".C", do_dot_c, -1),
     prim(".Fortran", do_dot_fortran, -1),
     prim(".External", do_external, -1),
-    prim(".External2", do_external, -1),
+    // R: names.c — eval code 201: the result keeps the visibility the
+    // routine's last evaluation set (magrittr's `%<>%` is invisible).
+    prim(".External2", do_external, -1).custom_vis(),
     prim(".Call", do_dotcall, -1),
     prim(".External.graphics", do_external_gr, -1),
     prim(".Call.graphics", do_dotcall_gr, -1),
