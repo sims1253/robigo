@@ -10,6 +10,7 @@
 mod chars;
 mod gc;
 mod heap;
+mod heapsize;
 pub mod unwind;
 
 pub use gc::{Core, GcStats, ReleaseFn};

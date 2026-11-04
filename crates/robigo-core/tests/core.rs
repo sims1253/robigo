@@ -162,8 +162,9 @@ fn rooted_objects_survive_and_garbage_is_freed() {
         list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil()) };
     }
     root(list);
-    // garbage
-    for i in 0..100_000 {
+    // garbage: twice GNU R's initial node count (R_NSIZE, 350,000), so
+    // allocation collects at least twice
+    for i in 0..800_000 {
         int_vec(&mut c, &[i, i]);
     }
     c.collect();
