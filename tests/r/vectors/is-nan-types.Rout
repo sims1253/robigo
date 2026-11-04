@@ -1,0 +1,15 @@
+[1] FALSE FALSE FALSE
+    a     b     c 
+FALSE FALSE FALSE 
+logical(0)
+logical(0)
+      [,1]  [,2]
+[1,] FALSE FALSE
+[2,] FALSE FALSE
+[1] FALSE FALSE
+[1] FALSE FALSE
+logical(0)
+[1] FALSE FALSE  TRUE FALSE
+[1] TRUE
+[1] "default method not implemented for type 'list'"
+[1] "default method not implemented for type 'symbol'"
