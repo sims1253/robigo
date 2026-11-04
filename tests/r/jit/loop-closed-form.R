@@ -66,4 +66,11 @@ print(drive1(d1, 50)); print(drive1(d2, 3)); print(drive1(d3, 6)); print(drive1(
 print(drive1(d4, 20)); print(drive1(d5, 40))
 print(tryCatch(drive1(d4, 100001L), error = function(e) conditionMessage(e)))
 print(drive1(e3, 0))
+# An overwritten value that overflows still warns: the loop is not summarized.
+o1 <- function(n) { x <- 0L; for (i in 1:n) { x <- i + 2147483600L; x <- i }; x }
+for (r in 1:3) print(o1(100))
+o2 <- function(n) { i <- 0L; y <- 0L; while (i < n) { y <- i * 100000000L; y <- i; i <- i + 1L }; c(i, y) }
+for (r in 1:3) print(o2(30L))
+o3 <- function(n) { x <- 0L; for (i in 1:n) { x <- i + 2147483600L; x <- i }; i }
+print(drive1(o3, 60))
 w1(0, NA)

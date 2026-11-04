@@ -432,6 +432,15 @@ pub fn analyze(
             return None;
         }
     }
+    // Every operation of an iteration, not only those whose values last
+    // (`x <- i + 2147483600L; x <- i` overflows, which leaves native code),
+    // never leaves, but the induction steps, whose values `run` bounds.
+    for (k, n) in b.nodes.iter().enumerate() {
+        let k = k as N;
+        if matches!(n, Node::Arith(..)) && !b.total(k) && !ivs.keys().any(|s| sv.get(s) == Some(&k)) {
+            return None;
+        }
+    }
     // Everything read has its value at entry.
     let mut iv_list: Vec<Iv> = Vec::new();
     let mut ks: Vec<(&Slot, &i64)> = ivs.iter().collect();
