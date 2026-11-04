@@ -86,6 +86,9 @@ struct FastClosure {
 enum FastApply {
     One(Rc<Closure>),
     Multi(FastClosure),
+    /// A closure of one formal that may have native code (see
+    /// `vm::call_native_rval`).
+    Native(Rc<Closure>),
 }
 
 /// The closure `FUN` when `FUN(X[[i]], ...)` (in `rho`, `X` being `xx`)
@@ -101,9 +104,6 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     let Value::Sym(f) = &l.fun else { return Ok(None) };
     let Ok(fun_val) = i.find_fun(*f, rho) else { return Ok(None) };
     let Value::Closure(c) = fun_val else { return Ok(None) };
-    if !crate::vm::inlinable(&c) {
-        return Ok(None);
-    }
     let nf = c.formals.len();
     if nf == 0 {
         return Ok(None);
@@ -112,6 +112,12 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
         Some((Value::Dots(d), _)) => d,
         _ => Rc::new(Vec::new()),
     };
+    // (Analysed now: a closure not known to be pure yet would take the
+    // inline path, which declines it at every element.)
+    if c.inline.get_or_init(|| crate::vm::inline_info(&c)).is_none() || !crate::vm::inlinable(&c) {
+        let one = nf == 1 && dots.is_empty() && c.formals[0].tag != Some(s::DOTS);
+        return Ok(one.then_some(FastApply::Native(c)));
+    }
     if nf == 1 && dots.is_empty() && c.formals[0].tag != Some(s::DOTS) {
         return Ok(Some(FastApply::One(c)));
     }
@@ -190,6 +196,11 @@ fn call_fun(
                 return Ok(v.into_value());
             }
         }
+        Some(FastApply::Native(c)) => {
+            if let Some(v) = crate::vm::call_native_rval(i, c, &[element_rval(xx, k)]) {
+                return Ok(v.into_value());
+            }
+        }
         None => {}
     }
     rho.set_local(isym, Value::int(k as i32 + 1));
@@ -230,6 +241,17 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
             for k in 0..n {
                 fc.args[fc.x_slot] = element_rval(&xx, k);
                 if let Some(v) = crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
+                    out.push(v.into_value());
+                } else {
+                    rho.set_local(isym, Value::int(k as i32 + 1));
+                    out.push(force_and_call(i, &fcall, 1, rho)?);
+                }
+            }
+        }
+        Some(FastApply::Native(c)) => {
+            for k in 0..n {
+                let rk = element_rval(&xx, k);
+                if let Some(v) = crate::vm::call_native_rval(i, &c, &[rk]) {
                     out.push(v.into_value());
                 } else {
                     rho.set_local(isym, Value::int(k as i32 + 1));
@@ -392,7 +414,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                     }
                 }
             }
-            None => {}
+            Some(FastApply::Native(_)) | None => {}
         }
     }
 

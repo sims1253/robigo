@@ -944,7 +944,7 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &mut RVal, take:
     true
 }
 
-fn set_element(x: &mut Value, i: usize, val: &mut RVal, two: bool, take: bool) -> bool {
+pub(crate) fn set_element(x: &mut Value, i: usize, val: &mut RVal, two: bool, take: bool) -> bool {
     if i == x.len() && x.attrs().is_none() {
         return append_element(x, val, two, take);
     }
@@ -1327,7 +1327,7 @@ fn str_eq_fast(op: RelOp, a: &RVal, b: &RVal) -> Option<RVal> {
 
 /// Unboxed `sqrt(x)` etc.; `None` where the builtin must run (it warns
 /// about NaNs produced, or the input is not a plain number).
-fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
+pub(crate) fn math1_fast(f: Math1, x: Num) -> Option<RVal> {
     if f == Math1::Abs {
         return Some(match x {
             Num::I(i) | Num::L(i) => RVal::I(if i == NA_INTEGER { i } else { i.abs() }),
@@ -3080,6 +3080,27 @@ pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]
     let v = run_inline_with(interp, info, &clo.env, |_, k| Some(args[k].clone()), INLINE_DEPTH)?;
     interp.visible = true;
     Some(v)
+}
+
+/// A call of `clo` with the values `args` by its native code, for a builtin
+/// that calls a closure per element (`lapply`), as a call site's
+/// [`native_site_call`] would make it. The VM's frames are flushed (the
+/// builtin's call was a real call). `None`: the call has to be made, and
+/// nothing has happened yet.
+pub(crate) fn call_native_rval(interp: &mut Interp, clo: &Rc<Closure>, args: &[RVal]) -> Option<RVal> {
+    let Some(Some(code)) = clo.code.get() else { return None };
+    if code.native.never() || args.len() != clo.formals.len() || clo.jit.inline_blocked() {
+        return None;
+    }
+    if !code.native.counted() {
+        return None;
+    }
+    let v = match crate::jit::closure::call(interp, clo, code, args, &[], None) {
+        crate::jit::closure::Run::Done(v) => Some(v),
+        _ => None,
+    };
+    code.native.outcome(v.is_some());
+    v
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run
