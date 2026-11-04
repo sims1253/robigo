@@ -84,7 +84,7 @@ print(same())
 # pending assignments are what it must read
 encl <- function() {
   x <- 1
-  f <- local(function(i) x + i)
+  f <- (function() function(i) x + i)()
   out <- 0
   for (j in 1:3) {
     x <- j
@@ -95,3 +95,8 @@ encl <- function() {
   out
 }
 print(encl())
+# the loop assigns the free variable with <<- (where native loops do that)
+k <- 10
+addk <- function(x) x + k
+sup <- function() { s <- 0; for (i in 1:40) { if (i == 20) k <<- 1000; s <- s + addk(i) }; s }
+print(sup()); print(k)

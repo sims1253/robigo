@@ -234,3 +234,13 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   x + i)`): it read `x` from the environment while the loop's newer value
   was still pending in the VM (15450 instead of GNU R's 15750). Both
   checks now use `closure::on_chain`; the case is in the test.
+- Found by the stacked conformance run: with #294 underneath (native
+  `<<-`), a loop that assigns the free variable with `<<-`
+  (`lang/compiled-jit.R` `callfree`, `k <<- 1000` mid-loop) kept the value
+  read at entry. `<<-` writes of the name now reject the loop too; the
+  case is in the test.
+- Gap (interpreter tier only, so not a `tests/r` script): inside a
+  function, `x <- 1; f <- local(function(i) x + i); for (j in 1:2) f(j)`
+  fails with "attempt to apply non-function" when not compiled
+  (`ROBIGO_COMPILE=0`); the VM runs it. The test builds the closure
+  without `local()`.

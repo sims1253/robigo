@@ -939,7 +939,8 @@ pub fn compile(
                 (r.start..r.end).any(|pc| {
                     let u = uses(&ops[pc], &inl);
                     u.wslots.contains(&(s as Slot))
-                        || matches!(&ops[pc], Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } if *slot as usize == s)
+                        || matches!(&ops[pc], Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. }
+                            | Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } if *slot as usize == s)
                 })
             });
             if written {
