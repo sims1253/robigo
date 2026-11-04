@@ -3465,6 +3465,13 @@ fn unwind_to(f: Flow, env: &Env, loops: &[LoopRec]) -> Result<usize, Flow> {
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
 
+/// Back edges, summed over entries that each ended below
+/// [`JIT_THRESHOLD`], before a loop is compiled at its next entry. Higher:
+/// compiling costs as much as thousands of iterations in the VM, so a short
+/// loop must be run often to repay it (at 16, `robigo/nbody` was +25%,
+/// compiling its inner loops before the outer one).
+const JIT_HEAT: u32 = 1024;
+
 /// Add the back edges of an entry of the loop at `enter` that ended below
 /// the threshold to its heat.
 #[cold]
@@ -5167,7 +5174,7 @@ fn run_with(
                 let (go, heat) = if gs.jit_on {
                     match code.jit.borrow().get(&((pc - 1) as u32)) {
                         Some(crate::jit::JitSlot::Ready(_)) => (true, false),
-                        Some(crate::jit::JitSlot::Heat(h)) => (*h >= JIT_THRESHOLD, true),
+                        Some(crate::jit::JitSlot::Heat(h)) => (*h >= JIT_HEAT, true),
                         None => (false, true),
                         Some(_) => (false, false),
                     }
