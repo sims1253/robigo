@@ -1792,6 +1792,15 @@ unsafe extern "C" fn h_d_copy(dst: *mut RVal, src: *const RVal) {
         }
     }
 }
+unsafe extern "C" fn h_d_move(dst: *mut RVal, src: *mut RVal) {
+    // SAFETY: see above; this one writes both slots, which the check makes
+    // distinct, so the two borrows do not overlap.
+    unsafe {
+        if !std::ptr::eq(dst, src) {
+            *dst = std::mem::replace(&mut *src, RVal::V(Value::Null));
+        }
+    }
+}
 unsafe extern "C" fn h_d_set_d(dst: *mut RVal, x: f64) {
     // SAFETY: see above.
     unsafe { *dst = RVal::D(x) };
@@ -1950,6 +1959,7 @@ pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
     ("robigo_d_init", h_d_init as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_release", h_d_release as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_copy", h_d_copy as *const u8, &[types::I64, types::I64], None),
+    ("robigo_d_move", h_d_move as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_set_d", h_d_set_d as *const u8, &[types::I64, types::F64], None),
     ("robigo_d_set_i", h_d_set_i as *const u8, &[types::I64, types::I32], None),
     ("robigo_d_set_l", h_d_set_l as *const u8, &[types::I64, types::I32], None),
@@ -2085,10 +2095,12 @@ impl Gen<'_, '_> {
                 let d = self.dyn_reg(*dst);
                 self.hcall("robigo_d_copy", &[d, src]);
             }
-            Op::SetVar { src, slot, .. } if rt(src) == dy => {
+            Op::SetVar { src, slot, take, .. } if rt(src) == dy => {
                 let (s, _) = self.reg(*src);
                 let (d, _) = self.var(*slot);
-                self.hcall("robigo_d_copy", &[d, s]);
+                // (In effect position the register gives its value up, as
+                // the VM's SetVar does: #357.)
+                self.hcall(if *take { "robigo_d_move" } else { "robigo_d_copy" }, &[d, s]);
             }
             Op::Const { dst, k } => {
                 let consts = self.whole.as_ref().unwrap().consts;

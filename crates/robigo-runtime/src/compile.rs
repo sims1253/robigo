@@ -127,6 +127,8 @@ pub enum Op {
         src: Reg,
         sym: Sym,
         slot: Slot,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// `x[i] <<- val` / `x[[i]] <<- val` (`two`; call `consts[k]`): in
     /// place where `sym <<- ` would assign a plain vector, otherwise the
@@ -138,12 +140,18 @@ pub enum Op {
         i: Leaf,
         two: bool,
         k: u32,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// Assign to a symbol in the current frame (`<-`/`=`).
     SetVar {
         src: Reg,
         sym: Sym,
         slot: Slot,
+        /// In effect position: move the value out of the register (left
+        /// `NULL`) instead of copying it, so the register does not keep it
+        /// alive (R: bcEval's SETVAR + POP; #357).
+        take: bool,
     },
     Arith {
         op: ArithOp,
@@ -242,6 +250,8 @@ pub enum Op {
         i: Leaf,
         two: bool,
         k: u32,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// A setter with arbitrary or missing indices. Delegate evaluation to
     /// the interpreter while retaining the compiled diagnostic source.
@@ -249,6 +259,8 @@ pub enum Op {
         val: Reg,
         slot: Slot,
         k: u32,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// `x[i, j]` / `x[[i, j]]` for a variable `x`: an element of a plain
     /// atomic matrix by in-range scalar indices is read directly; anything
@@ -273,6 +285,8 @@ pub enum Op {
         j: Leaf,
         two: bool,
         k: u32,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// `x$name <- val` (name `consts[name]`): in place for an existing
     /// element of a plain local list, otherwise the complex assignment
@@ -283,6 +297,8 @@ pub enum Op {
         slot: Slot,
         name: u32,
         k: u32,
+        /// As for `SetVar`.
+        take: bool,
     },
     /// Call the base builtin `consts[f]` with the evaluated arguments
     /// `arglists[args]`; `consts[call]` is the call.
@@ -1222,6 +1238,55 @@ impl Compiler {
         self.emit(Op::Eval { dst, k });
     }
 
+    /// In effect position, a value left in `dst` is dead: clear it, or the
+    /// register keeps it alive until the next write (a `gc()` in a later
+    /// statement could not collect it). R: bcEval's POP after each
+    /// non-last statement of `{` and after a loop body (cmp.R cmpBrace,
+    /// cmpFor...), and memory.c scans the node stack only up to
+    /// R_BCNodeStackTop. Stores take their value themselves (`take`), and
+    /// control flow (`{`, `if`, loops) leaves nothing of its own: only an
+    /// op that last wrote a value to `dst` needs the clear. Jumps to the
+    /// end of the expression (a guard's fallback, `&&`'s short cut, ...)
+    /// land on it too.
+    fn discard(&mut self, dst: Reg, w: Want) {
+        if w != Want::Effect {
+            return;
+        }
+        let value = match self.ops.last() {
+            Some(
+                Op::Const { dst: d, .. }
+                | Op::ConstD { dst: d, .. }
+                | Op::ConstI { dst: d, .. }
+                | Op::ConstL { dst: d, .. }
+                | Op::GetVar { dst: d, .. }
+                | Op::Arith { dst: d, .. }
+                | Op::ArithL { dst: d, .. }
+                | Op::Rel { dst: d, .. }
+                | Op::RelL { dst: d, .. }
+                | Op::Neg { dst: d, .. }
+                | Op::Not { dst: d, .. }
+                | Op::Math1 { dst: d, .. }
+                | Op::Builtin1 { dst: d, .. }
+                | Op::Colon { dst: d, .. }
+                | Op::AndOr { dst: d, .. }
+                | Op::Index { dst: d, .. }
+                | Op::Index2 { dst: d, .. }
+                | Op::Subset { dst: d, .. }
+                | Op::Dollar { dst: d, .. }
+                | Op::SlotRead { dst: d, .. }
+                | Op::Missing { dst: d, .. }
+                | Op::CallBuiltin { dst: d, .. }
+                | Op::CallSpecial { dst: d, .. }
+                | Op::Call { dst: d, .. }
+                | Op::Eval { dst: d, .. },
+            ) => *d == dst,
+            _ => false,
+        };
+        if value {
+            self.emit(Op::Null { dst });
+        }
+    }
+
     fn vis(&mut self, w: Want, on: bool) {
         if w == Want::All {
             self.emit(Op::Visible { on });
@@ -1236,14 +1301,19 @@ impl Compiler {
             Value::Sym(sym) if is_var(*sym) => {
                 let slot = self.slot(*sym);
                 self.emit(Op::GetVar { dst, sym: *sym, slot });
+                self.discard(dst, w);
             }
             Value::Lang(l) => {
                 // The temporaries of a call are dead once its value is in `dst`.
                 let top = self.top;
                 self.call(l, e, dst, w);
                 self.top = top;
+                self.discard(dst, w);
             }
-            Value::Sym(_) | Value::Promise(_) => self.fallback(e, dst),
+            Value::Sym(_) | Value::Promise(_) => {
+                self.fallback(e, dst);
+                self.discard(dst, w);
+            }
             _ if w == Want::Effect => {}
             Value::Real(v) if v.data.len() == 1 && v.attrs.is_none() => {
                 self.emit(Op::ConstD { dst, x: v.data[0] });
@@ -1322,7 +1392,8 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 self.expr(&l.args[1].value, dst, Want::Value);
                 let slot = self.slot(target);
-                self.emit(Op::SuperSet { src: dst, sym: target, slot });
+                let take = w == Want::Effect;
+                self.emit(Op::SuperSet { src: dst, sym: target, slot, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1340,7 +1411,8 @@ impl Compiler {
                 let i = self.index_operand(i);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
-                self.emit(Op::SuperSetIndex { val: dst, x, slot, i, two, k });
+                let take = w == Want::Effect;
+                self.emit(Op::SuperSetIndex { val: dst, x, slot, i, two, k, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1354,7 +1426,8 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 self.expr(&l.args[1].value, dst, Want::Value);
                 let slot = self.slot(target);
-                self.emit(Op::SetVar { src: dst, sym: target, slot });
+                let take = w == Want::Effect;
+                self.emit(Op::SetVar { src: dst, sym: target, slot, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1367,7 +1440,8 @@ impl Compiler {
                 let i = self.index_operand(i);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
-                self.emit(Op::SetIndex { val: dst, x, slot, i, two, k });
+                let take = w == Want::Effect;
+                self.emit(Op::SetIndex { val: dst, x, slot, i, two, k, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1382,7 +1456,8 @@ impl Compiler {
                 let j = self.index_operand(j);
                 let slot = self.slot(x);
                 let k = self.konst(whole.clone());
-                self.emit(Op::SetIndex2 { val: dst, x, slot, i, j, two, k });
+                let take = w == Want::Effect;
+                self.emit(Op::SetIndex2 { val: dst, x, slot, i, j, two, k, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1396,7 +1471,8 @@ impl Compiler {
                 let slot = self.slot(x);
                 let name = self.konst(Value::strs(vec![name]));
                 let k = self.konst(whole.clone());
-                self.emit(Op::SetDollar { val: dst, x, slot, name, k });
+                let take = w == Want::Effect;
+                self.emit(Op::SetDollar { val: dst, x, slot, name, k, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1415,7 +1491,8 @@ impl Compiler {
                 // The helper resolves and dispatches the setter at runtime.
                 let slot = self.slot(target);
                 let k = self.konst(whole.clone());
-                self.emit(Op::SetComplex { val: dst, slot, k });
+                let take = w == Want::Effect;
+                self.emit(Op::SetComplex { val: dst, slot, k, take });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
@@ -1607,13 +1684,14 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
+                let generic = if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
                     let gs = self.guard(rh, &l.args[1].value, seq);
                     let len = self.leaf(len).unwrap();
                     let kseq = self.konst(l.args[1].value.clone());
                     self.emit(Op::ForSeqLength { len, seq, call: kseq });
                     let here = self.here();
                     self.patch(gs, here);
+                    false
                 } else if let Some((rh, kind, a_e, b_e)) = range_form(&l.args[1].value) {
                     // Guard the sequence function; on failure the
                     // interpreter evaluates the sequence expression.
@@ -1628,9 +1706,11 @@ impl Compiler {
                     self.emit(Op::ForRange { kind, a, b, seq, call: kseq });
                     let here = self.here();
                     self.patch(gs, here);
+                    false
                 } else {
                     self.expr(&l.args[1].value, seq, Want::Value);
-                }
+                    true
+                };
                 let kc = self.konst(whole.clone());
                 self.emit(Op::ForInit { seq, call: kc });
                 let enter = self.emit(Op::LoopEnter { brk: 0, nxt: 0 });
@@ -1646,6 +1726,12 @@ impl Compiler {
                 self.emit(Op::ForStep { seq, idx, var, slot, body: body_top, call: kc });
                 let exit = self.here();
                 self.emit(Op::LoopExit);
+                // R: eval.c:bcEval ENDFOR pops the sequence: a generic one
+                // (a list, a vector) is dead once the loop is done. (A
+                // range or `seq_len` sequence holds no object.)
+                if generic {
+                    self.emit(Op::Null { dst: seq });
+                }
                 self.close_loop(enter, lp, exit, step);
                 if w != Want::Effect {
                     self.emit(Op::Null { dst });
