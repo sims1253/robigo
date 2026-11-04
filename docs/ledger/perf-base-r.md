@@ -76,3 +76,18 @@ Baseline (main 5ce8d760, seconds, peak / shot):
   pages less often (-0.2M). Callgrind cannot see what leaking costs: the
   page faults of fresh memory. Startup in cycles (`perf stat -r 40`, two
   alternations): main 303-322M, candidate 271-286M; RSS 55 -> 53 MB.
+
+## 2026-11-04: zlib-rs with its `std` feature: SIMD adler32 (kept, with the above)
+
+- Why: the frame freeing above costs instructions on the S4 benchmarks
+  (CI: `s4-valid` +0.71%, `s4-new` +0.56%) that no change to it removes
+  (the walks succeed; the drops are the fix). Looking for what those
+  programs spend: `library(methods)` is half of `s4-valid`, and zlib-rs's
+  *scalar* `adler32` alone is 17.9M of it (4.2M in every startup).
+  flate2 builds zlib-rs without `std`, so zlib-rs cannot detect AVX2 at
+  run time and never takes its SIMD checksum.
+- What (`crates/robigo-runtime/Cargo.toml`): depend on zlib-rs directly
+  with `std` (and flate2's `rust-allocator`), unifying the features. The
+  checksum is the same; only the implementation changes.
+- Result: startup 208.5 -> 199.7M instructions (-4.2%), `s4-valid` -4.5%,
+  `lm` -1.7% on its own.
