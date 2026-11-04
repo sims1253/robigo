@@ -164,3 +164,17 @@ Causes, most blocks first:
     internet (google.com, firefox.com, hb.cran.dev, api.figshare.com).
   - Whether skips the authors always take belong in the floor's
     denominator is a question about the metric, left open.
+
+## 2026-11-04: skips of the package's own leave the floor (httr green)
+
+- Coordinator's decision, option (A): `tests/packages/own-skips.tsv` lists,
+  for each package and version, the skip reasons its own code always takes,
+  each with the source line that makes it unconditional. A block GNU R
+  records as skipped, steadily and only for listed reasons, leaves the 80%
+  floor's denominator; robigo must still skip it the same way. Environment
+  skips (`skip_on_ci()`, missing Suggests, hosts of the internet) are not
+  listed.
+- httr 1.4.9: `skip("httpbin is not reliable")` (helper.R:1, `skip_httpbin()`)
+  and `skip("Currently broken")` (test-header.r:17), 33 of 96 blocks. The
+  floor becomes 59 of 63 (94%). On main dbe74cda (4-vCPU VM): httr 59 / 59,
+  files done 20, nothing diverged, **green**. curl unchanged at 50 / 73.
