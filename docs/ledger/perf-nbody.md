@@ -171,7 +171,9 @@ Profiles (perf, 20-40 repetitions of the benchmark body in one process):
   `seq_len(5)`'s 2.2k instructions, ~500 are the flush `Op::CallBuiltin`
   does first (`Vars::flush`, then `set_var`/`binding_flags` writing the
   locals back). It is conservative because a builtin may signal, and a
-  calling handler could inspect the frame. A lazy flush (or a list of
-  builtins that cannot signal for the argument types at hand) is what
-  `nbody_2`'s remaining gap needs: `colSums` 3.6 us (GNU R 2.3), `diag<-`
-  3.8 us (GNU R 1.8), both spread flat over base-closure execution.
+  calling handler could inspect the frame. Measured upper bound of a lazy
+  flush (dropping it, not shippable): `nbody_2` only -3%, so rejected for
+  now. `nbody_2`'s remaining gap (peak 0.0174 with every PR here, Ř
+  0.0165) is base-closure execution spread flat: `colSums` 3.6 us (GNU R
+  2.3), `diag<-` 3.8 us (GNU R 1.8), 32-42k instructions per call with no
+  hot spot (argument matching, promises, frames, complex assignment).
