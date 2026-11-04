@@ -591,24 +591,22 @@ fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: u
     if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
         return z;
     }
-    // R: array.c:matprod. Finite inputs go to the BLAS dgemm, whose
-    // reference loop is C(:,k) += Y(j,k) * X(:,j) for ascending j: each
-    // element sums the same products in the same order as the loop below,
-    // which runs down contiguous columns (and vectorizes).
-    if x.iter().chain(y.iter()).all(|v| v.is_finite()) {
-        if nrx == 1 && ncy != 1 {
-            // A row vector times a matrix goes to dgemv("T"), one dot
-            // product per column of Y: TEMP = 0 + sum of Y(j,k) * X(j) for
-            // ascending j (the same sums, without a loop over one row).
-            for (k, zk) in z.iter_mut().enumerate() {
-                let mut sum = 0.0;
-                for (yj, xj) in y[k * nry..(k + 1) * nry].iter().zip(x) {
-                    sum += yj * xj;
-                }
-                *zk = sum;
-            }
-            return z;
-        }
+    // R: array.c:matprod. A row vector times a matrix goes to
+    // dgemv("T") when both are finite, one dot product per column of Y:
+    // TEMP = 0 + sum of Y(j,k) * X(j) for ascending j; to simple_matprod
+    // otherwise, which sums X(j) * Y(j,k) in the same order from 0. With X
+    // finite the two are the same bits whatever Y holds (a product with a
+    // finite factor has the same value and NaN payload either way round;
+    // TEMP never is -0), so the n^2 scan of Y is not needed.
+    if nrx == 1 && ncy != 1 && all_finite(x) {
+        dot_columns(x, y, nry, &mut z);
+        return z;
+    }
+    // Finite inputs go to the BLAS dgemm, whose reference loop is
+    // C(:,k) += Y(j,k) * X(:,j) for ascending j: each element sums the same
+    // products in the same order as the loop below, which runs down
+    // contiguous columns (and vectorizes).
+    if all_finite(x) && all_finite(y) {
         for k in 0..ncy {
             let zc = &mut z[k * nrx..(k + 1) * nrx];
             for j in 0..ncx {
@@ -631,6 +629,66 @@ fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: u
         }
     }
     z
+}
+
+/// Whether every element is finite (R: array.c:mayHaveNaNOrInf, exact).
+/// Branch-free over blocks so that it vectorizes.
+fn all_finite(x: &[f64]) -> bool {
+    let mut chunks = x.chunks_exact(16);
+    for c in &mut chunks {
+        // (`x - x` is 0 for finite `x`, NaN otherwise.)
+        let mut acc = 0.0;
+        for v in c {
+            acc += v - v;
+        }
+        if acc != 0.0 {
+            return false;
+        }
+    }
+    chunks.remainder().iter().all(|v| v.is_finite())
+}
+
+/// `z[k] = 0 + sum of y(j,k) * x(j)` for ascending `j` per column `k` of
+/// the `nry`-row matrix `y` (dgemv("T")'s loop). Each column's sum is
+/// one chain of dependent additions; eight columns at a time keep eight
+/// chains in flight, each still in exactly the reference order.
+fn dot_columns(x: &[f64], y: &[f64], nry: usize, z: &mut [f64]) {
+    const W: usize = 8;
+    let x = &x[..nry];
+    let mut zb = z.chunks_exact_mut(W);
+    let mut k0 = 0;
+    for zk in &mut zb {
+        let cols: [&[f64]; W] = std::array::from_fn(|c| &y[(k0 + c) * nry..(k0 + c + 1) * nry]);
+        let mut sum = [0.0f64; W];
+        for (j, xj) in x.iter().enumerate() {
+            for c in 0..W {
+                sum[c] += cols[c][j] * xj;
+            }
+        }
+        zk.copy_from_slice(&sum);
+        k0 += W;
+    }
+    for (c, zk) in zb.into_remainder().iter_mut().enumerate() {
+        let k = k0 + c;
+        let mut sum = 0.0;
+        for (yj, xj) in y[k * nry..(k + 1) * nry].iter().zip(x) {
+            sum += yj * xj;
+        }
+        *zk = sum;
+    }
+    // Where two NaNs meet (an NA and a NaN, say), x87/SSE keep the first
+    // operand's payload, and the compiler may have swapped the operands of
+    // the additions above: those columns again, in GNU R's operand order.
+    for (k, zk) in z.iter_mut().enumerate() {
+        if zk.is_nan() {
+            let mut sum = 0.0f64;
+            for (yj, xj) in y[k * nry..(k + 1) * nry].iter().zip(x) {
+                let p = yj * xj;
+                sum = if sum.is_nan() && p.is_nan() { f64::from_bits(sum.to_bits() | 1 << 51) } else { sum + p };
+            }
+            *zk = sum;
+        }
+    }
 }
 
 fn crossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: usize) -> Vec<f64> {
