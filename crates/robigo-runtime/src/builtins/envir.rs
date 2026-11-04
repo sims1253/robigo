@@ -1097,6 +1097,10 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         Err(Flow::Return(v, t)) if t.ptr_eq(&env) => Ok(v),
         r => r,
     };
+    // R: eval.c:do_eval ends its CTXT_RETURN context with endcontext, which
+    // runs the code `on.exit` registered for `env` (withr's defer() and
+    // testthat's local_*() inside test_that() blocks), on a jump too.
+    let r = i.run_on_exit(r);
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
     i.handlers = ctx.handlers;
