@@ -658,45 +658,100 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     length_gets(x, n)
 }
 
-fn do_lengths(i: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+// R: array.c:do_lengths
+fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
-    // R: array.c:do_lengths -- asLogical(use.names), NA is an error.
     let use_names = crate::coerce::as_logical(&arg(&args, 1));
     if use_names == NA_LOGICAL {
         return Err(Flow::error("invalid 'use.names' value"));
     }
-    let use_names = use_names != 0;
-    let lens: Vec<i32> = match &x {
-        Value::List(l) | Value::Expr(l) => {
-            let mut out = Vec::with_capacity(l.data.len());
-            for e in &l.data {
-                if e.is_object() {
-                    let f = i.find_fun(crate::sym::Sym::new("length"), &i.base.clone())?;
-                    let r = i.call_value(&f, vec![Arg::pos(e.clone())], env)?;
-                    out.push(crate::coerce::as_integer(&r));
-                } else {
-                    out.push(e.len() as i32);
-                }
+    // DispatchOrEval internal generic: lengths
+    if let Some(r) = i.try_dispatch("lengths", call, &args, env)? {
+        return Ok(r);
+    }
+    let is_list = matches!(x, Value::List(_) | Value::Expr(_)) || x.is_s4();
+    if !is_list && !(x.is_null() || x.is_atomic()) {
+        return Err(Flow::error("'x' must be a list or atomic vector"));
+    }
+    let x_len = dispatch_xlength(i, &x, call, env)?;
+    let mut ans = if is_list {
+        let mut lens = Vec::with_capacity(x_len.max(0) as usize);
+        let mut long = false;
+        for k in 0..x_len {
+            let l = get_element_length(i, &x, k, call, env)?;
+            if l > i32::MAX as i64 {
+                long = true;
+                break;
             }
-            out
+            lens.push(l as i32);
         }
-        Value::Null => vec![],
-        x if x.is_atomic() => vec![1; x.len()],
-        _ => return Err(Flow::error("'x' must be a list or atomic vector")),
+        if long { lengths_long(i, &x, call, env)? } else { Value::ints(lens) }
+    } else {
+        // atomic: every element has length 1
+        Value::ints(vec![1; x_len.max(0) as usize])
     };
-    let mut v = Value::ints(lens);
-    if use_names {
-        if let Some(n) = x.get_attr(s::NAMES) {
-            v.set_attr_raw(s::NAMES, n);
+    let dim = get_attrib(&x, s::DIM);
+    if !dim.is_null() {
+        ans = set_attrib(ans, s::DIM, dim)?;
+    }
+    if use_names != 0 {
+        let names = get_attrib(&x, s::NAMES);
+        if !names.is_null() {
+            ans = set_attrib(ans, s::NAMES, names)?;
         }
-        if let Some(d) = x.get_attr(s::DIM) {
-            v = set_attrib(v, s::DIM, d)?;
-            if let Some(dn) = x.get_attr(s::DIMNAMES) {
-                v = set_attrib(v, s::DIMNAMES, dn)?;
-            }
+        let dimnames = get_attrib(&x, s::DIMNAMES);
+        if !dimnames.is_null() {
+            ans = set_attrib(ans, s::DIMNAMES, dimnames)?;
         }
     }
-    Ok(v)
+    Ok(ans)
+}
+
+/// `lengths()` when an element is longer than `INT_MAX`: doubles.
+// R: array.c:do_lengths_long
+fn lengths_long(i: &mut Interp, x: &Value, call: &Value, env: &Env) -> RResult<Value> {
+    let x_len = dispatch_xlength(i, x, call, env)?;
+    let mut out = Vec::with_capacity(x_len.max(0) as usize);
+    for k in 0..x_len {
+        out.push(get_element_length(i, x, k, call, env)? as f64);
+    }
+    Ok(Value::reals(out))
+}
+
+/// The length of `x`, dispatching on `length()` for objects.
+// R: array.c:dispatch_xlength
+pub(crate) fn dispatch_xlength(i: &mut Interp, x: &Value, call: &Value, env: &Env) -> RResult<i64> {
+    if x.is_object() {
+        // DispatchOrEval internal generic: length
+        if let Some(len) = i.try_dispatch("length", call, &[Arg::pos(x.clone())], env)? {
+            return Ok(match &len {
+                Value::Real(r) if !r.data.is_empty() => r.data[0] as i64,
+                _ => crate::coerce::as_integer(&len) as i64,
+            });
+        }
+    }
+    Ok(x.len() as i64)
+}
+
+/// The length of `x[[k + 1]]`, both dispatching for objects.
+// R: array.c:getElementLength, dispatch_subset2
+fn get_element_length(i: &mut Interp, x: &Value, k: i64, call: &Value, env: &Env) -> RResult<i64> {
+    let elt = if x.is_object() {
+        let a = vec![Arg::pos(x.clone()), Arg::pos(Value::real((k + 1) as f64))];
+        super::subset::do_subset2(i, call, a, env)?
+    } else {
+        match x {
+            Value::List(l) | Value::Expr(l) => l.data[k as usize].clone(),
+            // An S4 object without a class (asS4()) of an atomic type.
+            _ => {
+                return Err(Flow::error(format!(
+                    "VECTOR_ELT() can only be applied to a 'list', not a '{}'",
+                    x.type_name()
+                )));
+            }
+        }
+    };
+    dispatch_xlength(i, &elt, call, env)
 }
 
 fn do_vector(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
