@@ -55,9 +55,9 @@ pub enum JType {
     /// whole): native code knows it by the slot's address.
     Dyn,
     /// (Only as a variable's type in a loop's analysis.) A variable assigned
-    /// scalars of different types: its type at each op is this entry of the
-    /// register state, like a register's.
-    Split(u16),
+    /// scalars of different types: its type at each op is an entry of the
+    /// register state, like a register's (see [`split_index`]).
+    Split,
 }
 
 impl JType {
@@ -71,6 +71,7 @@ impl JType {
 
     /// A small number per type (for keys and orders); no `Split` reaches
     /// the places that use it.
+    #[inline(always)]
     pub fn code(self) -> u8 {
         match self {
             JType::D => 0,
@@ -82,7 +83,7 @@ impl JType {
             JType::MatD => 6,
             JType::MatI => 7,
             JType::Dyn => 8,
-            JType::Split(_) => 9,
+            JType::Split => 9,
         }
     }
 }
@@ -736,6 +737,7 @@ pub fn compile(
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
     let inl = Inl::new(&calls);
+    SPLITS.with(|m| m.borrow_mut().clear());
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
@@ -823,7 +825,8 @@ pub fn compile(
         // Variables found to change type: their type becomes part of the
         // state (after the registers), starting as at entry.
         for &sl in &splits[known..] {
-            slot_ty.insert(sl, JType::Split(entry_state.len() as u16));
+            slot_ty.insert(sl, JType::Split);
+            SPLITS.with(|m| m.borrow_mut().insert(sl, entry_state.len() as u16));
             entry_state.push(entry(sl).filter(|t| t.is_scalar()));
         }
         if let Some(st) = st
@@ -921,7 +924,7 @@ pub fn compile(
     let mut slot_list: Vec<Slot> = slot_ty.keys().copied().collect();
     slot_list.sort();
     for s in slot_list {
-        let split = matches!(slot_ty[&s], JType::Split(_));
+        let split = slot_ty[&s] == JType::Split;
         // (A variable that changes type has a value at entry, whose type
         // native code takes from there: one without would need its type
         // where native code returns before the first assignment.)
@@ -1087,10 +1090,22 @@ fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<
     }
 }
 
+thread_local! {
+    /// For the loop being compiled: the entry of the register state that
+    /// holds the type of each variable that changes type (whose type is
+    /// [`JType::Split`]). (Here rather than in `JType` itself, whose one
+    /// byte native calls hash and compare.)
+    static SPLITS: RefCell<HashMap<Slot, u16>> = RefCell::new(HashMap::new());
+}
+
+fn split_index(s: Slot) -> u16 {
+    SPLITS.with(|m| m.borrow()[&s])
+}
+
 /// The type of variable `s` before an op (with state `st`).
 fn slot_type(s: Slot, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
     match slot_ty.get(&s) {
-        Some(JType::Split(k)) => st.get(*k as usize).copied().flatten(),
+        Some(JType::Split) => st.get(split_index(s) as usize).copied().flatten(),
         t => t.copied(),
     }
 }
@@ -1219,8 +1234,8 @@ fn reg_flow(
         let mut split_writes: Vec<(u16, JType)> = Vec::new();
         let mut assign = |slot: Slot, t: JType| -> Result<(), Reject> {
             match slot_ty.get(&slot) {
-                Some(JType::Split(k)) => {
-                    split_writes.push((*k, t));
+                Some(JType::Split) => {
+                    split_writes.push((split_index(slot), t));
                     Ok(())
                 }
                 Some(old) if *old == t => Ok(()),
@@ -2293,7 +2308,7 @@ fn codegen(
             };
             for s in slots {
                 if s.split {
-                    let Some(JType::Split(k)) = slot_ty.get(&s.slot).copied() else { unreachable!() };
+                    let k = split_index(s.slot);
                     let vs = [b.declare_var(types::F64), b.declare_var(types::I32), b.declare_var(types::I32)];
                     let z = b.ins().f64const(0.0);
                     b.def_var(vs[0], z);

@@ -174,7 +174,14 @@ struct Last {
 /// Types as one number, if they fit (`MAX_ARGS` of them do).
 #[inline(always)]
 fn pack(tys: &[JType]) -> Option<u64> {
-    (tys.len() <= MAX_ARGS).then(|| tys.iter().fold(tys.len() as u64, |a, t| (a << 7) | (t.code() as u64 + 1)))
+    if tys.len() > MAX_ARGS {
+        return None;
+    }
+    let mut a = tys.len() as u64;
+    for t in tys {
+        a = (a << 7) | (t.code() as u64 + 1);
+    }
+    Some(a)
 }
 
 /// A validated tree: its root, the search epoch, the versions of the
