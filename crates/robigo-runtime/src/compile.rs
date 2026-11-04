@@ -597,6 +597,9 @@ pub struct CallSite {
     /// instead of storing the value (the call's own `POP`, #357; see
     /// `Compiler::discard`), saving an `Op::Null` per call.
     pub effect: bool,
+    /// A base closure the call may answer without running it (see
+    /// [`crate::intrinsic`]).
+    pub intrinsic: Option<Box<crate::intrinsic::Site>>,
 }
 
 /// The variables `ops` read, in order, before the first operation that may
@@ -1241,6 +1244,7 @@ impl Compiler {
             fslot: None,
             force,
             effect: false,
+            intrinsic: crate::intrinsic::site(f, l),
         });
         let site = (self.call_sites.len() - 1) as u32;
         self.emit(Op::Call { dst, f, site });

@@ -692,6 +692,12 @@ impl Interp {
         }
     }
 
+    /// `options(expressions=)`.
+    #[inline]
+    pub(crate) fn expressions_limit(&self) -> usize {
+        self.expressions
+    }
+
     /// Whether one more nested call fits `options(expressions=)`. An
     /// inline run that would exceed it gives up, so the real call's
     /// [`Self::enter_call`] raises the error at the same evaluation

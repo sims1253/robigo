@@ -1599,7 +1599,7 @@ fn call_builtin(interp: &mut Interp, call: &Value, args: Vec<RVal>, env: &Env) -
 /// - for the first search-path environment, after checking that the frames
 ///   below it (fresh per call) bind no function of that name.
 #[inline(always)]
-fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
+pub(crate) fn guard_ok(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cell<GuardMemo>) -> bool {
     let epoch = crate::env::search_epoch();
     let m = memo.get();
     if m.epoch == epoch && m.env == env.id() && m.version == env.fn_version() {
@@ -2671,6 +2671,12 @@ fn closure_call(
         && let Some(r) = try_inline_site(interp, site, l, &site.call, env)
     {
         return r;
+    }
+    if let Some(isite) = &site.intrinsic
+        && let Some(v) = crate::intrinsic::match_arg(interp, isite, clo, env)
+    {
+        interp.visible = true;
+        return Ok(RVal::V(v));
     }
     let promargs = if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
         caller_promargs(interp, site, clo, l, env, vars, regs)
