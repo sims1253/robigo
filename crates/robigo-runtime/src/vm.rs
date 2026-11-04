@@ -3792,7 +3792,7 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
-    let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
+    let mut vecs: SmallVec<[crate::jit::VecView; 16]> = SmallVec::new();
     for s in &jl.slots {
         if s.ty.is_vector() && s.superset {
             // `x[[i]] <<- v`: the binding `<<-` assigns, viewed in place (the
@@ -3809,7 +3809,7 @@ fn jit_enter(
         }
         if s.ty.is_vector() {
             let ok = match read_var(vars, env, s.sym, s.slot) {
-                Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
+                Some(rv @ RVal::V(v)) => !v.is_object() && jit_type(rv) == Some(s.ty),
                 _ => false,
             };
             if !ok || (s.writable && !own_var(vars, env, s.sym, s.slot)) {

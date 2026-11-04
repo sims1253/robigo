@@ -213,11 +213,13 @@ pub struct Inl<'a> {
     /// Compiling a closure whole: calls are real calls, whose result types
     /// come from here.
     specs: Option<&'a closure::Specs>,
+    /// Compiling a loop: its code (for the builtins it calls).
+    code: Option<&'a Code>,
 }
 
 impl<'a> Inl<'a> {
     pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
-        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None }
+        Inl { calls, memo: RefCell::new(HashMap::new()), specs: None, code: None }
     }
 
     /// The type of the result of the call at `site` with these arguments.
@@ -565,6 +567,8 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         Op::CallBuiltin { dst, args, .. } => {
             if let Some(code) = inl.specs.and_then(|s| s.code()) {
                 u.rregs.extend(code.arglists[*args as usize].iter().map(|(_, r)| *r));
+            } else if let Some((_, a, b)) = min_max(op, inl) {
+                u.rregs.extend([a, b]);
             }
             u.wregs.push(*dst);
         }
@@ -645,6 +649,23 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         _ => {}
     }
     u
+}
+
+/// In a loop, `min(a, b)` / `max(a, b)` of two untagged arguments:
+/// whether it is `max`, and the argument registers.
+fn min_max(op: &Op, inl: &Inl) -> Option<(bool, Reg, Reg)> {
+    let Op::CallBuiltin { f, args, .. } = op else { return None };
+    let code = inl.code.filter(|_| inl.specs.is_none())?;
+    let crate::value::Value::Builtin(b) = &code.consts[*f as usize] else { return None };
+    let max = match &*b.name {
+        "min" => false,
+        "max" => true,
+        _ => return None,
+    };
+    match code.arglists[*args as usize][..] {
+        [(None, a), (None, b)] => Some((max, a, b)),
+        _ => None,
+    }
 }
 
 /// Whether native code supports `op` (given the region bounds for jumps).
@@ -728,7 +749,8 @@ pub fn compile(
     live_in: &dyn Fn(Reg) -> Option<JType>,
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
-    let inl = Inl::new(&calls);
+    let mut inl = Inl::new(&calls);
+    inl.code = Some(code);
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
@@ -740,7 +762,7 @@ pub fn compile(
     for pc in r.start..r.end {
         let op = &ops[pc];
         let inline_call = matches!(op, Op::Call { site, .. } if calls.contains_key(site));
-        if !inline_call && !supported(op, &r) {
+        if !inline_call && !supported(op, &r) && min_max(op, &inl).is_none() {
             if trace() {
                 eprintln!("jit: unsupported at {}: {:?}", pc, op);
             }
@@ -1040,6 +1062,8 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         }
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
+        Op::CallBuiltin { .. } if inl.specs.is_none() => min_max(op, inl)
+            .is_some_and(|(_, a, b)| matches!(rt(&a), JType::I | JType::D) && matches!(rt(&b), JType::I | JType::D)),
         Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
         Op::Index2 { slot, i, j, .. } => {
             matches!(slot_ty[slot], JType::MatD | JType::MatI)
@@ -1107,6 +1131,16 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Null { dst, dead: true } => vec![(*dst as usize, None)],
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
         Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_ty.get(slot).copied()))],
+        // (R: summary.c:do_summary: integer for integers, else double.)
+        Op::CallBuiltin { dst, .. } if min_max(op, inl).is_some() => {
+            let (_, a, b) = min_max(op, inl).unwrap();
+            let t = match (rt(&a), rt(&b)) {
+                (Some(JType::I), Some(JType::I)) => Some(JType::I),
+                (Some(JType::I | JType::D), Some(JType::I | JType::D)) => Some(JType::D),
+                _ => None,
+            };
+            vec![(*dst as usize, t)]
+        }
         Op::Builtin1 { f: Builtin1::Length, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::I))],
         Op::Builtin1 { f: Builtin1::IsNull, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::L))],
         Op::Arith { op, dst, a, b, .. } => {
@@ -1701,6 +1735,28 @@ impl Gen<'_, '_> {
             Op::Builtin1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
                 let v = self.builtin1(*f, x, t, pc);
+                self.set_reg(*dst, v);
+            }
+            // R: summary.c:imin/rmin etc. Of equal values the first wins
+            // (`x < s` replaces); NA and NaN leave native code.
+            Op::CallBuiltin { dst, .. } if self.whole.is_none() => {
+                let (max, a, b) = min_max(op, self.inl).unwrap();
+                let (x, xt) = self.reg(a);
+                let (y, yt) = self.reg(b);
+                let v = if xt == JType::I && yt == JType::I {
+                    let na = self.is_na_i(x);
+                    let nb = self.is_na_i(y);
+                    let bad = self.b.ins().bor(na, nb);
+                    self.deopt_if(bad, pc);
+                    let c = self.b.ins().icmp(if max { IntCC::SignedGreaterThan } else { IntCC::SignedLessThan }, y, x);
+                    self.b.ins().select(c, y, x)
+                } else {
+                    let (x, y) = (self.to_f64(x, xt), self.to_f64(y, yt));
+                    let bad = self.b.ins().fcmp(FloatCC::Unordered, x, y);
+                    self.deopt_if(bad, pc);
+                    let c = self.b.ins().fcmp(if max { FloatCC::GreaterThan } else { FloatCC::LessThan }, y, x);
+                    self.b.ins().select(c, y, x)
+                };
                 self.set_reg(*dst, v);
             }
             Op::SetVar { src, slot, .. } => {
