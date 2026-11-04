@@ -1272,6 +1272,9 @@ fn reg_flow(
         for (reg, t) in defs(op, &st, slot_ty, inl) {
             out[reg] = t;
         }
+        // (A `for` step that finds its sequence exhausted assigns nothing:
+        // the variable keeps the type it had.)
+        let exhausted = matches!(op, Op::ForStep { .. }).then(|| out.clone());
         for (k, t) in split_writes {
             out[k as usize] = Some(t);
         }
@@ -1289,10 +1292,14 @@ fn reg_flow(
                 return Err(Reject::Never);
             }
             let k = t - r.start;
+            let out = match &exhausted {
+                Some(e) if t == pc + 1 => e,
+                _ => &out,
+            };
             let merged = match &states[k] {
                 None => Some(out.clone()),
                 Some(old) => {
-                    let m: RegState = old.iter().zip(&out).map(|(a, b)| if a == b { *a } else { None }).collect();
+                    let m: RegState = old.iter().zip(out).map(|(a, b)| if a == b { *a } else { None }).collect();
                     (m != *old).then_some(m)
                 }
             };

@@ -71,3 +71,9 @@ t3 <- function(n) {
 }
 for (k in 1:20) t3(10)
 show(t3(25))
+# A for variable reassigned in the body keeps the body's value (and type)
+# after the sequence is exhausted.
+f1 <- function() { i <- 0; ans <- 0; for (k in 1:100) { ans <- i; for (i in 1:2) i <- i + 0.5; ans <- i + 0; i <- 0 }; ans }
+print(f1()); print(f1())
+f2 <- function() { s <- 0; for (k in 1:60) { for (i in 1:3) i <- i * 1.5; s <- s + i }; s }
+print(f2())
