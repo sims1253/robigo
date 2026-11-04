@@ -158,6 +158,7 @@ pub unsafe fn install_attrib(vec: Sexp, name: Sexp, val: Sexp) -> Sexp {
         if s.tag() == name {
             let val = if MAYBE_REFERENCED(val) != 0 && val != s.car() && val == vec { Rf_duplicate(val) } else { val };
             SETCAR(s, val);
+            crate::bridge::host_attrs_changed(vec);
             return val;
         }
         t = s;
@@ -177,6 +178,7 @@ pub unsafe fn install_attrib(vec: Sexp, name: Sexp, val: Sexp) -> Sexp {
         SETCDR(t, s);
     }
     Rf_unprotect(3);
+    crate::bridge::host_attrs_changed(vec);
     val
 }
 

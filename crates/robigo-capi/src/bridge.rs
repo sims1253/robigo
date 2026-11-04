@@ -487,10 +487,12 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // GNU R, so one with the object): `write_back` reads both back
     let s4 = v.is_s4();
     if s4 || attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
-        pushing_attrs(|| set_attrs(x, attrs.as_ref()));
-        if s4 {
-            SET_S4_OBJECT(x);
-        }
+        pushing_attrs(|| {
+            set_attrs(x, attrs.as_ref());
+            if s4 {
+                SET_S4_OBJECT(x);
+            }
+        });
         if matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
             agree_attrs(x);
         }
@@ -554,15 +556,48 @@ unsafe fn push_attrs(v: &Value, x: Sexp) {
     if identical_attrs(&attrs, &current) {
         return;
     }
-    SET_ATTRIB(x, R_NilValue);
-    x.set_flag(flags::OBJECT, false);
-    if attrs.as_ref().is_some_and(|a| a.1) {
-        SET_S4_OBJECT(x)
-    } else {
-        UNSET_S4_OBJECT(x)
-    }
-    pushing_attrs(|| set_attrs(x, attrs.as_deref()));
+    pushing_attrs(|| {
+        SET_ATTRIB(x, R_NilValue);
+        x.set_flag(flags::OBJECT, false);
+        if attrs.as_ref().is_some_and(|a| a.1) {
+            SET_S4_OBJECT(x)
+        } else {
+            UNSET_S4_OBJECT(x)
+        }
+        set_attrs(x, attrs.as_deref());
+    });
     agree_attrs(x);
+}
+
+/// C changed the attributes or the S4 bit of `x` (`Rf_setAttrib`,
+/// `SET_ATTRIB`, `SET_S4_OBJECT`, ...). An environment or external pointer
+/// is one object on both sides of the bridge, so the change reaches the
+/// runtime object now, as in GNU R, not when the routine returns: R code
+/// the routine runs meanwhile (`Rf_eval`) reads it (rlang's data mask
+/// classes its `.env` pronoun, then evaluates the quosure in the mask).
+pub(crate) unsafe fn host_attrs_changed(x: Sexp) {
+    if !x.has_flag(flags::HOST) || PUSHING_ATTRS.with(|p| p.get()) {
+        return;
+    }
+    if let Some(v @ (Value::Env(_) | Value::ExtPtr(_))) = proxied(x) {
+        if !attrs_agreed(x) {
+            v.clone().set_attrs(box_attrs(x, &mut HashMap::new()));
+            agree_attrs(x);
+        }
+    }
+}
+
+/// The attributes and S4 bit of core object `x` as runtime attributes.
+unsafe fn box_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+    let s4 = x.gp() & gp::S4 != 0;
+    match attrs_converted(x, originals) {
+        Some(mut a) => {
+            a.1 = s4;
+            Some(a)
+        }
+        None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
+        None => None,
+    }
 }
 
 /// Attributes equal by content: one side was converted from core objects,
@@ -2021,17 +2056,6 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             // R semantics: the routine mutated the caller's object
             let p = Rc::as_ptr(rc) as *mut Vector<T>;
             (*p).data.copy_from_slice(src);
-        }
-    }
-    unsafe fn box_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
-        let s4 = x.gp() & gp::S4 != 0;
-        match attrs_converted(x, originals) {
-            Some(mut a) => {
-                a.1 = s4;
-                Some(a)
-            }
-            None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
-            None => None,
         }
     }
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {

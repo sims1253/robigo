@@ -545,7 +545,8 @@ pub unsafe extern "C" fn OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_OBJECT(x: Sexp, v: c_int) {
-    x.set_flag(flags::OBJECT, v != 0)
+    x.set_flag(flags::OBJECT, v != 0);
+    crate::bridge::host_attrs_changed(x);
 }
 
 #[unsafe(no_mangle)]
@@ -555,12 +556,14 @@ pub unsafe extern "C" fn IS_S4_OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_S4_OBJECT(x: Sexp) {
-    x.set_gp(x.gp() | gp::S4)
+    x.set_gp(x.gp() | gp::S4);
+    crate::bridge::host_attrs_changed(x);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNSET_S4_OBJECT(x: Sexp) {
-    x.set_gp(x.gp() & !gp::S4)
+    x.set_gp(x.gp() & !gp::S4);
+    crate::bridge::host_attrs_changed(x);
 }
 
 #[unsafe(no_mangle)]
@@ -606,6 +609,7 @@ pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
     }
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);
+    crate::bridge::host_attrs_changed(x);
 }
 
 #[unsafe(no_mangle)]
