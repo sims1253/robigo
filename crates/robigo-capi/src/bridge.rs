@@ -1994,6 +1994,12 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     if x.is_altrep() {
         return;
     }
+    // C wrote into its copy of a process-wide shared scalar (`i <- 0L`
+    // binds the shared 0L): carrying that back would change every `0L`
+    // and `TRUE` in the session, where GNU R's write changes one literal
+    if v.is_shared_scalar() {
+        return;
+    }
     unsafe fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
         if n == 0 || crate::memory::xlength(x) as usize != n {

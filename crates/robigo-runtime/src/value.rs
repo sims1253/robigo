@@ -1059,6 +1059,20 @@ thread_local! {
 }
 
 impl Value {
+    /// One of the process-wide shared scalars (`TRUE`, `FALSE`, `NA`, the
+    /// small integers). GNU R gives each literal its own object, so C code
+    /// that writes into an argument changes only that object; writing into
+    /// one of these would change every `TRUE` or `0L` there is.
+    pub fn is_shared_scalar(&self) -> bool {
+        match self {
+            Value::Lgl(x) => SCALARS.with(|c| c.lgl.iter().any(|s| matches!(s, Value::Lgl(y) if Rc::ptr_eq(x, y)))),
+            Value::Int(x) if x.data.len() == 1 && (0..SMALL_INTS as i32).contains(&x.data[0]) => {
+                SCALARS.with(|c| matches!(&c.int[x.data[0] as usize], Value::Int(y) if Rc::ptr_eq(x, y)))
+            }
+            _ => false,
+        }
+    }
+
     // ----- constructors -------------------------------------------------
 
     pub fn missing_arg() -> Value {
