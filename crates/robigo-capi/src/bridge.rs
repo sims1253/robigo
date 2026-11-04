@@ -2025,15 +2025,14 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Att
 /// chain for it at every native call, so its cells, not the chain, say
 /// whether C changed it. Unchanged, the list keeps its own object (in GNU
 /// R it is the same DOTSXP or LISTSXP).
-fn same_cells(old: &Value, new: &Value) -> bool {
-    let same = |a: &[Arg], b: &[Arg]| {
-        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.tag == y.tag && x.value.same_object(&y.value))
+unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) -> bool {
+    let items = match (old, x.typ()) {
+        (Value::Dots(a), DOTSXP) => &a[..],
+        (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
+        _ => return false,
     };
-    match (old, new) {
-        (Value::Dots(a), Value::Dots(b)) => same(a, b),
-        (Value::Pairlist(a), Value::Pairlist(b)) => a.attrs.is_none() && b.attrs.is_none() && same(&a.items, &b.items),
-        _ => false,
-    }
+    let new = pair_items_converted(x, originals);
+    items.len() == new.len() && items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
 }
 
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
@@ -2104,9 +2103,13 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             let n = xlength(x);
             if n as usize == rc.data.len() {
                 for j in 0..n {
-                    let new = converted(VECTOR_ELT(x, j), originals);
+                    let xj = VECTOR_ELT(x, j);
                     let old = &rc.data[j as usize];
-                    if !old.same_object(&new) && !same_cells(old, &new) {
+                    if same_cells(old, xj, originals) {
+                        continue;
+                    }
+                    let new = converted(xj, originals);
+                    if !old.same_object(&new) {
                         v.set_vector_elt_through_alias(j as usize, new);
                     }
                 }
