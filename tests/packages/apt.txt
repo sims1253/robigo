@@ -8,6 +8,8 @@ cmake
 curl
 git
 libcairo2-dev
+# with pango: what GNU R's cairo devices are built with (build-natives.sh)
+libpango1.0-dev
 libcurl4-openssl-dev
 libfontconfig1-dev
 libfreetype-dev

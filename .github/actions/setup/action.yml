@@ -17,7 +17,8 @@ runs:
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends r-base-core=4.5.0-3 r-base-dev \
           build-essential python3 curl ca-certificates git gh valgrind xz-utils \
-          libcurl4-openssl-dev zlib1g-dev > /dev/null
+          libcurl4-openssl-dev zlib1g-dev \
+          libcairo2-dev libpango1.0-dev libpng-dev libjpeg-dev libtiff-dev > /dev/null
         R --version | head -1
         echo "R_HOME=$(R RHOME)" >> "$GITHUB_ENV"
     - if: inputs.rust == 'true'

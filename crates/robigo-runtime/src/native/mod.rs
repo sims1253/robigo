@@ -201,29 +201,41 @@ pub fn has_table(name: &str) -> bool {
 /// so only the dynamic string table is searched: these files are
 /// megabytes and every base-package dyn.load checks one.
 pub fn is_robigo_build(path: &str) -> bool {
+    dynamic_names(path, &[b"robigo_base_native"])[0]
+}
+
+/// Which of `names` a shared object's dynamic string table holds, the
+/// names of the symbols it defines and imports (and of the libraries it
+/// needs), read from the file without loading it.
+pub fn dynamic_names(path: &str, names: &[&[u8]]) -> Vec<bool> {
+    dynamic_strings(path)
+        .map(|strs| names.iter().map(|n| strs.split(|&b| b == 0).any(|name| name == *n)).collect())
+        .unwrap_or_else(|| vec![false; names.len()])
+}
+
+fn dynamic_strings(path: &str) -> Option<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
-    let marker = b"robigo_base_native";
-    let Ok(f) = std::fs::File::open(path) else { return false };
+    let f = std::fs::File::open(path).ok()?;
     let mut f = std::io::BufReader::with_capacity(1 << 16, f);
     let u64_at = |buf: &[u8], off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
     // ELF64 header: program headers at e_phoff (u64 at 0x20), count
     // e_phnum (u16 at 0x38), entry size e_phentsize (u16 at 0x36).
     let mut eh = [0u8; 64];
     if f.read_exact(&mut eh).is_err() || &eh[..4] != b"\x7fELF" || eh[4] != 2 {
-        return false;
+        return None;
     }
     let phoff = u64_at(&eh, 0x20) as usize;
     let phentsize = u16::from_le_bytes([eh[0x36], eh[0x37]]) as usize;
     let phnum = u16::from_le_bytes([eh[0x38], eh[0x39]]) as usize;
     if phoff == 0 || phentsize < 56 || phnum > 64 {
-        return false;
+        return None;
     }
     if f.seek(SeekFrom::Start(phoff as u64)).is_err() {
-        return false;
+        return None;
     }
     let mut ph = vec![0u8; phentsize * phnum];
     if f.read_exact(&mut ph).is_err() {
-        return false;
+        return None;
     }
     let entry = |i: usize| &ph[i * phentsize..(i + 1) * phentsize];
     // PT_DYNAMIC (type 2): the vaddr -> file offset map from the PT_LOAD
@@ -244,13 +256,13 @@ pub fn is_robigo_build(path: &str) -> bool {
         let sz = u64_at(e, 0x20) as usize;
         Some((off, sz))
     });
-    let Some((dyn_off, dyn_sz)) = dynseg else { return false };
+    let (dyn_off, dyn_sz) = dynseg?;
     if f.seek(SeekFrom::Start(dyn_off)).is_err() {
-        return false;
+        return None;
     }
     let mut dynbuf = vec![0u8; dyn_sz];
     if f.read_exact(&mut dynbuf).is_err() {
-        return false;
+        return None;
     }
     let (mut strtab, mut strsz) = (None, 0usize);
     for ent in dynbuf.chunks_exact(16) {
@@ -263,20 +275,18 @@ pub fn is_robigo_build(path: &str) -> bool {
             _ => {}
         }
     }
-    let (Some(strtab), strsz) = (strtab, strsz) else { return false };
+    let strtab = strtab?;
     let strsz = strsz.min(1 << 20);
-    let Some(off) = to_off(strtab) else { return false };
+    let off = to_off(strtab)?;
     if f.seek(SeekFrom::Start(off)).is_err() {
-        return false;
+        return None;
     }
     let mut strs = vec![0u8; strsz];
-    match f.read_exact(&mut strs) {
-        // The dynamic string table is NUL-separated names; comparing
-        // whole names (a vectorized NUL scan plus one memcmp per name)
-        // beats a sliding-window compare over every byte position.
-        Ok(()) => strs.split(|&b| b == 0).any(|name| name == marker),
-        Err(_) => false,
-    }
+    // The dynamic string table is NUL-separated names; comparing whole
+    // names (a vectorized NUL scan plus one memcmp per name) beats a
+    // sliding-window compare over every byte position.
+    f.read_exact(&mut strs).ok()?;
+    Some(strs)
 }
 
 /// robigo's build of a base package's native code from GNU R's sources

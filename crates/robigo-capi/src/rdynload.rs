@@ -318,6 +318,40 @@ pub unsafe extern "C" fn robigo_dll_open(
     info
 }
 
+// R: Rdynload.c:R_cairoCdynload — AddDLL of grDevices' cairo module,
+// R_HOME/library/grDevices/libs/cairo.so (scripts/build-natives.sh builds
+// it from GNU R's sources): a warning, not an error, when it cannot be
+// loaded. Once open it is also registered with the host as dyn.load does,
+// so that getLoadedDLLs() lists "cairo", as in GNU R.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn R_cairoCdynload(local: c_int, now: c_int) -> c_int {
+    let Some(home) = std::env::var_os("R_HOME") else { return 0 };
+    let path = format!("{}/library/grDevices/libs/cairo.so", home.to_string_lossy());
+    let cpath = CString::new(path.as_str()).unwrap_or_default();
+    let mut err = [0 as c_char; 2048];
+    let mut token = 0usize;
+    let info = robigo_dll_open(cpath.as_ptr(), c"cairo".as_ptr(), local, now, err.as_mut_ptr(), err.len(), &mut token);
+    if info.is_null() {
+        let e = CStr::from_ptr(err.as_ptr()).to_string_lossy().into_owned();
+        crate::errors::warning_owned(format!("unable to load shared object '{path}':\n  {e}"));
+        return 0;
+    }
+    if token != 0 {
+        crate::errors::jump_host(token);
+    }
+    let lgl = |b: c_int| crate::list::Rf_ScalarLogical((b != 0) as c_int);
+    let s = |x: &CStr| crate::strings::Rf_mkString(x.as_ptr());
+    let a = [
+        crate::memory::Rf_protect(s(&cpath)),
+        crate::memory::Rf_protect(lgl(local)),
+        crate::memory::Rf_protect(lgl(now)),
+        crate::memory::Rf_protect(s(c"")),
+    ];
+    crate::sort::internal("dyn.load", &a);
+    crate::memory::Rf_unprotect(4);
+    1
+}
+
 /// Unload (Rdynload.c DeleteDLL): runs `R_unload_<name>`, then dlclose.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_dll_close(info: *mut DllInfo) {
