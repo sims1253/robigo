@@ -166,3 +166,23 @@ caller <- function() {
     shadow
 }
 print(c(caller(), shadow))
+
+# A pending assignment that hides a function the callee calls: it is in the
+# frame before the callee's functions are checked.
+custom <- function() {
+    `%%` <- function(a, b) 7L
+    run <- function() {
+        `%%` <- base::`%%`
+        k <- 0L
+        h <- function() k <<- (k + 3L) %% 5L
+        tot <- 0L
+        for (j in 1:40) {
+            for (i in 1:20) h()
+            tot <- tot + k
+            if (j == 16L) `%%` <- 0
+        }
+        tot
+    }
+    run()
+}
+print(custom())

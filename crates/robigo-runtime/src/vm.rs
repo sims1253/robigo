@@ -3053,6 +3053,18 @@ fn jit_enter(
             }
         }
     };
+    // A closure called inline that is defined in this frame sees its
+    // pending assignments, for its variables and for the functions it
+    // calls: they go first.
+    if !jl.cells.is_empty()
+        && vars.dirty
+        && jl.calls.iter().any(|(_, c, _)| crate::jit::closure::on_chain(&c.env, env))
+        && let Err(e) = vars.flush(interp, env, &code.vars)
+    {
+        vars.failed = Some(Box::new(e));
+        vars.dirty = true;
+        return None;
+    }
     // Guards: native code assumes them, and that its inlined calls still
     // call the same closures (whose guards hold).
     for (sym, at) in &jl.guards {
@@ -3078,19 +3090,11 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
-    // The cells: the bindings the closures called inline see. (A closure
-    // defined in this frame sees its pending assignments: they go first.)
+    // The cells: the bindings the closures called inline see (pending
+    // assignments flushed above).
     let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
     if !jl.cells.is_empty() {
         let clo_at = |site: u32| jl.calls.iter().find(|(s, _, _)| *s == site).map(|(_, c, _)| c);
-        if vars.dirty
-            && jl.calls.iter().any(|(_, c, _)| crate::jit::closure::on_chain(&c.env, env))
-            && let Err(e) = vars.flush(interp, env, &code.vars)
-        {
-            vars.failed = Some(Box::new(e));
-            vars.dirty = true;
-            return None;
-        }
         for c in &jl.cells {
             let first = clo_at(c.sites[0])?;
             let o = crate::jit::closure::owner(&first.env, c.sym)?;
