@@ -1091,6 +1091,196 @@ fn stored(val: &mut RVal, take: bool) -> Value {
     if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
 }
 
+/// The geometry of `x[i, , k]` on a plain array: the offset of the first
+/// element, and (extent, stride) of each empty index in order.
+struct Slice {
+    base: usize,
+    ext: SmallVec<[(usize, usize); 4]>,
+    len: usize,
+}
+
+/// The extents of an atomic vector whose only attribute is `dim`.
+fn plain_dims(attrs: &AttrBox) -> Option<&[i32]> {
+    let a = attrs.as_ref()?;
+    if a.1 || a.0.len() != 1 || a.0[0].0 != s::DIM {
+        return None;
+    }
+    let Value::Int(d) = &a.0[0].1 else { return None };
+    Some(&d.data)
+}
+
+/// The scalar indices of an [`Op::IndexN`] (`None` for an empty one), all
+/// within `[1, 2^52)` as 0-based offsets; `None` if one is not such a
+/// scalar (or is a promise, a logical, NA, ...).
+fn slice_indices(
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    idx: &[Option<Leaf>],
+) -> Option<SmallVec<[Option<usize>; 8]>> {
+    let mut out = SmallVec::new();
+    for l in idx {
+        out.push(match l {
+            None => None,
+            Some(l) => Some(scalar_index(vars, env, regs, l)? as usize),
+        });
+    }
+    Some(out)
+}
+
+/// The slice of an array with extents `dims` that in-range scalar and
+/// empty indices select; `None` for another rank, an index out of range or
+/// an empty result (the general path handles those).
+// R: subset.c:ArraySubset, for indices that select one element or all.
+fn slice_geom(dims: &[i32], idx: &[Option<usize>], n: usize) -> Option<Slice> {
+    if dims.len() != idx.len() {
+        return None;
+    }
+    let (mut base, mut stride, mut len) = (0usize, 1usize, 1usize);
+    let mut ext = SmallVec::new();
+    for (d, i) in dims.iter().zip(idx) {
+        let d = usize::try_from(*d).ok().filter(|d| *d > 0)?;
+        match i {
+            None => {
+                ext.push((d, stride));
+                len *= d;
+            }
+            Some(i) if *i < d => base += i * stride,
+            Some(_) => return None,
+        }
+        stride = stride.checked_mul(d)?;
+    }
+    (stride == n).then_some(Slice { base, ext, len })
+}
+
+/// Call `f` with the offset of each element of the slice, in R's order
+/// (the first empty index varies fastest).
+#[inline]
+fn slice_offsets(g: &Slice, mut f: impl FnMut(usize)) {
+    match g.ext.as_slice() {
+        [] => f(g.base),
+        [(n, st)] => (0..*n).for_each(|t| f(g.base + t * st)),
+        ext => {
+            let mut ctr: SmallVec<[usize; 8]> = SmallVec::from_elem(0, ext.len());
+            for _ in 0..g.len {
+                f(g.base + ctr.iter().zip(ext).map(|(c, (_, st))| c * st).sum::<usize>());
+                for (c, (n, _)) in ctr.iter_mut().zip(ext) {
+                    *c += 1;
+                    if *c < *n {
+                        break;
+                    }
+                    *c = 0;
+                }
+            }
+        }
+    }
+}
+
+/// `x[i, , k]` of a plain atomic array: a vector of the selected elements,
+/// with the extents of the empty indices other than 1 as its `dim` when
+/// two or more remain (R's `drop = TRUE`: subset.c:DropDims).
+fn array_slice(x: &RVal, idx: &[Option<usize>]) -> Option<RVal> {
+    let RVal::V(v) = x else { return None };
+    macro_rules! slice {
+        ($x:expr, $ctor:path, $one:path) => {{
+            let g = slice_geom(plain_dims(&$x.attrs)?, idx, $x.data.len())?;
+            if g.len == 1 {
+                return Some($one($x.data[g.base]));
+            }
+            let mut data = Vec::with_capacity(g.len);
+            slice_offsets(&g, |o| data.push($x.data[o]));
+            let mut out = Vector::new(data);
+            let keep: Vec<i32> = g.ext.iter().filter(|(n, _)| *n != 1).map(|(n, _)| *n as i32).collect();
+            if keep.len() >= 2 {
+                out.attrs = Some(Box::new(Attrs(vec![(s::DIM, Value::Int(Rc::new(Vector::new(keep))))], false)));
+            }
+            Some(RVal::V($ctor(Rc::new(out))))
+        }};
+    }
+    match v {
+        Value::Real(x) => slice!(x, Value::Real, RVal::D),
+        Value::Int(x) => slice!(x, Value::Int, RVal::I),
+        Value::Lgl(x) => slice!(x, Value::Lgl, RVal::L),
+        _ => None,
+    }
+}
+
+/// `x[i, , k] <- val` in place on a plain atomic array: a value of the
+/// same or a lower type (logical < integer < double) without a class,
+/// whose length divides the slice's (recycled). `false` (nothing done)
+/// otherwise.
+// R: subassign.c:ArrayAssign, for indices that select one element or all.
+fn array_assign(x: &mut Value, idx: &[Option<usize>], val: &RVal) -> bool {
+    macro_rules! assign {
+        ($x:expr, $src:expr, $conv:expr) => {{
+            let Some(g) = plain_dims(&$x.attrs).and_then(|d| slice_geom(d, idx, $x.data.len())) else { return false };
+            let src = $src;
+            if src.is_empty() || g.len % src.len() != 0 {
+                return false;
+            }
+            let data = &mut Rc::make_mut($x).data;
+            let mut t = 0;
+            slice_offsets(&g, |o| {
+                data[o] = $conv(src[t]);
+                t += 1;
+                if t == src.len() {
+                    t = 0;
+                }
+            });
+            true
+        }};
+    }
+    if matches!(val, RVal::V(v) if v.is_object()) {
+        return false;
+    }
+    let one_i;
+    let one_d;
+    match (x, val) {
+        (Value::Real(x), RVal::D(d)) => {
+            one_d = [*d];
+            assign!(x, &one_d[..], |v: f64| v)
+        }
+        (Value::Real(x), RVal::I(n) | RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], int_to_real)
+        }
+        (Value::Real(x), RVal::V(Value::Real(y))) => assign!(x, &y.data[..], |v: f64| v),
+        (Value::Real(x), RVal::V(Value::Int(y) | Value::Lgl(y))) => {
+            assign!(x, &y.data[..], int_to_real)
+        }
+        (Value::Int(x), RVal::I(n) | RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], |v: i32| v)
+        }
+        (Value::Int(x), RVal::V(Value::Int(y) | Value::Lgl(y))) => assign!(x, &y.data[..], |v: i32| v),
+        (Value::Lgl(x), RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], |v: i32| v)
+        }
+        (Value::Lgl(x), RVal::V(Value::Lgl(y))) => assign!(x, &y.data[..], |v: i32| v),
+        _ => false,
+    }
+}
+
+/// `x[i, , k] <<- val` in place on the binding `<<-` assigns (see
+/// [`super_set_element`]).
+fn super_set_slice(interp: &Interp, env: &Env, sym: Sym, idx: &[Option<usize>], val: &RVal) -> bool {
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let Some(b) = frame.get_mut(sym) else { return false };
+    if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
+        return false;
+    }
+    array_assign(&mut b.value, idx, val)
+}
+
 /// `forceAndCall`: force the first `n` promise arguments.
 // R: eval.c:R_forceAndCall
 fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
@@ -4272,6 +4462,47 @@ fn run_with(
                         tryop!(index2_slow(interp, code, env, regs, vars, (*x, *slot), i, j, *two, *k))
                     }
                 };
+            }
+            Op::IndexN { dst, x, slot, idx, k } => {
+                interp.visible = true;
+                let fast = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
+                    Some(ix) => read_var(vars, env, *x, *slot).and_then(|xv| array_slice(xv, &ix)),
+                    None => None,
+                };
+                regs[*dst as usize] = match fast {
+                    Some(v) => v,
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                    }
+                };
+            }
+            Op::SetIndexN { val, x, slot, idx, k, take } => {
+                let done = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
+                    Some(ix) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
+                        SlotVal::Dirty(RVal::V(xv)) => array_assign(xv, &ix, &regs[*val as usize]),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !done {
+                    flush!();
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
+                }
+            }
+            Op::SuperSetIndexN { val, x, slot, idx, k, take } => {
+                // (As for `Op::SuperSetIndex`.)
+                if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
+                    vars.slots[*slot as usize] = SlotVal::Empty;
+                }
+                let done = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
+                    Some(ix) => super_set_slice(interp, env, *x, &ix, &regs[*val as usize]),
+                    None => false,
+                };
+                if !done {
+                    flush!();
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, true, *take));
+                }
             }
             Op::SetComplex { val, slot, k, take } => {
                 flush!();

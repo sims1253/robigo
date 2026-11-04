@@ -288,6 +288,41 @@ pub enum Op {
         /// As for `SetVar`.
         take: bool,
     },
+    /// `x[i, , k]` (two or more indices, each empty, a constant or a
+    /// variable; `index_lists[idx]`, `None` for an empty one) for a
+    /// variable `x`: a slice of a plain atomic array by in-range scalar
+    /// indices is read directly; anything else evaluates the call
+    /// `consts[k]`.
+    IndexN {
+        dst: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+    },
+    /// `x[i, , k] <- val`: in place for a plain local array, in-range
+    /// scalar indices and a value that fills the slice; otherwise the
+    /// complex assignment `consts[k]`.
+    SetIndexN {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+        /// As for `SetVar`.
+        take: bool,
+    },
+    /// `x[i, , k] <<- val`, as [`Op::SetIndexN`] on the binding `<<-`
+    /// assigns.
+    SuperSetIndexN {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+        /// As for `SetVar`.
+        take: bool,
+    },
     /// `x$name <- val` (name `consts[name]`): in place for an existing
     /// element of a plain local list, otherwise the complex assignment
     /// `consts[k]`.
@@ -702,6 +737,8 @@ pub struct Code {
     pub vars: Vec<Sym>,
     /// Argument lists of `CallBuiltin`: (tag, register) pairs.
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    /// The indices of `Op::IndexN` and its assignments.
+    pub index_lists: Vec<Vec<Option<Leaf>>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
     /// The result register of the whole body.
@@ -782,6 +819,7 @@ impl Code {
             nregs: c.nregs,
             vars: c.vars,
             arglists: c.arglists,
+            index_lists: c.index_lists,
             call_sites: c.call_sites,
             nguards: c.nguards,
             guard_syms,
@@ -833,6 +871,7 @@ struct Compiler {
     top: usize,
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    index_lists: Vec<Vec<Option<Leaf>>>,
     call_sites: Vec<CallSite>,
     nguards: usize,
     loops: Vec<Loop>,
@@ -942,6 +981,32 @@ fn index2_form(e: &Value) -> Option<(Sym, bool, &Value, &Value)> {
     let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
     let (i, j) = (&l.args[1].value, &l.args[2].value);
     (is_pure(i, 0) && is_pure(j, 0)).then_some((x, two, i, j))
+}
+
+/// `x[i, , k]`: `[` of a variable `x` with two or more untagged indices,
+/// each empty, a variable or a numeric constant (evaluating none of them
+/// can be observed), not all of two given (that is [`index2_form`]).
+fn indexn_form(e: &Value) -> Option<(Sym, &[Arg])> {
+    let Value::Lang(l) = e else { return None };
+    if !head(l)?.with_name(|n| n == "[") || l.args.len() < 3 || l.args.len() > 9 {
+        return None;
+    }
+    if l.args.iter().any(|a| a.tag.is_some()) {
+        return None;
+    }
+    let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
+    let idx = &l.args[1..];
+    let ok = |a: &Arg| match &a.value {
+        v if v.is_missing_arg() => true,
+        Value::Sym(s) => is_var(*s),
+        Value::Real(v) => v.data.len() == 1 && v.attrs.is_none(),
+        Value::Int(v) => v.data.len() == 1 && v.attrs.is_none(),
+        _ => false,
+    };
+    if !idx.iter().all(ok) || (idx.len() == 2 && !idx.iter().any(|a| a.value.is_missing_arg())) {
+        return None;
+    }
+    Some((x, idx))
 }
 
 /// The `n` of `forceAndCall(n, ...)` when it is a small constant.
@@ -1076,6 +1141,13 @@ impl Compiler {
     }
 
     /// An index operand: a leaf, or the register `e` is evaluated into.
+    /// The indices of an [`indexn_form`] (all leaves or empty).
+    fn index_list(&mut self, idx: &[Arg]) -> u32 {
+        let list = idx.iter().map(|a| if a.value.is_missing_arg() { None } else { self.leaf(&a.value) }).collect();
+        self.index_lists.push(list);
+        (self.index_lists.len() - 1) as u32
+    }
+
     fn index_operand(&mut self, e: &Value) -> Leaf {
         match self.leaf(e) {
             Some(l) => l,
@@ -1467,6 +1539,30 @@ impl Compiler {
                 self.patch(g, end);
                 self.patch(g2, end);
             }
+            "<-" | "=" | "<<-"
+                if l.args.len() == 2
+                    && l.args[0].tag.is_none()
+                    && index2_form(&l.args[0].value).is_none()
+                    && indexn_form(&l.args[0].value).is_some() =>
+            {
+                let (x, idx) = indexn_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new("[<-"), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let idx = self.index_list(idx);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                let take = w == Want::Effect;
+                if h.with_name(|n| n == "<<-") {
+                    self.emit(Op::SuperSetIndexN { val: dst, x, slot, idx, k, take });
+                } else {
+                    self.emit(Op::SetIndexN { val: dst, x, slot, idx, k, take });
+                }
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
             "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && index2_form(&l.args[0].value).is_some() => {
                 let (x, two, i, j) = index2_form(&l.args[0].value).unwrap();
                 let g = self.guard(h, whole, dst);
@@ -1514,6 +1610,17 @@ impl Compiler {
                 let take = w == Want::Effect;
                 self.emit(Op::SetComplex { val: dst, slot, k, take });
                 self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "[" if index2_form(whole).is_none() && indexn_form(whole).is_some() => {
+                let (x, idx) = indexn_form(whole).unwrap();
+                let g = self.guard(h, whole, dst);
+                let idx = self.index_list(idx);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::IndexN { dst, x, slot, idx, k });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
