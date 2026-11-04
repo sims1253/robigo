@@ -1461,13 +1461,14 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             // turns it into a runtime promise whose to_sexp proxy stays
             // live for C's PRVALUE/PRCODE/PRENV reads and writes
             // (rlang's r_env_bind_delayed, magrittr's pipe masks) — and
-            // an environment or a symbol, which from_sexp does not copy:
-            // the binding holds C's object itself. Bound C-owned, the
-            // variable would read as an active binding, which GNU R's is
-            // not: rlang's env_clone() of a namespace (testthat's test
-            // environment) would lose `.__NAMESPACE__.` to R_IsNamespaceEnv.
+            // what C does not write through in place: an environment, a
+            // symbol, a function. Bound C-owned, the variable reads as an
+            // active binding, which GNU R's is not (#341): rlang's
+            // env_clone() of a namespace (testthat's test environment)
+            // lost `.__NAMESPACE__.` to R_IsNamespaceEnv, so lifecycle
+            // could not tell which package a deprecated function is in.
             if a[1] != R_NilValue
-                && !matches!(a[1].typ(), PROMSXP | ENVSXP | SYMSXP)
+                && !matches!(a[1].typ(), PROMSXP | ENVSXP | SYMSXP | CLOSXP | BUILTINSXP | SPECIALSXP)
                 && !env.0.locked.get()
                 && crate::owned::is_c_env(&env)
             {
