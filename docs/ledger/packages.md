@@ -137,3 +137,30 @@ Causes, most blocks first:
   bridge arguments (local branch `track/bridge-zero-copy`): net +275 blocks,
   dplyr +245, but it reaches #167's crash sooner in tidyr, so it waits on
   #167.
+
+## 2026-11-04: a local httpbin for curl; httr stays under the floor
+
+- curl's tests run against a local httpbin: python3-httpbin 0.10.2, pinned
+  in `apt.txt`, started on each worker's loopback before R
+  (`tests/packages/README.md`, Test servers). curl's helper probes
+  `http://httpbin.org` whatever `HTTPBIN_TEST_SERVER` says, because
+  `Sys.getenv` forces its default. So the server answers as httpbin.org, which
+  the oracle maps to 127.0.0.1 (`--add-host`; a mount for each worker's own
+  hosts file is refused by Docker's AppArmor profile).
+- GNU R, three recordings, all identical: curl 80 blocks, 73 scored (91%),
+  22 files done. The 7 unscored blocks name hosts of the internet
+  (letsencrypt.org, köln.de, hetzner) or need Windows.
+- robigo on main bf7332ee (4-vCPU VM): curl 50 / 73, files done 22.
+  - `R_new_custom_connection` is a stub (12 blocks): #343.
+  - C finalizers of handles made inside `test_that()` do not run on `gc()`
+    (9 blocks): #344. test-multi's "Data callback" fails there too, with
+    ``could not find function "{"`` (1 block).
+- httr: GNU R records the same 96 blocks as before (59 scored, 61%), and
+  robigo matches all 59. A test server cannot lift httr over the 80% floor:
+  - 33 of the 37 unscored blocks skip unconditionally in httr's own
+    source: `skip_httpbin()` is `skip("httpbin is not reliable")`, plus
+    one `skip("Currently broken")`.
+  - One more is `skip_on_ci()`, and the remaining three name hosts of the
+    internet (google.com, firefox.com, hb.cran.dev, api.figshare.com).
+  - Whether skips the authors always take belong in the floor's
+    denominator is a question about the metric, left open.
