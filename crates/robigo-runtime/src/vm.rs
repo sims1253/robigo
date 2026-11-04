@@ -1432,7 +1432,30 @@ fn reaches_seq_default(interp: &mut Interp, env: &Env, classes: &[&str]) -> bool
         _ => None,
     };
     matches!(interp.lookup_method(dflt, env, &defenv),
-        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r)))
+        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r) && registered_is_base(r, &base)))
+}
+
+thread_local! {
+    /// The `seq.default` last found in base's methods table, and whether it
+    /// is base's own.
+    static SEQ_DEFAULT_SEEN: RefCell<Option<(Value, bool)>> = const { RefCell::new(None) };
+}
+
+/// Whether `f`, the `seq.default` of base's methods table, is base's own
+/// (a copy of the binding's closure, unserialized separately), not one a
+/// later `registerS3method` put there. Remembered for the value last seen
+/// (held, so its address is not reused).
+fn registered_is_base(f: &Value, base: &Value) -> bool {
+    SEQ_DEFAULT_SEEN.with(|seen| {
+        if let Some((v, ok)) = &*seen.borrow()
+            && v.ptr_eq(f)
+        {
+            return *ok;
+        }
+        let ok = crate::builtins::identical::identical(f, base);
+        *seen.borrow_mut() = Some((f.clone(), ok));
+        ok
+    })
 }
 
 thread_local! {
@@ -1469,7 +1492,12 @@ fn seq_integer_default(interp: &mut Interp, env: &Env) -> bool {
     let plain = interp.topenv(env).ptr_eq(&interp.global)
         && below_global()
         && match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
-            Some(Value::Env(t)) => !t.has_local(names[0]) && !t.has_local(names[1]),
+            Some(Value::Env(t)) => {
+                !t.has_local(names[0])
+                    && !t.has_local(names[1])
+                    && t.get_local(names[2])
+                        .is_none_or(|d| interp.base_binding(names[2]).is_some_and(|b| registered_is_base(&d, &b)))
+            }
             _ => false,
         };
     if plain && SEQ_INT_EPOCH.with(|e| e.get()) == epoch {
