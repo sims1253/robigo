@@ -139,11 +139,15 @@ pub enum Op {
         two: bool,
         k: u32,
     },
-    /// Assign to a symbol in the current frame (`<-`/`=`).
+    /// Assign to a symbol in the current frame (`<-`/`=`). `moves`: the
+    /// assignment's value is not used, so the value leaves `src` rather
+    /// than being shared with it (a vector modified in place next is then
+    /// not copied).
     SetVar {
         src: Reg,
         sym: Sym,
         slot: Slot,
+        moves: bool,
     },
     Arith {
         op: ArithOp,
@@ -1298,7 +1302,7 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 self.expr(&l.args[1].value, dst, Want::Value);
                 let slot = self.slot(target);
-                self.emit(Op::SetVar { src: dst, sym: target, slot });
+                self.emit(Op::SetVar { src: dst, sym: target, slot, moves: w == Want::Effect });
                 self.vis(w, false);
                 let end = self.here();
                 self.patch(g, end);
