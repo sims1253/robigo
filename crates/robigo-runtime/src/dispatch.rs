@@ -9,6 +9,17 @@ use crate::interp::{Context, Interp};
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+/// R: eval.c:DispatchGroup compares the two Ops methods with
+/// `R_compute_identical(lsxp, rsxp, 16 + 1 + 2 + 4)`: bitwise numbers and
+/// NAs, attributes in order, closure environments compared, srcrefs ignored.
+const OPS_METHOD_IDENTICAL: crate::builtins::identical::IdFlags = crate::builtins::identical::IdFlags {
+    num_eq: false,
+    single_na: false,
+    attrib_as_set: false,
+    ignore_env: false,
+    ignore_srcref: true,
+};
+
 /// R's `R_data_class2`: the class vector used for S3 dispatch, including
 /// implicit classes.
 pub fn dispatch_class(v: &Value) -> Vec<crate::value::RString> {
@@ -509,10 +520,18 @@ impl Interp {
                     rsxp = None;
                 } else if lname == "Ops.difftime" && matches!(rname.as_str(), "+.POSIXt" | "+.Date") {
                     lsxp = None;
-                } else if !crate::builtins::identical::identical(l, r) {
-                    let msg = format!("Incompatible methods (\"{}\", \"{}\") for \"{}\"", lname, rname, generic);
-                    self.warningcall(call, msg)?;
-                    return Ok(None);
+                } else if !crate::builtins::identical::identical_flags(l, r, OPS_METHOD_IDENTICAL) {
+                    // R: eval.c:DispatchGroup — ask chooseOpsMethod(), forward then reversed.
+                    let (x, y) = (&args[0].value, &args[1].value);
+                    if self.choose_ops_method(x, y, l, r, call, false, env)? {
+                        rsxp = None;
+                    } else if self.choose_ops_method(y, x, r, l, call, true, env)? {
+                        lsxp = None;
+                    } else {
+                        let msg = format!("Incompatible methods (\"{}\", \"{}\") for \"{}\"", lname, rname, generic);
+                        self.warning(msg)?;
+                        return Ok(None);
+                    }
                 }
             }
         }
@@ -559,6 +578,47 @@ impl Interp {
             Value::Closure(c) => self.apply_closure(&newcall, c, pargs, env, Some(vars)).map(Some),
             _ => self.apply_function(&f, pargs, env, &newcall).map(Some),
         }
+    }
+
+    /// R: eval.c:R_chooseOpsMethod — evaluates
+    /// `base::chooseOpsMethod(x, y, mx, my, cl, rev)` in a new environment
+    /// enclosed by `rho`.
+    #[allow(clippy::too_many_arguments)]
+    fn choose_ops_method(
+        &mut self,
+        x: &Value,
+        y: &Value,
+        mx: &Value,
+        my: &Value,
+        call: &Value,
+        rev: bool,
+        rho: &Env,
+    ) -> RResult<bool> {
+        let (xs, ys, mxs, mys, cls, revs) =
+            (Sym::new("x"), Sym::new("y"), Sym::new("mx"), Sym::new("my"), Sym::new("cl"), Sym::new("rev"));
+        let newrho = Env::new(Some(rho.clone()));
+        newrho.set_local(xs, x.clone());
+        newrho.set_local(ys, y.clone());
+        newrho.set_local(mxs, mx.clone());
+        newrho.set_local(mys, my.clone());
+        newrho.set_local(cls, call.clone());
+        newrho.set_local(revs, Value::lgl(rev));
+        let fun = Value::lang(
+            Value::Sym(s::NAMESPACE_GET),
+            vec![Arg::pos(Value::Sym(Sym::new("base"))), Arg::pos(Value::Sym(Sym::new("chooseOpsMethod")))],
+        );
+        let expr =
+            Value::lang(fun, [xs, ys, mxs, mys, cls, revs].into_iter().map(|s| Arg::pos(Value::Sym(s))).collect());
+        let ans = self.eval(&expr, &newrho)?;
+        if matches!(ans, Value::Null) {
+            return Ok(false);
+        }
+        // R: coerce.c:asRbool
+        let l = crate::builtins::summary::as_logical2(&ans, true, call)?;
+        if l == NA_LOGICAL {
+            return Err(Flow::error_call(call.clone(), "NA in coercion to boolean"));
+        }
+        Ok(l != 0)
     }
 
     #[allow(clippy::type_complexity)]
