@@ -678,6 +678,11 @@ pub struct Code {
     /// arguments for formals among them itself (`vm::caller_promargs`).
     pub strict: Vec<Sym>,
     pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
+    /// For a closure made in a call frame of a namespace function: (search
+    /// epoch, the namespace's id and function-binding version, formals
+    /// address) for which all guards hold in a fresh call frame, when that
+    /// frame binds none of their names (see `vm::fresh_nested_ok`).
+    pub fresh_outer: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
     pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
     /// Native code for the whole closure (see `crate::jit::closure`).
@@ -739,6 +744,7 @@ impl Code {
             fresh_nested: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             strict,
             fresh_seen: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
+            fresh_outer: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             result,
             is_body,
             guard_memo,

@@ -3266,6 +3266,29 @@ fn fresh_nested_ok(interp: &mut Interp, code: &Code, clo: &Closure) -> bool {
     if !clo.env.parent_ref().as_ref().is_some_and(|p| p.is_search() || locked_to_search(p)) {
         return false;
     }
+    // A closure made in a call of a function of the search path or a
+    // namespace (`function(x) ...` passed to lapply): each call of the
+    // outer function makes a new one, in a new frame. Its guards depend on
+    // that frame's own function bindings and the enclosure's (locked, or on
+    // the search path), so the enclosure is the memo.
+    let outer = match &*clo.env.parent_ref() {
+        Some(p) if p.is_search() || p.0.locked.get() => Some((key.0, p.id(), p.fn_version(), key.3)),
+        _ => None,
+    };
+    if let Some(okey) = outer {
+        if code.guard_syms.iter().any(|s| clo.env.local_may_bind_fun(*s)) {
+            return false;
+        }
+        if code.fresh_outer.get() != okey {
+            if !guards_hold_fresh(interp, code, clo) {
+                return false;
+            }
+            code.fresh_outer.set(okey);
+        }
+        // (As below: callers read it too, see `eager_args`.)
+        code.fresh_nested.set(key);
+        return true;
+    }
     // Environments below the search path come and go with calls: check
     // only for a closure called again with the same environment (checking
     // every guard costs more than one call saves).
