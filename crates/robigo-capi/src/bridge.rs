@@ -2021,6 +2021,21 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Att
 
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
+/// A `...` or pairlist element C left as it was: to_sexp builds a fresh
+/// chain for it at every native call, so its cells, not the chain, say
+/// whether C changed it. Unchanged, the list keeps its own object (in GNU
+/// R it is the same DOTSXP or LISTSXP).
+fn same_cells(old: &Value, new: &Value) -> bool {
+    let same = |a: &[Arg], b: &[Arg]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.tag == y.tag && x.value.same_object(&y.value))
+    };
+    match (old, new) {
+        (Value::Dots(a), Value::Dots(b)) => same(a, b),
+        (Value::Pairlist(a), Value::Pairlist(b)) => a.attrs.is_none() && b.attrs.is_none() && same(&a.items, &b.items),
+        _ => false,
+    }
+}
+
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
     // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
@@ -2090,7 +2105,8 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             if n as usize == rc.data.len() {
                 for j in 0..n {
                     let new = converted(VECTOR_ELT(x, j), originals);
-                    if !rc.data[j as usize].same_object(&new) {
+                    let old = &rc.data[j as usize];
+                    if !old.same_object(&new) && !same_cells(old, &new) {
                         v.set_vector_elt_through_alias(j as usize, new);
                     }
                 }
