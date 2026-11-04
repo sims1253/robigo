@@ -16,6 +16,8 @@ SEXP capi_ss_set_lgl(SEXP x) {
 }
 
 SEXP capi_ss_set_attr(SEXP x) {
-    Rf_setAttrib(x, Rf_install("tag"), Rf_mkString("set in C"));
+    SEXP v = PROTECT(Rf_mkString("set in C"));
+    Rf_setAttrib(x, Rf_install("tag"), v);
+    UNPROTECT(1);
     return R_NilValue;
 }
