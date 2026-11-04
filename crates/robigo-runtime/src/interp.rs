@@ -1156,6 +1156,29 @@ impl Interp {
                 crate::typeprof::record_frame(Some(&c.body), &ctx.cloenv);
             }
         }
+        let result = self.run_on_exit(r);
+        let ctx = self.frames.pop().unwrap();
+        // The executor and this context own two references. Extra owners
+        // include escaped closures and unforced default-promise cycles.
+        if Rc::strong_count(&ctx.cloenv.0) > 2 {
+            ctx.cloenv.track_escape();
+        }
+        self.handlers = ctx.handlers;
+        self.restarts = ctx.restarts;
+        let mut promargs = ctx.promargs;
+        if promargs.capacity() != 0 && self.arg_pool.len() < 64 {
+            promargs.clear();
+            self.arg_pool.push(promargs);
+        }
+        result
+    }
+
+    /// Run the `on.exit` code of the current context, which stays pushed,
+    /// with `r` the pending result; returns the context's result (an
+    /// on.exit `return()` replaces it, an on.exit error replaces it too).
+    // R: context.c:endcontext
+    #[inline]
+    pub fn run_on_exit(&mut self, r: RResult<Value>) -> RResult<Value> {
         let saved_visible = self.visible;
         let on_exit = std::mem::take(&mut self.frames.last_mut().unwrap().on_exit);
         let mut result = r;
@@ -1191,19 +1214,6 @@ impl Interp {
             }
             self.exit_value = saved_exit_value;
             self.visible = saved_visible;
-        }
-        let ctx = self.frames.pop().unwrap();
-        // The executor and this context own two references. Extra owners
-        // include escaped closures and unforced default-promise cycles.
-        if Rc::strong_count(&ctx.cloenv.0) > 2 {
-            ctx.cloenv.track_escape();
-        }
-        self.handlers = ctx.handlers;
-        self.restarts = ctx.restarts;
-        let mut promargs = ctx.promargs;
-        if promargs.capacity() != 0 && self.arg_pool.len() < 64 {
-            promargs.clear();
-            self.arg_pool.push(promargs);
         }
         result
     }

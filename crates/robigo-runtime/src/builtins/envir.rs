@@ -1097,6 +1097,10 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         Err(Flow::Return(v, t)) if t.ptr_eq(&env) => Ok(v),
         r => r,
     };
+    // R: eval.c:do_eval — endcontext runs the on.exit code registered in
+    // this context (`on.exit()` called directly in the evaluated code, as
+    // testthat's test_that() bodies do), also when unwinding an error.
+    let r = i.run_on_exit(r);
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
     i.handlers = ctx.handlers;
