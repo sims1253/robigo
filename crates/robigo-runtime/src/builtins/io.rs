@@ -3369,7 +3369,13 @@ fn cat_body(
     labs: &[String],
     out: &mut String,
 ) -> RResult<()> {
-    let sep_at = |k: usize| -> &str { if sepr.is_empty() { "" } else { &sepr[k % sepr.len()] } };
+    let sep_at = |k: usize| -> &str {
+        match sepr.len() {
+            0 => "",
+            1 => &sepr[0],
+            n => &sepr[k % n],
+        }
+    };
     let sep_width = |k: usize| -> usize { crate::format::str_width(sep_at(k)) };
     let mut width = 0usize;
     let mut ntot = 0usize;
@@ -3384,9 +3390,23 @@ fn cat_body(
             *width += crate::format::str_width(l) + 1;
         }
     };
-    // One PrintParams for the whole call: `encode_element_cat` used to build
-    // it per element, costing five option lookups per cat() element.
-    let pp = i.print_params();
+    // One PrintParams for the whole call, and only for numbers:
+    // `encode_element_cat` used to build it per element, costing five option
+    // lookups per cat() element.
+    let pp = std::cell::OnceCell::new();
+    if pwidth == usize::MAX {
+        out.reserve(
+            objs.iter()
+                .map(|o| {
+                    if let Value::Str(x) = o {
+                        x.data.iter().map(|e| e.as_ref().map_or(2, |e| e.len()) + 1).sum()
+                    } else {
+                        0
+                    }
+                })
+                .sum(),
+        );
+    }
     for (iobj, s0) in objs.iter().enumerate() {
         if iobj != 0 && !s0.is_null() {
             out.push_str(sep_at(ntot));
@@ -3396,6 +3416,17 @@ fn cat_body(
         if n == 0 {
             continue;
         }
+        // Without filling, widths never matter: strings go out as they are.
+        if let (Value::Str(x), usize::MAX, true) = (s0, pwidth, labs.is_empty()) {
+            for (k, e) in x.data.iter().enumerate() {
+                out.push_str(e.as_deref().unwrap_or("NA"));
+                if k < n - 1 {
+                    out.push_str(sep_at(ntot));
+                    ntot += 1;
+                }
+            }
+            continue;
+        }
         if !labs.is_empty() && iobj == 0 && as_integer(fill) > 0 {
             let l = &labs[nlines % labs.len()];
             out.push_str(l);
@@ -3403,10 +3434,14 @@ fn cat_body(
             width += crate::format::str_width(l) + 1;
             nlines += 1;
         }
-        let elem = |k: usize| -> RResult<String> {
+        // (Strings as they are, without a copy per element.)
+        let elem = |k: usize| -> RResult<std::borrow::Cow<'_, str>> {
             match s0 {
-                Value::Sym(sy) => Ok(sy.name().to_string()),
-                v if v.is_atomic() => Ok(encode_element_cat(&pp, v, k)),
+                Value::Str(x) => Ok(std::borrow::Cow::Borrowed(x.data[k].as_deref().unwrap_or("NA"))),
+                Value::Sym(sy) => Ok(std::borrow::Cow::Owned(sy.name().to_string())),
+                v if v.is_atomic() => {
+                    Ok(std::borrow::Cow::Owned(encode_element_cat(pp.get_or_init(|| i.print_params()), v, k)))
+                }
                 v => Err(Flow::error(format!(
                     "argument {} (type '{}') cannot be handled by 'cat'",
                     iobj + 1,

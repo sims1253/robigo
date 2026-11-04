@@ -129,6 +129,25 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     if maxlen == 0 {
         return Ok(zero(&collapse));
     }
+    // Collapsed: every piece straight into the result.
+    if let Some(c) = &collapse {
+        let size: usize = parts.iter().map(|p| p.iter().map(|s| na_str(s).len()).sum::<usize>()).sum();
+        let mut out = String::with_capacity(size + maxlen * (c.len() + sep.len() * nx));
+        for i in 0..maxlen {
+            if i > 0 {
+                out.push_str(c);
+            }
+            for (j, p) in parts.iter().enumerate() {
+                if !p.is_empty() {
+                    out.push_str(na_str(&p[i % p.len()]));
+                }
+                if j != nx - 1 && !sep.is_empty() {
+                    out.push_str(&sep);
+                }
+            }
+        }
+        return Ok(Value::str(&out));
+    }
     let mut ans: Vec<String> = Vec::with_capacity(maxlen);
     for i in 0..maxlen {
         let mut buf = String::new();
@@ -142,10 +161,7 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
         }
         ans.push(buf);
     }
-    match collapse {
-        Some(c) => Ok(Value::str(&ans.join(&c))),
-        None => Ok(Value::strs_from(ans)),
-    }
+    Ok(Value::strs_from(ans))
 }
 
 fn do_paste(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
