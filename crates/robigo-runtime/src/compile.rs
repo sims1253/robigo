@@ -149,7 +149,7 @@ pub enum Op {
         sym: Sym,
         slot: Slot,
         /// In effect position: move the value out of the register (left
-        /// `NULL`) instead of copying it, so the register does not keep it
+        /// dead) instead of copying it, so the register does not keep it
         /// alive (R: bcEval's SETVAR + POP; #357).
         take: bool,
     },
@@ -409,8 +409,12 @@ pub enum Op {
         skip: u32,
         g: u32,
     },
+    /// `dst <- NULL`. `dead`: not a value but the clear of a register whose
+    /// value is dead (#357; `Compiler::discard`): the VM puts a scalar
+    /// there (`vm::DEAD`), native code nothing.
     Null {
         dst: Reg,
+        dead: bool,
     },
     Return {
         src: Reg,
@@ -1283,7 +1287,7 @@ impl Compiler {
             _ => false,
         };
         if value {
-            self.emit(Op::Null { dst });
+            self.emit(Op::Null { dst, dead: true });
         }
     }
 
@@ -1360,7 +1364,7 @@ impl Compiler {
                     return self.fallback(whole, dst);
                 }
                 if l.args.is_empty() && w != Want::Effect {
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                     self.vis(w, true);
                 }
                 let n = l.args.len();
@@ -1614,7 +1618,7 @@ impl Compiler {
                     ends.push(self.emit(Op::Jump { target: 0 }));
                 }
                 let null = self.here();
-                self.emit(Op::Null { dst });
+                self.emit(Op::Null { dst, dead: false });
                 self.vis(w, false);
                 let end = self.here();
                 for j in ends {
@@ -1666,7 +1670,7 @@ impl Compiler {
                     let jend = self.emit(Op::Jump { target: 0 });
                     let else_start = self.here();
                     self.patch(j, else_start);
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                     self.vis(w, false);
                     let end = self.here();
                     self.patch(jend, end);
@@ -1730,11 +1734,11 @@ impl Compiler {
                 // (a list, a vector) is dead once the loop is done. (A
                 // range or `seq_len` sequence holds no object.)
                 if generic {
-                    self.emit(Op::Null { dst: seq });
+                    self.emit(Op::Null { dst: seq, dead: true });
                 }
                 self.close_loop(enter, lp, exit, step);
                 if w != Want::Effect {
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                 }
                 self.vis(w, false);
                 let end = self.here();
@@ -1761,7 +1765,7 @@ impl Compiler {
                 self.emit(Op::LoopExit);
                 self.close_loop(enter, lp, exit, test);
                 if w != Want::Effect {
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                 }
                 self.vis(w, false);
                 let end = self.here();
@@ -1780,7 +1784,7 @@ impl Compiler {
                 self.emit(Op::LoopExit);
                 self.close_loop(enter, lp, exit, top);
                 if w != Want::Effect {
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                 }
                 self.vis(w, false);
                 let end = self.here();
@@ -1804,7 +1808,7 @@ impl Compiler {
                 // The value keeps its visibility: return(invisible(x)).
                 let g = self.guard(h, whole, dst);
                 if l.args.is_empty() {
-                    self.emit(Op::Null { dst });
+                    self.emit(Op::Null { dst, dead: false });
                     self.emit(Op::Visible { on: true });
                 } else {
                     self.expr(&l.args[0].value, dst, Want::All);
