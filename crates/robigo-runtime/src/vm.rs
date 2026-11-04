@@ -3485,9 +3485,9 @@ fn inline_call(
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
     }
-    let leaves = cs.leaf_args.as_ref()?;
+    let iargs = cs.inline_args.as_ref()?;
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if clo.jit.traced() || leaves.len() != clo.formals.len() {
+    if clo.jit.traced() || iargs.len() != clo.formals.len() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
@@ -3503,7 +3503,17 @@ fn inline_call(
         code: info.code.clone(),
         formal_slots: info.formal_slots.clone(),
         guard_syms: info.guard_syms.clone(),
-        args: leaves.iter().map(|l| crate::jit::CallArg::Leaf(*l)).collect(),
+        // Arithmetic and element reads of the caller's variables are
+        // evaluated by native code where they take their fast paths (else it
+        // leaves at the call); `jit_enter` checks their functions are base's.
+        args: iargs
+            .iter()
+            .map(|a| match a {
+                InlineArg::Leaf(l) => crate::jit::CallArg::Leaf(*l),
+                InlineArg::Arith { op, a, b, .. } => crate::jit::CallArg::Arith(*op, *a, *b),
+                InlineArg::Index { slot, i, two, .. } => crate::jit::CallArg::Index(*slot, *i, *two),
+            })
+            .collect(),
         clo: clo.clone(),
         callee: 0,
     })
@@ -3631,6 +3641,13 @@ fn jit_enter(
         };
         if !syms.iter().all(|s| interp.resolves_to_base(*s, &c.env)) {
             return None;
+        }
+        for a in cs.inline_args.as_deref().unwrap_or(&[]) {
+            if let InlineArg::Arith { sym, memo, .. } | InlineArg::Index { sym, memo, .. } = a {
+                if !guard_ok(interp, *sym, env, memo) {
+                    return None;
+                }
+            }
         }
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();

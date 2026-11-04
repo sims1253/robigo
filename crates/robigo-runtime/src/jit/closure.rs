@@ -2065,8 +2065,11 @@ impl Gen<'_, '_> {
     /// An argument `x[[i]]` / `x[i]` of call argument `k`.
     pub(super) fn index_arg(&mut self, k: usize, x: Slot, i: &Leaf, two: bool, pc: usize) -> (CValue, JType) {
         let iv = self.leaf(i);
-        let (xv, t) = self.var(x);
-        if t == JType::Dyn {
+        // (A loop's vectors are views only; values of any type are a whole
+        // closure's.)
+        if self.whole.is_some()
+            && let (xv, JType::Dyn) = self.var(x)
+        {
             let f = self.to_f64(iv.0, iv.1);
             let dst = self.tmp(k);
             let two = self.i32c(two as i64);
