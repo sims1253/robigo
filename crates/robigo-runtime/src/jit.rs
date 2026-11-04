@@ -125,7 +125,7 @@ pub struct JitLoop {
     pub guards: Vec<(Sym, usize)>,
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
-    pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+    pub calls: Vec<LoopCall>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -157,6 +157,16 @@ pub struct CalleeCell {
     pub ty: JType,
     /// Assigned with `<<-`.
     pub written: bool,
+}
+
+/// A call a loop runs inline: its site, the function it names, the closure
+/// it was compiled for, and the functions the body guards, each with a memo
+/// of its last check from the closure's environment (`vm::guard_ok`).
+pub struct LoopCall {
+    pub site: u32,
+    pub f: Sym,
+    pub clo: std::rc::Rc<crate::value::Closure>,
+    pub guards: Vec<(Sym, std::cell::Cell<crate::compile::GuardMemo>)>,
 }
 
 /// A variable of an enclosing environment of closures a loop calls inline:
@@ -980,7 +990,21 @@ pub fn compile(
 
     let mut deopt_regs = HashMap::new();
     let func = codegen(code, &r, &slots, &cells, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
-    let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
+    let calls = calls
+        .into_iter()
+        .map(|(site, c)| {
+            let f = ops
+                .iter()
+                .find_map(|o| match o {
+                    Op::Call { f, site: s2, .. } if *s2 == site => Some(*f),
+                    _ => None,
+                })
+                .expect("an inlined call's op");
+            let guards =
+                c.guard_syms.iter().map(|s| (*s, std::cell::Cell::new(crate::compile::GuardMemo::NONE))).collect();
+            LoopCall { site, f, clo: c.clo, guards }
+        })
+        .collect();
     Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls, cells })
 }
 

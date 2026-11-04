@@ -477,6 +477,12 @@ pub struct GuardMemo {
     pub outer_version: u32,
 }
 
+impl GuardMemo {
+    /// Valid for nothing.
+    pub const NONE: GuardMemo =
+        GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
+}
+
 /// R: compiler/R/cmp.R:safeBaseInternals. Base closures that installed
 /// bytecode inlines as direct `.Internal` calls (guard-free in locked
 /// namespaces, `BASEGUARD`-checked in user code). The index is the
