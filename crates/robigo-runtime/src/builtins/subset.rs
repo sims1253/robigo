@@ -790,7 +790,7 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
 // ----------------------------------------------------------------------
 // [[
 
-fn do_subset2(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+pub(crate) fn do_subset2(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     match dispatch_or_eval_sp(interp, call, "[[", args, env)? {
         Dispatched::Done(v) => Ok(v),
         Dispatched::Args(a) => subset2_dflt(interp, call, a),

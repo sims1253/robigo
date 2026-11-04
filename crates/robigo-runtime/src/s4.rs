@@ -173,12 +173,18 @@ pub mod syms {
     }
 }
 
-/// The primitive whose method tables hold the methods of `generic` (the
-/// dispatch name a builtin passes). `as.numeric` is the `as.double`
-/// primitive in GNU R (base binds `as.numeric` to it); robigo's builtins
-/// pass the name they were called by.
+/// The builtin whose method tables hold the methods of `generic` (the
+/// dispatch name a builtin passes): GNU R's `DispatchOrEval` uses the `op`
+/// of the builtin running, which robigo's builtins identify by name. That is
+/// a primitive or, for the internal generics (`as.vector`, `unlist`,
+/// `lengths`, `nchar`, `is.unsorted`, `rep.int`, `rep_len`), the
+/// `.Internal`, on which methods sets their methods (objects.c:
+/// R_set_prim_method reads the generic's 'internal' slot). No name is both.
+/// `as.numeric` is the `as.double` primitive in GNU R (base binds
+/// `as.numeric` to it); robigo's builtins pass the name they were called by.
 pub fn prim_op(generic: &str) -> Option<&'static Builtin> {
-    crate::builtins::lookup_primitive(if generic == "as.numeric" { "as.double" } else { generic })
+    let name = if generic == "as.numeric" { "as.double" } else { generic };
+    crate::builtins::lookup_primitive(name).or_else(|| crate::builtins::lookup_internal(name))
 }
 
 /// `R_deferred_default_method()`.
