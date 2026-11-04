@@ -29,6 +29,9 @@ libwebp-dev
 libxml2-dev
 pkg-config
 python3
+# the test server of packages with `server` httpbin in selection.tsv (curl):
+# pinned, since its responses are part of the recorded outcomes
+python3-httpbin=0.10.2+dfsg-2
 util-linux
 # crates/robigo-capi/bench/bench.py runs callgrind in this image
 valgrind

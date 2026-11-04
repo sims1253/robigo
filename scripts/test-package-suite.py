@@ -194,6 +194,95 @@ class Supervise(unittest.TestCase):
             suite.MEMORY_CAP = cap
 
 
+def read(path):
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
+def free_port():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def userns():
+    """Can this user make a network namespace (as the oracle's root can)?"""
+    import subprocess
+    return subprocess.run(["unshare", "-rn", "true"], capture_output=True).returncode == 0
+
+
+class Server(unittest.TestCase):
+    """A package's test server runs in the worker's own network namespace."""
+
+    def run_worker(self, worker, server_cmd, port, d):
+        server = [port, server_cmd, os.path.join(d, "server.log"), 20]
+        cmd = suite.in_namespace(worker, server)
+        if userns():
+            cmd = ["unshare", "-rn"] + cmd  # the oracle's `unshare -n`, without root
+        return suite.supervise(cmd, dict(os.environ), d, os.path.join(d, "log"), 60)
+
+    def fetch(self, url):
+        return [sys.executable, "-c", f"import urllib.request; print(urllib.request.urlopen({url!r}).status)"]
+
+    def test_the_worker_reaches_its_server(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            status, rc, _ = self.run_worker(self.fetch(f"http://127.0.0.1:{port}/"),
+                                            [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+            log = read(os.path.join(d, "log"))
+            self.assertEqual((status, rc), (None, 0), log)
+            self.assertEqual(log.strip(), "200")
+            self.assertIn("GET / ", read(os.path.join(d, "server.log")))
+
+    def test_the_server_goes_with_the_file(self):
+        import socket
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            self.run_worker(["true"], [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+        time.sleep(0.5)
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+
+    def test_a_server_that_does_not_start_stops_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            status, rc, _ = self.run_worker(["true"], [sys.executable, "-c", "print('no such port'); exit(3)"],
+                                            free_port(), d)
+            log = read(os.path.join(d, "log"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("did not start", log)
+        self.assertIn("no such port", log)
+
+    @unittest.skipUnless(userns(), "needs a network namespace")
+    def test_still_no_network(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            status, rc, _ = self.run_worker(self.fetch("http://192.0.2.1/"),
+                                            [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+            log = read(os.path.join(d, "log"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("unreachable", log)
+
+    def test_httpbin_tells_the_tests_where_it_is(self):
+        server, env = suite.server_of({"server": "httpbin"}, "/x/server.log")
+        self.assertEqual(server[0], suite.HTTPBIN_PORT)
+        self.assertEqual(server[2], "/x/server.log")
+        self.assertIn("httpbin.core", server[1])
+        self.assertEqual(env, {"HTTPBIN_TEST_SERVER": f"http://127.0.0.1:{suite.HTTPBIN_PORT}"})
+
+    def test_no_server_by_default(self):
+        self.assertEqual(suite.server_of({"server": ""}, "log"), (None, {}))
+        self.assertEqual(suite.server_of({}, "log"), (None, {}))  # the canary's row
+        with self.assertRaises(SystemExit):
+            suite.server_of({"server": "ftp"}, "log")
+
+    def test_the_selection_names_known_servers(self):
+        rows = suite.selection()
+        self.assertEqual(rows["curl"]["server"], "httpbin")
+        for name, row in rows.items():
+            self.assertIn(row["server"], {""} | set(suite.SERVERS), name)
+
+
 class History(unittest.TestCase):
     def doc(self, shard, m=1, n=2, valid=True, pkg="p"):
         return {"kind": "packages", "snapshot": "2026-11-01", "lock": "l", "selection": 2, "valid": valid,

@@ -6,14 +6,14 @@ tool.
 
 | file | what | written by |
 |---|---|---|
-| `selection.tsv` | the packages, with the figures that selected them; `framework`, `filter` and `env` mirror each package's own test entry point | `select`, plus hand edits of those three columns |
+| `selection.tsv` | the packages, with the figures that selected them; `framework`, `filter` and `env` mirror each package's own test entry point, and `server` names the local test server its tests talk to | `select`, plus hand edits of those four columns |
 | `rproject.toml`, `rv.lock` | the selection and its Suggests, pinned to one PPM snapshot | `lock` |
 | `sources.tsv` | the selection's source tarballs, with checksums (rv's binaries carry no tests and `rv.lock` no checksums) | `lock` |
 | `expected/<pkg>.jsonl.gz` | GNU R's outcome of every test file and block, recorded three times | `record`, which runs GNU R only |
 | `passing/<pkg>/<file>/<id>.pass` | the ratchet: one empty marker per block that matches | `run --update` |
 | `runner.R` | runs one test file in one process and streams events | |
 | `canary/` | a package with one test per outcome, to check the harness on robigo | |
-| `Dockerfile`, `apt.txt` | `robigo-oracle:4.5.0` and the system libraries the pinned packages link against | |
+| `Dockerfile`, `apt.txt` | `robigo-oracle:4.5.0` and the system libraries the pinned packages link against, and the pinned test servers | |
 
 A package enters the selection above 900,000 downloads in 30 days and 500
 packages using it (distinct packages naming it under Depends, Imports or
@@ -23,6 +23,25 @@ CRAN's index at the snapshot and cranlogs, because the Observatory's paged
 listing refuses scripts and its data release is a 770 MB download. The
 selection of snapshot 2026-11-01 was checked against that release: the same
 20 packages.
+
+## Test servers
+
+The tests never reach the internet. A package whose tests need an HTTP
+server gets one on the loopback of each test file's own network namespace,
+started before R and killed with the file, the same for GNU R and robigo:
+
+| `server` | what | the tests find it by |
+|---|---|---|
+| `httpbin` | `python3-httpbin` 0.10.2 (Debian trixie, pinned in `apt.txt`) on `127.0.0.1:8080` | `HTTPBIN_TEST_SERVER=http://127.0.0.1:8080` |
+
+curl uses it. Tests that name a host of the internet themselves
+(`https://httpbin.org`, `https://google.com`) still find no network: GNU R
+fails or skips them, so they are not scored. httr's tests are such: most of
+them call `skip("httpbin is not reliable")` before anything else, and the rest
+name their hosts, so httr runs without a server. A new server is an entry of
+`SERVERS` in `scripts/package-suite.py` and a pinned package in `apt.txt`;
+its responses are part of the recorded outcomes, so changing its version
+means recording its packages again.
 
 ## Moving to a new snapshot
 

@@ -149,6 +149,9 @@ What is measured:
   a fresh `$HOME` and only a loopback interface. `NOT_CRAN=true` matters: a
   CRAN-style run skips the snapshot tests, which are the ones that compare
   output exactly.
+  A package that needs an HTTP test server (curl, `server` in
+  `selection.tsv`) gets a pinned httpbin on that loopback, started per test
+  file for GNU R and robigo alike (`tests/packages/README.md`, Test servers).
 
 A block **matches** when its pass, fail, error, skip and warning counts and
 its skip reasons all equal GNU R's. So an extra warning, a lost expectation
@@ -158,8 +161,7 @@ and a skip GNU R did not take are all differences.
 - Not scored: blocks GNU R fails, skips, or does not repeat. A block GNU R
   skips that fails on robigo counts as `skip_diverged`.
 - A package is **green** when every scored block matches, nothing diverged,
-  every file finished, and at least 80% of its blocks are scored. curl scores
-  nothing yet: its helper needs a live HTTP test server.
+  every file finished, and at least 80% of its blocks are scored.
 
 The headline is the share of scored blocks that match, across all packages,
 with the green count beside it. A package at 0/20 green has no gradient; a block
