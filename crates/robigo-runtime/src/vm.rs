@@ -657,6 +657,12 @@ fn set_index_slow(
 ) -> RResult<()> {
     let whole = &code.consts[k as usize];
     let Value::Lang(l) = whole else { unreachable!() };
+    if let ([i], false, Value::Lang(target)) = (idx, sup, &l.args[0].value)
+        && target.fun_sym() == Some(s::BRACKET)
+        && scatter_fast(vars, env, regs, (code.vars[slot as usize], slot), i, &regs[val as usize])
+    {
+        return Ok(());
+    }
     let rhs = regs[val as usize].to_value();
     let pre = match idx {
         [Leaf::R(r)] => Some(vec![regs[*r as usize].to_value()]),
@@ -692,6 +698,145 @@ fn set_index_slow(
     signal(interp, r.map(|_| Value::Null)).map(|_| ())
 }
 
+/// An index vector `x[i]` and `x[i] <- v` take element by element: integer
+/// or double, without attributes, every element in `1..=len`. Anything else
+/// (NA, zero, negative, out of range) is the general path's.
+enum Positions<'a> {
+    I(&'a [i32]),
+    D(&'a [f64]),
+}
+
+impl Positions<'_> {
+    fn of(i: &Value, len: usize) -> Option<Positions<'_>> {
+        let lim = len as f64 + 1.0;
+        match i {
+            Value::Int(v) if v.attrs.is_none() && v.data.iter().all(|&k| k >= 1 && (k as usize) <= len) => {
+                Some(Positions::I(&v.data))
+            }
+            // (NaN fails the comparison.)
+            Value::Real(v) if v.attrs.is_none() && v.data.iter().all(|&k| k >= 1.0 && k < lim) => {
+                Some(Positions::D(&v.data))
+            }
+            _ => None,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Positions::I(v) => v.len(),
+            Positions::D(v) => v.len(),
+        }
+    }
+
+    /// The 0-based position of element `n`.
+    #[inline(always)]
+    fn at(&self, n: usize) -> usize {
+        match self {
+            Positions::I(v) => v[n] as usize - 1,
+            Positions::D(v) => v[n] as usize - 1,
+        }
+    }
+}
+
+/// The value of an index operand that is a vector.
+fn index_vector(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<Value> {
+    match i {
+        Leaf::R(r) => match &regs[*r as usize] {
+            RVal::V(v) => Some(v.clone()),
+            _ => None,
+        },
+        Leaf::Var(sym, s) => match read_var(vars, env, *sym, *s)? {
+            RVal::V(v) => Some(v.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `x[i]` for an index vector of [`Positions`] and an attribute-free vector
+/// `x`: the elements, as `[` returns them (R: subset.c:VectorSubset,
+/// ExtractSubset). `None`: the general path.
+fn gather_fast(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], (x, slot): (Sym, Slot), i: &Leaf) -> Option<RVal> {
+    let iv = index_vector(vars, env, regs, i)?;
+    let RVal::V(xv) = read_var(vars, env, x, slot)? else { return None };
+    macro_rules! gather {
+        ($x:expr, $ctor:path) => {{
+            if $x.attrs.is_some() {
+                return None;
+            }
+            let pos = Positions::of(&iv, $x.data.len())?;
+            let out: Vec<_> = (0..pos.len()).map(|n| $x.data[pos.at(n)].clone()).collect();
+            Some(RVal::V($ctor(Rc::new(crate::value::Vector::new(out)))))
+        }};
+    }
+    match xv {
+        Value::Real(x) => gather!(x, Value::Real),
+        Value::Int(x) => gather!(x, Value::Int),
+        Value::Lgl(x) => gather!(x, Value::Lgl),
+        Value::Str(x) => gather!(x, Value::Str),
+        _ => None,
+    }
+}
+
+/// `x[i] <- v` for an index vector of [`Positions`], `x` an attribute-free
+/// vector of this frame (made unshared) and `v` an attribute-free vector
+/// whose length divides the index's (recycled, as R does without a warning
+/// then): in place, coercing an integer `x` to double for a double `v`
+/// (R: subassign.c:VectorAssign, SubassignTypeFix). `false` (nothing
+/// done): the general path.
+fn scatter_fast(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], (x, slot): (Sym, Slot), i: &Leaf, val: &RVal) -> bool {
+    let Some(iv) = index_vector(vars, env, regs, i) else { return false };
+    let v = val.to_value();
+    let m = v.len();
+    if m == 0 || v.attrs().is_some() {
+        return false;
+    }
+    let len = match read_var(vars, env, x, slot) {
+        Some(RVal::V(xv @ (Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_))))
+            if xv.attrs().is_none() =>
+        {
+            xv.len()
+        }
+        _ => return false,
+    };
+    let Some(pos) = Positions::of(&iv, len) else { return false };
+    let fits = matches!(
+        (read_var(vars, env, x, slot), &v),
+        (Some(RVal::V(Value::Real(_))), Value::Real(_) | Value::Int(_) | Value::Lgl(_))
+            | (Some(RVal::V(Value::Int(_))), Value::Real(_) | Value::Int(_) | Value::Lgl(_))
+            | (Some(RVal::V(Value::Lgl(_))), Value::Lgl(_))
+            | (Some(RVal::V(Value::Str(_))), Value::Str(_))
+    );
+    if !fits || pos.len() % m != 0 || !own_var(vars, env, x, slot) {
+        return false;
+    }
+    let SlotVal::Dirty(RVal::V(xv)) = &mut vars.slots[slot as usize] else { return false };
+    if let (Value::Int(xi), Value::Real(_)) = (&*xv, &v) {
+        let d: Vec<f64> = xi.data.iter().map(|&k| crate::builtins::arith::int_to_real(k)).collect();
+        *xv = Value::Real(Rc::new(crate::value::Vector::new(d)));
+    }
+    macro_rules! scatter {
+        ($x:expr, $y:expr, $f:expr) => {{
+            let x = Rc::make_mut($x);
+            for n in 0..pos.len() {
+                x.data[pos.at(n)] = $f(&$y.data[n % m]);
+            }
+        }};
+    }
+    let real = |k: &i32| crate::builtins::arith::int_to_real(*k);
+    match (xv, &v) {
+        (Value::Real(x), Value::Real(y)) => scatter!(x, y, |d: &f64| *d),
+        (Value::Real(x), Value::Int(y)) => scatter!(x, y, real),
+        (Value::Real(x), Value::Lgl(y)) => scatter!(x, y, real),
+        (Value::Int(x), Value::Int(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Int(x), Value::Lgl(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Lgl(x), Value::Lgl(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Str(x), Value::Str(y)) => scatter!(x, y, |s: &crate::value::RStr| s.clone()),
+        _ => unreachable!("checked by `fits`"),
+    }
+    true
+}
+
 /// The general case of `Op::Index` (`x[i]` / `x[[i]]`, call `consts[k]`),
 /// after a flush. With `x` not an object, `[`/`[[` evaluate the index next
 /// (R: eval.c:R_DispatchOrEvalSP): an index promise is forced here,
@@ -711,6 +856,9 @@ fn index_slow(
     k: u32,
 ) -> RResult<RVal> {
     let call = &code.consts[k as usize];
+    if !two && let Some(v) = gather_fast(vars, env, regs, (x, slot), i) {
+        return Ok(v);
+    }
     if index_promise(vars, env, i) == Some(true) {
         if let Some(xv) = read_var(vars, env, x, slot).filter(|xv| !matches!(xv, RVal::V(v) if v.is_object())).cloned()
         {

@@ -172,3 +172,37 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   in the global environment, a frame, base's table and locally, rebound
   `seq`, `-` and `+`, promises forced once and in order, objects),
   recorded with GNU R 4.5.0, identical in all tiers.
+
+## 2026-11-04: `x[i]` and `x[i] <- v` with index vectors in the VM
+
+- Why: fasta_2 and fasta_3 search vectorised (`mid[inds] <- (lo[inds] +
+  hi[inds] - 1L) %/% 2`, `hi[ge] <- mid[ge]`, `psum[mid]`), ~45k such ops
+  per run on vectors of 60. `Op::Index` and `Op::SetIndex` only had scalar
+  and range fast paths, so every one went to `index_slow`, which evaluated
+  the whole call again in the AST interpreter (92k calls at ~5,000
+  instructions, 19% of fasta_3), and `set_index_slow` (14%).
+- What (`vm.rs`, in the out-of-line slow functions, so `run_with` is
+  unchanged): an index vector that is integer or double, without
+  attributes, every element in `1..=length(x)`, on an attribute-free
+  double, integer, logical or character `x`. `x[i]` gathers the elements;
+  `x[i] <- v` writes them in place into this frame's (unshared) `x`, `v`
+  attribute-free with a length dividing the index's (recycled, as R does
+  silently then), an integer `x` becoming double for a double `v`
+  (SubassignTypeFix). Everything else (NA, zero, negative, out of range,
+  names, dims, lists, other coercions) takes the general path as before.
+- Rejected on the way: building the positions with
+  `collect::<Option<Vec<_>>>()`: 1,900 instructions per call of 60 (it
+  grows the vector); validating in place and indexing directly costs a
+  fraction.
+- Result, local min of 40 runs (ms): fasta_2 18 -> 14 (FastR 14.9),
+  fasta_3 23 -> 18 (FastR 12). Gate (full suite against main bf7332ee):
+  7 faster, 0 slower: `fannkuchredux` -18.4%, `fasta_2` -8.6%, `fasta_3`
+  -8.4%, `sortorder` -2.9%, `fastaredux` -1.1%, `dataframe` -0.9%,
+  `vecops` -0.6%; worst +0.05%.
+- Verified: `tests/r/vectors/index-vectors-vm.R` (every type of `x`, integer
+  and fractional double indices, duplicates, empty, NA/NaN, zero, negative,
+  out of range and growth, names, matrices, factors, lists, logical, named
+  and factor indices, coercions both ways, recycling with and without the
+  warning, zero-length values, copy-on-modify, `a[a] <- a * 10`, a global
+  copied into the frame, a lazy index, the fasta_3 search), recorded with
+  GNU R 4.5.0, identical in all tiers.
