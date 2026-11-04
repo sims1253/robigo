@@ -148,7 +148,12 @@ def in_oracle():
         cmd += ["-v", f"{os.path.realpath(rv)}:/usr/local/bin/rv:ro"]
     # a robigo built in another checkout: its binary, its R_HOME beside it
     # (<exe>/../home) and its natives, at their own paths
-    extra = {os.path.dirname(os.path.dirname(os.path.abspath(ROBIGO)))}
+    robigo_dir = os.path.dirname(os.path.dirname(os.path.abspath(ROBIGO)))
+    extra = {robigo_dir}
+    # its R_HOME's headers are a link into that checkout (scripts/robigo-home.sh)
+    include = os.path.join(robigo_dir, "home", "include")
+    if os.path.islink(include):
+        extra.add(os.path.realpath(include))
     # where --out writes, so the result outlives the container
     for i, arg in enumerate(sys.argv):
         out = arg.split("=", 1)[1] if arg.startswith("--out=") else \
@@ -157,12 +162,14 @@ def in_oracle():
             d = os.path.dirname(os.path.abspath(out))
             os.makedirs(d, exist_ok=True)
             extra.add(d)
-    if os.environ.get("ROBIGO_NATIVES"):
-        extra.add(os.path.abspath(os.environ["ROBIGO_NATIVES"]))
+    for k in ("ROBIGO_NATIVES", "ROBIGO_PKG_KEEP_LOGS"):
+        if os.environ.get(k):
+            os.makedirs(os.environ[k], exist_ok=True)
+            extra.add(os.path.abspath(os.environ[k]))
     for d in sorted(extra):
         if os.path.isdir(d) and not (d + "/").startswith(ROOT + "/") and not (d + "/").startswith(CACHE + "/"):
             cmd += ["-v", f"{d}:{d}"]
-    for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET", "ROBIGO_PKG_JOBS"):
+    for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET", "ROBIGO_PKG_JOBS", "ROBIGO_PKG_KEEP_LOGS"):
         if k in os.environ:
             cmd += ["-e", f"{k}={os.environ[k]}"]
     os.execvp("docker", cmd + [IMAGE, "python3", os.path.abspath(__file__)] + sys.argv[1:])
@@ -489,6 +496,11 @@ def run_file(engine, pkg, row, path, lib, limit):
             k, v = kv.split("=", 1)
             env[k] = v
         status, rc, secs = supervise(offline(engine_cmd(engine)), env, tests, os.path.join(tmp, "log"), limit)
+        keep = os.environ.get("ROBIGO_PKG_KEEP_LOGS")
+        if keep:
+            # the worker's own output (compiler errors, crashes) for a look later
+            os.makedirs(keep, exist_ok=True)
+            shutil.copy(os.path.join(tmp, "log"), os.path.join(keep, f"{engine}-{pkg}-{file_key(path)}.log"))
         blocks, done, abort = parse_events(events)
         if status is None:
             if rc == 0 and done:
