@@ -1110,10 +1110,15 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             }
         }
         CHARSXP => wrap_core(x),
-        LISTSXP | DOTSXP => {
+        LISTSXP => {
             let items = items_of(x);
             return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_with_s4(x) }));
         }
+        // `...` stays `...` (to_sexp makes it a DOTSXP chain): read back as
+        // a pairlist, a list element that held `...` changed type when the
+        // list went through a native call, and code walking it (waldo's
+        // compare()) forced promises GNU R never forces.
+        DOTSXP => return Value::Dots(Rc::new(items_of(x))),
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
