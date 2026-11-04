@@ -220,7 +220,7 @@ fn call_fun(
             }
             rho.set_local(isym, Value::int(k as i32 + 1));
             let v = force_and_call(i, fcall, 1, rho)?;
-            if !native_still_valid(fcall, rho, c, xx) {
+            if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
                 *fast = None;
             }
             return Ok(v);
@@ -281,7 +281,7 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                 }
                 rho.set_local(isym, Value::int(k as i32 + 1));
                 out.push(force_and_call(i, &fcall, 1, rho)?);
-                valid = valid && native_still_valid(&fcall, rho, &c, &xx);
+                valid = valid && !crate::vm::native_never(&c) && native_still_valid(&fcall, rho, &c, &xx);
             }
         }
         None => {

@@ -3103,6 +3103,12 @@ pub(crate) fn call_native_rval(interp: &mut Interp, clo: &Rc<Closure>, args: &[R
     v
 }
 
+/// Whether `clo` is known never to run as native code (see
+/// [`call_native_rval`]).
+pub(crate) fn native_never(clo: &Closure) -> bool {
+    matches!(clo.code.get(), Some(Some(code)) if code.native.never()) || matches!(clo.code.get(), Some(None))
+}
+
 /// The call at call site `site` (of `f`) as a call native code can run
 /// inline: a pure closure without free variables (see [`inline_info`])
 /// called with plain arguments.
