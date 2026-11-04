@@ -959,7 +959,10 @@ impl Interp {
             if formals[fi].tag == Some(s::DOTS) {
                 break;
             }
-            if actuals[fi].is_some() {
+            // R: match.c skips a formal only if it holds a value (CAR(a) !=
+            // R_MissingArg): one matched by tag to an empty argument is
+            // still filled by position.
+            if actuals[fi].as_ref().is_some_and(|v| !v.is_missing_arg()) {
                 fi += 1;
             } else if used[bi] != 0 || supplied[bi].tag.is_some() {
                 bi += 1;
@@ -1626,7 +1629,9 @@ pub(crate) fn bind_exact(clo: &Closure, promargs: &[Arg]) -> Option<Env> {
     let mut k = 0;
     for (i, a) in promargs.iter().enumerate() {
         if a.tag.is_none() {
-            while k < ndots && map[k] != FREE {
+            // R: a formal matched by tag to an empty argument (`f(x = , 3)`)
+            // is still open to a positional one.
+            while k < ndots && map[k] != FREE && !promargs[map[k] as usize].value.is_missing_arg() {
                 k += 1;
             }
             if k == ndots {

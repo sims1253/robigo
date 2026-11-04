@@ -91,3 +91,14 @@ run8 <- function() {
   print(dup())
 }
 run8()
+## A formal matched by tag to an empty argument is still filled by position.
+em <- function(x = 10, y = 20) c(x, y)
+eh <- function(a, b, ...) list(a = if (!missing(a)) a, b = if (!missing(b)) b, d = list(...))
+run9 <- function() {
+  print(em(x = , 3))
+  print(em(y = , 3))
+  show(eh(a = , 1, 2))
+  show(eh(b = , 1, 2, 3))
+}
+run9()
+print(em(x = , 3))
