@@ -2090,37 +2090,78 @@ fn do_agrep(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     agrep_impl(interp, args, false)
 }
 
+/// Element `i` of one of adist_full's inputs, read as the C code reads it,
+/// when it reads it: `VECTOR_ELT` checks for a list (so a character
+/// vector errors only once an element is reached: an empty `x` never
+/// touches `y`), `INTEGER` does not check the element at all.
+// R: memory.c:VECTOR_ELT, agrep.c:adist_full
+fn adist_elt(v: &Value, i: usize) -> RResult<Rc<Vector<i32>>> {
+    let items = match v {
+        Value::List(l) => &l.data,
+        Value::Expr(e) => &e.data,
+        _ => {
+            return Err(Flow::error(format!(
+                "VECTOR_ELT() can only be applied to a 'list', not a '{}'",
+                v.type_name()
+            )));
+        }
+    };
+    match &items[i] {
+        Value::Int(iv) | Value::Lgl(iv) => Ok(iv.clone()),
+        // GNU R reinterprets whatever is there as int storage: undefined,
+        // so said rather than guessed.
+        e => {
+            Err(Flow::error(format!("robigo: 'adist' needs integer code vectors (utf8ToInt), not '{}'", e.type_name())))
+        }
+    }
+}
+
 // R: agrep.c:adist_full -- operation-weighted Levenshtein over the integer
 // vectors the utils wrapper prepared (`utf8ToInt` code points, or bytes as
 // integers; NA strings are a one-element NA integer vector). `counts`
 // also reconstructs the transcript: GNU R's tie order is insert, then
 // delete, then substitute only when strictly closer.
-fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResult<Value> {
-    let list_of_ints = |v: &Value| -> Option<Vec<Rc<Vector<i32>>>> {
-        let Value::List(l) = v else { return None };
-        let mut out = Vec::with_capacity(l.data.len());
-        for e in &l.data {
-            match e {
-                Value::Int(iv) => out.push(iv.clone()),
-                _ => return None,
-            }
+fn adist_full(x: &Value, y: &Value, costs: &Value, opt_counts: bool) -> RResult<Value> {
+    let (nx, ny) = (x.len(), y.len());
+    // utils::adist passes three doubles (.amatch_costs). GNU R reads
+    // REAL(opt_costs) unchecked, and only uses the costs once a pair is
+    // compared: the integer costs of the `fixed = FALSE, partial = FALSE`
+    // path never get that far (VECTOR_ELT fails on the character `x`
+    // first). Anything else is undefined there, so it is an error here,
+    // raised where GNU R would first use the costs.
+    let mut checked: Option<[f64; 3]> = None;
+    let mut the_costs = || -> RResult<[f64; 3]> {
+        if let Some(c) = checked {
+            return Ok(c);
         }
-        Some(out)
+        let c = match costs {
+            Value::Real(v) if v.data.len() >= 3 => [v.data[0], v.data[1], v.data[2]],
+            v => {
+                return Err(Flow::error(format!(
+                    "robigo: 'adist' needs three double costs, not '{}' of length {}",
+                    v.type_name(),
+                    v.len()
+                )));
+            }
+        };
+        checked = Some(c);
+        Ok(c)
     };
-    let (Some(xv), Some(yv)) = (list_of_ints(x), list_of_ints(y)) else {
-        return Err(Flow::error("robigo: 'adist' expects the lists of integer vectors the R wrapper builds"));
-    };
-    let (nx, ny) = (xv.len(), yv.len());
-    let [cost_ins, cost_del, cost_sub] = costs;
     let mut ans = vec![0.0f64; nx * ny];
     // ANS(i, j) = ans[i + j * nx]; COUNTS(i, j, m) = counts[i + j*nx + m*nx*ny]
     let mut counts: Vec<i32> = if opt_counts { vec![0; nx * ny * 3] } else { Vec::new() };
     // allocMatrix(STRSXP) starts from "" : NA inputs keep the empty
     // transcript, only computed non-finite distances set NA_STRING.
     let mut trafos: Vec<RStr> = if opt_counts { vec![Some(String::new().into()); nx * ny] } else { Vec::new() };
-    for (i, xi) in xv.iter().enumerate() {
+    for i in 0..nx {
+        let xi = adist_elt(x, i)?;
         let nxi = xi.data.len();
         if nxi > 0 && xi.data[0] == NA_INTEGER {
+            // GNU R's counts loop here sits after `for (j ...)`, so it
+            // writes COUNTS(i, ny, m): two cells of the next layers and one
+            // past the array, and leaves this row's counts uninitialized
+            // (garbage in `attr(, "counts")`). Undefined, so not
+            // reproduced: the row's counts are NA, as for an NA `y`.
             for j in 0..ny {
                 ans[i + j * nx] = NA_REAL;
                 if opt_counts {
@@ -2131,7 +2172,8 @@ fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResul
             }
             continue;
         }
-        for (j, yj) in yv.iter().enumerate() {
+        for j in 0..ny {
+            let yj = adist_elt(y, j)?;
             let nyj = yj.data.len();
             if nyj > 0 && yj.data[0] == NA_INTEGER {
                 ans[i + j * nx] = NA_REAL;
@@ -2142,6 +2184,7 @@ fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResul
                 }
                 continue;
             }
+            let [cost_ins, cost_del, cost_sub] = the_costs()?;
             let (nr, nc) = (nxi + 1, nyj + 1);
             let mut dists = vec![0.0f64; nr * nc];
             let mut paths: Vec<u8> = if opt_counts { vec![0; nr * nc] } else { Vec::new() };
@@ -2240,7 +2283,7 @@ fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResul
     let raw_xnames = crate::attrib::get_attrib(x, s::NAMES);
     let raw_ynames = crate::attrib::get_attrib(y, s::NAMES);
     let has_names = !raw_xnames.is_null() || !raw_ynames.is_null();
-    let null_if_empty = |v: Value| if v.len() == 0 { Value::Null } else { v };
+    let null_if_empty = |v: Value| if v.is_empty() { Value::Null } else { v };
     let xnames = null_if_empty(raw_xnames);
     let ynames = null_if_empty(raw_ynames);
     ans.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
@@ -2270,11 +2313,6 @@ fn adist_full(x: &Value, y: &Value, costs: [f64; 3], opt_counts: bool) -> RResul
 // provide (agrep only needs a yes/no): not implemented yet, said so.
 fn do_adist(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 8, "adist")?;
-    let costs: [f64; 3] = match &args[2].value {
-        Value::Real(v) if v.data.len() >= 3 => [v.data[0], v.data[1], v.data[2]],
-        Value::Int(v) if v.data.len() >= 3 => [v.data[0] as f64, v.data[1] as f64, v.data[2] as f64],
-        _ => [1.0, 1.0, 1.0],
-    };
     let opt_counts = as_bool2(&args[3].value, call)?;
     let opt_fixed = as_bool2(&args[4].value, call)?;
     let opt_partial = as_bool2(&args[5].value, call)?;
@@ -2284,7 +2322,7 @@ fn do_adist(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
         interp.warning("argument 'partial = FALSE' will be ignored")?;
     }
     if !opt_partial {
-        return adist_full(&args[0].value, &args[1].value, costs, opt_counts);
+        return adist_full(&args[0].value, &args[1].value, &args[2].value, opt_counts);
     }
     Err(Flow::error("robigo: 'adist' with 'partial = TRUE' is not implemented yet"))
 }
@@ -2936,7 +2974,7 @@ mod tests {
     fn adist_na_trafos() {
         let x = adist_ints(&[&[97]]);
         let y = adist_ints(&[&[NA_INTEGER]]);
-        let a = adist_full(&x, &y, [1.0, 1.0, 1.0], true).unwrap_or(Value::Null);
+        let a = adist_full(&x, &y, &Value::reals(vec![1.0; 3]), true).unwrap_or(Value::Null);
         let t = crate::attrib::get_attrib(&a, Sym::new("trafos"));
         assert_eq!(strs_of(&t), vec!["".to_string()]);
         let c = crate::attrib::get_attrib(&a, Sym::new("counts"));
@@ -2956,7 +2994,7 @@ mod tests {
         x.set_attr_raw(crate::sym::s::NAMES, Value::strs(vec![]));
         let mut y = adist_ints(&[&[97]]);
         y.set_attr_raw(crate::sym::s::NAMES, Value::strs_from(["y1"]));
-        let a = adist_full(&x, &y, [1.0, 1.0, 1.0], false).unwrap_or(Value::Null);
+        let a = adist_full(&x, &y, &Value::reals(vec![1.0; 3]), false).unwrap_or(Value::Null);
         let dn = crate::attrib::get_attrib(&a, crate::sym::s::DIMNAMES);
         match dn {
             Value::List(l) => {
@@ -2967,7 +3005,7 @@ mod tests {
         }
         // character(0) as the ONLY names attribute: list(NULL, NULL).
         let y2 = adist_ints(&[&[97]]);
-        let b = adist_full(&x, &y2, [1.0, 1.0, 1.0], false).unwrap_or(Value::Null);
+        let b = adist_full(&x, &y2, &Value::reals(vec![1.0; 3]), false).unwrap_or(Value::Null);
         match crate::attrib::get_attrib(&b, crate::sym::s::DIMNAMES) {
             Value::List(l) => {
                 assert!(matches!(l.data[0], Value::Null));
