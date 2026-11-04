@@ -55,9 +55,10 @@ thread_local! {
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
     /// proxy handle -> (identity, the runtime object)
     static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::new());
-    /// Proxy (environment, external pointer, closure) -> its attribute
-    /// cells when the two sides last agreed (see [`push_attrs`],
-    /// [`write_back`]); empty if absent. Addresses, not values: a
+    /// Core object (a proxy, or the conversion of a vector, call or
+    /// pairlist while SEEN or STORED holds it) -> its attribute cells when
+    /// the two sides last agreed (see [`push_attrs`], [`write_back`]);
+    /// empty if absent. Addresses, not values: a
     /// reference from here would count as the runtime holding what the
     /// attributes refer to.
     static SYNCED_ATTRS: RefCell<HashMap<usize, Synced>> = RefCell::new(HashMap::new());
@@ -259,8 +260,14 @@ unsafe extern "C" fn release_proxy(handle: usize) {
 unsafe fn remember_stored(x: Sexp, v: &Value) {
     if let Some(k) = vector_identity(v) {
         core().preserve(x);
+        // `v` has `x`'s attributes now (it is `x` converted, or `x` is its
+        // conversion)
+        agree_attrs(x);
         if let Some((old, _)) = STORED.with(|m| m.borrow_mut().insert(k, (x, v.clone()))) {
             core().release(old);
+            if old != x {
+                forget_attrs(old);
+            }
         }
     }
 }
@@ -299,6 +306,7 @@ unsafe fn sweep_stored() -> usize {
     let mut released = dead.len();
     for x in dead {
         core().release(x);
+        forget_attrs(x);
     }
     let unpinned: Vec<Sexp> = PINNED.with(|p| {
         let mut p = p.borrow_mut();
@@ -1010,17 +1018,23 @@ fn vector_identity(v: &Value) -> Option<usize> {
 /// Convert a runtime value to a core object (a copy for vectors; the
 /// same copy while a native call runs).
 pub unsafe fn to_sexp(v: &Value) -> Sexp {
-    if let Some(x) = STORED.with(|m| {
-        let m = m.borrow();
-        if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
-    }) {
-        return x;
-    }
     let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
             return x;
         }
+    }
+    if let Some(x) = STORED.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
+    }) {
+        // seen by this call: what C writes into it comes back when the
+        // call returns, as for the objects converted for it
+        if let Some(k) = key {
+            core().preserve(x);
+            SEEN.with(|m| m.borrow_mut().insert(k, (x, v.clone())));
+        }
+        return x;
     }
     let x = to_sexp_new(v);
     if let Some(k) = key {
@@ -1072,6 +1086,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
+            agree_attrs(r);
             return r;
         }
         Value::Lang(l) => {
@@ -1086,6 +1101,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
+            agree_attrs(r);
             return r;
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => {
@@ -1111,6 +1127,8 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
     if v.is_s4() {
         SET_S4_OBJECT(x);
     }
+    // what `write_back` compares the routine's writes with
+    agree_attrs(x);
     x
 }
 
@@ -2173,6 +2191,32 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>
     items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
 }
 
+/// The attribute cells of `x` are those of `attrs`' conversion: what C
+/// wrote into the attribute values themselves comes back in place.
+unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usize, Value>) {
+    let Some(a) = attrs.as_deref() else { return };
+    if x.typ() == CHARSXP {
+        return;
+    }
+    let mut cell = x.attrib_raw();
+    for (name, value) in &a.0 {
+        if cell == R_NilValue || cell.is_null() || cell.tag().typ() != SYMSXP || sym_of(cell.tag()) != *name {
+            return;
+        }
+        write_back(value, cell.car(), originals);
+        cell = cell.cdr();
+    }
+}
+
+/// The attributes of a cons cell as a runtime attribute box (with its S4 bit).
+unsafe fn cells_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+    let mut attrs = attrs_converted(x, originals);
+    if x.gp() & gp::S4 != 0 {
+        attrs.get_or_insert_with(Default::default).1 = true;
+    }
+    attrs
+}
+
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
@@ -2209,11 +2253,19 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             None => None,
         }
     }
+    // Only what the routine wrote: the attribute cells are compared with
+    // those of the conversion (`agree_attrs`); converting unchanged cells
+    // back would make new objects of the same values.
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
+        if attrs_agreed(x) {
+            attr_values_back(&rc.attrs, x, originals);
+            return;
+        }
         let new = box_attrs(x, originals);
         if !same_attrs(&rc.attrs, &new) {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }
+        agree_attrs(x);
     }
     // Only what the routine changed is stored, in the buffer the object
     // has: this runs on every argument of every call, and the running R
@@ -2263,10 +2315,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         // is rewritten in place: every alias keeps the object and sees it.
         Value::Pairlist(rc) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
             let items = pair_items_converted(x, originals);
-            let mut attrs = attrs_converted(x, originals);
-            if x.gp() & gp::S4 != 0 {
-                attrs.get_or_insert_with(Default::default).1 = true;
+            let agreed = attrs_agreed(x);
+            if agreed {
+                attr_values_back(&rc.attrs, x, originals);
             }
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
             let p = Rc::as_ptr(rc).cast_mut();
             if items.len() != rc.items.len() {
                 retire_copy(&raw mut (*p).items);
@@ -2275,6 +2328,9 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 retire_copy(&raw mut (*p).attrs);
             }
             v.set_pairlist_cells_through_alias(items, attrs);
+            if !agreed {
+                agree_attrs(x);
+            }
         }
         // R: memory.c:SETCAR/SET_TAG on a DOTSXP chain: the routine wrote
         // the cells of the `...` it was handed or found in a frame
@@ -2290,10 +2346,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             let fun = converted(x.car(), originals);
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             let args = pair_items_converted(x.cdr(), originals);
-            let mut attrs = attrs_converted(x, originals);
-            if x.gp() & gp::S4 != 0 {
-                attrs.get_or_insert_with(Default::default).1 = true;
+            let agreed = attrs_agreed(x);
+            if agreed {
+                attr_values_back(&rc.attrs, x, originals);
             }
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
             let p = Rc::as_ptr(rc).cast_mut();
             if args.len() != rc.args.len() {
                 retire_copy(&raw mut (*p).args);
@@ -2302,6 +2359,9 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 retire_copy(&raw mut (*p).attrs);
             }
             v.set_lang_cells_through_alias(fun, fun_tag, args, attrs);
+            if !agreed {
+                agree_attrs(x);
+            }
         }
         Value::Lgl(rc) | Value::Int(rc) => back(rc, x),
         Value::Real(rc) => back(rc, x),
@@ -2429,8 +2489,12 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         d.get() == 0
     }) {
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
-        for (_, (x, _)) in seen {
+        for (k, (x, _)) in seen {
             core().release(x);
+            // a value C stored keeps its agreement (`remember_stored`)
+            if STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
+                forget_attrs(x);
+            }
         }
         if kept_count() > SWEEP_AT.with(|c| c.get()) {
             sweep_stored();
