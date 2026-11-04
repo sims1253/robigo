@@ -5,8 +5,8 @@
 //! the bake-off's `mm-gc` (`experiments/memory`), which measured this
 //! design against reference counting (`docs/ledger/memory.md`).
 
-use crate::heapsize::HeapSizes;
 use crate::heap::{BLOCK, Block, CLASS_NONE, DATA_OFF, Heap, OWNER_EMPTY, OWNER_NONE, SIZES, START_WORDS};
+use crate::heapsize::HeapSizes;
 use crate::types::*;
 use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes};
 use std::collections::HashMap;
@@ -384,6 +384,12 @@ impl Core {
     }
 
     // ---- allocation ---------------------------------------------------
+
+    /// The collection trigger's state in GNU R's units: (`R_NSize`,
+    /// `R_VSize` in VECRECs, nodes in use, VECRECs in use).
+    pub fn heap_sizes(&self) -> (usize, usize, usize, usize) {
+        (self.sizes.n_size, self.sizes.v_size, self.sizes.nodes_in_use, self.sizes.valloc)
+    }
 
     /// Collect if one is due before allocating an object whose vector data
     /// takes `cells` VECRECs.

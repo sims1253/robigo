@@ -158,19 +158,19 @@ fn size_from_env() -> (usize, usize) {
     let mut nsize = R_NSIZE;
     if let Ok(p) = std::env::var("R_VSIZE") {
         match decode2long(&p) {
-            Err(_) => eprint!("WARNING: invalid R_VSIZE ignored\n"),
+            Err(_) => eprintln!("WARNING: invalid R_VSIZE ignored"),
             Ok(v) if v < MIN_VSIZE => {
-                eprint!("WARNING: R_VSIZE smaller than Min_Vsize = {MIN_VSIZE} is ignored\n")
+                eprintln!("WARNING: R_VSIZE smaller than Min_Vsize = {MIN_VSIZE} is ignored")
             }
             Ok(v) => vsize = v,
         }
     }
     if let Ok(p) = std::env::var("R_NSIZE") {
         match decode2long(&p) {
-            Err(_) => eprint!("WARNING: invalid R_NSIZE ignored\n"),
-            Ok(v) if v > MAX_NSIZE => eprint!("WARNING: invalid R_NSIZE ignored\n"),
+            Err(_) => eprintln!("WARNING: invalid R_NSIZE ignored"),
+            Ok(v) if v > MAX_NSIZE => eprintln!("WARNING: invalid R_NSIZE ignored"),
             Ok(v) if v < MIN_NSIZE => {
-                eprint!("WARNING: R_NSIZE smaller than Min_Nsize = {MIN_NSIZE} is ignored\n")
+                eprintln!("WARNING: R_NSIZE smaller than Min_Nsize = {MIN_NSIZE} is ignored")
             }
             Ok(v) => nsize = v,
         }

@@ -117,8 +117,9 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   `experiments/memory`): a non-moving mark-region heap with conservative
   scanning of the Rust stack, a precise root stack for `PROTECT` and
   `R_PreserveObject`, reference counts kept only for copy-on-modify
-  (heap-to-heap references and bindings, like GNU R's REFCNT), a 2 MiB
-  reuse floor and skip-clean sweeps. Rust code holds `Sexp`s as plain
+  (heap-to-heap references and bindings, like GNU R's REFCNT), GNU R's
+  collection trigger (memory.c's R_NSize/R_VSize, AdjustHeapSize) and
+  skip-clean sweeps. Rust code holds `Sexp`s as plain
   `Copy` pointers. Objects stay at fixed addresses (C holds pointers);
   finalizers and weak references build on the same tracing.
 - **Instance state:** symbol and string tables, epochs and caches belong

@@ -162,9 +162,8 @@ fn rooted_objects_survive_and_garbage_is_freed() {
         list = unsafe { c.alloc_node(LISTSXP, v, list, c.nil()) };
     }
     root(list);
-    // garbage: twice GNU R's initial node count (R_NSIZE, 350,000), so
-    // allocation collects at least twice
-    for i in 0..800_000 {
+    // garbage
+    for i in 0..100_000 {
         int_vec(&mut c, &[i, i]);
     }
     c.collect();
@@ -181,7 +180,93 @@ fn rooted_objects_survive_and_garbage_is_freed() {
         assert_eq!(n, 1000);
     }
     assert!(after < 10_000, "garbage freed: {after} live");
-    assert!(c.stats.collections >= 2, "allocation triggers collections");
+}
+
+/// Allocation collects when GNU R's would: once the nodes in use reach
+/// R_NSize (350,000), not before (memory.c NO_FREE_NODES).
+#[test]
+fn allocation_collects_when_the_node_count_reaches_r_nsize() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    let (n_size, _, in_use, _) = c.heap_sizes();
+    assert_eq!(n_size, 350_000);
+    let n0 = c.stats.collections;
+    for _ in in_use..n_size {
+        unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
+    }
+    assert_eq!(c.stats.collections, n0, "no collection before R_NSize nodes");
+    unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
+    assert_eq!(c.stats.collections, n0 + 1);
+    // the garbage is gone from the count, and the heap kept its size
+    let (n_size, _, in_use, _) = c.heap_sizes();
+    assert_eq!(n_size, 350_000);
+    assert!(in_use < 1_000, "{in_use} nodes in use after the collection");
+}
+
+/// The vector heap triggers on its own: R_VSize is 64 MB of 8-byte VECRECs,
+/// and a vector that does not fit in what is free collects first
+/// (allocVector3's `VHEAP_FREE() < alloc_size`).
+#[test]
+fn allocation_collects_when_the_vector_heap_is_full() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    let (_, v_size, _, _) = c.heap_sizes();
+    assert_eq!(v_size, (67_108_864 + 1) / 8);
+    let n0 = c.stats.collections;
+    // seven 8 MB vectors fit in 64 MB (with what startup took)
+    for _ in 0..7 {
+        c.alloc_vector(REALSXP, 1 << 20);
+    }
+    assert_eq!(c.stats.collections, n0);
+    let (_, _, _, valloc) = c.heap_sizes();
+    assert!(valloc >= 7 << 20);
+    c.alloc_vector(REALSXP, 1 << 20);
+    assert_eq!(c.stats.collections, n0 + 1, "the eighth 8 MB vector collects first");
+}
+
+/// A live heap that outgrows R_NSize grows it (AdjustHeapSize) instead of
+/// collecting on every allocation.
+#[test]
+fn a_growing_live_heap_grows_r_nsize() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    let mut list = c.nil();
+    for i in 0..1_000_000 {
+        list = unsafe { c.alloc_node(LISTSXP, c.nil(), list, c.nil()) };
+        ROOTS.with(|r| {
+            let mut r = r.borrow_mut();
+            r.clear();
+            r.push(list);
+        });
+        if i % 100_000 == 0 {
+            assert!(c.stats.collections <= 10, "{} collections", c.stats.collections);
+        }
+    }
+    let (n_size, _, in_use, _) = c.heap_sizes();
+    assert!(in_use >= 1_000_000);
+    assert!(n_size > in_use, "R_NSize {n_size} grew past the live nodes {in_use}");
+    assert!(c.stats.collections <= 10, "{} collections for 1M live nodes", c.stats.collections);
+}
+
+/// While collections are inhibited a due collection is postponed: the
+/// heap sizes make room, and the first allocation afterwards collects
+/// (R_gc_internal's `!R_GCEnabled` branch and gc_pending).
+#[test]
+fn an_inhibited_collection_runs_at_the_next_allocation() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    let (n_size, _, in_use, _) = c.heap_sizes();
+    let n0 = c.stats.collections;
+    c.gc_inhibit += 1;
+    for _ in in_use..n_size + 10 {
+        unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
+    }
+    assert_eq!(c.stats.collections, n0);
+    let (grown, _, _, _) = c.heap_sizes();
+    assert!(grown > n_size);
+    c.gc_inhibit -= 1;
+    unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
+    assert_eq!(c.stats.collections, n0 + 1);
 }
 
 #[test]
