@@ -80,13 +80,18 @@ GREEN_FLOOR = 0.8
 # Test servers a package's tests talk to, by the name in selection.tsv's
 # `server` column: started on the loopback of the file's own network
 # namespace before R, for GNU R and robigo alike, so the tests still never
-# reach the internet. (port, command, what the tests read to find it). The
-# server is python3-httpbin, pinned in apt.txt; curl's helper reads
-# HTTPBIN_TEST_SERVER.
-HTTPBIN_PORT = 8080
+# reach the internet. `hosts` resolve to that loopback, through an /etc/hosts
+# of the worker's own (a mount namespace), and `env` is what the tests read
+# to find the server.
+#
+# httpbin is python3-httpbin, pinned in apt.txt. curl's helper reads
+# HTTPBIN_TEST_SERVER, but it evaluates `Sys.getenv(, find_test_server())`,
+# and Sys.getenv forces its default: the helper probes its fallback list
+# whatever the variable says, and stops if none answers. The last of that
+# list is http://httpbin.org, so the server is httpbin.org on port 80.
 SERVERS = {
-    "httpbin": (HTTPBIN_PORT, ["python3", "-I", "-m", "httpbin.core", "--host", "127.0.0.1", "--port", str(HTTPBIN_PORT)],
-                {"HTTPBIN_TEST_SERVER": f"http://127.0.0.1:{HTTPBIN_PORT}"}),
+    "httpbin": {"port": 80, "cmd": ["python3", "-I", "-m", "httpbin.core", "--host", "127.0.0.1", "--port", "80"],
+                "hosts": ["httpbin.org"], "env": {"HTTPBIN_TEST_SERVER": "http://httpbin.org"}},
 }
 SERVER_START_LIMIT = 60
 
@@ -384,10 +389,10 @@ def sync():
 # ------------------------------------------------------------------- workers
 
 # Tests run without a network, with a working loopback: the results must not
-# depend on what the internet does that day. argv: the server to start first
-# as JSON ([port, command, log] or null), then the worker's command. The
-# server stays in the worker's process group, so the supervisor counts its
-# memory and kills it with the file.
+# depend on what the internet does that day. argv: the test server to start
+# first as JSON (`server_of`, or null), then the worker's command. The server
+# stays in the worker's process group, so the supervisor counts its memory
+# and kills it with the file.
 OFFLINE = """
 import fcntl, json, os, socket, struct, subprocess, sys, time
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -399,19 +404,25 @@ except PermissionError:
         raise
 server = json.loads(sys.argv[1])
 if server:
-    port, cmd, log, limit = server
-    with open(log, "wb") as out:
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
-    deadline = time.time() + limit
+    if server["hosts"]:
+        # the namespace's own /etc/hosts: what was there, and the server's names
+        hosts = os.path.join(os.path.dirname(server["log"]), "hosts")
+        with open("/etc/hosts") as f, open(hosts, "w") as out:
+            out.write(f.read().rstrip("\\n") + "\\n127.0.0.1 " + " ".join(server["hosts"]) + "\\n")
+        subprocess.run(["mount", "--bind", hosts, "/etc/hosts"], check=True)
+    with open(server["log"], "wb") as out:
+        p = subprocess.Popen(server["cmd"], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+    deadline = time.time() + server["limit"]
     while True:
         try:
-            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            socket.create_connection(("127.0.0.1", server["port"]), timeout=1).close()
             break
         except OSError:
             if p.poll() is not None or time.time() > deadline:
                 p.kill()
-                tail = open(log, errors="replace").read()[-300:]
-                sys.exit(f"package-suite: the test server {cmd[0]} did not start on port {port}: {tail}")
+                tail = open(server["log"], errors="replace").read()[-300:]
+                sys.exit(f"package-suite: the test server {server['cmd'][0]} did not start on port "
+                         f"{server['port']}: {tail}")
             time.sleep(0.05)
 os.execvp(sys.argv[2], sys.argv[2:])
 """
@@ -423,9 +434,10 @@ def engine_cmd(engine):
 
 
 def offline(cmd, server=None):
-    """`cmd` in a network namespace of its own, after `server` ([port, command,
-    log, seconds to start]) is listening on its loopback."""
-    return ["unshare", "-n"] + in_namespace(cmd, server)
+    """`cmd` in a network namespace of its own, after `server` is listening on
+    its loopback; and in a mount namespace of its own when the server has
+    names to resolve."""
+    return ["unshare", "-n"] + (["-m"] if server and server["hosts"] else []) + in_namespace(cmd, server)
 
 
 def in_namespace(cmd, server=None):
@@ -439,8 +451,9 @@ def server_of(row, log):
         return None, {}
     if name not in SERVERS:
         die(f"unknown test server {name!r} in selection.tsv")
-    port, cmd, env = SERVERS[name]
-    return [port, cmd, log, SERVER_START_LIMIT], env
+    spec = SERVERS[name]
+    return {"port": spec["port"], "cmd": spec["cmd"], "hosts": spec["hosts"], "log": log,
+            "limit": SERVER_START_LIMIT}, spec["env"]
 
 
 def group_rss(pgid):

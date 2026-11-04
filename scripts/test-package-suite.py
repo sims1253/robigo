@@ -215,12 +215,19 @@ def userns():
 class Server(unittest.TestCase):
     """A package's test server runs in the worker's own network namespace."""
 
-    def run_worker(self, worker, server_cmd, port, d):
-        server = [port, server_cmd, os.path.join(d, "server.log"), 20]
-        cmd = suite.in_namespace(worker, server)
+    def run_worker(self, worker, server_cmd, port, d, hosts=()):
+        server = {"port": port, "cmd": server_cmd, "hosts": list(hosts), "log": os.path.join(d, "server.log"),
+                  "limit": 20}
         if userns():
-            cmd = ["unshare", "-rn"] + cmd  # the oracle's `unshare -n`, without root
+            cmd = suite.offline(worker, server)
+            self.assertEqual(cmd[:2], ["unshare", "-n"])
+            cmd[1] = "-rn"  # the oracle's `unshare -n`, without root
+        else:
+            cmd = suite.in_namespace(worker, server)
         return suite.supervise(cmd, dict(os.environ), d, os.path.join(d, "log"), 60)
+
+    def http_server(self, port):
+        return [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)]
 
     def fetch(self, url):
         return [sys.executable, "-c", f"import urllib.request; print(urllib.request.urlopen({url!r}).status)"]
@@ -229,7 +236,7 @@ class Server(unittest.TestCase):
         port = free_port()
         with tempfile.TemporaryDirectory() as d:
             status, rc, _ = self.run_worker(self.fetch(f"http://127.0.0.1:{port}/"),
-                                            [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+                                            self.http_server(port), port, d)
             log = read(os.path.join(d, "log"))
             self.assertEqual((status, rc), (None, 0), log)
             self.assertEqual(log.strip(), "200")
@@ -239,7 +246,7 @@ class Server(unittest.TestCase):
         import socket
         port = free_port()
         with tempfile.TemporaryDirectory() as d:
-            self.run_worker(["true"], [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+            self.run_worker(["true"], self.http_server(port), port, d)
         time.sleep(0.5)
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1).close()
@@ -258,17 +265,35 @@ class Server(unittest.TestCase):
         port = free_port()
         with tempfile.TemporaryDirectory() as d:
             status, rc, _ = self.run_worker(self.fetch("http://192.0.2.1/"),
-                                            [sys.executable, "-m", "http.server", "-b", "127.0.0.1", str(port)], port, d)
+                                            self.http_server(port), port, d)
             log = read(os.path.join(d, "log"))
         self.assertNotEqual(rc, 0)
         self.assertIn("unreachable", log)
 
-    def test_httpbin_tells_the_tests_where_it_is(self):
+    @unittest.skipUnless(userns(), "needs a network and a mount namespace")
+    def test_the_server_answers_to_its_names(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as d:
+            status, rc, _ = self.run_worker(self.fetch(f"http://httpbin.org:{port}/"), self.http_server(port), port, d,
+                                            hosts=["httpbin.org"])
+            log = read(os.path.join(d, "log"))
+            self.assertEqual((status, rc), (None, 0), log)
+            self.assertEqual(log.strip(), "200")
+        # only in the worker's namespace
+        self.assertNotIn("httpbin.org", read("/etc/hosts"))
+
+    def test_no_names_no_mount_namespace(self):
+        server, _ = suite.server_of({"server": "httpbin"}, "log")
+        self.assertIn("-m", suite.offline(["R"], server)[:3])
+        self.assertEqual(suite.offline(["R"])[:3], ["unshare", "-n", "python3"])
+        self.assertEqual(suite.offline(["R"], dict(server, hosts=[]))[:3], ["unshare", "-n", "python3"])
+
+    def test_httpbin_is_what_curls_helper_probes(self):
+        # curl's helper probes http://httpbin.org/get whatever HTTPBIN_TEST_SERVER says
         server, env = suite.server_of({"server": "httpbin"}, "/x/server.log")
-        self.assertEqual(server[0], suite.HTTPBIN_PORT)
-        self.assertEqual(server[2], "/x/server.log")
-        self.assertIn("httpbin.core", server[1])
-        self.assertEqual(env, {"HTTPBIN_TEST_SERVER": f"http://127.0.0.1:{suite.HTTPBIN_PORT}"})
+        self.assertEqual((server["port"], server["hosts"], server["log"]), (80, ["httpbin.org"], "/x/server.log"))
+        self.assertIn("httpbin.core", server["cmd"])
+        self.assertEqual(env, {"HTTPBIN_TEST_SERVER": "http://httpbin.org"})
 
     def test_no_server_by_default(self):
         self.assertEqual(suite.server_of({"server": ""}, "log"), (None, {}))
