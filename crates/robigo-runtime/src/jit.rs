@@ -657,7 +657,7 @@ fn min_max(op: &Op, inl: &Inl) -> Option<(bool, Reg, Reg)> {
     let Op::CallBuiltin { f, args, .. } = op else { return None };
     let code = inl.code.filter(|_| inl.specs.is_none())?;
     let crate::value::Value::Builtin(b) = &code.consts[*f as usize] else { return None };
-    let max = match &*b.name {
+    let max = match b.name {
         "min" => false,
         "max" => true,
         _ => return None,
