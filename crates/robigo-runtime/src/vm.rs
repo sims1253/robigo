@@ -951,7 +951,8 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
     true
 }
 
-// The fast paths of the store ops, out of line (but `x[i] <- v`'s): they
+// The fast paths of the store ops, out of line (but `x[i] <- v`'s and
+// `x[i, j] <- v`'s): they
 // are large, and the dispatch loop's register allocation is shared by all
 // its ops. Each
 // returns whether it did the store; if not, the op flushes and takes the
@@ -992,7 +993,8 @@ fn set_index_fast(
 }
 
 /// `Op::SetIndex2`: in-range scalar indices into a plain local matrix.
-#[inline(never)]
+/// (Inline: matrix stores are hot in numeric loops.)
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn set_index2_fast(
     vars: &mut Vars<'_>,
