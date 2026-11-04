@@ -2859,8 +2859,9 @@ pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run
-/// inline: a pure closure without free variables (see [`inline_info`])
-/// called with plain arguments.
+/// inline: a pure closure (see [`inline_info`]) called with plain
+/// arguments, which may also read scalar variables of its enclosing
+/// environments and assign them with `<<-` (see `crate::jit::LoopCell`).
 fn inline_call(
     interp: &mut Interp,
     code: &Code,
@@ -2878,23 +2879,85 @@ fn inline_call(
     if clo.jit.traced() || leaves.len() != clo.formals.len() {
         return None;
     }
-    let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
-    if info.free_vars {
-        return None;
-    }
+    let (code, formal_slots, guard_syms, cells) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
+        Some(info) if !info.free_vars => {
+            (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new())
+        }
+        _ => loop_callee(&clo)?,
+    };
     // Native code does not count calls: take the loop to call the closure
     // at least twice (GNU R's JIT decides by the second call).
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
     Some(crate::jit::InlineCall {
-        code: info.code.clone(),
-        formal_slots: info.formal_slots.clone(),
-        guard_syms: info.guard_syms.clone(),
+        code,
+        formal_slots,
+        guard_syms,
         args: leaves.iter().map(|l| crate::jit::CallArg::Leaf(*l)).collect(),
         clo: clo.clone(),
         callee: 0,
+        cells,
     })
+}
+
+/// A closure that reads or `<<-`-assigns variables of its enclosing
+/// environments, as [`inline_call`] takes it: the body is pure but for the
+/// `<<-` (as [`inline_info`] has it, which keeps such bodies in the VM),
+/// and every such variable is bound to a scalar now. (The native loop
+/// checks the bindings again whenever it is entered.)
+#[cold]
+#[allow(clippy::type_complexity)]
+fn loop_callee(
+    clo: &Closure,
+) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, Vec<(Slot, Sym, crate::jit::JType, bool)>)> {
+    if !may_inline() || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    let formals: Vec<Sym> = clo.formals.iter().map(|f| f.tag.unwrap()).collect();
+    let mut guard_syms = Vec::new();
+    let mut written: Vec<Slot> = Vec::new();
+    for op in &code.ops {
+        match op {
+            Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
+                if formals.contains(sym) {
+                    return None;
+                }
+                if !guard_syms.contains(sym) {
+                    guard_syms.push(*sym);
+                }
+            }
+            // (`<<-` of a formal's name assigns the enclosing binding while
+            // the body reads the formal: not a cell.)
+            Op::SuperSet { sym, slot, .. } if !formals.contains(sym) => written.push(*slot),
+            Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::JumpIfNot { .. }
+            | Op::JumpIf { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Return { .. } => {}
+            _ => return None,
+        }
+    }
+    let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
+    let mut cells = Vec::new();
+    for (k, sym) in code.vars.iter().enumerate() {
+        if formals.contains(sym) {
+            continue;
+        }
+        let t = plain_lookup(&clo.env, *sym).as_ref().and_then(jit_type).filter(|t| t.is_scalar())?;
+        cells.push((k as Slot, *sym, t, written.contains(&(k as Slot))));
+    }
+    Some((code, formal_slots, guard_syms, cells))
 }
 
 /// Run the loop entered at op `enter` natively (compiling it first if
@@ -3009,6 +3072,38 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
+    // The cells: the bindings the closures called inline see. (A closure
+    // defined in this frame sees its pending assignments: they go first.)
+    let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
+    if !jl.cells.is_empty() {
+        let clo_at = |site: u32| jl.calls.iter().find(|(s, _, _)| *s == site).map(|(_, c, _)| c);
+        if vars.dirty
+            && jl.calls.iter().any(|(_, c, _)| crate::jit::closure::on_chain(&c.env, env))
+            && let Err(e) = vars.flush(interp, env, &code.vars)
+        {
+            vars.failed = Some(Box::new(e));
+            vars.dirty = true;
+            return None;
+        }
+        for c in &jl.cells {
+            let first = clo_at(c.sites[0])?;
+            let o = crate::jit::closure::owner(&first.env, c.sym)?;
+            for s in &c.sites[1..] {
+                if !crate::jit::closure::owner(&clo_at(*s)?.env, c.sym)?.ptr_eq(&o) {
+                    return None;
+                }
+            }
+            if c.written && !o.plain_binding(c.sym) {
+                return None;
+            }
+            vals[c.idx] = match (c.ty, plain_lookup(&o, c.sym).as_ref().and_then(scalar)) {
+                (JType::D, Some(Num::D(x))) => x.to_bits(),
+                (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => x as i64 as u64,
+                _ => return None,
+            };
+            owners.push(o);
+        }
+    }
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
     for s in &jl.slots {
         if s.ty.is_vector() {
@@ -3070,9 +3165,30 @@ fn jit_enter(
             _ => return None,
         }
     }
+    let entry_cells: SmallVec<[u64; 4]> = jl.cells.iter().map(|c| vals[c.idx]).collect();
     // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and the
     // vectors they view are held by `regs` and `vars` for the whole call.
     let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) };
+    // The cells the calls assigned, back to their bindings (checked above to
+    // be plain); this frame's cached copies of them are stale.
+    for ((c, o), was) in jl.cells.iter().zip(&owners).zip(&entry_cells) {
+        let b = vals[c.idx];
+        if !c.written || b == *was {
+            continue;
+        }
+        let v = match c.ty {
+            JType::D => RVal::D(f64::from_bits(b)),
+            JType::I => RVal::I(b as i32),
+            _ => RVal::L(b as i32),
+        };
+        let done = set_plain_in_place(o, c.sym, &v);
+        debug_assert!(done);
+        for (k, sym) in code.vars.iter().enumerate() {
+            if *sym == c.sym && matches!(vars.slots[k], SlotVal::Clean(_)) {
+                vars.slots[k] = SlotVal::Empty;
+            }
+        }
+    }
     // Write the variables back as pending assignments.
     for s in &jl.slots {
         if !s.written || !s.ty.is_scalar() {
