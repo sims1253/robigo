@@ -1409,25 +1409,122 @@ fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
     if !len.is_finite() || len < 0.0 || len > i32::MAX as f64 {
         return None;
     }
+    reaches_seq_default(interp, env, classes).then_some(len as u64)
+}
+
+/// Whether `seq` called from `env` on an object of implicit class `classes`
+/// reaches base's `seq.default` (no method of those classes visible from
+/// `env` or registered, and `seq.default` itself base's).
+fn reaches_seq_default(interp: &mut Interp, env: &Env, classes: &[&str]) -> bool {
     let defenv = interp.base_ns.clone();
     for m in classes {
         match interp.lookup_method(Sym::new(m), env, &defenv) {
             Ok(None) => {}
-            _ => return None,
+            _ => return false,
         }
     }
     let dflt = Sym::new("seq.default");
-    let base = interp.base_binding(dflt)?;
+    let Some(base) = interp.base_binding(dflt) else { return false };
     // base's S3 methods table registers its own seq.default: loaded from
     // base.rdb, a separately unserialized copy of the binding's closure
     let registered = match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
         Some(Value::Env(t)) => t.get_local(dflt).and_then(|v| interp.force(v).ok()),
         _ => None,
     };
-    match interp.lookup_method(dflt, env, &defenv) {
-        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r)) => Some(len as u64),
-        _ => None,
+    matches!(interp.lookup_method(dflt, env, &defenv),
+        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r)))
+}
+
+thread_local! {
+    /// `seq.integer`, `seq.numeric`, `seq.default`.
+    static SEQ_INT_METHODS: [Sym; 3] = [Sym::new("seq.integer"), Sym::new("seq.numeric"), Sym::new("seq.default")];
+    /// The search epoch in which `seq` on an integer, called from frames
+    /// below the global environment that bind none of those, was last seen
+    /// to reach base's `seq.default`.
+    static SEQ_INT_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+/// [`reaches_seq_default`] for an integer, as `seq` called from `env`
+/// dispatches on it. Method lookup searches `env` up to its top environment,
+/// the registered methods, then base: for function frames below the global
+/// environment, what depends on the global environment and base is
+/// memoized by the search epoch (which their function bindings bump), and
+/// the frames and base's methods table are checked each time.
+fn seq_integer_default(interp: &mut Interp, env: &Env) -> bool {
+    let names = SEQ_INT_METHODS.with(|n| *n);
+    let epoch = crate::env::search_epoch();
+    let below_global = || {
+        let mut cur = env.clone();
+        while !cur.ptr_eq(&interp.global) {
+            if cur.is_search() || names.iter().any(|m| cur.local_may_bind_fun(*m)) {
+                return false;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+        true
+    };
+    let plain = interp.topenv(env).ptr_eq(&interp.global)
+        && below_global()
+        && match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
+            Some(Value::Env(t)) => !t.has_local(names[0]) && !t.has_local(names[1]),
+            _ => false,
+        };
+    if plain && SEQ_INT_EPOCH.with(|e| e.get()) == epoch {
+        return true;
     }
+    let ok = reaches_seq_default(interp, env, &["seq.integer", "seq.numeric"]);
+    if plain && ok {
+        SEQ_INT_EPOCH.with(|e| e.set(epoch));
+    }
+    ok
+}
+
+/// The arguments of `Op::ForSeqBy` when they are integers (not NA)
+/// computed without warnings or dispatch (the guards hold).
+#[inline(never)]
+fn seq_by_args(args: &[crate::compile::SeqArg; 3], vars: &mut Vars<'_>, env: &Env, regs: &[RVal]) -> Option<[i32; 3]> {
+    let mut v = [0i32; 3];
+    for (j, a) in args.iter().enumerate() {
+        let x = leaf_num(vars, env, regs, &a.a);
+        let n = match a.op {
+            None => x,
+            Some(op) => arith_fast(op, x?, leaf_num(vars, env, regs, &a.b)?).as_ref().and_then(scalar),
+        };
+        match n {
+            Some(Num::I(i)) if i != NA_INTEGER => v[j] = i,
+            _ => return None,
+        }
+    }
+    Some(v)
+}
+
+/// The integer range `seq(from, to, by)` returns for integer (not NA)
+/// arguments when the call reaches base's `seq.default`: `(start, step,
+/// length)`. `None` where it would signal an error (a zero or wrong-signed
+/// `by`, too many elements) or dispatch: the call is made.
+// R: seq.R:seq.default (the `by` branch with `int` true: `del == 0`
+// returns `from` or `to`, both `from`; else `n <- as.integer(del/by)` and
+// `from + (0L:n) * by`, or the same values by `cumsum`)
+#[inline(never)]
+fn seq_by_range(interp: &mut Interp, env: &Env, from: i32, to: i32, by: i32) -> Option<(i64, i64, u64)> {
+    if !seq_integer_default(interp, env) {
+        return None;
+    }
+    let del = to as f64 - from as f64;
+    if del == 0.0 {
+        return Some((from as i64, 1, 1));
+    }
+    if by == 0 {
+        return None;
+    }
+    let n = del / by as f64;
+    if n < 0.0 || n > i32::MAX as f64 {
+        return None;
+    }
+    Some((from as i64, by as i64, n as u64 + 1))
 }
 
 /// Call the base builtin named by the call's head with boxed arguments.
@@ -4355,6 +4452,22 @@ fn run_with(
                     _ => RVal::V(tryop!(interp.eval(&site.call, env))),
                 };
                 regs[*dst as usize] = v;
+            }
+            Op::ForSeqBy { k, seq, call } => {
+                let r = match seq_by_args(&code.seq_by[*k as usize], vars, env, regs) {
+                    Some([from, to, by]) => {
+                        flush!();
+                        seq_by_range(interp, env, from, to, by)
+                    }
+                    None => None,
+                };
+                regs[*seq as usize] = match r {
+                    Some((start, step, n)) => RVal::Range { start, step, n },
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*call as usize], env)))
+                    }
+                };
             }
             Op::ForSeqLength { len, seq, call } => {
                 let n = match leaf_num(vars, env, regs, len) {
