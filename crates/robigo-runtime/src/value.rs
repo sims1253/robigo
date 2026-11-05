@@ -587,6 +587,10 @@ pub struct Promise {
     /// bridge, which keeps the C node's fields in step when it is
     /// forced (robigo-capi's promise memo).
     pub from_c: bool,
+    /// An argument promise of a call (not a default, `delayedAssign`, a
+    /// lazy-loaded value): one compiled code makes is bytecode in GNU R,
+    /// read with getvar when forced.
+    pub arg: bool,
 }
 
 impl Promise {
@@ -603,7 +607,13 @@ impl Promise {
             code,
             default: false,
             from_c: false,
+            arg: false,
         }
+    }
+
+    /// An argument promise of a call (see `arg`).
+    pub fn arg(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
+        Promise { arg: true, ..Promise::with_code(expr, env, code) }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
@@ -615,6 +625,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
+            arg: false,
         }
     }
 
@@ -628,6 +639,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
+            arg: false,
         }
     }
 
@@ -641,6 +653,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
+            arg: false,
         }
     }
 
@@ -654,6 +667,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
+            arg: false,
         }
     }
 
