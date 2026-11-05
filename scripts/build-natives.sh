@@ -75,13 +75,28 @@ fi
 # (HAVE_PANGOCAIRO), with which grDevices makes Xlib, not cairo, png()'s
 # default type (bitmapType) as GNU R does: configure it again once they
 # are there.
-stale_feature() {
-    [ -f "$build/src/include/config.h" ] && ! grep -q "^#define $1" "$build/src/include/config.h" &&
-        pkg-config --exists "$2" 2> /dev/null
+# The pkg-config packages (and versions) present when the tree was
+# configured are kept in a stamp: a package that has appeared or changed
+# version since, and whose feature the tree lacks, calls for configure
+# again. (configure's own test is stricter than pkg-config's; once it has
+# said no to a version, the stamp keeps every later build from configuring
+# again until that version changes.)
+stamp="$build/.robigo-configured-with"
+# config.h macro : pkg-config package
+features="HAVE_WORKING_CAIRO:cairo HAVE_PANGOCAIRO:pangocairo"
+pkg_line() {
+    v=$(pkg-config --modversion "$1" 2> /dev/null) && echo "$1 $v"
 }
-if stale_feature HAVE_WORKING_CAIRO cairo || stale_feature HAVE_PANGOCAIRO pangocairo; then
-    rm -f "$build/src/include/config.h"
-fi
+stale_feature() {
+    [ -f "$build/src/include/config.h" ] && ! grep -qE "^#define $1( |$)" "$build/src/include/config.h" &&
+        line=$(pkg_line "$2") && ! grep -qxF "$line" "$stamp" 2> /dev/null
+}
+for f in $features; do
+    if stale_feature "${f%%:*}" "${f#*:}"; then
+        rm -f "$build/src/include/config.h"
+        break
+    fi
+done
 if [ ! -f "$build/src/include/config.h" ]; then
     mkdir -p "$build"
     (cd "$build" && "$RSRC/configure" --with-x=no --without-recommended-packages \
@@ -90,6 +105,9 @@ if [ ! -f "$build/src/include/config.h" ]; then
         echo "build-natives: configuring the R sources failed (see $build/configure.log)" >&2
         exit 1
     }
+    for f in $features; do
+        pkg_line "${f#*:}" || true
+    done > "$stamp"
 fi
 
 # a variable of GNU R's Makeconf (what `R CMD config` prints)
