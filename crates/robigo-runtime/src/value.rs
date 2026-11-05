@@ -1813,6 +1813,10 @@ impl Value {
         // SAFETY: see the comment on this impl.
         unsafe { self.set_lang_cells_through_alias(fun, fun_tag, args, attrs) }
     }
+    fn set_dots_cells(&self, items: Vec<Arg>) -> bool {
+        // SAFETY: see the comment on this impl.
+        unsafe { self.set_dots_cells_through_alias(items) }
+    }
 }
 
 #[cfg(test)]
@@ -2081,6 +2085,26 @@ mod shared_pairlist_tests {
         for v in [Value::lgl(true), Value::expr_vec(vec![Value::int(1)]), pl(vec![Value::int(1)])] {
             assert!(v.same_object(&v.clone()));
         }
+    }
+
+    #[test]
+    fn dots_cell_rewrites_keep_the_buffer_and_reach_the_aliases() {
+        let dots = Value::Dots(Rc::new(vec![Arg::pos(Value::int(1)), Arg::pos(Value::int(2))]));
+        let alias = dots.clone();
+        let ptr = |v: &Value| match v {
+            Value::Dots(d) => d.as_ptr(),
+            _ => panic!("not dots"),
+        };
+        let before = ptr(&dots);
+        let Value::Dots(d) = &alias else { panic!() };
+        let second = d[1].value.clone();
+        assert!(dots.set_dots_cells(vec![Arg::pos(Value::int(9)), Arg::new(Some(Sym::new("b")), second)]));
+        // same length: the cells stay where they are, and every alias sees them
+        assert_eq!(ptr(&dots), before);
+        let Value::Dots(d) = &alias else { panic!() };
+        assert_eq!(int(&d[0].value), 9);
+        assert_eq!(d[1].tag.map(|t| t.name().to_string()), Some("b".to_string()));
+        assert!(!Value::int(1).set_dots_cells(vec![]));
     }
 
     #[test]
