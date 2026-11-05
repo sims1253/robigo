@@ -4486,6 +4486,10 @@ fn run_with(
                     },
                     _ => false,
                 };
+                if done && *take {
+                    // (The elements were copied; the value is dead: #357.)
+                    regs[*val as usize] = DEAD;
+                }
                 if !done {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
@@ -4500,6 +4504,9 @@ fn run_with(
                     Some(ix) => super_set_slice(interp, env, *x, &ix, &regs[*val as usize]),
                     None => false,
                 };
+                if done && *take {
+                    regs[*val as usize] = DEAD;
+                }
                 if !done {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, true, *take));

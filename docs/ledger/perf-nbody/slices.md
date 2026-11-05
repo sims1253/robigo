@@ -47,3 +47,12 @@ profiles are in `docs/ledger/perf-nbody.md`.
   (`m[1, 1] <- { \`[<-\` <- function(x, ..., value) x; 1 }` writes 1, GNU R
   leaves 0); a gap of the VM's setter guards, not fixable as a `tests/r`
   script since the tiers differ.
+- Rebased onto main 7a0d27bd, which made stores in effect position drop
+  their value (#357, `take`): `Op::SetIndexN`/`Op::SuperSetIndexN` gained
+  `take` like `SetIndex2`. Review of the rebase (sol-loop, gpt-6.1-sol)
+  found the fast paths still left the value in its register after copying
+  its elements, so an environment in one of its attributes outlived the
+  next `gc()`; they now clear it.
+  `tests/r/env/vm-dead-registers-slices.R` (fails in the VM tiers without
+  that).
+
