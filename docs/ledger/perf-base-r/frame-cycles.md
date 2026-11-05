@@ -1,4 +1,4 @@
-# perf-base-r: base R library code on the general closure path
+# perf-base-r / frame-cycles: freeing frames held only by themselves
 
 Benchmarks: `robigo/lm`, `robigo/sortorder`, `rbench/real/flexclust_kcca`
 (`apply(m, 1, rank, ties.method = "random")` over 110k rows). Metric: peak
