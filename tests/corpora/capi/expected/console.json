@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": "REprintf goes to stderr\nREvprintf: 8\n"
+ },
+ "id": "console",
+ "out": {
+  "t": "Rprintf: int 42, double 1.5, string s\nRvprintf: 7\n[1] \"done\"\n     [,1] [,2]\n[1,]    1    3\n[2,]    2    4\nhome is /tmp/robigo-corpus/capi/e2346381bb8e\n[1] \"printed\"\n[1] \"not busy\"\n"
+ },
+ "sha": "a1866185b4771ae8",
+ "status": 0
+}

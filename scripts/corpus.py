@@ -235,11 +235,26 @@ def dec(d):
     return d["t"].encode("utf-8") if "t" in d else base64.b64decode(d["b64"])
 
 
+def per_case(filename):
+    """An `expected_file` without the `.jsonl.gz` suffix names a directory
+    holding one `<id>.json` per case, so that branches adding cases never
+    touch the same file (like the ratchet markers)."""
+    return not filename.endswith(".jsonl.gz")
+
+
 def load_expected(name, filename="expected.jsonl.gz"):
     p = os.path.join(cdir(name), filename)
     if not os.path.exists(p):
         return {}
     out = {}
+    if per_case(filename):
+        for root, _, files in os.walk(p):
+            for fn in sorted(files):
+                if fn.endswith(".json"):
+                    with open(os.path.join(root, fn), encoding="utf-8") as f:
+                        e = json.load(f)
+                    out[e["id"]] = e
+        return out
     with gzip.open(p, "rt", encoding="utf-8") as f:
         for line in f:
             e = json.loads(line)
@@ -249,6 +264,25 @@ def load_expected(name, filename="expected.jsonl.gz"):
 
 def write_expected(name, exp, filename="expected.jsonl.gz"):
     p = os.path.join(cdir(name), filename)
+    if per_case(filename):
+        # One file per case: only the cases whose record changed are
+        # rewritten, and a case no longer recorded loses its file.
+        want = {os.path.join(p, k + ".json"): exp[k] for k in exp}
+        for root, _, files in os.walk(p) if os.path.isdir(p) else ():
+            for fn in files:
+                f = os.path.join(root, fn)
+                if fn.endswith(".json") and f not in want:
+                    os.remove(f)
+        for f, e in want.items():
+            text = json.dumps(e, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+            if os.path.exists(f):
+                with open(f, encoding="utf-8") as old:
+                    if old.read() == text:
+                        continue
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            with open(f, "w", encoding="utf-8") as out:
+                out.write(text)
+        return
     # mtime=0: the file only changes when its content does.
     with open(p, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
         for k in sorted(exp):
