@@ -27,6 +27,10 @@
 
 use std::collections::HashMap;
 
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::{Block, InstBuilder, Value as CValue, types};
+use cranelift_frontend::Variable;
+
 use super::{Inl, JType, SlotInfo};
 use crate::builtins::arith::{ArithOp, RelOp, r_pow};
 use crate::compile::{Code, Leaf, Op, Reg, Slot};
@@ -130,6 +134,8 @@ pub struct Summary {
     ivs: Vec<Iv>,
     /// The induction variable of a `while` condition.
     cond_iv: usize,
+    /// Per node: its type.
+    tys: Vec<JType>,
 }
 
 const EXACT: i128 = 1 << 53;
@@ -470,7 +476,8 @@ pub fn analyze(
         Trip::While { iv, .. } => iv_list.iter().position(|v| v.slot == *iv)?,
         Trip::For { .. } => 0,
     };
-    Some(Summary { nodes: b.nodes, place, trip, fates, ivs: iv_list, cond_iv })
+    let tys = (0..b.nodes.len()).map(|n| b.ty(n as N)).collect::<Option<Vec<_>>>()?;
+    Some(Summary { nodes: b.nodes, place, trip, fates, ivs: iv_list, cond_iv, tys })
 }
 
 fn ceil_div(a: i128, b: i128) -> i128 {
@@ -653,5 +660,155 @@ impl Summary {
             vals[iv.idx] = fin[k];
         }
         true
+    }
+}
+
+impl Summary {
+    /// Whether [`Summary::emit_for`] applies: a `for` loop.
+    pub(super) fn is_for(&self) -> bool {
+        matches!(self.trip, Trip::For { .. })
+    }
+
+    /// The closed form of a `for` loop as native code, computing what
+    /// [`Summary::run`] does: `vars[idx]` is the variable at value-buffer
+    /// place `idx`, `range` the sequence's (start, step, length) and `index`
+    /// its index variable. Continues at `exit` with the variables set, or at
+    /// `fallback`, with nothing changed, where `run` would decline.
+    pub(super) fn emit_for(
+        &self,
+        g: &mut super::Gen,
+        vars: &[Variable],
+        (vs, vt, vn): (Variable, Variable, Variable),
+        index: Variable,
+        exit: Block,
+        fallback: Block,
+    ) {
+        let start = g.b.use_var(vs);
+        let step = g.b.use_var(vt);
+        let n = g.b.use_var(vn);
+        let i0 = g.b.use_var(index);
+        let i0 = g.b.ins().sextend(types::I64, i0);
+        let done = g.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i0, n);
+        let at_end = g.b.create_block();
+        let run = g.b.create_block();
+        g.b.ins().brif(done, at_end, &[], run, &[]);
+        // No iteration left: nothing changes, but an empty sequence, whose
+        // variable the VM sets.
+        g.b.switch_to_block(at_end);
+        let empty = g.b.ins().icmp_imm_s(IntCC::Equal, i0, 0);
+        g.b.ins().brif(empty, fallback, &[], exit, &[]);
+        g.b.switch_to_block(run);
+        let t = g.b.ins().isub(n, i0);
+        // The induction variables: exact all the way, their values at the
+        // last iteration and at the end.
+        let mut ok = g.b.ins().iconst(types::I8, 1);
+        let mut last = Vec::new();
+        let mut fin = Vec::new();
+        for iv in &self.ivs {
+            let x = g.b.use_var(vars[iv.idx]);
+            // (`t * step` and the sums below cannot overflow: beyond this
+            // many iterations no value stays exact anyway.)
+            let fits = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, t, (1i64 << 54) / iv.step.abs());
+            ok = g.b.ins().band(ok, fits);
+            let tc = g.b.ins().imul_imm_s(t, iv.step);
+            if iv.ty == JType::D {
+                let xi = g.b.ins().fcvt_to_sint_sat(types::I64, x);
+                let back = g.b.ins().fcvt_from_sint(types::F64, xi);
+                let same = g.b.ins().fcmp(FloatCC::Equal, back, x);
+                let xt = g.b.ins().iadd(xi, tc);
+                for v in [xi, xt] {
+                    let lo = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, v, -(EXACT as i64));
+                    let hi = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, v, EXACT as i64);
+                    ok = g.b.ins().band(ok, lo);
+                    ok = g.b.ins().band(ok, hi);
+                }
+                ok = g.b.ins().band(ok, same);
+                // (At the first iteration the value itself, which may be -0;
+                // after that a sum, whose zero is +0.)
+                let xl = g.b.ins().iadd_imm_s(xt, -iv.step);
+                let fl = g.b.ins().fcvt_from_sint(types::F64, xl);
+                let first = g.b.ins().icmp_imm_s(IntCC::Equal, t, 1);
+                last.push((g.b.ins().select(first, x, fl), JType::D));
+                fin.push(g.b.ins().fcvt_from_sint(types::F64, xt));
+            } else {
+                let notna = g.b.ins().icmp_imm_s(IntCC::NotEqual, x, NA_INTEGER as i64);
+                let xi = g.b.ins().sextend(types::I64, x);
+                let xt = g.b.ins().iadd(xi, tc);
+                let lo = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, xt, i32::MIN as i64);
+                let hi = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, xt, i32::MAX as i64);
+                for c in [notna, lo, hi] {
+                    ok = g.b.ins().band(ok, c);
+                }
+                let xl = g.b.ins().iadd_imm_s(xt, -iv.step);
+                last.push((g.b.ins().ireduce(types::I32, xl), iv.ty));
+                fin.push(g.b.ins().ireduce(types::I32, xt));
+            }
+        }
+        let go = g.b.create_block();
+        g.b.ins().brif(ok, go, &[], fallback, &[]);
+        g.b.switch_to_block(go);
+        // The `for` element of the last iteration.
+        let k = g.b.ins().iadd(i0, t);
+        let k = g.b.ins().iadd_imm_s(k, -1);
+        let off = g.b.ins().imul(k, step);
+        let e = g.b.ins().iadd(start, off);
+        let elem = g.b.ins().ireduce(types::I32, e);
+        let mut memo = vec![None; self.nodes.len()];
+        let values: Vec<CValue> =
+            self.fates.iter().map(|f| self.emit_node(g, f.node, vars, &last, elem, &mut memo).0).collect();
+        for (f, v) in self.fates.iter().zip(values) {
+            g.b.def_var(vars[f.idx], v);
+        }
+        for (iv, v) in self.ivs.iter().zip(fin) {
+            g.b.def_var(vars[iv.idx], v);
+        }
+        g.b.ins().jump(exit, &[]);
+    }
+
+    /// Node `n` as native code (as [`Summary::eval`]).
+    fn emit_node(
+        &self,
+        g: &mut super::Gen,
+        n: N,
+        vars: &[Variable],
+        last: &[(CValue, JType)],
+        elem: CValue,
+        memo: &mut Vec<Option<(CValue, JType)>>,
+    ) -> (CValue, JType) {
+        if let Some(v) = memo[n as usize] {
+            return v;
+        }
+        let v = match self.nodes[n as usize] {
+            Node::Entry(_) => {
+                let (idx, ty, k) = self.place[n as usize];
+                if k != NO_IV { last[k as usize] } else { (g.b.use_var(vars[idx]), ty) }
+            }
+            Node::Elem => (elem, JType::I),
+            Node::D(x) => (g.b.ins().f64const(x), JType::D),
+            Node::I(x) => (g.b.ins().iconst(types::I32, x as i64), JType::I),
+            Node::L(x) => (g.b.ins().iconst(types::I32, x as i64), JType::L),
+            Node::Arith(op, a, b) => {
+                let x = self.emit_node(g, a, vars, last, elem, memo);
+                let y = self.emit_node(g, b, vars, last, elem, memo);
+                // (Only double results are admitted, see `total`.)
+                let (x, y) = (g.to_f64(x.0, x.1), g.to_f64(y.0, y.1));
+                let r = match op {
+                    ArithOp::Plus => g.b.ins().fadd(x, y),
+                    ArithOp::Minus => g.b.ins().fsub(x, y),
+                    ArithOp::Times => g.b.ins().fmul(x, y),
+                    ArithOp::Div => g.b.ins().fdiv(x, y),
+                    _ => g.call("robigo_pow", &[x, y]),
+                };
+                (r, JType::D)
+            }
+            Node::Rel(op, a, b) => {
+                let x = self.emit_node(g, a, vars, last, elem, memo);
+                let y = self.emit_node(g, b, vars, last, elem, memo);
+                (g.rel(op, x, y), JType::L)
+            }
+        };
+        debug_assert_eq!(v.1, self.tys[n as usize]);
+        memo[n as usize] = Some(v);
+        v
     }
 }

@@ -73,4 +73,12 @@ o2 <- function(n) { i <- 0L; y <- 0L; while (i < n) { y <- i * 100000000L; y <- 
 for (r in 1:3) print(o2(30L))
 o3 <- function(n) { x <- 0L; for (i in 1:n) { x <- i + 2147483600L; x <- i }; i }
 print(drive1(o3, 60))
+# `for` loops in closed form in closures compiled whole: induction
+# variables at the edges.
+e5 <- function(n, s0) { y <- 0; s <- s0; for (i in 1:n) { y <- s; s <- s + 1 }; c(1 / y, s) }
+print(drive(e5, 1, -0)); print(drive(e5, 5, -0)); print(drive(e5, 3, 2^53 - 1)); print(drive(e5, 3, 0.5))
+e6 <- function(n) { s <- 2147483600L; y <- 0L; for (i in 1:n) { y <- s; s <- s + 1L }; c(y, s) }
+print(drive1(e6, 40)); print(drive1(e6, 100))
+e7 <- function(n) { s <- 0; d <- 0; for (i in 10:n) { s <- s - 2; d <- i / 4 + s }; c(s, d, i) }
+print(drive1(e7, 3)); print(drive1(e7, 10)); print(drive1(e7, 25))
 w1(0, NA)

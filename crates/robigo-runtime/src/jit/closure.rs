@@ -1785,7 +1785,15 @@ fn run(
         interp.visible = ctx[0] != 0;
         return Some(if l.result == JType::Dyn { out_any } else { from_bits(l.result, out) });
     }
-    let mut ctx: SmallVec<[u64; 24]> = SmallVec::from_elem(0, e.ctx_words);
+    // (On the stack when it fits: `SmallVec::from_elem` costs a call.)
+    let mut ctx_stack = [0u64; 24];
+    let mut ctx_heap: Vec<u64>;
+    let ctx: &mut [u64] = if e.ctx_words <= ctx_stack.len() {
+        &mut ctx_stack[..e.ctx_words]
+    } else {
+        ctx_heap = vec![0; e.ctx_words];
+        &mut ctx_heap
+    };
     ctx[0] = 1;
     // (Pending assignments of the caller's frame matter only if a cell may be
     // one of its variables.)
@@ -2571,6 +2579,19 @@ impl Gen<'_, '_> {
     /// Before the loop whose `LoopExit` is `brk`: run its closed form, and
     /// continue after the loop if it applied.
     fn summarized_loop(&mut self, ls: &LoopSum, brk: usize) {
+        if ls.sum.is_for()
+            && let [(seq, JType::Range), (idx, JType::I)] = ls.regs[..]
+        {
+            // A `for` loop's closed form in native code.
+            let vars: Vec<Variable> = ls.slots.iter().map(|(s, _, _)| self.v.slot[s].0).collect();
+            let range = self.v.range[&seq];
+            let index = self.v.reg[&(idx, JType::I)];
+            let exit = self.block(brk);
+            let fallback = self.b.create_block();
+            ls.sum.emit_for(self, &vars, range, index, exit, fallback);
+            self.b.switch_to_block(fallback);
+            return;
+        }
         let mf = MemFlagsData::trusted();
         let ss =
             self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (ls.nvals * 8) as u32, 3));
