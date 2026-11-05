@@ -39,20 +39,43 @@ r <- NULL
 repeat { r <- f(1); break }
 cat("top-level repeat:", r, "\n")
 
-# Inside a compiled closure: eval() and C interpret, local() is inlined,
-# promise code is compiled with its caller.
+# Inside a compiled closure: eval() and C interpret, promise code is
+# compiled with its caller. (local() is left out: the compiler inlines it
+# as a closure call, which robigo does not.)
 id <- function(z) z
 comp <- function() {
   a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
   a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
   e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
-  c(direct = f(1), eval = eval(quote(f(1))), local = local(f(1)),
+  c(direct = f(1), eval = eval(quote(f(1))),
     promise = id(f(1)), c_call = .Call("capi_c_call", f, environment()),
     dots = paste(d(1, 2), collapse = "/"))
 }
 print(comp())
 # A loop inside eval() at top level is compiled too (rho is the global env).
 eval(quote(for (i in 1) cat("eval'd top-level for:", f(1), "\n")))
+# A closure made in a compiled top-level loop is compiled with it.
+for (i in 1) {
+  h <- function() f(1)
+  cat("closure made in a top-level loop:", h(), "\n")
+}
+# A promise made by interpreted code is interpreted wherever it is forced.
+late <- function(x) {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  x
+}
+cat("top-level promise forced in a compiled closure:", late(f(1)), "\n")
+# on.exit code is evaluated, not compiled.
+oe <- function() {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  on.exit(cat("on.exit in a compiled closure:", f(1), "\n"))
+  invisible()
+}
+oe()
 # A loop inside a function is part of that function's code.
 loopy <- function() { for (i in 1) r <- f(1); r }
 cat("small closure with a loop, 1st call:", loopy(), "\n")

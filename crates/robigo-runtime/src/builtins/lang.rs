@@ -81,7 +81,25 @@ fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) ->
     Some(crate::vm::run(interp, &code, env))
 }
 
+/// R: eval.c:do_for, do_while, do_repeat — at JIT level 3 a loop the AST
+/// interpreter meets in the global environment is compiled and run by
+/// bcEval (R_compileAndExecute), so its call sites are bytecode ones.
+/// (Everywhere else a loop is part of the code around it.)
+fn loop_bc<T>(interp: &mut Interp, head: Sym, env: &Env, f: impl FnOnce(&mut Interp) -> RResult<T>) -> RResult<T> {
+    if interp.bc || !env.ptr_eq(&interp.global) || !interp.resolves_to_base(head, env) {
+        return f(interp);
+    }
+    interp.bc = true;
+    let r = f(interp);
+    interp.bc = false;
+    r
+}
+
 fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::FOR, env, |interp| for_loop(interp, call, args, env))
+}
+
+fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::FOR, env) {
         return r;
     }
@@ -168,6 +186,10 @@ fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
 }
 
 fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::WHILE, env, |interp| while_loop(interp, call, args, env))
+}
+
+fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::WHILE, env) {
         return r;
     }
@@ -185,6 +207,10 @@ fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
 }
 
 fn do_repeat(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::REPEAT, env, |interp| repeat_loop(interp, call, args, env))
+}
+
+fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::REPEAT, env) {
         return r;
     }

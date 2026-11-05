@@ -28,6 +28,8 @@ pub struct Context {
     /// A builtin's context (R's `CTXT_BUILTIN`, which `.Call` and friends
     /// get): not a function context, so `sys.call()` and friends skip it.
     pub builtin: bool,
+    /// [`Interp::bc`] when this context was entered, restored when it ends.
+    pub prev_bc: bool,
 }
 
 /// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
@@ -102,6 +104,14 @@ pub struct Interp {
     /// still loading stay generic (and unmemoized): resolving against a
     /// partial snapshot would poison the memo for user code.
     pub si_ready: bool,
+    /// Whether GNU R's evaluator would be `bcEval` here: the body of a
+    /// closure its JIT compiled (or installed bytecode), code a compiled
+    /// body made into promises, a top-level loop (JIT level 3). Not robigo's
+    /// own tier, which compiles everything. Call sites differ between the
+    /// two evaluators: the AST interpreter promises constant arguments
+    /// (eval.c:promiseArgs), bytecode pushes them as values (PUSHCONSTARG).
+    /// `eval()`, on.exit code and C's evaluation interpret.
+    pub bc: bool,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -187,6 +197,15 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
     }
 }
 
+/// A constant argument as GNU R's AST interpreter passes it: an unforced
+/// promise of the constant (eval.c:promiseArgs). rlang's dots_info and
+/// check_dots_used tell it from a value ("delayed").
+#[cold]
+#[inline(never)]
+pub(crate) fn const_promise(a: &Arg, env: &Env) -> Arg {
+    Arg::new(a.tag, Value::Promise(Rc::new(Promise::new(a.value.clone(), env.clone()))))
+}
+
 /// The current stack pointer, approximately.
 #[inline(always)]
 fn stack_address() -> usize {
@@ -247,6 +266,7 @@ impl Interp {
             ccode_calls: Vec::new(),
             si_snaps: std::array::from_fn(|_| None),
             si_ready: false,
+            bc: false,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -478,6 +498,10 @@ impl Interp {
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
+        // The promise's code runs in the evaluator that made it: compiled
+        // code compiles its promise arguments (MAKEPROM), a formal's
+        // default never is.
+        let saved_bc = std::mem::replace(&mut self.bc, p.bc && !p.default);
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -488,6 +512,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
+        self.bc = saved_bc;
         drop(_default);
         p.forcing.set(false);
         let v = r?;
@@ -796,12 +821,16 @@ impl Interp {
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
                     let code = codes.get(i).cloned().flatten();
-                    let p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    let mut p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    p.bc = self.bc;
                     out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
-                // Constants are their own value; no promise needed.
-                _ => out.push(a.clone()),
+                // R: a constant is pushed as its value by bytecode
+                // (PUSHCONSTARG) and promised by the AST interpreter
+                // (eval.c:promiseArgs), which GNU R runs here unless `bc`.
+                _ if self.bc => out.push(a.clone()),
+                _ => out.push(const_promise(a, env)),
             }
         }
         Ok(out)
@@ -1092,6 +1121,8 @@ impl Interp {
         if clo.jit.unsettled() {
             crate::vm::jit_check(self, clo);
         }
+        // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
+        self.bc = !clo.jit.interpreted();
         let code = if crate::vm::enabled() {
             clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone()
         } else {
@@ -1140,6 +1171,7 @@ impl Interp {
             restarts: self.restarts.clone(),
             generic: false,
             builtin: false,
+            prev_bc: self.bc,
         });
     }
 
@@ -1155,6 +1187,7 @@ impl Interp {
         // instead of moving it through `run_on_exit` and back.
         let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
+        self.bc = ctx.prev_bc;
         // The executor and this context own two references. Extra owners
         // include escaped closures and unforced default-promise cycles.
         if Rc::strong_count(&ctx.cloenv.0) > 2 {
@@ -1184,6 +1217,9 @@ impl Interp {
         // instead of letting a `return()` there swallow it.
         if !self.abort_to_toplevel && !on_exit.is_empty() {
             let env = self.frames.last().unwrap().cloenv.clone();
+            // on.exit code is kept as an expression and evaluated (context.c
+            // endcontext -> eval): the AST interpreter, in compiled code too.
+            let saved_bc = std::mem::replace(&mut self.bc, false);
             // R: context.c:endcontext makes this frame the exit context
             // (R_ExitContext) while its on.exit code runs, with the pending
             // return value; after an error unwind the value is undefined.
@@ -1211,6 +1247,7 @@ impl Interp {
             }
             self.exit_value = saved_exit_value;
             self.visible = saved_visible;
+            self.bc = saved_bc;
         }
         result
     }
@@ -1403,6 +1440,7 @@ impl Interp {
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
         let saved_ccode = std::mem::take(&mut self.ccode_calls);
+        let saved_bc = std::mem::replace(&mut self.bc, false);
         let global = self.global.clone();
         let base = self.base_ns.clone();
         let mut result = Ok(());
@@ -1421,6 +1459,7 @@ impl Interp {
         self.restarts = saved_restarts;
         self.depth = saved_depth;
         self.ccode_calls = saved_ccode;
+        self.bc = saved_bc;
         result
     }
 
@@ -1435,6 +1474,7 @@ impl Interp {
         self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
+        self.bc = false;
         self.restore_expressions();
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;
