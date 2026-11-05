@@ -5,8 +5,8 @@ st <- function(env, ...) .Call("capi_binding_states", env, c(...))
 f <- function(a = 1, b = 2L, c = "x", d = TRUE, e = NULL, g = 1i, h = c(1, 2), k)
   st(environment(), "a", "b", "c", "d", "e", "g", "h", "k")
 print(f())
-# Supplied arguments are the call's (promises of the AST interpreter).
-print(f(1, 2))
+# A supplied argument is the call's: a promise of `k`'s expression.
+print(f(k = sqrt(4)))
 
 # The same in a closure the JIT compiles at its first call.
 big <- function(a = 1, b = "x", h = c(1, 2)) {
