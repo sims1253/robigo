@@ -769,7 +769,7 @@ pub struct Code {
     pub strict: Vec<Sym>,
     pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
-    pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
+    pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot, crate::env::FastHash>>,
     /// Native code for the whole closure (see `crate::jit::closure`).
     pub native: crate::jit::closure::NativeSlot,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).

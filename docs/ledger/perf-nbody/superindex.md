@@ -51,4 +51,11 @@ profiles are in `docs/ledger/perf-nbody.md`.
   `&mut` value and a `take` flag; #294's write-back of a `<<-` scalar after
   a native loop passes its local value (taken). Reviewed with the rebase
   (sol-loop): no finding on it.
+- Gate against main 7a0d27bd: `robigo/fannkuch` +0.75% at this level. The
+  loop-state map (`Code::jit`) is looked up at every loop entry (main does
+  that too) and hashed with std's SipHash; with heat it now holds entries
+  for short loops as well. It hashes with `env::FastHash` now:
+  `robigo/fannkuch` -0.88% against main, `nbody_naive` -24.7%. Rejected on
+  the way: the entry decision out of line with the heat flag in a bit of
+  `LoopRec::enter` (+1.22%: the lookup was the cost, not the layout).
 
