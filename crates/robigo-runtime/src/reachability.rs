@@ -144,6 +144,8 @@ impl ObjectGraph {
         edges.push(self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || Owner::Code(code.clone())));
     }
 
+    // the edge to a closure's retained GNU code object
+    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode(&mut self, edges: &mut Vec<usize>, code: &Rc<Bytecode>) {
         edges.push(
             self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || {
