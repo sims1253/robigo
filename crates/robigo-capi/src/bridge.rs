@@ -306,7 +306,7 @@ unsafe fn sweep_stored() -> usize {
     for x in dead {
         core().release(x);
     }
-    let unpinned: Vec<Sexp> = PINNED.with(|p| {
+    let unpinned: Vec<(Sexp, u64)> = PINNED.with(|p| {
         let mut p = p.borrow_mut();
         let handles: Vec<usize> = PROXIED.with(|m| {
             let m = m.borrow();
