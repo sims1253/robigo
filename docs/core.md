@@ -202,9 +202,17 @@ under a null are unspecified, and R would read them as data.
 The `mm-gc` prototype becomes `robigo_core::heap`, unchanged in policy:
 64 KiB blocks in 1 MiB chunks, 44 size classes up to 2 KiB, a dedicated
 chunk per larger object, free lists extended by the sweeper, fully empty
-blocks pooled, dead chunks returned to the OS, a 2 MiB collection floor,
-growth to 1.5x the live bytes, alternating mark colors and skip-clean
-sweeps with per-block immortal counts. Every slot is carved at its size
+blocks pooled, dead chunks returned to the OS, alternating mark colors
+and skip-clean sweeps with per-block immortal counts. A collection comes
+when GNU R's would (`heapsize.rs`, ported from memory.c): when the
+objects in use reach `R_NSize` (350,000 nodes) or a vector's data does not
+fit in what is left of `R_VSize` (64 MB, counted in 8-byte VECRECs rounded
+to the small-vector classes), and both sizes then move towards 30-70%
+occupancy (`AdjustHeapSize`); `R_NSIZE`, `R_VSIZE` and `R_GC_MEM_GROW` and
+its siblings set them as in GNU R. (The bake-off's 2 MiB floor collected
+the C heap after every 2 MiB: once weak references reach proxies, each
+collection walks the runtime's object graph, which made it the cost of
+package tests.) Every slot is carved at its size
 class (the bake-off's allocator cut bump-allocated slots to the request
 size, so reusing a dead slot for a larger request of the same class
 overran its neighbour; fixed and tested over every request-size pair).

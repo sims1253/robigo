@@ -6,6 +6,7 @@
 //! design against reference counting (`docs/ledger/memory.md`).
 
 use crate::heap::{BLOCK, Block, CLASS_NONE, DATA_OFF, Heap, OWNER_EMPTY, OWNER_NONE, SIZES, START_WORDS};
+use crate::heapsize::HeapSizes;
 use crate::types::*;
 use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes};
 use std::collections::HashMap;
@@ -53,14 +54,6 @@ pub struct GcStats {
     pub collect_max_pause_ns: u64,
 }
 
-/// The collection floor: grow at least this much between collections
-/// (2 MiB: the bake-off's locality knee). `ROBIGO_GC_MIN` (bytes)
-/// overrides it so tests can stress tiny heaps.
-fn gc_min() -> usize {
-    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ROBIGO_GC_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(2 << 20))
-}
-
 /// C's `atoi`: optional blanks and sign, then digits; 0 if none.
 fn atoi(s: &str) -> i32 {
     let s = s.trim_start();
@@ -98,8 +91,10 @@ pub struct Core {
     /// the collection's number: large objects are marked by storing it in
     /// their chunk's header (no clearing between collections)
     epoch: u64,
+    /// bytes allocated since the last collection (for `stats`)
     alloc_since_gc: usize,
-    gc_threshold: usize,
+    /// when to collect: GNU R's heap sizes and what is in use (heapsize.rs)
+    sizes: HeapSizes,
     /// cached CHARSXPs marked by this collection, and immortal ones: when
     /// they add up to the table's size nothing in it died, and the prune
     /// (a cache miss per entry: 1.3 s for 10M strings) is skipped
@@ -251,7 +246,7 @@ impl Core {
             mark_stack: Vec::new(),
             epoch: 0,
             alloc_since_gc: 0,
-            gc_threshold: gc_min(),
+            sizes: HeapSizes::new(),
             marked_chars: 0,
             immortal_chars: 0,
             gc_inhibit: 0,
@@ -284,7 +279,7 @@ impl Core {
         // allocation can collect, so none of them can be swept.
         unsafe {
             // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
-            let nil = c.alloc_object(NILSXP, NODE_SIZE);
+            let nil = c.alloc_object(NILSXP, NODE_SIZE, 0);
             nil.set_attrib_raw(nil);
             nil.set_car_raw(nil);
             nil.set_cdr_raw(nil);
@@ -390,15 +385,51 @@ impl Core {
 
     // ---- allocation ---------------------------------------------------
 
-    /// A raw object of `size` bytes with a fresh header (type `t`, no
-    /// flags, attributes R_NilValue).
+    /// The collection trigger's state in GNU R's units: (`R_NSize`,
+    /// `R_VSize` in VECRECs, nodes in use, VECRECs in use).
+    pub fn heap_sizes(&self) -> (usize, usize, usize, usize) {
+        (self.sizes.n_size, self.sizes.v_size, self.sizes.nodes_in_use, self.sizes.valloc)
+    }
+
+    /// Collect if one is due before allocating an object whose vector data
+    /// takes `cells` VECRECs.
+    // R: memory.c:allocVector3 / allocSExp: `if (FORCE_GC || NO_FREE_NODES()
+    // || VHEAP_FREE() < alloc_size) R_gc_internal(alloc_size)`
     #[inline(always)]
-    pub(crate) fn alloc_object(&mut self, t: u8, size: usize) -> Sexp {
-        if ((self.force_wait > 0 && self.force_gc()) || self.alloc_since_gc >= self.gc_threshold)
-            && self.gc_inhibit == 0
-        {
-            self.collect();
+    fn collect_if_due(&mut self, cells: usize) {
+        if (!self.sizes.pending && self.force_wait > 0 && self.force_gc()) || self.sizes.due(cells) {
+            self.gc_internal(cells);
         }
+    }
+
+    /// A collection is due: run it, or postpone it while collections are
+    /// inhibited.
+    // R: memory.c:R_gc_internal
+    #[cold]
+    #[inline(never)]
+    fn gc_internal(&mut self, size_needed: usize) {
+        if self.gc_inhibit > 0 {
+            self.sizes.postpone(size_needed);
+            return;
+        }
+        self.sizes.pending = false;
+        self.collect_needing(size_needed);
+    }
+
+    /// Count a new object of `cells` VECRECs in the heap sizes.
+    #[inline(always)]
+    fn count(&mut self, bytes: usize, cells: usize) {
+        self.alloc_since_gc += bytes;
+        self.sizes.nodes_in_use += 1;
+        self.sizes.valloc += cells;
+    }
+
+    /// A raw object of `size` bytes with a fresh header (type `t`, no
+    /// flags, attributes R_NilValue), whose vector data GNU R would count
+    /// as `cells` VECRECs ([`crate::heapsize::vec_cells`]; 0 for nodes).
+    #[inline(always)]
+    pub(crate) fn alloc_object(&mut self, t: u8, size: usize, cells: usize) -> Sexp {
+        self.collect_if_due(cells);
         let size = size.max(16);
         let p = self.heap.alloc(size);
         // SAFETY: `p` has at least 16 bytes, 16-byte aligned, and no one else
@@ -407,7 +438,7 @@ impl Core {
             *(p as *mut u64) = t as u64;
             *((p as *mut *mut u8).add(1)) = self.nil.0;
         }
-        self.alloc_since_gc += size;
+        self.count(size, cells);
         Sexp(p)
     }
 
@@ -420,7 +451,7 @@ impl Core {
     /// EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
     #[inline]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Sexp {
-        let x = self.alloc_object(t, NODE_SIZE);
+        let x = self.alloc_object(t, NODE_SIZE, 0);
         // SAFETY: `x` has node fields. The allocation above may collect, but
         // the caller's contract keeps `car`, `cdr` and `tag` live through it,
         // and only an object's count is written, never a non-object `car`.
@@ -461,7 +492,7 @@ impl Core {
                 not_a_vector_type(t);
             }
             // small atomic vectors: no overflow check, no fill
-            let x = self.alloc_object(t, (OFF_DATA + n * esz).div_ceil(16) * 16);
+            let x = self.alloc_object(t, (OFF_DATA + n * esz).div_ceil(16) * 16, crate::heapsize::vec_cells(t, n));
             // SAFETY: at least OFF_DATA bytes were requested, and a fresh
             // vector of a type with elements has its length fields there.
             unsafe {
@@ -492,13 +523,9 @@ impl Core {
             not_a_vector_type(t);
         }
         let bytes = n.checked_mul(esz)?.checked_add(OFF_DATA)?.checked_add(15)? / 16 * 16;
+        let cells = crate::heapsize::vec_cells(t, n);
         let x = if bytes > crate::heap::MAX_MEDIUM {
-            // R: memory.c:allocVector3, `if (FORCE_GC || ...)` on this path too
-            if ((self.force_wait > 0 && self.force_gc()) || self.alloc_since_gc >= self.gc_threshold)
-                && self.gc_inhibit == 0
-            {
-                self.collect();
-            }
+            self.collect_if_due(cells);
             let p = match self.heap.try_alloc_large(bytes) {
                 Some(p) => p,
                 None => {
@@ -513,10 +540,10 @@ impl Core {
                 *(p as *mut u64) = t as u64;
                 *((p as *mut *mut u8).add(1)) = self.nil.0;
             }
-            self.alloc_since_gc += bytes;
+            self.count(bytes, cells);
             Sexp(p)
         } else {
-            self.alloc_object(t, bytes)
+            self.alloc_object(t, bytes, cells)
         };
         // SAFETY: `x` is fresh with `OFF_DATA + n * esz` bytes (no overflow:
         // checked above), and for the filled types `esz` is a pointer's size,
@@ -556,7 +583,9 @@ impl Core {
         owner: usize,
         release: Option<ReleaseFn>,
     ) -> Sexp {
-        let x = self.alloc_object(t, EXTDATA_SIZE);
+        // (the payload is not on this heap: a node, as GNU R counts a
+        // custom allocator's vector)
+        let x = self.alloc_object(t, EXTDATA_SIZE, 0);
         // SAFETY: EXTDATA_SIZE covers every field written, up to +56.
         unsafe {
             x.set_flags(flags::EXTDATA);
@@ -577,7 +606,7 @@ impl Core {
     /// `release` may be called with `handle` from any collection, and
     /// [`Core::set_host_trace`]'s hook is too: both must accept it.
     pub unsafe fn alloc_host(&mut self, t: u8, handle: usize, release: Option<ReleaseFn>) -> Sexp {
-        let x = self.alloc_object(t, crate::HOST_SIZE);
+        let x = self.alloc_object(t, crate::HOST_SIZE, 0);
         // SAFETY: HOST_SIZE covers every field written, up to +56.
         unsafe {
             x.set_flags(flags::HOST);
@@ -614,7 +643,11 @@ impl Core {
     // ---- CHARSXPs and symbols -------------------------------------------
 
     fn alloc_char(&mut self, bytes: &[u8], gpbits: u16, h: u32) -> Sexp {
-        let x = self.alloc_object(CHARSXP, (OFF_DATA + bytes.len() + 1).div_ceil(16) * 16);
+        let x = self.alloc_object(
+            CHARSXP,
+            (OFF_DATA + bytes.len() + 1).div_ceil(16) * 16,
+            crate::heapsize::vec_cells(CHARSXP, bytes.len()),
+        );
         // SAFETY: `x` has room for the bytes and their NUL, and `bytes`, a
         // borrow of memory outside the slot just handed out, cannot overlap it.
         unsafe {
@@ -653,7 +686,7 @@ impl Core {
     }
 
     fn new_symbol(&mut self, name: Sexp) -> Sexp {
-        let s = self.alloc_object(SYMSXP, NODE_SIZE);
+        let s = self.alloc_object(SYMSXP, NODE_SIZE, 0);
         // SAFETY: `s` is fresh and node-sized, and no allocation follows, so
         // `name` (immortal, in both callers) and `nil` cannot be swept first.
         unsafe {
@@ -1151,6 +1184,16 @@ impl Core {
     /// If a collection is already running: a GC hook allocated or collected
     /// (see [`Core::root_fns`]).
     pub fn collect(&mut self) -> u64 {
+        // R: memory.c:R_gc -> R_gc_internal(0)
+        self.sizes.pending = false;
+        self.collect_needing(0)
+    }
+
+    /// A full collection before allocating `size_needed` VECRECs; the heap
+    /// sizes are adjusted for it afterwards.
+    // R: memory.c:R_gc_internal (RunGenCollect, then AdjustHeapSize after a
+    // collection of every generation: here each one is)
+    fn collect_needing(&mut self, size_needed: usize) -> u64 {
         assert!(!self.collecting, "robigo: a GC hook allocated or collected inside a collection");
         self.collecting = true;
         self.stats.bytes_allocated += self.alloc_since_gc as u64;
@@ -1204,6 +1247,7 @@ impl Core {
                 end();
             }
         }
+        self.sizes.adjust(size_needed);
         self.collecting = false;
         let dt = t0.elapsed().as_nanos() as u64;
         self.stats.collections += 1;
@@ -1234,6 +1278,10 @@ impl Core {
         // by `alloc_extdata` or `alloc_host`, which fill +40 and +48, and +48
         // is an `Option<ReleaseFn>`: API code that disarms it writes null.
         unsafe {
+            // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize -=
+            // getVecSizeInVEC(s)); small vectors are counted by class there,
+            // which is the same number
+            self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
             let f = *p.add(1);
             if f & (flags::EXTDATA | flags::HOST) != 0 {
                 // EXTDATA and HOST objects both keep owner/handle at +40
@@ -1422,6 +1470,7 @@ impl Core {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        self.gc_threshold = ((live_bytes as usize) * 3 / 2).max(gc_min());
+        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected)
+        self.sizes.nodes_in_use = live_objects as usize;
     }
 }
