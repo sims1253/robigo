@@ -17,6 +17,7 @@ const OPS_METHOD_IDENTICAL: crate::builtins::identical::IdFlags = crate::builtin
     single_na: false,
     attrib_as_set: false,
     ignore_env: false,
+    ignore_bytecode: true,
     ignore_srcref: true,
 };
 
@@ -103,7 +104,6 @@ fn implicit_type_class(v: &Value) -> &'static str {
         Value::Closure(_) | Value::Builtin(_) => "function",
         Value::Env(_) => "environment",
         Value::Promise(_) => "promise",
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => "bytecode",
         Value::Dots(_) => "...",
         Value::ExtPtr(_) => "externalptr",
