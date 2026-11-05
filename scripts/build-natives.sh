@@ -85,10 +85,9 @@ stamp="$build/.robigo-configured-with"
 # config.h macro : pkg-config package
 features="HAVE_WORKING_CAIRO:cairo HAVE_PANGOCAIRO:pangocairo"
 pkg_line() {
-    pkg-config --exists "$1" 2> /dev/null && echo "$1 $(pkg-config --modversion "$1" 2> /dev/null)"
+    v=$(pkg-config --modversion "$1" 2> /dev/null) && echo "$1 $v"
 }
 stale_feature() {
-    local line
     [ -f "$build/src/include/config.h" ] && ! grep -qE "^#define $1( |$)" "$build/src/include/config.h" &&
         line=$(pkg_line "$2") && ! grep -qxF "$line" "$stamp" 2> /dev/null
 }
