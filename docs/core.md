@@ -475,9 +475,13 @@ So does robigo:
 
 - The core objects runtime values wrap (`CoreRef`) and the proxies
   pinned for C (`PINNED`) are *held* (`Core::hold`), a set apart from
-  the precious list. In collections the allocator triggers, and in a
-  `gc()` with C frames active, held objects are roots.
-- In a `gc()` from R they are not: the bridge marks the held objects it
+  the precious list. In collections the allocator triggers, held objects
+  are roots.
+- In a `gc()` they are not, also with C frames active below it (R code
+  that rlang's C code evaluates, as in every testthat expectation): the
+  conservative stack scan still covers those frames, so what a C local
+  holds is marked, and what C keeps in a static is a pin, which the
+  runtime graph keeps while its runtime object lives. The bridge marks the held objects it
   still reaches, through the runtime graph (`mark_proxies`: a wrapper
   the graph does not show dead; `trace_proxy`: what a traced proxy's
   runtime object reaches). The core queues the holds it found dead

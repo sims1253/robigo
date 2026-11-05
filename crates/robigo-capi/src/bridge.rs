@@ -3027,8 +3027,9 @@ impl NativeBridge for Bridge {
         // runtime ones (a callback in a pointer's protected field), so the
         // collection marks both heaps as one: what the bridge holds in the
         // core heap is no root, it is marked through the runtime graph
-        // (mark_proxies, trace_proxy). With C code running below gc(), its
-        // frames can hold what the runtime wraps, and the holds stay roots.
+        // (mark_proxies, trace_proxy). With C code running below gc() (R
+        // code that rlang's or testthat's C code evaluates), the stack scan
+        // covers its frames: what a C local holds is marked as before.
         // R: memory.c:R_gc_internal
         // SAFETY: on the R thread, with libR ready (READY), and no
         // collector borrow active: the collection starts below.
@@ -3039,7 +3040,7 @@ impl NativeBridge for Bridge {
             // gc() from R with no C code active: nothing on the machine
             // stack can hold a core object
             let old = if outer { core().set_scan_top(0) } else { 0 };
-            let roots = core().set_held_roots(!outer);
+            let roots = core().set_held_roots(false);
             core().collect();
             core().set_held_roots(roots);
             if outer {
