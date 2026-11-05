@@ -35,10 +35,12 @@ pub static BRIDGE: Bridge = Bridge;
 /// Register the bridge with the runtime (the executable calls this first).
 pub fn install() {
     robigo_runtime::native::set_bridge(&BRIDGE);
+    robigo_runtime::builtins::grep::set_tre_engine(&crate::tre::TRE);
 }
 
 struct FinalizerContext {
     frames: Vec<robigo_runtime::interp::Context>,
+    srcrefs: (robigo_runtime::interp::SrcPos, Vec<(usize, robigo_runtime::interp::SrcPos)>),
     handlers: robigo_runtime::conditions::HandlerStack,
     global_handlers: robigo_runtime::conditions::HandlerStack,
     restarts: robigo_runtime::conditions::RestartStack,
@@ -70,8 +72,14 @@ thread_local! {
     static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
     static READY: Cell<bool> = const { Cell::new(false) };
     /// handler stacks hidden by R_ToplevelExec
-    static TOPLEVEL: RefCell<Vec<(Vec<robigo_runtime::interp::Context>, robigo_runtime::conditions::HandlerStack)>> =
-        const { RefCell::new(Vec::new()) };
+    #[allow(clippy::type_complexity)]
+    static TOPLEVEL: RefCell<
+        Vec<(
+            Vec<robigo_runtime::interp::Context>,
+            robigo_runtime::conditions::HandlerStack,
+            Vec<(usize, robigo_runtime::interp::SrcPos)>,
+        )>,
+    > = const { RefCell::new(Vec::new()) };
     /// Identity within a native call: a runtime vector converted twice is
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
@@ -230,6 +238,25 @@ fn store_flow(f: Flow) -> usize {
     });
     FLOWS.with(|m| m.borrow_mut().insert(t, f));
     t
+}
+
+/// The R condition a jump out of C code carried (its token).
+pub(crate) fn flow_of_token(t: usize) -> Flow {
+    take_flow(t)
+}
+
+/// Run `f` with `interp` current, as a native call does (see `enter`).
+pub(crate) fn with_current<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> T {
+    enter(interp, |_| f())
+}
+
+/// Set up the C side (the library state, the C locale) before C code that
+/// is not a package's runs, such as GNU R's TRE.
+///
+/// # Safety
+/// On the R thread.
+pub(crate) unsafe fn ready_for_c(interp: &mut Interp) {
+    enter(interp, |i| ensure_ready(i));
 }
 
 fn take_flow(t: usize) -> Flow {
@@ -1784,6 +1811,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             with_interp(|i| {
                 let saved = FinalizerContext {
                     frames: std::mem::take(&mut i.frames),
+                    srcrefs: (i.srcref.take(), std::mem::take(&mut i.srcref_saved)),
                     handlers: i.handlers.take(),
                     global_handlers: i.global_handlers.take(),
                     restarts: i.restarts.take(),
@@ -1798,6 +1826,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             if let Some(saved) = FINALIZER_CONTEXTS.with(|s| s.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = saved.frames;
+                    (i.srcref, i.srcref_saved) = saved.srcrefs;
                     i.handlers = saved.handlers;
                     i.global_handlers = saved.global_handlers;
                     i.restarts = saved.restarts;
@@ -1809,15 +1838,16 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "toplevelBegin" => {
             with_interp(|i| {
-                let saved = (std::mem::take(&mut i.frames), i.handlers.take());
+                let saved = (std::mem::take(&mut i.frames), i.handlers.take(), std::mem::take(&mut i.srcref_saved));
                 TOPLEVEL.with(|t| t.borrow_mut().push(saved))
             });
             R_NilValue
         }
         "toplevelEnd" => {
-            if let Some((frames, h)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
+            if let Some((frames, h, srcrefs)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = frames;
+                    i.srcref_saved = srcrefs;
                     i.handlers = h;
                 });
             }
@@ -2417,7 +2447,25 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
+    check_result(out)?;
     converting(interp, || from_sexp(out))
+}
+
+/// A routine that returns no object (one declared void but registered for
+/// .Call, as rlang's r_on_exit test routine is) leaves whatever its last
+/// call left in the return register; GNU R keeps that pointer unread
+/// unless R uses the value. robigo converts every result, so every path
+/// that converts one first checks that the pointer is in its heap at all.
+/// (Inside the heap a stale object is #389's to fix: rlang's rlang_zap
+/// static still reads as the zap object there.)
+unsafe fn check_result(out: Sexp) -> RResult<()> {
+    if !out.is_null() && out != R_NilValue && !crate::state::core().in_heap(out.addr()) {
+        return Err(Flow::error(format!(
+            "robigo: a native routine returned {:#x}, which is not an R object (a routine declared void?)",
+            out.addr()
+        )));
+    }
+    Ok(())
 }
 
 /// A list or call cell that `.Call` returned and that came from the runtime:
@@ -2501,6 +2549,9 @@ unsafe fn call_routine_ctx(
         interp.restarts = restarts;
         return r;
     }
+    if interp.srcref.is_some() {
+        interp.srcref_begin(false);
+    }
     interp.frames.push(robigo_runtime::interp::Context {
         call: call.clone(),
         function: Value::Null,
@@ -2513,12 +2564,16 @@ unsafe fn call_routine_ctx(
         generic: false,
         builtin: true,
     });
+    // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
+    // so what it calls back reports no srcref
+    interp.srcref = robigo_runtime::interp::null_srcref();
     let r = call_routine_in(interp, call, r, args, env);
     let r = match r {
         Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
         other => other,
     };
     let ctx = interp.frames.pop().unwrap();
+    interp.srcref_ended(interp.frames.len());
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
     r
@@ -2644,6 +2699,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
         if t != 0 {
             return Err(take_flow(t));
         }
+        check_result(out)?;
         return Ok(original_cell(out, &originals).unwrap_or_else(|| from_sexp(out)));
     }
     let back = converting_in_context(interp, || write_backs(args, &xs));
