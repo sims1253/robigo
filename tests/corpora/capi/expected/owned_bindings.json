@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "owned_bindings",
+ "out": {
+  "t": "[1] 1 2\n[1] 11  2\n[1] FALSE\n[1] \"no active binding for \\\"v\\\"\"\n[1] \"symbol already has a regular binding\"\n$v\n[1] 11  2\n\n$v\n[1] 13\n\n$v\n[1] 11  2\n\n[1] 11  2\n[1] FALSE\n[1] 11  2\n[1] TRUE\n[1] TRUE\n[1] 5\n$act\n[1] 42\n\n[1] TRUE\n[1] 42\n"
+ },
+ "sha": "a73d98c9ec6da03a",
+ "status": 0
+}
