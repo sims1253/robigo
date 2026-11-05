@@ -17,3 +17,6 @@ k()
 [4] "withCallingHandlers" "m"                   "heads"              
 [1] "evalError"       "missingArgError" "error"           "condition"      
 [1] "argument \"a\" is missing, with no default"
+[1] "withRestarts"       "withOneRestart"     "doWithOneRestart"  
+[4] ".handleSimpleError" "h"                  "heads"             
+[1] "(converted from warning) NAs introduced by coercion"
