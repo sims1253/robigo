@@ -3912,7 +3912,8 @@ fn jit_enter(
         if s.superset {
             // As `Op::SuperSet` does (checked above not to fail).
             vars.slots[s.slot as usize] = SlotVal::Empty;
-            let done = super_set_fast(interp, env, s.sym, &v);
+            let mut v = v;
+            let done = super_set_fast(interp, env, s.sym, &mut v, true);
             debug_assert!(done);
             continue;
         }
