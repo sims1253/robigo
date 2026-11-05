@@ -1939,7 +1939,8 @@ pub struct Writer<'a> {
     hook: Option<PersistHook<'a>>,
     /// how to read a C-owned binding's value (see [`OwnedReader`])
     owned: Option<OwnedReader<'a>>,
-    /// the first error the hook raised (writing stops being meaningful)
+    /// the first error a callback (the hook or the C-owned reader) raised
+    /// (writing stops being meaningful)
     err: Option<Flow>,
     /// Reference table shared by symbols and environments, as in R.
     refs: Vec<RefKey>,
