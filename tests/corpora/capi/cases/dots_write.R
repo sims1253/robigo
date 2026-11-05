@@ -15,3 +15,17 @@ print(eval(quote(list(...)), e))
 
 h <- function(...) .Call("capi_dots_same", environment())
 print(h(1, 2))
+
+e2 <- new.env()
+k <- function(...) {
+  .Call("capi_dots_bind", environment(), e2)
+  invisible(gc())
+  .Call("capi_dots_bound_same", e2)
+}
+print(k(1, 2))
+
+e3 <- g(10, 20)
+l <- as.list.environment(e3, all.names = TRUE)
+invisible(.Call("capi_dots_append_lang", l))
+print(length(l[["..."]]))
+print(eval(quote(list(...)), e3))
