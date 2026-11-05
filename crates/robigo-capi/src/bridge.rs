@@ -591,6 +591,11 @@ struct Twin {
     constant: bool,
     /// the watched cells registered for this twin
     cells: Vec<Sexp>,
+    /// `x` is the original and the value its copy: a package ALTREP object
+    /// (#422), whose class answers reads the copy cannot (crate::altrep in
+    /// the runtime). Its data are refreshed from the class after C writes
+    /// through a writable DATAPTR; it has no inner twins.
+    original: bool,
 }
 
 thread_local! {
@@ -748,7 +753,7 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     let cells = twin_cells(x);
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
-    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells }));
+    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells, original: false }));
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -836,12 +841,16 @@ unsafe fn flush_twin(k: usize) {
     if !TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k)) {
         return;
     }
-    let Some((x, value, readonly, constant, old)) = TWINS
-        .with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.clone(), tw.readonly, tw.constant, tw.cells.clone())))
-    else {
+    let Some((x, value, readonly, constant, old, original)) = TWINS.with(|t| {
+        t.borrow().get(&k).map(|tw| (tw.x, tw.value.clone(), tw.readonly, tw.constant, tw.cells.clone(), tw.original))
+    }) else {
         return;
     };
     if readonly {
+        return;
+    }
+    if original {
+        refresh_original(&value, x);
         return;
     }
     if !twin_shape(x, &value) {
@@ -1832,7 +1841,117 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     if x.gp() & gp::S4 != 0 {
         v.set_s4(true);
     }
+    if x.is_altrep() && matches!(x.typ(), LGLSXP | INTSXP | REALSXP) && crate::altrep::package_class(x) {
+        make_original(x, &v);
+    }
     v
+}
+
+/// `x`, a package ALTREP object, reaches R as `v`, a copy of its data
+/// (DATAPTR_OR_NULL, then a read-only DATAPTR): keep `x` as the twin `v`
+/// came from (to_sexp gives it back, from_sexp finds `v` again), and
+/// register `v` with the runtime, whose reads of it go to `x`'s class
+/// (#422, council round 7).
+unsafe fn make_original(x: Sexp, v: &Value) {
+    let Some(k) = twin_key(v) else { return };
+    if TWINS.with(|t| t.borrow().contains_key(&k)) || TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr())) {
+        return;
+    }
+    let cells = vec![x];
+    watch_cells(k, &cells);
+    TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
+    TWINS.with(|t| {
+        t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly: false, constant: false, cells, original: true })
+    });
+    robigo_runtime::altrep::register(v, x.addr());
+}
+
+/// Copy a package ALTREP object's data into its registered copy again,
+/// in place (C wrote through a writable DATAPTR of `x`).
+unsafe fn refresh_original(v: &Value, x: Sexp) {
+    let n = crate::memory::xlength(x) as usize;
+    match v {
+        Value::Int(rc) | Value::Lgl(rc) if rc.data.len() == n && n > 0 => {
+            let src = std::slice::from_raw_parts(DATAPTR_RO(x) as *const i32, n);
+            if src != rc.data.as_slice() {
+                (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
+            }
+        }
+        Value::Real(rc) if rc.data.len() == n && n > 0 => {
+            let src = std::slice::from_raw_parts(DATAPTR_RO(x) as *const f64, n);
+            if src != rc.data.as_slice() {
+                (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The original object of a registered value's handle (`x.addr()`), if
+/// the bridge still keeps it.
+unsafe fn original_of(handle: usize) -> RResult<Sexp> {
+    let live = TWIN_HEAD
+        .with(|h| h.borrow().get(&handle).copied())
+        .is_some_and(|k| TWINS.with(|t| t.borrow().get(&k).is_some_and(|tw| tw.original && tw.x.addr() == handle)));
+    if !live {
+        return Err(Flow::error("robigo: the ALTREP object of this vector was released"));
+    }
+    Ok(Sexp(handle as *mut u8))
+}
+
+/// Call a package ALTREP class's method `f` (#422): on the R thread with
+/// `interp` current, as a native call is (the method can run R code), and
+/// behind a protected boundary: an error, warning, condition or interrupt
+/// it raises comes back as the `RResult`, and no runtime or table borrow
+/// is held while it runs.
+unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+    // SAFETY: the caller is on the R thread; `enter` makes `interp` current
+    // for the C code and its callbacks, as a native call does.
+    enter(interp, |interp| unsafe {
+        ensure_ready(interp);
+        publish(interp);
+        CALL_DEPTH.with(|d| d.set(d.get() + 1));
+        let base = R_PPStackTop;
+        let mut out = None;
+        let t = crate::errors::protect_run(|| out = Some(f()));
+        R_PPStackTop = base;
+        flush_twins();
+        if CALL_DEPTH.with(|d| {
+            d.set(d.get() - 1);
+            d.get() == 0
+        }) {
+            let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
+            for (_, (x, _)) in seen {
+                core().release(x);
+            }
+        }
+        match t {
+            None => Ok(out.expect("an ALTREP method that returned left its value")),
+            Some(t) => Err(match take_flow(t) {
+                Flow::Error(e) if !e.signaled => interp.signal_error(e),
+                f => f,
+            }),
+        }
+    })
+}
+
+/// R: inspect.c:inspect_subtree, handed to a class's `Inspect`.
+unsafe extern "C" fn inspect_subtree(x: Sexp, pre: c_int, deep: c_int, pvec: c_int) {
+    let t = guarded(|| {
+        // SAFETY: on the R thread, inside altrep_call (an interpreter is current).
+        let v = unsafe { from_sexp(x) };
+        // SAFETY: as above: with_interp finds the interpreter altrep_call entered.
+        let r = unsafe {
+            with_interp(|i| robigo_runtime::builtins::inspect::inspect_tree(i, pre + 2, &v, deep - 1, pvec, 0))
+        };
+        match r {
+            Ok(()) => 0,
+            Err(f) => store_flow(f),
+        }
+    });
+    if t != 0 {
+        crate::errors::jump_host(t)
+    }
 }
 
 // ---- host callbacks ------------------------------------------------------------
@@ -3471,6 +3590,122 @@ impl NativeBridge for Bridge {
             crate::graphics::sync_devices(interp);
             r
         })
+    }
+
+    fn altrep_elt(&self, interp: &mut Interp, handle: usize, i: usize) -> RResult<Value> {
+        // SAFETY: the R thread; `original_of` checks the bridge still keeps
+        // the object, and the method runs behind altrep_call's boundary.
+        unsafe {
+            let x = original_of(handle)?;
+            altrep_call(interp, || {
+                let r = match x.typ() {
+                    INTSXP => crate::list::Rf_ScalarInteger(crate::altrep::integer_elt(x, i as isize)),
+                    LGLSXP => crate::list::Rf_ScalarLogical(crate::altrep::logical_elt(x, i as isize)),
+                    REALSXP => crate::list::Rf_ScalarReal(crate::altrep::real_elt(x, i as isize)),
+                    _ => R_NilValue,
+                };
+                from_sexp(r)
+            })
+        }
+    }
+
+    fn altrep_summary(
+        &self,
+        interp: &mut Interp,
+        handle: usize,
+        op: robigo_runtime::altrep::Summary,
+        narm: bool,
+    ) -> RResult<Option<Value>> {
+        use robigo_runtime::altrep::Summary;
+        // SAFETY: as altrep_elt; the slot holds the class's C function.
+        unsafe {
+            let x = original_of(handle)?;
+            let which = match op {
+                Summary::Sum => 0,
+                Summary::Min => 1,
+                Summary::Max => 2,
+            };
+            let f = crate::altrep::summary_method(x, which);
+            if f == 0 {
+                return Ok(None);
+            }
+            altrep_call(interp, || {
+                let f = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(f);
+                let r = f(x, narm as c_int);
+                (!r.is_null()).then(|| from_sexp(r))
+            })
+        }
+    }
+
+    fn altrep_sorted(&self, interp: &mut Interp, handle: usize, no_na: bool) -> RResult<Option<i32>> {
+        // SAFETY: as altrep_summary.
+        unsafe {
+            let x = original_of(handle)?;
+            let f = crate::altrep::sorted_method(x, no_na);
+            if f == 0 {
+                return Ok(None);
+            }
+            altrep_call(interp, || Some(std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>(f)(x)))
+        }
+    }
+
+    fn altrep_subset(&self, interp: &mut Interp, handle: usize, indx: &Value) -> RResult<Option<Value>> {
+        // SAFETY: as altrep_summary.
+        unsafe {
+            let x = original_of(handle)?;
+            let f = crate::altrep::extract_subset_method(x);
+            if f == 0 {
+                return Ok(None);
+            }
+            altrep_call(interp, || {
+                let ix = Rf_protect(to_sexp(indx));
+                let f = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp, Sexp) -> Sexp>(f);
+                let r = f(x, ix, R_NilValue);
+                let v = (!r.is_null()).then(|| from_sexp(r));
+                Rf_unprotect(1);
+                v
+            })
+        }
+    }
+
+    fn altrep_serialized(&self, interp: &mut Interp, handle: usize) -> RResult<Option<(Value, Value)>> {
+        // SAFETY: as altrep_summary.
+        unsafe {
+            let x = original_of(handle)?;
+            let f = crate::altrep::serialized_state_method(x);
+            if f == 0 {
+                return Ok(None);
+            }
+            altrep_call(interp, || {
+                // R: altrep.c:ALTREP_SERIALIZED_CLASS / ALTREP_SERIALIZED_STATE
+                let info = crate::altrep::class_of(x).attrib_raw();
+                let state = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> Sexp>(f)(x);
+                if state.is_null() || info.is_null() || info == R_NilValue {
+                    return None;
+                }
+                Rf_protect(state);
+                let r = Some((from_sexp(info), from_sexp(state)));
+                Rf_unprotect(1);
+                r
+            })
+        }
+    }
+
+    fn altrep_inspect(&self, interp: &mut Interp, handle: usize, pre: i32, deep: i32, pvec: i32) -> RResult<bool> {
+        // SAFETY: as altrep_summary.
+        unsafe {
+            let x = original_of(handle)?;
+            let f = crate::altrep::inspect_method(x);
+            if f == 0 {
+                return Ok(false);
+            }
+            type Subtree = unsafe extern "C" fn(Sexp, c_int, c_int, c_int);
+            altrep_call(interp, || {
+                let f =
+                    std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int, c_int, c_int, Subtree) -> c_int>(f);
+                f(x, pre, deep, pvec, inspect_subtree) != 0
+            })
+        }
     }
 
     fn owned_get(&self, interp: &mut Interp, holder: &Value) -> RResult<Value> {

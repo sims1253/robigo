@@ -436,21 +436,38 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
 }
 
 pub(crate) fn unbox(v: Value) -> RVal {
-    match &v {
+    let r = match &v {
         Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
         Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
         Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => RVal::V(v),
+        _ => return RVal::V(v),
+    };
+    if crate::altrep::any() {
+        return unbox_alt(v, r);
     }
+    r
 }
 
+/// [`unbox`] of a borrowed value.
 pub(crate) fn unbox_ref(v: &Value) -> RVal {
-    match v {
+    let r = match v {
         Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
         Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
         Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => RVal::V(v.clone()),
+        _ => return RVal::V(v.clone()),
+    };
+    if crate::altrep::any() {
+        return unbox_alt(v.clone(), r);
     }
+    r
+}
+
+/// A package ALTREP scalar stays boxed: its class answers each read
+/// (cli's `cli_timer_t` in `if`, crate::altrep).
+#[cold]
+#[inline(never)]
+fn unbox_alt(v: Value, r: RVal) -> RVal {
+    if crate::altrep::lookup(&v).is_some() { RVal::V(v) } else { r }
 }
 
 /// Whether an assignment of `sym` in `env` may be deferred: the binding is
@@ -807,10 +824,12 @@ fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
     // `x[i]` keeps names and other attributes; `x[[i]]` drops them, but
     // classed objects dispatch.
     let plain = |attrs: &AttrBox| attrs.is_none() || (two && !v.is_object());
+    // a package ALTREP vector is read through its class (subset2_dflt)
+    let alt = || crate::altrep::lookup(v).is_some();
     Some(match v {
-        Value::Real(x) if i < x.data.len() && plain(&x.attrs) => RVal::D(x.data[i]),
-        Value::Int(x) if i < x.data.len() && plain(&x.attrs) => RVal::I(x.data[i]),
-        Value::Lgl(x) if i < x.data.len() && plain(&x.attrs) => RVal::L(x.data[i]),
+        Value::Real(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::D(x.data[i]),
+        Value::Int(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::I(x.data[i]),
+        Value::Lgl(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::L(x.data[i]),
         Value::Str(x) if i < x.data.len() && plain(&x.attrs) => RVal::V(Value::strs(vec![x.data[i].clone()])),
         Value::List(x) if two && i < x.data.len() && plain(&x.attrs) => unbox(x.data[i].clone()),
         _ => return None,
@@ -884,6 +903,9 @@ fn gather_range<T: Clone>(d: &[T], first: usize, step: i64, n: usize) -> Vec<T> 
 /// `x[a:b]` for an attribute-free vector and an in-range range.
 fn range_subset(x: &RVal, start: i64, step: i64, n: u64) -> Option<RVal> {
     let RVal::V(x) = x else { return None };
+    if crate::altrep::lookup(x).is_some() {
+        return None;
+    }
     if x.attrs().is_some() {
         return None;
     }
@@ -3048,6 +3070,12 @@ pub(crate) fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u6
 /// The scalar or vector type of a variable's current value for native code.
 pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     use crate::jit::JType;
+    // native kernels read data directly: never a package ALTREP vector's
+    if let RVal::V(x) = v {
+        if crate::altrep::lookup(x).is_some() {
+            return None;
+        }
+    }
     Some(match v {
         RVal::D(_) => JType::D,
         RVal::I(_) => JType::I,
@@ -3542,6 +3570,24 @@ fn for_element(sv: &Value, i: usize) -> Option<RVal> {
         Value::Pairlist(p) => RVal::V(p.items[i].value.clone()),
         _ => unreachable!(),
     })
+}
+
+/// The `for` index of a package ALTREP sequence's element 0 (Op::ForInit):
+/// negative, so that ordinary element access finds no element.
+const ALT_FOR: i32 = i32::MIN;
+
+/// Element `i` of a package ALTREP `for` sequence, from its class's `Elt`
+/// (crate::altrep).
+#[cold]
+#[inline(never)]
+/// Before element 0 the loop variable is bound to NULL, as for any
+/// sequence (the frame is flushed: `define` writes it).
+fn for_altrep_element(interp: &mut Interp, env: &Env, var: Sym, sv: &Value, i: usize) -> RResult<Value> {
+    if i == 0 {
+        interp.define(var, Value::Null, env)?;
+    }
+    let Some(h) = crate::altrep::lookup(sv) else { unreachable!() };
+    crate::altrep::elt(interp, h, i)
 }
 
 /// The general case of `Op::Call` (after a flush): find the function
@@ -4594,8 +4640,13 @@ fn run_with(
                         return signal(interp, Err(e));
                     }
                 };
+                // a package ALTREP sequence is read through its class
+                // (crate::altrep): decided once per loop, marked by an index
+                // counting from ALT_FOR (see Op::ForStep)
+                // (an empty one takes the ordinary path: no element to read)
+                let alt = !v.is_empty() && crate::altrep::lookup(&v).is_some();
                 regs[*seq as usize] = RVal::V(v);
-                regs[*seq as usize + 1] = RVal::I(0);
+                regs[*seq as usize + 1] = RVal::I(if alt { ALT_FOR } else { 0 });
             }
             Op::ForStep { seq, idx, var, slot, body, .. } => {
                 back_edge!();
@@ -4617,7 +4668,23 @@ fn run_with(
                     continue;
                 }
                 let RVal::V(sv) = &regs[*seq as usize] else { unreachable!() };
-                let Some(elt) = for_element(sv, i) else { continue };
+                let elt = match for_element(sv, i) {
+                    Some(elt) => elt,
+                    // past the end, or a package ALTREP sequence: its index
+                    // counts from ALT_FOR (negative, so for_element has no
+                    // element), and its class's Elt gives the element. The
+                    // check is off the path of ordinary loops' iterations.
+                    None => {
+                        let RVal::I(raw) = regs[*idx as usize] else { continue };
+                        if raw >= 0 || (raw - ALT_FOR) as usize >= sv.len() {
+                            continue;
+                        }
+                        flush!();
+                        let r = for_altrep_element(interp, env, *var, sv, (raw - ALT_FOR) as usize);
+                        unbox(tryop!(signal(interp, r)))
+                    }
+                };
+                // (an ALTREP index: ALT_FOR + k + 1, as `i` is `raw`)
                 regs[*idx as usize] = RVal::I(i as i32 + 1);
                 assign!(*var, *slot, elt);
                 pc = *body as usize;

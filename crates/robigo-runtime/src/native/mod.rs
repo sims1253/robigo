@@ -121,6 +121,39 @@ pub trait NativeBridge: Sync {
     /// Run the finalizers registered with `onexit = TRUE` at exit
     /// (memory.c:R_RunExitFinalizers).
     fn run_exit_finalizers(&self, _interp: &mut Interp) {}
+    /// Element `i` of the package ALTREP object behind a registered value
+    /// (`crate::altrep`), from its class: an R value of length one.
+    fn altrep_elt(&self, _interp: &mut Interp, _handle: usize, _i: usize) -> RResult<Value> {
+        Err(Flow::error("robigo: ALTREP classes require the native bridge"))
+    }
+    /// The class's `Sum`/`Min`/`Max`, if it has the method and it answers.
+    fn altrep_summary(
+        &self,
+        _interp: &mut Interp,
+        _handle: usize,
+        _op: crate::altrep::Summary,
+        _narm: bool,
+    ) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    /// The class's `Is_sorted` (`no_na`: `No_NA`), if it has the method.
+    fn altrep_sorted(&self, _interp: &mut Interp, _handle: usize, _no_na: bool) -> RResult<Option<i32>> {
+        Ok(None)
+    }
+    /// The class's `Extract_subset`, if it has the method and it answers.
+    fn altrep_subset(&self, _interp: &mut Interp, _handle: usize, _indx: &Value) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    /// The class info and `Serialized_state`, if the class has the method
+    /// and it answers.
+    fn altrep_serialized(&self, _interp: &mut Interp, _handle: usize) -> RResult<Option<(Value, Value)>> {
+        Ok(None)
+    }
+    /// The class's `Inspect` (memory.c's ALTREP_INSPECT): whether it
+    /// printed the object.
+    fn altrep_inspect(&self, _interp: &mut Interp, _handle: usize, _pre: i32, _deep: i32, _pvec: i32) -> RResult<bool> {
+        Ok(false)
+    }
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
     /// `gctorture()`/`gctorture2()`: set the C heap's forced collections

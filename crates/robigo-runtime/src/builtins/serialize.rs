@@ -75,8 +75,11 @@ fn do_serializeb(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 /// C API's `R_Serialize`, on the interpreter its call runs under.
 pub fn serialize_r(i: &mut Interp, v: &Value, version: i32, format: crate::serialize::Format) -> RResult<Vec<u8>> {
     let g = i.global.clone();
-    let mut read = |f: &Value| -> RResult<Value> { i.call_value(f, vec![], &g) };
-    crate::serialize::serialize_with(v, version, format, None, Some(&mut read))
+    // as in the lazy-load writer: each borrow lasts one closure call
+    let i = std::cell::RefCell::new(i);
+    let mut read = |f: &Value| -> RResult<Value> { i.borrow_mut().call_value(f, vec![], &g) };
+    let mut alt = |h: usize| crate::altrep::serialized_state(&mut i.borrow_mut(), h);
+    crate::serialize::serialize_with(v, version, format, None, Some(&mut read), Some(&mut alt))
 }
 
 /// The `version` argument shared by all entry points (R: `bad version value`).
@@ -581,12 +584,14 @@ fn do_lazy_load_db_insert_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &E
         let mut call_hook =
             |x: &Value| -> RResult<Value> { i.borrow_mut().call_value(&hook, vec![Arg::pos(x.clone())], &g) };
         let mut read = |f: &Value| -> RResult<Value> { i.borrow_mut().call_value(f, vec![], &g) };
+        let mut alt = |h: usize| crate::altrep::serialized_state(&mut i.borrow_mut(), h);
         crate::serialize::serialize_with(
             &value,
             version,
             crate::serialize::Format::Xdr,
             Some(&mut call_hook),
             Some(&mut read),
+            Some(&mut alt),
         )?
     };
     let bytes = match compress {

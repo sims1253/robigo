@@ -1946,13 +1946,20 @@ pub type PersistHook<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
 /// object C shares, so a frame writes the value, not robigo's function.
 pub type OwnedReader<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
 
+/// The class info and `Serialized_state` of a package ALTREP object, by
+/// its handle (`crate::altrep`), or `None` when its class has no state
+/// (R: altrep.c:ALTREP_SERIALIZED_CLASS / ALTREP_SERIALIZED_STATE).
+pub type AltrepState<'a> = &'a mut dyn FnMut(usize) -> RResult<Option<(Value, Value)>>;
+
 pub struct Writer<'a> {
     pub out: Vec<u8>,
     hook: Option<PersistHook<'a>>,
     /// how to read a C-owned binding's value (see [`OwnedReader`])
     owned: Option<OwnedReader<'a>>,
-    /// the first error a callback (the hook or the C-owned reader) raised
-    /// (writing stops being meaningful)
+    /// the serialized state of package ALTREP objects (see [`AltrepState`])
+    altrep: Option<AltrepState<'a>>,
+    /// the first error a callback (the hook, the C-owned reader or the
+    /// ALTREP state) raised (writing stops being meaningful)
     err: Option<Flow>,
     /// Reference table shared by symbols and environments, as in R.
     refs: Vec<RefKey>,
@@ -2191,6 +2198,28 @@ impl Writer<'_> {
         self.int(NILVALUE_SXP as i32);
     }
 
+    /// R: serialize.c:WriteItem — a package ALTREP object whose class gives
+    /// a serialized state in version 3: ALTREP_SXP, the class info, the
+    /// state, the attributes. False: written as an ordinary vector.
+    fn altrep_item(&mut self, v: &Value, levs: u32, obj: bool) -> bool {
+        let Some(h) = crate::altrep::lookup(v) else { return false };
+        let Some(f) = self.altrep.as_mut() else { return false };
+        match f(h) {
+            Ok(Some((info, state))) => {
+                self.flags(ALTREP_SXP, levs, obj, false, false);
+                self.item(&info);
+                self.item(&state);
+                self.attrs(v);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                self.err.get_or_insert(e);
+                true
+            }
+        }
+    }
+
     /// R: serialize.c:OutStringVec
     fn string_vec(&mut self, s: &[RStr]) {
         self.int(0);
@@ -2333,6 +2362,9 @@ impl Writer<'_> {
         let has_attr = v.has_attrs();
         let obj = v.is_object();
         let levs = if v.is_s4() { S4_OBJECT_MASK } else { 0 };
+        if self.version >= 3 && crate::altrep::any() && self.altrep_item(v, levs, obj) {
+            return;
+        }
         match v {
             Value::Null => self.int(NILVALUE_SXP as i32),
             Value::Sym(s) if s.is_empty() => self.int(MISSINGARG_SXP as i32),
@@ -2573,6 +2605,7 @@ pub fn serialize_with<'a>(
     format: Format,
     hook: Option<PersistHook<'a>>,
     owned: Option<OwnedReader<'a>>,
+    altrep: Option<AltrepState<'a>>,
 ) -> RResult<Vec<u8>> {
     // R: serialize.c:R_Serialize — only versions 2 and 3 are written.
     if !(2..=3).contains(&version) {
@@ -2586,6 +2619,7 @@ pub fn serialize_with<'a>(
         },
         hook,
         owned,
+        altrep,
         err: None,
         refs: Vec::new(),
         version,
@@ -2627,13 +2661,13 @@ fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
 /// an interpreter: a C-owned binding is an error here (use the R-level
 /// `builtins::serialize::serialize_r`).
 pub fn serialize_binary(v: &Value, version: i32) -> RResult<Vec<u8>> {
-    serialize_with(v, version, Format::Binary, None, None)
+    serialize_with(v, version, Format::Binary, None, None, None)
 }
 
 /// Serialize to an XDR version-3 stream, without an interpreter (see
 /// [`serialize_binary`]).
 pub fn serialize(v: &Value) -> RResult<Vec<u8>> {
-    serialize_with(v, 3, Format::Xdr, None, None)
+    serialize_with(v, 3, Format::Xdr, None, None, None)
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]
