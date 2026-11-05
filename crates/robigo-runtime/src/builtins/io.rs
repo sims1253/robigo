@@ -1001,6 +1001,10 @@ pub fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
 /// con_close1, and con_destroy's `free`). The caller has closed it if it
 /// needed closing.
 fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
+    // (an invalid number: the open that failed on it said so)
+    if n < 0 || n as usize >= i.conns.table.len() {
+        return Ok(());
+    }
     let r = match i.conns.table[n as usize].as_deref().map(|c| &c.kind) {
         Some(ConnKind::Native { .. }) => native_bridge().and_then(|b| b.conn_destroy(i, n)),
         // R: connections.c null_destroy, text_destroy, outtext_destroy:
@@ -1210,13 +1214,9 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     }
     let con = i.conns.get(n)?;
     let mut raw_bytes: Option<Vec<u8>> = None;
-    let mut native = false;
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Native { .. } => {
-            native = true;
-            Ok(())
-        }
+        ConnKind::Native { .. } => return native_bridge()?.conn_vfprintf(i, n, text),
         ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
             if !*writing {
@@ -1267,9 +1267,6 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             Ok(())
         }
     }?;
-    if native {
-        return native_bridge()?.conn_vfprintf(i, n, text);
-    }
     if let Some(bytes) = raw_bytes {
         con_write_bytes(i, n, &bytes)?;
     }
@@ -1486,6 +1483,10 @@ pub fn connection_with_id(i: &Interp, id: usize) -> Option<i32> {
 /// C `struct Rconn` at `con`, whose `con->id` is `id` (from
 /// [`next_connection_id`]). The bridge copies the struct's fields in.
 pub fn install_native_connection(i: &mut Interp, n: i32, class: &str, description: &str, con: usize, id: usize) {
+    debug_assert!(
+        (3..NCONNECTIONS as i32).contains(&n) && i.conns.table[n as usize].is_none(),
+        "install_native_connection: slot {n} is not a free connection slot"
+    );
     let mut c = Connection::new(class, description, "", ConnKind::Native { con });
     c.id = id;
     i.conns.table[n as usize] = Some(Box::new(c));
@@ -2701,58 +2702,55 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
 // consumed from the OS file)
 fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
     use std::io::Seek;
-    {
-        let (canread, canwrite) = (con.canread, con.canwrite);
-        let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind
-        else {
-            return Ok(0.0);
-        };
-        let _ = flush_file_wbuf(f, wbuf);
-        // make sure both positions are set
-        let os_pos = f.stream_position().unwrap_or(0);
-        if *last_was_write {
-            *wpos = os_pos;
-        } else {
-            *frpos = os_pos - (rbuf.len() - *rb) as u64;
-        }
-        let mut pos = if *last_was_write { *wpos } else { *frpos };
-        if rw == 1 {
-            if !canread {
-                return Err(Flow::error("connection is not open for reading"));
-            }
-            pos = *frpos;
-            *last_was_write = false;
-        }
-        if rw == 2 {
-            if !canwrite {
-                return Err(Flow::error("connection is not open for writing"));
-            }
-            pos = *wpos;
-            *last_was_write = true;
-        }
-        if r#where.is_nan() {
-            return Ok(pos as f64);
-        }
-        let whence = match origin {
-            2 => std::io::SeekFrom::Current(r#where as i64),
-            3 => std::io::SeekFrom::End(r#where as i64),
-            _ => std::io::SeekFrom::Start(r#where as u64),
-        };
-        // SEEK_CUR is relative to the logical position, not the buffer's end
-        if let std::io::SeekFrom::Current(_) = whence {
-            let logical = os_pos - (rbuf.len() - *rb) as u64;
-            let _ = f.seek(std::io::SeekFrom::Start(logical));
-        }
-        rbuf.clear();
-        *rb = 0;
-        let new = f.seek(whence).unwrap_or(0);
-        if *last_was_write {
-            *wpos = new;
-        } else {
-            *frpos = new;
-        }
-        Ok(pos as f64)
+    let (canread, canwrite) = (con.canread, con.canwrite);
+    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+        return Ok(0.0);
+    };
+    let _ = flush_file_wbuf(f, wbuf);
+    // make sure both positions are set
+    let os_pos = f.stream_position().unwrap_or(0);
+    if *last_was_write {
+        *wpos = os_pos;
+    } else {
+        *frpos = os_pos - (rbuf.len() - *rb) as u64;
     }
+    let mut pos = if *last_was_write { *wpos } else { *frpos };
+    if rw == 1 {
+        if !canread {
+            return Err(Flow::error("connection is not open for reading"));
+        }
+        pos = *frpos;
+        *last_was_write = false;
+    }
+    if rw == 2 {
+        if !canwrite {
+            return Err(Flow::error("connection is not open for writing"));
+        }
+        pos = *wpos;
+        *last_was_write = true;
+    }
+    if r#where.is_nan() {
+        return Ok(pos as f64);
+    }
+    let whence = match origin {
+        2 => std::io::SeekFrom::Current(r#where as i64),
+        3 => std::io::SeekFrom::End(r#where as i64),
+        _ => std::io::SeekFrom::Start(r#where as u64),
+    };
+    // SEEK_CUR is relative to the logical position, not the buffer's end
+    if let std::io::SeekFrom::Current(_) = whence {
+        let logical = os_pos - (rbuf.len() - *rb) as u64;
+        let _ = f.seek(std::io::SeekFrom::Start(logical));
+    }
+    rbuf.clear();
+    *rb = 0;
+    let new = f.seek(whence).unwrap_or(0);
+    if *last_was_write {
+        *wpos = new;
+    } else {
+        *frpos = new;
+    }
+    Ok(pos as f64)
 }
 
 // R: connections.c raw_seek
