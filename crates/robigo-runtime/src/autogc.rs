@@ -74,7 +74,10 @@ pub fn heap_bytes() -> isize {
 /// collection is due; the next safe point runs it.
 // R: memory.c:allocVector3's `VHEAP_FREE() < alloc_size`
 pub fn heartbeat() {
-    if !DUE.load(Relaxed) && heap_bytes() >= TRIGGER.load(Relaxed) {
+    // (not while a collection runs: building its graph allocates, and the
+    // heap is sized for what is left once it is done)
+    if !DUE.load(Relaxed) && !COLLECTING.try_with(|c| c.get()).unwrap_or(true) && heap_bytes() >= TRIGGER.load(Relaxed)
+    {
         DUE.store(true, Relaxed);
     }
 }
@@ -160,7 +163,6 @@ pub fn collect(interp: &mut Interp) {
     if COLLECTING.with(|c| c.replace(true)) {
         return;
     }
-    DUE.store(false, Relaxed);
     let log = std::env::var_os("ROBIGO_CYCLES_LOG").is_some();
     let (t0, before) = (std::time::Instant::now(), if log { heap_bytes() } else { 0 });
     // (as gc(): implementation caches are weak in R, see misc.rs do_gc)
@@ -178,6 +180,7 @@ pub fn collect(interp: &mut Interp) {
             crate::reachability::reclaim_cycles();
         }
     }
+    DUE.store(false, Relaxed);
     adjust();
     if log {
         eprintln!(
