@@ -623,6 +623,7 @@
   Rdqagi;
   Rdqags;
   Rf_AdobeSymbol2ucs2;
+  Rf_AdobeSymbol2utf8;
   Rf_CreateAtVector;
   Rf_EncodeChar;
   Rf_EncodeComplex;
@@ -992,6 +993,7 @@
   Rf_unprotect;
   Rf_unprotect_ptr;
   Rf_utf8Toutf8NoPUA;
+  Rf_utf8toAdobeSymbol;
   Rf_utf8toucs;
   Rf_utf8toucs32;
   Rf_utf8towcs;
@@ -1184,6 +1186,7 @@
   mbcsTruncateToValid;
   mbcsValid;
   mbcslocale;
+  mbrtoint;
   names;
   nmmin;
   norm_rand;

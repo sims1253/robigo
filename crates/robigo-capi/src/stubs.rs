@@ -11,7 +11,6 @@ pub static STUBS: &[&str] = &[
     "R_EditFiles",
     "R_GetVarLocMISSING",
     "R_ShowMessage",
-    "R_cairoCdynload",
     "R_checkActivity",
     "R_deferred_default_method",
     "R_execMethod",
@@ -28,7 +27,6 @@ pub static STUBS: &[&str] = &[
     "R_tryCatchError",
     "R_withCallingErrorHandler",
     "Rf_memtrace_report",
-    "Rf_utf8Toutf8NoPUA",
     "do_Rprof",
     "do_Rprofmem",
     "do_edit",
@@ -36,7 +34,6 @@ pub static STUBS: &[&str] = &[
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
     "getPRIMNAME",
-    "utf8Valid",
 ];
 
 #[unsafe(no_mangle)]
@@ -55,11 +52,6 @@ pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
     not_implemented("R_ShowMessage")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_cairoCdynload() {
-    not_implemented("R_cairoCdynload")
 }
 
 #[unsafe(no_mangle)]
@@ -146,11 +138,6 @@ pub unsafe extern "C" fn Rf_memtrace_report() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Rf_utf8Toutf8NoPUA() {
-    not_implemented("Rf_utf8Toutf8NoPUA")
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprof() {
     not_implemented("do_Rprof")
 }
@@ -208,8 +195,3 @@ pub static mut ptr_do_dataviewer: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub static mut ptr_do_selectlist: [usize; 4] = [0; 4];
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn utf8Valid() {
-    not_implemented("utf8Valid")
-}

@@ -135,8 +135,9 @@ jobs:
         run: |
           mkdir -p dist/natives
           cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" dist/
+          # each base package's shared object, and grDevices' cairo module
           for d in .robigo/natives/*/; do
-            p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d$p.so" "dist/natives/$p/"
+            p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d"*.so "dist/natives/$p/"
           done
           cp -r .robigo/rdbflat dist/rdbflat
       - uses: actions/upload-artifact@v7

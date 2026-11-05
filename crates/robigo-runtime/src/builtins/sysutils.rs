@@ -66,13 +66,30 @@ pub static DEFS: &[Builtin] = &[
     internal("capabilitiesX11", do_capabilities_x11, 0),
 ];
 
+/// What GNU R's configure decided for the cairo module this R_HOME has
+/// (scripts/build-natives.sh builds it only where configure found a
+/// working cairo): HAVE_WORKING_CAIRO, then HAVE_PNG, HAVE_JPEG and
+/// HAVE_TIFF, read off the library functions its bitmap writers import
+/// (src/modules/X11/rbitmap.c compiles them only with those defines).
+fn cairo_build() -> [bool; 4] {
+    static BUILD: std::sync::OnceLock<[bool; 4]> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let Some(module) = crate::native::cairo_module() else { return [false; 4] };
+        let found =
+            crate::native::dynamic_names(&module, &[b"png_create_write_struct", b"jpeg_CreateCompress", b"TIFFOpen"]);
+        [true, found[0], found[1], found[2]]
+    })
+}
+
 /// What this build of robigo supports, in GNU R's order.
-// R: platform.c:do_capabilities
+// R: platform.c:do_capabilities — jpeg, png and tiff on Unix come from
+// the cairo module (HAVE_WORKING_CAIRO), as robigo has no X11 module.
 fn do_capabilities(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let [cairo, png, jpeg, tiff] = cairo_build();
     let caps: [(&str, bool); 19] = [
-        ("jpeg", false),
-        ("png", false),
-        ("tiff", false),
+        ("jpeg", jpeg),
+        ("png", png),
+        ("tiff", tiff),
         ("tcltk", false),
         ("X11", false),
         ("aqua", false),
@@ -85,7 +102,7 @@ fn do_capabilities(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
         ("NLS", false),
         ("Rprof", false),
         ("profmem", false),
-        ("cairo", false),
+        ("cairo", cairo),
         ("ICU", false),
         ("long.double", true),
         ("libcurl", false),

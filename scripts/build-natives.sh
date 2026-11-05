@@ -70,6 +70,12 @@ if [ ! -f "$build/src/include/config.h" ] && [ ! -x "$(command -v curl-config)" 
     LDFLAGS="${LDFLAGS:-} -L$p/usr/lib/$(gcc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)"
     export CPPFLAGS LDFLAGS
 fi
+# A tree configured before cairo's headers were installed has no cairo
+# devices (HAVE_WORKING_CAIRO): configure it again once they are there.
+if [ -f "$build/src/include/config.h" ] && ! grep -q '^#define HAVE_WORKING_CAIRO' "$build/src/include/config.h" &&
+    pkg-config --exists cairo 2> /dev/null; then
+    rm -f "$build/src/include/config.h"
+fi
 if [ ! -f "$build/src/include/config.h" ]; then
     mkdir -p "$build"
     (cd "$build" && "$RSRC/configure" --with-x=no --without-recommended-packages \
@@ -110,6 +116,42 @@ sources() {
     # out the rest of the line
     sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$1" | sed -n "s/^$2 *= *//p" |
         sed -e 's/@BUILD_AQUA_TRUE@/#/' -e 's/#.*//'
+}
+
+# a substitution configure made (config.status), e.g. CAIRO_CPPFLAGS;
+# long values are split over lines as "part"\ / "part"
+subst() {
+    sed -n "/^S\[\"$1\"\]=/{
+        :a
+        /\\\\$/{N; s/\"\\\\\n\"//; ba
+        }
+        s/^[^=]*=\"//; s/\"$//; p
+    }" "$build/config.status"
+}
+
+# grDevices' cairo devices live in a module of their own, cairo.so next to
+# grDevices.so, which R_cairoCdynload loads on the first cairo device
+# (src/library/grDevices/src/cairo/Makefile.in: cairoBM.c and X11's
+# rbitmap.o, with configure's CAIRO_CPPFLAGS, CAIRO_LIBS and BITMAP_LIBS).
+# Built only where configure found a working cairo, as in GNU R.
+cairo_module() {
+    grep -q '^#define HAVE_WORKING_CAIRO' "$build/src/include/config.h" || {
+        echo "build-natives: no cairo (install libcairo2-dev and libpango1.0-dev): no cairo devices" >&2
+        return 0
+    }
+    csrc=$RSRC/src/library/grDevices/src/cairo
+    cobj=$out/grDevices/cairo-obj
+    rm -rf "$cobj" && mkdir -p "$cobj"
+    for f in "$csrc/cairoBM.c" "$RSRC/src/modules/X11/rbitmap.c"; do
+        $CC $CFLAGS -DTESTING_WRITE_BARRIER -DHAVE_CONFIG_H -I"$build/src/include" \
+            -I"$RSRC/src/include" -I"$RSRC/src/main" $(subst CAIRO_CPPFLAGS) $(subst BITMAP_CPPFLAGS) \
+            -I"$RSRC/src/modules/X11" -I"$csrc" -c "$f" -o "$cobj/$(basename "${f%.c}").o" 2>> "$cobj/cc.log"
+    done
+    # the marker robigo looks for before loading it (native::cairo_module)
+    echo 'int robigo_base_native = 1;' > "$cobj/robigo-marker.c"
+    $CC $CFLAGS -c "$cobj/robigo-marker.c" -o "$cobj/robigo-marker.o"
+    $CC -shared -o "$out/grDevices/cairo.so" "$cobj"/*.o $(subst BITMAP_LIBS) $(subst CAIRO_LIBS) $LINKFLAGS
+    echo "build-natives: $out/grDevices/cairo.so"
 }
 
 for pkg in $pkgs; do
@@ -168,4 +210,5 @@ EOF
     if grep -qE 'BLAS_LIBS|LAPACK_LIBS' "$src/Makefile.in"; then linalg=$LINALG; fi
     $CC -shared -o "$out/$pkg/$pkg.so" "$obj"/*.o $pkglibs $LINKFLAGS $linalg $FLIBS
     echo "build-natives: $out/$pkg/$pkg.so"
+    if [ "$pkg" = grDevices ]; then cairo_module; fi
 done

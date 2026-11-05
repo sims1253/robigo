@@ -96,6 +96,10 @@ for p in "$gnu"/library/*; do
             [ "$(basename "$f")" = libs ] || ln -s "$f" "$dest/library/$pkg/"
         done
         cp "$so" "$dest/library/$pkg/libs/"
+        # grDevices' cairo module (R_cairoCdynload loads it from there)
+        for m in "$natives/$pkg"/*.so; do
+            [ "$m" = "$so" ] || cp "$m" "$dest/library/$pkg/libs/"
+        done
         echo "robigo home: $pkg's native code built for robigo"
     else
         ln -s "$p" "$dest/library/$pkg"
