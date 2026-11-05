@@ -40,6 +40,7 @@ pub fn install() {
 
 struct FinalizerContext {
     frames: Vec<robigo_runtime::interp::Context>,
+    srcrefs: (robigo_runtime::interp::SrcPos, Vec<(usize, robigo_runtime::interp::SrcPos)>),
     handlers: robigo_runtime::conditions::HandlerStack,
     global_handlers: robigo_runtime::conditions::HandlerStack,
     restarts: robigo_runtime::conditions::RestartStack,
@@ -60,12 +61,13 @@ thread_local! {
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
     /// proxy handle -> (identity, the runtime object)
     static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::new());
-    /// Proxy (environment, external pointer, closure) -> its attribute
-    /// cells when the two sides last agreed (see [`push_attrs`],
-    /// [`write_back`]); empty if absent. Addresses, not values: a
+    /// Core object (a proxy, or the conversion of a vector, call or
+    /// pairlist while SEEN or STORED holds it) -> its attribute cells when
+    /// the two sides last agreed (see [`push_attrs`], [`write_back`]);
+    /// empty if absent. Addresses, not values: a
     /// reference from here would count as the runtime holding what the
     /// attributes refer to.
-    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced>> = RefCell::new(HashMap::new());
+    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced, robigo_runtime::env::FastHash>> = RefCell::new(HashMap::default());
     /// A `push_attrs` is running: attributes can refer back to the object.
     static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
     static NEXT_HANDLE: Cell<usize> = const { Cell::new(1) };
@@ -75,8 +77,14 @@ thread_local! {
     static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
     static READY: Cell<bool> = const { Cell::new(false) };
     /// handler stacks hidden by R_ToplevelExec
-    static TOPLEVEL: RefCell<Vec<(Vec<robigo_runtime::interp::Context>, robigo_runtime::conditions::HandlerStack)>> =
-        const { RefCell::new(Vec::new()) };
+    #[allow(clippy::type_complexity)]
+    static TOPLEVEL: RefCell<
+        Vec<(
+            Vec<robigo_runtime::interp::Context>,
+            robigo_runtime::conditions::HandlerStack,
+            Vec<(usize, robigo_runtime::interp::SrcPos)>,
+        )>,
+    > = const { RefCell::new(Vec::new()) };
     /// Identity within a native call: a runtime vector converted twice is
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
@@ -283,8 +291,14 @@ unsafe extern "C" fn release_proxy(handle: usize) {
 unsafe fn remember_stored(x: Sexp, v: &Value) {
     if let Some(k) = vector_identity(v) {
         core().preserve(x);
+        // `v` has `x`'s attributes now (it is `x` converted, or `x` is its
+        // conversion)
+        agree_attrs(x);
         if let Some((old, _)) = STORED.with(|m| m.borrow_mut().insert(k, (x, v.clone()))) {
             core().release(old);
+            if old != x {
+                forget_attrs(old);
+            }
         }
     }
 }
@@ -294,7 +308,6 @@ fn only_stored(v: &Value) -> bool {
     match v {
         Value::Env(e) => Rc::strong_count(&e.0) == 1,
         Value::Closure(x) => Rc::strong_count(x) == 1,
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(x) => Rc::strong_count(x) == 1,
         Value::Promise(x) => Rc::strong_count(x) == 1,
         Value::ExtPtr(x) => Rc::strong_count(x) == 1,
@@ -324,6 +337,7 @@ unsafe fn sweep_stored() -> usize {
     let mut released = dead.len();
     for x in dead {
         core().release(x);
+        forget_attrs(x);
     }
     let unpinned: Vec<Sexp> = PINNED.with(|p| {
         let mut p = p.borrow_mut();
@@ -479,7 +493,6 @@ fn identity(v: &Value) -> Option<(usize, u8)> {
     Some(match v {
         Value::Env(e) => (Rc::as_ptr(&e.0) as *const u8 as usize, ENVSXP),
         Value::Closure(c) => (Rc::as_ptr(c) as *const u8 as usize, CLOSXP),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(b) => (Rc::as_ptr(b) as *const u8 as usize, BCODESXP),
         Value::Promise(p) => (Rc::as_ptr(p) as *const u8 as usize, PROMSXP),
         Value::Builtin(b) => (
@@ -519,7 +532,6 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // "type")
     let attrs = match v {
         Value::Closure(_) => v.attrs().cloned(),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => v.attrs().cloned(),
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
@@ -565,8 +577,36 @@ struct Synced {
 }
 
 unsafe fn attrs_agreed(x: Sexp) -> bool {
-    let cells = attr_cells(x);
-    SYNCED_ATTRS.with(|m| m.borrow().get(&x.addr()).map_or(cells.is_empty(), |c| c.cells == cells))
+    // (compared in place: this runs for every object a call writes back)
+    let none =
+        x.typ() == CHARSXP || ((x.attrib_raw() == R_NilValue || x.attrib_raw().is_null()) && x.gp() & gp::S4 == 0);
+    SYNCED_ATTRS.with(|m| {
+        let m = m.borrow();
+        let Some(c) = m.get(&x.addr()) else { return none };
+        if none {
+            return c.cells.is_empty();
+        }
+        let mut want = c.cells.iter();
+        let mut a = x.attrib_raw();
+        while a != R_NilValue && !a.is_null() {
+            if want.next() != Some(&(a.tag().addr(), a.car().addr())) {
+                return false;
+            }
+            a = a.cdr();
+        }
+        if x.gp() & gp::S4 != 0 && want.next() != Some(&(0, 0)) {
+            return false;
+        }
+        want.next().is_none()
+    })
+}
+
+/// [`agree_attrs`] for a fresh conversion: nothing to record (and nothing
+/// to forget) when it has no attributes.
+unsafe fn agree_converted(x: Sexp) {
+    if (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0 {
+        agree_attrs(x);
+    }
 }
 
 /// The two sides agree on `x`'s attributes as they are now. For a proxy,
@@ -830,7 +870,6 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 let held = match value {
                     Value::Env(e) => Rc::strong_count(&e.0) > 1,
                     Value::Closure(f) => Rc::strong_count(f) > 1,
-                    #[cfg(feature = "bytecode-fidelity")]
                     Value::Bytecode(b) => Rc::strong_count(b) > 1,
                     Value::ExtPtr(p) => Rc::strong_count(p) > 1,
                     _ => false,
@@ -1110,6 +1149,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
+            agree_converted(r);
             return r;
         }
         Value::Lang(l) => {
@@ -1124,6 +1164,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
+            agree_converted(r);
             return r;
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => {
@@ -1139,7 +1180,6 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return args_list(d, DOTSXP);
         }
         Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => return proxy(v),
         Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
@@ -1149,6 +1189,8 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
     if v.is_s4() {
         SET_S4_OBJECT(x);
     }
+    // what `write_back` compares the routine's writes with
+    agree_converted(x);
     x
 }
 
@@ -1811,6 +1853,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             with_interp(|i| {
                 let saved = FinalizerContext {
                     frames: std::mem::take(&mut i.frames),
+                    srcrefs: (i.srcref.take(), std::mem::take(&mut i.srcref_saved)),
                     handlers: i.handlers.take(),
                     global_handlers: i.global_handlers.take(),
                     restarts: i.restarts.take(),
@@ -1825,6 +1868,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             if let Some(saved) = FINALIZER_CONTEXTS.with(|s| s.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = saved.frames;
+                    (i.srcref, i.srcref_saved) = saved.srcrefs;
                     i.handlers = saved.handlers;
                     i.global_handlers = saved.global_handlers;
                     i.restarts = saved.restarts;
@@ -1836,15 +1880,16 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "toplevelBegin" => {
             with_interp(|i| {
-                let saved = (std::mem::take(&mut i.frames), i.handlers.take());
+                let saved = (std::mem::take(&mut i.frames), i.handlers.take(), std::mem::take(&mut i.srcref_saved));
                 TOPLEVEL.with(|t| t.borrow_mut().push(saved))
             });
             R_NilValue
         }
         "toplevelEnd" => {
-            if let Some((frames, h)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
+            if let Some((frames, h, srcrefs)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = frames;
+                    i.srcref_saved = srcrefs;
                     i.handlers = h;
                 });
             }
@@ -1877,9 +1922,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 0) => to_sexp(b.code()),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value() {
@@ -1941,24 +1984,13 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         }
         (Value::Closure(c), 1) => {
             let p = Rc::as_ptr(c).cast_mut();
+            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y));
+            retire(&raw mut (*p).body, body);
             #[cfg(feature = "bytecode-fidelity")]
-            match from_sexp(y) {
-                Value::Bytecode(b) => {
-                    retire(&raw mut (*p).body, b.expression.clone());
-                    retire(&raw mut (*p).gnu_bytecode, Some(b));
-                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
-                }
-                val => {
-                    retire(&raw mut (*p).body, val);
-                    retire(&raw mut (*p).gnu_bytecode, None);
-                    (*p).jit = Default::default();
-                }
-            }
+            retire(&raw mut (*p).gnu_bytecode, code);
             #[cfg(not(feature = "bytecode-fidelity"))]
-            {
-                retire(&raw mut (*p).body, from_sexp(y));
-                (*p).jit = Default::default();
-            }
+            drop(code);
+            (*p).jit = jit;
             retire_code(p);
         }
         (Value::Closure(c), 2) => {
@@ -2220,6 +2252,35 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>
     items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
 }
 
+/// The attribute cells of `x` are those of `attrs`' conversion: what C
+/// wrote into the attribute values themselves comes back in place.
+unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usize, Value>) {
+    let Some(a) = attrs.as_deref() else { return };
+    if x.typ() == CHARSXP {
+        return;
+    }
+    let mut cell = x.attrib_raw();
+    for (name, value) in &a.0 {
+        if cell == R_NilValue || cell.is_null() || cell.tag().typ() != SYMSXP || sym_of(cell.tag()) != *name {
+            return;
+        }
+        // (an object this call converted is written back on its own)
+        if !originals.contains_key(&cell.car().addr()) {
+            write_back(value, cell.car(), originals);
+        }
+        cell = cell.cdr();
+    }
+}
+
+/// The attributes of a cons cell as a runtime attribute box (with its S4 bit).
+unsafe fn cells_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+    let mut attrs = attrs_converted(x, originals);
+    if x.gp() & gp::S4 != 0 {
+        attrs.get_or_insert_with(Default::default).1 = true;
+    }
+    attrs
+}
+
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
@@ -2256,11 +2317,19 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             None => None,
         }
     }
+    // Only what the routine wrote: the attribute cells are compared with
+    // those of the conversion (`agree_attrs`); converting unchanged cells
+    // back would make new objects of the same values.
     unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
+        if attrs_agreed(x) {
+            attr_values_back(&rc.attrs, x, originals);
+            return;
+        }
         let new = box_attrs(x, originals);
         if !same_attrs(&rc.attrs, &new) {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }
+        agree_attrs(x);
     }
     // Only what the routine changed is stored, in the buffer the object
     // has: this runs on every argument of every call, and the running R
@@ -2310,10 +2379,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         // is rewritten in place: every alias keeps the object and sees it.
         Value::Pairlist(rc) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
             let items = pair_items_converted(x, originals);
-            let mut attrs = attrs_converted(x, originals);
-            if x.gp() & gp::S4 != 0 {
-                attrs.get_or_insert_with(Default::default).1 = true;
+            let agreed = attrs_agreed(x);
+            if agreed {
+                attr_values_back(&rc.attrs, x, originals);
             }
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
             let p = Rc::as_ptr(rc).cast_mut();
             if items.len() != rc.items.len() {
                 retire_copy(&raw mut (*p).items);
@@ -2322,6 +2392,9 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 retire_copy(&raw mut (*p).attrs);
             }
             v.set_pairlist_cells_through_alias(items, attrs);
+            if !agreed {
+                agree_attrs(x);
+            }
         }
         // R: memory.c:SETCAR/SET_TAG on a DOTSXP chain: the routine wrote
         // the cells of the `...` it was handed or found in a frame
@@ -2337,10 +2410,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             let fun = converted(x.car(), originals);
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
             let args = pair_items_converted(x.cdr(), originals);
-            let mut attrs = attrs_converted(x, originals);
-            if x.gp() & gp::S4 != 0 {
-                attrs.get_or_insert_with(Default::default).1 = true;
+            let agreed = attrs_agreed(x);
+            if agreed {
+                attr_values_back(&rc.attrs, x, originals);
             }
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
             let p = Rc::as_ptr(rc).cast_mut();
             if args.len() != rc.args.len() {
                 retire_copy(&raw mut (*p).args);
@@ -2349,6 +2423,9 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 retire_copy(&raw mut (*p).attrs);
             }
             v.set_lang_cells_through_alias(fun, fun_tag, args, attrs);
+            if !agreed {
+                agree_attrs(x);
+            }
         }
         Value::Lgl(rc) | Value::Int(rc) => back(rc, x),
         Value::Real(rc) => back(rc, x),
@@ -2381,7 +2458,6 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
         }
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) if !attrs_agreed(x) => {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
@@ -2444,7 +2520,25 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
+    check_result(out)?;
     converting(interp, || from_sexp(out))
+}
+
+/// A routine that returns no object (one declared void but registered for
+/// .Call, as rlang's r_on_exit test routine is) leaves whatever its last
+/// call left in the return register; GNU R keeps that pointer unread
+/// unless R uses the value. robigo converts every result, so every path
+/// that converts one first checks that the pointer is in its heap at all.
+/// (Inside the heap a stale object is #389's to fix: rlang's rlang_zap
+/// static still reads as the zap object there.)
+unsafe fn check_result(out: Sexp) -> RResult<()> {
+    if !out.is_null() && out != R_NilValue && !crate::state::core().in_heap(out.addr()) {
+        return Err(Flow::error(format!(
+            "robigo: a native routine returned {:#x}, which is not an R object (a routine declared void?)",
+            out.addr()
+        )));
+    }
+    Ok(())
 }
 
 /// A list or call cell that `.Call` returned and that came from the runtime:
@@ -2477,8 +2571,14 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         d.get() == 0
     }) {
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
-        for (_, (x, _)) in seen {
+        for (k, (x, _)) in seen {
             core().release(x);
+            // the agreement of an object with attributes (`write_back`
+            // forgets the others); a value C stored keeps its own
+            let attributed = (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0;
+            if attributed && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
+                forget_attrs(x);
+            }
         }
         if kept_count() > SWEEP_AT.with(|c| c.get()) {
             sweep_stored();
@@ -2528,6 +2628,9 @@ unsafe fn call_routine_ctx(
         interp.restarts = restarts;
         return r;
     }
+    if interp.srcref.is_some() {
+        interp.srcref_begin(false);
+    }
     interp.frames.push(robigo_runtime::interp::Context {
         call: call.clone(),
         function: Value::Null,
@@ -2540,12 +2643,16 @@ unsafe fn call_routine_ctx(
         generic: false,
         builtin: true,
     });
+    // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
+    // so what it calls back reports no srcref
+    interp.srcref = robigo_runtime::interp::null_srcref();
     let r = call_routine_in(interp, call, r, args, env);
     let r = match r {
         Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
         other => other,
     };
     let ctx = interp.frames.pop().unwrap();
+    interp.srcref_ended(interp.frames.len());
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
     r
@@ -2671,6 +2778,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
         if t != 0 {
             return Err(take_flow(t));
         }
+        check_result(out)?;
         return Ok(original_cell(out, &originals).unwrap_or_else(|| from_sexp(out)));
     }
     let back = converting_in_context(interp, || write_backs(args, &xs));
