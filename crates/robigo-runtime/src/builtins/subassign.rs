@@ -736,6 +736,41 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
             }
         }
     }
+    // `x[, , i] <- y`: whole leading dimensions, then in-range scalars,
+    // select one contiguous block, which a same-typed `y` of its length
+    // fills in order (as the general path below would).
+    let lead = subs.iter().take_while(|s| is_missing_or_empty(s)).count();
+    if lead >= 1 && lead < k {
+        let mut base = 0usize;
+        let mut stride = 1usize;
+        let mut ok = true;
+        for i in 0..k {
+            if i >= lead {
+                match as_scalar_index(&subs[i]) {
+                    Some(idx) if idx >= 1 && idx <= dims[i] as i64 => base += (idx - 1) as usize * stride,
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            stride *= dims[i] as usize;
+        }
+        let len: usize = dims[..lead].iter().map(|&d| d as usize).product();
+        if ok && ny == len && len > 0 {
+            match (&mut *x, &y) {
+                (Value::Real(a), Value::Real(b)) => {
+                    Rc::make_mut(a).data[base..base + len].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                (Value::Int(a), Value::Int(b)) => {
+                    Rc::make_mut(a).data[base..base + len].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
     let mut sub_idx = Vec::with_capacity(k);
     for i in 0..k {
         sub_idx.push(array_subscript(interp, i, &subs[i], &dims, x, Some(call))?);

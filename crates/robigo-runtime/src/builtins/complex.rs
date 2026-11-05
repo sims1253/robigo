@@ -322,6 +322,267 @@ fn cmul_recover<T: CArith>([a, b, c, d]: [f64; 4], [ac, bd, ad, bc]: [f64; 4], m
     Complex::new(x, y)
 }
 
+/// [`cmul`] on two lanes at once, `cmul(x[k], y[k])`, with the same
+/// result bits: the arithmetic is the packed form of the same SSE2
+/// instructions (each lane follows the scalar rules, so NaN payloads
+/// survive as in `cmul`), and `__muldc3`'s recovery runs on both lanes
+/// without branches, its result kept where a lane needs it.
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod pair {
+    use crate::value::Complex;
+    use core::arch::x86_64 as x86;
+    use core::arch::x86_64::__m128d as V;
+
+    const ADD: u8 = 0;
+    const SUB: u8 = 1;
+    const MUL: u8 = 2;
+
+    // Safe wrappers of the SSE2 intrinsics used here. SAFETY (for every
+    // `unsafe` block of this module): SSE2 is part of the x86-64 baseline,
+    // and these operate on registers only.
+
+    /// `d OP s` on both lanes, `d` the destination operand.
+    #[inline(always)]
+    fn op<const OP: u8>(mut d: V, s: V) -> V {
+        // SAFETY: see above.
+        unsafe {
+            match OP {
+                ADD => {
+                    core::arch::asm!("addpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+                SUB => {
+                    core::arch::asm!("subpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+                _ => {
+                    core::arch::asm!("mulpd {d}, {s}", d = inout(xmm_reg) d, s = in(xmm_reg) s, options(pure, nomem, nostack, preserves_flags))
+                }
+            }
+        }
+        d
+    }
+
+    #[inline(always)]
+    fn and(a: V, b: V) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_and_pd(a, b) }
+    }
+
+    #[inline(always)]
+    fn or(a: V, b: V) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_or_pd(a, b) }
+    }
+
+    /// `!a & b`
+    #[inline(always)]
+    fn andnot(a: V, b: V) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_andnot_pd(a, b) }
+    }
+
+    #[inline(always)]
+    fn splat(x: f64) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_set1_pd(x) }
+    }
+
+    #[inline(always)]
+    fn bits(x: u64) -> V {
+        splat(f64::from_bits(x))
+    }
+
+    #[inline(always)]
+    fn any(m: V) -> bool {
+        // SAFETY: see above.
+        unsafe { x86::_mm_movemask_pd(m) != 0 }
+    }
+
+    #[inline(always)]
+    fn sel(m: V, a: V, b: V) -> V {
+        or(and(m, a), andnot(m, b))
+    }
+
+    #[inline(always)]
+    fn isnan(v: V) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_cmpunord_pd(v, v) }
+    }
+
+    #[inline(always)]
+    fn isinf(v: V) -> V {
+        // SAFETY: see above.
+        unsafe { x86::_mm_cmpeq_pd(and(v, bits(0x7fff_ffff_ffff_ffff)), splat(f64::INFINITY)) }
+    }
+
+    /// `copysign(m ? 1 : 0, v)`.
+    #[inline(always)]
+    fn sign_one(m: V, v: V) -> V {
+        or(and(m, splat(1.0)), and(v, bits(1 << 63)))
+    }
+
+    /// `v`, with the lanes in `m` that are NaN replaced by `copysign(0, v)`.
+    #[inline(always)]
+    fn nan_to_zero(m: V, v: V) -> V {
+        sel(and(m, isnan(v)), and(v, bits(1 << 63)), v)
+    }
+
+    /// The real and imaginary parts of two complex numbers, as two lanes each.
+    #[cfg(test)]
+    #[inline(always)]
+    pub fn split(x: [Complex; 2]) -> (V, V) {
+        // SAFETY: see above.
+        unsafe { (x86::_mm_set_pd(x[1].re, x[0].re), x86::_mm_set_pd(x[1].im, x[0].im)) }
+    }
+
+    #[inline(always)]
+    pub fn join(re: V, im: V) -> [Complex; 2] {
+        // SAFETY: see above.
+        unsafe {
+            let hi = |v: V| x86::_mm_cvtsd_f64(x86::_mm_unpackhi_pd(v, v));
+            [Complex::new(x86::_mm_cvtsd_f64(re), x86::_mm_cvtsd_f64(im)), Complex::new(hi(re), hi(im))]
+        }
+    }
+
+    /// `cmul` (see `cmul_impl` and `cmul_recover`) on parts as lanes.
+    // R: libgcc2.c:__muldc3
+    #[inline(always)]
+    pub fn mul(a: V, b: V, c: V, d: V) -> (V, V) {
+        let ac = op::<MUL>(a, c);
+        let bd = op::<MUL>(b, d);
+        let ad = op::<MUL>(a, d);
+        let bc = op::<MUL>(c, b);
+        let x = op::<SUB>(ac, bd);
+        let y = op::<ADD>(ad, bc);
+        let need = and(isnan(x), isnan(y));
+        if !any(need) {
+            return (x, y);
+        }
+        recover(need, [a, b, c, d], [ac, bd, ad, bc], x, y)
+    }
+
+    #[inline(always)]
+    fn recover(need: V, [a, b, c, d]: [V; 4], [ac, bd, ad, bc]: [V; 4], x: V, y: V) -> (V, V) {
+        // if (isinf (a) || isinf (b)): box the infinity, NaNs of the other
+        // factor to 0.
+        let (ia, ib) = (isinf(a), isinf(b));
+        let s1 = or(ia, ib);
+        let a = sel(s1, sign_one(ia, a), a);
+        let b = sel(s1, sign_one(ib, b), b);
+        let c = nan_to_zero(s1, c);
+        let d = nan_to_zero(s1, d);
+        // if (isinf (c) || isinf (d))
+        let (ic, id) = (isinf(c), isinf(d));
+        let s2 = or(ic, id);
+        let c = sel(s2, sign_one(ic, c), c);
+        let d = sel(s2, sign_one(id, d), d);
+        let a = nan_to_zero(s2, a);
+        let b = nan_to_zero(s2, b);
+        // if (!recalc && (isinf (ac) || ...)): NaNs to 0.
+        let recalc = or(s1, s2);
+        let prod_inf = or(or(isinf(ac), isinf(bd)), or(isinf(ad), isinf(bc)));
+        let s3 = andnot(recalc, prod_inf);
+        let (a, b, c, d) = (nan_to_zero(s3, a), nan_to_zero(s3, b), nan_to_zero(s3, c), nan_to_zero(s3, d));
+        let recalc = or(recalc, s3);
+        let inf = splat(f64::INFINITY);
+        let xr = op::<MUL>(inf, op::<SUB>(op::<MUL>(a, c), op::<MUL>(b, d)));
+        let yr = op::<MUL>(inf, op::<ADD>(op::<MUL>(a, d), op::<MUL>(b, c)));
+        let m = and(need, recalc);
+        (sel(m, xr, x), sel(m, yr, y))
+    }
+
+    /// `cmul(x[k], y[k])` for two pairs.
+    #[cfg(test)]
+    pub fn cmul2(x: [Complex; 2], y: [Complex; 2]) -> [Complex; 2] {
+        let (a, b) = split(x);
+        let (c, d) = split(y);
+        let (re, im) = mul(a, b, c, d);
+        join(re, im)
+    }
+
+    /// `cpow(x[i], y)` for every element, `y` an integer power `k > 1`
+    /// that `cpow` takes to `r_cpow_n`: its multiplications two elements at
+    /// a time (the same for every element, as `k` is).
+    pub fn cpow_n(x: &[Complex], y: Complex, k: i32) -> Vec<Complex> {
+        debug_assert!(k > 1 && y.im == 0.0 && y.re == k as f64);
+        let mut out: Vec<Complex> = Vec::with_capacity(x.len());
+        let x2 = x.chunks_exact(2);
+        let xr = x2.remainder();
+        let one = (splat(1.0), splat(0.0));
+        for p in x2 {
+            // (`cpow` of zero is not `r_cpow_n`'s.)
+            if p.iter().any(|c| c.re == 0.0 && c.im == 0.0) {
+                out.extend(p.iter().map(|&c| super::cpow(c, y)));
+                continue;
+            }
+            let (mut xa, mut xb) = load(p.try_into().unwrap());
+            let mut z = one;
+            let mut k = k;
+            // R: complex.c:R_cpow_n
+            while k > 0 {
+                if k & 1 != 0 {
+                    z = mul(z.0, z.1, xa, xb);
+                }
+                if k == 1 {
+                    break;
+                }
+                k >>= 1;
+                (xa, xb) = mul(xa, xb, xa, xb);
+            }
+            out.extend_from_slice(&join(z.0, z.1));
+        }
+        out.extend(xr.iter().map(|&c| super::cpow(c, y)));
+        out
+    }
+
+    /// The parts of `p[0]` and `p[1]` as lanes.
+    #[inline(always)]
+    fn load(p: &[Complex; 2]) -> (V, V) {
+        let f = p.as_ptr() as *const f64;
+        // SAFETY: see above; `f` points to the four f64 of `p`.
+        unsafe {
+            let (lo, hi) = (x86::_mm_loadu_pd(f), x86::_mm_loadu_pd(f.add(2)));
+            (x86::_mm_unpacklo_pd(lo, hi), x86::_mm_unpackhi_pd(lo, hi))
+        }
+    }
+
+    /// `f2` (on parts as lanes) for each pair of elements of `x` and `y`
+    /// (of the same length), `f` for a last odd one.
+    #[inline(always)]
+    pub fn zip(
+        x: &[Complex],
+        y: &[Complex],
+        f2: impl Fn(V, V, V, V) -> (V, V),
+        f: impl Fn(Complex, Complex) -> Complex,
+    ) -> Vec<Complex> {
+        let n = x.len().min(y.len());
+        let mut out: Vec<Complex> = Vec::with_capacity(n);
+        {
+            let dst = &mut out.spare_capacity_mut()[..n];
+            let (x2, y2) = (x[..n].chunks_exact(2), y[..n].chunks_exact(2));
+            let (xr, yr) = (x2.remainder(), y2.remainder());
+            let mut d2 = dst.chunks_exact_mut(2);
+            for ((o, p), q) in (&mut d2).zip(x2).zip(y2) {
+                let (a, b) = load(p.try_into().unwrap());
+                let (c, d) = load(q.try_into().unwrap());
+                let (re, im) = f2(a, b, c, d);
+                let o = o.as_mut_ptr() as *mut f64;
+                // SAFETY: see above; `o` points to two elements of spare
+                // capacity.
+                unsafe {
+                    x86::_mm_storeu_pd(o, x86::_mm_unpacklo_pd(re, im));
+                    x86::_mm_storeu_pd(o.add(2), x86::_mm_unpackhi_pd(re, im));
+                }
+            }
+            for ((o, &p), &q) in d2.into_remainder().iter_mut().zip(xr).zip(yr) {
+                o.write(f(p, q));
+            }
+        }
+        // SAFETY: the loops above wrote all n elements.
+        unsafe { out.set_len(n) };
+        out
+    }
+}
+
 /// C's `copysign` (Rust's has the same behavior).
 fn copysign(x: f64, y: f64) -> f64 {
     f64::copysign(x, y)
@@ -1534,6 +1795,78 @@ mod tests {
         assert_eq!(csqrt(z(-1.0, 0.0)), z(0.0, 1.0));
         // sqrt(NA+0i): NA propagates through the hypot path as a NaN.
         assert!(csqrt(z(crate::value::NA_REAL, 0.0)).re.is_nan());
+    }
+
+    /// The two-lane multiply gives `cmul`'s bits for every pair of special
+    /// values, in either lane and next to any other pair.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn pair_cmul_matches_cmul() {
+        let parts = [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            1e-310,
+            1e308,
+            -1e308,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::from_bits(0xfff8000000000000),
+            f64::from_bits(0x7ff00000000007a2), // R's NA (signalling)
+            f64::from_bits(0x7ff8000000000123),
+        ];
+        let mut vals = Vec::new();
+        for &re in &parts {
+            for &im in &parts {
+                vals.push(z(re, im));
+            }
+        }
+        let n = vals.len();
+        for i in 0..n {
+            for j in 0..n {
+                // (Lane partners chosen to mix recovering and plain lanes.)
+                let (x2, y2) = (vals[(i * 7 + j) % n], vals[(j * 5 + 3) % n]);
+                let got = super::pair::cmul2([vals[i], x2], [vals[j], y2]);
+                assert_eq!(bits(got[0]), bits(cmul(vals[i], vals[j])), "{:?} * {:?}", vals[i], vals[j]);
+                assert_eq!(bits(got[1]), bits(cmul(x2, y2)), "{:?} * {:?}", x2, y2);
+            }
+        }
+    }
+
+    /// The two-lane integer power gives `cpow`'s bits.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn pair_cpow_n_matches_cpow() {
+        let parts = [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            0.5,
+            1e-200,
+            1e200,
+            1e308,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::from_bits(0x7ff00000000007a2),
+        ];
+        let mut vals = Vec::new();
+        for &re in &parts {
+            for &im in &parts {
+                vals.push(z(re, im));
+            }
+        }
+        vals.push(z(1.0, 2.0));
+        for k in [2, 3, 4, 5, 7, 8, 13, 64, 65536] {
+            let y = z(k as f64, 0.0);
+            let got = super::pair::cpow_n(&vals, y, k);
+            for (g, &v) in got.iter().zip(&vals) {
+                assert_eq!(bits(*g), bits(cpow(v, y)), "{v:?} ^ {k}");
+            }
+        }
     }
 
     /// The unrolled loop gives the element-by-element results for every
