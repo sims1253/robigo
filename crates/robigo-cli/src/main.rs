@@ -31,8 +31,6 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_malloc_aligned(layout.size(), layout.align())
             }
         };
-        // what the runtime's automatic collection measures (autogc.rs)
-        robigo_runtime::autogc::note_alloc(layout.size());
         p as *mut u8
     }
 
@@ -47,13 +45,11 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_zalloc_aligned(layout.size(), layout.align())
             }
         };
-        robigo_runtime::autogc::note_alloc(layout.size());
         p as *mut u8
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        robigo_runtime::autogc::note_free(layout.size());
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: std::alloc::Layout) {
         // SAFETY: `ptr` was allocated by mimalloc.
         unsafe { libmimalloc_sys::mi_free(ptr as *mut std::ffi::c_void) };
     }
@@ -70,16 +66,55 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_realloc_aligned(p, new_size, layout.align())
             }
         };
-        if !q.is_null() {
-            robigo_runtime::autogc::note_alloc(new_size);
-            robigo_runtime::autogc::note_free(layout.size());
-        }
         q as *mut u8
     }
 }
 
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
+
+/// The runtime's automatic collection measures the heap as mimalloc's
+/// committed bytes, from mimalloc's deferred-free hook (called every
+/// hundred allocations off its fast path), so allocation itself pays
+/// nothing (autogc.rs).
+fn heap_probe_install() {
+    // (mimalloc's extended API, which the static library exports; declared
+    // here rather than through libmimalloc-sys's `extended` feature)
+    type DeferredFree = extern "C" fn(bool, std::ffi::c_ulonglong, *mut std::ffi::c_void);
+    #[allow(unsafe_code)]
+    unsafe extern "C" {
+        fn mi_process_info(
+            elapsed_msecs: *mut usize,
+            user_msecs: *mut usize,
+            system_msecs: *mut usize,
+            current_rss: *mut usize,
+            peak_rss: *mut usize,
+            current_commit: *mut usize,
+            peak_commit: *mut usize,
+            page_faults: *mut usize,
+        );
+        fn mi_register_deferred_free(f: Option<DeferredFree>, arg: *mut std::ffi::c_void);
+    }
+    fn committed() -> usize {
+        let (mut e, mut u, mut s, mut rss, mut prss, mut commit, mut pcommit, mut pf) = (0, 0, 0, 0, 0, 0, 0, 0);
+        // SAFETY: mimalloc writes each out-parameter; all are valid.
+        #[allow(unsafe_code)]
+        unsafe {
+            mi_process_info(&mut e, &mut u, &mut s, &mut rss, &mut prss, &mut commit, &mut pcommit, &mut pf)
+        };
+        commit
+    }
+    extern "C" fn hook(_force: bool, _heartbeat: std::ffi::c_ulonglong, _arg: *mut std::ffi::c_void) {
+        robigo_runtime::autogc::heartbeat();
+    }
+    robigo_runtime::autogc::set_heap_probe(committed);
+    // SAFETY: the hook allocates nothing and only reads mimalloc's
+    // statistics and an atomic; mimalloc guards it against recursion.
+    #[allow(unsafe_code)]
+    unsafe {
+        mi_register_deferred_free(Some(hook), std::ptr::null_mut())
+    };
+}
 
 const USAGE: &str = "\
 usage: robigo [options] [FILE]
@@ -541,6 +576,7 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
+        heap_probe_install();
         robigo_runtime::autogc::enable();
         if !robigo_runtime::startup::run(&mut interp, cl.startup) {
             // R: a profile or .First error in an interactive session is
