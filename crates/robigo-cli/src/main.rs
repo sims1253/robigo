@@ -576,9 +576,11 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
+        let started = robigo_runtime::startup::run(&mut interp, cl.startup);
+        // (once the session is up: the default packages are loaded)
         heap_probe_install();
         robigo_runtime::autogc::enable();
-        if !robigo_runtime::startup::run(&mut interp, cl.startup) {
+        if !started {
             // R: a profile or .First error in an interactive session is
             // reported and the session still reaches the REPL; only the
             // non-interactive console halts.

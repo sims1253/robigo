@@ -33,7 +33,7 @@ static TRIGGER: AtomicIsize = AtomicIsize::new(isize::MAX);
 /// A collection is due at the next safe point.
 static DUE: AtomicBool = AtomicBool::new(false);
 
-/// The heap once the base environment was loaded: GNU R's sizes apply to
+/// The heap once the session was up (base and the default packages loaded): GNU R's sizes apply to
 /// what the program allocates beyond it (GNU R's own base takes a few
 /// megabytes of its heap, robigo's environments and compiled code tens).
 static BOOT: AtomicIsize = AtomicIsize::new(0);
@@ -93,7 +93,8 @@ pub fn due() -> bool {
     DUE.load(Relaxed)
 }
 
-/// Start collecting automatically, once the base environment is loaded:
+/// Start collecting automatically, once the session is up (base and the
+/// default packages loaded):
 /// the program's heap starts at `R_VSIZE` above what that took.
 pub fn enable() {
     if std::env::var("ROBIGO_CYCLES").is_ok_and(|v| v == "0") {
