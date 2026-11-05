@@ -745,7 +745,6 @@ pub enum Visibility {
     Custom,
 }
 
-#[derive(Clone)]
 pub enum Value {
     Null,
     Sym(Sym),
@@ -772,6 +771,41 @@ pub enum Value {
     Obj(Rc<Obj>),
     #[cfg(feature = "bytecode-fidelity")]
     Bytecode(Rc<Bytecode>),
+}
+
+impl Clone for Value {
+    /// Every payload is a reference count or plain data: take one more
+    /// reference and copy the bits. The derived clone dispatched through a
+    /// jump table whose arms were identical (`Rc` keeps its count first,
+    /// whatever it holds), an indirect branch on every copy of a value that
+    /// mispredicts as values of different types alternate.
+    #[inline]
+    fn clone(&self) -> Value {
+        match self {
+            Value::Null | Value::Sym(_) | Value::Builtin(_) => {}
+            Value::Lgl(r) => std::mem::forget(Rc::clone(r)),
+            Value::Int(r) => std::mem::forget(Rc::clone(r)),
+            Value::Real(r) => std::mem::forget(Rc::clone(r)),
+            Value::Cplx(r) => std::mem::forget(Rc::clone(r)),
+            Value::Str(r) => std::mem::forget(Rc::clone(r)),
+            Value::Raw(r) => std::mem::forget(Rc::clone(r)),
+            Value::List(r) | Value::Expr(r) => std::mem::forget(Rc::clone(r)),
+            Value::Pairlist(r) => std::mem::forget(Rc::clone(r)),
+            Value::Lang(r) => std::mem::forget(Rc::clone(r)),
+            Value::Closure(r) => std::mem::forget(Rc::clone(r)),
+            Value::Env(e) => std::mem::forget(Rc::clone(&e.0)),
+            Value::Promise(r) => std::mem::forget(Rc::clone(r)),
+            Value::Dots(r) => std::mem::forget(Rc::clone(r)),
+            Value::ExtPtr(r) => std::mem::forget(Rc::clone(r)),
+            Value::Obj(r) => std::mem::forget(Rc::clone(r)),
+            #[cfg(feature = "bytecode-fidelity")]
+            Value::Bytecode(r) => std::mem::forget(Rc::clone(r)),
+        }
+        // SAFETY: the reference count of the payload, if it has one, was
+        // incremented above, so the bitwise copy owns a reference of its
+        // own; every other payload (`Sym`, `&'static Builtin`) is `Copy`.
+        unsafe { std::ptr::read(self) }
+    }
 }
 
 /// GNU R's portable BCODESXP data. Instructions stay in R_bcDecode's integer
