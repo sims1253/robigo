@@ -3,7 +3,11 @@
 # The compiled closure has the same formals, body() and environment, prints
 # with <bytecode>, and differs from the source only for identical(...,
 # ignore.bytecode = FALSE).
-addr <- function(x) sub("0x[0-9a-f]+", "ADDR", capture.output(print(x)))
+addr <- function(x) {
+  tc <- textConnection("out", "w", local = TRUE)
+  sink(tc); print(x); sink(); close(tc)
+  sub("0x[0-9a-f]+", "ADDR", out)
+}
 f <- function(x, y = 2) x + y
 g <- compiler::cmpfun(f)
 typeof(g)
