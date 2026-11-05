@@ -3071,6 +3071,17 @@ impl NativeBridge for Bridge {
 /// some of the thread-locals its destructor needs (`WRAPPED`, the isolate,
 /// the search epoch) are gone. Rust aborts the process when a TLS access
 /// during destruction panics, so those destructors use `try_with`.
+/// R: names.c:mkSymMarker -- R_MissingArg, the symbol "", is its own
+/// SYMVALUE, which is the binding the base environment and the base
+/// namespace give a symbol: base "binds" it to the missing argument.
+///
+/// # Safety
+/// The R thread, with the interpreter current (a host op).
+unsafe fn missing_marker_at(env: &Env, sym: Sym) -> bool {
+    // SAFETY: the caller's contract.
+    sym.is_empty() && unsafe { with_interp(|i| i.is_base_frame(env)) }
+}
+
 #[cfg(test)]
 mod tls_drop_tests {
     use super::*;
@@ -3131,15 +3142,4 @@ mod tls_drop_tests {
         assert!(out.status.success(), "child aborted ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr));
         assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "child test did not run");
     }
-}
-
-/// R: names.c:mkSymMarker -- R_MissingArg, the symbol "", is its own
-/// SYMVALUE, which is the binding the base environment and the base
-/// namespace give a symbol: base "binds" it to the missing argument.
-///
-/// # Safety
-/// The R thread, with the interpreter current (a host op).
-unsafe fn missing_marker_at(env: &Env, sym: Sym) -> bool {
-    // SAFETY: the caller's contract.
-    sym.is_empty() && unsafe { with_interp(|i| i.is_base_frame(env)) }
 }
