@@ -288,13 +288,15 @@ fn only_stored(v: &Value) -> bool {
     }
 }
 
-unsafe fn sweep_stored() {
+/// Returns how many core objects it released.
+unsafe fn sweep_stored() -> usize {
     let dead: Vec<Sexp> = STORED.with(|m| {
         let mut m = m.borrow_mut();
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
         keys.into_iter().filter_map(|k| m.remove(&k).map(|e| e.0)).collect()
     });
     let removed_stored = !dead.is_empty();
+    let mut released = dead.len();
     for x in dead {
         core().release(x);
     }
@@ -306,6 +308,7 @@ unsafe fn sweep_stored() {
         });
         handles.into_iter().filter_map(|h| p.remove(&h)).collect()
     });
+    released += unpinned.len();
     for x in unpinned {
         core().release(x);
     }
@@ -315,11 +318,13 @@ unsafe fn sweep_stored() {
         robigo_runtime::env::Env::mark_cycle_dirty();
     }
     SWEEP_AT.with(|c| c.set((2 * kept_count()).max(256)));
+    released
 }
 
 /// Drop preservation pins whose only remaining owners are runtime cycles.
 /// Called before entering a collection, with no collector borrow active.
-unsafe fn unpin_cycles() {
+/// Returns how many it dropped.
+unsafe fn unpin_cycles() -> usize {
     let dead = PROXIED.with(|m| {
         let proxies = m.borrow();
         let mut graph = robigo_runtime::reachability::ObjectGraph::default();
@@ -350,42 +355,42 @@ unsafe fn unpin_cycles() {
             handles.into_iter().filter_map(|h| pins.remove(&h)).collect::<Vec<_>>()
         })
     });
+    let released = dead.len();
     for x in dead {
         core().release(x);
     }
+    released
 }
 
-/// The runtime allocation graph over the proxy table. One bridge reference
-/// per proxy is excluded (the bridge does not keep R objects alive); every
-/// field of every weak reference is a root: GNU R keeps a weak reference's
-/// key, value and finalizer alive for its finalization round.
+/// What only the bridge holds, or only dead cycles pin, before a
+/// collection: how many core objects that released.
+unsafe fn sweep_bridge_holds() -> usize {
+    let mut released = sweep_stored();
+    cpromise_memo_sweep();
+    if HOST_WEAK_REFS.with(|active| active.get()) {
+        released += unpin_cycles();
+    }
+    released
+}
+
+/// The runtime allocation graph over the proxy table, after a collection.
+/// Every proxy still in the table is one the core heap kept: a C object,
+/// a C root or the precious list (C code's handles, such as grid's static
+/// evaluation environment or curl's callbacks in a pointer's protected
+/// field) refers to it, or the runtime holds it, or it is a field of a weak
+/// reference, which GNU R keeps alive for its finalization round. Its
+/// runtime object is therefore a root: memory.c marks what any reachable
+/// object refers to, whichever heap that object is in. The collection
+/// marked proxies by runtime-graph reachability (`graph_marking`), so a
+/// proxy only a dead runtime cycle refers to has died in it and is no
+/// root here.
+// R: memory.c:RunGenCollect
 unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
-    let pending = core().weak_ref_fields();
     let build = || {
         let mut graph = robigo_runtime::reachability::ObjectGraph::default();
         PROXIED.with(|m| {
-            let proxies = m.borrow();
-            for (_, value) in proxies.values() {
-                graph.ignore_owner(value);
-            }
-            // Preserved proxies are C code's handles: C can still use them
-            // (grid's static evaluation environment), so they are roots.
-            // unpin_cycles has already released the ones whose keys only
-            // cycles kept alive.
-            PINNED.with(|pins| {
-                for h in pins.borrow().keys() {
-                    if let Some((_, value)) = proxies.get(h) {
-                        graph.root(value);
-                    }
-                }
-            });
-            for x in &pending {
-                if x.has_flag(flags::HOST) {
-                    let h = robigo_core::Core::host_handle(*x);
-                    if let Some((_, value)) = proxies.get(&h) {
-                        graph.root(value);
-                    }
-                }
+            for (_, value) in m.borrow().values() {
+                graph.root(value);
             }
         });
         graph.include_escaped();
@@ -408,14 +413,17 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
 /// because GNU R keeps them through the finalization round; once a
 /// reference has run and left the list, its key's cycle is ordinary garbage.
 // R: memory.c:R_gc_internal / RunGenCollect
-unsafe fn reclaim_host_cycles() {
+/// Returns how many environments (and shared frames) were reclaimed.
+unsafe fn reclaim_host_cycles() -> usize {
     if !robigo_runtime::reachability::reclaim_pending() {
-        return;
+        return 0;
     }
     let graph = cycle_graph();
     let live = graph.externally_live();
-    graph.reclaim_unreachable(&live);
+    let reclaimed = graph.reclaim_unreachable(&live);
+    drop(graph);
     robigo_runtime::reachability::mark_reclaimed();
+    reclaimed
 }
 
 fn kept_count() -> usize {
@@ -677,6 +685,13 @@ fn identical_attrs(a: &AttrBox, b: &AttrBox) -> bool {
 
 thread_local! {
     static HOST_WEAK_REFS: Cell<bool> = const { Cell::new(false) };
+    /// An explicit `gc()` is collecting: proxies are marked by the runtime
+    /// graph, so that every proxy left afterwards is one the core heap
+    /// keeps (see [`reclaim_host_cycles`]).
+    static GRAPH_MARK: Cell<bool> = const { Cell::new(false) };
+    /// Core objects the runtime let go of (`CoreRef`s dropped): a
+    /// reclamation that dropped none freed nothing a collection could find.
+    static CORE_RELEASES: Cell<u64> = const { Cell::new(0) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
     /// C-assembled promise nodes converted by `from_sexp`, by node
     /// address. The weak reference plus the promise's `STORED` entry
@@ -770,12 +785,21 @@ pub(crate) fn enable_host_weak_refs() {
     HOST_WEAK_REFS.with(|active| active.set(true));
 }
 
+/// Whether proxies are marked by runtime-graph reachability rather than by
+/// reference count: with runtime weak references, and in an explicit
+/// `gc()`, whose cycle reclamation needs the proxies left after the
+/// collection to be exactly the ones the core heap keeps.
+fn graph_marking() -> bool {
+    HOST_WEAK_REFS.with(|active| active.get()) || GRAPH_MARK.with(|on| on.get())
+}
+
 /// Runtime references outside the proxy graph are roots. Internal cycle
 /// edges and the bridge's own proxy handles do not keep weak keys alive.
 pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
-    // Without runtime weak references the existing root protocol suffices;
-    // avoid building the allocation graph for ordinary native workloads.
-    if !HOST_WEAK_REFS.with(|active| active.get()) {
+    // Without runtime weak references the existing root protocol suffices
+    // outside gc(); avoid building the allocation graph for ordinary native
+    // workloads. A count above one also comes from a dead cycle.
+    if !graph_marking() {
         PROXIED.with(|m| {
             for (key, value) in m.borrow().values() {
                 let held = match value {
@@ -820,7 +844,7 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
 /// root pass. Follow the same runtime graph during every core trace phase.
 // R: memory.c:RunGenCollect
 pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
-    if !HOST_WEAK_REFS.with(|active| active.get()) {
+    if !graph_marking() {
         return;
     }
     PROXIED.with(|m| {
@@ -871,6 +895,7 @@ impl Drop for CoreRef {
             // that holds runtime values.
             unsafe { core().release(self.0) };
         }
+        let _ = CORE_RELEASES.try_with(|n| n.set(n.get() + 1));
         let _ = WRAPPED.try_with(|m| {
             m.borrow_mut().remove(&self.0.addr());
         });
@@ -2933,35 +2958,60 @@ impl NativeBridge for Bridge {
             robigo_runtime::reachability::reclaim_cycles();
             return;
         }
-        // SAFETY: on the R thread, with libR ready (READY), and no collector
-        // borrow active: the collection starts below.
-        unsafe {
-            sweep_stored();
-            cpromise_memo_sweep();
-            if HOST_WEAK_REFS.with(|active| active.get()) {
-                unpin_cycles();
-            }
-        };
         let outer = INTERP.with(|c| c.get().is_null());
-        // SAFETY: the R thread with `interp` current.
-        enter(interp, |_| unsafe {
-            // gc() from R with no C code active: nothing on the
-            // machine stack can hold a core object
-            let old = if outer { core().set_scan_top(0) } else { 0 };
-            core().collect();
-            if outer {
-                core().set_scan_top(old);
+        // GNU R's collection finds everything unreachable at once. Here a
+        // runtime cycle can hold core objects (an external pointer in a
+        // test_that() environment) and core objects can hold runtime ones
+        // (a callback in a pointer's protected field): collect, reclaim
+        // the runtime cycles nothing reaches anymore, and collect again
+        // while that frees something, so that one gc() runs the finalizers
+        // of everything that became unreachable.
+        // R: memory.c:R_gc_internal
+        // SAFETY: on the R thread, with libR ready (READY), and no
+        // collector borrow active: the collection starts below.
+        unsafe { sweep_bridge_holds() };
+        loop {
+            // Proxies are marked by the runtime graph: one that only a dead
+            // cycle refers to has a count above one, and kept now it would
+            // root its cycle in the reclamation below.
+            GRAPH_MARK.with(|on| on.set(true));
+            // SAFETY: the R thread with `interp` current.
+            enter(interp, |_| unsafe {
+                // gc() from R with no C code active: nothing on the
+                // machine stack can hold a core object
+                let old = if outer { core().set_scan_top(0) } else { 0 };
+                core().collect();
+                if outer {
+                    core().set_scan_top(old);
+                }
+                GRAPH_MARK.with(|on| on.set(false));
+                // Finalizers are C code: the scan is back on, so a
+                // collection inside one sees its locals.
+                crate::util::safe_point();
+            });
+            GRAPH_MARK.with(|on| on.set(false));
+            drain_dead();
+            // After the collection and its finalizers: the weak-reference
+            // round is over, so what only dead cycles reach can be
+            // reclaimed.
+            let before = CORE_RELEASES.with(|n| n.get());
+            // SAFETY: the collection and its finalizers are over, and no
+            // collector borrow is active.
+            if unsafe { reclaim_host_cycles() } == 0 {
+                break;
             }
-            // Finalizers are C code: the scan is back on, so a collection
-            // inside one sees its locals.
-            crate::util::safe_point();
-        });
-        drain_dead();
-        // After the collection and its finalizers: the weak-reference
-        // round is over, so what only dead cycles reach can be reclaimed.
-        // SAFETY: the collection and its finalizers are over, and no
-        // collector borrow is active.
-        unsafe { reclaim_host_cycles() };
+            // Collect again only if the reclaimed cycles let go of core
+            // objects: wrapped pointers they held, or what the bridge kept
+            // for them (a cycle of plain R objects frees nothing there).
+            let dropped = CORE_RELEASES.with(|n| n.get()) - before;
+            // (Pins only reclaimed cycles held are left to the next gc():
+            // finding them takes another graph, and they only wait.)
+            // SAFETY: as above.
+            let swept = unsafe { sweep_stored() };
+            if dropped == 0 && swept == 0 {
+                break;
+            }
+        }
     }
 }
 
