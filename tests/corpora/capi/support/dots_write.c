@@ -22,3 +22,26 @@ SEXP capi_dots_write_arg(SEXP d) {
 SEXP capi_dots_same(SEXP env) {
     return ScalarLogical(findVarInFrame(env, R_DotsSymbol) == findVarInFrame(env, R_DotsSymbol));
 }
+
+/* A `...` C binds in an environment stays the chain it bound, through a
+ * collection (the binding keeps it, as in GNU R). */
+static SEXP bound = NULL;
+
+SEXP capi_dots_bind(SEXP from, SEXP to) {
+    bound = findVarInFrame(from, R_DotsSymbol);
+    defineVar(install("d"), bound, to);
+    return R_NilValue;
+}
+
+SEXP capi_dots_bound_same(SEXP to) {
+    return ScalarLogical(findVarInFrame(to, install("d")) == bound);
+}
+
+/* A `...` lengthened with a LANGSXP cell (SETCDR of its last cell). */
+SEXP capi_dots_append_lang(SEXP list) {
+    SEXP d = VECTOR_ELT(list, 0);
+    while (CDR(d) != R_NilValue)
+        d = CDR(d);
+    SETCDR(d, LCONS(ScalarInteger(3), R_NilValue));
+    return R_NilValue;
+}
