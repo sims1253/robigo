@@ -535,6 +535,7 @@ pub unsafe extern "C" fn TYPEOF(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_TYPEOF(x: Sexp, t: c_int) {
+    watch_write(x);
     x.set_typ(t as u8)
 }
 
@@ -546,6 +547,7 @@ pub unsafe extern "C" fn OBJECT(x: Sexp) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_OBJECT(x: Sexp, v: c_int) {
     crate::bridge::touch_attrs(x);
+    watch_write(x);
     x.set_flag(flags::OBJECT, v != 0)
 }
 
@@ -557,12 +559,14 @@ pub unsafe extern "C" fn IS_S4_OBJECT(x: Sexp) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_S4_OBJECT(x: Sexp) {
     crate::bridge::touch_attrs(x);
+    watch_write(x);
     x.set_gp(x.gp() | gp::S4)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNSET_S4_OBJECT(x: Sexp) {
     crate::bridge::touch_attrs(x);
+    watch_write(x);
     x.set_gp(x.gp() & !gp::S4)
 }
 
@@ -610,6 +614,7 @@ pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
         error_str("cannot set attribute on a CHARSXP")
     }
     crate::bridge::touch_attrs(x);
+    watch_write(x);
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);
 }
@@ -759,6 +764,7 @@ pub unsafe extern "C" fn SETLENGTH(x: Sexp, v: isize) {
     if !crate::util::is_vector(x) {
         error_str_owned(format!("SETLENGTH() can only be applied to a standard vector, not a '{}'", type_to_char(x)))
     }
+    watch_write(x);
     x.set_std_len(v)
 }
 
@@ -778,9 +784,26 @@ pub unsafe extern "C" fn SET_GROWABLE_BIT(x: Sexp) {
     x.set_gp(x.gp() | gp::GROWABLE)
 }
 
-/// DATAPTR with GNU R's zero-length convention.
+/// A write to `x` through the API: report it when the bridge watches `x`
+/// (robigo_core::extra::TWIN, docs/core.md §6).
+#[inline(always)]
+pub unsafe fn watch_write(x: Sexp) {
+    if x.is_twin_cell() {
+        crate::bridge::twin_written(x);
+    }
+}
+
+/// DATAPTR with GNU R's zero-length convention, for writing: the caller
+/// may store through the pointer, so a watched object reports a write.
 #[inline]
 pub unsafe fn dataptr(x: Sexp) -> *mut u8 {
+    watch_write(x);
+    dataptr_unwatched(x)
+}
+
+/// [`dataptr`] for reading (or for the core's own copies).
+#[inline]
+pub unsafe fn dataptr_unwatched(x: Sexp) -> *mut u8 {
     if x.is_altrep() {
         return crate::util::altrep_dataptr(x, true);
     }
@@ -800,7 +823,7 @@ pub unsafe extern "C" fn DATAPTR_RO(x: Sexp) -> *const c_void {
     if x.is_altrep() {
         return crate::util::altrep_dataptr(x, false) as *const c_void;
     }
-    dataptr(x) as *const c_void
+    dataptr_unwatched(x) as *const c_void
 }
 
 #[unsafe(no_mangle)]
@@ -808,7 +831,7 @@ pub unsafe extern "C" fn DATAPTR_OR_NULL(x: Sexp) -> *const c_void {
     if x.is_altrep() {
         return crate::util::altrep_dataptr_or_null(x) as *const c_void;
     }
-    dataptr(x) as *const c_void
+    dataptr_unwatched(x) as *const c_void
 }
 
 #[unsafe(no_mangle)]
@@ -935,7 +958,7 @@ unsafe fn vector_elt_slow(x: Sexp, i: isize) -> Sexp {
 /// reference counting, when nothing else is needed (no calls: the hot
 /// accessors stay free of a stack frame).
 #[inline(always)]
-unsafe fn store_slot(x: Sexp, p: *mut Sexp, v: Sexp) {
+pub(crate) unsafe fn store_slot(x: Sexp, p: *mut Sexp, v: Sexp) {
     let old = *p;
     if old != v && x.tracks_refs() {
         old.decref();
@@ -946,7 +969,10 @@ unsafe fn store_slot(x: Sexp, p: *mut Sexp, v: Sexp) {
 
 #[inline(always)]
 unsafe fn plain_target(x: Sexp, i: isize) -> bool {
-    !x.is_altrep() && !x.has_flag(flags::IMMORTAL) && (i as usize) < x.std_len() as usize
+    // the flags byte (+1) and the extra word (+6) in one header load: not
+    // ALTREP, not immortal, not watched
+    const MASK: u64 = ((flags::ALTREP | flags::IMMORTAL) as u64) << 8 | (robigo_core::extra::TWIN as u64) << 48;
+    (*(x.0 as *const u64) & MASK) == 0 && (i as usize) < x.std_len() as usize
 }
 
 // R: memory.c:SET_STRING_ELT
@@ -974,6 +1000,7 @@ unsafe fn set_string_elt_slow(x: Sexp, i: isize, v: Sexp) {
     if x.is_altrep() {
         return crate::util::altstring_set_elt(x, i, v);
     }
+    watch_write(x);
     let p = (x.std_data() as *mut Sexp).offset(i);
     fix_refcnt(x, *p, v);
     *p = v;
@@ -981,9 +1008,6 @@ unsafe fn set_string_elt_slow(x: Sexp, i: isize, v: Sexp) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_VECTOR_ELT(x: Sexp, i: isize, v: Sexp) -> Sexp {
-    if crate::owned::ORIGINS.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-        crate::owned::mutated(x);
-    }
     if matches!(x.typ(), VECSXP | EXPRSXP) && plain_target(x, i) {
         store_slot(x, (x.std_data() as *mut Sexp).offset(i), v);
         return v;
@@ -1005,6 +1029,7 @@ unsafe fn set_vector_elt_slow(x: Sexp, i: isize, v: Sexp) -> Sexp {
         crate::util::altlist_set_elt(x, i, v);
         return v;
     }
+    watch_write(x);
     let p = (x.std_data() as *mut Sexp).offset(i);
     fix_refcnt(x, *p, v);
     *p = v;
@@ -1012,13 +1037,16 @@ unsafe fn set_vector_elt_slow(x: Sexp, i: isize, v: Sexp) -> Sexp {
 }
 
 macro_rules! elt_accessors {
-    ($get:ident, $set:ident, $ptr:ident, $t:ty, $elt:ident) => {
+    ($get:ident, $set:ident, $ptr:ident, $t:ty, $elt:ident, $($types:pat_param)|+) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $get(x: Sexp, i: isize) -> $t {
             if x.is_altrep() {
                 return crate::util::$elt(x, i);
             }
-            *$ptr(x).offset(i)
+            if !matches!(x.typ(), $($types)|+) {
+                $ptr(x);
+            }
+            *(dataptr_unwatched(x) as *const $t).offset(i)
         }
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $set(x: Sexp, i: isize, v: $t) {
@@ -1027,11 +1055,11 @@ macro_rules! elt_accessors {
     };
 }
 
-elt_accessors!(INTEGER_ELT, SET_INTEGER_ELT, INTEGER, c_int, altinteger_elt);
-elt_accessors!(LOGICAL_ELT, SET_LOGICAL_ELT, LOGICAL, c_int, altlogical_elt);
-elt_accessors!(REAL_ELT, SET_REAL_ELT, REAL, f64, altreal_elt);
-elt_accessors!(COMPLEX_ELT, SET_COMPLEX_ELT, COMPLEX, Rcomplex, altcomplex_elt);
-elt_accessors!(RAW_ELT, SET_RAW_ELT, RAW, u8, altraw_elt);
+elt_accessors!(INTEGER_ELT, SET_INTEGER_ELT, INTEGER, c_int, altinteger_elt, INTSXP | LGLSXP);
+elt_accessors!(LOGICAL_ELT, SET_LOGICAL_ELT, LOGICAL, c_int, altlogical_elt, LGLSXP);
+elt_accessors!(REAL_ELT, SET_REAL_ELT, REAL, f64, altreal_elt, REALSXP);
+elt_accessors!(COMPLEX_ELT, SET_COMPLEX_ELT, COMPLEX, Rcomplex, altcomplex_elt, CPLXSXP);
+elt_accessors!(RAW_ELT, SET_RAW_ELT, RAW, u8, altraw_elt, RAWSXP);
 
 // R: altrep.c:INTEGER_GET_REGION & co — the class's Get_region method,
 // else element by element (no materialization)
@@ -1151,6 +1179,7 @@ pub unsafe extern "C" fn SETCAR(x: Sexp, y: Sexp) -> Sexp {
     if x.extra() & robigo_core::extra::WATCHED != 0 {
         crate::bridge::watched_cell_written(x);
     }
+    watch_write(x);
     fix_refcnt(x, x.car(), y);
     x.set_car_raw(y);
     // A promise node written through the cons setter: keep the
@@ -1174,6 +1203,7 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
     if x.extra() & robigo_core::extra::WATCHED != 0 {
         crate::bridge::watched_cell_written(x);
     }
+    watch_write(x);
     fix_refcnt(x, x.cdr(), y);
     x.set_cdr_raw(y);
     if x.typ() == PROMSXP {
@@ -1192,6 +1222,7 @@ pub unsafe extern "C" fn SET_TAG(x: Sexp, y: Sexp) {
     if x.extra() & robigo_core::extra::WATCHED != 0 {
         crate::bridge::watched_cell_written(x);
     }
+    watch_write(x);
     fix_refcnt(x, x.tag(), y);
     x.set_tag_raw(y);
     if x.typ() == PROMSXP {
@@ -1373,7 +1404,7 @@ unsafe fn duplicate1(s: Sexp, deep: bool) -> Sexp {
             Rf_protect(s);
             let r = try_alloc_vector(t, n as usize);
             if n > 0 {
-                let src = dataptr(s) as *const u8;
+                let src = dataptr_unwatched(s) as *const u8;
                 match t {
                     STRSXP => {
                         std::ptr::copy_nonoverlapping(src, r.std_data(), n as usize * 8);
