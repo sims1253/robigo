@@ -1480,11 +1480,21 @@ impl Value {
             Value::Pairlist(p) => &p.attrs,
             Value::Lang(l) => &l.attrs,
             Value::Closure(c) => &c.attrs,
-            Value::Bytecode(b) => &b.attrs,
             Value::Obj(o) => &o.attrs,
-            _ => return None,
+            // out of line, so the hot match is what it is without code
+            // objects (perf gate: dim_view, get_attr)
+            _ => return self.attrs_cold(),
         };
         b.as_deref()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attrs_cold(&self) -> Option<&Attrs> {
+        match self {
+            Value::Bytecode(b) => b.attrs.as_deref(),
+            _ => None,
+        }
     }
 
     /// Attributes of environments and external pointers live behind a
@@ -1527,10 +1537,18 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
-            Value::Bytecode(b) => bytecode_attrs_slot(b),
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
-            _ => return None,
+            _ => return self.attrs_slot_mut_cold(),
         })
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attrs_slot_mut_cold(&mut self) -> Option<&mut AttrBox> {
+        match self {
+            Value::Bytecode(b) => Some(bytecode_attrs_slot(b)),
+            _ => None,
+        }
     }
 
     /// GNU R's `IS_S4_OBJECT`.

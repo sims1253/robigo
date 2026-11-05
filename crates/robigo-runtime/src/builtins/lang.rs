@@ -683,8 +683,7 @@ fn fast_replace(
 /// value itself; plain values evaluate to themselves already.
 pub fn quote_if_needed(v: Value) -> Value {
     match &v {
-        Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => Value::call_sym("quote", vec![v]),
-        Value::Bytecode(_) => Value::call_sym("quote", vec![v]),
+        Value::Sym(_) | Value::Lang(_) | Value::Promise(_) | Value::Bytecode(_) => Value::call_sym("quote", vec![v]),
         _ => v,
     }
 }
