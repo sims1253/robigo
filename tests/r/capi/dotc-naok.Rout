@@ -1,0 +1,11 @@
+<simpleError in qr.default(c(1, NA)): NA/NaN/Inf in foreign function call (arg 1)>
+<simpleError in qr.default(c(1, Inf)): NA/NaN/Inf in foreign function call (arg 1)>
+<simpleError in qr.default(c(1, NaN)): NA/NaN/Inf in foreign function call (arg 1)>
+<simpleError in f(1, NA_integer_): NAs in foreign function call (arg 2)>
+<simpleError in f(NA_real_, 1L): NA/NaN/Inf in foreign function call (arg 1)>
+<simpleError in f(complex(real = NA, imaginary = 0), 1L): complex NA/NaN/Inf in foreign function call (arg 1)>
+<simpleError in f(1, NA): NAs in foreign function call (arg 2)>
+[1] 0
+<simpleError in .Fortran(base:::.F_dqrdc2, qr = x, 2L, 2L, 1L, 1e-07, rank = 1L,     qraux = double(1), pivot = 1:1, double(2), NAOK = NA): invalid 'naok' value>
+<simpleError in k(matrix(c(1, NaN), 2)): NA/NaN/Inf in foreign function call (arg 1)>
+<simpleWarning in doTryCatch(return(expr), name, parentenv, handler): 'NAOK' used more than once>
