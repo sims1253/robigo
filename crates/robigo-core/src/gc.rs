@@ -944,6 +944,12 @@ impl Core {
         self.heap.resolve(w).map(Sexp)
     }
 
+    /// Whether `w` lies in memory this heap reserved (an object, free
+    /// space or a block header): no claim that an object starts there.
+    pub fn in_heap(&self, w: usize) -> bool {
+        self.heap.chunk_of(w).is_some()
+    }
+
     // ---- collection ----------------------------------------------------
 
     /// # Safety
