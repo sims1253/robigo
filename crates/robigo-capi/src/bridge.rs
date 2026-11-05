@@ -897,6 +897,7 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
             return None;
         }
         flush_twin(k);
+        resync_atomics(x, &v, 0);
         return Some(v);
     }
     if matches!(x.typ(), LISTSXP | DOTSXP) && TWIN_CELLS.with(|m| m.borrow().contains_key(&x.addr())) {
@@ -912,6 +913,59 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
         return Some(v);
     }
     None
+}
+
+/// C writes into an atomic vector through a pointer it took once (rlang's
+/// `*sys_frame_n_addr = n` into the argument of a call it keeps): no setter
+/// sees that, so a twin's atomic vectors, and those of the twins it
+/// contains, are compared with the runtime values whenever R gets the twin
+/// back, and C's writes copied in place (`write_back`).
+unsafe fn resync_atomics(x: Sexp, v: &Value, depth: u32) {
+    if depth > 256 || x.is_altrep() {
+        return;
+    }
+    match v {
+        Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) => {
+            if !v.is_shared_scalar() && twin_shape(x, v) {
+                write_back(v, x, &mut HashMap::new());
+            }
+        }
+        Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) => {
+            if x.std_len() as usize == rc.data.len() {
+                for (i, e) in rc.data.iter().enumerate() {
+                    resync_child(VECTOR_ELT(x, i as isize), e, depth);
+                }
+            }
+        }
+        Value::Lang(l) if x.typ() == LANGSXP => {
+            resync_child(x.car(), &l.fun, depth);
+            resync_items(x.cdr(), &l.args, depth);
+        }
+        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => resync_items(x, &p.items, depth),
+        Value::Dots(d) if x.typ() == DOTSXP => resync_items(x, d, depth),
+        _ => {}
+    }
+}
+
+/// [`resync_atomics`] of a contained object that is a twin of `v`.
+unsafe fn resync_child(x: Sexp, v: &Value, depth: u32) {
+    if x.is_null() || x == R_NilValue || !x.is_twin_cell() {
+        return;
+    }
+    let Some(k) = twin_key(v) else { return };
+    if TWIN_HEAD.with(|h| h.borrow().get(&x.addr()) == Some(&k)) {
+        resync_atomics(x, v, depth + 1);
+    }
+}
+
+unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
+    for item in items {
+        if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+            return;
+        }
+        resync_child(p.car(), &item.value, depth);
+        p = p.cdr();
+    }
 }
 
 /// Mark every twin (a root of the collector, from `mark_api_roots`).
@@ -2716,9 +2770,19 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     if v.is_shared_scalar() {
         return;
     }
-    unsafe fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
+    unsafe fn back<T: Copy + PartialEq + 'static>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
-        if n == 0 || crate::memory::xlength(x) as usize != n {
+        let m = crate::memory::xlength(x) as usize;
+        if m != n {
+            // C resized the object in place (SETLENGTH over TRUELENGTH,
+            // rlang's dynamic arrays): the caller's object has the new
+            // length. The old buffer stays alive until top level (see
+            // `retire`): R code can be walking it.
+            let src = if m == 0 { &[][..] } else { std::slice::from_raw_parts(x.std_data() as *const T, m) };
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, src.to_vec());
+            return;
+        }
+        if n == 0 {
             return;
         }
         let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
