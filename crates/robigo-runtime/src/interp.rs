@@ -1313,8 +1313,9 @@ impl Interp {
         // R: eval.c:R_execClosure restores the R_Srcref saved at the call.
         self.srcref_ended(self.frames.len());
         // The executor and this context own two references. Extra owners
-        // include escaped closures and unforced default-promise cycles.
-        if Rc::strong_count(&ctx.cloenv.0) > 2 {
+        // include escaped closures and unforced default-promise cycles;
+        // a frame only its own bindings refer back to is freed here.
+        if Rc::strong_count(&ctx.cloenv.0) > 2 && !ctx.cloenv.release_self_cycle(2) {
             ctx.cloenv.track_escape();
         }
         self.handlers = ctx.handlers;

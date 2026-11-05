@@ -25,6 +25,10 @@ cranelift-jit = "0.137"
 cranelift-module = "0.137"
 cranelift-native = "0.137"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# Only to turn on zlib-rs's `std` feature (flate2 leaves it off): with it
+# zlib-rs detects AVX2 at run time and checksums inflated lazy-load data
+# with its SIMD adler32 instead of the scalar one.
+zlib-rs = { version = "0.6", default-features = false, features = ["std", "rust-allocator"] }
 bzip2 = "0.6"
 # The rdbflat cache maps its files read-only (rdbflat.rs); already linked
 # by mimalloc-sys and liblzma, so this adds no library to the binary.
