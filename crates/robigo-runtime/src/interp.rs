@@ -1784,17 +1784,42 @@ pub(crate) fn bind_positional(clo: &Closure, promargs: &[Arg]) -> Env {
 }
 
 /// The binding of a missing argument with a default: a promise of the
-/// default in the new frame, a constant one included (C code that reads the
-/// binding unforced, as rlang's `env_binding_are_lazy()` does, sees it).
+/// default in the new frame (eval.c:applyClosure promises every default).
+/// A constant default is bound as itself, flagged BIND_MISSING_DEFAULT: R
+/// cannot tell it from its promise (forcing gives the constant, `missing()`
+/// reads the flag, `substitute()` the expression), and C, which can, gets
+/// the promise made at its first look ([`materialize_default`]).
 // R: eval.c:applyClosure — SETCAR(a, mkPROMISE(CAR(f), newrho))
 pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
     let expr = &clo.formals[k].value;
-    let code = if crate::vm::enabled() && matches!(expr, Value::Sym(_) | Value::Lang(_)) {
-        clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
-    } else {
-        None
-    };
-    let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
+    match expr {
+        Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) => expr.clone(),
+        _ => {
+            let code = if crate::vm::enabled() {
+                clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
+            } else {
+                None
+            };
+            let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
+            p.default = true;
+            Value::Promise(Rc::new(p))
+        }
+    }
+}
+
+/// `sym`'s binding in `env` as GNU R holds it, for code (C's findVarInFrame,
+/// a frame walk) that can tell an unforced promise from a value: a constant
+/// default ([`default_arg`]) becomes the unforced promise of itself that
+/// applyClosure made, in place, so later looks see the same object.
+pub fn materialize_default(env: &Env, sym: Sym, v: Value) -> Value {
+    if !matches!(v, Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_))
+        || env.binding_flags(sym).is_none_or(|f| f & BIND_MISSING_DEFAULT == 0)
+    {
+        return v;
+    }
+    let mut p = Promise::new(v, env.clone());
     p.default = true;
-    Value::Promise(Rc::new(p))
+    let p = Value::Promise(Rc::new(p));
+    env.set_local_flags(sym, p.clone(), BIND_MISSING_DEFAULT);
+    p
 }

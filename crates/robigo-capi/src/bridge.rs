@@ -2109,7 +2109,8 @@ unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     if flags & robigo_runtime::env::BIND_ACTIVE != 0 {
         return with_interp(|i| i.get_active_value(&v)).map(Some);
     }
-    Ok(Some(v))
+    // a constant default: the promise applyClosure made
+    Ok(Some(robigo_runtime::interp::materialize_default(env, sym, v)))
 }
 
 fn vtype_of(t: i32) -> Option<VType> {
@@ -2537,6 +2538,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
                 .into_iter()
                 .map(|s| {
                     let v = e.get_local(s).unwrap_or(Value::Null);
+                    let v = robigo_runtime::interp::materialize_default(&e, s, v);
                     let v = match robigo_runtime::native::c_owned_holder(&v) {
                         // SAFETY: `c_owned_holder` returned a holder this bridge
                         // made, and the API state is live during a host call.
