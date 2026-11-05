@@ -110,6 +110,7 @@ impl Interp {
         // R_tryEval: the callback runs with no caller above it and its
         // errors do not reach the top level.
         let saved_frames = std::mem::take(&mut self.frames);
+        let saved_srcrefs = (self.srcref.take(), std::mem::take(&mut self.srcref_saved));
         let saved_handlers = std::mem::replace(&mut self.handlers, self.global_handlers.clone());
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
@@ -118,6 +119,7 @@ impl Interp {
         let r = self.eval(&call, &rho);
         self.bc = saved_bc;
         self.frames = saved_frames;
+        (self.srcref, self.srcref_saved) = saved_srcrefs;
         self.handlers = saved_handlers;
         self.restarts = saved_restarts;
         self.depth = saved_depth;

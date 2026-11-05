@@ -587,8 +587,10 @@ pub struct Promise {
     /// bridge, which keeps the C node's fields in step when it is
     /// forced (robigo-capi's promise memo).
     pub from_c: bool,
-    /// Made by code GNU R runs as bytecode (`Interp::bc`): its code is
-    /// compiled there too, so forcing it runs `bcEval`.
+    /// An argument promise made by code GNU R runs as bytecode
+    /// (`Interp::bc`): GNU R compiles it too (MAKEPROM), so forcing it runs
+    /// bcEval, reading with getvar. Defaults, `delayedAssign` and lazy-load
+    /// promises are expressions (false).
     pub bc: bool,
 }
 
@@ -608,6 +610,12 @@ impl Promise {
             from_c: false,
             bc: false,
         }
+    }
+
+    /// An argument promise of a call, made by code GNU R runs as bytecode
+    /// or not (`bc`, see the field).
+    pub fn arg(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>, bc: bool) -> Self {
+        Promise { bc, ..Promise::with_code(expr, env, code) }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {

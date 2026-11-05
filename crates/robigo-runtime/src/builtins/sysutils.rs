@@ -1489,7 +1489,7 @@ fn list_files(
         if recursive {
             if is_dir_path(&full) {
                 if not_dot {
-                    if idirs && reg.is_none_or(|r| r.is_match(name)) {
+                    if idirs && matches_pattern(i, reg, name)? {
                         out.push(full[offset..].to_string());
                     }
                     // Recurse when the directory can be opened; its
@@ -1512,7 +1512,7 @@ fn list_files(
                 continue;
             }
         }
-        if (not_dot || allowdots) && reg.is_none_or(|r| r.is_match(name)) {
+        if (not_dot || allowdots) && matches_pattern(i, reg, name)? {
             out.push(full[offset..].to_string());
         }
     }
@@ -1556,7 +1556,7 @@ fn do_listfiles(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     let allowdots = nodots == 0;
     let reg = match &pattern {
         Some(p) => Some(
-            super::grep::TreBoolMatch::compile(p, igcase != 0)
+            super::grep::TreBoolMatch::compile(i, p, igcase != 0)?
                 .map_err(|_| Flow::error("invalid 'pattern' regular expression"))?,
         ),
         None => None,
@@ -1573,6 +1573,14 @@ fn do_listfiles(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
     out.sort_by(|a, b| super::sort::scollate(a, b));
     Ok(Value::strs_from(out))
+}
+
+/// No pattern, or `name` matches it.
+fn matches_pattern(i: &mut Interp, reg: Option<&super::grep::TreBoolMatch>, name: &str) -> RResult<bool> {
+    match reg {
+        Some(r) => r.is_match(i, name),
+        None => Ok(true),
+    }
 }
 
 /// `list_dirs`' recursion.

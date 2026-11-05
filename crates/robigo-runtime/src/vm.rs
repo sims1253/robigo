@@ -1402,7 +1402,10 @@ fn subset_values(
     let mut args = Vec::with_capacity(l.args.len());
     args.push(Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))));
     if ivals.is_empty() {
-        args.push(Arg::new(l.args[1].tag, Value::Promise(Rc::new(Promise::new(l.args[1].value.clone(), env.clone())))));
+        args.push(Arg::new(
+            l.args[1].tag,
+            Value::Promise(Rc::new(Promise::arg(l.args[1].value.clone(), env.clone(), None, interp.bc))),
+        ));
     }
     for (a, v) in l.args[1..].iter().zip(ivals) {
         args.push(Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))));
@@ -2776,8 +2779,7 @@ fn caller_promargs(
                     Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value()))))
                 }
                 (None, Value::Sym(_) | Value::Lang(_)) => {
-                    let mut p = Promise::with_code(a.value.clone(), env.clone(), c.clone());
-                    p.bc = interp.bc;
+                    let p = Promise::arg(a.value.clone(), env.clone(), c.clone(), interp.bc);
                     Arg::new(a.tag, Value::Promise(Rc::new(p)))
                 }
                 (None, Value::Promise(_)) => a.clone(),
@@ -3817,6 +3819,36 @@ fn run_pre(interp: &mut Interp, code: &Code, env: &Env, pre: bool, unboxed: bool
     run_with(interp, code, env, &mut regs, &mut vars, checked)
 }
 
+/// `Op::Srcref`: R_Srcref is a statement's srcref (`v`), or NULL.
+#[cold]
+#[inline(never)]
+fn set_srcref(interp: &mut Interp, v: &Value) {
+    interp.srcref = match v {
+        Value::Int(v) => Some(v.clone()),
+        _ => crate::interp::null_srcref(),
+    };
+}
+
+/// `Op::SrcrefSave`: R_Srcref as a register value (`NULL` for `None`).
+#[cold]
+#[inline(never)]
+fn saved_srcref(interp: &Interp) -> Value {
+    match &interp.srcref {
+        Some(v) => Value::Int(v.clone()),
+        None => Value::Null,
+    }
+}
+
+/// `Op::SrcrefRestore`.
+#[cold]
+#[inline(never)]
+fn set_srcref_saved(interp: &mut Interp, r: &RVal) {
+    interp.srcref = match r {
+        RVal::V(Value::Int(v)) => Some(v.clone()),
+        _ => None,
+    };
+}
+
 fn run_with(
     interp: &mut Interp,
     code: &Code,
@@ -3990,6 +4022,10 @@ fn run_with(
             Op::Null { dst, dead: false } => regs[*dst as usize] = RVal::V(Value::Null),
             Op::Null { dst, dead: true } => regs[*dst as usize] = DEAD,
             Op::Visible { on } => interp.visible = *on,
+            // R: eval.c:do_begin (only code with source references)
+            Op::Srcref { k } => set_srcref(interp, &code.consts[*k as usize]),
+            Op::SrcrefSave { dst } => regs[*dst as usize] = RVal::V(saved_srcref(interp)),
+            Op::SrcrefRestore { src } => set_srcref_saved(interp, &regs[*src as usize]),
             Op::GetVar { dst, sym, slot } => {
                 // R: eval() sets R_Visible before the lookup, so forcing a
                 // promise (`expr` in withCallingHandlers) keeps its visibility.

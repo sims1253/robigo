@@ -418,6 +418,9 @@ impl Interp {
         let op = crate::s4::prim_op(generic)
             .or_else(|| crate::builtins::lookup_internal(generic))
             .map_or(Value::Null, Value::Builtin);
+        if self.srcref.is_some() {
+            self.srcref_begin(false);
+        }
         self.frames.push(Context {
             call: call.clone(),
             function: op,
@@ -434,6 +437,7 @@ impl Interp {
         let base = self.base.clone();
         let r = self.usemethod(generic, obj, call, pargs, &rho1, env, &base);
         let ctx = self.frames.pop().unwrap();
+        self.srcref_ended(self.frames.len());
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;
         r

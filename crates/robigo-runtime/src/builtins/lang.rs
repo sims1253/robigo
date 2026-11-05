@@ -300,9 +300,26 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
 // is dead once the next statement starts: drop it, else an object only
 // it holds outlives a gc() in the next statement (R6's finalizer tests:
 // `B <- BC$new()` then `expect_output({ rm(B); gc() })`).
-fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     interp.visible = true;
     let Some((last, init)) = args.split_last() else { return Ok(Value::Null) };
+    // R: eval.c:do_begin -- with source references, each statement runs
+    // under its own srcref (the block's list starts with the block's), and
+    // the srcref before the block comes back after it (eval.c:eval). Code
+    // without them leaves R_Srcref alone.
+    if let Some(refs) = call.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_))) {
+        let saved = interp.srcref.clone();
+        let r = (|| {
+            for (j, a) in init.iter().enumerate() {
+                interp.srcref = crate::interp::statement_srcref(&refs, j + 1);
+                interp.eval(&a.value, env)?;
+            }
+            interp.srcref = crate::interp::statement_srcref(&refs, args.len());
+            interp.eval(&last.value, env)
+        })();
+        interp.srcref = saved;
+        return r;
+    }
     for a in init {
         interp.eval(&a.value, env)?;
     }

@@ -10,23 +10,23 @@
 //!   semantics: the leftmost match start is found with a leftmost-first
 //!   engine and the longest end with a DFA in `MatchKind::All` mode. Like
 //!   TRE in R, every search runs on the remaining substring as a fresh
-//!   string (with `REG_NOTBOL` where R sets it). Patterns with
-//!   back-references are matched by `fancy-regex` (leftmost-first).
+//!   string (with `REG_NOTBOL` where R sets it). The constructs this can
+//!   get wrong go to GNU R's own TRE instead (robigo-capi's `extra/tre`,
+//!   through [`TreEngine`]), called as grep.c calls it: minimal
+//!   repetitions, back-references, word boundaries, approximate matching,
+//!   and submatches of alternations and repeated groups
+//!   ([`tre_needs_native`]; `ROBIGO_TRE_DIFF` checks the rule).
 //! * PCRE (`perl = TRUE`): translated to `fancy-regex`, which provides
 //!   look-around, back-references, atomic groups and `\K`. As R does not
 //!   enable PCRE2_UCP, `\w`, `\d`, `\s` and `\b` are ASCII-only.
 //!
 //! Known differences from GNU R:
-//! * TRE: submatch positions follow leftmost-first rather than POSIX rules
-//!   for ambiguous patterns; `\B` is not suppressed at the start/end of the
-//!   string as TRE does; with Unicode text, the longest-match DFA may give
-//!   up on `\b`/`\<`/`\>`, falling back to leftmost-first; TRE's
-//!   approximate-matching `{...}` syntax is not supported.
 //! * PCRE: recursion, callouts, `(*VERB)`s other than `(*UCP)`/`(*UTF)` and
 //!   some error messages are not supported; compile errors other than the
 //!   common ones report the underlying engine's message.
-//! * `useBytes = TRUE` with non-ASCII input matches characters (robigo strings
-//!   are always valid UTF-8) but reports byte positions.
+//! * `useBytes = TRUE` with `perl = TRUE` and non-ASCII input matches
+//!   characters (robigo strings are always valid UTF-8) but reports byte
+//!   positions. (TRE patterns go to GNU R's TRE, which matches the bytes.)
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -144,6 +144,10 @@ struct TreParser {
     has_bol: bool,
     has_minimal: bool,
     has_lookaround: bool,
+    has_wordb: bool,
+    has_alt: bool,
+    has_qgroup: bool,
+    has_approx: bool,
 }
 
 pub struct TreOut {
@@ -152,11 +156,34 @@ pub struct TreOut {
     pub has_backref: bool,
     pub has_bol: bool,
     pub has_minimal: bool,
-    /// Needs look-around (TRE's `\B`): matched by fancy-regex.
+    /// Needs look-around (TRE's `\B`).
     pub has_lookaround: bool,
+    /// A word boundary: `\b`, `\B`, `\<` or `\>`.
+    pub has_wordb: bool,
+    /// An alternation whose branch choice can move a submatch: branches of
+    /// different or variable lengths, or holding groups.
+    pub has_alt: bool,
+    /// A repetition of an atom that holds a capturing group.
+    pub has_qgroup: bool,
+    /// TRE's approximate matching (`{~1}`, `{+1-1#1}`, costs).
+    pub has_approx: bool,
 }
 
 type TreRes<T> = Result<T, &'static str>;
+
+/// Do the translated branches all match one fixed number of bytes?
+fn same_fixed_len(alts: &[String]) -> bool {
+    let mut len = None;
+    for a in alts {
+        let Ok(hir) = regex_automata::util::syntax::parse(a) else { return false };
+        let p = hir.properties();
+        match (p.minimum_len(), p.maximum_len()) {
+            (Some(lo), Some(hi)) if lo == hi && len.is_none_or(|l| l == lo) => len = Some(lo),
+            _ => return false,
+        }
+    }
+    true
+}
 
 impl TreParser {
     fn peek(&self) -> Option<char> {
@@ -181,7 +208,9 @@ impl TreParser {
 
     // PARSE_RE + PARSE_UNION
     fn parse_re(&mut self) -> TreRes<String> {
+        let n0 = self.nsub;
         let mut alts = vec![self.parse_branch()?];
+        let mut caps = vec![self.nsub > n0];
         loop {
             if self.literal {
                 break;
@@ -189,7 +218,9 @@ impl TreParser {
             match self.peek() {
                 Some('|') => {
                     self.i += 1;
+                    let n = self.nsub;
                     alts.push(self.parse_branch()?);
+                    caps.push(self.nsub > n);
                 }
                 Some(')') => {
                     self.i += 1;
@@ -197,6 +228,11 @@ impl TreParser {
                 }
                 _ => break,
             }
+        }
+        // Branches of one fixed length without groups match the same span
+        // whichever is taken, so no submatch depends on the choice.
+        if alts.len() > 1 && (caps.iter().any(|&c| c) || !same_fixed_len(&alts)) {
+            self.has_alt = true;
         }
         Ok(alts.join("|"))
     }
@@ -221,7 +257,9 @@ impl TreParser {
 
     // PARSE_PIECE + PARSE_POSTFIX
     fn parse_piece(&mut self) -> TreRes<String> {
+        let groups_before = self.nsub;
         let mut atom = self.parse_atom()?;
+        let has_group = self.nsub > groups_before;
         loop {
             if self.literal {
                 break;
@@ -245,10 +283,12 @@ impl TreParser {
                         _ => "?",
                     };
                     self.has_minimal |= minimal;
+                    self.has_qgroup |= has_group;
                     atom = format!("(?:{}){}{}", atom, op, if minimal { "?" } else { "" });
                 }
                 '{' => {
                     self.i += 1;
+                    self.has_qgroup |= has_group;
                     atom = self.parse_bound(atom)?;
                 }
                 _ => break,
@@ -375,7 +415,9 @@ impl TreParser {
             _ => {}
         }
         if approx || costs_set || counts_set {
-            return Err("robigo: approximate regular expression matching is not supported");
+            // only TRE matches these (the pattern goes to it)
+            self.has_approx = true;
+            return Ok(atom);
         }
         if min == 0 && max == 0 {
             return Ok(format!("(?:{}){{0}}", atom));
@@ -602,6 +644,10 @@ impl TreParser {
                 has_bol: false,
                 has_minimal: false,
                 has_lookaround: false,
+                has_wordb: false,
+                has_alt: false,
+                has_qgroup: false,
+                has_approx: false,
             };
             let r = sub.parse_re()?;
             self.has_minimal |= sub.has_minimal;
@@ -616,14 +662,24 @@ impl TreParser {
         }
         self.i += 2;
         Ok(match n {
-            'b' => r"(?:\b|\A|\z)".into(),
+            'b' => {
+                self.has_wordb = true;
+                r"(?:\b|\A|\z)".into()
+            }
             'B' => {
+                self.has_wordb = true;
                 // TRE: never at the start or end of the (sub)string
                 self.has_lookaround = true;
                 format!("(?:(?<={w})(?={w})|(?<={nw})(?={nw}))", w = TRE_WORD, nw = TRE_NONWORD)
             }
-            '<' => r"\<".into(),
-            '>' => r"\>".into(),
+            '<' => {
+                self.has_wordb = true;
+                r"\<".into()
+            }
+            '>' => {
+                self.has_wordb = true;
+                r"\>".into()
+            }
             'x' => {
                 if self.peek() != Some('{') && self.peek().is_some() {
                     let mut tmp = String::new();
@@ -641,7 +697,8 @@ impl TreParser {
                     loop {
                         match self.peek() {
                             Some('}') => break,
-                            Some(c) if c.is_ascii_hexdigit() => {
+                            // (TRE's buffer holds 31 digits: extra/README.md in robigo-capi)
+                            Some(c) if c.is_ascii_hexdigit() && tmp.len() < 31 => {
                                 tmp.push(c);
                                 self.i += 1;
                             }
@@ -680,6 +737,10 @@ pub fn tre_translate(pat: &str, icase: bool, notbol: bool, literal: bool) -> Tre
             has_bol: false,
             has_minimal: false,
             has_lookaround: false,
+            has_wordb: false,
+            has_alt: false,
+            has_qgroup: false,
+            has_approx: false,
         });
     }
     let mut p = TreParser {
@@ -696,6 +757,10 @@ pub fn tre_translate(pat: &str, icase: bool, notbol: bool, literal: bool) -> Tre
         has_bol: false,
         has_minimal: false,
         has_lookaround: false,
+        has_wordb: false,
+        has_alt: false,
+        has_qgroup: false,
+        has_approx: false,
     };
     let out = p.parse_re()?;
     if p.depth > 0 {
@@ -711,6 +776,10 @@ pub fn tre_translate(pat: &str, icase: bool, notbol: bool, literal: bool) -> Tre
         has_bol: p.has_bol,
         has_minimal: p.has_minimal,
         has_lookaround: p.has_lookaround,
+        has_wordb: p.has_wordb,
+        has_alt: p.has_alt,
+        has_qgroup: p.has_qgroup,
+        has_approx: p.has_approx,
     })
 }
 
@@ -1275,97 +1344,243 @@ fn meta_regex(pattern: &str) -> Result<MetaRegex, regex_automata::meta::BuildErr
     MetaRegex::builder().configure(MetaRegex::config().dfa(false)).build(pattern)
 }
 
-/// A TRE program: leftmost-longest matching via regex-automata, or
-/// fancy-regex for patterns with back-references.
-enum TreProg {
-    Auto { meta: MetaRegex, dfa: Option<DFA>, cache: RefCell<Option<DfaCache>>, cap: Option<MetaRegex> },
-    Fancy(fancy_regex::Regex),
+// ======================================================================
+// GNU R's TRE
+
+/// GNU R's TRE (robigo-capi's `extra/tre`), installed by the bridge.
+/// Called as grep.c calls it: `bytes` chooses `tre_regcompb` and
+/// `tre_regexecb` (useBytes, or every input ASCII) over `tre_regwcomp`
+/// and `tre_regwexec` on wide characters.
+pub trait TreEngine: Sync {
+    /// Compile `pat` with REG_EXTENDED (and REG_ICASE when `icase`).
+    /// `Ok(Err(reason))`: TRE refused it, `reason` from `tre_regerror`.
+    fn compile(
+        &self,
+        interp: &mut Interp,
+        pat: &str,
+        icase: bool,
+        bytes: bool,
+    ) -> RResult<Result<Box<dyn TreRegex>, String>>;
 }
 
-type Spans = Vec<Option<(usize, usize)>>;
+/// A pattern compiled by GNU R's TRE.
+pub trait TreRegex {
+    /// The first match in `s`, a fresh string (`REG_NOTBOL` when `notbol`):
+    /// `nmatch` spans as byte offsets into `s`, index 0 the whole match.
+    fn exec(&self, interp: &mut Interp, s: &str, nmatch: usize, notbol: bool) -> RResult<Option<Spans>>;
+}
+
+static TRE_ENGINE: std::sync::OnceLock<&'static dyn TreEngine> = std::sync::OnceLock::new();
+
+/// Install GNU R's TRE (the executable's bridge does).
+pub fn set_tre_engine(e: &'static dyn TreEngine) {
+    let _ = TRE_ENGINE.set(e);
+}
+
+/// Does robigo's own engine possibly match `t` differently from TRE? These
+/// patterns go to GNU R's TRE; everything else stays with the fast engine,
+/// whose leftmost start plus longest end is TRE's POSIX match.
+/// `ROBIGO_TRE_DIFF` checks this rule against TRE (tests/tre_diff).
+fn tre_needs_native(t: &TreOut, want_caps: bool, bytes_non_ascii: bool) -> bool {
+    // useBytes on non-ASCII input: TRE matches bytes, classifying each as
+    // the code point of its value; robigo's engine matches characters
+    bytes_non_ascii
+        // minimal repetitions: TRE ranks matches by its tags
+        || t.has_minimal
+        // back-references and \B: matched by TRE's backtracking matcher
+        || t.has_backref
+        || t.has_lookaround
+        // \b \< \>: TRE's assertions at the ends of the (sub)string and
+        // around non-ASCII characters
+        || t.has_wordb
+        || t.has_approx
+        // repeated groups: TRE's tagged matcher picks its own match for
+        // these, not always the leftmost-longest one (`(a|ab){2}b?` on
+        // "bbbaaab" matches at 5, `b{2}(a*){2}` at 2)
+        || t.has_qgroup
+        // submatches: POSIX rules for alternations
+        || (want_caps && t.nsub > 0 && t.has_alt)
+}
+
+/// Where `ROBIGO_TRE_DIFF` sends disagreements between the fast engine and
+/// TRE on the patterns `tre_needs_native` keeps on the fast engine.
+fn tre_diff_log() -> Option<&'static str> {
+    static LOG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| std::env::var("ROBIGO_TRE_DIFF").ok().filter(|s| !s.is_empty())).as_deref()
+}
+
+fn tre_diff_report(pat: &str, s: &str, notbol: bool, groups: bool, fast: &Option<Spans>, tre: &Option<Spans>) {
+    let Some(path) = tre_diff_log() else { return };
+    let line = format!(
+        "pattern={:?} subject={:?} notbol={} groups={} fast={:?} tre={:?}\n",
+        pat, s, notbol, groups, fast, tre
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// A TRE program: the fast engine's leftmost-longest matching via
+/// regex-automata, or GNU R's TRE for what `tre_needs_native` sends it.
+enum TreProg {
+    Auto {
+        meta: MetaRegex,
+        dfa: Option<DFA>,
+        cache: RefCell<Option<DfaCache>>,
+        cap: Option<MetaRegex>,
+        /// Under `ROBIGO_TRE_DIFF`: the same pattern in TRE, and its text.
+        shadow: Option<(Box<dyn TreRegex>, String)>,
+    },
+    Native(Box<dyn TreRegex>),
+}
+
+pub type Spans = Vec<Option<(usize, usize)>>;
+
+/// GNU R's TRE compile of `pat` (R: grep.c, `tre_regcompb`/`tre_regwcomp`
+/// then `reg_report` on failure).
+fn tre_native(interp: &mut Interp, pat: &str, icase: bool, bytes: bool) -> RResult<Box<dyn TreRegex>> {
+    let Some(engine) = TRE_ENGINE.get() else {
+        return Err(Flow::error(format!(
+            "robigo: regular expression '{}' needs GNU R's TRE, which is not available here",
+            pat
+        )));
+    };
+    match engine.compile(interp, pat, icase, bytes)? {
+        Ok(re) => Ok(re),
+        Err(reason) => Err(Re::tre_error(interp, pat, &reason)),
+    }
+}
 
 impl TreProg {
     fn new(t: &TreOut, want_caps: bool) -> Result<TreProg, String> {
-        if t.has_backref || t.has_lookaround {
-            return fancy_regex::Regex::new(&t.pattern).map(TreProg::Fancy).map_err(|e| e.to_string());
-        }
         let meta = meta_regex(&t.pattern).map_err(|e| e.to_string())?;
-        // TRE honours minimal repetitions, so only extend to the longest
-        // match when there are none.
-        let dfa = if t.has_minimal {
-            None
-        } else {
-            DFA::builder()
-                .configure(DFA::config().match_kind(MatchKind::All).unicode_word_boundary(true))
-                .build(&t.pattern)
-                .ok()
-        };
+        let dfa = DFA::builder()
+            .configure(DFA::config().match_kind(MatchKind::All).unicode_word_boundary(true))
+            .build(&t.pattern)
+            .ok();
         let cap = if want_caps && t.nsub > 0 { meta_regex(&format!(r"(?:{})\z", t.pattern)).ok() } else { None };
-        Ok(TreProg::Auto { meta, dfa, cache: RefCell::new(None), cap })
+        Ok(TreProg::Auto { meta, dfa, cache: RefCell::new(None), cap, shadow: None })
     }
 
-    /// Leftmost-longest match in `s` (a fresh string).
-    fn exec(&self, s: &str, groups: bool) -> Option<Spans> {
-        match self {
-            TreProg::Fancy(re) => {
-                let caps = re.captures(s).ok()??;
-                Some((0..caps.len()).map(|i| caps.get(i).map(|m| (m.start(), m.end()))).collect())
-            }
-            TreProg::Auto { meta, dfa, cache, cap } => {
-                let m = meta.find(s)?;
-                let s0 = m.start();
-                let mut e = m.end();
-                if let Some(dfa) = dfa {
-                    let mut c = cache.borrow_mut();
-                    let c = c.get_or_insert_with(|| dfa.create_cache());
-                    let input = Input::new(s).range(s0..).anchored(Anchored::Yes);
-                    if let Ok(Some(hm)) = dfa.try_search_fwd(c, &input) {
-                        if hm.offset() > e {
-                            e = hm.offset();
-                        }
-                    }
-                }
-                let mut spans: Spans = vec![Some((s0, e))];
-                if groups {
-                    let ngroups = meta.captures_len();
-                    let mut got = false;
-                    if let Some(cap) = cap {
-                        let mut caps = cap.create_captures();
-                        let input = Input::new(&s[..e]).range(s0..e).anchored(Anchored::Yes);
-                        cap.search_captures(&input, &mut caps);
-                        if caps.is_match() {
-                            spans = (0..ngroups).map(|i| caps.get_group(i).map(|sp| (sp.start, sp.end))).collect();
-                            spans[0] = Some((s0, e));
-                            got = true;
-                        }
-                    }
-                    if !got {
-                        let mut caps = meta.create_captures();
-                        let input = Input::new(s).range(s0..).anchored(Anchored::Yes);
-                        meta.search_captures(&input, &mut caps);
-                        spans = (0..ngroups).map(|i| caps.get_group(i).map(|sp| (sp.start, sp.end))).collect();
-                        spans[0] = Some((s0, e));
-                    }
-                }
-                Some(spans)
+    /// The program for `pat`: GNU R's TRE when `tre_needs_native`, else the
+    /// fast engine (with a TRE shadow under `ROBIGO_TRE_DIFF`).
+    /// `ascii`: the pattern and every input are ASCII.
+    #[allow(clippy::too_many_arguments)]
+    fn compile(
+        interp: &mut Interp,
+        pat: &str,
+        icase: bool,
+        bytes: bool,
+        ascii: bool,
+        t: &TreOut,
+        want_caps: bool,
+    ) -> RResult<TreProg> {
+        if tre_needs_native(t, want_caps, bytes && !ascii) {
+            return Ok(TreProg::Native(tre_native(interp, pat, icase, bytes)?));
+        }
+        let mut prog = TreProg::new(t, want_caps).map_err(|e| unsupported(pat, &e))?;
+        if tre_diff_log().is_some() && TRE_ENGINE.get().is_some() {
+            if let (TreProg::Auto { shadow, .. }, Ok(re)) = (&mut prog, tre_native(interp, pat, icase, bytes)) {
+                *shadow = Some((re, pat.to_string()));
             }
         }
+        Ok(prog)
+    }
+
+    /// Leftmost-longest match in `s` (a fresh string). `notbol`: REG_NOTBOL
+    /// (the fast engine has its own program for it); `nsub`: the pattern's
+    /// capture groups.
+    fn exec(&self, interp: &mut Interp, s: &str, groups: bool, notbol: bool, nsub: usize) -> RResult<Option<Spans>> {
+        let nmatch = if groups { nsub + 1 } else { 1 };
+        match self {
+            TreProg::Native(re) => re.exec(interp, s, nmatch, notbol),
+            TreProg::Auto { meta, dfa, cache, cap, shadow } => {
+                let fast = Self::exec_auto(meta, dfa, cache, cap, s, groups);
+                if let Some((re, pat)) = shadow {
+                    let tre = re.exec(interp, s, nmatch, notbol)?;
+                    let norm = |m: &Option<Spans>| {
+                        m.as_ref().map(|v| (0..nmatch).map(|i| v.get(i).copied().flatten()).collect::<Vec<_>>())
+                    };
+                    if norm(&fast) != norm(&tre) {
+                        tre_diff_report(pat, s, notbol, groups, &fast, &tre);
+                    }
+                }
+                Ok(fast)
+            }
+        }
+    }
+
+    fn exec_auto(
+        meta: &MetaRegex,
+        dfa: &Option<DFA>,
+        cache: &RefCell<Option<DfaCache>>,
+        cap: &Option<MetaRegex>,
+        s: &str,
+        groups: bool,
+    ) -> Option<Spans> {
+        let m = meta.find(s)?;
+        let s0 = m.start();
+        let mut e = m.end();
+        if let Some(dfa) = dfa {
+            let mut c = cache.borrow_mut();
+            let c = c.get_or_insert_with(|| dfa.create_cache());
+            let input = Input::new(s).range(s0..).anchored(Anchored::Yes);
+            if let Ok(Some(hm)) = dfa.try_search_fwd(c, &input) {
+                if hm.offset() > e {
+                    e = hm.offset();
+                }
+            }
+        }
+        let mut spans: Spans = vec![Some((s0, e))];
+        if groups {
+            let ngroups = meta.captures_len();
+            let mut got = false;
+            if let Some(cap) = cap {
+                let mut caps = cap.create_captures();
+                let input = Input::new(&s[..e]).range(s0..e).anchored(Anchored::Yes);
+                cap.search_captures(&input, &mut caps);
+                if caps.is_match() {
+                    spans = (0..ngroups).map(|i| caps.get_group(i).map(|sp| (sp.start, sp.end))).collect();
+                    spans[0] = Some((s0, e));
+                    got = true;
+                }
+            }
+            if !got {
+                let mut caps = meta.create_captures();
+                let input = Input::new(s).range(s0..).anchored(Anchored::Yes);
+                meta.search_captures(&input, &mut caps);
+                spans = (0..ngroups).map(|i| caps.get_group(i).map(|sp| (sp.start, sp.end))).collect();
+                spans[0] = Some((s0, e));
+            }
+        }
+        Some(spans)
     }
 }
 
 /// A POSIX ERE compiled for a boolean match, as R's `list.files` needs
 /// (platform.c: tre_regcomp REG_EXTENDED, then `tre_regexec(...) == 0`).
-/// Compile errors come back as the reason string.
 pub struct TreBoolMatch(TreProg);
 
 impl TreBoolMatch {
-    pub fn compile(pat: &str, icase: bool) -> Result<TreBoolMatch, String> {
-        let t = tre_translate(pat, icase, false, false).map_err(|e| e.to_string())?;
-        Ok(TreBoolMatch(TreProg::new(&t, false)?))
+    /// `Ok(Err(reason))` when the pattern is invalid.
+    pub fn compile(interp: &mut Interp, pat: &str, icase: bool) -> RResult<Result<TreBoolMatch, String>> {
+        let t = match tre_translate(pat, icase, false, false) {
+            Ok(t) => t,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        if tre_needs_native(&t, false, false) {
+            let Some(engine) = TRE_ENGINE.get() else {
+                return Ok(Err(format!("robigo: regular expression '{}' needs GNU R's TRE", pat)));
+            };
+            // platform.c's tre_regcomp: multibyte, as wide characters
+            return Ok(engine.compile(interp, pat, icase, false)?.map(|re| TreBoolMatch(TreProg::Native(re))));
+        }
+        Ok(TreProg::new(&t, false).map(TreBoolMatch))
     }
 
-    pub fn is_match(&self, s: &str) -> bool {
-        self.0.exec(s, false).is_some()
+    pub fn is_match(&self, interp: &mut Interp, s: &str) -> RResult<bool> {
+        Ok(self.0.exec(interp, s, false, false, 0)?.is_some())
     }
 }
 
@@ -1381,8 +1596,9 @@ struct Re {
     nsub: usize,
 }
 
-/// (pattern, perl, ignore.case, captures wanted, ASCII-only text).
-type ReKey = (String, bool, bool, bool, bool);
+/// (pattern, perl, ignore.case, captures wanted, ASCII-only text, TRE
+/// byte mode).
+type ReKey = (String, bool, bool, bool, bool, bool);
 
 const RE_CACHE_SIZE: usize = 32;
 
@@ -1426,7 +1642,10 @@ impl Re {
     }
 
     /// `ascii`: every string the pattern will be matched against is ASCII.
-    /// Compiled patterns are cached (see [`RE_CACHE`]).
+    /// `bytes`: GNU R would run TRE on bytes (`tre_regcompb`, see
+    /// [`tre_bytes`]), not wide characters. Compiled patterns are cached
+    /// (see [`RE_CACHE`]).
+    #[allow(clippy::too_many_arguments)]
     fn compile(
         interp: &mut Interp,
         pat: &str,
@@ -1435,11 +1654,12 @@ impl Re {
         icase: bool,
         want_caps: bool,
         ascii: bool,
+        bytes: bool,
     ) -> RResult<Rc<Re>> {
         if fixed {
             return Ok(Rc::new(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 }));
         }
-        let key = (pat.to_string(), perl, icase, want_caps, ascii);
+        let key = (pat.to_string(), perl, icase, want_caps, ascii, bytes);
         let hit = RE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
             let i = c.iter().position(|(k, _)| *k == key)?;
@@ -1451,7 +1671,7 @@ impl Re {
         if let Some(re) = hit {
             return Ok(re);
         }
-        let re = Rc::new(Re::compile_uncached(interp, pat, fixed, perl, icase, want_caps, ascii)?);
+        let re = Rc::new(Re::compile_uncached(interp, pat, fixed, perl, icase, want_caps, ascii, bytes)?);
         RE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
             c.insert(0, (key, re.clone()));
@@ -1460,6 +1680,7 @@ impl Re {
         Ok(re)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_uncached(
         interp: &mut Interp,
         pat: &str,
@@ -1468,6 +1689,7 @@ impl Re {
         icase: bool,
         want_caps: bool,
         ascii: bool,
+        bytes: bool,
     ) -> RResult<Re> {
         if fixed {
             return Ok(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 });
@@ -1496,14 +1718,21 @@ impl Re {
             t
         };
         let t = restrict(tre_translate(pat, icase, false, false).map_err(|r| Re::tre_error(interp, pat, r))?);
-        let std = TreProg::new(&t, want_caps).map_err(|e| unsupported(pat, &e))?;
-        let notbol = if t.has_bol {
+        let all_ascii = ascii && pat.is_ascii();
+        let std = TreProg::compile(interp, pat, icase, bytes, all_ascii, &t, want_caps)?;
+        // the fast engine's program for REG_NOTBOL (TRE takes it as a flag)
+        let notbol = if t.has_bol && matches!(std, TreProg::Auto { .. }) {
             let t2 = restrict(tre_translate(pat, icase, true, false).map_err(|r| Re::tre_error(interp, pat, r))?);
-            Some(TreProg::new(&t2, want_caps).map_err(|e| unsupported(pat, &e))?)
+            Some(TreProg::compile(interp, pat, icase, bytes, all_ascii, &t2, want_caps)?)
         } else {
             None
         };
         Ok(Re { kind: Kind::Tre { std, notbol }, nsub: t.nsub })
+    }
+
+    /// Does GNU R's TRE match this pattern (see `tre_needs_native`)?
+    fn is_native(&self) -> bool {
+        matches!(&self.kind, Kind::Tre { std: TreProg::Native(_), .. })
     }
 
     /// Capture names for perl = TRUE ("" for unnamed groups).
@@ -1518,18 +1747,19 @@ impl Re {
 
     /// First match at or after byte `start`; spans are absolute byte
     /// offsets, index 0 being the whole match.
-    fn exec(&self, hay: &str, start: usize, ctx: Ctx, groups: bool) -> Option<Spans> {
-        match &self.kind {
+    fn exec(&self, interp: &mut Interp, hay: &str, start: usize, ctx: Ctx, groups: bool) -> RResult<Option<Spans>> {
+        Ok(match &self.kind {
             Kind::Fixed(p) => {
-                let i = hay[start..].find(p.as_str())?;
+                let Some(i) = hay[start..].find(p.as_str()) else { return Ok(None) };
                 Some(vec![Some((start + i, start + i + p.len()))])
             }
             Kind::Tre { std, notbol } => {
-                let prog = match (ctx, notbol) {
-                    (Ctx::Fresh { notbol: true }, Some(nb)) => nb,
+                let nb = matches!(ctx, Ctx::Fresh { notbol: true });
+                let prog = match (nb, notbol) {
+                    (true, Some(p)) => p,
                     _ => std,
                 };
-                let spans = prog.exec(&hay[start..], groups)?;
+                let Some(spans) = prog.exec(interp, &hay[start..], groups, nb, self.nsub)? else { return Ok(None) };
                 Some(spans.into_iter().map(|o| o.map(|(a, b)| (a + start, b + start))).collect())
             }
             Kind::Pcre(re) => {
@@ -1539,15 +1769,25 @@ impl Re {
                 };
                 let from = if base == 0 { start } else { 0 };
                 if groups {
-                    let caps = re.captures_from_pos(sub, from).ok()??;
+                    let Some(caps) = re.captures_from_pos(sub, from).ok().flatten() else { return Ok(None) };
                     Some((0..caps.len()).map(|i| caps.get(i).map(|m| (m.start() + base, m.end() + base))).collect())
                 } else {
-                    let m = re.find_from_pos(sub, from).ok()??;
+                    let Some(m) = re.find_from_pos(sub, from).ok().flatten() else { return Ok(None) };
                     Some(vec![Some((m.start() + base, m.end() + base))])
                 }
             }
-        }
+        })
     }
+}
+
+/// GNU R's TRE mode in a UTF-8 locale (R: grep.c, do_gsub and friends):
+/// bytes when `useBytes`, when every input is ASCII, or when one is marked
+/// "bytes"; wide characters otherwise.
+fn tre_bytes(use_bytes: bool, inputs: &[&[RStr]]) -> bool {
+    use crate::value::Encoding;
+    use_bytes
+        || inputs.iter().all(|v| v.iter().all(|s| s.as_deref().is_none_or(|s| s.is_ascii())))
+        || inputs.iter().any(|v| v.iter().any(|s| s.as_ref().is_some_and(|s| s.encoding() == Encoding::Bytes)))
 }
 
 fn unsupported(pat: &str, e: &str) -> Flow {
@@ -1670,7 +1910,7 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let tok = &args[1].value;
     let fixed = as_bool2(&args[2].value, call)?;
     let mut perl = as_bool2(&args[3].value, call)?;
-    let _use_bytes = as_bool2(&args[4].value, call)?;
+    let use_bytes = as_bool2(&args[4].value, call)?;
     if fixed && perl {
         interp.warning("argument 'perl = TRUE' will be ignored")?;
         perl = false;
@@ -1721,7 +1961,8 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                 }
             }
             Some(split) => {
-                let re = Re::compile(interp, split, false, perl, false, false, only_ascii(&xv.data))?;
+                let bytes = tre_bytes(use_bytes, &[&tv.data, &xv.data]);
+                let re = Re::compile(interp, split, false, perl, false, false, only_ascii(&xv.data), bytes)?;
                 for i in idx {
                     ans[i] = match &xv.data[i] {
                         None => Value::str_na(),
@@ -1729,7 +1970,7 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                             let mut v: Vec<RStr> = Vec::new();
                             let mut bufp = 0usize;
                             if !s.is_empty() {
-                                while let Some(m) = re.exec(s, bufp, Ctx::Fresh { notbol: false }, false) {
+                                while let Some(m) = re.exec(interp, s, bufp, Ctx::Fresh { notbol: false }, false)? {
                                     let (so, eo) = m[0].unwrap();
                                     if eo > bufp {
                                         v.push(Some(crate::value::RString::from(&s[bufp..so])));
@@ -1772,7 +2013,7 @@ fn grep_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, grepl: bool) -> 
     let value = as_bool2(&args[3].value, call)?;
     o.perl = as_bool2(&args[4].value, call)?;
     o.fixed = as_bool2(&args[5].value, call)?;
-    let _use_bytes = as_bool2(&args[6].value, call)?;
+    let use_bytes = as_bool2(&args[6].value, call)?;
     let invert = as_bool2(&args[7].value, call)?;
     fix_opts(interp, &mut o)?;
     let p = pattern_arg(interp, pat)?;
@@ -1793,15 +2034,15 @@ fn grep_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, grepl: bool) -> 
             return Ok(Value::ints(vec![NA_INTEGER; n]));
         }
     };
-    let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, false, only_ascii(&tv.data))?;
-    let ind: Vec<bool> = tv
-        .data
-        .iter()
-        .map(|e| match e {
+    let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], &tv.data]);
+    let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, false, only_ascii(&tv.data), bytes)?;
+    let mut ind: Vec<bool> = Vec::with_capacity(n);
+    for e in &tv.data {
+        ind.push(match e {
             None => false,
-            Some(s) => re.exec(s, 0, Ctx::Fresh { notbol: false }, false).is_some(),
-        })
-        .collect();
+            Some(s) => re.exec(interp, s, 0, Ctx::Fresh { notbol: false }, false)?.is_some(),
+        });
+    }
     if grepl {
         return Ok(Value::lgls(ind.iter().map(|&b| b as Lgl).collect()));
     }
@@ -2450,10 +2691,17 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     let ptxt = bytes_to_latin1(pat);
     let ttxt = bytes_to_latin1(text);
     let ascii = ptxt.is_ascii() && ttxt.is_ascii();
-    let re = Re::compile(interp, &ptxt, false, false, igcase_opt, false, ascii)?;
+    let re = Re::compile(interp, &ptxt, false, false, igcase_opt, false, ascii, true)?;
+    // GNU R matches the raw bytes (tre_regncompb): the Latin-1 text here is
+    // the same bytes only when they are ASCII without NULs
+    if re.is_native() && !(ascii && !pat.contains(&0) && !text.contains(&0)) {
+        return Err(Flow::error(
+            "robigo: grepRaw() of this pattern on non-ASCII or NUL bytes is not implemented yet".to_string(),
+        ));
+    }
 
     if !all {
-        let m = re.exec(&ttxt, offset, Ctx::Fresh { notbol: false }, false);
+        let m = re.exec(interp, &ttxt, offset, Ctx::Fresh { notbol: false }, false)?;
         let span = m.and_then(|m| m[0]);
         let Some((so, eo)) = span else {
             return Ok(if value { Value::raws(Vec::new()) } else { Value::ints(Vec::new()) });
@@ -2479,7 +2727,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut off = offset;
     let mut notbol = false;
-    while let Some(m) = re.exec(&ttxt, off, Ctx::Fresh { notbol }, false) {
+    while let Some(m) = re.exec(interp, &ttxt, off, Ctx::Fresh { notbol }, false)? {
         let Some((so, eo)) = m[0] else { break };
         if spans.is_empty() {
             notbol = true;
@@ -2489,7 +2737,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
         if eo == 0 {
             let mut infinite = true;
             if spans.len() == 1 {
-                match re.exec(&ttxt, off, Ctx::Fresh { notbol }, false).and_then(|m| m[0]) {
+                match re.exec(interp, &ttxt, off, Ctx::Fresh { notbol }, false)?.and_then(|m| m[0]) {
                     Some((_, 0)) => {}
                     _ => infinite = false,
                 }
@@ -2599,7 +2847,7 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
         perl: as_bool2(&args[4].value, call)?,
         fixed: as_bool2(&args[5].value, call)?,
     };
-    let _use_bytes = as_bool2(&args[6].value, call)?;
+    let use_bytes = as_bool2(&args[6].value, call)?;
     fix_opts(interp, &mut o)?;
     let p = pattern_arg(interp, pat)?;
     let r = match rep {
@@ -2622,7 +2870,9 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                 return Err(Flow::error("zero-length pattern"));
             }
             let groups = !o.fixed && has_backrefs(srep);
-            let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&tv.data))?;
+            let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], std::slice::from_ref(&repl), &tv.data]);
+            let re =
+                Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&tv.data), bytes)?;
             let mut out = Vec::with_capacity(n);
             for e in &tv.data {
                 let Some(s) = e else {
@@ -2636,7 +2886,7 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                 let mut last_end: i64 = -1;
                 let mut notbol = false;
                 let ctx_of = |notbol: bool| if o.perl { Ctx::Full } else { Ctx::Fresh { notbol } };
-                while let Some(m) = re.exec(s, offset, ctx_of(notbol), groups) {
+                while let Some(m) = re.exec(interp, s, offset, ctx_of(notbol), groups)? {
                     let (so, eo) = m[0].unwrap();
                     nmatch += 1;
                     buf.push_str(&s[offset..so]);
@@ -2749,7 +2999,8 @@ fn regexpr_setup(interp: &mut Interp, call: &Value, args: &[Arg]) -> RResult<(Re
     let itype = if use_bytes { "bytes" } else { "chars" };
     let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
     let pstr = p.data[0].clone().unwrap();
-    let re = Re::compile(interp, &pstr, o.fixed, o.perl, o.icase && !o.fixed, o.perl, only_ascii(&tv.data))?;
+    let bytes = tre_bytes(use_bytes, &[&p.data[..1], &tv.data]);
+    let re = Re::compile(interp, &pstr, o.fixed, o.perl, o.icase && !o.fixed, o.perl, only_ascii(&tv.data), bytes)?;
     Ok((RegexprSetup { re, use_bytes, itype, perl: o.perl, fixed: o.fixed }, tv.clone()))
 }
 
@@ -2770,7 +3021,7 @@ fn do_regexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
             continue;
         };
         let ctx = Ctx::Fresh { notbol: false };
-        match st.re.exec(s, 0, ctx, st.perl) {
+        match st.re.exec(interp, s, 0, ctx, st.perl)? {
             Some(m) => {
                 let (p, l) = pos_len(s, m[0], st.use_bytes);
                 pos[i] = p;
@@ -2829,7 +3080,7 @@ fn do_gregexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                 break;
             }
             let ctx = if st.perl { Ctx::Full } else { Ctx::Fresh { notbol } };
-            let Some(m) = st.re.exec(s, offset, ctx, st.perl) else { break };
+            let Some(m) = st.re.exec(interp, s, offset, ctx, st.perl)? else { break };
             let (so, eo) = m[0].unwrap();
             let (p, l) = pos_len(s, m[0], st.use_bytes);
             pos.push(p);
@@ -2906,7 +3157,23 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
     let pstr = p.data[0].clone().unwrap();
     let t = tre_translate(&pstr, icase, false, fixed).map_err(|r| Flow::error(format!("regcomp error: '{}'", r)))?;
-    let prog = TreProg::new(&t, true).map_err(|e| unsupported(&pstr, &e))?;
+    let all_ascii = only_ascii(&p.data[..1]) && only_ascii(&tv.data);
+    let prog = if tre_needs_native(&t, true, use_bytes && !all_ascii) {
+        let Some(engine) = TRE_ENGINE.get() else {
+            return Err(Flow::error(format!(
+                "robigo: regular expression '{}' needs GNU R's TRE, which is not available here",
+                pstr
+            )));
+        };
+        // R: grep.c:do_regexec, tre_regcompb on ASCII/bytes, else tre_regwcomp
+        let bytes = tre_bytes(use_bytes, &[&p.data[..1], &tv.data]);
+        match engine.compile(interp, &pstr, icase, bytes)? {
+            Ok(re) => TreProg::Native(re),
+            Err(reason) => return Err(Flow::error(format!("regcomp error: '{}'", reason))),
+        }
+    } else {
+        TreProg::new(&t, true).map_err(|e| unsupported(&pstr, &e))?
+    };
     let nmatch = t.nsub + 1;
     let mut out = Vec::with_capacity(tv.data.len());
     for e in &tv.data {
@@ -2916,7 +3183,7 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
             out.push(v);
             continue;
         };
-        let mut v = match prog.exec(s, true) {
+        let mut v = match prog.exec(interp, s, true, false, t.nsub)? {
             Some(m) => {
                 let mut pos = Vec::with_capacity(nmatch);
                 let mut len = Vec::with_capacity(nmatch);
@@ -3031,6 +3298,10 @@ mod tests {
         assert_eq!(tre("\\"), "ERR Trailing backslash");
         assert_eq!(tre("(a)\\2"), "ERR Invalid back reference");
         assert_eq!(tre("[b-a]"), "ERR Invalid character range");
+        // 31 hex digits fit TRE's buffer, 32 are refused (robigo-capi's
+        // extra/README.md)
+        assert!(!tre(&format!("\\x{{{}41}}", "0".repeat(29))).starts_with("ERR"));
+        assert_eq!(tre(&format!("\\x{{{}41}}", "0".repeat(30))), "ERR Missing '}'");
     }
 
     /// TRE only skips blanks and commas after the repetition counts, so a
@@ -3110,8 +3381,32 @@ mod tests {
     #[test]
     fn longest() {
         let t = tre_translate("a|ab", false, false, false).unwrap();
+        assert!(!tre_needs_native(&t, false, false));
         let p = TreProg::new(&t, false).unwrap();
-        assert_eq!(p.exec("abc", false).unwrap()[0], Some((0, 2)));
+        let TreProg::Auto { meta, dfa, cache, cap, .. } = &p else { panic!("not the fast engine") };
+        let m = TreProg::exec_auto(meta, dfa, cache, cap, "abc", false).expect("a match");
+        assert_eq!(m[0], Some((0, 2)));
+    }
+
+    #[test]
+    fn routes_to_tre() {
+        let native =
+            |p: &str, caps: bool| tre_needs_native(&tre_translate(p, false, false, false).unwrap(), caps, false);
+        // what the fast engine can get wrong
+        for p in ["a.*?b|a.*", "x+?", "a??", "a{1,3}?", "\\bfoo", "\\Bo", "\\<a", "a\\>", "(a)\\1", "(abc){~1}"] {
+            assert!(native(p, false), "{}", p);
+        }
+        assert!(native("(a|ab)(c|bcd)", true));
+        assert!(native("((a)|b)c", true));
+        assert!(!native("(a|e)(l|p)", true));
+        assert!(!native("(ab|cd|[xy]z)-(.)", true));
+        assert!(native("(ab)+c", false));
+        assert!(native("(a*){2}", false));
+        // what it cannot
+        for p in ["a|ab", "(a|ab)(c|bcd)", "[[:alpha:]]+", "[ab]{2}", "a{2,3}", "^a.*z$"] {
+            assert!(!native(p, false), "{}", p);
+        }
+        assert!(!native("(a)(b)", true));
     }
 
     #[test]
