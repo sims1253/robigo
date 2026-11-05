@@ -15,6 +15,17 @@
 //! running in the frame of such a closure still takes base's function
 //! ([`frozen`]), and so does the interpreter ([`frozen_fun`]).
 //!
+//! Installed code (`IGNORE`) is known by provenance only: the closures the
+//! unserializer read with a BCODESXP body, as GNU R's lazy-load databases
+//! (base's `base.rdb`, packages GNU R installed) and saved compiled
+//! closures hold them. A closure's environment says nothing: code sourced
+//! into a namespace, or made below a namespace copy (testthat's test
+//! files), is JIT-decided as in GNU R. So base loaded from its sources
+//! (`ROBIGO_BASE=src`, or no installed `base.rdb`) and packages robigo
+//! installs itself (it writes plain bodies unless built with
+//! `bytecode-fidelity`) are JIT-decided too, where GNU R's would be
+//! installed bytecode.
+//!
 //! R: eval.c:R_CheckJIT, JIT_score, R_cmpfun (and the JIT cache);
 //! compiler/R/cmp.R: getInlineInfo, findCenvVar, findLocalsList,
 //! mayCallBrowser, languageFuns and the inline handlers.
@@ -52,8 +63,9 @@ const INHERITED: u64 = 2;
 const NOJIT: u64 = 3;
 /// Compiled; the frozen set is in the high bits.
 const COMPILED: u64 = 4;
-/// Defined in a namespace: compiled when its package was installed, and
-/// lookups from there find base's functions anyway.
+/// Installed: unserialized with a bytecode body (base's and packages'
+/// lazy-load databases); the frozen set it was compiled with, taken at its
+/// first call, is in the high bits for the closures its code makes.
 const IGNORE: u64 = 5;
 // R: print.c:PrintClosure / serialize.c:ReadItem. A loaded BCODESXP body
 // is printed as bytecode without changing the execution/inheritance state.
@@ -119,7 +131,8 @@ impl JitState {
 
     /// Whether GNU R's AST interpreter would run this closure's body: it is
     /// not installed bytecode, and the JIT has not compiled it (`IGNORE`
-    /// marks closures in a namespace, whose installed bodies are bytecode).
+    /// marks installed closures: their bodies were unserialized as
+    /// bytecode).
     /// Only the trace reports differ between the two evaluators
     /// (eval.c:1224 vs 7894).
     pub fn interpreted(&self) -> bool {
@@ -290,8 +303,16 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
     let v = clo.jit.0.get();
     match v & STATE_MASK {
         UNSEEN => {
-            if in_namespace(interp, &clo.env) {
-                clo.jit.set(IGNORE, 0);
+            // Installed code is what the unserializer read with a bytecode
+            // body (serialize.c ReadBC: base's and packages' lazy-load
+            // databases, a saved compiled closure): compiled with the
+            // bindings its environment had then, taken now. Nothing else is
+            // installed, whatever its environment (a closure interpreted
+            // code made below a namespace, testthat's test files): the JIT
+            // decides, as for any closure.
+            if v & LOADED_BYTECODE != 0 {
+                let mask = compile_mask(interp, clo).unwrap_or(0);
+                clo.jit.set(IGNORE, mask);
                 return;
             }
             // R: eval.c:R_CheckJIT, strategy STRATEGY_TOP_SMALL_MAYBE.
@@ -317,27 +338,6 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
             clo.jit.set(COMPILED, outer & !function_locals(interp, clo));
         }
         _ => {}
-    }
-}
-
-/// Is `env` (or an enclosure of it below the global environment) a
-/// namespace or the base environment? Namespaces reach the global
-/// environment through the base namespace (their imports' parent), other
-/// code directly.
-#[inline(never)]
-fn in_namespace(interp: &Interp, env: &Env) -> bool {
-    let mut e = env.clone();
-    loop {
-        if e.ptr_eq(&interp.global) {
-            return false;
-        }
-        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
-            return true;
-        }
-        match e.parent() {
-            Some(p) => e = p,
-            None => return false,
-        }
     }
 }
 
@@ -416,6 +416,7 @@ fn compile(interp: &mut Interp, clo: &Closure) {
             single_na: true,
             attrib_as_set: true,
             ignore_env: true,
+            ignore_bytecode: true,
             ignore_srcref: false,
         };
         crate::builtins::identical::identical_flags(&e.body, &clo.body, flags).then_some(Some(e.mask))
@@ -732,6 +733,46 @@ fn frame_mask(interp: &Interp, env: &Env) -> u64 {
     0
 }
 
+/// The call `l` of `clo` in compiled code (the caller checks `Interp::bc`):
+/// did GNU R's compiler inline it as `(function() expr)()`? It does for
+/// `local` with one argument when `local` was base's as the code was
+/// compiled: the frozen set of a closure the JIT compiled, else (installed
+/// package code, a top-level loop) base's `local` as found now.
+// R: compiler/R/cmp.R: setInlineHandler("local") (length(e) == 2)
+#[inline]
+pub fn inlines_local(interp: &Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) -> bool {
+    if l.args.len() != 1 || l.fun.as_sym().is_none_or(|f| f != s::LOCAL) {
+        return false;
+    }
+    inlines_local_slow(interp, clo, env)
+}
+
+#[cold]
+#[inline(never)]
+fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
+    let base = match interp.base.get_local(s::LOCAL) {
+        Some(Value::Promise(p)) => p.forced_fun(),
+        v => v,
+    };
+    if !base.is_some_and(|b| matches!(&b, Value::Closure(c) if Rc::ptr_eq(c, clo))) {
+        return false;
+    }
+    for ctx in interp.frames.iter().rev() {
+        if ctx.cloenv.ptr_eq(env) {
+            let Value::Closure(c) = &ctx.function else { return true };
+            // Compiled by the JIT, or installed (and closures their code
+            // made): base's `local` when it was compiled, by its frozen set.
+            let v = c.jit.0.get();
+            return match v & STATE_MASK {
+                COMPILED | IGNORE => index(s::LOCAL).is_some_and(|i| (v >> 8) >> i & 1 != 0),
+                _ => true,
+            };
+        }
+    }
+    // A loop in the global environment (do_for and friends).
+    true
+}
+
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
 /// code there still use base's `sym`?
 #[cold]
@@ -781,6 +822,14 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
 #[inline(never)]
 pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
     if env.is_search() {
+        // R: eval.c:do_for and friends compile a loop the interpreter meets
+        // in the global environment (`Interp::bc`); `function` there makes
+        // a compiled closure (MAKECLOSURE), with the global environment's
+        // bindings as the loop was compiled with them. (Taken now: a frozen
+        // function rebound earlier in the same loop would differ.)
+        if interp.bc && env.ptr_eq(&interp.global) {
+            clo.jit.set(INHERITED, top_mask(interp, env, &frozen_syms()));
+        }
         return;
     }
     for ctx in interp.frames.iter().rev() {
@@ -795,8 +844,8 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
                 let v = c.jit.0.get();
                 match v & STATE_MASK {
                     COMPILED => clo.jit.set(INHERITED, v >> 8),
-                    // Namespace code runs installed bytecode: its nested
-                    // closures are compiled with it (MAKECLOSURE).
+                    // Installed bytecode: its nested closures are compiled
+                    // with it (MAKECLOSURE), with its frozen set.
                     IGNORE => clo.jit.set(INHERITED, v >> 8),
                     _ => {}
                 }

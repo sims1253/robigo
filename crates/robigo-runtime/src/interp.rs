@@ -63,6 +63,8 @@ pub struct Context {
     /// A builtin's context (R's `CTXT_BUILTIN`, which `.Call` and friends
     /// get): not a function context, so `sys.call()` and friends skip it.
     pub builtin: bool,
+    /// [`Interp::bc`] when this context was entered, restored when it ends.
+    pub prev_bc: bool,
 }
 
 /// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
@@ -95,11 +97,6 @@ pub struct Interp {
     /// the frame's exit code runs, and nested calls read the outer frame's
     /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
     pub exit_value: Option<Value>,
-    /// `frames.len()` when the AST evaluator took over from compiled code:
-    /// forcing a promise (eval.c:forcePromise) or running on.exit code
-    /// (context.c:R_run_onexits). A missing argument read before another
-    /// closure is entered is an `evalError` (see `missing_arg_class`).
-    pub(crate) ast_frames: usize,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -148,6 +145,14 @@ pub struct Interp {
     /// still loading stay generic (and unmemoized): resolving against a
     /// partial snapshot would poison the memo for user code.
     pub si_ready: bool,
+    /// Whether GNU R's evaluator would be `bcEval` here: the body of a
+    /// closure its JIT compiled (or installed bytecode), code a compiled
+    /// body made into promises, a top-level loop (JIT level 3). Not robigo's
+    /// own tier, which compiles everything. Call sites differ between the
+    /// two evaluators: the AST interpreter promises constant arguments
+    /// (eval.c:promiseArgs), bytecode pushes them as values (PUSHCONSTARG).
+    /// `eval()`, on.exit code and C's evaluation interpret.
+    pub bc: bool,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -249,6 +254,15 @@ fn expand_promise(p: &Promise, v: Value) -> Value {
     p.value().unwrap_or(v)
 }
 
+/// A constant argument as GNU R's AST interpreter passes it: an unforced
+/// promise of the constant (eval.c:promiseArgs). rlang's dots_info and
+/// check_dots_used tell it from a value ("delayed").
+#[cold]
+#[inline(never)]
+pub(crate) fn const_promise(a: &Arg, env: &Env) -> Arg {
+    Arg::new(a.tag, Value::Promise(Rc::new(Promise::new(a.value.clone(), env.clone()))))
+}
+
 /// The current stack pointer, approximately.
 #[inline(always)]
 fn stack_address() -> usize {
@@ -288,7 +302,6 @@ impl Interp {
             visible: true,
             interactive: false,
             exit_value: None,
-            ast_frames: usize::MAX,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -312,6 +325,7 @@ impl Interp {
             ccode_calls: Vec::new(),
             si_snaps: std::array::from_fn(|_| None),
             si_ready: false,
+            bc: false,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -430,7 +444,6 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => self.eval_bytecode(b, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
@@ -442,7 +455,6 @@ impl Interp {
     // recursive just for imported code; it changes LLVM's hot-path lowering.
     #[cold]
     #[inline(never)]
-    #[cfg(feature = "bytecode-fidelity")]
     fn eval_bytecode(&mut self, b: &Bytecode, env: &Env) -> RResult<Value> {
         self.eval(&b.expression, env)
     }
@@ -452,25 +464,14 @@ impl Interp {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 
-    /// The class of a missing-argument error for a variable read in `env`:
-    /// GNU R reads the variables of a byte-compiled closure's body with
-    /// getvar() (`getvarError`), and evaluates everything else, eval()
-    /// included, with the AST evaluator (`evalError`). A closure counts as
-    /// compiled once GNU R's JIT would have compiled it (R_CheckJIT, see
-    /// `JitState::is_bytecode`).
+    /// The class of a missing-argument error: GNU R reads variables with
+    /// getvar() in bcEval (`getvarError`) and with eval() in the AST
+    /// evaluator (`evalError`), which is where [`Interp::bc`] says GNU R
+    /// would be: a compiled closure's body, a promise its code made, a
+    /// top-level loop; not eval(), on.exit code, a default.
     // R: eval.c:getvar, eval.c:eval (SYMSXP)
-    fn missing_arg_class(&self, env: &Env) -> &'static str {
-        if self.ast_frames == self.frames.len() {
-            return "evalError";
-        }
-        // The frame `env` belongs to: a read in a compiled closure's body,
-        // or in a promise its compiled code created for an argument (GNU R
-        // gives those bytecode, forced by bcEval: getvar), even when another
-        // closure forces it.
-        match self.frame_of_env(env).map(|k| &self.frames[k].function) {
-            Some(Value::Closure(c)) if c.jit.is_bytecode() => "getvarError",
-            _ => "evalError",
-        }
+    fn missing_arg_class(&self, _env: &Env) -> &'static str {
+        if self.bc { "getvarError" } else { "evalError" }
     }
 
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
@@ -488,7 +489,7 @@ impl Interp {
             // (a variable's object: Env::binding_value)
             if let Some((v, flags)) = cur.binding_value(sym) {
                 if flags & BIND_ACTIVE != 0 {
-                    return self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]));
+                    return self.get_active_value(&v);
                 }
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
@@ -586,13 +587,12 @@ impl Interp {
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
         // R: eval.c:forcePromise evaluates PRCODE with eval(): bytecode (an
-        // argument of compiled code) runs on bcEval and reads with getvar,
-        // an expression on the AST evaluator. Only an argument promise can
-        // be bytecode (whether its creator counts as compiled decides the
-        // class, see missing_arg_class); a formal's default, delayedAssign
-        // and lazy-load promises are expressions.
-        let ast = !p.arg || p.default;
-        let saved_ast = if ast { std::mem::replace(&mut self.ast_frames, self.frames.len()) } else { self.ast_frames };
+        // argument promise compiled code made, MAKEPROM) runs on bcEval and
+        // reads with getvar, an expression on the AST evaluator. A formal's
+        // default, delayedAssign and lazy-load promises are expressions
+        // (`Promise::bc` false); the promise's creator decides, not who
+        // forces it.
+        let saved_bc = std::mem::replace(&mut self.bc, p.bc && !p.default);
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -603,7 +603,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
-        self.ast_frames = saved_ast;
+        self.bc = saved_bc;
         drop(_default);
         p.forcing.set(false);
         let v = r?;
@@ -642,7 +642,7 @@ impl Interp {
             };
             if let Some((mut v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
-                    v = self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]))?;
+                    v = self.get_active_value(&v)?;
                 }
                 if let Value::Promise(p) = &v {
                     v = self.force_promise(p)?;
@@ -844,11 +844,30 @@ impl Interp {
                 {
                     return r;
                 }
+                if self.bc && crate::vm::inlines_local(self, c, l, env) {
+                    return self.eval_inlined_local(l, env);
+                }
                 let promargs = self.promise_args(&l.args, env)?;
                 self.apply_closure(call, c, promargs, env, None)
             }
             _ => Err(Flow::error("attempt to apply non-function")),
         }
+    }
+
+    /// `local(expr)` in code GNU R compiled: the compiler's inline handler
+    /// turns it into the call `(function() expr)()` (a compiled closure of
+    /// the current frame, `jit_inherit`), which is what runs, and what
+    /// `sys.call()` and `sys.function()` there see.
+    // R: compiler/R/cmp.R: setInlineHandler("local")
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn eval_inlined_local(&mut self, l: &Lang, env: &Env) -> RResult<Value> {
+        let fun = Value::lang(
+            Value::Sym(s::FUNCTION),
+            vec![Arg::pos(Value::Null), Arg::pos(l.args[0].value.clone()), Arg::pos(Value::Null)],
+        );
+        let call = Value::lang(fun, Vec::new());
+        self.eval(&call, env)
     }
 
     /// An interpreted call taking the simple-internal path (see
@@ -912,12 +931,15 @@ impl Interp {
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
                     let code = codes.get(i).cloned().flatten();
-                    let p = Promise::arg(a.value.clone(), env.clone(), code);
+                    let p = Promise::arg(a.value.clone(), env.clone(), code, self.bc);
                     out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
-                // Constants are their own value; no promise needed.
-                _ => out.push(a.clone()),
+                // R: a constant is pushed as its value by bytecode
+                // (PUSHCONSTARG) and promised by the AST interpreter
+                // (eval.c:promiseArgs), which GNU R runs here unless `bc`.
+                _ if self.bc => out.push(a.clone()),
+                _ => out.push(const_promise(a, env)),
             }
         }
         Ok(out)
@@ -1221,6 +1243,8 @@ impl Interp {
         if clo.jit.unsettled() {
             crate::vm::jit_check(self, clo);
         }
+        // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
+        self.bc = !clo.jit.interpreted();
         let code = if crate::vm::enabled() {
             clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone()
         } else {
@@ -1275,6 +1299,7 @@ impl Interp {
             restarts: self.restarts.clone(),
             generic: false,
             builtin: false,
+            prev_bc: self.bc,
         });
     }
 
@@ -1349,6 +1374,7 @@ impl Interp {
         // instead of moving it through `run_on_exit` and back.
         let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
+        self.bc = ctx.prev_bc;
         // R: eval.c:R_execClosure restores the R_Srcref saved at the call.
         self.srcref_ended(self.frames.len());
         // The executor and this context own two references. Extra owners
@@ -1380,6 +1406,9 @@ impl Interp {
         // instead of letting a `return()` there swallow it.
         if !self.abort_to_toplevel && !on_exit.is_empty() {
             let env = self.frames.last().unwrap().cloenv.clone();
+            // on.exit code is kept as an expression and evaluated (context.c
+            // endcontext -> eval): the AST interpreter, in compiled code too.
+            let saved_bc = std::mem::replace(&mut self.bc, false);
             // R: context.c:endcontext makes this frame the exit context
             // (R_ExitContext) while its on.exit code runs, with the pending
             // return value; after an error unwind the value is undefined.
@@ -1390,8 +1419,6 @@ impl Interp {
             if raise {
                 self.expressions = self.expressions_keep + 500;
             }
-            // R: context.c:R_run_onexits evaluates the code with eval()
-            let saved_ast = std::mem::replace(&mut self.ast_frames, self.frames.len());
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
@@ -1404,12 +1431,12 @@ impl Interp {
                     }
                 }
             }
-            self.ast_frames = saved_ast;
             if raise {
                 self.restore_expressions();
             }
             self.exit_value = saved_exit_value;
             self.visible = saved_visible;
+            self.bc = saved_bc;
         }
         result
     }
@@ -1474,12 +1501,33 @@ impl Interp {
     // ------------------------------------------------------------------
     // assignment
 
+    /// An active binding's value: `fun()` evaluated in the global
+    /// environment.
+    // R: envir.c:getActiveValue
+    pub fn get_active_value(&mut self, fun: &Value) -> RResult<Value> {
+        let expr = Value::lang(fun.clone(), vec![]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)
+    }
+
+    /// Assigning to an active binding: `fun(base::quote(val))` evaluated in
+    /// the global environment, so the function sees (and argument matching
+    /// reports) the quoted value.
+    // R: envir.c:setActiveValue
+    pub fn set_active_value(&mut self, fun: &Value, val: Value) -> RResult<()> {
+        let qfun = Value::lang(Value::sym("::"), vec![Arg::pos(Value::sym("base")), Arg::pos(Value::sym("quote"))]);
+        let arg = Value::lang(qfun, vec![Arg::pos(val)]);
+        let expr = Value::lang(fun.clone(), vec![Arg::pos(arg)]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)?;
+        Ok(())
+    }
+
     pub fn define(&mut self, sym: Sym, value: Value, env: &Env) -> RResult<()> {
         if let Some(flags) = env.binding_flags(sym) {
             if flags & BIND_ACTIVE != 0 {
                 let f = env.get_local(sym).unwrap();
-                self.call_value(&f, vec![Arg::pos(value)], env)?;
-                return Ok(());
+                return self.set_active_value(&f, value);
             }
         }
         if !env.set_local(sym, value) {
@@ -1603,6 +1651,7 @@ impl Interp {
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
         let saved_ccode = std::mem::take(&mut self.ccode_calls);
+        let saved_bc = std::mem::replace(&mut self.bc, false);
         let global = self.global.clone();
         let base = self.base_ns.clone();
         let mut result = Ok(());
@@ -1622,6 +1671,7 @@ impl Interp {
         self.restarts = saved_restarts;
         self.depth = saved_depth;
         self.ccode_calls = saved_ccode;
+        self.bc = saved_bc;
         result
     }
 
@@ -1638,6 +1688,7 @@ impl Interp {
         self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
+        self.bc = false;
         self.restore_expressions();
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;
