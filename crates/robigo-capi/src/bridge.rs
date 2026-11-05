@@ -197,32 +197,52 @@ fn publish(interp: &mut Interp) {
     INTERP.with(|c| c.set(interp as *mut Interp));
 }
 
-/// Run `f` with the interpreter that is currently calling into C.
+/// Run `f` with the interpreter that is currently calling into C: the
+/// runtime's side of a callback, as [`host_frame`].
 ///
 /// # Safety
 /// The interpreter's frames above the C code are suspended in a call, so
 /// they do not touch it while `f` runs; `f` must not hold on to it.
+#[inline(always)]
 pub unsafe fn with_interp<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
+    let p = INTERP.with(|c| c.get());
+    assert!(!p.is_null(), "robigo: the C API was called outside an R evaluation");
+    host_frame(|| f(&mut *p))
+}
+
+/// [`with_interp`] for runtime code that runs no R code (so no `gc()` can
+/// see its frames): without [`host_frame`]'s cost, for what C calls per
+/// element (`R_WriteConnection` to a file).
+///
+/// # Safety
+/// As [`with_interp`].
+#[inline(always)]
+unsafe fn with_interp_leaf<T>(f: impl FnOnce(&mut Interp) -> T) -> T {
     let p = INTERP.with(|c| c.get());
     assert!(!p.is_null(), "robigo: the C API was called outside an R evaluation");
     f(&mut *p)
 }
 
-/// Make `interp` current while `f` runs (re-entrant). The outermost
-/// entry also bounds the C heap's conservative stack scan to the frames
-/// below it: the runtime's own frames above hold core objects only
-/// through precise roots (protect stack, preserved wrappers, proxies), so
-/// stale words there cannot keep garbage alive (docs/core.md §3).
+/// Make `interp` current while `f` runs (re-entrant). Each entry from
+/// the runtime into C also opens a segment of the C heap's conservative
+/// stack scan: the frames below this one (C code, and libR's own), up to
+/// the next callback into the runtime ([`host_frame`]), which closes it.
+/// The runtime's own frames hold core objects only through precise roots
+/// (protect stack, preserved wrappers, proxies), so stale words there
+/// must not keep garbage alive (docs/core.md §3).
 fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     let prev = INTERP.with(|c| c.replace(interp as *mut Interp));
     let marker = 0usize;
     let here = std::hint::black_box(&marker) as *const usize as usize;
-    let outer = prev.is_null();
+    // (Entered from the runtime: at top level, or inside a callback, which
+    // closed the segment of the C code that called it.)
     // SAFETY: the runtime calls the bridge on the R thread, and the heap
     // reference ends with the call.
-    let old = if outer { unsafe { core().set_scan_top(here) } } else { 0 };
+    let open = prev.is_null() || unsafe { core().scan_top() } == 0;
+    // SAFETY: as above.
+    let old = if open { unsafe { core().set_scan_top(here) } } else { 0 };
     let r = f(interp);
-    if outer {
+    if open {
         // SAFETY: as above.
         unsafe { core().set_scan_top(old) };
     }
@@ -318,6 +338,40 @@ fn guarded(f: impl FnOnce() -> usize) -> usize {
             store_flow(Flow::error(format!("robigo: internal error in a C API callback: {msg}")))
         }
     }
+}
+
+/// Run `f`, runtime code called from C (or from libR's own frames). The
+/// frames above (C code, and libR's glue, which holds fresh objects in
+/// locals) stay in the conservative stack scan, with their callee-saved
+/// registers spilled into this frame; the runtime's frames below do not:
+/// they hold core objects only through precise roots, and their stale
+/// words, left by earlier calls at the same depth, kept garbage alive at
+/// random (an R6 object's finalizer key, so `{ rm(B); gc() }` under
+/// rlang's `eval_bare` finalized it one gc() late in some processes).
+/// R: memory.c marks precisely; the scan is for C locals only (docs/core.md
+/// §3).
+#[inline(always)]
+fn host_frame<T>(f: impl FnOnce() -> T) -> T {
+    /// Reopens the segment as `f` returns or unwinds (a panic its caller
+    /// catches).
+    struct Reopen(*mut robigo_core::Core, *const robigo_core::ScanSegment);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            // SAFETY: the segment closed below, still innermost: closes
+            // and reopens nest with the frames that make them.
+            unsafe { (*self.0).reopen_scan_segment(self.1) };
+        }
+    }
+    let mut seg = robigo_core::ScanSegment::new();
+    // SAFETY: on the R thread; the core does not move, and `seg` lives in
+    // this frame until `_reopen` (declared after it, so dropped before it)
+    // reopens the segment. A jump never crosses this frame: the runtime
+    // returns flow tokens to C instead.
+    let c: *mut robigo_core::Core = unsafe { core() };
+    // SAFETY: as above.
+    unsafe { (*c).close_scan_segment(&mut seg) };
+    let _reopen = Reopen(c, &seg);
+    f()
 }
 
 // ---- proxies -------------------------------------------------------------
@@ -2138,9 +2192,18 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 /// the caller jumps, as `host::op` does.
 #[inline(always)]
 pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
-    guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
-        Ok(()) => 0,
-        Err(f) => store_flow(f),
+    // Only the text path can run R code (a text connection assigns): it
+    // is the one in a host frame; a file takes the bytes, per field.
+    guarded(|| {
+        let r = with_interp_leaf(|i| {
+            robigo_runtime::builtins::io::con_write_bytes_or(i, num, bytes, |i, n, text| {
+                host_frame(|| robigo_runtime::builtins::io::conn_write(i, n, text))
+            })
+        });
+        match r {
+            Ok(()) => 0,
+            Err(f) => store_flow(f),
+        }
     })
 }
 
@@ -3819,7 +3882,6 @@ impl NativeBridge for Bridge {
             robigo_runtime::reachability::reclaim_cycles();
             return;
         }
-        let outer = INTERP.with(|c| c.get().is_null());
         // GNU R's collection finds everything unreachable at once, in one
         // mark. Here a runtime cycle can hold core objects (an external
         // pointer in a test_that() environment) and core objects can hold
@@ -3828,7 +3890,9 @@ impl NativeBridge for Bridge {
         // core heap is no root, it is marked through the runtime graph
         // (mark_proxies, trace_proxy). With C code running below gc() (R
         // code that rlang's or testthat's C code evaluates), the stack scan
-        // covers its frames: what a C local holds is marked as before.
+        // covers its frames, in their closed segments: what a C local holds
+        // is marked as before, and the runtime's frames between are not
+        // scanned.
         // R: memory.c:R_gc_internal
         // SAFETY: on the R thread, with libR ready (READY), and no
         // collector borrow active: the collection starts below.
@@ -3836,15 +3900,14 @@ impl NativeBridge for Bridge {
         GRAPH_MARK.with(|on| on.set(true));
         // SAFETY: the R thread with `interp` current.
         enter(interp, |_| unsafe {
-            // gc() from R with no C code active: nothing on the machine
-            // stack can hold a core object
-            let old = if outer { core().set_scan_top(0) } else { 0 };
+            // gc() from R: no C code is active below the runtime's frames
+            // (that of C code further up, which called back into the
+            // runtime, is in a closed segment, still scanned)
+            let old = core().set_scan_top(0);
             let roots = core().set_held_roots(false);
             core().collect();
             core().set_held_roots(roots);
-            if outer {
-                core().set_scan_top(old);
-            }
+            core().set_scan_top(old);
             GRAPH_MARK.with(|on| on.set(false));
             // before any finalizer: no wrapper may hand out a freed object
             drain_dead_held();

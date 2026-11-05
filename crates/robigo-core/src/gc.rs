@@ -111,6 +111,10 @@ pub struct Core {
     /// stack top by default; the embedder narrows it to the C segments
     /// (0: no stack scan) — see [`Core::set_scan_top`]
     scan_top: usize,
+    /// The closed C segments, innermost first: C code that called back
+    /// into the embedder (see [`Core::close_scan_segment`]). The nodes live
+    /// in the embedder's callback frames.
+    scan_chain: *const ScanSegment,
     /// gctorture (memory.c's gc_force_wait, gc_force_gap): while
     /// `force_wait > 0`, every allocation counts it down and collects when
     /// it reaches 0, then waits `force_gap` allocations for the next one;
@@ -247,6 +251,71 @@ fn stack_pointer() -> usize {
     std::hint::black_box(&marker) as *const usize as usize
 }
 
+/// A closed segment of the conservative stack scan, `[lo, hi)`: the frames
+/// of C code that called back into the embedder (see
+/// [`Core::close_scan_segment`]), linked from the innermost.
+/// The node lives in the callback's frame and holds the C frames'
+/// callee-saved registers (its lowest address is the segment's `lo`).
+#[repr(C)]
+pub struct ScanSegment {
+    lo: usize,
+    hi: usize,
+    prev: *const ScanSegment,
+    regs: [std::mem::MaybeUninit<usize>; 12],
+}
+
+impl ScanSegment {
+    pub const fn new() -> Self {
+        ScanSegment { lo: 0, hi: 0, prev: std::ptr::null(), regs: [std::mem::MaybeUninit::uninit(); 12] }
+    }
+}
+
+impl Default for ScanSegment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The callee-saved registers, stored into `buf`: called first thing in a
+/// callback from C, it puts on the stack (in the callback's frame, above
+/// what it closes) every value the C frames keep in such a register, which
+/// later frames below would otherwise save out of the scan's reach.
+/// Registers the callback already saved are in its frame, above `buf`.
+#[inline(always)]
+fn spill_callee_saved(buf: &mut [std::mem::MaybeUninit<usize>; 12]) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: stores six registers into the twelve words `buf` points at;
+    // reads no memory, changes no register or flag the compiler relies on.
+    unsafe {
+        std::arch::asm!(
+            "mov [{b}], rbx",
+            "mov [{b} + 8], rbp",
+            "mov [{b} + 16], r12",
+            "mov [{b} + 24], r13",
+            "mov [{b} + 32], r14",
+            "mov [{b} + 40], r15",
+            b = in(reg) buf.as_mut_ptr(),
+            options(nostack, preserves_flags),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as above, eleven registers (x19-x29) into `buf`.
+    unsafe {
+        std::arch::asm!(
+            "stp x19, x20, [{b}]",
+            "stp x21, x22, [{b}, #16]",
+            "stp x23, x24, [{b}, #32]",
+            "stp x25, x26, [{b}, #48]",
+            "stp x27, x28, [{b}, #64]",
+            "str x29, [{b}, #80]",
+            b = in(reg) buf.as_mut_ptr(),
+            options(nostack, preserves_flags),
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    compile_error!("spill_callee_saved: name this architecture's callee-saved registers");
+}
+
 impl Core {
     /// A new heap. The calling thread's stack is the one scanned
     /// conservatively.
@@ -265,6 +334,7 @@ impl Core {
             stack_top,
             stack_lo,
             scan_top: usize::MAX,
+            scan_chain: std::ptr::null(),
             force_wait: 0,
             force_gap: 0,
             stats: GcStats::default(),
@@ -869,6 +939,51 @@ impl Core {
         std::mem::replace(&mut self.scan_top, top)
     }
 
+    /// The current limit of the scan (see [`Core::set_scan_top`]).
+    pub fn scan_top(&self) -> usize {
+        self.scan_top
+    }
+
+    /// C code below the open segment's top called back into the embedder:
+    /// close the segment at `seg`, a node in the callback's frame (the
+    /// segment is still scanned, with the C frames' callee-saved registers,
+    /// which this spills into `seg`), and scan nothing below until
+    /// [`Core::reopen_scan_segment`]. The embedder's frames hold core
+    /// objects only through precise roots, but they reuse stack memory, so
+    /// their stale words would keep garbage alive at random, delaying
+    /// finalizers (R6's finalizer tests).
+    ///
+    /// # Safety
+    /// Called first thing in the callback; `seg` must stay valid, and in
+    /// place, until the matching reopen, which comes after those of
+    /// segments closed later.
+    #[inline(always)]
+    pub unsafe fn close_scan_segment(&mut self, seg: *mut ScanSegment) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            spill_callee_saved(&mut (*seg).regs);
+            (*seg).lo = seg as usize;
+            (*seg).hi = self.scan_top;
+            (*seg).prev = self.scan_chain;
+        }
+        self.scan_chain = seg;
+        self.scan_top = 0;
+    }
+
+    /// Undo [`Core::close_scan_segment`] of `seg`, as the callback returns
+    /// to the C code.
+    ///
+    /// # Safety
+    /// `seg` must be the innermost closed segment.
+    #[inline(always)]
+    pub unsafe fn reopen_scan_segment(&mut self, seg: *const ScanSegment) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.scan_chain = (*seg).prev;
+            self.scan_top = (*seg).hi;
+        }
+    }
+
     /// The thread's stack bounds the core scans: (lowest, highest).
     pub fn stack_bounds(&self) -> (usize, usize) {
         (self.stack_lo, self.stack_top)
@@ -1214,26 +1329,47 @@ impl Core {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
             let sp = std::hint::black_box(&marker) as *const usize as usize;
+            // The open segment (this frame up to its top), then the closed
+            // ones: the frames of C code, not those of the embedder it
+            // called back into.
             let top = c.stack_top.min(c.scan_top);
-            let (min, max) = (c.heap.min_addr, c.heap.max_addr);
-            let mut w = (sp + 7) & !7;
-            while w < top {
+            c.scan_words(sp, top);
+            let mut seg = c.scan_chain;
+            while !seg.is_null() {
+                let s = &*seg;
+                c.scan_words(s.lo.max(sp), s.hi.min(c.stack_top));
+                seg = s.prev;
+            }
+            c.trace();
+        }
+    }
+
+    /// Mark what the words in `[from, to)` of this thread's stack point at.
+    ///
+    /// # Safety
+    /// As [`Core::scan_stack`]'s loop: `[from, to)` is mapped stack of this
+    /// thread, read while marking.
+    unsafe fn scan_words(&mut self, from: usize, to: usize) {
+        // SAFETY: the caller's contract; see `scan_stack`.
+        unsafe {
+            let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+            let mut w = (from + 7) & !7;
+            while w < to {
                 let v = *(w as *const usize);
                 if v >= min && v < max {
-                    if let Some(p) = c.heap.resolve(v) {
-                        c.mark_obj(Sexp(p));
+                    if let Some(p) = self.heap.resolve(v) {
+                        self.mark_obj(Sexp(p));
                     }
                     // a word on a granule boundary may be one past the end
                     // of the previous object (a loop bound, p + n)
                     if v & 15 == 0 {
-                        if let Some(p) = c.heap.resolve(v - 1) {
-                            c.mark_obj(Sexp(p));
+                        if let Some(p) = self.heap.resolve(v - 1) {
+                            self.mark_obj(Sexp(p));
                         }
                     }
                 }
                 w += 8;
             }
-            c.trace();
         }
     }
 
