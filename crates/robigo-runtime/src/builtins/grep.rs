@@ -697,7 +697,8 @@ impl TreParser {
                     loop {
                         match self.peek() {
                             Some('}') => break,
-                            Some(c) if c.is_ascii_hexdigit() => {
+                            // (TRE's buffer holds 31 digits: extra/README.md in robigo-capi)
+                            Some(c) if c.is_ascii_hexdigit() && tmp.len() < 31 => {
                                 tmp.push(c);
                                 self.i += 1;
                             }
@@ -3297,6 +3298,10 @@ mod tests {
         assert_eq!(tre("\\"), "ERR Trailing backslash");
         assert_eq!(tre("(a)\\2"), "ERR Invalid back reference");
         assert_eq!(tre("[b-a]"), "ERR Invalid character range");
+        // 31 hex digits fit TRE's buffer, 32 are refused (robigo-capi's
+        // extra/README.md)
+        assert!(!tre(&format!("\\x{{{}41}}", "0".repeat(29))).starts_with("ERR"));
+        assert_eq!(tre(&format!("\\x{{{}41}}", "0".repeat(30))), "ERR Missing '}'");
     }
 
     /// TRE only skips blanks and commas after the repetition counts, so a

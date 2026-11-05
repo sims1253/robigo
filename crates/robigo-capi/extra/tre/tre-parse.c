@@ -1505,6 +1505,10 @@ tre_parse(tre_parse_ctx_t *ctx)
 			    break;
 			  if (tre_isxdigit(ctx->re[0]))
 			    {
+			      /* robigo: bounded, GNU R overflows tmp here
+				 (extra/README.md) */
+			      if (i >= (int) sizeof(tmp) - 1)
+				return REG_EBRACE;
 			      tmp[i] = (char)ctx->re[0];
 			      i++;
 			      ctx->re++;
