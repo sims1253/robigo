@@ -590,10 +590,24 @@ fn is_internal_alias(r: &Routine) -> bool {
 /// must live in one implementation.
 const PORTS_FIRST: &[&str] = &["stats"];
 
-pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
+pub fn invoke(
+    interp: &mut Interp,
+    call: &Value,
+    r: &Routine,
+    mut args: Vec<Arg>,
+    env: &crate::env::Env,
+) -> RResult<Value> {
     let ported = PORTS_FIRST.contains(&&*r.package) && (is_internal_alias(r) || port_of(r).is_some());
     if r.addr != 0 && !ported {
         if let Some(b) = bridge() {
+            // C may write into its arguments: a shared small integer (a
+            // literal, a computed `0L + 0L`) goes as an object of its own,
+            // as GNU R's would be, never as every `0L` there is.
+            for a in args.iter_mut() {
+                if a.value.shared_int().is_some() {
+                    a.value = std::mem::replace(&mut a.value, Value::Null).for_binding();
+                }
+            }
             let r = b.invoke(interp, call, r, args, env);
             // C may have written into the objects of variables (an argument,
             // or one it found with findVar) without running R code: values

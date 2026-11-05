@@ -610,7 +610,8 @@ impl Env {
         if function_like(&value) {
             self.bump_fn_version();
         }
-        self.0.frame().borrow_mut().push_new(sym, value, flags);
+        // (A variable's value is its own object: `Value::for_binding`.)
+        self.0.frame().borrow_mut().push_new(sym, value.for_binding(), flags);
     }
 
     /// Bind a new symbol without looking for an existing binding, as
