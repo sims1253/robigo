@@ -2745,7 +2745,7 @@ unsafe fn converted(x: Sexp, originals: &mut Originals) -> Value {
 
 /// The runtime values of core objects during a write-back: what the
 /// write-back converted, then the objects converted for the native call
-/// (SEEN, through [`SEEN_AT`]). A twin's flush looks only at what it
+/// (SEEN, through [`SEEN_AT`], except those that became twins). A twin's flush looks only at what it
 /// converted itself ([`Originals::own`]).
 #[derive(Default)]
 struct Originals(HashMap<usize, Value>, bool);
@@ -2761,7 +2761,7 @@ impl Originals {
         if let Some(v) = self.0.get(&addr) {
             return Some(v.clone());
         }
-        if self.1 {
+        if self.1 || is_twin_head(addr) {
             return None;
         }
         let k = SEEN_AT.try_with(|m| m.borrow().get(&addr).copied()).ok().flatten()?;
@@ -2769,8 +2769,15 @@ impl Originals {
     }
 
     fn contains(&self, addr: usize) -> bool {
-        self.0.contains_key(&addr) || !self.1 && SEEN_AT.try_with(|m| m.borrow().contains_key(&addr)).unwrap_or(false)
+        self.0.contains_key(&addr)
+            || !self.1 && !is_twin_head(addr) && SEEN_AT.try_with(|m| m.borrow().contains_key(&addr)).unwrap_or(false)
     }
+}
+
+/// A SEEN object that became a twin is the twin's: its value is the
+/// twin's, not the one it was converted from.
+fn is_twin_head(addr: usize) -> bool {
+    TWIN_HEAD.try_with(|h| h.borrow().contains_key(&addr)).unwrap_or(false)
 }
 
 /// A cons chain as runtime cells, keeping unchanged elements' identity.
