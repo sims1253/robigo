@@ -529,7 +529,7 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
         if let Some(b) = b {
             let mut v = b.value;
             if b.flags & BIND_ACTIVE != 0 {
-                v = i.call_value(&v, vec![], &e)?;
+                v = i.get_active_value(&v)?;
             }
             if mode != "any" || matches!(v, Value::Promise(_)) {
                 v = i.force(v)?;
@@ -760,7 +760,7 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         // R: envir.c:FrameValues — BINDING_VALUE calls an active binding
         // (a C-owned variable's included, which reads C's object).
         if env.binding_flags(sym).is_some_and(|f| f & BIND_ACTIVE != 0) {
-            vals.push(i.call_value(&v, vec![], &env)?);
+            vals.push(i.get_active_value(&v)?);
             continue;
         }
         vals.push(i.force(v)?);
