@@ -15,6 +15,17 @@
 //! running in the frame of such a closure still takes base's function
 //! ([`frozen`]), and so does the interpreter ([`frozen_fun`]).
 //!
+//! Installed code (`IGNORE`) is known by provenance only: the closures the
+//! unserializer read with a BCODESXP body, as GNU R's lazy-load databases
+//! (base's `base.rdb`, packages GNU R installed) and saved compiled
+//! closures hold them. A closure's environment says nothing: code sourced
+//! into a namespace, or made below a namespace copy (testthat's test
+//! files), is JIT-decided as in GNU R. So base loaded from its sources
+//! (`ROBIGO_BASE=src`, or no installed `base.rdb`) and packages robigo
+//! installs itself (it writes plain bodies unless built with
+//! `bytecode-fidelity`) are JIT-decided too, where GNU R's would be
+//! installed bytecode.
+//!
 //! R: eval.c:R_CheckJIT, JIT_score, R_cmpfun (and the JIT cache);
 //! compiler/R/cmp.R: getInlineInfo, findCenvVar, findLocalsList,
 //! mayCallBrowser, languageFuns and the inline handlers.
