@@ -602,17 +602,9 @@ impl Interp {
                     // a forced promise (lazily loaded base) is its value,
                     // as findFun takes PRVALUE
                     Value::Promise(p) => {
-                        let f = match &*p.value.borrow() {
-                            crate::value::PromiseVal::Boxed(v) => Some(v.clone()),
-                            _ => None,
-                        };
-                        return match f {
-                            Some(f @ (Value::Closure(_) | Value::Builtin(_))) => {
-                                self.fun_cache.insert(key, f.clone());
-                                Some(f)
-                            }
-                            _ => None,
-                        };
+                        let f = p.forced_fun()?;
+                        self.fun_cache.insert(key, f.clone());
+                        return Some(f);
                     }
                     _ => {}
                 }
@@ -629,10 +621,7 @@ impl Interp {
             Some(v) => match self.base.0.frame().borrow().get(sym) {
                 // a lazily loaded base binding is a (forced) promise
                 Some(b) => match &b.value {
-                    Value::Promise(p) => match &*p.value.borrow() {
-                        crate::value::PromiseVal::Boxed(f) => f.ptr_eq(&v),
-                        _ => false,
-                    },
+                    Value::Promise(p) => p.forced_fun().is_some_and(|f| f.ptr_eq(&v)),
                     f => f.ptr_eq(&v),
                 },
                 None => false,
