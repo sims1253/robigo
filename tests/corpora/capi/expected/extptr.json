@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": "Warning: stack imbalance in '.Call', 8 then 7\n"
+ },
+ "id": "extptr",
+ "out": {
+  "t": "[[1]]\n[1] TRUE\n\n[[2]]\n[1] \"tag1\"\n\n[[3]]\n[1] 7\n\n[[4]]\n[1] \"tag2\"\n\n[[5]]\n[1] TRUE\n\n[[6]]\n[1] TRUE\n\n[1] TRUE\nfinalizer 1 ran (addr is kept)\n[[1]]\n[1] TRUE\n\n[[2]]\n[1] \"value\"\n\n[[3]]\n[1] 1\n\n"
+ },
+ "sha": "37370c2345fea121",
+ "status": 0
+}

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": "Warning message:\nIn print(.Fortran(\"cfort\", \"hello\", n = 0L)) :\n  passing a char vector to .Fortran is not portable\nWarning message:\nIn print(.Fortran(\"cfort\", c(\"abc\", \"defgh\"), n = 0L)) :\n  only the first string in a char vector used in .Fortran\nWarning message:\nIn print(.Fortran(\"cfort\", NA_character_, n = 0L)) :\n  passing a char vector to .Fortran is not portable\nWarning message:\npassing a char vector to .Fortran is not portable \n"
+ },
+ "id": "fortran_strings",
+ "out": {
+  "t": "[[1]]\n[1] \"Xello\"\n\n$n\n[1] 5\n\n[[1]]\n[1] \"Xbc\"\n\n$n\n[1] 3\n\n[[1]]\n[1] \"XA\"\n\n$n\n[1] 2\n\n[1] 255\n[1] \"yyy\"\n"
+ },
+ "sha": "2e3b5f2b9c99095f",
+ "status": 0
+}

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "cpromise",
+ "out": {
+  "t": "[1] 22\n[1] 22\n[1] 22\nNULL\n[1] TRUE\n[1] 7\n[1] 23\n[1] FALSE\nNULL\n[1] 99\nNULL\n[1] 77\n[1] \"value\" \"w\"     \"x\"     \"y\"     \"z\"    \nNULL\n[1] 99\n"
+ },
+ "sha": "8d16f934c6613ba6",
+ "status": 0
+}

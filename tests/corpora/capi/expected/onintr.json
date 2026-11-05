@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": "\nExecution halted\n"
+ },
+ "id": "onintr",
+ "out": {
+  "t": "before onintr\n"
+ },
+ "sha": "e264d39b71b45dca",
+ "status": 1
+}

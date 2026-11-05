@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "newenv_bind",
+ "out": {
+  "t": "[1] TRUE\n[1] FALSE\n[1] TRUE\n[1] \"fakepkg\"\n.__NAMESPACE__.          an_env           a_sym           a_fun          a_prim \n          FALSE           FALSE           FALSE           FALSE           FALSE \n[1] TRUE\n[1] TRUE\nabc\n[1] TRUE\n[1] 42\n[1] 3\n[1] TRUE\n[1] TRUE\n"
+ },
+ "sha": "dc106bbce6d686d2",
+ "status": 0
+}

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "proxy_attr_write",
+ "out": {
+  "t": "$a\n[1] 1\n\n$a\n[1] 1\n\n[1] FALSE FALSE\n$a\n[1] 2\n\n$a\n[1] 2\n\n[1] FALSE FALSE\n$a\n[1] 2\n\n$b\n[1] \"appended\"\n\n$a\n[1] 2\n\n$b\n[1] \"appended\"\n\n[1] FALSE FALSE\n[1] \"a\" \"c\"\n[1] \"poked later\"\n$a\n[1] 2\n\n$b\n[1] \"appended\"\n\n$a\n[1] \"poked later\"\n\n$c\n[1] \"appended\"\n\n[1] TRUE TRUE\n$a\n[1] 2\n\n$b\n[1] \"appended\"\n\n$a\n[1] \"poked later\"\n\n$c\n[1] \"appended\"\n\n[1] FALSE FALSE\n[1] \"seen by R\"\n[1] \"seen by R\"\n"
+ },
+ "sha": "4b92273addc3fb91",
+ "status": 0
+}
