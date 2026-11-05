@@ -588,6 +588,7 @@ unsafe fn twin_shape(x: Sexp, v: &Value) -> bool {
         Value::Expr(_) => x.typ() == EXPRSXP,
         Value::Obj(_) => x.typ() == OBJSXP,
         Value::Pairlist(_) => matches!(x.typ(), LISTSXP | DOTSXP),
+        Value::Dots(_) => x.typ() == DOTSXP,
         Value::Lang(_) => x.typ() == LANGSXP,
         _ => false,
     }
@@ -731,6 +732,7 @@ unsafe fn twin_children(x: Sexp, v: &Value, constant: bool) {
             }
         }
         Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => twin_items(x, &p.items, constant),
+        Value::Dots(d) if x.typ() == DOTSXP => twin_items(x, d, constant),
         Value::Lang(l) if x.typ() == LANGSXP => {
             make_twin_as(x.car(), &l.fun, true);
             twin_items(x.cdr(), &l.args, true);
@@ -863,7 +865,11 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
         // R: memory.c's CDR is the cell itself; the runtime has no views
         // into a pairlist, so the tail is a value of its own on the same
         // cells
-        let v = Value::Pairlist(Rc::new(Pairlist { items: items_of(x), attrs: attrs_from(x) }));
+        let v = if x.typ() == DOTSXP {
+            Value::Dots(Rc::new(items_of(x)))
+        } else {
+            Value::Pairlist(Rc::new(Pairlist { items: items_of(x), attrs: attrs_from(x) }))
+        };
         make_twin(x, &v);
         return Some(v);
     }
@@ -1424,8 +1430,8 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
     if let Some(x) = twin_of(v) {
         return x;
     }
-    // a call or pairlist keeps its cells while it lives (see twins)
-    if matches!(v, Value::Lang(_) | Value::Pairlist(_)) {
+    // a call, pairlist or `...` keeps its cells while it lives (see twins)
+    if matches!(v, Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_)) {
         let x = to_sexp_new(v);
         make_twin(x, v);
         return x;
