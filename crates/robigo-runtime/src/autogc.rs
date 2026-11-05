@@ -178,7 +178,7 @@ pub fn collect(interp: &mut Interp) {
     if !interp.fun_cache.is_empty() {
         interp.fun_cache.clear();
     }
-    crate::vm::clear_gc_caches();
+    crate::vm::clear_gc_caches_running();
     match crate::native::bridge() {
         Some(b) => {
             if b.collect_cycles(interp) {
