@@ -1888,32 +1888,13 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         }
         (Value::Closure(c), 1) => {
             let p = Rc::as_ptr(c).cast_mut();
+            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y));
+            retire(&raw mut (*p).body, body);
             #[cfg(feature = "bytecode-fidelity")]
-            match from_sexp(y) {
-                Value::Bytecode(b) => {
-                    retire(&raw mut (*p).body, b.expression.clone());
-                    retire(&raw mut (*p).gnu_bytecode, Some(b));
-                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
-                }
-                val => {
-                    retire(&raw mut (*p).body, val);
-                    retire(&raw mut (*p).gnu_bytecode, None);
-                    (*p).jit = Default::default();
-                }
-            }
-            // a code object from mkCode: its source, marked as bytecode
-            // (as bcClose makes it)
+            retire(&raw mut (*p).gnu_bytecode, code);
             #[cfg(not(feature = "bytecode-fidelity"))]
-            match from_sexp(y) {
-                Value::Bytecode(b) => {
-                    retire(&raw mut (*p).body, b.expression.clone());
-                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
-                }
-                val => {
-                    retire(&raw mut (*p).body, val);
-                    (*p).jit = Default::default();
-                }
-            }
+            drop(code);
+            (*p).jit = jit;
             retire_code(p);
         }
         (Value::Closure(c), 2) => {

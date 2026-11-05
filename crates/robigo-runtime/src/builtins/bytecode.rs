@@ -257,17 +257,19 @@ fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     // to compile, marked as bytecode as a loaded GNU-compiled closure is:
     // body() and identical() see the source, print() shows <bytecode>.
     // The feature build also keeps GNU R's code object.
+    #[cfg_attr(not(feature = "bytecode-fidelity"), allow(unused_variables))]
+    let (body, gnu_bytecode, jit) = closure_body(Value::Bytecode(body));
     Ok(Value::Closure(Rc::new(Closure {
         formals: formals.into(),
-        body: body.expression.clone(),
+        body,
         env,
         attrs: None,
         #[cfg(feature = "bytecode-fidelity")]
-        gnu_bytecode: Some(body),
+        gnu_bytecode,
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),
-        jit: crate::vm::JitState::from_bytecode(),
+        jit,
     })))
 }
 // R: eval.c:disassemble. BCODE_EXPR is constant zero, not a fourth field.

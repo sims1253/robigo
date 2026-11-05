@@ -788,6 +788,18 @@ pub struct Bytecode {
     pub rep_values: Rc<OnceCell<Vec<Value>>>,
 }
 
+/// The body, GNU code object and JIT mark of a closure whose body is `v`:
+/// a code object (mkCode's) becomes its source, the first constant, marked
+/// as bytecode for robigo's VM to compile, as bcClose makes it; anything
+/// else is the body as it is. Only the bytecode-fidelity build keeps the
+/// code object (`Closure::gnu_bytecode`).
+pub fn closure_body(v: Value) -> (Value, Option<Rc<Bytecode>>, crate::vm::JitState) {
+    match v {
+        Value::Bytecode(b) => (b.expression.clone(), Some(b), crate::vm::JitState::from_bytecode()),
+        v => (v, None, Default::default()),
+    }
+}
+
 impl Bytecode {
     pub fn code(&self) -> &Value {
         self.code.get_or_init(|| crate::serialize::materialize_bytecode_code(self))
