@@ -49,6 +49,8 @@ default_packages = "NULL"
 timeout = 60
 support = "support"
 build = "build.sh"
+# one file per case (expected/<id>.json): branches adding cases never conflict
+expected_file = "expected"
 
 [gnur-examples]
 description = "The examples of every help page in GNU R 4.5.0's base and recommended-free packages"
