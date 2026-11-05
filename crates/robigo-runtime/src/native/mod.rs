@@ -150,6 +150,12 @@ pub trait NativeBridge: Sync {
     /// options() set an option the C code reads from a global
     /// (`OutDec`, `max.contour.segments`).
     fn option_set(&self, _name: &str, _value: &Value) {}
+    /// `R_interrupts_suspended`, which C code reads and sets too: the value
+    /// before, set to `set` if given; `None` when the bridge keeps no such
+    /// flag.
+    fn interrupts_suspended(&self, _set: Option<bool>) -> Option<bool> {
+        None
+    }
     /// `.External.graphics`/`.Call.graphics` before the call: the current
     /// device's display-list recording, which is turned off.
     fn graphics_begin(&self, _interp: &mut Interp) -> RResult<bool> {
