@@ -129,6 +129,16 @@ impl ObjectGraph {
     }
 
     fn edge(&mut self, edges: &mut Vec<usize>, value: &Value) {
+        // An atomic vector without attributes refers to nothing: it can be
+        // in no cycle and keep none alive, so it needs no node (lists of
+        // numbers would otherwise give the graph a node per element).
+        if matches!(
+            value,
+            Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_)
+        ) && value.attrs().is_none()
+        {
+            return;
+        }
         if let Some(id) = self.value(value) {
             edges.push(id);
         }
