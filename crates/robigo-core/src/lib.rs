@@ -51,6 +51,9 @@ pub mod extra {
     /// recorded: SETCAR/SETCDR/SET_TAG tell the bridge when C writes it.
     /// A fresh allocation's header has it clear.
     pub const WATCHED: u16 = 1 << 15;
+    /// An EXTDATA vector whose owner word belongs to the host bridge: a
+    /// runtime vector shared with C zero-copy.
+    pub const HOST_OWNED: u16 = 1 << 14;
 }
 
 /// Header flag bits (byte +1).
@@ -68,14 +71,6 @@ pub mod flags {
     /// Do not maintain reference counts of the children: GNU R's `spare`
     /// bit (TRACKREFS(x) is `!spare`, and closures always track).
     pub const NO_TRACKREFS: u8 = 0x80;
-}
-
-/// Bits of the header's `extra` word above GNU R's debug, trace and step
-/// bits (0..2), which C sets through masked accessors only.
-pub mod extra {
-    /// An EXTDATA vector whose owner word belongs to the host bridge: a
-    /// runtime vector shared with C zero-copy.
-    pub const HOST_OWNED: u16 = 1 << 15;
 }
 
 /// GNU R's sxpinfo.gp bits that the core itself uses (Defn.h).
