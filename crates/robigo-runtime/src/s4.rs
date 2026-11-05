@@ -209,7 +209,7 @@ pub fn is_valid_string_f(v: &Value) -> bool {
 /// `R_findVarInFrame`: the binding's value (promises unforced; active
 /// bindings called).
 pub fn find_var_in_frame(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<Option<Value>> {
-    let b = env.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+    let b = env.binding_value(sym);
     match b {
         None => Ok(None),
         Some((f, flags)) if flags & BIND_ACTIVE != 0 => {
@@ -654,7 +654,7 @@ impl Interp {
         let newrho = Env::with_capacity(Some(op.env.clone()), op.formals.len() + 6);
         for (k, f) in op.formals.iter().enumerate() {
             let symbol = f.tag.unwrap_or(s::EMPTY);
-            let b = rho.0.frame().borrow().get(symbol).map(|b| (b.value.clone(), b.flags));
+            let b = rho.binding_value(symbol);
             let Some((val, flags)) = b else {
                 return Err(Flow::error(format!(
                     "could not find symbol \"{}\" in environment of the generic function",

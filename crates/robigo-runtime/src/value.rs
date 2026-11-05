@@ -699,15 +699,23 @@ impl Promise {
         }
     }
 
+    /// The promise's value as R reads an object: an unboxed scalar, or a
+    /// shared small integer, is boxed into the promise's own object once
+    /// and stored back, so every reader sees that object.
+    // R: memory.c:R_expand_promise_value
     pub fn value(&self) -> Option<Value> {
         match &*self.value.borrow() {
-            PromiseVal::Boxed(v) => return Some(v.clone()),
+            PromiseVal::Boxed(v) if v.shared_int().is_none() => return Some(v.clone()),
             PromiseVal::Unforced => return None,
             _ => {}
         }
         let mut b = self.value.borrow_mut();
         match &*b {
-            PromiseVal::Boxed(v) => Some(v.clone()),
+            PromiseVal::Boxed(v) => {
+                let v = v.clone().for_binding();
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
             PromiseVal::ScalarInt(i) => {
                 let v = Value::int_fresh(*i);
                 *b = PromiseVal::Boxed(v.clone());

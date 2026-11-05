@@ -527,8 +527,40 @@ impl Env {
         }
     }
 
+    #[inline(always)]
     pub fn get_local(&self, sym: Sym) -> Option<Value> {
-        self.0.frame().borrow().get(sym).map(|b| b.value.clone())
+        self.binding_value(sym).map(|(v, _)| v)
+    }
+
+    /// The value bound to `sym` in this frame and the binding's flags, as R
+    /// reads a variable's object. A shared small integer bound here (the
+    /// VM binds unboxed scalars as they are) is first boxed into an object
+    /// of its own and stored back into the binding, so this reader and
+    /// every later one (`get`, `as.list(env)`, C's `findVar`, a promise of
+    /// the variable) see one object, which native code may write into. The
+    /// VM's unboxed reads (`vm::plain_lookup`) do not expand.
+    // R: envir.c:BINDING_VALUE -> memory.c:R_expand_binding_value
+    #[inline(always)]
+    pub fn binding_value(&self, sym: Sym) -> Option<(Value, u8)> {
+        let f = self.0.frame().borrow();
+        let b = f.get(sym)?;
+        if let Some(i) = b.value.shared_int() {
+            let flags = b.flags;
+            drop(f);
+            return Some((self.expand_binding(sym, i), flags));
+        }
+        Some((b.value.clone(), b.flags))
+    }
+
+    /// [`Env::binding_value`]'s boxing: the binding's shared small integer
+    /// `i` replaced by an object of its own (SET_BNDCELL).
+    #[cold]
+    #[inline(never)]
+    fn expand_binding(&self, sym: Sym, i: i32) -> Value {
+        let mut f = self.0.frame().borrow_mut();
+        let b = f.get_mut(sym).expect("the binding just read");
+        b.value = Value::int_fresh(i);
+        b.value.clone()
     }
 
     pub fn binding_flags(&self, sym: Sym) -> Option<u8> {
@@ -586,8 +618,6 @@ impl Env {
         if cycle_value(&value) {
             trace::cycle_changed();
         }
-        // (A variable's value is its own object: `Value::for_binding`.)
-        let value = value.for_binding();
         let mut f = self.0.frame().borrow_mut();
         let search = f.search;
         if let Some(b) = f.get_mut(sym) {
@@ -637,7 +667,7 @@ impl Env {
         }
         let mut f = self.0.frame().borrow_mut();
         f.close_base();
-        f.push_new(sym, value.for_binding(), flags);
+        f.push_new(sym, value, flags);
     }
 
     /// Move a value out of a binding, leaving `NULL` behind, so that the

@@ -433,7 +433,7 @@ fn eval_arg_handle_error(i: &mut Interp, e: &Value, ev: &Env, fname: &Value, arg
     // An argument whose binding is a value or a forced promise evaluates
     // without running code, so it cannot signal: no handler is needed.
     if let Value::Sym(sym) = e {
-        let b = ev.0.frame().borrow().get(*sym).map(|b| (b.value.clone(), b.flags));
+        let b = ev.binding_value(*sym);
         if let Some((v, flags)) = b {
             if flags & crate::env::BIND_ACTIVE == 0 {
                 match &v {
