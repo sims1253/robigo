@@ -1402,7 +1402,10 @@ fn subset_values(
     let mut args = Vec::with_capacity(l.args.len());
     args.push(Arg::new(l.args[0].tag, Value::Promise(Rc::new(Promise::forced(l.args[0].value.clone(), xval)))));
     if ivals.is_empty() {
-        args.push(Arg::new(l.args[1].tag, Value::Promise(Rc::new(Promise::new(l.args[1].value.clone(), env.clone())))));
+        args.push(Arg::new(
+            l.args[1].tag,
+            Value::Promise(Rc::new(Promise::arg(l.args[1].value.clone(), env.clone(), None))),
+        ));
     }
     for (a, v) in l.args[1..].iter().zip(ivals) {
         args.push(Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v)))));
@@ -2773,10 +2776,9 @@ fn caller_promargs(
                 (Some(v), _) => {
                     Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value()))))
                 }
-                (None, Value::Sym(_) | Value::Lang(_)) => Arg::new(
-                    a.tag,
-                    Value::Promise(Rc::new(Promise::with_code(a.value.clone(), env.clone(), c.clone()))),
-                ),
+                (None, Value::Sym(_) | Value::Lang(_)) => {
+                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::arg(a.value.clone(), env.clone(), c.clone()))))
+                }
                 (None, _) => a.clone(),
             });
         }

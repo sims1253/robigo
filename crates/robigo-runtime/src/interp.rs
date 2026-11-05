@@ -508,10 +508,11 @@ impl Interp {
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
         // R: eval.c:forcePromise evaluates PRCODE with eval(): bytecode (an
         // argument of compiled code) runs on bcEval and reads with getvar,
-        // an expression on the AST evaluator. A formal's default and a
-        // promise made outside compiled code (delayedAssign, interpreted
-        // calls) are expressions there.
-        let ast = p.default || p.code.is_none();
+        // an expression on the AST evaluator. Only an argument promise can
+        // be bytecode (whether its creator counts as compiled decides the
+        // class, see missing_arg_class); a formal's default, delayedAssign
+        // and lazy-load promises are expressions.
+        let ast = !p.arg || p.default;
         let saved_ast = if ast { std::mem::replace(&mut self.ast_frames, self.frames.len()) } else { self.ast_frames };
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
@@ -832,7 +833,7 @@ impl Interp {
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
                     let code = codes.get(i).cloned().flatten();
-                    let p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    let p = Promise::arg(a.value.clone(), env.clone(), code);
                     out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
