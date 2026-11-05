@@ -2968,12 +2968,10 @@ impl NativeBridge for Bridge {
         // collector borrow active: the collection starts below.
         unsafe { sweep_bridge_holds() };
         loop {
-            // Only a collection a reclamation follows needs the graph: with
-            // no change since the last one, a gc() loop stays cheap. (A
-            // proxy that a count marks and that dies later only delays its
-            // cycle's reclamation, never frees what C holds.)
-            let reclaiming = robigo_runtime::reachability::reclaim_pending();
-            GRAPH_MARK.with(|on| on.set(reclaiming));
+            // Proxies are marked by the runtime graph: one that only a dead
+            // cycle refers to has a count above one, and kept now it would
+            // root its cycle in the reclamation below.
+            GRAPH_MARK.with(|on| on.set(true));
             // SAFETY: the R thread with `interp` current.
             enter(interp, |_| unsafe {
                 // gc() from R with no C code active: nothing on the
