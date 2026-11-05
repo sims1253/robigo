@@ -421,7 +421,9 @@ pub fn copy_most_attrib_no_ts(from: &Value, to: &mut Value) {
 pub fn attributes_list(v: &Value) -> Value {
     let mut names: Vec<RStr> = Vec::new();
     let mut vals: Vec<Value> = Vec::new();
-    if matches!(v, Value::Pairlist(_) | Value::Lang(_)) {
+    // R: attrib.c:do_attributes -- only a pairlist (isList) reports its
+    // tags as names; a call's tags are not among its attributes.
+    if matches!(v, Value::Pairlist(_)) {
         if let Some(n) = v.names() {
             names.push(rstr("names"));
             vals.push(n);
