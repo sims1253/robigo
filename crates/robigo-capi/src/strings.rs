@@ -209,9 +209,23 @@ pub unsafe extern "C" fn Rf_translateCharFP(x: Sexp) -> *const c_char {
     Rf_translateChar(x)
 }
 
+unsafe extern "C" {
+    // robigo_glue.c (GNU R's util.c)
+    fn Rf_AdobeSymbol2utf8(work: *mut c_char, c0: *const c_char, nwork: usize, use_pua: c_int) -> *mut c_void;
+}
+
 // R: sysutils.c:reEnc, for the encodings robigo's UTF-8 locale meets
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_reEnc(x: *const c_char, ce_in: c_int, ce_out: c_int, subst: c_int) -> *const c_char {
+    // R: sysutils.c:reEncode — Symbol text converts to UTF-8 only (and not
+    // to the native encoding): plotmath's Greek letters on a device that
+    // wants UTF-8 symbols (svglite, cairo)
+    if ce_in == ce::SYMBOL && ce_out == ce::UTF8 {
+        let nc = 3 * CStr::from_ptr(x).to_bytes().len() + 1; // all in the BMP
+        let p = R_alloc(nc, 1);
+        Rf_AdobeSymbol2utf8(p, x, nc, 1);
+        return p;
+    }
     let norm = |e: c_int| if e == ce::NATIVE { ce::UTF8 } else { e };
     let (ci, co) = (norm(ce_in), norm(ce_out));
     if ci == co

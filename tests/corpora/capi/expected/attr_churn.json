@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "attr_churn",
+ "out": {
+  "t": "a1 a2 a3 \n 1  2  3 \n$names\n[1] \"a1\" \"a2\" \"a3\"\n\n$tag\n[1] \"from C\"\n\n[1] \"a1\" \"zz\" \"a3\"\n[1] TRUE\n[1] TRUE\n[1] \"a1\" \"a2\" \"a3\"\n"
+ },
+ "sha": "d004743397d92fe7",
+ "status": 0
+}

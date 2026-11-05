@@ -88,6 +88,7 @@ predefined! {
     DOT_PACKAGE_NAME = ".packageName",
     DOT_NAMESPACE = ".__NAMESPACE__.",
     SPEC = "spec",
+    LOCAL = "local",
 }
 
 /// FxHash (as in rustc): fast for short strings such as symbol names.

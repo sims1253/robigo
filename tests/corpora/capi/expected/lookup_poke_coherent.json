@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "lookup_poke_coherent",
+ "out": {
+  "t": "NULL\n[[1]]\n[1] TRUE\n\n[[2]]\n[1] 3\n\n[[1]]\n[1] TRUE\n\n[[2]]\n[1] 7\n\nNULL\n[1] \"two\"\n[1] \"two\"\n[1] \"B\"\n"
+ },
+ "sha": "0c54db72a740f955",
+ "status": 0
+}

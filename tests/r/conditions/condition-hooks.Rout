@@ -1,0 +1,22 @@
+[1] "doTryCatch"          "withCallingHandlers" "f"                  
+[4] ".handleSimpleError"  "h"                   "heads"              
+[1] "simpleError" "error"       "condition"  
+log("a")
+[1] "non-numeric argument to mathematical function"
+[1] "withCallingHandlers" "g"                   "stop"               
+[4] ".handleSimpleError"  "h"                   "heads"              
+[1] "boom"
+[1] "k"                    ".signalSimpleWarning" "withRestarts"        
+[4] "withOneRestart"       "doWithOneRestart"     "heads"               
+[1] "simpleWarning" "warning"       "condition"    
+k()
+[1] NA
+[1] "warning"              ".signalSimpleWarning" "withRestarts"        
+[4] "withOneRestart"       "doWithOneRestart"     "heads"               
+[1] "tryCatchList"        "tryCatchOne"         "doTryCatch"         
+[4] "withCallingHandlers" "m"                   "heads"              
+[1] "evalError"       "missingArgError" "error"           "condition"      
+[1] "argument \"a\" is missing, with no default"
+[1] "withRestarts"       "withOneRestart"     "doWithOneRestart"  
+[4] ".handleSimpleError" "h"                  "heads"             
+[1] "(converted from warning) NAs introduced by coercion"

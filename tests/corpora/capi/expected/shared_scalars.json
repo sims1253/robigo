@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "shared_scalars",
+ "out": {
+  "t": "[1] 0\na b \n0 1 \n[1] 5\n[1] 0\n[1] TRUE\n[1] TRUE   NA\nNULL\n"
+ },
+ "sha": "6363c47c03658081",
+ "status": 0
+}
