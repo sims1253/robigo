@@ -712,6 +712,11 @@ fn set_index_slow(
             Value::Closure(clo) => clo.jit.is_bytecode(),
             _ => true,
         });
+    // (After the flush the slot only caches the binding: holding on to it
+    // would share the object with the replacement call, which then copies.)
+    if matches!(vars.slots[slot as usize], SlotVal::Clean(_)) {
+        vars.slots[slot as usize] = SlotVal::Empty;
+    }
     let r = crate::builtins::lang::complex_assign_pre(
         interp,
         whole,
