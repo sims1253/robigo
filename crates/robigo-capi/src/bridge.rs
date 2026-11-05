@@ -1785,12 +1785,18 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         // handlers are hidden until it returns
         "finalizerBegin" => {
             with_interp(|i| {
+                // R: errors.c:getCurrentCall: C code run here (a C
+                // finalizer) reports the expression that was being
+                // evaluated (R_getBCInterpreterExpression: gc()'s
+                // `.Internal(gc(...))`); R code run here has its own calls
+                let current = i.context_call();
+                let calls = if current.is_null() { Vec::new() } else { vec![(0, current)] };
                 let saved = FinalizerContext {
                     frames: std::mem::take(&mut i.frames),
                     handlers: i.handlers.take(),
                     global_handlers: i.global_handlers.take(),
                     restarts: i.restarts.take(),
-                    ccode_calls: std::mem::take(&mut i.ccode_calls),
+                    ccode_calls: std::mem::replace(&mut i.ccode_calls, calls),
                     visible: i.visible,
                 };
                 FINALIZER_CONTEXTS.with(|s| s.borrow_mut().push(saved));

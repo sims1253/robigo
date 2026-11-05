@@ -640,8 +640,14 @@ fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 
 /// robigo does not track allocations by R's cell classes; report NA rather
 /// than invented numbers.
-fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    r_gc(i)?;
+fn do_gc(i: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: the finalizers it runs report getCurrentCall(), the expression
+    // gc()'s bytecode is at: `.Internal(gc(verbose, reset, full))`
+    let current = Value::lang(Value::sym(".Internal"), vec![Arg::pos(call.clone())]);
+    i.ccode_calls.push((i.frames.len(), current));
+    let r = r_gc(i);
+    i.ccode_calls.pop();
+    r?;
     Ok(Value::reals(vec![NA_REAL; 14]))
 }
 
