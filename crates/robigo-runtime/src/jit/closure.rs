@@ -1374,7 +1374,12 @@ fn define(
                 ret,
             }),
         };
+        let targets = super::jump_targets(&code.ops, 0, len);
+        let mut fused = false;
         for pc in 0..len {
+            if std::mem::take(&mut fused) {
+                continue;
+            }
             let blk = g.block(pc);
             g.b.switch_to_block(blk);
             if g.states[pc].is_none() || fl.bail[pc] {
@@ -1388,6 +1393,16 @@ fn define(
             }
             g.cur = pc;
             g.cur_defs = defs(&code.ops[pc], g.state(pc), &fl.slot_ty, &inl);
+            if pc + 1 < len
+                && !fl.bail[pc + 1]
+                && super::fusable(&code.ops, pc, len, &targets, |q| g.states[q].as_ref(), &fl.slot_ty)
+            {
+                let (Op::Rel { dst, .. } | Op::RelL { dst, .. }) = code.ops[pc] else { unreachable!() };
+                let live = super::live_after(&code.ops, pc + 1, len, dst, dst == code.result, &inl);
+                g.compare_branch(pc, &code.ops[pc], &code.ops[pc + 1], live);
+                fused = true;
+                continue;
+            }
             g.op(pc, &code.ops[pc]);
         }
         let last = g.block(len);
