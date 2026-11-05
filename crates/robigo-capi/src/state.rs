@@ -315,7 +315,6 @@ unsafe fn mark_api_roots(c: &mut Core) {
     }
     crate::graphics::mark_roots(c);
     crate::bridge::mark_proxies(c);
-    crate::bridge::mark_twins(c);
 }
 
 /// Create the heap and the API's constants (memory.c InitMemory,

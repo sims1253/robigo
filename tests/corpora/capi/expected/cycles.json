@@ -4,8 +4,8 @@
  },
  "id": "cycles",
  "out": {
-  "t": "finalizer of closure-cycle ran\nfinalizer of self-bound ran\nafter one gc()\nafter two gc()s\n[1] 11\n[1] 12\n[1] 101\nR finalizer ran\n[1] 1001\n[1] 3\nfinalizer of weak-mode cycle ran\nafter one more gc()\n"
+  "t": "finalizer of closure-cycle ran\nfinalizer of self-bound ran\nafter one gc()\nafter two gc()s\n[1] 11\n[1] 12\n[1] 101\nR finalizer ran\n[1] 1001\n[1] 3\nfinalizer of weak-mode cycle ran\nafter one more gc()\nfinalizer of pool a ran\nafter one gc() for pool a\npool b is kept: b \nfinalizer of pool b ran\nafter keeper went\nframe of c finalized\nfinalizer of pool c ran\nafter the frame's finalizer\nafter the next gc()\nbusy finalizer ran\n[1] \"still works\"\n[1] \"still works\"\nafter the busy finalizer\n"
  },
- "sha": "b69a7e96f73731db",
+ "sha": "081aff989f1480c8",
  "status": 0
 }

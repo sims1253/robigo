@@ -402,6 +402,12 @@ impl ObjectGraph {
         live
     }
 
+    /// [`Self::is_live`] by the allocation's address (`Rc::as_ptr`): true
+    /// for an allocation the graph does not have.
+    pub fn is_live_key(&self, key: usize, live: &[bool]) -> bool {
+        self.ids.get(&key).is_none_or(|&id| live[id])
+    }
+
     pub fn is_live(&self, value: &Value, live: &[bool]) -> bool {
         identity(value).and_then(|(key, _)| self.ids.get(&key)).is_none_or(|&id| live[id])
     }

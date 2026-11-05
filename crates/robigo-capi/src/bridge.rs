@@ -131,9 +131,15 @@ thread_local! {
     /// from anywhere but `PROXIED` (handle -> proxy): C code keeps
     /// functions and environments it looked up in statics (Rcpp's
     /// `Rcpp::Function`s and namespace), which GNU R keeps alive through
-    /// their bindings. `gc()` unpins the others; the collector then frees
-    /// them and `release_proxy` forgets them.
-    static PINNED: RefCell<HashMap<usize, Sexp>> = RefCell::new(HashMap::default());
+    /// their bindings. Held by the core (with the hold's id): `gc()` marks
+    /// them through the runtime graph, which keeps the ones whose runtime
+    /// objects are live (one mark over both heaps); `sweep_stored` unpins
+    /// those only the bridge refers to.
+    static PINNED: RefCell<HashMap<usize, (Sexp, u64)>> = RefCell::new(HashMap::default());
+    /// What each of the bridge's holds in the core heap is (hold id ->
+    /// a wrapped object or a pinned proxy), for the holds a collection
+    /// found dead (`drain_dead_held`).
+    static HELD: RefCell<HashMap<u64, Held>> = RefCell::new(HashMap::default());
     /// Handles of the proxies whose attributes C code reached through the
     /// API since a `.Call` last wrote back (see [`touch_attrs`]).
     static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
@@ -373,7 +379,7 @@ unsafe fn sweep_stored() -> usize {
         core().release(x);
         forget_attrs(x);
     }
-    let unpinned: Vec<Sexp> = PINNED.with(|p| {
+    let unpinned: Vec<(Sexp, u64)> = PINNED.with(|p| {
         let mut p = p.borrow_mut();
         let handles: Vec<usize> = PROXIED.with(|m| {
             let m = m.borrow();
@@ -382,8 +388,9 @@ unsafe fn sweep_stored() -> usize {
         handles.into_iter().filter_map(|h| p.remove(&h)).collect()
     });
     released += unpinned.len();
-    for x in unpinned {
-        core().release(x);
+    for (_, id) in unpinned {
+        core().unhold(id);
+        HELD.with(|m| m.borrow_mut().remove(&id));
     }
     if removed_stored || removed_twins {
         // Dropping the bridge's own value can make its runtime cycle
@@ -394,58 +401,46 @@ unsafe fn sweep_stored() -> usize {
     released
 }
 
-/// Drop preservation pins whose only remaining owners are runtime cycles.
-/// Called before entering a collection, with no collector borrow active.
-/// Returns how many it dropped.
-unsafe fn unpin_cycles() -> usize {
-    let dead = PROXIED.with(|m| {
-        let proxies = m.borrow();
-        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
-        for (_, value) in proxies.values() {
-            graph.ignore_owner(value);
-        }
-        ignore_twin_owners(&mut graph);
-        graph.include_escaped();
-        graph.expand();
-        let graph = if graph.clear_callsite_memos() {
-            // The first graph's own owners would look like outside
-            // references to the rebuilt one.
-            drop(graph);
-            let mut fresh = robigo_runtime::reachability::ObjectGraph::default();
-            for (_, value) in proxies.values() {
-                fresh.ignore_owner(value);
-            }
-            ignore_twin_owners(&mut fresh);
-            fresh.include_escaped();
-            fresh.expand();
-            fresh
-        } else {
-            graph
-        };
-        let live = graph.externally_live();
-        PINNED.with(|pins| {
-            let mut pins = pins.borrow_mut();
-            let handles: Vec<_> =
-                proxies.iter().filter(|(_, (_, value))| !graph.is_live(value, &live)).map(|(h, _)| *h).collect();
-            handles.into_iter().filter_map(|h| pins.remove(&h)).collect::<Vec<_>>()
-        })
-    });
-    let released = dead.len();
-    for x in dead {
-        core().release(x);
-    }
-    released
+/// What only the bridge holds, before a collection.
+unsafe fn sweep_bridge_holds() {
+    sweep_stored();
+    cpromise_memo_sweep();
 }
 
-/// What only the bridge holds, or only dead cycles pin, before a
-/// collection: how many core objects that released.
-unsafe fn sweep_bridge_holds() -> usize {
-    let mut released = sweep_stored();
-    cpromise_memo_sweep();
-    if HOST_WEAK_REFS.with(|active| active.get()) {
-        released += unpin_cycles();
+/// A hold of the bridge in the core heap.
+enum Held {
+    /// The object a runtime `ExtPtr` wraps (`CoreRef`), at this address.
+    Wrapped(usize),
+    /// A proxy pinned for C, by handle.
+    Pinned(usize),
+    /// A twin, by its runtime identity.
+    Twin(usize),
+}
+
+/// The holds the last collection found dead (one mark over both heaps:
+/// nothing reached them, through either heap): their wrappers become
+/// inert, so that a slot the sweep reuses is never handed out as the old
+/// object, and their pins go. Runs right after the collection, before any
+/// finalizer.
+unsafe fn drain_dead_held() {
+    for id in core().take_dead_held() {
+        match HELD.with(|m| m.borrow_mut().remove(&id)) {
+            Some(Held::Wrapped(addr)) => {
+                let w = WRAPPED.with(|m| m.borrow_mut().remove(&addr));
+                if let Some(p) = w.and_then(|w| w.upgrade()) {
+                    if let Some(c) = p.payload.as_ref().and_then(|p| p.downcast_ref::<CoreRef>()) {
+                        c.inert.set(true);
+                    }
+                }
+                forget_attrs(Sexp(addr as *mut u8));
+            }
+            Some(Held::Pinned(h)) => {
+                PINNED.with(|m| m.borrow_mut().remove(&h));
+            }
+            Some(Held::Twin(k)) => forget_dead_twin(k),
+            None => {}
+        }
     }
-    released
 }
 
 /// The runtime allocation graph over the proxy table, after a collection.
@@ -468,7 +463,12 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
                 graph.root(value);
             }
         });
-        ignore_twin_owners(&mut graph);
+        // a twin left after the collection is one the core heap kept too
+        TWINS.with(|t| {
+            for tw in t.borrow().values() {
+                graph.root(&tw.value);
+            }
+        });
         graph.include_escaped();
         graph.expand();
         graph
@@ -562,8 +562,9 @@ unsafe fn proxy(v: &Value) -> Sexp {
     }
     PROXIED.with(|m| m.borrow_mut().insert(h, (key, v.clone())));
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
-    core().preserve(x);
-    PINNED.with(|m| m.borrow_mut().insert(h, x));
+    let id = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(id, Held::Pinned(h)));
+    PINNED.with(|m| m.borrow_mut().insert(h, (x, id)));
     // the object's attributes (a closure's, an environment's class, ...),
     // as C reads them with getAttrib (R_GE_maskType: a mask function's
     // "type")
@@ -612,12 +613,18 @@ unsafe fn proxy(v: &Value) -> Sexp {
 //
 // The table holds the value, as `STORED` did, so a runtime-side change copies
 // it (copy-on-modify sees it shared) and the twin never goes stale; the
-// sweep drops twins whose value only the table holds. The collector marks
-// every twin (`mark_twins`); shared scalars (`Value::lgl`, small `Value::int`)
+// sweep drops twins whose value only the table holds. A twin is a hold
+// in the core heap (`Held::Twin`): a root in the collections the allocator
+// triggers; in gc() it is marked when the runtime graph shows its value
+// live or a traced proxy's runtime side reaches the value (one mark over
+// both heaps), and a twin nothing reached dies with the collection
+// (`forget_dead_twin`). Shared scalars (`Value::lgl`, small `Value::int`)
 // get a read-only twin, which C cannot write back into every user of them.
 
 struct Twin {
     x: Sexp,
+    /// its hold in the core heap (see `Held::Twin`)
+    hold: u64,
     value: Value,
     readonly: bool,
     /// a constant of code (inside a call): not mutable, as eval.c's
@@ -782,7 +789,9 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     let cells = twin_cells(x);
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
-    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells }));
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Twin(k)));
+    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, hold, value: v.clone(), readonly, constant, cells }));
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -839,6 +848,8 @@ unsafe fn twin_items(mut p: Sexp, items: &[Arg], constant: bool) {
 /// Drop twin `k` (its value is referenced only by the table).
 unsafe fn drop_twin(k: usize) {
     let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    core().unhold(tw.hold);
+    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
     TWIN_HEAD.with(|h| {
         let mut h = h.borrow_mut();
         if h.get(&tw.x.addr()) == Some(&k) {
@@ -850,6 +861,22 @@ unsafe fn drop_twin(k: usize) {
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
     // address may be another object's after the next collection
+    forget_attrs(tw.x);
+}
+
+/// Twin `k` died in the collection (nothing reached it, through either
+/// heap): forget it without reading its freed cells.
+unsafe fn forget_dead_twin(k: usize) {
+    let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    TWIN_HEAD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.get(&tw.x.addr()) == Some(&k) {
+            h.remove(&tw.x.addr());
+        }
+    });
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    // no cell of it is known live: their bits stay, as unwatch leaves them
+    unwatch_cells(k, &tw.cells, &[]);
     forget_attrs(tw.x);
 }
 
@@ -1002,13 +1029,25 @@ unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
     }
 }
 
-/// Mark every twin (a root of the collector, from `mark_api_roots`).
-pub unsafe fn mark_twins(c: &mut robigo_core::Core) {
+/// The twins whose values the runtime graph shows live (a twin is a
+/// hold: a root in the collections the allocator triggers, marked through
+/// the runtime graph in gc(), one mark over both heaps).
+unsafe fn mark_live_twins(c: &mut robigo_core::Core, graph: &robigo_runtime::reachability::ObjectGraph, live: &[bool]) {
     TWINS.with(|t| {
         for tw in t.borrow().values() {
-            c.mark(tw.x);
+            if graph.is_live(&tw.value, live) {
+                c.mark(tw.x);
+            }
         }
     });
+}
+
+/// The twin of a value the runtime graph reaches from a traced proxy.
+unsafe fn mark_twin_of(c: &mut robigo_core::Core, v: &Value) {
+    let Some(k) = twin_key(v) else { return };
+    if let Some(x) = TWINS.with(|t| t.borrow().get(&k).map(|tw| tw.x)) {
+        c.mark(x);
+    }
 }
 
 /// Drop the twins whose value only the table still holds (inner twins
@@ -1259,9 +1298,6 @@ thread_local! {
     /// graph, so that every proxy left afterwards is one the core heap
     /// keeps (see [`reclaim_host_cycles`]).
     static GRAPH_MARK: Cell<bool> = const { Cell::new(false) };
-    /// Core objects the runtime let go of (`CoreRef`s dropped): a
-    /// reclamation that dropped none freed nothing a collection could find.
-    static CORE_RELEASES: Cell<u64> = const { Cell::new(0) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
     /// C-assembled promise nodes converted by `from_sexp`, by node
     /// address. The weak reference plus the promise's `STORED` entry
@@ -1405,6 +1441,17 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 }
             }
         }
+        mark_live_twins(c, &graph, &live);
+        // The objects runtime values wrap: live unless the graph shows
+        // that only dead runtime objects refer to their wrapper. (Held
+        // objects are no roots in gc(): one mark over both heaps.)
+        WRAPPED.with(|m| {
+            for (&addr, w) in m.borrow().iter() {
+                if w.strong_count() > 0 && graph.is_live_key(Weak::as_ptr(w) as *const () as usize, &live) {
+                    c.mark(Sexp(addr as *mut u8));
+                }
+            }
+        });
         let visited = graph.visited_set();
         TRACE_GRAPH.with(|g| *g.borrow_mut() = Some((graph, visited)));
     })
@@ -1434,6 +1481,11 @@ pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
                         c.mark(x);
                     }
                 }
+                // a wrapped object the traced object's runtime side holds
+                if let Some(x) = core_ref_of(value) {
+                    c.mark(x);
+                }
+                mark_twin_of(c, value);
             });
         });
     });
@@ -1451,11 +1503,21 @@ unsafe fn proxied(x: Sexp) -> Option<Value> {
     PROXIED.with(|m| m.borrow().get(&h).map(|e| e.1.clone()))
 }
 
-/// A core object kept alive while the runtime holds it.
-struct CoreRef(Sexp);
+/// A core object kept alive while the runtime holds it (a hold in the
+/// core heap). Inert once a collection found its object dead, which only
+/// a dead runtime cycle can still refer to: then it owns nothing.
+struct CoreRef {
+    x: Sexp,
+    hold: u64,
+    inert: Cell<bool>,
+}
 
 impl Drop for CoreRef {
     fn drop(&mut self) {
+        if self.inert.get() {
+            // the object is gone, its slot may be another's by now
+            return;
+        }
         // A runtime value kept in one of this module's thread-locals can
         // outlive `WRAPPED` (and the isolate): TLS destructors run in
         // reverse registration order at process exit. Reaching either with
@@ -1463,19 +1525,19 @@ impl Drop for CoreRef {
         if crate::state::try_isolate().is_some() {
             // SAFETY: the isolate is alive on this thread, the only one
             // that holds runtime values.
-            unsafe { core().release(self.0) };
+            unsafe { core().unhold(self.hold) };
         }
-        let _ = CORE_RELEASES.try_with(|n| n.set(n.get() + 1));
+        let _ = HELD.try_with(|m| m.borrow_mut().remove(&self.hold));
         let _ = WRAPPED.try_with(|m| {
-            m.borrow_mut().remove(&self.0.addr());
+            m.borrow_mut().remove(&self.x.addr());
         });
-        forget_attrs(self.0);
+        forget_attrs(self.x);
     }
 }
 
 pub fn core_ref_of(v: &Value) -> Option<Sexp> {
     match v {
-        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().map(|c| c.0),
+        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().filter(|c| !c.inert.get()).map(|c| c.x),
         _ => None,
     }
 }
@@ -1484,11 +1546,13 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
         return Value::ExtPtr(p);
     }
-    core().preserve(x);
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Wrapped(x.addr())));
     let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag()) } else { Value::Null };
     let attrs = attrs_with_s4(x);
     agree_attrs(x);
-    let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(CoreRef(x))) });
+    let core_ref = CoreRef { x, hold, inert: Cell::new(false) };
+    let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(core_ref)) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
     Value::ExtPtr(p)
 }
@@ -3270,7 +3334,7 @@ unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>)
         }
         let proxy = PROXIED
             .try_with(|m| {
-                PINNED.try_with(|p| Some((*p.borrow().get(&h)?, m.borrow().get(&h)?.1.clone()))).ok().flatten()
+                PINNED.try_with(|p| Some((p.borrow().get(&h)?.0, m.borrow().get(&h)?.1.clone()))).ok().flatten()
             })
             .ok()
             .flatten();
@@ -3756,59 +3820,46 @@ impl NativeBridge for Bridge {
             return;
         }
         let outer = INTERP.with(|c| c.get().is_null());
-        // GNU R's collection finds everything unreachable at once. Here a
-        // runtime cycle can hold core objects (an external pointer in a
-        // test_that() environment) and core objects can hold runtime ones
-        // (a callback in a pointer's protected field): collect, reclaim
-        // the runtime cycles nothing reaches anymore, and collect again
-        // while that frees something, so that one gc() runs the finalizers
-        // of everything that became unreachable.
+        // GNU R's collection finds everything unreachable at once, in one
+        // mark. Here a runtime cycle can hold core objects (an external
+        // pointer in a test_that() environment) and core objects can hold
+        // runtime ones (a callback in a pointer's protected field), so the
+        // collection marks both heaps as one: what the bridge holds in the
+        // core heap is no root, it is marked through the runtime graph
+        // (mark_proxies, trace_proxy). With C code running below gc() (R
+        // code that rlang's or testthat's C code evaluates), the stack scan
+        // covers its frames: what a C local holds is marked as before.
         // R: memory.c:R_gc_internal
         // SAFETY: on the R thread, with libR ready (READY), and no
         // collector borrow active: the collection starts below.
         unsafe { sweep_bridge_holds() };
-        loop {
-            // Proxies are marked by the runtime graph: one that only a dead
-            // cycle refers to has a count above one, and kept now it would
-            // root its cycle in the reclamation below.
-            GRAPH_MARK.with(|on| on.set(true));
-            // SAFETY: the R thread with `interp` current.
-            enter(interp, |_| unsafe {
-                // gc() from R with no C code active: nothing on the
-                // machine stack can hold a core object
-                let old = if outer { core().set_scan_top(0) } else { 0 };
-                core().collect();
-                if outer {
-                    core().set_scan_top(old);
-                }
-                GRAPH_MARK.with(|on| on.set(false));
-                // Finalizers are C code: the scan is back on, so a
-                // collection inside one sees its locals.
-                crate::util::safe_point();
-            });
+        GRAPH_MARK.with(|on| on.set(true));
+        // SAFETY: the R thread with `interp` current.
+        enter(interp, |_| unsafe {
+            // gc() from R with no C code active: nothing on the machine
+            // stack can hold a core object
+            let old = if outer { core().set_scan_top(0) } else { 0 };
+            let roots = core().set_held_roots(false);
+            core().collect();
+            core().set_held_roots(roots);
+            if outer {
+                core().set_scan_top(old);
+            }
             GRAPH_MARK.with(|on| on.set(false));
-            drain_dead();
-            // After the collection and its finalizers: the weak-reference
-            // round is over, so what only dead cycles reach can be
-            // reclaimed.
-            let before = CORE_RELEASES.with(|n| n.get());
-            // SAFETY: the collection and its finalizers are over, and no
-            // collector borrow is active.
-            if unsafe { reclaim_host_cycles() } == 0 {
-                break;
-            }
-            // Collect again only if the reclaimed cycles let go of core
-            // objects: wrapped pointers they held, or what the bridge kept
-            // for them (a cycle of plain R objects frees nothing there).
-            let dropped = CORE_RELEASES.with(|n| n.get()) - before;
-            // (Pins only reclaimed cycles held are left to the next gc():
-            // finding them takes another graph, and they only wait.)
-            // SAFETY: as above.
-            let swept = unsafe { sweep_stored() };
-            if dropped == 0 && swept == 0 {
-                break;
-            }
-        }
+            // before any finalizer: no wrapper may hand out a freed object
+            drain_dead_held();
+            // Finalizers are C code: the scan is back on, so a collection
+            // inside one sees its locals.
+            crate::util::safe_point();
+        });
+        GRAPH_MARK.with(|on| on.set(false));
+        drain_dead();
+        // After the collection and its finalizers: the weak-reference
+        // round is over, so the runtime half of what died can be
+        // reclaimed.
+        // SAFETY: the collection and its finalizers are over, and no
+        // collector borrow is active.
+        unsafe { reclaim_host_cycles() };
     }
 }
 
