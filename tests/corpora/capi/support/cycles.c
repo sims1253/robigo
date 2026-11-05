@@ -40,3 +40,44 @@ SEXP cycles_call(SEXP ptr, SEXP arg) {
     UNPROTECT(1);
     return ans;
 }
+
+// A pool that keeps a callback in its protected field, as curl's pools
+// keep their handles' callbacks: a cycle through both heaps when the
+// callback's frame holds the pool.
+static void cycles_pool_finalizer(SEXP ptr) {
+    Rprintf("finalizer of pool %s ran\n", (const char *) R_ExternalPtrAddr(ptr));
+}
+
+SEXP cycles_pool(SEXP name, SEXP fun) {
+    static char names[8][32];
+    static int n = 0;
+    char *slot = names[n++ % 8];
+    strncpy(slot, CHAR(STRING_ELT(name, 0)), 31);
+    SEXP prot = PROTECT(allocVector(VECSXP, 1));
+    SET_VECTOR_ELT(prot, 0, fun);
+    SEXP ptr = PROTECT(R_MakeExternalPtr(slot, R_NilValue, prot));
+    R_RegisterCFinalizerEx(ptr, cycles_pool_finalizer, FALSE);
+    UNPROTECT(2);
+    return ptr;
+}
+
+// A finalizer that allocates: the sweep's free slots are reused while
+// the runtime still has the dead pool's wrapper.
+static void cycles_busy_finalizer(SEXP ptr) {
+    for (int i = 0; i < 2000; i++) {
+        SEXP v = PROTECT(allocVector(INTSXP, 4));
+        SEXP p = PROTECT(R_MakeExternalPtr(NULL, R_NilValue, v));
+        UNPROTECT(2);
+        (void) p;
+    }
+    Rprintf("busy finalizer ran\n");
+}
+
+SEXP cycles_busy_pool(SEXP fun) {
+    SEXP prot = PROTECT(allocVector(VECSXP, 1));
+    SET_VECTOR_ELT(prot, 0, fun);
+    SEXP ptr = PROTECT(R_MakeExternalPtr(NULL, R_NilValue, prot));
+    R_RegisterCFinalizerEx(ptr, cycles_busy_finalizer, FALSE);
+    UNPROTECT(2);
+    return ptr;
+}

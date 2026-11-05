@@ -533,6 +533,40 @@ memory.c's `NodeClassSize` rule (0 for ALTREP and non-vector objects),
 no `MARK`, and `REF(n)` from the object's reference count. Environments
 print no `FRAME` or `HASHTAB`: robigo's frames are neither.
 
+**One mark over both heaps** (#344, council round 6). A cycle can cross
+the heaps: a runtime frame holds an `ExtPtr` whose core object's
+protected field holds the proxy of a closure of that frame (curl's
+handles and their callbacks). GNU R's one heap frees it in one `gc()`.
+So does robigo:
+
+- The core objects runtime values wrap (`CoreRef`) and the proxies
+  pinned for C (`PINNED`) are *held* (`Core::hold`), a set apart from
+  the precious list. In collections the allocator triggers, held objects
+  are roots.
+- In a `gc()` they are not, also with C frames active below it (R code
+  that rlang's C code evaluates, as in every testthat expectation): the
+  conservative stack scan still covers those frames, so what a C local
+  holds is marked, and what C keeps in a static is a pin, which the
+  runtime graph keeps while its runtime object lives. The bridge marks the held objects it
+  still reaches, through the runtime graph (`mark_proxies`: a wrapper
+  the graph does not show dead; `trace_proxy`: what a traced proxy's
+  runtime object reaches). The core queues the holds it found dead
+  between its mark and its sweep, without calling the bridge. The bridge
+  drains that queue after the collection and before any finalizer runs,
+  making those `CoreRef`s inert and dropping their `WRAPPED` entries, so
+  a reused slot is never handed out as the old object. One
+  `reclaim_host_cycles` then frees the runtime half.
+- The invariant this needs: **every runtime reference that the cycle
+  graph ignores must be an edge from a core object that marks its target
+  when the core traces it.** `PROXIED`'s clones are (a traced proxy
+  marks its runtime object through `trace_proxy`). The twins' table
+  satisfies it as well: a twin is marked in every collection
+  (`mark_twins`), and what it contains is core copies or proxies, so the
+  runtime objects behind a twin's value are reached through proxies the
+  core marks and `trace_proxy` follows, and the objects its value wraps
+  are marked through the twin's own cells. `STORED` is precious until it
+  has that property too.
+
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* that is not a twin
 reach the caller's object only when the call returns; `NAMED`/
