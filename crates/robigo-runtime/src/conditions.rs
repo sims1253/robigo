@@ -469,28 +469,23 @@ impl Interp {
     /// Signal a warning from Rust code (R's `warningcall`).
     pub fn warningcall(&mut self, call: &Value, msg: impl Into<String>) -> RResult<()> {
         let msg = msg.into();
-        // With handlers established, go through the R-level protocol so that
-        // withCallingHandlers/tryCatch/suppressWarnings see the warning.
+        // R: errors.c:vsignalWarning -- every warning goes through
+        // .signalSimpleWarning(msg, base::quote(call)) in the global
+        // environment (evalKeepVis): handlers run below its
+        // withRestarts(muffleWarning = ) frames, and so does an error
+        // handler when warn = 2 turns the warning into an error. With no
+        // handler established at all nothing can observe those frames, and
+        // the default handling below is what .dfltWarn does.
         if self.handlers.is_some() {
-            let classes: Vec<crate::value::RString> =
-                ["simpleWarning", "warning", "condition"].iter().map(|c| crate::value::RString::from(*c)).collect();
-            if self.find_handler(&classes).is_some() {
-                // R: errors.c:vsignalWarning -- the warning goes through
-                // .signalSimpleWarning(msg, base::quote(call)) in the global
-                // environment (evalKeepVis): handlers run below its
-                // withRestarts(muffleWarning = ) frames. Without a handler
-                // nothing can observe those frames, and the default
-                // handling below is what .dfltWarn does.
-                let hcall = Value::lang(
-                    Value::sym(".signalSimpleWarning"),
-                    vec![Arg::pos(Value::str(&msg)), Arg::pos(base_quote(call))],
-                );
-                let global = self.global.clone();
-                let vis = self.visible;
-                let r = self.eval(&hcall, &global);
-                self.visible = vis;
-                return r.map(|_| ());
-            }
+            let hcall = Value::lang(
+                Value::sym(".signalSimpleWarning"),
+                vec![Arg::pos(Value::str(&msg)), Arg::pos(base_quote(call))],
+            );
+            let global = self.global.clone();
+            let vis = self.visible;
+            let r = self.eval(&hcall, &global);
+            self.visible = vis;
+            return r.map(|_| ());
         }
         self.warning_default(call, &msg)
     }

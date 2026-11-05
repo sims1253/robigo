@@ -28,3 +28,9 @@ m <- function(a) a
 r <- tryCatch(withCallingHandlers(m(), error = function(e) { heads(); print(class(e)) }),
               error = function(e) conditionMessage(e))
 r
+# warn = 2: the warning still goes through .signalSimpleWarning before it
+# becomes an error, which an error handler sees
+options(warn = 2)
+r <- tryCatch(withCallingHandlers(k(), error = function(e) heads()), error = function(e) conditionMessage(e))
+r
+options(warn = 0)
