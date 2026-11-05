@@ -295,6 +295,42 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 Every job runs in a `debian:trixie` container with Debian's
 `r-base-core 4.5.0-3`: the GNU R the corpora were recorded with, on the
 same C library (GNU R uses glibc's `sinpi` and friends when they exist, so
-other builds of GNU R 4.5.0 can differ in the last bit). The host runner
-is `ubuntu-24.04` unless the repository variable `ROBIGO_RUNNER` names
-another (e.g. a self-hosted machine).
+other builds of GNU R 4.5.0 can differ in the last bit).
+
+### Self-hosted runners
+
+The host runner is GitHub's `ubuntu-24.04` unless a repository variable
+names the self-hosted label `robigo-docker`: `ROBIGO_RUNNER_BUILD` for the
+compiling jobs (lint, build, test, bytecode-fidelity) and
+`ROBIGO_RUNNER_CORPORA` for the jobs that run the built binary (corpora,
+fuzz, cran). Self-hosted runners do not count against GitHub's limit of
+concurrent jobs. Clear a variable (`gh variable delete NAME`) when the
+machines are offline: queued jobs wait for a runner with their label and
+do not fall back. perf, perf-diagnostic, miri and progress always run on
+GitHub's (see the comment above `jobs:` in `ci.yml`), and so does every
+pull request from a fork. `packages.yml` reads `ROBIGO_RUNNER` for its
+non-pull-request runs.
+
+A fork's pull request can rewrite the workflow and ask for any label, so
+the protection is the repository's fork policy: workflows of every outside
+contributor wait for a maintainer's approval (Settings → Actions →
+"Require approval for all external contributors"). Read the whole diff,
+build scripts included, before approving.
+
+`scripts/ci-runner/install.sh --slots N --cpus C --memory M` sets a
+machine up (Docker, `gh` logged in as a repository admin, `loginctl
+enable-linger`): N systemd user units `robigo-runner@0..N-1`, slot k pinned
+to CPUs [kC, (k+1)C) so `nproc` in a job reports its share. Each slot
+(`scripts/ci-runner/robigo-runner.sh`) loops: it registers a single-use
+just-in-time runner (the host's `gh` token never enters a container),
+starts a fresh `docker:dind` daemon for the job's `container:` and a fresh
+official runner container, and deletes both with their volumes when the
+job ends. Job containers cannot reach private address ranges (the LAN).
+Image pulls go through a per-machine pull-through mirror
+(`robigo-ci-mirror`), as Docker Hub limits anonymous pulls. A slot waits
+while the Docker disk has under 15 GB free. `journalctl --user -u
+'robigo-runner@*'` shows what the slots do; `--slots 0` removes them.
+
+The dind container is privileged on the host's rootful Docker, so the
+containers keep jobs clean and apart, but they are not a security
+boundary against a malicious job: the approval policy is.

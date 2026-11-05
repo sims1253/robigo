@@ -38,10 +38,18 @@ env:
   LC_ALL: C.UTF-8
   TZ: UTC
 
+# Runners (docs/verification.md, "Self-hosted runners"): the repository
+# variables ROBIGO_RUNNER_BUILD (compiling jobs) and ROBIGO_RUNNER_CORPORA
+# (jobs that run the built binary) may name the self-hosted label
+# `robigo-docker`; unset, they run on GitHub's. Pull requests from forks
+# always run on GitHub's. perf and perf-diagnostic stay there because their
+# instruction counts are compared with main's from GitHub's machines;
+# progress because it writes to the repository; miri because it runs on
+# the host, not in a container.
 jobs:
   perf-diagnostic:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.perf_diagnostic == true }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 60
     steps:
@@ -69,7 +77,7 @@ jobs:
   # Seconds of work: a formatting or lint mistake should not wait for a build.
   lint:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 15
     steps:
@@ -86,7 +94,7 @@ jobs:
 
   miri:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -97,7 +105,7 @@ jobs:
 
   build:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     steps:
@@ -151,7 +159,7 @@ jobs:
   # build in the quick profile, and conformance tests the release binary.
   test:
     needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     env:
@@ -188,7 +196,7 @@ jobs:
 
   bytecode-fidelity:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     steps:
@@ -209,7 +217,7 @@ jobs:
 
   corpora:
     needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -258,7 +266,7 @@ jobs:
   # inputs its change has nothing to do with; main explores new ones.
   fuzz:
     needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
@@ -295,7 +303,7 @@ jobs:
     # A backstop only: above the steps' own limits with every package hanging.
     # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
@@ -325,7 +333,7 @@ jobs:
 
   perf:
     needs: build
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container: debian:trixie
     # perf-baseline.py may wait 50 minutes for main's run, then this measures
     timeout-minutes: 110
@@ -425,7 +433,7 @@ jobs:
     # also records earlier main runs the history lacks.
     needs: [build, test, corpora, perf]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.result == 'success' }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 15
     concurrency:
