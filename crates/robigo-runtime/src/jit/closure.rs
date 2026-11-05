@@ -121,6 +121,30 @@ impl NativeSlot {
         self.entry.borrow().as_ref().is_none_or(|e| !e.cells.is_empty())
     }
 
+    /// The slots of a caller with variables `syms` that a run may look up
+    /// (all it reads of its environments are its cells and the functions it
+    /// calls and guards), as bits (bit 63: any slot from 63 on), with the
+    /// entry they hold for (`site` caches them, by [`Entry::id`]); all if
+    /// not known yet.
+    #[inline]
+    pub fn reads_slots(&self, site: &std::cell::Cell<(usize, u64)>, syms: &[Sym]) -> u64 {
+        let entry = self.entry.borrow();
+        let Some(e) = entry.as_ref() else { return u64::MAX };
+        let key = e.id;
+        let (k, mask) = site.get();
+        if k == key {
+            return mask;
+        }
+        let mut mask = 0u64;
+        for (i, s) in syms.iter().enumerate() {
+            if e.frame_syms.binary_search(s).is_ok() {
+                mask |= 1 << i.min(63);
+            }
+        }
+        site.set((key, mask));
+        mask
+    }
+
     /// Note how an attempt went. A body that keeps failing to run (a type
     /// that does not fit, say) must not cost every call an attempt.
     #[inline(always)]
@@ -142,14 +166,23 @@ impl NativeSlot {
     }
 }
 
+thread_local! {
+    static NEXT_ENTRY: Cell<usize> = const { Cell::new(0) };
+}
+
 /// The root of a call tree.
 struct Entry {
+    /// Unique among entries (addresses are reused).
+    id: usize,
     funs: Vec<Fun>,
     /// Some body calls builtins (which print when traced).
     builtins: bool,
     /// Some cell is assigned with `<<-`.
     writes: bool,
     cells: Vec<CellDef>,
+    /// Every name the tree looks up in its environments: its cells, the
+    /// functions it calls and the functions it guards.
+    frame_syms: Vec<Sym>,
     /// Words of the context block.
     ctx_words: usize,
     /// What the tree was last found valid for.
@@ -296,6 +329,11 @@ pub(super) struct Whole<'a> {
     /// The frame's `RVal` slots (values of any type), and how many.
     base: Option<CValue>,
     nframe: usize,
+    /// The temporary slots used, and the constants giving the frame's size
+    /// to `robigo_d_init`/`robigo_d_release`: set once code generation knows
+    /// how many temporaries there are (a frame often needs none).
+    tmp_used: usize,
+    frame_sizes: Vec<cranelift_codegen::ir::Inst>,
     /// Offsets in the frame: registers, the temporary slots.
     dyn_regs: HashMap<Reg, i32>,
     tmp: i32,
@@ -1178,11 +1216,13 @@ fn define(
         if uses_dyn {
             nframe += TMP;
         }
+        let mut frame_sizes = Vec::new();
         let (base, argv) = if uses_dyn {
             let ss =
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (nframe * RVAL) as u32, 3));
             let base = b.ins().stack_addr(ptr, ss, 0);
             let n = b.ins().iconst(types::I64, nframe as i64);
+            frame_sizes.push(b.func.dfg.value_def(n).unwrap_inst());
             // Scalars defined so far (arguments, cells) go around the call
             // through memory, explicitly: live across it, they would be
             // spilled, and the register allocator then stores and reloads
@@ -1250,6 +1290,8 @@ fn define(
                 views,
                 base,
                 nframe,
+                tmp_used: 0,
+                frame_sizes,
                 dyn_regs,
                 tmp,
                 dyn_slots,
@@ -1287,6 +1329,14 @@ fn define(
         let z = zero(&mut g.b, result);
         let failed = g.i32c(1);
         g.b.ins().return_(&[z, failed]);
+        // The frame ends with the temporaries actually used.
+        let w = g.whole.as_ref().unwrap();
+        if w.base.is_some() {
+            let size = (w.nframe - TMP + w.tmp_used) as i64;
+            for inst in w.frame_sizes.clone() {
+                g.b.func.replace(inst).iconst(types::I64, size);
+            }
+        }
         g.b.seal_all_blocks();
         g.b.finalize(tcfg);
     }
@@ -1438,11 +1488,23 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
     let builtins =
         funs.iter().any(|f| f.code.ops.iter().any(|o| matches!(o, Op::CallBuiltin { .. } | Op::Builtin1 { .. })));
     let writes = cells.iter().any(|c| c.written);
+    let mut frame_syms: Vec<Sym> = cells.iter().map(|c| c.sym).collect();
+    for f in &funs {
+        frame_syms.extend(f.sites.iter().map(|(_, s)| *s));
+        frame_syms.extend(f.guards.iter().copied());
+    }
+    frame_syms.sort();
+    frame_syms.dedup();
     let e = Rc::new(Entry {
+        id: NEXT_ENTRY.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        }),
         funs,
         builtins,
         writes,
         cells,
+        frame_syms,
         ctx_words,
         valid: RefCell::new(None),
         runs: Cell::new(0),
@@ -2045,7 +2107,8 @@ impl Gen<'_, '_> {
     }
 
     fn tmp(&mut self, k: usize) -> CValue {
-        let w = self.whole.as_ref().unwrap();
+        let w = self.whole.as_mut().unwrap();
+        w.tmp_used = w.tmp_used.max(k + 1);
         let (base, off) = (w.base.unwrap(), w.tmp + (k * RVAL) as i32);
         self.b.ins().iadd_imm_s(base, off as i64)
     }
@@ -2071,6 +2134,8 @@ impl Gen<'_, '_> {
         let w = self.whole.as_ref().unwrap();
         if let Some(base) = w.base {
             let n = self.b.ins().iconst(types::I64, w.nframe as i64);
+            let inst = self.b.func.dfg.value_def(n).unwrap_inst();
+            self.whole.as_mut().unwrap().frame_sizes.push(inst);
             self.hcall("robigo_d_release", &[base, n]);
         }
     }

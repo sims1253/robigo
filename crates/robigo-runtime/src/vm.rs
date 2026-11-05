@@ -338,6 +338,22 @@ impl Vars<'_> {
 
     /// Note that `slot` may now be dirty or cache a vector.
     #[inline(always)]
+    /// Whether a slot of `mask` (bits as in `touched`) has an assignment not
+    /// yet written to the frame.
+    fn any_pending(&self, mask: u64) -> bool {
+        let mut m = self.touched & mask;
+        while m != 0 {
+            let i = m.trailing_zeros() as usize;
+            m &= m - 1;
+            // (Bit 63 stands for slots 63 and above.)
+            let range = if i == 63 { 63..self.slots.len() } else { i..i + 1 };
+            if self.slots[range].iter().any(|s| matches!(s, SlotVal::Dirty(_))) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn touch(&mut self, slot: usize) {
         self.touched |= 1 << slot.min(63);
     }
@@ -2265,11 +2281,16 @@ fn native_site_call(
         }
     }
     use crate::jit::closure::Run;
+    // Pending assignments of this frame matter only if the tree reads one of
+    // those variables (as a top-level loop's variable `for (j in ...) f()`
+    // is not read by `f`).
+    let dirty = vars.dirty
+        && code.native.reads_frames()
+        && vars.any_pending(code.native.reads_slots(&site.native_reads, &caller.vars));
     // A closure defined in this frame, as usual for one reading its
     // variables, sees its pending assignments: they go first. (Other
     // closures of the tree are checked by `call`.)
-    if vars.dirty
-        && code.native.reads_frames()
+    if dirty
         && crate::jit::closure::on_chain(&clo.env, env)
         && let Err(e) = vars.flush(interp, env, &caller.vars)
     {
@@ -2277,7 +2298,7 @@ fn native_site_call(
         vars.dirty = true;
         return None;
     }
-    let mut r = crate::jit::closure::call(interp, clo, code, &args, leaves, vars.dirty.then_some(env));
+    let mut r = crate::jit::closure::call(interp, clo, code, &args, leaves, dirty.then_some(env));
     if let Run::Flush = r {
         // The tree reads variables of this frame: pending assignments go
         // first. (The VM does the same before any call, which this may be.)

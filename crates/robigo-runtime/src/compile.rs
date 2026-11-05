@@ -595,6 +595,10 @@ pub struct CallSite {
     /// The same for native code (`jit::closure`): the formals (address) of
     /// the last closure that has none here.
     pub no_native: std::cell::Cell<usize>,
+    /// For the native tree called here (`jit::closure`): its entry (id)
+    /// and the slots of this code whose variables it may read, as bits
+    /// (bit 63: any slot from 63 on).
+    pub native_reads: std::cell::Cell<(usize, u64)>,
     /// The slot of the function's name, if the code has one (filled in once
     /// compilation is done).
     pub fslot: Option<Slot>,
@@ -1264,6 +1268,7 @@ impl Compiler {
             native_args,
             no_eager: std::cell::Cell::new(0),
             no_native: std::cell::Cell::new(0),
+            native_reads: std::cell::Cell::new((0, 0)),
             fslot: None,
             force,
             effect: false,
