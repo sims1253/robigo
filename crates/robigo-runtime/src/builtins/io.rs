@@ -1460,7 +1460,7 @@ pub fn close_unused_connections(i: &mut Interp) -> RResult<()> {
         dead.push((con.id, n as i32));
     }
     // the collector runs finalizers newest first (R_weak_refs is a stack)
-    dead.sort_by(|a, b| b.0.cmp(&a.0));
+    dead.sort_by_key(|d| std::cmp::Reverse(d.0));
     for (_, n) in dead {
         finalize_connection(i, n)?;
     }

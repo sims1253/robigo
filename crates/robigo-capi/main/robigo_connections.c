@@ -37,7 +37,6 @@ int Rvsnprintf_mbcs(char *buf, size_t size, const char *format, va_list ap)
     }
     return val;
 }
-#endif
 
 /* R: connections.c, the buffered fgetc (dummy_fgetc reads through it when con->buff is set) */
 #define RBUFFCON_LEN_DEFAULT 4096
