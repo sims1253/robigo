@@ -475,6 +475,21 @@ pub enum Op {
     Visible {
         on: bool,
     },
+    /// R_Srcref = `consts[k]` (a srcref, or NULL): the statement of a `{`
+    /// block that starts here (eval.c:do_begin). Only code with source
+    /// references has these ops.
+    Srcref {
+        k: u32,
+    },
+    /// Save R_Srcref in `dst` where an outermost `{` with source references
+    /// starts ([`Op::SrcrefRestore`] puts it back where it ends, as eval.c:
+    /// eval does).
+    SrcrefSave {
+        dst: Reg,
+    },
+    SrcrefRestore {
+        src: Reg,
+    },
     /// Enter/leave a loop region (for `break`/`next` from the interpreter).
     LoopEnter {
         brk: u32,
@@ -863,6 +878,9 @@ struct Compiler {
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
     call_sites: Vec<CallSite>,
+    /// The `consts` index of the srcref of the `{` statement being compiled,
+    /// inside a block with source references (see [`Op::Srcref`]).
+    srcref_k: Option<u32>,
     nguards: usize,
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
@@ -1414,9 +1432,41 @@ impl Compiler {
                     self.emit(Op::Null { dst, dead: false });
                     self.vis(w, true);
                 }
+                // R: eval.c:do_begin -- with source references each
+                // statement runs under its srcref (a block without them,
+                // inside one with them, under NULL), and the value before
+                // the block comes back after it (eval.c:eval). Code without
+                // source references gets none of these ops.
+                let refs = whole.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
+                let outer = self.srcref_k;
+                let tracked = refs.is_some() || outer.is_some();
+                let save = (tracked && outer.is_none()).then(|| {
+                    let r = self.reg();
+                    self.emit(Op::SrcrefSave { dst: r });
+                    r
+                });
                 let n = l.args.len();
                 for (i, a) in l.args.iter().enumerate() {
+                    if tracked {
+                        let v = match refs.as_ref().map(|r| crate::interp::statement_srcref(r, i + 1)) {
+                            Some(Some(v)) if v.data.len() >= 6 => Value::Int(v),
+                            _ => Value::Null,
+                        };
+                        let k = self.konst(v);
+                        self.srcref_k = Some(k);
+                        self.emit(Op::Srcref { k });
+                    }
                     self.expr(&a.value, dst, if i + 1 == n { w } else { Want::Effect });
+                }
+                self.srcref_k = outer;
+                match (save, outer) {
+                    (Some(r), _) => {
+                        self.emit(Op::SrcrefRestore { src: r });
+                    }
+                    (None, Some(k)) => {
+                        self.emit(Op::Srcref { k });
+                    }
+                    (None, None) => {}
                 }
                 let end = self.here();
                 self.patch(g, end);
