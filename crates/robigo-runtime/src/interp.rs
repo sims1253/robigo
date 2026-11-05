@@ -1783,19 +1783,18 @@ pub(crate) fn bind_positional(clo: &Closure, promargs: &[Arg]) -> Env {
     newenv
 }
 
+/// The binding of a missing argument with a default: a promise of the
+/// default in the new frame, a constant one included (C code that reads the
+/// binding unforced, as rlang's `env_binding_are_lazy()` does, sees it).
+// R: eval.c:applyClosure — SETCAR(a, mkPROMISE(CAR(f), newrho))
 pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
     let expr = &clo.formals[k].value;
-    match expr {
-        Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) => expr.clone(),
-        _ => {
-            let code = if crate::vm::enabled() {
-                clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
-            } else {
-                None
-            };
-            let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
-            p.default = true;
-            Value::Promise(Rc::new(p))
-        }
-    }
+    let code = if crate::vm::enabled() && matches!(expr, Value::Sym(_) | Value::Lang(_)) {
+        clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
+    } else {
+        None
+    };
+    let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
+    p.default = true;
+    Value::Promise(Rc::new(p))
 }
