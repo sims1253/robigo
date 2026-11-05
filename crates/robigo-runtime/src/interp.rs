@@ -476,7 +476,7 @@ impl Interp {
             };
             if let Some((v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
-                    return self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]));
+                    return self.get_active_value(&v);
                 }
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
@@ -606,7 +606,7 @@ impl Interp {
             };
             if let Some((mut v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
-                    v = self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]))?;
+                    v = self.get_active_value(&v)?;
                 }
                 if let Value::Promise(p) = &v {
                     v = self.force_promise(p)?;
@@ -808,11 +808,30 @@ impl Interp {
                 {
                     return r;
                 }
+                if self.bc && crate::vm::inlines_local(self, c, l, env) {
+                    return self.eval_inlined_local(l, env);
+                }
                 let promargs = self.promise_args(&l.args, env)?;
                 self.apply_closure(call, c, promargs, env, None)
             }
             _ => Err(Flow::error("attempt to apply non-function")),
         }
+    }
+
+    /// `local(expr)` in code GNU R compiled: the compiler's inline handler
+    /// turns it into the call `(function() expr)()` (a compiled closure of
+    /// the current frame, `jit_inherit`), which is what runs, and what
+    /// `sys.call()` and `sys.function()` there see.
+    // R: compiler/R/cmp.R: setInlineHandler("local")
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn eval_inlined_local(&mut self, l: &Lang, env: &Env) -> RResult<Value> {
+        let fun = Value::lang(
+            Value::Sym(s::FUNCTION),
+            vec![Arg::pos(Value::Null), Arg::pos(l.args[0].value.clone()), Arg::pos(Value::Null)],
+        );
+        let call = Value::lang(fun, Vec::new());
+        self.eval(&call, env)
     }
 
     /// An interpreted call taking the simple-internal path (see
@@ -1433,12 +1452,33 @@ impl Interp {
     // ------------------------------------------------------------------
     // assignment
 
+    /// An active binding's value: `fun()` evaluated in the global
+    /// environment.
+    // R: envir.c:getActiveValue
+    pub fn get_active_value(&mut self, fun: &Value) -> RResult<Value> {
+        let expr = Value::lang(fun.clone(), vec![]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)
+    }
+
+    /// Assigning to an active binding: `fun(base::quote(val))` evaluated in
+    /// the global environment, so the function sees (and argument matching
+    /// reports) the quoted value.
+    // R: envir.c:setActiveValue
+    pub fn set_active_value(&mut self, fun: &Value, val: Value) -> RResult<()> {
+        let qfun = Value::lang(Value::sym("::"), vec![Arg::pos(Value::sym("base")), Arg::pos(Value::sym("quote"))]);
+        let arg = Value::lang(qfun, vec![Arg::pos(val)]);
+        let expr = Value::lang(fun.clone(), vec![Arg::pos(arg)]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)?;
+        Ok(())
+    }
+
     pub fn define(&mut self, sym: Sym, value: Value, env: &Env) -> RResult<()> {
         if let Some(flags) = env.binding_flags(sym) {
             if flags & BIND_ACTIVE != 0 {
                 let f = env.get_local(sym).unwrap();
-                self.call_value(&f, vec![Arg::pos(value)], env)?;
-                return Ok(());
+                return self.set_active_value(&f, value);
             }
         }
         if !env.set_local(sym, value) {
