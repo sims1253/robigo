@@ -43,3 +43,12 @@ inner <- mk()
 cat(inner(), "\n")
 # a top-level loop is compiled
 for (i in 1) cat(deparse(local(sys.call())), "\n")
+# closures interpreted code makes below a namespace, or below a copy of
+# one (testthat's test environment is a child of env_clone(asNamespace())),
+# are left to the JIT: these small ones are never compiled
+ns <- asNamespace("stats")
+h <- eval(quote(function() deparse(local(sys.call()))), new.env(parent = ns))
+cat(h(), "|", h(), "\n")
+copy <- list2env(as.list(ns, all.names = TRUE), parent = parent.env(ns))
+h2 <- eval(quote(function() deparse(local(sys.call()))), new.env(parent = copy))
+cat(h2(), "|", h2(), "\n")

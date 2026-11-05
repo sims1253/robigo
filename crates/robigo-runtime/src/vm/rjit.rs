@@ -758,15 +758,58 @@ fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
     }
     for ctx in interp.frames.iter().rev() {
         if ctx.cloenv.ptr_eq(env) {
-            if let Value::Closure(c) = &ctx.function
-                && c.jit.0.get() & STATE_MASK == COMPILED
-            {
-                return index(s::LOCAL).is_some_and(|i| c.jit.mask() >> i & 1 != 0);
+            let Value::Closure(c) = &ctx.function else { return true };
+            let v = c.jit.0.get();
+            if v & LOADED_BYTECODE != 0 {
+                return true;
             }
-            return true;
+            return match v & STATE_MASK {
+                // Compiled by the JIT: base's `local` then by its frozen set;
+                // made by installed code (its frozen set is empty there,
+                // lookups find base's `local`), by its environment.
+                COMPILED => {
+                    index(s::LOCAL).is_some_and(|i| c.jit.mask() >> i & 1 != 0)
+                        || in_registered_namespace(interp, &c.env)
+                }
+                // An installed function: a closure of base or of a
+                // registered namespace itself. (`IGNORE` also marks closures
+                // that interpreted code made below a namespace, which GNU R
+                // leaves to its JIT: not inlined, as GNU R does not.)
+                _ => {
+                    c.env.ptr_eq(&interp.base_ns)
+                        || c.env.ptr_eq(&interp.base)
+                        || c.env.namespace_name().is_some_and(|n| {
+                            matches!(interp.ns_registry.get_local(Sym::new(&n)), Some(Value::Env(r)) if r.ptr_eq(&c.env))
+                        })
+                }
+            };
         }
     }
+    // A loop in the global environment (do_for and friends).
     true
+}
+
+/// Does `env` reach the base environment or a registered namespace before
+/// the global one? The first namespace on the way up decides: a copy
+/// (rlang's `env_clone()`, testthat's test environment) is not
+/// registered.
+fn in_registered_namespace(interp: &Interp, env: &Env) -> bool {
+    let mut e = env.clone();
+    loop {
+        if e.ptr_eq(&interp.global) {
+            return false;
+        }
+        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
+            return true;
+        }
+        if let Some(name) = e.namespace_name() {
+            return matches!(interp.ns_registry.get_local(Sym::new(&name)), Some(Value::Env(r)) if r.ptr_eq(&e));
+        }
+        match e.parent() {
+            Some(p) => e = p,
+            None => return false,
+        }
+    }
 }
 
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
