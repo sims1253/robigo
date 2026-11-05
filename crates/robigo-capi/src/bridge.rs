@@ -2538,7 +2538,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
                 .into_iter()
                 .map(|s| {
                     let v = e.get_local(s).unwrap_or(Value::Null);
-                    let v = robigo_runtime::interp::materialize_default(&e, s, v);
+                    let v = robigo_runtime::interp::materialize_default(e, s, v);
                     let v = match robigo_runtime::native::c_owned_holder(&v) {
                         // SAFETY: `c_owned_holder` returned a holder this bridge
                         // made, and the API state is live during a host call.
