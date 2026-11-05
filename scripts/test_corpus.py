@@ -192,5 +192,23 @@ class GcNormalization(unittest.TestCase):
             self.assertEqual(corpus.normalize(output), output)
 
 
+class PerCaseExpectedTests(unittest.TestCase):
+    def test_per_case_directory_round_trips_and_drops_removed_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "fixture").mkdir()
+            rec = lambda i, out: {"id": i, "sha": "x", "out": corpus.enc(out), "err": corpus.enc(b""), "status": 0}
+            exp = {"a": rec("a", b"1"), "b": rec("b", b"\xff")}
+            with patch.object(corpus, "CORPORA", tmp):
+                corpus.write_expected("fixture", exp, "expected")
+                files = sorted(p.name for p in (Path(tmp) / "fixture/expected").iterdir())
+                self.assertEqual(files, ["a.json", "b.json"])
+                self.assertEqual(corpus.load_expected("fixture", "expected"), exp)
+                a = Path(tmp) / "fixture/expected/a.json"
+                before = a.stat().st_mtime_ns
+                corpus.write_expected("fixture", {"a": exp["a"]}, "expected")
+                self.assertEqual(a.stat().st_mtime_ns, before)  # unchanged record: not rewritten
+                self.assertEqual(corpus.load_expected("fixture", "expected"), {"a": exp["a"]})
+
+
 if __name__ == "__main__":
     unittest.main()
