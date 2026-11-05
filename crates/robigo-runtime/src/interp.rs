@@ -1162,7 +1162,9 @@ impl Interp {
                 crate::typeprof::record_frame(Some(&c.body), &ctx.cloenv);
             }
         }
-        let result = self.run_on_exit(r);
+        // Most contexts have no on.exit code: keep the result in place
+        // instead of moving it through `run_on_exit` and back.
+        let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
         // The executor and this context own two references. Extra owners
         // include escaped closures and unforced default-promise cycles.
@@ -1183,7 +1185,7 @@ impl Interp {
     /// with `r` the pending result; returns the context's result (an
     /// on.exit `return()` replaces it, an on.exit error replaces it too).
     // R: context.c:endcontext
-    #[inline]
+    #[inline(never)]
     pub fn run_on_exit(&mut self, r: RResult<Value>) -> RResult<Value> {
         let saved_visible = self.visible;
         let on_exit = std::mem::take(&mut self.frames.last_mut().unwrap().on_exit);
