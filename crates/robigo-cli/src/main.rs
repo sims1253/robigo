@@ -598,7 +598,7 @@ fn real_main() -> ExitCode {
         let ok = echo::repl_console(&mut interp, &mut input, !cl.no_echo);
         return finish(&mut interp, ok);
     }
-    repl(&mut interp)
+    repl(&mut interp, !cl.no_echo)
 }
 
 /// With `--features profile`, `ROBIGO_PROFILE=out.svg robigo script.R` writes a
@@ -709,11 +709,13 @@ fn finish_interactive(interp: &mut Interp) -> Option<ExitCode> {
     Some(ExitCode::SUCCESS)
 }
 
-fn repl(interp: &mut Interp) -> ExitCode {
+fn repl(interp: &mut Interp, echo: bool) -> ExitCode {
     let stdin = std::io::stdin();
     let mut buf = String::new();
     loop {
-        print!("{}", if buf.is_empty() { "> " } else { "+ " });
+        // R: main.c:R_PromptString -- the `prompt`/`continue` options, or no
+        // prompt at all with --no-echo (--slave), interactive or not
+        print!("{}", echo::prompt_string(interp, echo, !buf.is_empty()));
         let _ = std::io::stdout().flush();
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {

@@ -73,7 +73,7 @@ impl ConsoleInput {
 /// Like `R_PromptString` (R: main.c): the `prompt` or `continue` option
 /// (re-read every line, so R code can change them), or nothing in
 /// no-echo mode.
-fn prompt_string(interp: &Interp, echo: bool, continue_line: bool) -> String {
+pub(crate) fn prompt_string(interp: &Interp, echo: bool, continue_line: bool) -> String {
     if !echo {
         return String::new();
     }
