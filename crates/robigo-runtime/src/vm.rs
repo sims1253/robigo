@@ -2681,7 +2681,7 @@ fn closure_call(
         Ok(promargs) => match force_args(interp, &promargs, site.force) {
             Ok(()) => match direct_code(clo, &promargs) {
                 Some(code) => direct_call(interp, &site.call, clo, &code, promargs, env),
-                None => interp.call_closure_ex(&site.call, clo, promargs, env, true),
+                None => tagged_call(interp, &site.call, clo, promargs, env),
             },
             Err(e) => signal(interp, Err(e)),
         },
@@ -2727,6 +2727,35 @@ fn direct_call(
 ) -> RResult<Value> {
     interp.enter_call()?;
     let newenv = crate::interp::bind_positional(clo, &promargs);
+    run_direct(interp, call, clo, code, promargs, newenv, env)
+}
+
+/// A call of `clo` from compiled code that [`direct_code`] declined: when
+/// the arguments match without partial matching (`interp::bind_exact`:
+/// tags, `...`), still a [`direct_call`]; otherwise the general call.
+#[inline(never)]
+fn tagged_call(interp: &mut Interp, call: &Value, clo: &Rc<Closure>, promargs: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if !crate::typeprof::enabled()
+        && let Some(code) = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()
+        && let Some(newenv) = crate::interp::bind_exact(clo, &promargs)
+    {
+        interp.enter_call()?;
+        return run_direct(interp, call, clo, &code, promargs, newenv, env);
+    }
+    interp.call_closure_ex(call, clo, promargs, env, true)
+}
+
+/// The rest of [`direct_call`] once the frame is made.
+#[inline(always)]
+fn run_direct(
+    interp: &mut Interp,
+    call: &Value,
+    clo: &Rc<Closure>,
+    code: &Code,
+    promargs: Vec<Arg>,
+    newenv: Env,
+    env: &Env,
+) -> RResult<Value> {
     let sysparent = interp.call_sysparent(env);
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
     if clo.jit.inline_blocked() {

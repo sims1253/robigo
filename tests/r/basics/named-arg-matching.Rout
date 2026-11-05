@@ -1,0 +1,61 @@
+list(a = 1, bb = 2, dots = list(3), z = 3, mz = TRUE, nd = 1L)
+list(a = 2, bb = 1, dots = list(3), z = 3, mz = TRUE, nd = 1L)
+list(a = 2, bb = 1, dots = list(3), z = 3, mz = TRUE, nd = 1L)
+list(a = 2, bb = 3, dots = list(x = 1), z = 9, mz = FALSE, nd = 1L)
+list(a = NULL, bb = NULL, dots = list(), z = 1, mz = FALSE, nd = 0L)
+list(a = NULL, bb = NULL, dots = list(), z = 3, mz = TRUE, nd = 0L)
+list(a = 1, bb = NULL, dots = list(3), z = 3, mz = TRUE, nd = 1L)
+list(a = 1, bb = 2, dots = list(w = 5), z = 4, mz = FALSE, nd = 1L)
+list(a = 3, bb = NULL, dots = list(z2 = 2), z = 1, mz = FALSE, 
+    nd = 1L)
+c(x = NA, y = 1L, mx = 1L, my = 0L)
+c(x = NA, y = 2L, mx = 1L, my = 0L)
+c(x = NA, y = 3L, mx = 1L, my = 0L)
+c(x = 1, y = 1, mx = 0, my = 0)
+c(x = 2, y = 1, mx = 0, my = 0)
+c(x = 3, y = 1, mx = 0, my = 0)
+c(x = 1, y = 2, mx = 0, my = 1)
+c(x = 2, y = 4, mx = 0, my = 1)
+c(x = 3, y = 6, mx = 0, my = 1)
+c(x = 2, y = 4, mx = 0, my = 1)
+[1] "formal argument \"x\" matched by multiple actual arguments"
+[1] "unused argument (3)"
+[1] "unused argument (z = 1)"
+[1] "unused argument (1)"
+list(1, m = 3, n = 2)
+list(nn = 2, n = 1)
+list(n2 = 1, n = NULL)
+list(abc = 1, d = list(2))
+list(abc = 1, d = list(ab = 2))
+list(abc = 2, d = list(x = 1))
+list(abc = 1, d = list(2))
+[1] "formal argument \"abc\" matched by multiple actual arguments"
+second
+first
+two
+one
+w(b = 1, a = 2)
+mc(a = 2, b = 1, c = 3)
+x + y
+[1] 2
+[1] 1
+ a  b  n 
+10  1  1 
+ a  b  n 
+10  2  1 
+[1] "two"
+[1] "the ... list contains fewer than 2 elements"
+n v 
+2 1 
+n v 
+2 0 
+n v 
+0 1 
+[1] "argument 1 matches multiple formal arguments"
+[1] 3
+[1] 1
+[1]  3 20
+[1]  3 20
+list(a = 1, b = 2, d = list())
+list(a = 1, b = 2, d = list(3))
+[1]  3 20
