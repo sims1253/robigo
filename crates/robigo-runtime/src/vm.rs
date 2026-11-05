@@ -30,7 +30,7 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 mod rjit;
-pub use rjit::{JitState, begin_default_force, frozen_fun, jit_check, jit_inherit};
+pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_local, jit_check, jit_inherit};
 mod slow;
 use slow::{Kind, Slow, arith_slow, leaf_op_slow, math1_slow};
 
@@ -2684,6 +2684,10 @@ fn closure_call(
         && let Some(r) = try_inline_site(interp, site, l, &site.call, env)
     {
         return r;
+    }
+    // (Interp::eval_inlined_local: the compiler's local() inline.)
+    if interp.bc && inlines_local(interp, clo, l, env) {
+        return interp.eval_inlined_local(l, env).map(RVal::V);
     }
     let promargs = if site.eager && site.no_eager.get() != Rc::as_ptr(&clo.formals) as *const Arg as usize {
         caller_promargs(interp, site, clo, l, env, vars, regs)

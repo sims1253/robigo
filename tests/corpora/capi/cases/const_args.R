@@ -39,15 +39,14 @@ r <- NULL
 repeat { r <- f(1); break }
 cat("top-level repeat:", r, "\n")
 
-# Inside a compiled closure: eval() and C interpret, promise code is
-# compiled with its caller. (local() is left out: the compiler inlines it
-# as a closure call, which robigo does not.)
+# Inside a compiled closure: eval() and C interpret, local() is inlined
+# as a compiled closure call, promise code is compiled with its caller.
 id <- function(z) z
 comp <- function() {
   a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
   a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
   e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
-  c(direct = f(1), eval = eval(quote(f(1))),
+  c(direct = f(1), eval = eval(quote(f(1))), local = local(f(1)),
     promise = id(f(1)), c_call = .Call("capi_c_call", f, environment()),
     dots = paste(d(1, 2), collapse = "/"))
 }
