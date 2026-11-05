@@ -35,6 +35,7 @@ pub static BRIDGE: Bridge = Bridge;
 /// Register the bridge with the runtime (the executable calls this first).
 pub fn install() {
     robigo_runtime::native::set_bridge(&BRIDGE);
+    robigo_runtime::builtins::grep::set_tre_engine(&crate::tre::TRE);
 }
 
 struct FinalizerContext {
@@ -224,6 +225,25 @@ fn store_flow(f: Flow) -> usize {
     });
     FLOWS.with(|m| m.borrow_mut().insert(t, f));
     t
+}
+
+/// The R condition a jump out of C code carried (its token).
+pub(crate) fn flow_of_token(t: usize) -> Flow {
+    take_flow(t)
+}
+
+/// Run `f` with `interp` current, as a native call does (see `enter`).
+pub(crate) fn with_current<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> T {
+    enter(interp, |_| f())
+}
+
+/// Set up the C side (the library state, the C locale) before C code that
+/// is not a package's runs, such as GNU R's TRE.
+///
+/// # Safety
+/// On the R thread.
+pub(crate) unsafe fn ready_for_c(interp: &mut Interp) {
+    enter(interp, |i| ensure_ready(i));
 }
 
 fn take_flow(t: usize) -> Flow {
