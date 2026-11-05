@@ -544,6 +544,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             args,
                             clo: callee,
                             callee: k,
+                            arg_syms: Vec::new(),
                         },
                     );
                 }
