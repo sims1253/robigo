@@ -2396,20 +2396,25 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
-    // A routine that returns no object (one declared void but registered
-    // for .Call, as rlang's r_on_exit test routine is) leaves whatever its
-    // last call left in the return register; GNU R keeps that pointer
-    // unread unless R uses the value. robigo converts every result, so it
-    // checks that the pointer is in its heap at all before reading through
-    // it. (Inside the heap a stale object is #389's to fix: rlang's
-    // rlang_zap static still reads as the zap object there.)
+    check_result(out)?;
+    converting(interp, || from_sexp(out))
+}
+
+/// A routine that returns no object (one declared void but registered for
+/// .Call, as rlang's r_on_exit test routine is) leaves whatever its last
+/// call left in the return register; GNU R keeps that pointer unread
+/// unless R uses the value. robigo converts every result, so every path
+/// that converts one first checks that the pointer is in its heap at all.
+/// (Inside the heap a stale object is #389's to fix: rlang's rlang_zap
+/// static still reads as the zap object there.)
+unsafe fn check_result(out: Sexp) -> RResult<()> {
     if !out.is_null() && out != R_NilValue && !crate::state::core().in_heap(out.addr()) {
         return Err(Flow::error(format!(
             "robigo: a native routine returned {:#x}, which is not an R object (a routine declared void?)",
             out.addr()
         )));
     }
-    converting(interp, || from_sexp(out))
+    Ok(())
 }
 
 /// A list or call cell that `.Call` returned and that came from the runtime:
@@ -2636,6 +2641,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
         if t != 0 {
             return Err(take_flow(t));
         }
+        check_result(out)?;
         return Ok(original_cell(out, &originals).unwrap_or_else(|| from_sexp(out)));
     }
     let back = converting_in_context(interp, || write_backs(args, &xs));
