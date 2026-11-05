@@ -480,11 +480,13 @@ slots read the binding again. So what C writes into a variable's value
 is what R reads through the variable: after the call (the bridge's
 write-back of copied arguments), and during the call's callbacks once
 the bridge hands atomic vectors over as themselves (#364), which purrr's
-map needs: it writes its index `i` before each callback. A literal
-passed straight to C is one of the shared scalars when it is a small
-integer or a logical: C gets a copy, and its write is not carried back
-(the bridge's `write_back` skips `Value::is_shared_scalar`), so it does
-not change every other `0L` or `TRUE`.
+map needs: it writes its index `i` before each callback. An integer
+literal is an object of its own, as GNU R's parser makes it (gram.y
+`mkInt`), and so is a computed value handed to C (`native::invoke`): C's
+write changes that object only, never every other `0L`. A logical
+literal is the shared `TRUE`/`FALSE`, which C gets as a copy whose write
+is not carried back (the bridge's `write_back` skips
+`Value::is_shared_scalar`).
 
 Known differences (scalar variables): GNU R disagrees with itself where
 C writes into a *reassigned* scalar (`i <- i + 1L`, a `for` variable)
