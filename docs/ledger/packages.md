@@ -293,3 +293,40 @@ What remains, by owner:
   (#344), council round 6.
 - ggplot2: 3 timeouts and 1 oom (proxy retention).
 - tidyselect: #387.
+
+## 2026-11-05: round 3 (preview), 12 of 20 green
+
+A preview full run of main 88bef9bf with the eight PRs then open merged in
+(#424, #425, #427, #428, #429, #430, #439, #440; branch
+exp/integration-r3), one VM, 4 jobs: 12 of 20 green, 7,383 of 8,693
+blocks. Against round 2: 18 blocks gained, none lost.
+
+| package | round 2 | preview | from |
+|---|---|---|---|
+| R6 | 71 | 73 / 73, green | finalizer timing varies between runs (under investigation) |
+| rlang | 1,194 | 1,202 | not attributed per PR |
+| ggplot2 | 810 | 815 | #439 (`.C` NAOK, 1) and #440 (plotmath Greek in SVG, 2) checked per file; the rest not attributed |
+| cli | 679 | 682 | not attributed per PR (#426, the REPL prompt, merged in between) |
+
+Open PRs not in the preview, with the gains their authors measured on a
+VM:
+
+| PR | what | measured |
+|---|---|---|
+| #436 | twins (council round 5): one core object per looked-up runtime value; #387, #353 | rlang 1,194 → 1,311, dplyr 943 → 982, purrr +8 |
+| #444, #445 | attributes and nested write-back only when C changed them | ggplot2 810 → 826, no timeouts, 2.3× faster |
+| #435, #442 | native custom connections (#343); one mark over both heaps (#344) | curl 59 → 71, +2 |
+| #453 | package ALTREP twins and `inspect` (council round 7) | cli 683 → 688 |
+| #451 | constants promised where GNU R interprets (#419) | rlang +7, ggplot2 +5 |
+| #452 | statement srcrefs, lazily (#197) | rlang +10 |
+| #441 | GNU R's TRE for the patterns robigo's engine got wrong (#423) | cli +1 |
+| #446 to #450 | void `.Call` results, C conditions through the R hooks, `suspendInterrupts`, call tags, the empty symbol | rlang about +50 |
+
+Decisions this round:
+- **#197:** lazy srcrefs, no gate exception.
+- **#398:** GNU R's `R_expand_binding_value`, boxing once at the central binding accessor.
+- **#302:** automatic cycle collection on runtime heap growth, run only at GNU R's pending-finalizer points.
+- **#442:** C-held objects are not roots in `gc()`, as in GNU R.
+
+The review bot's failures from its provider's rate limit (HTTP 429) are
+not blocking; build, test, corpora and perf decide.
