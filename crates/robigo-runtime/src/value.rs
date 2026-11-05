@@ -1264,6 +1264,24 @@ impl Value {
         true
     }
 
+    /// Rewrite the cells of a `...` in the allocation, as a native routine
+    /// that ran SETCAR/SET_TAG over the DOTSXP chain did (the bridge's
+    /// write-back): the frame binding that `...` sees the cells.
+    ///
+    /// # Safety
+    /// As for [`Value::set_pairlist_cells_through_alias`].
+    pub unsafe fn set_dots_cells_through_alias(&self, items: Vec<Arg>) -> bool {
+        let Value::Dots(d) = self else { return false };
+        if same_cells(d, &items) {
+            return true;
+        }
+        crate::env::Env::mark_cycle_dirty();
+        // SAFETY: as in set_pairlist_cells_through_alias. R: memory.c:SETCAR
+        let m = unsafe { &mut *Rc::as_ptr(d).cast_mut() };
+        rewrite_cells(m, items);
+        true
+    }
+
     /// Rewrite a whole call in the allocation (the bridge's write-back of
     /// SETCAR/SETCDR/SET_TAG on a LANGSXP chain). Every alias keeps the same
     /// object and sees the new function, tags and arguments.

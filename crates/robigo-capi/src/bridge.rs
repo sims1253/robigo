@@ -1000,6 +1000,9 @@ fn vector_identity(v: &Value) -> Option<usize> {
         Value::Lang(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Pairlist(x) => Rc::as_ptr(x) as *const u8 as usize,
         Value::Promise(x) => Rc::as_ptr(x) as *const u8 as usize,
+        // a `...` C finds twice in a call is one chain, and its writes
+        // reach the frame (write_backs walks what a call converted)
+        Value::Dots(x) => Rc::as_ptr(x) as *const u8 as usize,
         _ => return None,
     })
 }
@@ -2147,8 +2150,6 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Att
     if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
 }
 
-/// Copy back atomic arguments the routine wrote into (GNU R passes the
-/// caller's own vectors, so in-place writes are visible to it).
 /// A `...` or pairlist element C left as it was: to_sexp builds a fresh
 /// chain for it at every native call, so its cells, not the chain, say
 /// whether C changed it. Unchanged, the list keeps its own object (in GNU
@@ -2159,10 +2160,21 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>
         (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
         _ => return false,
     };
+    // a chain C lengthened or shortened needs no conversion to tell
+    let (mut p, mut n) = (x, 0usize);
+    while p != R_NilValue && matches!(p.typ(), LISTSXP | DOTSXP) {
+        n += 1;
+        p = p.cdr();
+    }
+    if n != items.len() {
+        return false;
+    }
     let new = pair_items_converted(x, originals);
-    items.len() == new.len() && items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
+    items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
 }
 
+/// Copy back atomic arguments the routine wrote into (GNU R passes the
+/// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
     // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
@@ -2263,6 +2275,16 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
                 retire_copy(&raw mut (*p).attrs);
             }
             v.set_pairlist_cells_through_alias(items, attrs);
+        }
+        // R: memory.c:SETCAR/SET_TAG on a DOTSXP chain: the routine wrote
+        // the cells of the `...` it was handed or found in a frame
+        // (findVarInFrame(env, R_DotsSymbol)), and the frame sees them.
+        Value::Dots(rc) if x.typ() == DOTSXP => {
+            let items = pair_items_converted(x, originals);
+            if items.len() != rc.len() {
+                retire_copy(Rc::as_ptr(rc).cast_mut());
+            }
+            v.set_dots_cells_through_alias(items);
         }
         Value::Lang(rc) if x.typ() == LANGSXP => {
             let fun = converted(x.car(), originals);
