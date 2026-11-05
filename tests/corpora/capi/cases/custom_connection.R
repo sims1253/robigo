@@ -27,7 +27,7 @@ print(isOpen(two))
 close(two)
 
 # not blocking: three bytes per read, incomplete lines pushed back
-three <- .Call("cc_new", "three", "ab\ncd\nef", 3L)
+three <- .Call("cc_new", "three", "ab\ncd\nef\n", 3L)
 open(three, "r", blocking = FALSE)
 print(isIncomplete(three))
 while (isIncomplete(three)) print(readLines(three))

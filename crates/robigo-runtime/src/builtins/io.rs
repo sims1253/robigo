@@ -1478,8 +1478,8 @@ pub fn finalize_connection(i: &mut Interp, n: i32) -> RResult<()> {
     };
     con_destroy(i, n)?;
     if let Some(msg) = warn {
-        // run as a finalizer: at top level, so against no call
-        i.warningcall(&Value::Null, msg)?;
+        // warning(): against the gc() that ran the finalizer
+        i.warning(msg)?;
     }
     Ok(())
 }
