@@ -279,10 +279,7 @@ fn find_var_in_frame(interp: &mut Interp, e: &Env, sym: Sym) -> RResult<Option<V
     let b = e.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
     match b {
         None => Ok(None),
-        Some((f, flags)) if flags & BIND_ACTIVE != 0 => {
-            let global = interp.global.clone();
-            interp.call_value(&f, vec![], &global).map(Some)
-        }
+        Some((f, flags)) if flags & BIND_ACTIVE != 0 => interp.get_active_value(&f).map(Some),
         Some((v, _)) => interp.force(v).map(Some),
     }
 }
