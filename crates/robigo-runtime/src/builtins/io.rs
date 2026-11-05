@@ -798,12 +798,12 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
     if n <= 2 || !byte_kind {
         return conn_write(i, n, &String::from_utf8_lossy(bytes));
     }
-    con_write(i, n, bytes)
+    con_write(i.conns.get(n)?, bytes)
 }
 
 /// `con->write(bytes, 1, bytes.len(), con)`.
-fn con_write(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
-    let con = i.conns.get(n)?;
+#[inline(always)]
+fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<()> {
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { out, writing: true, .. } => {
@@ -2655,33 +2655,34 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
     if used == buf.len() {
         return Ok(used);
     }
-    Ok(used + con_read(i, n, &mut buf[used..])?)
+    con_read(con, buf, used)
 }
 
-/// `con->read(buf, 1, buf.len(), con)`: how many bytes it read.
-fn con_read(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> {
-    let con = i.conns.get(n)?;
+/// `con->read(buf + used, 1, buf.len() - used, con)`: `used` plus how many
+/// bytes it read.
+#[inline(always)]
+fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<usize> {
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
         ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
-            let take = buf.len().min(data.len() - *cur);
-            buf[..take].copy_from_slice(&data[*cur..*cur + take]);
+            let take = (buf.len() - used).min(data.len() - *cur);
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
             *cur += take;
-            Ok(take)
+            Ok(used + take)
         }
         ConnKind::Raw { data, pos, nbytes } => {
-            let take = buf.len().min(nbytes.saturating_sub(*pos));
-            buf[..take].copy_from_slice(&data[*pos..*pos + take]);
+            let take = (buf.len() - used).min(nbytes.saturating_sub(*pos));
+            buf[used..used + take].copy_from_slice(&data[*pos..*pos + take]);
             *pos += take;
-            Ok(take)
+            Ok(used + take)
         }
         ConnKind::File { fp: Some(f), rbuf, rpos, fifo, .. } => {
             // R: connections.c fifo_read — fifos read unbuffered.
-            let mut used = 0;
             if !*fifo {
-                used = buf.len().min(rbuf.len() - *rpos);
-                buf[..used].copy_from_slice(&rbuf[*rpos..*rpos + used]);
-                *rpos += used;
+                let take = (buf.len() - used).min(rbuf.len() - *rpos);
+                buf[used..used + take].copy_from_slice(&rbuf[*rpos..*rpos + take]);
+                *rpos += take;
+                used += take;
                 if used == buf.len() {
                     return Ok(used);
                 }
@@ -2693,14 +2694,14 @@ fn con_read(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> {
                 Err(_) => Err(Flow::error("error reading from the connection")),
             }
         }
-        ConnKind::Terminal => match std::io::stdin().read(buf) {
-            Ok(k) => Ok(k),
+        ConnKind::Terminal => match std::io::stdin().read(&mut buf[used..]) {
+            Ok(k) => Ok(used + k),
             Err(_) => Err(Flow::error("error reading from the connection")),
         },
         ConnKind::Sock(s) => {
-            let (k, incomplete) = s.read(buf, con.blocking);
+            let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
             con.incomplete = incomplete;
-            Ok(k)
+            Ok(used + k)
         }
         // R: connections.c null_read
         ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
