@@ -2876,6 +2876,17 @@ impl NativeBridge for Bridge {
         })
     }
 
+    fn interrupts_suspended(&self, set: Option<bool>) -> Option<bool> {
+        // SAFETY: R_interrupts_suspended is the R thread's global, as in libR.
+        unsafe {
+            let orig = crate::state::R_interrupts_suspended != 0;
+            if let Some(v) = set {
+                crate::state::R_interrupts_suspended = v as c_int;
+            }
+            Some(orig)
+        }
+    }
+
     fn option_set(&self, name: &str, value: &Value) {
         // SAFETY: the setters store into C globals of the R thread's engine.
         unsafe { crate::graphics::option_set(name, value) }

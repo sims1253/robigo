@@ -336,9 +336,14 @@ pub unsafe extern "C" fn R_CheckUserInterrupt() {
     }
 }
 
-// R: errors.c:onintr — jumps to top level like a user interrupt.
+// R: errors.c:onintr — jumps to top level like a user interrupt; while
+// interrupts are suspended it leaves the interrupt pending (onintrEx).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_onintr() {
+    if crate::state::R_interrupts_suspended != 0 {
+        crate::state::R_interrupts_pending = 1;
+        return;
+    }
     crate::state::R_interrupts_pending = 0;
     let mut out = Sexp::NULL;
     let t = crate::host::try_op("onintr\0", &[], &mut out);
