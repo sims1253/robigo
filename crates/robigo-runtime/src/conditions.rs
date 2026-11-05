@@ -212,7 +212,26 @@ impl Interp {
                     }
                 }
                 let global = self.global.clone();
-                if let Err(f) = self.call_value(&entry.handler, vec![Arg::pos(cond)], &global) {
+                let r = if e.classes.is_empty() {
+                    // R: errors.c:vsignalError -- a simple error reaches a
+                    // calling handler as
+                    // .handleSimpleError(h, msg, base::quote(call)),
+                    // evaluated in the global environment, so the handler
+                    // runs below that frame (rlang's entrace looks for it).
+                    let hcall = Value::lang(
+                        Value::sym(".handleSimpleError"),
+                        vec![
+                            Arg::pos(entry.handler.clone()),
+                            Arg::pos(Value::str(&e.message)),
+                            Arg::pos(base_quote(&ecall)),
+                        ],
+                    );
+                    self.eval(&hcall, &global).map(|_| ())
+                } else {
+                    // R: errors.c:R_signalErrorConditionEx -- h(cond)
+                    self.call_value(&entry.handler, vec![Arg::pos(cond)], &global).map(|_| ())
+                };
+                if let Err(f) = r {
                     return f;
                 }
             } else {
@@ -450,34 +469,25 @@ impl Interp {
     /// Signal a warning from Rust code (R's `warningcall`).
     pub fn warningcall(&mut self, call: &Value, msg: impl Into<String>) -> RResult<()> {
         let msg = msg.into();
-        // With handlers established, go through the R-level protocol so that
-        // withCallingHandlers/tryCatch/suppressWarnings see the warning.
+        // R: errors.c:vsignalWarning -- every warning goes through
+        // .signalSimpleWarning(msg, base::quote(call)) in the global
+        // environment (evalKeepVis): handlers run below its
+        // withRestarts(muffleWarning = ) frames, and so does an error
+        // handler when warn = 2 turns the warning into an error. With no
+        // handler established at all nothing can observe those frames, and
+        // the default handling below is what .dfltWarn does.
         if self.handlers.is_some() {
-            let classes: Vec<crate::value::RString> =
-                ["simpleWarning", "warning", "condition"].iter().map(|c| crate::value::RString::from(*c)).collect();
-            if self.find_handler(&classes).is_some() {
-                let cond = make_condition(&msg, call.clone(), &["simpleWarning", "warning", "condition"]);
-                return self.signal_warning_condition(&cond, call, &msg);
-            }
+            let hcall = Value::lang(
+                Value::sym(".signalSimpleWarning"),
+                vec![Arg::pos(Value::str(&msg)), Arg::pos(base_quote(call))],
+            );
+            let global = self.global.clone();
+            let vis = self.visible;
+            let r = self.eval(&hcall, &global);
+            self.visible = vis;
+            return r.map(|_| ());
         }
         self.warning_default(call, &msg)
-    }
-
-    /// Like R's `.signalSimpleWarning`: offer a `muffleWarning` restart,
-    /// signal, then fall back to default warning handling.
-    pub fn signal_warning_condition(&mut self, cond: &Value, call: &Value, msg: &str) -> RResult<()> {
-        // Establish a muffleWarning restart targeting a fresh frame.
-        let target = Env::new(Some(self.base.clone()));
-        let restart = crate::builtins::conditions::make_restart("muffleWarning", Value::Env(target.clone()));
-        let saved = self.restarts.clone();
-        self.restarts = Some(Rc::new(RestartNode { restart, next: saved.clone() }));
-        let r = self.signal_condition(cond, call);
-        self.restarts = saved;
-        match r {
-            Ok(()) => self.warning_default(call, msg),
-            Err(Flow::Return(_, t)) if t.ptr_eq(&target) => Ok(()),
-            Err(f) => Err(f),
-        }
     }
 
     pub fn warning_default(&mut self, call: &Value, msg: &str) -> RResult<()> {
@@ -558,4 +568,10 @@ impl Interp {
         let base = self.base.clone();
         base.force_set(crate::sym::Sym::new("last.warning"), Value::List(Rc::new(lw)));
     }
+}
+
+/// `base::quote(x)`, as errors.c builds it for the hook calls.
+fn base_quote(x: &Value) -> Value {
+    let qfun = Value::lang(Value::sym("::"), vec![Arg::pos(Value::sym("base")), Arg::pos(Value::sym("quote"))]);
+    Value::lang(qfun, vec![Arg::pos(x.clone())])
 }

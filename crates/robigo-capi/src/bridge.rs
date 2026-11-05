@@ -40,6 +40,7 @@ pub fn install() {
 
 struct FinalizerContext {
     frames: Vec<robigo_runtime::interp::Context>,
+    srcrefs: (robigo_runtime::interp::SrcPos, Vec<(usize, robigo_runtime::interp::SrcPos)>),
     handlers: robigo_runtime::conditions::HandlerStack,
     global_handlers: robigo_runtime::conditions::HandlerStack,
     restarts: robigo_runtime::conditions::RestartStack,
@@ -71,8 +72,14 @@ thread_local! {
     static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
     static READY: Cell<bool> = const { Cell::new(false) };
     /// handler stacks hidden by R_ToplevelExec
-    static TOPLEVEL: RefCell<Vec<(Vec<robigo_runtime::interp::Context>, robigo_runtime::conditions::HandlerStack)>> =
-        const { RefCell::new(Vec::new()) };
+    #[allow(clippy::type_complexity)]
+    static TOPLEVEL: RefCell<
+        Vec<(
+            Vec<robigo_runtime::interp::Context>,
+            robigo_runtime::conditions::HandlerStack,
+            Vec<(usize, robigo_runtime::interp::SrcPos)>,
+        )>,
+    > = const { RefCell::new(Vec::new()) };
     /// Identity within a native call: a runtime vector converted twice is
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
@@ -1793,6 +1800,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             with_interp(|i| {
                 let saved = FinalizerContext {
                     frames: std::mem::take(&mut i.frames),
+                    srcrefs: (i.srcref.take(), std::mem::take(&mut i.srcref_saved)),
                     handlers: i.handlers.take(),
                     global_handlers: i.global_handlers.take(),
                     restarts: i.restarts.take(),
@@ -1807,6 +1815,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             if let Some(saved) = FINALIZER_CONTEXTS.with(|s| s.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = saved.frames;
+                    (i.srcref, i.srcref_saved) = saved.srcrefs;
                     i.handlers = saved.handlers;
                     i.global_handlers = saved.global_handlers;
                     i.restarts = saved.restarts;
@@ -1818,15 +1827,16 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "toplevelBegin" => {
             with_interp(|i| {
-                let saved = (std::mem::take(&mut i.frames), i.handlers.take());
+                let saved = (std::mem::take(&mut i.frames), i.handlers.take(), std::mem::take(&mut i.srcref_saved));
                 TOPLEVEL.with(|t| t.borrow_mut().push(saved))
             });
             R_NilValue
         }
         "toplevelEnd" => {
-            if let Some((frames, h)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
+            if let Some((frames, h, srcrefs)) = TOPLEVEL.with(|t| t.borrow_mut().pop()) {
                 with_interp(|i| {
                     i.frames = frames;
+                    i.srcref_saved = srcrefs;
                     i.handlers = h;
                 });
             }
@@ -2528,6 +2538,9 @@ unsafe fn call_routine_ctx(
         interp.restarts = restarts;
         return r;
     }
+    if interp.srcref.is_some() {
+        interp.srcref_begin(false);
+    }
     interp.frames.push(robigo_runtime::interp::Context {
         call: call.clone(),
         function: Value::Null,
@@ -2540,12 +2553,16 @@ unsafe fn call_routine_ctx(
         generic: false,
         builtin: true,
     });
+    // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
+    // so what it calls back reports no srcref
+    interp.srcref = robigo_runtime::interp::null_srcref();
     let r = call_routine_in(interp, call, r, args, env);
     let r = match r {
         Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
         other => other,
     };
     let ctx = interp.frames.pop().unwrap();
+    interp.srcref_ended(interp.frames.len());
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
     r

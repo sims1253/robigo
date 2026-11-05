@@ -12,6 +12,41 @@ use crate::error::{Flow, RResult};
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+/// R's `R_Srcref`, the srcref of the statement being evaluated, as the
+/// interpreter keeps it: `None` is the value a closure's entry sets
+/// (eval.c:R_execClosure, `R_Srcref = getAttrib(op, R_SrcrefSymbol)`),
+/// read from the innermost closure context only when `sys.call()` or
+/// `sys.calls()` asks ([`Interp::frame_srcref`]); `Some` a statement's
+/// srcref, which only code with source references sets (`{`, `eval()` of an
+/// expression vector, `Op::Srcref` in compiled code). An entry shorter
+/// than a srcref (see [`null_srcref`]) is an explicit NULL. A context that
+/// begins under `Some` saves it in [`Interp::srcref_saved`]; contexts do
+/// not carry it, so code without source references pays one test per call.
+pub type SrcPos = Option<Rc<Vector<i32>>>;
+
+thread_local! {
+    static NULL_SRCREF: Rc<Vector<i32>> = Rc::new(Vector::new(Vec::new()));
+}
+
+/// The [`SrcPos`] of an explicit NULL srcref (R_Srcref = R_NilValue).
+pub fn null_srcref() -> SrcPos {
+    Some(NULL_SRCREF.with(Rc::clone))
+}
+
+/// One statement's srcref from a `srcref` attribute list (`ind` is its
+/// index; a `{` block's list starts with the block's own); a malformed or
+/// absent entry is NULL.
+// R: eval.c:getSrcref
+pub fn statement_srcref(srcrefs: &Value, ind: usize) -> SrcPos {
+    match srcrefs {
+        Value::List(l) => match l.data.get(ind) {
+            Some(Value::Int(v)) if v.data.len() >= 6 => Some(v.clone()),
+            _ => null_srcref(),
+        },
+        _ => null_srcref(),
+    }
+}
+
 /// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
 pub struct Context {
     pub call: Value,
@@ -42,6 +77,12 @@ pub struct Interp {
     pub base_ns: Env,
     pub empty: Env,
     pub frames: Vec<Context>,
+    /// `R_Srcref` (see [`SrcPos`]).
+    pub srcref: SrcPos,
+    /// R: `cptr->srcref` (context.c:begincontext) of the contexts that began
+    /// while `srcref` was `Some`: (index in `frames`, the value), in stack
+    /// order. A context without an entry began under `None`.
+    pub srcref_saved: Vec<(usize, SrcPos)>,
     pub visible: bool,
     /// `R_Interactive`: the session reads from an interactive console.
     /// `q()` reports a `.Last` error back to the REPL only there; the
@@ -54,6 +95,11 @@ pub struct Interp {
     /// the frame's exit code runs, and nested calls read the outer frame's
     /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
     pub exit_value: Option<Value>,
+    /// `frames.len()` when the AST evaluator took over from compiled code:
+    /// forcing a promise (eval.c:forcePromise) or running on.exit code
+    /// (context.c:R_run_onexits). A missing argument read before another
+    /// closure is entered is an `evalError` (see `missing_arg_class`).
+    pub(crate) ast_frames: usize,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -221,9 +267,12 @@ impl Interp {
             base_ns,
             empty,
             frames: Vec::new(),
+            srcref: None,
+            srcref_saved: Vec::new(),
             visible: true,
             interactive: false,
             exit_value: None,
+            ast_frames: usize::MAX,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -393,6 +442,27 @@ impl Interp {
         e.ptr_eq(&self.base) || e.ptr_eq(&self.base_ns)
     }
 
+    /// The class of a missing-argument error for a variable read in `env`:
+    /// GNU R reads the variables of a byte-compiled closure's body with
+    /// getvar() (`getvarError`), and evaluates everything else, eval()
+    /// included, with the AST evaluator (`evalError`). A closure counts as
+    /// compiled once GNU R's JIT would have compiled it (R_CheckJIT, see
+    /// `JitState::is_bytecode`).
+    // R: eval.c:getvar, eval.c:eval (SYMSXP)
+    fn missing_arg_class(&self, env: &Env) -> &'static str {
+        if self.ast_frames == self.frames.len() {
+            return "evalError";
+        }
+        // The frame `env` belongs to: a read in a compiled closure's body,
+        // or in a promise its compiled code created for an argument (GNU R
+        // gives those bytecode, forced by bcEval: getvar), even when another
+        // closure forces it.
+        match self.frame_of_env(env).map(|k| &self.frames[k].function) {
+            Some(Value::Closure(c)) if c.jit.is_bytecode() => "getvarError",
+            _ => "evalError",
+        }
+    }
+
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
         if sym == s::DOTS {
             return Err(Flow::error("'...' used in an incorrect context"));
@@ -413,7 +483,8 @@ impl Interp {
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
                     v if v.is_missing_arg() => {
-                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"))
+                        let class = self.missing_arg_class(env);
+                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class))
                     }
                     v => Ok(v),
                 };
@@ -488,6 +559,14 @@ impl Interp {
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
+        // R: eval.c:forcePromise evaluates PRCODE with eval(): bytecode (an
+        // argument of compiled code) runs on bcEval and reads with getvar,
+        // an expression on the AST evaluator. Only an argument promise can
+        // be bytecode (whether its creator counts as compiled decides the
+        // class, see missing_arg_class); a formal's default, delayedAssign
+        // and lazy-load promises are expressions.
+        let ast = !p.arg || p.default;
+        let saved_ast = if ast { std::mem::replace(&mut self.ast_frames, self.frames.len()) } else { self.ast_frames };
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -498,6 +577,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
+        self.ast_frames = saved_ast;
         drop(_default);
         p.forcing.set(false);
         let v = r?;
@@ -806,7 +886,7 @@ impl Interp {
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
                     let code = codes.get(i).cloned().flatten();
-                    let p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    let p = Promise::arg(a.value.clone(), env.clone(), code);
                     out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
@@ -1139,6 +1219,12 @@ impl Interp {
         sysparent: Env,
     ) {
         crate::env::bump_r_epoch();
+        // R: context.c:begincontext saves R_Srcref; eval.c:R_execClosure
+        // then sets the closure's own srcref, which `None` stands for (read
+        // when asked, not per call).
+        if self.srcref.is_some() {
+            self.srcref_begin(true);
+        }
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Closure(clo.clone()),
@@ -1153,6 +1239,65 @@ impl Interp {
         });
     }
 
+    /// A context begins (the next one in `frames`) under `R_Srcref`
+    /// `Some`: save it; a closure's then starts at its entry value.
+    #[cold]
+    #[inline(never)]
+    pub fn srcref_begin(&mut self, closure: bool) {
+        let pos = if closure { self.srcref.take() } else { self.srcref.clone() };
+        self.srcref_saved.push((self.frames.len(), pos));
+    }
+
+    /// The context at `frames[k]` ended (and is popped): `R_Srcref` is what
+    /// it began under again (eval.c:R_execClosure, eval.c:eval). Call it
+    /// only when `srcref` is `Some` or `srcref_saved` is not empty.
+    #[cold]
+    #[inline(never)]
+    pub fn srcref_end(&mut self, k: usize) {
+        // (entries above `k` are of contexts gone without one: none should be)
+        while self.srcref_saved.last().is_some_and(|(j, _)| *j > k) {
+            self.srcref_saved.pop();
+        }
+        self.srcref = match self.srcref_saved.last() {
+            Some((j, _)) if *j == k => self.srcref_saved.pop().unwrap().1,
+            _ => None,
+        };
+    }
+
+    /// [`Self::srcref_end`] where a context ends, if it has anything to do.
+    #[inline(always)]
+    pub fn srcref_ended(&mut self, k: usize) {
+        if self.srcref.is_some() || !self.srcref_saved.is_empty() {
+            self.srcref_end(k);
+        }
+    }
+
+    /// The srcref `sys.call()` attaches to frame `k`'s call: `R_Srcref` when
+    /// it began, `NULL` if none. A closure's entry value is its `srcref`
+    /// attribute, looked up now.
+    // R: context.c:getCallWithSrcref
+    pub fn frame_srcref(&self, k: usize) -> Value {
+        let saved = self.srcref_saved.iter().rev().find(|(j, _)| *j == k).map(|(_, p)| p);
+        let pos = match saved {
+            Some(p) => p.clone(),
+            None => self.frames[..k]
+                .iter()
+                .rev()
+                .find_map(|c| match &c.function {
+                    Value::Closure(f) => Some(match f.attrs.as_ref().and_then(|a| a.get(s::SRCREF)) {
+                        Some(Value::Int(v)) => Some(v.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+                .flatten(),
+        };
+        match pos {
+            Some(v) if v.data.len() >= 6 => Value::Int(v),
+            _ => Value::Null,
+        }
+    }
+
     /// Pop the current context, running `on.exit` code.
     pub fn end_context(&mut self, r: RResult<Value>) -> RResult<Value> {
         if crate::typeprof::enabled() {
@@ -1165,6 +1310,8 @@ impl Interp {
         // instead of moving it through `run_on_exit` and back.
         let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
+        // R: eval.c:R_execClosure restores the R_Srcref saved at the call.
+        self.srcref_ended(self.frames.len());
         // The executor and this context own two references. Extra owners
         // include escaped closures and unforced default-promise cycles.
         if Rc::strong_count(&ctx.cloenv.0) > 2 {
@@ -1204,6 +1351,8 @@ impl Interp {
             if raise {
                 self.expressions = self.expressions_keep + 500;
             }
+            // R: context.c:R_run_onexits evaluates the code with eval()
+            let saved_ast = std::mem::replace(&mut self.ast_frames, self.frames.len());
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
@@ -1216,6 +1365,7 @@ impl Interp {
                     }
                 }
             }
+            self.ast_frames = saved_ast;
             if raise {
                 self.restore_expressions();
             }
@@ -1409,6 +1559,7 @@ impl Interp {
         // caller's frames so an interactive q() error can still unwind
         // through them after .Last returns it.
         let saved_frames = std::mem::take(&mut self.frames);
+        let saved_srcrefs = (self.srcref.take(), std::mem::take(&mut self.srcref_saved));
         let saved_handlers = std::mem::replace(&mut self.handlers, self.global_handlers.clone());
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
@@ -1427,6 +1578,7 @@ impl Interp {
             }
         }
         self.frames = saved_frames;
+        (self.srcref, self.srcref_saved) = saved_srcrefs;
         self.handlers = saved_handlers;
         self.restarts = saved_restarts;
         self.depth = saved_depth;
@@ -1442,6 +1594,8 @@ impl Interp {
             b.at_top_level();
         }
         self.frames.clear();
+        self.srcref = None;
+        self.srcref_saved.clear();
         self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
