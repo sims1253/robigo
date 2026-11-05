@@ -169,6 +169,14 @@ pub fn collect(interp: &mut Interp) {
     {
         return;
     }
+    // Not while a native routine runs (R code it called reached this
+    // point): until the routine returns, its writes to the objects it holds
+    // are not yet the runtime's (the bridge copies them back then), so the
+    // two sides disagree on what is reachable. The collection stays due
+    // and runs at the first safe point after the routine returns.
+    if crate::native::bridge().is_some_and(|b| b.in_native_call()) {
+        return;
+    }
     if COLLECTING.with(|c| c.replace(true)) {
         return;
     }
