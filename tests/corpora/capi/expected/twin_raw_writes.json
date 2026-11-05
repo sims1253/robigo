@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "twin_raw_writes",
+ "out": {
+  "t": "[1] 3\n[1] -1\n[1] 7\nidentity(7L)\n[1] 1 2\n"
+ },
+ "sha": "76442b6322288867",
+ "status": 0
+}
