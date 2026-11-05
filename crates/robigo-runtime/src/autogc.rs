@@ -48,8 +48,10 @@ thread_local! {
     static V_SIZE: Cell<f64> = const { Cell::new(R_VSIZE) };
     /// A collection is running (its finalizers can reach safe points).
     static COLLECTING: Cell<bool> = const { Cell::new(false) };
-    /// Collect at every safe point (`ROBIGO_CYCLES_TORTURE`).
-    static TORTURE: Cell<bool> = const { Cell::new(false) };
+    /// Collect at every `n`th safe point (`ROBIGO_CYCLES_TORTURE=n`; 0:
+    /// off), and how many have passed.
+    static TORTURE: Cell<u64> = const { Cell::new(0) };
+    static TORTURE_SEEN: Cell<u64> = const { Cell::new(0) };
 }
 
 /// The global allocator handed out `n` bytes.
@@ -84,17 +86,19 @@ pub fn enable() {
     if std::env::var("ROBIGO_CYCLES").is_ok_and(|v| v == "0") {
         return;
     }
-    if std::env::var_os("ROBIGO_CYCLES_TORTURE").is_some() {
-        TORTURE.with(|t| t.set(true));
-        TRIGGER.store(0, Relaxed);
-        return;
+    if let Some(n) = std::env::var("ROBIGO_CYCLES_TORTURE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if n > 0 {
+            TORTURE.with(|t| t.set(n));
+            TRIGGER.store(0, Relaxed);
+            return;
+        }
     }
     adjust();
 }
 
 /// Size the heap for what a collection left.
 fn adjust() {
-    if TORTURE.with(|t| t.get()) {
+    if TORTURE.with(|t| t.get()) > 0 {
         TRIGGER.store(0, Relaxed);
         return;
     }
@@ -137,6 +141,15 @@ fn next_size(live: f64, mut v_size: f64) -> f64 {
 #[cold]
 #[inline(never)]
 pub fn collect(interp: &mut Interp) {
+    let every = TORTURE.with(|t| t.get());
+    if every > 1
+        && TORTURE_SEEN.with(|c| {
+            c.set(c.get() + 1);
+            c.get() % every != 0
+        })
+    {
+        return;
+    }
     if COLLECTING.with(|c| c.replace(true)) {
         return;
     }
