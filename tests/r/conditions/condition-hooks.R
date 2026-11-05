@@ -5,7 +5,8 @@
 heads <- function() {
   calls <- sys.calls()
   h <- vapply(calls, function(x) paste(deparse(x[[1]]), collapse = ""), "")
-  print(tail(h[!startsWith(h, "function")], 6))
+  h <- h[!startsWith(h, "function")]
+  print(h[max(1, length(h) - 5):length(h)])
 }
 f <- function() log("a")
 r <- tryCatch(withCallingHandlers(f(), error = function(e) {
