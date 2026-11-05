@@ -108,3 +108,25 @@ print(0L)
 # a value bound by eval()'s list environment
 print(eval(quote({ .Call("capi_id_set", i, 7L); i }), list(i = 2L)))
 print(2L)
+
+# the first read of a variable as an object boxes it into the binding, so
+# every later reader sees that one object (R_expand_binding_value)
+via <- function() {
+  i <- 0L
+  g <- get("i")
+  .Call("capi_id_set", g, 11L)
+  l <- as.list(environment())
+  .Call("capi_id_set", l$i, 12L)
+  c(i, g, l$i)
+}
+print(via())
+i2 <- 3L - 3L
+l2 <- list(i2)
+.Call("capi_id_set", l2[[1]], 13L)
+print(c(i2, l2[[1]]))
+j2 <- 2L * 2L
+.Call("capi_id_findvar", quote(j2), environment(), 21L)
+print(j2)
+m2 <- 1L + 1L
+.Call("capi_id_set", mget("m2")[[1]], 22L)
+print(m2)

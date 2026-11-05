@@ -65,10 +65,9 @@ impl RVal {
         self.clone().into_value()
     }
 
-    /// The value as a variable binds it: an integer scalar of its own,
-    /// never a shared one (`Value::for_binding`), so that the binding is
-    /// the variable's identity (native code may write into it).
-    // R: memory.c:R_expand_binding_value
+    /// The value as an object of its own, never a shared small integer
+    /// (`Value::for_binding`): what native code gets for a computed scalar
+    /// (GNU R's is a fresh box).
     #[inline]
     pub(crate) fn to_binding(&self) -> Value {
         match self {
@@ -531,22 +530,23 @@ fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg>
 }
 
 /// The object variable `sym` is bound to (a plain binding, or a forced
-/// promise's value, boxed once), if reading it runs no code; `None`
-/// otherwise (`interp::plain_value`'s cases for the variables the VM has
-/// just read).
+/// promise's value), expanded into an object of its own the first time it
+/// is read as one (`Env::binding_value`, `Promise::value`), if reading it
+/// runs no code; `None` otherwise (`interp::plain_value`'s cases, for the
+/// variables the VM has just read).
 #[inline]
 fn binding_object(env: &Env, sym: Sym) -> Option<Value> {
+    // (a variable's object: Env::binding_value, Promise::value)
     #[inline(always)]
     fn in_frame(e: &Env, sym: Sym) -> Option<Option<Value>> {
-        let frame = e.0.frame().borrow();
-        let b = frame.get(sym)?;
-        if b.flags & crate::env::BIND_ACTIVE != 0 {
+        let (v, flags) = e.binding_value(sym)?;
+        if flags & crate::env::BIND_ACTIVE != 0 {
             return Some(None);
         }
-        Some(match &b.value {
+        Some(match v {
             Value::Promise(p) => p.value(),
             v if v.is_missing_arg() => None,
-            v => Some(v.clone()),
+            v => Some(v),
         })
     }
     if let Some(r) = in_frame(env, sym) {
@@ -634,7 +634,8 @@ fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)>
         _ => None,
     };
     match p {
-        Some(p) => interp.force_promise(&p).map(|v| (v, true)),
+        // (taken unboxed: no expansion)
+        Some(p) => interp.force_promise_raw(&p).map(|v| (v, true)),
         None => interp.eval_sym(sym, env).map(|v| (v, false)),
     }
 }
@@ -1199,17 +1200,6 @@ fn stored(val: &mut RVal, take: bool) -> Value {
     if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
 }
 
-/// The value a store binds to a variable: [`stored`]'s, as the variable's
-/// own object (`RVal::to_binding`).
-#[inline(always)]
-fn stored_binding(val: &mut RVal, take: bool) -> Value {
-    if take && let RVal::V(_) = val {
-        std::mem::replace(val, DEAD).into_value().for_binding()
-    } else {
-        val.to_binding()
-    }
-}
-
 /// `forceAndCall`: force the first `n` promise arguments.
 // R: eval.c:R_forceAndCall
 fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
@@ -1219,7 +1209,7 @@ fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
             if !matches!(&*p.value.borrow(), crate::value::PromiseVal::Unforced) {
                 continue;
             }
-            interp.force_promise(p)?;
+            interp.force_promise_raw(p)?;
         }
     }
     Ok(())
@@ -1576,7 +1566,7 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
                 if !matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
                     && !matches!(val, RVal::V(Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)))
                 {
-                    let prev = std::mem::replace(&mut b.value, val.to_binding());
+                    let prev = std::mem::replace(&mut b.value, val.to_value());
                     drop(frame);
                     drop(prev);
                     return Ok(());
@@ -1584,7 +1574,7 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
             }
         }
     }
-    let r = interp.define(sym, val.to_binding(), env);
+    let r = interp.define(sym, val.to_value(), env);
     signal(interp, r.map(|_| Value::Null)).map(|_| ())
 }
 
@@ -1659,7 +1649,7 @@ pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool
         _ => false,
     };
     if !done {
-        let prev = std::mem::replace(&mut b.value, stored_binding(val, take));
+        let prev = std::mem::replace(&mut b.value, stored(val, take));
         drop(frame);
         drop(prev);
     }
@@ -4147,6 +4137,21 @@ fn run_with(
                     }
                     regs[*dst as usize] = v;
                 }
+            }
+            Op::GetVarBoxed { dst, sym, slot } => {
+                interp.visible = true;
+                // C reads the binding: write pending assignments first.
+                flush!();
+                let _ = slot;
+                let v = match binding_object(env, *sym) {
+                    Some(v) => v,
+                    None => {
+                        let r = force_var(interp, env, *sym);
+                        let (v, _) = tryop!(signal_var(interp, r));
+                        binding_object(env, *sym).unwrap_or(v)
+                    }
+                };
+                regs[*dst as usize] = RVal::V(v);
             }
             Op::SetVar { src, sym, slot, take } => {
                 // R: bcEval SETVAR then POP: in effect position the value

@@ -467,26 +467,32 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
-**Scalar variables.** A variable's binding holds its own object: binding
-a scalar (the VM's `set_var` and its flush, `Env::set_local_flags`)
-never binds one of the shared small integers (`Value::for_binding`), and
-the VM's in-place update of an unshared scalar keeps a counter
-allocation-free afterwards. The VM's slots and registers only cache the
-unboxed value. Where a read escapes towards C (an argument of `.Call` &
-co, a promise of the variable, an argument a caller forces for a callee
-that can reach native code), it is the binding's object
-(`vm::escaping_read`), and a `.Call` returning bumps the epoch so cached
-slots read the binding again. So what C writes into a variable's value
-is what R reads through the variable: after the call (the bridge's
-write-back of copied arguments), and during the call's callbacks once
-the bridge hands atomic vectors over as themselves (#364), which purrr's
-map needs: it writes its index `i` before each callback. An integer
-literal is an object of its own, as GNU R's parser makes it (gram.y
-`mkInt`), and so is a computed value handed to C (`native::invoke`): C's
-write changes that object only, never every other `0L`. A logical
-literal is the shared `TRUE`/`FALSE`, which C gets as a copy whose write
-is not carried back (the bridge's `write_back` skips
-`Value::is_shared_scalar`).
+**Scalar variables.** As in GNU R, a variable's binding owns its
+object, and an unboxed scalar is boxed into it the first time something
+reads the variable as an object (`R_expand_binding_value`). The VM keeps
+scalars unboxed in its slots and binds them as they are, a small integer
+as one of the shared scalars, the way GNU R's byte code keeps an unboxed
+binding cell. Every read that needs the object goes through
+`Env::binding_value` (and `Promise::value` for a promise's value): it
+boxes a shared small integer into an object of its own and stores it
+back into the binding, so that reader and every later one (`get`,
+`as.list(env)`, an interpreted `list(i)`, a promise of the variable, C's
+`findVar`) see the same object. Only the VM's unboxed reads
+(`vm::plain_lookup`) leave the binding as it is. The VM hands a variable
+to native code through that accessor (`vm::escaping_read`: arguments of
+`.Call` & co, and of callees that can reach native code), a computed
+scalar as an object of its own, and a `.Call` returning bumps the epoch
+so cached slots read the binding again. So what C writes into a
+variable's value is what R reads through the variable: after the call
+(the bridge's write-back of copied arguments), and during the call's
+callbacks once the bridge hands atomic vectors over as themselves
+(#364), which purrr's map needs: it writes its index `i` before each
+callback. An integer literal is an object of its own, as GNU R's parser
+makes it (gram.y `mkInt`), and so is a computed value handed to C
+(`native::invoke`): C's write changes that object only, never every
+other `0L`. A logical literal is the shared `TRUE`/`FALSE`, which C gets
+as a copy whose write is not carried back (the bridge's `write_back`
+skips `Value::is_shared_scalar`).
 
 Known differences (scalar variables): GNU R disagrees with itself where
 C writes into a *reassigned* scalar (`i <- i + 1L`, a `for` variable)

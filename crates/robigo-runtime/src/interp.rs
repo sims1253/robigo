@@ -151,13 +151,14 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                 if b.flags & BIND_ACTIVE != 0 {
                     return None;
                 }
+                if b.value.shared_int().is_some() {
+                    // (a variable's object: Env::binding_value)
+                    drop(frame);
+                    return cur.binding_value(sym).map(|(v, _)| v);
+                }
                 return match &b.value {
                     Value::Promise(q) => {
-                        let is_unforced = match &*q.value.borrow() {
-                            crate::value::PromiseVal::Boxed(v) => return Some(v.clone()),
-                            crate::value::PromiseVal::Unforced => true,
-                            _ => false,
-                        };
+                        let is_unforced = matches!(&*q.value.borrow(), crate::value::PromiseVal::Unforced);
                         if !is_unforced {
                             // (Boxed once: the promise's value is one object.)
                             return q.value();
@@ -187,6 +188,14 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
         }
         cur = cur.parent()?;
     }
+}
+
+/// [`Interp::force_promise`]'s boxing of a shared small integer into the
+/// promise's own object (`Promise::value`).
+#[cold]
+#[inline(never)]
+fn expand_promise(p: &Promise, v: Value) -> Value {
+    p.value().unwrap_or(v)
 }
 
 /// The current stack pointer, approximately.
@@ -401,11 +410,8 @@ impl Interp {
         }
         let mut cur = env.clone();
         loop {
-            let found = {
-                let frame = cur.0.frame().borrow();
-                frame.get(sym).map(|b| (b.value.clone(), b.flags))
-            };
-            if let Some((v, flags)) = found {
+            // (a variable's object: Env::binding_value)
+            if let Some((v, flags)) = cur.binding_value(sym) {
                 if flags & BIND_ACTIVE != 0 {
                     return self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]));
                 }
@@ -452,15 +458,32 @@ impl Interp {
         }
     }
 
+    /// The value of a promise, forced if need be, as R reads an object:
+    /// boxed into the promise's own object the first time (`Promise::value`),
+    /// as GNU R expands an unboxed promise value (R_expand_promise_value).
+    #[inline]
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
+        if let crate::value::PromiseVal::Boxed(v) = &*p.value.borrow()
+            && v.shared_int().is_none()
+        {
+            return Ok(v.clone());
+        }
+        let v = self.force_promise_raw(p)?;
+        if v.shared_int().is_some() {
+            return Ok(expand_promise(p, v));
+        }
+        Ok(v)
+    }
+
+    /// [`Interp::force_promise`] for a reader that takes the value unboxed
+    /// (the VM): a shared small integer stays as it is, unexpanded.
+    pub(crate) fn force_promise_raw(&mut self, p: &Rc<Promise>) -> RResult<Value> {
         let unboxed = match &*p.value.borrow() {
             crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
             crate::value::PromiseVal::Unforced => false,
             _ => true,
         };
         if unboxed {
-            // (Boxed once: the promise's value is one object, which native
-            // code may write into.)
             return Ok(p.value().unwrap_or(Value::Null));
         }
         if p.forcing.get() {
@@ -495,10 +518,7 @@ impl Interp {
         };
         drop(_default);
         p.forcing.set(false);
-        // (The promise's value is an object of its own, as the value of a
-        // variable is: a default argument's literal or a computed small
-        // integer is never the shared one native code could write into.)
-        let v = r?.for_binding();
+        let v = r?;
         p.set_value(v.clone());
         *p.env.borrow_mut() = None;
         p.note_c_forced();

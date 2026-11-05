@@ -120,6 +120,14 @@ pub enum Op {
         sym: Sym,
         slot: Slot,
     },
+    /// A variable as an argument of a builtin calling native code: the
+    /// binding's own object (`Env::binding_value`), pending assignments
+    /// flushed first.
+    GetVarBoxed {
+        dst: Reg,
+        sym: Sym,
+        slot: Slot,
+    },
     /// `sym <<- src`: assign in the first enclosing frame that binds `sym`,
     /// or the global environment (`slot`: this code's slot for `sym`, whose
     /// cached value the assignment may make stale).
@@ -2018,14 +2026,24 @@ impl Compiler {
                 && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
             {
                 let b = base_builtin(n).unwrap();
+                let native = native_call(b);
                 let g = self.guard(h, whole, dst);
                 let mut list = Vec::with_capacity(l.args.len());
                 for a in &l.args {
                     let r = self.reg();
-                    self.expr(&a.value, r, Want::Value);
+                    if native && element_of(&a.value) {
+                        // C gets the element itself (GNU R's `x$y` and
+                        // `x[[i]]` are the container's object), which the
+                        // VM would unbox: the interpreter evaluates it.
+                        self.fallback(&a.value, r);
+                    } else if let (true, Some(sym)) = (native, var_arg(&a.value)) {
+                        let slot = self.slot(sym);
+                        self.emit(Op::GetVarBoxed { dst: r, sym, slot });
+                    } else {
+                        self.expr(&a.value, r, Want::Value);
+                    }
                     list.push((a.tag, r));
                 }
-                let native = native_call(b);
                 self.argvars.push(if native { l.args.iter().map(|a| var_arg(&a.value)).collect() } else { Vec::new() });
                 self.arglists.push(list);
                 let args = (self.arglists.len() - 1) as u32;
@@ -2084,6 +2102,12 @@ pub fn compile_body(body: &Value) -> Code {
 /// could reach it later.)
 fn native_call(b: &Builtin) -> bool {
     matches!(b.name, ".Call" | ".External" | ".External2" | ".C" | ".Fortran" | ".Call.graphics" | ".External.graphics")
+}
+
+/// Whether an argument expression extracts an element of an object (`$`,
+/// `[[`, `@`), which is that object's own element in GNU R.
+fn element_of(e: &Value) -> bool {
+    matches!(e, Value::Lang(l) if head(l).is_some_and(|h| matches!(&*h.name(), "$" | "[[" | "@")))
 }
 
 /// The variable an argument expression is, if it is one (compiled to

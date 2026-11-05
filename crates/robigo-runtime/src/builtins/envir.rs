@@ -525,10 +525,8 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
             let v = Value::missing_arg();
             return Ok(mode_matches(&v, mode).then_some(v));
         }
-        let b = e.0.frame().borrow().get(sym).cloned();
-        if let Some(b) = b {
-            let mut v = b.value;
-            if b.flags & BIND_ACTIVE != 0 {
+        if let Some((mut v, flags)) = e.binding_value(sym) {
+            if flags & BIND_ACTIVE != 0 {
                 v = i.call_value(&v, vec![], &e)?;
             }
             if mode != "any" || matches!(v, Value::Promise(_)) {
@@ -1016,8 +1014,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             if let Some(Value::Str(n)) = envir.names() {
                 for (nm, val) in n.data.iter().zip(crate::coerce::to_list(&envir)) {
                     if let Some(nm) = nm.as_deref().filter(|nm| !nm.is_empty()) {
-                        // (a variable's value is its own object)
-                        e.bind_arg(Sym::new(nm), val.for_binding(), 0);
+                        e.bind_arg(Sym::new(nm), val, 0);
                     }
                 }
             }
@@ -1027,7 +1024,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             let e = Env::new(Some(enclos_env.clone().unwrap_or_else(|| i.base.clone())));
             for a in &p.items {
                 if let Some(t) = a.tag {
-                    e.bind_arg(t, a.value.clone().for_binding(), 0);
+                    e.bind_arg(t, a.value.clone(), 0);
                 }
             }
             e
