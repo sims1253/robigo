@@ -163,7 +163,9 @@ fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
         }
         object = Value::list(vec![]);
     }
-    if matches!(object, Value::Pairlist(_) | Value::Lang(_)) {
+    // R: attrib.c:do_attributesgets -- only a pairlist (isList) loses its
+    // tags; a call keeps them (they are not among its attributes).
+    if matches!(object, Value::Pairlist(_)) {
         object = remove_attrib(object, s::NAMES);
     }
     // R keeps the S4 bit unless the new attribute list is empty.

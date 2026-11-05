@@ -327,26 +327,38 @@ pub fn expand_file_name(name: &str) -> String {
     name.to_string()
 }
 
+// ----------------------------------------------------------------------
+// The connection methods: one per function pointer of GNU R's
+// `struct Rconn` (open, close, destroy, vfprintf, fgetc_internal, seek,
+// truncate, fflush, read, write). Each matches every kind, so a new kind
+// has to say what it does for each of them.
+
 /// Open connection `n` with its current mode (R's `con->open(con)`).
 /// Failures are reported with a warning and `Ok(false)`.
 pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
+    match con.kind {
+        ConnKind::File { fifo: true, .. } => fifo_open(i, n),
+        ConnKind::File { fifo: false, .. } => file_open(i, n),
+        ConnKind::Gz { .. } => gz_open(i, n),
+        ConnKind::Sock(_) => super::sock::sock_open(i, n),
+        // open from their creation on (text_open, raw_open)
+        ConnKind::Terminal
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::Raw { .. }
+        | ConnKind::ServSock { .. } => {
+            con.save = -1000;
+            Ok(true)
+        }
+    }
+}
+
+// R: connections.c:file_open
+fn file_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let con = i.conns.get(n)?;
     let mode = con.mode.clone();
     let description = con.description.clone();
-    if matches!(con.kind, ConnKind::Gz { .. }) {
-        return gz_open(i, n);
-    }
-    if matches!(con.kind, ConnKind::File { fifo: true, .. }) {
-        return fifo_open(i, n);
-    }
-    if matches!(con.kind, ConnKind::Sock(_)) {
-        return super::sock::sock_open(i, n);
-    }
-    if !matches!(con.kind, ConnKind::File { .. }) {
-        con.save = -1000;
-        return Ok(true);
-    }
-    // R: connections.c:file_open
     let (name, is_temp) = if description.is_empty() {
         (super::sysutils::tempfile_name(&i_tempdir()?, "Rf", ""), true)
     } else {
@@ -435,11 +447,11 @@ fn set_iconv_check(i: &mut Interp, n: i32) -> RResult<()> {
     // target of the input conversion is "" (the locale charset).
     let enc = if encname == "UTF-8-BOM" { "UTF-8" } else { encname.as_str() };
     if canread && !iconv_converts("", enc) {
-        i.conns.table[n as usize] = None;
+        con_free(i, n);
         return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
     }
     if canwrite && !iconv_converts(encname.as_str(), "") {
-        i.conns.table[n as usize] = None;
+        con_free(i, n);
         return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
     }
     Ok(())
@@ -765,7 +777,9 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
                 }
             }
         }
-        _ => return Err(Flow::error("cannot read from this connection")),
+        ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
+            return Err(Flow::error("cannot read from this connection"));
+        }
     }
     Ok(out)
 }
@@ -784,7 +798,12 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
     if n <= 2 || !byte_kind {
         return conn_write(i, n, &String::from_utf8_lossy(bytes));
     }
-    let con = i.conns.get(n)?;
+    con_write(i.conns.get(n)?, bytes)
+}
+
+/// `con->write(bytes, 1, bytes.len(), con)`.
+#[inline(always)]
+fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<()> {
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { out, writing: true, .. } => {
@@ -825,7 +844,13 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
                 Err(Flow::error("problem writing to connection"))
             }
         }
-        _ => Err(Flow::error("cannot write to this connection")),
+        // R: connections.c null_write
+        ConnKind::Gz { writing: false, .. }
+        | ConnKind::File { fp: None, .. }
+        | ConnKind::Terminal
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::ServSock { .. } => Err(Flow::error("cannot write to this connection")),
     }
 }
 
@@ -928,8 +953,38 @@ fn check_close(i: &mut Interp, n: i32) -> RResult<()> {
 fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
     check_close(i, n)?;
     let st = i.conns.get(n)?.status;
-    i.conns.table[n as usize] = None;
+    con_free(i, n);
     Ok(st)
+}
+
+/// `con->destroy(con)`, then the slot is freed (R: the end of
+/// con_close1, and con_destroy's `free`). The caller has closed it if it
+/// needed closing.
+fn con_free(i: &mut Interp, n: i32) {
+    // (an invalid number: the open that failed on it said so)
+    if n < 0 || n as usize >= i.conns.table.len() {
+        return;
+    }
+    if let Some(con) = i.conns.table[n as usize].as_deref_mut() {
+        con_destroy_kind(con);
+    }
+    i.conns.table[n as usize] = None;
+}
+
+/// `con->destroy(con)`: what a kind owns besides its `Connection`. The
+/// built-in kinds own nothing more (their buffers drop with it).
+fn con_destroy_kind(con: &mut Connection) {
+    match &mut con.kind {
+        // R: connections.c null_destroy, text_destroy, outtext_destroy
+        ConnKind::Terminal
+        | ConnKind::File { .. }
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::Gz { .. }
+        | ConnKind::Raw { .. }
+        | ConnKind::Sock(_)
+        | ConnKind::ServSock { .. } => {}
+    }
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
@@ -1154,13 +1209,28 @@ fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
         2 => {
             let _ = i.err.flush();
         }
-        _ => {
-            let con = i.conns.get(n)?;
-            if let ConnKind::File { fp: Some(f), wbuf, .. } = &mut con.kind {
-                let _ = flush_file_wbuf(f, wbuf);
-                let _ = f.flush();
-            }
+        _ => con_fflush(i, n)?,
+    }
+    Ok(())
+}
+
+/// `con->fflush(con)`.
+fn con_fflush(i: &mut Interp, n: i32) -> RResult<()> {
+    let con = i.conns.get(n)?;
+    match &mut con.kind {
+        ConnKind::File { fp: Some(f), wbuf, .. } => {
+            let _ = flush_file_wbuf(f, wbuf);
+            let _ = f.flush();
         }
+        // R: connections.c null_fflush
+        ConnKind::File { fp: None, .. }
+        | ConnKind::Terminal
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::Gz { .. }
+        | ConnKind::Raw { .. }
+        | ConnKind::Sock(_)
+        | ConnKind::ServSock { .. } => {}
     }
     Ok(())
 }
@@ -1282,11 +1352,11 @@ pub(super) fn con_open_new(i: &mut Interp, v: &Value) -> RResult<()> {
     match con_open(i, n) {
         Ok(true) => Ok(()),
         Ok(false) => {
-            i.conns.table[n as usize] = None;
+            con_free(i, n);
             Err(Flow::error("cannot open the connection"))
         }
         Err(e) => {
-            i.conns.table[n as usize] = None;
+            con_free(i, n);
             Err(e)
         }
     }
@@ -1558,12 +1628,12 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                i.conns.table[ncon] = None;
+                con_free(i, ncon as i32);
                 return Err(e);
             }
         };
         if !ok {
-            i.conns.table[ncon] = None;
+            con_free(i, ncon as i32);
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -1625,12 +1695,12 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                i.conns.table[ncon] = None;
+                con_free(i, ncon as i32);
                 return Err(e);
             }
         };
         if !ok {
-            i.conns.table[ncon] = None;
+            con_free(i, ncon as i32);
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -1832,12 +1902,12 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                i.conns.table[ncon] = None;
+                con_free(i, ncon as i32);
                 return Err(e);
             }
         };
         if !ok {
-            i.conns.table[ncon] = None;
+            con_free(i, ncon as i32);
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -2402,86 +2472,93 @@ fn do_rawconvalue(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 // R: connections.c do_seek, file_seek, raw_seek, buff_seek
 fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResult<f64> {
     let r#where = pos_arg;
-    use std::io::Seek;
     let con = i.conns.get(n)?;
-    // R: connections.c null_seek — fifos cannot seek.
-    if matches!(con.kind, ConnKind::File { fifo: true, .. }) {
-        return Err(Flow::error("'seek' not enabled for this connection"));
+    match con.kind {
+        // R: connections.c null_seek — fifos cannot seek.
+        ConnKind::File { fifo: true, .. } => Err(Flow::error("'seek' not enabled for this connection")),
+        ConnKind::File { fifo: false, .. } => file_seek(con, r#where, origin, rw),
+        ConnKind::Raw { .. } => raw_seek(con, r#where, origin),
+        ConnKind::Terminal
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::Gz { .. }
+        | ConnKind::Sock(_)
+        | ConnKind::ServSock { .. } => Err(Flow::error("seek is not relevant for text connection")),
     }
-    if matches!(con.kind, ConnKind::File { .. }) {
-        // R: connections.c file_seek (the read buffer holds bytes already
-        // consumed from the OS file)
-        let (canread, canwrite) = (con.canread, con.canwrite);
-        let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind
-        else {
-            return Ok(0.0);
-        };
-        let _ = flush_file_wbuf(f, wbuf);
-        // make sure both positions are set
-        let os_pos = f.stream_position().unwrap_or(0);
-        if *last_was_write {
-            *wpos = os_pos;
-        } else {
-            *frpos = os_pos - (rbuf.len() - *rb) as u64;
+}
+
+// R: connections.c file_seek (the read buffer holds bytes already
+// consumed from the OS file)
+fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
+    use std::io::Seek;
+    let (canread, canwrite) = (con.canread, con.canwrite);
+    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+        return Ok(0.0);
+    };
+    let _ = flush_file_wbuf(f, wbuf);
+    // make sure both positions are set
+    let os_pos = f.stream_position().unwrap_or(0);
+    if *last_was_write {
+        *wpos = os_pos;
+    } else {
+        *frpos = os_pos - (rbuf.len() - *rb) as u64;
+    }
+    let mut pos = if *last_was_write { *wpos } else { *frpos };
+    if rw == 1 {
+        if !canread {
+            return Err(Flow::error("connection is not open for reading"));
         }
-        let mut pos = if *last_was_write { *wpos } else { *frpos };
-        if rw == 1 {
-            if !canread {
-                return Err(Flow::error("connection is not open for reading"));
-            }
-            pos = *frpos;
-            *last_was_write = false;
+        pos = *frpos;
+        *last_was_write = false;
+    }
+    if rw == 2 {
+        if !canwrite {
+            return Err(Flow::error("connection is not open for writing"));
         }
-        if rw == 2 {
-            if !canwrite {
-                return Err(Flow::error("connection is not open for writing"));
-            }
-            pos = *wpos;
-            *last_was_write = true;
-        }
-        if r#where.is_nan() {
-            return Ok(pos as f64);
-        }
-        let whence = match origin {
-            2 => std::io::SeekFrom::Current(r#where as i64),
-            3 => std::io::SeekFrom::End(r#where as i64),
-            _ => std::io::SeekFrom::Start(r#where as u64),
-        };
-        // SEEK_CUR is relative to the logical position, not the buffer's end
-        if let std::io::SeekFrom::Current(_) = whence {
-            let logical = os_pos - (rbuf.len() - *rb) as u64;
-            let _ = f.seek(std::io::SeekFrom::Start(logical));
-        }
-        rbuf.clear();
-        *rb = 0;
-        let new = f.seek(whence).unwrap_or(0);
-        if *last_was_write {
-            *wpos = new;
-        } else {
-            *frpos = new;
-        }
+        pos = *wpos;
+        *last_was_write = true;
+    }
+    if r#where.is_nan() {
         return Ok(pos as f64);
     }
-    match &mut con.kind {
-        // R: connections.c raw_seek
-        ConnKind::Raw { pos, nbytes, .. } => {
-            let old = *pos;
-            if r#where.is_nan() {
-                return Ok(old as f64);
-            }
-            let newpos = match origin {
-                2 => *pos as f64 + r#where,
-                3 => *nbytes as f64 + r#where,
-                _ => r#where,
-            };
-            if newpos < 0.0 || newpos > *nbytes as f64 {
-                return Err(Flow::error("attempt to seek outside the range of the raw connection"));
-            }
-            *pos = newpos as usize;
-            Ok(old as f64)
-        }
-        _ => Err(Flow::error("seek is not relevant for text connection")),
+    let whence = match origin {
+        2 => std::io::SeekFrom::Current(r#where as i64),
+        3 => std::io::SeekFrom::End(r#where as i64),
+        _ => std::io::SeekFrom::Start(r#where as u64),
+    };
+    // SEEK_CUR is relative to the logical position, not the buffer's end
+    if let std::io::SeekFrom::Current(_) = whence {
+        let logical = os_pos - (rbuf.len() - *rb) as u64;
+        let _ = f.seek(std::io::SeekFrom::Start(logical));
     }
+    rbuf.clear();
+    *rb = 0;
+    let new = f.seek(whence).unwrap_or(0);
+    if *last_was_write {
+        *wpos = new;
+    } else {
+        *frpos = new;
+    }
+    Ok(pos as f64)
+}
+
+// R: connections.c raw_seek
+fn raw_seek(con: &mut Connection, r#where: f64, origin: i32) -> RResult<f64> {
+    let ConnKind::Raw { pos, nbytes, .. } = &mut con.kind else { unreachable!("raw_seek on another kind") };
+    let old = *pos;
+    if r#where.is_nan() {
+        return Ok(old as f64);
+    }
+    let newpos = match origin {
+        2 => *pos as f64 + r#where,
+        3 => *nbytes as f64 + r#where,
+        _ => r#where,
+    };
+    if newpos < 0.0 || newpos > *nbytes as f64 {
+        return Err(Flow::error("attempt to seek outside the range of the raw connection"));
+    }
+    *pos = newpos as usize;
+    Ok(old as f64)
 }
 
 /// `seek(con, where, origin, rw)`
@@ -2514,6 +2591,12 @@ fn do_truncate(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         return Err(Flow::error("'con' is not a connection"));
     }
     let n = con_arg(&v)?;
+    con_truncate(i, n)?;
+    Ok(Value::Null)
+}
+
+/// `con->truncate(con)`.
+fn con_truncate(i: &mut Interp, n: i32) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
         // R: connections.c raw_truncate
@@ -2537,9 +2620,16 @@ fn do_truncate(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             }
             *last_was_write = true;
         }
-        _ => return Err(Flow::error("truncation not enabled for this connection")),
+        // R: connections.c null_truncate
+        ConnKind::File { fp: None, .. }
+        | ConnKind::Terminal
+        | ConnKind::TextIn { .. }
+        | ConnKind::TextOut { .. }
+        | ConnKind::Gz { .. }
+        | ConnKind::Sock(_)
+        | ConnKind::ServSock { .. } => return Err(Flow::error("truncation not enabled for this connection")),
     }
-    Ok(Value::Null)
+    Ok(())
 }
 
 // ----------------------------------------------------------------------
@@ -2566,6 +2656,13 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
     if used == buf.len() {
         return Ok(used);
     }
+    con_read(con, buf, used)
+}
+
+/// `con->read(buf + used, 1, buf.len() - used, con)`: `used` plus how many
+/// bytes it read.
+#[inline(always)]
+fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<usize> {
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
         ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
@@ -2607,7 +2704,10 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
             con.incomplete = incomplete;
             Ok(used + k)
         }
-        _ => Err(Flow::error("cannot read from this connection")),
+        // R: connections.c null_read
+        ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
+            Err(Flow::error("cannot read from this connection"))
+        }
     }
 }
 
