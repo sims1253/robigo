@@ -733,6 +733,86 @@ fn frame_mask(interp: &Interp, env: &Env) -> u64 {
     0
 }
 
+/// The call `l` of `clo` in compiled code (the caller checks `Interp::bc`):
+/// did GNU R's compiler inline it as `(function() expr)()`? It does for
+/// `local` with one argument when `local` was base's as the code was
+/// compiled: the frozen set of a closure the JIT compiled, else (installed
+/// package code, a top-level loop) base's `local` as found now.
+// R: compiler/R/cmp.R: setInlineHandler("local") (length(e) == 2)
+#[inline]
+pub fn inlines_local(interp: &Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) -> bool {
+    if l.args.len() != 1 || l.fun.as_sym().is_none_or(|f| f != s::LOCAL) {
+        return false;
+    }
+    inlines_local_slow(interp, clo, env)
+}
+
+#[cold]
+#[inline(never)]
+fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
+    let base = match interp.base.get_local(s::LOCAL) {
+        Some(Value::Promise(p)) => p.forced_fun(),
+        v => v,
+    };
+    if !base.is_some_and(|b| matches!(&b, Value::Closure(c) if Rc::ptr_eq(c, clo))) {
+        return false;
+    }
+    for ctx in interp.frames.iter().rev() {
+        if ctx.cloenv.ptr_eq(env) {
+            let Value::Closure(c) = &ctx.function else { return true };
+            let v = c.jit.0.get();
+            if v & LOADED_BYTECODE != 0 {
+                return true;
+            }
+            return match v & STATE_MASK {
+                // Compiled by the JIT: base's `local` then by its frozen set;
+                // made by installed code (its frozen set is empty there,
+                // lookups find base's `local`), by its environment.
+                COMPILED => {
+                    index(s::LOCAL).is_some_and(|i| c.jit.mask() >> i & 1 != 0)
+                        || in_registered_namespace(interp, &c.env)
+                }
+                // An installed function: a closure of base or of a
+                // registered namespace itself. (`IGNORE` also marks closures
+                // that interpreted code made below a namespace, which GNU R
+                // leaves to its JIT: not inlined, as GNU R does not.)
+                _ => {
+                    c.env.ptr_eq(&interp.base_ns)
+                        || c.env.ptr_eq(&interp.base)
+                        || c.env.namespace_name().is_some_and(|n| {
+                            matches!(interp.ns_registry.get_local(Sym::new(&n)), Some(Value::Env(r)) if r.ptr_eq(&c.env))
+                        })
+                }
+            };
+        }
+    }
+    // A loop in the global environment (do_for and friends).
+    true
+}
+
+/// Does `env` reach the base environment or a registered namespace before
+/// the global one? The first namespace on the way up decides: a copy
+/// (rlang's `env_clone()`, testthat's test environment) is not
+/// registered.
+fn in_registered_namespace(interp: &Interp, env: &Env) -> bool {
+    let mut e = env.clone();
+    loop {
+        if e.ptr_eq(&interp.global) {
+            return false;
+        }
+        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
+            return true;
+        }
+        if let Some(name) = e.namespace_name() {
+            return matches!(interp.ns_registry.get_local(Sym::new(&name)), Some(Value::Env(r)) if r.ptr_eq(&e));
+        }
+        match e.parent() {
+            Some(p) => e = p,
+            None => return false,
+        }
+    }
+}
+
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
 /// code there still use base's `sym`?
 #[cold]
@@ -782,6 +862,14 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
 #[inline(never)]
 pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
     if env.is_search() {
+        // R: eval.c:do_for and friends compile a loop the interpreter meets
+        // in the global environment (`Interp::bc`); `function` there makes
+        // a compiled closure (MAKECLOSURE), with the global environment's
+        // bindings as the loop was compiled with them. (Taken now: a frozen
+        // function rebound earlier in the same loop would differ.)
+        if interp.bc && env.ptr_eq(&interp.global) {
+            clo.jit.set(INHERITED, top_mask(interp, env, &frozen_syms()));
+        }
         return;
     }
     for ctx in interp.frames.iter().rev() {

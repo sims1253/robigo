@@ -529,7 +529,7 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
         if let Some(b) = b {
             let mut v = b.value;
             if b.flags & BIND_ACTIVE != 0 {
-                v = i.call_value(&v, vec![], &e)?;
+                v = i.get_active_value(&v)?;
             }
             if mode != "any" || matches!(v, Value::Promise(_)) {
                 v = i.force(v)?;
@@ -760,7 +760,7 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         // R: envir.c:FrameValues — BINDING_VALUE calls an active binding
         // (a C-owned variable's included, which reads C's object).
         if env.binding_flags(sym).is_some_and(|f| f & BIND_ACTIVE != 0) {
-            vals.push(i.call_value(&v, vec![], &env)?);
+            vals.push(i.get_active_value(&v)?);
             continue;
         }
         vals.push(i.force(v)?);
@@ -1093,7 +1093,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         restarts: i.restarts.clone(),
         generic: false,
         builtin: false,
+        prev_bc: i.bc,
     });
+    // R: eval.c:do_eval evaluates with eval(), the AST interpreter, also
+    // when called from compiled code (a loop in the global environment is
+    // compiled again by do_for and friends).
+    i.bc = false;
     let r = (|| -> RResult<Value> {
         match &expr {
             Value::Expr(ev) => {
@@ -1136,6 +1141,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
     let r = i.run_on_exit(r);
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
+    i.bc = ctx.prev_bc;
     // (eval.c:eval restores the R_Srcref of the `eval()` call)
     i.srcref_ended(i.frames.len());
     i.handlers = ctx.handlers;
