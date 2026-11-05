@@ -1,4 +1,6 @@
-//! GNU R eval.c's portable bytecode construction and inspection internals.
+//! GNU R eval.c's portable bytecode construction and inspection internals,
+//! which the compiler package (cmp.R) runs on: compile() returns the code
+//! object mkCode builds; cmpfun()'s bcClose makes a closure of it.
 use super::{arg, internal};
 use crate::{
     env::Env,
@@ -251,11 +253,16 @@ fn bcclose(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     if formal_attrs {
         return Err(Flow::error("robigo: attributes on bytecode closure formals are not implemented yet"));
     }
+    // The body is the source (the code's first constant) for robigo's VM
+    // to compile, marked as bytecode as a loaded GNU-compiled closure is:
+    // body() and identical() see the source, print() shows <bytecode>.
+    // The feature build also keeps GNU R's code object.
     Ok(Value::Closure(Rc::new(Closure {
         formals: formals.into(),
         body: body.expression.clone(),
         env,
         attrs: None,
+        #[cfg(feature = "bytecode-fidelity")]
         gnu_bytecode: Some(body),
         code: Default::default(),
         inline: Default::default(),

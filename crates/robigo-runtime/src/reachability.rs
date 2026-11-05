@@ -6,7 +6,6 @@
 //! roots, including evaluator temporaries and opaque Rust payloads.
 
 use std::cell::Cell;
-#[cfg(feature = "bytecode-fidelity")]
 use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,7 +14,6 @@ use std::rc::Rc;
 use crate::compile::Code;
 use crate::env::{Env, Frame};
 use crate::value::{Arg, Attrs, Value};
-#[cfg(feature = "bytecode-fidelity")]
 use crate::value::{Bytecode, BytecodeCells, BytecodeInstructions};
 
 thread_local! {
@@ -44,11 +42,8 @@ enum Owner {
     Formals(Rc<[Arg]>),
     Code(Rc<Code>),
     Defaults(Rc<[Option<Rc<Code>>]>),
-    #[cfg(feature = "bytecode-fidelity")]
     BytecodeCells(Rc<BytecodeCells>),
-    #[cfg(feature = "bytecode-fidelity")]
     BytecodeConsts(Rc<Vec<Value>>),
-    #[cfg(feature = "bytecode-fidelity")]
     BytecodeReps(Rc<OnceCell<Vec<Value>>>),
     Inline(Rc<crate::vm::Inline>),
 }
@@ -85,7 +80,6 @@ fn identity(v: &Value) -> Option<(usize, usize)> {
         Value::Pairlist(v) => rc!(v),
         Value::Lang(v) => rc!(v),
         Value::Closure(v) => rc!(v),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(v) => rc!(v),
         Value::Env(v) => rc!(&v.0),
         Value::Promise(v) => rc!(v),
@@ -150,7 +144,6 @@ impl ObjectGraph {
         edges.push(self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || Owner::Code(code.clone())));
     }
 
-    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode(&mut self, edges: &mut Vec<usize>, code: &Rc<Bytecode>) {
         edges.push(
             self.insert(Rc::as_ptr(code) as usize, Rc::strong_count(code), || {
@@ -218,7 +211,6 @@ impl ObjectGraph {
                                 self.edge(&mut edges, &a.value);
                             }
                         }
-                        #[cfg(feature = "bytecode-fidelity")]
                         Value::Bytecode(v) => {
                             self.edge(&mut edges, &v.expression);
                             if let Some(code) = v.code.get() {
@@ -302,7 +294,6 @@ impl ObjectGraph {
                         | Value::Raw(_) => {}
                     }
                 }
-                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeCells(cells) => {
                     for value in &cells.items {
                         self.edge(&mut edges, value);
@@ -311,13 +302,11 @@ impl ObjectGraph {
                         self.edge(&mut edges, &encoded.attrs);
                     }
                 }
-                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeConsts(pool) => {
                     for value in pool.iter() {
                         self.edge(&mut edges, value);
                     }
                 }
-                #[cfg(feature = "bytecode-fidelity")]
                 Owner::BytecodeReps(reps) => {
                     for value in reps.get().into_iter().flatten() {
                         self.edge(&mut edges, value);

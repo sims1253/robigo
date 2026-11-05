@@ -416,6 +416,7 @@ fn compile(interp: &mut Interp, clo: &Closure) {
             single_na: true,
             attrib_as_set: true,
             ignore_env: true,
+            ignore_bytecode: true,
             ignore_srcref: false,
         };
         crate::builtins::identical::identical_flags(&e.body, &clo.body, flags).then_some(Some(e.mask))
