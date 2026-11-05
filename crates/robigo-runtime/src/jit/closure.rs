@@ -1060,6 +1060,7 @@ fn define(
             flag: HashMap::new(),
             reg: HashMap::new(),
             range: HashMap::new(),
+            lp: Default::default(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -1281,6 +1282,7 @@ fn define(
             deopt: HashMap::new(),
             exit,
             helpers,
+            lp: None,
             whole: Some(Whole {
                 bail,
                 rem,

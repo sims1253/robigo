@@ -3200,7 +3200,7 @@ fn jit_enter(
             // sequences set up before the loop.
             let mut types: Vec<Option<JType>> = Vec::with_capacity(code.vars.len());
             for (s, sym) in code.vars.iter().enumerate() {
-                types.push(read_var(vars, env, *sym, s as Slot).and_then(jit_type));
+                types.push(read_var(vars, env, *sym, s as Slot).and_then(loop_type));
             }
             let Op::LoopEnter { brk, .. } = code.ops[enter] else { return None };
             let mut live: HashMap<Reg, JType> = HashMap::default();
@@ -3283,11 +3283,64 @@ fn jit_enter(
             return None;
         }
     }
+    if jl.builtins && crate::builtins::debug::any_prim_traced() {
+        return None;
+    }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
+    let mut ctx = crate::jit::LoopCtx::default();
     for s in &jl.slots {
+        if s.written && !s.ty.is_vector() || s.owned {
+            let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
+            if !deferrable(env, s.sym, &RVal::I(0), pending) {
+                return None;
+            }
+        }
+        if s.owned {
+            // A buffer of the run's, with the value's elements if needed.
+            use crate::jit::Buf;
+            let buf = match (s.needs_entry, read_var(vars, env, s.sym, s.slot)) {
+                (false, _) => match s.ty {
+                    JType::VecD => Buf::D(Vec::new()),
+                    _ => Buf::I(Vec::new()),
+                },
+                (true, Some(RVal::V(Value::Real(x)))) if x.attrs.is_none() && s.ty == JType::VecD => {
+                    Buf::D(x.data.clone())
+                }
+                (true, Some(RVal::V(Value::Int(x)))) if x.attrs.is_none() && s.ty == JType::VecI => {
+                    Buf::I(x.data.clone())
+                }
+                (true, Some(RVal::Range { start, step, n })) if s.ty == JType::VecI => {
+                    Buf::I((0..*n as i64).map(|k| (start + k * step) as i32).collect())
+                }
+                _ => return None,
+            };
+            let k = ctx.bufs.len() as u64;
+            ctx.bufs.push(buf);
+            let view = match ctx.bufs.last_mut().unwrap() {
+                Buf::I(v) => crate::jit::VecView {
+                    ptr: v.as_mut_ptr() as *mut u8,
+                    len: v.len() as u64,
+                    nrow: v.len() as u64,
+                    ncol: k,
+                },
+                Buf::D(v) => crate::jit::VecView {
+                    ptr: v.as_mut_ptr() as *mut u8,
+                    len: v.len() as u64,
+                    nrow: v.len() as u64,
+                    ncol: k,
+                },
+            };
+            debug_assert_eq!(vecs.len(), s.idx);
+            vecs.push(view);
+            continue;
+        }
         if s.ty.is_vector() {
+            // (A range the loop indexes is a vector.)
+            if let SlotVal::Dirty(r @ RVal::Range { .. }) = &vars.slots[s.slot as usize] {
+                vars.slots[s.slot as usize] = SlotVal::Dirty(RVal::V(r.clone().into_value()));
+            }
             let ok = match read_var(vars, env, s.sym, s.slot) {
                 Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
                 _ => false,
@@ -3316,13 +3369,16 @@ fn jit_enter(
             vecs.push(view);
             continue;
         }
-        let cur = read_var(vars, env, s.sym, s.slot).cloned();
-        if s.written {
-            let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
-            if !deferrable(env, s.sym, &RVal::I(0), pending) {
-                return None;
+        if s.ty == JType::Range {
+            if s.needs_entry {
+                let (start, step, n) = read_var(vars, env, s.sym, s.slot).and_then(range_of)?;
+                vals[s.idx] = start as u64;
+                vals[s.idx + 1] = step as u64;
+                vals[s.idx + 2] = n;
             }
+            continue;
         }
+        let cur = read_var(vars, env, s.sym, s.slot).cloned();
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
@@ -3346,12 +3402,44 @@ fn jit_enter(
             _ => return None,
         }
     }
+    vals[jl.vis] = interp.visible as u64;
     // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and the
-    // vectors they view are held by `regs` and `vars` for the whole call.
-    let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_ptr()) };
+    // vectors they view are held by `regs`, `vars` and `ctx` for the whole
+    // call.
+    let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) };
+    interp.visible = vals[jl.vis] != 0;
+    // Registers the VM continues with (vector ones are copied out of what
+    // they view, which the write-back below may take).
+    if ret != crate::jit::EXIT {
+        for (reg, ty) in jl.deopt_regs.get(&ret).map(|v| v.as_slice()).unwrap_or(&[]) {
+            let idx = jl.reg_idx[reg];
+            let b = vals[idx];
+            regs[*reg as usize] = match ty {
+                JType::D => RVal::D(f64::from_bits(b)),
+                JType::I => RVal::I(b as i32),
+                JType::L => RVal::L(b as i32),
+                JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+                JType::VecD | JType::VecI => {
+                    let (p, n) = (b as usize, vals[idx + 1] as usize);
+                    // SAFETY: a live vector register views `n` elements of a
+                    // vector held by `vars` or a buffer of `ctx`, both alive.
+                    RVal::V(unsafe {
+                        if *ty == JType::VecD {
+                            Value::reals(std::slice::from_raw_parts(p as *const f64, n).to_vec())
+                        } else {
+                            Value::Int(Rc::new(crate::value::Vector::new(
+                                std::slice::from_raw_parts(p as *const i32, n).to_vec(),
+                            )))
+                        }
+                    })
+                }
+                _ => continue,
+            };
+        }
+    }
     // Write the variables back as pending assignments.
     for s in &jl.slots {
-        if !s.written || !s.ty.is_scalar() {
+        if !s.written || (s.ty.is_vector() && !s.owned) {
             continue;
         }
         let assigned = s.needs_entry || s.flag.is_some_and(|f| vals[f] != 0);
@@ -3362,6 +3450,22 @@ fn jit_enter(
         let v = match s.ty {
             JType::D => RVal::D(f64::from_bits(b)),
             JType::I => RVal::I(b as i32),
+            JType::Range => RVal::Range { start: b as i64, step: vals[s.idx + 1] as i64, n: vals[s.idx + 2] },
+            JType::VecD | JType::VecI => {
+                let view = &vecs[s.idx];
+                let n = view.len as usize;
+                let buf = std::mem::replace(&mut ctx.bufs[view.ncol as usize], crate::jit::Buf::I(Vec::new()));
+                RVal::V(match buf {
+                    crate::jit::Buf::I(mut v) => {
+                        v.truncate(n);
+                        Value::Int(Rc::new(crate::value::Vector::new(v)))
+                    }
+                    crate::jit::Buf::D(mut v) => {
+                        v.truncate(n);
+                        Value::reals(v)
+                    }
+                })
+            }
             _ => RVal::L(b as i32),
         };
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
@@ -3377,6 +3481,17 @@ fn jit_enter(
             regs[*reg as usize] = DEAD;
         }
     }
+    if let Some(c) = jl.counter {
+        // A loop that keeps leaving at an op native code does not have
+        // without running much of itself costs more than it saves.
+        let left = jl.leaves.binary_search(&ret).is_ok() as u64;
+        let (n, iters) = jl.stats.get();
+        let (n, iters) = (n + left, iters + vals[c]);
+        jl.stats.set((n, iters));
+        if n >= 4 && iters < 16 * n {
+            code.jit.borrow_mut().insert(key, JitSlot::Never);
+        }
+    }
     if ret == crate::jit::EXIT {
         if crate::jit::trace() {
             eprintln!("jit: loop at {} finished", enter);
@@ -3384,22 +3499,33 @@ fn jit_enter(
         return Some((Outcome::Exited, Vec::new()));
     }
     let p = ret as usize;
-    for (reg, ty) in jl.deopt_regs.get(&ret).map(|v| v.as_slice()).unwrap_or(&[]) {
-        let idx = jl.reg_idx[reg];
-        let b = vals[idx];
-        regs[*reg as usize] = match ty {
-            JType::D => RVal::D(f64::from_bits(b)),
-            JType::I => RVal::I(b as i32),
-            JType::L => RVal::L(b as i32),
-            JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
-            _ => continue,
-        };
-    }
     if crate::jit::trace() {
         eprintln!("jit: loop at {} continues in the VM at {}", enter, p);
     }
     let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
     Some((Outcome::Deopt(p), nested))
+}
+
+/// A range variable's value: an unmaterialized range, or a compact integer
+/// sequence.
+fn range_of(v: &RVal) -> Option<(i64, i64, u64)> {
+    match v {
+        RVal::Range { start, step, n } => Some((*start, *step, *n)),
+        RVal::V(Value::Int(x)) => {
+            let (n, first, inc) = crate::value::compact_intseq_of(x)?;
+            Some((first as i64, inc as i64, n as u64))
+        }
+        _ => None,
+    }
+}
+
+/// The type of a variable's current value for a loop: [`jit_type`], or a
+/// range.
+fn loop_type(v: &RVal) -> Option<crate::jit::JType> {
+    if range_of(v).is_some() {
+        return Some(crate::jit::JType::Range);
+    }
+    jit_type(v)
 }
 
 /// The head symbol of a call constant: what GNU R prints when tracing in
