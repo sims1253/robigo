@@ -25,7 +25,39 @@ use robigo_runtime::sym::{Sym, s};
 use robigo_runtime::value::*;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// The bridge's tables are keyed by core and runtime object addresses (and
+/// counters): SipHash was most of their cost (a tibble test file spent 7%
+/// hashing), and a bare multiplication would leave the low bits of 16-byte
+/// aligned addresses zero, which hashbrown picks buckets with. A multiply
+/// whose high half is folded into the low bits mixes both.
+#[derive(Default)]
+pub(crate) struct AddrHasher(u64);
+
+impl Hasher for AddrHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64((self.0 << 8) | b as u64);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        let x = (self.0 ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = x ^ (x >> 32);
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+}
+
+type AddrHash = BuildHasherDefault<AddrHasher>;
+type HashMap<K, V> = std::collections::HashMap<K, V, AddrHash>;
+type HashSet<K> = std::collections::HashSet<K, AddrHash>;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::rc::{Rc, Weak};
 
@@ -46,31 +78,32 @@ struct FinalizerContext {
     restarts: robigo_runtime::conditions::RestartStack,
     ccode_calls: Vec<(usize, Value)>,
     visible: bool,
+    bc: bool,
 }
 
 thread_local! {
     static FINALIZER_CONTEXTS: RefCell<Vec<FinalizerContext>> = const { RefCell::new(Vec::new()) };
     static INTERP: Cell<*mut Interp> = const { Cell::new(std::ptr::null_mut()) };
-    static FLOWS: RefCell<HashMap<usize, Flow>> = RefCell::new(HashMap::new());
+    static FLOWS: RefCell<HashMap<usize, Flow>> = RefCell::new(HashMap::default());
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(1) };
     /// identity of a runtime object -> its proxy's handle
-    static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
+    static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::default());
     /// proxy handle -> (identity, the runtime object)
-    static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::new());
+    static PROXIED: RefCell<HashMap<usize, (usize, Value)>> = RefCell::new(HashMap::default());
     /// Core object (a proxy, or the conversion of a vector, call or
     /// pairlist while SEEN or STORED holds it) -> its attribute cells when
     /// the two sides last agreed (see [`push_attrs`], [`write_back`]);
     /// empty if absent. Addresses, not values: a
     /// reference from here would count as the runtime holding what the
     /// attributes refer to.
-    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced, robigo_runtime::env::FastHash>> = RefCell::new(HashMap::default());
+    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced>> = RefCell::new(HashMap::default());
     /// A `push_attrs` is running: attributes can refer back to the object.
     static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
     static NEXT_HANDLE: Cell<usize> = const { Cell::new(1) };
     /// handles of proxies the collector found dead (dropped at a safe point)
     static DEAD: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// core objects wrapped for the runtime, for identity
-    static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::new());
+    static WRAPPED: RefCell<HashMap<usize, Weak<ExtPtr>>> = RefCell::new(HashMap::default());
     static READY: Cell<bool> = const { Cell::new(false) };
     /// handler stacks hidden by R_ToplevelExec
     #[allow(clippy::type_complexity)]
@@ -84,7 +117,7 @@ thread_local! {
     /// Identity within a native call: a runtime vector converted twice is
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
-    static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::default());
     /// Identity across native calls for a vector C code stored in an
     /// environment (`Rf_defineVar`, `Rf_setVar`): the runtime value it
     /// became -> the core object, preserved. C code keeps such objects in
@@ -92,7 +125,7 @@ thread_local! {
     /// with `Rf_findVarInFrame`). The entry holds the value too, so a
     /// runtime-side change copies it (a new identity, so no stale object
     /// is handed out); `gc()` drops entries whose value only it still holds.
-    static STORED: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    static STORED: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::default());
     /// Proxies kept preserved while their runtime object is referenced
     /// from anywhere but `PROXIED` (handle -> proxy): C code keeps
     /// functions and environments it looked up in statics (Rcpp's
@@ -101,18 +134,18 @@ thread_local! {
     /// them through the runtime graph, which keeps the ones whose runtime
     /// objects are live (one mark over both heaps); `sweep_stored` unpins
     /// those only the bridge refers to.
-    static PINNED: RefCell<HashMap<usize, (Sexp, u64)>> = RefCell::new(HashMap::new());
+    static PINNED: RefCell<HashMap<usize, (Sexp, u64)>> = RefCell::new(HashMap::default());
     /// What each of the bridge's holds in the core heap is (hold id ->
     /// a wrapped object or a pinned proxy), for the holds a collection
     /// found dead (`drain_dead_held`).
-    static HELD: RefCell<HashMap<u64, Held>> = RefCell::new(HashMap::new());
+    static HELD: RefCell<HashMap<u64, Held>> = RefCell::new(HashMap::default());
     /// Handles of the proxies whose attributes C code reached through the
     /// API since a `.Call` last wrote back (see [`touch_attrs`]).
-    static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
     /// Attribute cells of proxies, as [`agree_attrs`] last recorded them
     /// -> the handles of the proxies whose lists they are in (one, unless
     /// C code shares a list). Each has [`extra::WATCHED`] set.
-    static WATCHED_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
+    static WATCHED_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::default());
     /// `STORED` + `PINNED` entries above which a native call's exit sweeps
     /// (twice what the last sweep kept, at least 256).
     static SWEEP_AT: Cell<usize> = const { Cell::new(256) };
@@ -310,7 +343,6 @@ fn only_stored(v: &Value) -> bool {
     match v {
         Value::Env(e) => Rc::strong_count(&e.0) == 1,
         Value::Closure(x) => Rc::strong_count(x) == 1,
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(x) => Rc::strong_count(x) == 1,
         Value::Promise(x) => Rc::strong_count(x) == 1,
         Value::ExtPtr(x) => Rc::strong_count(x) == 1,
@@ -484,7 +516,6 @@ fn identity(v: &Value) -> Option<(usize, u8)> {
     Some(match v {
         Value::Env(e) => (Rc::as_ptr(&e.0) as *const u8 as usize, ENVSXP),
         Value::Closure(c) => (Rc::as_ptr(c) as *const u8 as usize, CLOSXP),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(b) => (Rc::as_ptr(b) as *const u8 as usize, BCODESXP),
         Value::Promise(p) => (Rc::as_ptr(p) as *const u8 as usize, PROMSXP),
         Value::Builtin(b) => (
@@ -525,7 +556,6 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // "type")
     let attrs = match v {
         Value::Closure(_) => v.attrs().cloned(),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => v.attrs().cloned(),
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
@@ -756,8 +786,8 @@ thread_local! {
     /// `sweep_stored` releases the preserved node once the last
     /// reference is gone, and a rebuilt entry reads the node's current
     /// fields, so a reused node address converts correctly.
-    static CPROMISE_MEMO: RefCell<std::collections::HashMap<usize, std::rc::Weak<robigo_runtime::value::Promise>>> =
-        RefCell::new(std::collections::HashMap::new());
+    static CPROMISE_MEMO: RefCell<HashMap<usize, std::rc::Weak<robigo_runtime::value::Promise>>> =
+        RefCell::new(HashMap::default());
 }
 
 /// The memoized runtime promise of a C-assembled promise node, if any.
@@ -861,7 +891,6 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 let held = match value {
                     Value::Env(e) => Rc::strong_count(&e.0) > 1,
                     Value::Closure(f) => Rc::strong_count(f) > 1,
-                    #[cfg(feature = "bytecode-fidelity")]
                     Value::Bytecode(b) => Rc::strong_count(b) > 1,
                     Value::ExtPtr(p) => Rc::strong_count(p) > 1,
                     _ => false,
@@ -1185,7 +1214,6 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return args_list(d, DOTSXP);
         }
         Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => return proxy(v),
         Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
@@ -1857,6 +1885,8 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     restarts: i.restarts.take(),
                     ccode_calls: std::mem::take(&mut i.ccode_calls),
                     visible: i.visible,
+                    // R_RunFinalizers evaluates the finalizer call with eval
+                    bc: std::mem::replace(&mut i.bc, false),
                 };
                 FINALIZER_CONTEXTS.with(|s| s.borrow_mut().push(saved));
             });
@@ -1872,6 +1902,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     i.restarts = saved.restarts;
                     i.ccode_calls = saved.ccode_calls;
                     i.visible = saved.visible;
+                    i.bc = saved.bc;
                 });
             }
             R_NilValue
@@ -1920,9 +1951,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 0) => to_sexp(b.code()),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value() {
@@ -1984,24 +2013,13 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         }
         (Value::Closure(c), 1) => {
             let p = Rc::as_ptr(c).cast_mut();
+            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y));
+            retire(&raw mut (*p).body, body);
             #[cfg(feature = "bytecode-fidelity")]
-            match from_sexp(y) {
-                Value::Bytecode(b) => {
-                    retire(&raw mut (*p).body, b.expression.clone());
-                    retire(&raw mut (*p).gnu_bytecode, Some(b));
-                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
-                }
-                val => {
-                    retire(&raw mut (*p).body, val);
-                    retire(&raw mut (*p).gnu_bytecode, None);
-                    (*p).jit = Default::default();
-                }
-            }
+            retire(&raw mut (*p).gnu_bytecode, code);
             #[cfg(not(feature = "bytecode-fidelity"))]
-            {
-                retire(&raw mut (*p).body, from_sexp(y));
-                (*p).jit = Default::default();
-            }
+            drop(code);
+            (*p).jit = jit;
             retire_code(p);
         }
         (Value::Closure(c), 2) => {
@@ -2469,7 +2487,6 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
         }
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) if !attrs_agreed(x) => {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
@@ -2629,9 +2646,14 @@ unsafe fn call_routine_ctx(
         }
         found
     };
+    // What C evaluates (Rf_eval of a call it built, R_forceAndCall) runs
+    // in GNU R's AST interpreter, whoever called the routine; a promise C
+    // forces still runs in the evaluator that made it.
     if compiled_caller {
         let (handlers, restarts) = (interp.handlers.clone(), interp.restarts.clone());
+        let bc = std::mem::replace(&mut interp.bc, false);
         let r = call_routine_in(interp, call, r, args, env);
+        interp.bc = bc;
         let r = match r {
             Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
             other => other,
@@ -2654,7 +2676,9 @@ unsafe fn call_routine_ctx(
         restarts: interp.restarts.clone(),
         generic: false,
         builtin: true,
+        prev_bc: interp.bc,
     });
+    interp.bc = false;
     // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
     // so what it calls back reports no srcref
     interp.srcref = robigo_runtime::interp::null_srcref();
@@ -2667,6 +2691,7 @@ unsafe fn call_routine_ctx(
     interp.srcref_ended(interp.frames.len());
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
+    interp.bc = ctx.prev_bc;
     r
 }
 
@@ -2798,7 +2823,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     let originals = match back {
         Ok(originals) => originals,
         Err(f) if t == 0 => return Err(f),
-        Err(_) => HashMap::new(),
+        Err(_) => HashMap::default(),
     };
     if t == 0 {
         if let Some(v) = original_cell(out, &originals) {

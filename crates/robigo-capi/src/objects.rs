@@ -455,15 +455,8 @@ pub unsafe extern "C" fn R_mkClosure(formals: Sexp, body: Sexp, rho: Sexp) -> Se
         robigo_runtime::value::Value::Pairlist(p) => p.items.clone(),
         _ => Vec::new(),
     };
-    #[cfg(feature = "bytecode-fidelity")]
-    let (body_val, gnu_bytecode, jit) = match crate::bridge::from_sexp(body) {
-        robigo_runtime::value::Value::Bytecode(b) => {
-            (b.expression.clone(), Some(b), robigo_runtime::vm::JitState::from_bytecode())
-        }
-        v => (v, None, Default::default()),
-    };
-    #[cfg(not(feature = "bytecode-fidelity"))]
-    let (body_val, jit) = (crate::bridge::from_sexp(body), Default::default());
+    #[cfg_attr(not(feature = "bytecode-fidelity"), allow(unused_variables))]
+    let (body_val, gnu_bytecode, jit) = robigo_runtime::value::closure_body(crate::bridge::from_sexp(body));
     let clo = robigo_runtime::value::Closure {
         #[cfg(feature = "bytecode-fidelity")]
         gnu_bytecode,
