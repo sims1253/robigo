@@ -35,3 +35,15 @@ profiles are in `docs/ledger/perf-nbody.md`.
   chains, a rebound `+`, complex scalars with NA/NaN and the `%%`/`%/%`
   errors, complex vectors), recorded with GNU R 4.5.0, byte-identical in
   all three tiers. Conformance: as main.
+- Rebased onto main 7a0d27bd (whose dispatch loop keeps only hot paths
+  inline): the stacked gate showed `robigo/fannkuch` +0.78% at this level,
+  all of it in `run_with`'s register allocation (callgrind: `ptr::` moves
+  +10.6M, its own lines -5.5M), and `mandelbrot_ascii`/`_noout` +0.36%
+  (complex vectors now classified before every flush). The pre-flush path
+  is now out of line (`reg_arith_pure`, `leaf_arith_pure`) behind an
+  inline test of the first operand (`may_be_pure`, for a variable its
+  cached value), and both paths share one `Slow` match: `robigo/fannkuch`
+  +0.02%, `mandelbrot_ascii` +0.20%. Rejected on the way: only the
+  classification out of line (a call per complex-vector op:
+  `mandelbrot_ascii` +0.53%, `fannkuch` +0.72%).
+
