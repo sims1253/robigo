@@ -674,7 +674,21 @@ fn do_lengths(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         return Err(Flow::error("'x' must be a list or atomic vector"));
     }
     let x_len = result_length(dispatch_xlength(i, &x, call, env)?, crate::memory::Elt::Int)?;
-    let mut ans = if is_list {
+    let mut ans = if let (false, Value::List(l) | Value::Expr(l)) = (x.is_object(), &x) {
+        // getElementLength of a plain list is dispatch_xlength of its
+        // element: no subsetting call per element
+        let mut lens = Vec::with_capacity(l.data.len());
+        let mut long = false;
+        for e in &l.data {
+            let n = if e.is_object() { dispatch_xlength(i, e, call, env)? } else { e.len() as i64 };
+            if n > i32::MAX as i64 {
+                long = true;
+                break;
+            }
+            lens.push(n as i32);
+        }
+        if long { lengths_long(i, &x, call, env)? } else { Value::ints(lens) }
+    } else if is_list {
         let mut lens = Vec::with_capacity(x_len as usize);
         let mut long = false;
         for k in 0..x_len {
