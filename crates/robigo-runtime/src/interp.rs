@@ -387,6 +387,23 @@ impl Interp {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 
+    /// The class of a missing-argument error for a variable read in `env`:
+    /// GNU R reads the variables of a byte-compiled closure's body with
+    /// getvar() (`getvarError`), and evaluates everything else, eval()
+    /// included, with the AST evaluator (`evalError`). A closure counts as
+    /// compiled once GNU R's JIT would have compiled it (R_CheckJIT, see
+    /// `JitState::is_bytecode`).
+    // R: eval.c:getvar, eval.c:eval (SYMSXP)
+    fn missing_arg_class(&self, env: &Env) -> &'static str {
+        match self.frames.last() {
+            Some(ctx) if ctx.cloenv.ptr_eq(env) => match &ctx.function {
+                Value::Closure(c) if c.jit.is_bytecode() => "getvarError",
+                _ => "evalError",
+            },
+            _ => "evalError",
+        }
+    }
+
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
         if sym.is_empty() {
             return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"));
@@ -410,7 +427,8 @@ impl Interp {
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
                     v if v.is_missing_arg() => {
-                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"))
+                        let class = self.missing_arg_class(env);
+                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class))
                     }
                     v => Ok(v),
                 };
