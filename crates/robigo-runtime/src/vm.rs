@@ -2578,6 +2578,12 @@ fn try_inline_site(
             if !ns && !interp.resolves_to_base(head, env) {
                 return None;
             }
+            // C code can rewrite the call in place through its cells (a
+            // spliced spine, sims1253/robigo#387): a resolution made for
+            // other arguments no longer applies, and the call runs generic
+            if inline.args.iter().any(|m| matches!(m, SiArg::Actual(j) if *j >= l.args.len())) {
+                return None;
+            }
             let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
         }
@@ -2643,6 +2649,10 @@ pub(crate) fn try_inline_expr(
     if let Some((_, _, hit)) = interp.si_expr_memo.get(&key) {
         let inline = hit.clone()?;
         if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
+            return None;
+        }
+        // (a call C rewrote in place, as above)
+        if inline.args.iter().any(|m| matches!(m, SiArg::Actual(j) if *j >= l.args.len())) {
             return None;
         }
         return Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env));

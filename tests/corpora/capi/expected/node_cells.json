@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "node_cells",
+ "out": {
+  "t": "f(a, B, c)\n[1] TRUE\nc(a, b, z)\n[1] 3\nf(z, b)\nf(z, b, x = \"new\")\n[1]  1  2 30\n"
+ },
+ "sha": "e04cf1512623041f",
+ "status": 0
+}

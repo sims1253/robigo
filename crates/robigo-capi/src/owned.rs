@@ -1,30 +1,18 @@
 //! Variables whose value C code shares with R and mutates in place.
 //!
-//! GNU R's C code may look a list up and change it where it lives: grid
-//! keeps each device's state in `.GRID.STATE` with
-//! `SET_VECTOR_ELT(findVar(...), i, state)` and its viewport tree in
-//! environments of pushed viewports it updates in place, and R code reads
-//! them back. The bridge hands C a copy of an R value, so such a change
-//! would be lost (and the objects only the copy holds collected). A list
-//! C looked up and then changes becomes the variable's value: the R
-//! binding turns into an active binding over C's object
-//! (`native::c_owned_binding`), which converts it when read.
+//! What C binds in an environment it created (`R_NewEnv`) stays C's object:
+//! the R binding is an active binding over it (`native::c_owned_binding`),
+//! which converts it when read. (A list C looks up and changes where it
+//! lives, as grid does with `SET_VECTOR_ELT(findVar(".GRID.STATE", ...),
+//! i, state)`, is the value's twin: the bridge writes the change back.)
 
 use robigo_core::Sexp;
 use robigo_runtime::env::Env;
 use robigo_runtime::sym::Sym;
 use robigo_runtime::value::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// How many lists C looked up in the current native call (a fast check
-/// for SET_VECTOR_ELT).
-pub static ORIGINS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
-    /// Lists C looked up in this native call: where they are bound.
-    static ORIGIN: RefCell<HashMap<usize, (Env, Sym)>> = RefCell::new(HashMap::new());
     /// Environments C created (`R_NewEnv`). C code keeps a pointer to a
     /// value it defines in one and changes it in place (`stats`'
     /// `numeric_deriv` perturbs a parameter through `REAL()` after
@@ -46,20 +34,6 @@ pub unsafe fn is_c_env(env: &Env) -> bool {
     })
 }
 
-/// `findVar` found the list `x` bound to `sym` in `env`.
-pub unsafe fn note_origin(x: Sexp, env: &Env, sym: Sym) {
-    ORIGIN.with(|o| o.borrow_mut().insert(x.0 as usize, (env.clone(), sym)));
-    ORIGINS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The end of the outermost native call.
-pub unsafe fn clear_origins() {
-    if ORIGINS.load(Ordering::Relaxed) != 0 {
-        ORIGIN.with(|o| o.borrow_mut().clear());
-        ORIGINS.store(0, Ordering::Relaxed);
-    }
-}
-
 /// C's object for a C-owned variable bound in `env`.
 pub unsafe fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
     let flags = env.binding_flags(sym)?;
@@ -68,17 +42,6 @@ pub unsafe fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
     }
     let holder = robigo_runtime::native::c_owned_holder(&env.get_local(sym)?)?;
     crate::bridge::core_ref_of(&holder)
-}
-
-/// SET_VECTOR_ELT on a list C looked up: the variable becomes C-owned.
-#[cold]
-pub unsafe fn mutated(x: Sexp) {
-    let Some((env, sym)) = ORIGIN.with(|o| o.borrow_mut().remove(&(x.0 as usize))) else { return };
-    ORIGINS.fetch_sub(1, Ordering::Relaxed);
-    if lookup(&env, sym).is_some() {
-        return;
-    }
-    robigo_runtime::native::c_owned_binding(&env, sym, crate::bridge::wrap_core(x));
 }
 
 /// Reading a C-owned variable from R.
