@@ -7,12 +7,14 @@
 #include <Rinternals.h>
 
 static void put(SEXP x, SEXP v, int k) {
+    if (Rf_length(x) != 1)
+        Rf_error("not a scalar");
     if (TYPEOF(x) == INTSXP)
         INTEGER(x)[0] = Rf_asInteger(v) + k;
     else if (TYPEOF(x) == REALSXP)
         REAL(x)[0] = Rf_asReal(v) + k;
     else if (TYPEOF(x) == LGLSXP)
-        LOGICAL(x)[0] = Rf_asLogical(v);
+        LOGICAL(x)[0] = Rf_asLogical(v); // (no `+ k`: not a counter)
     else
         Rf_error("not a number");
 }
@@ -40,6 +42,8 @@ SEXP capi_id_loop(SEXP env, SEXP call, SEXP counter, SEXP start, SEXP n) {
 SEXP capi_id_dots(SEXP args) {
     SEXP env = CAR(args), call = CADR(args), i = CADDR(args);
     int n = Rf_asInteger(CADDDR(args));
+    if (TYPEOF(i) != INTSXP || Rf_length(i) != 1)
+        Rf_error("not an integer scalar");
     int *p = INTEGER(i);
     SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
     for (int k = 0; k < n; ++k) {
@@ -53,6 +57,8 @@ SEXP capi_id_dots(SEXP args) {
 // the variable found by name, not passed
 SEXP capi_id_findvar(SEXP sym, SEXP env, SEXP v) {
     SEXP x = Rf_findVar(sym, env);
+    if (x == R_UnboundValue || x == R_MissingArg)
+        Rf_error("object '%s' not found", CHAR(PRINTNAME(sym)));
     if (TYPEOF(x) == PROMSXP)
         x = Rf_eval(x, env);
     put(x, v, 0);

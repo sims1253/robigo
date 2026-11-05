@@ -472,7 +472,7 @@ pub(crate) fn unbox_ref(v: &Value) -> RVal {
 /// may write into and R then reads (GNU R hands out the binding's value,
 /// boxing an unboxed binding cell into it the first time:
 /// `R_expand_binding_value`). Pending assignments must have been flushed.
-/// A fresh object when the binding no longer holds that value.
+/// An object of its own when the binding no longer holds that value.
 // R: envir.c:BINDING_VALUE
 fn escaping_read(env: &Env, sym: Sym, v: RVal) -> Value {
     if let Some(b) = binding_object(env, sym) {
@@ -488,7 +488,7 @@ fn escaping_read(env: &Env, sym: Sym, v: RVal) -> Value {
             return b;
         }
     }
-    v.into_value()
+    v.to_binding()
 }
 
 /// The arguments of a `CallBuiltin` of a builtin calling native code
@@ -505,7 +505,9 @@ fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg>
                 *tag,
                 match (var, &v) {
                     (Some(sym), RVal::I(_) | RVal::D(_) | RVal::L(_)) => escaping_read(env, *sym, v),
-                    _ => v.into_value(),
+                    // (a computed value: an object of its own, never a
+                    // shared small integer C could write into)
+                    _ => v.to_binding(),
                 },
             )
         })
@@ -3701,7 +3703,8 @@ fn call_op(
 }
 
 /// `Op::CallBuiltin` (after a flush): the builtin `consts[f]` with the
-/// values of `arglists[args]`, which are moved out of their registers.
+/// values of `arglists[args]`, which are moved out of their registers (for
+/// a `native` call, a variable's binding object: [`native_args`]).
 #[inline(never)]
 fn call_builtin_op(
     interp: &mut Interp,
