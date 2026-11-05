@@ -1050,9 +1050,30 @@ pub(super) fn rconn_fgetc(con: &mut Connection) -> i32 {
     c
 }
 
-/// Write text to connection `n` (R's `Rconn_printf(con, "%s", s)`); the
-/// terminals write to the process streams directly.
+/// Write text to connection `n` (R's `Rconn_printf(con, "%s", s)`).
+/// `stdout()` writes to the process's stdout, whatever the sinks
+/// (R: connections.c:stdout_vfprintf); `stderr()` writes where messages go,
+/// the connection of `sink(type = "message")` if there is one
+/// (stderr_vfprintf calls REvprintf_internal, which follows R_ErrorCon).
+#[inline(always)]
 pub fn conn_write(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
+    if n == 2 && i.conns.error_con != 2 {
+        stderr_sunk(i, text);
+        return Ok(());
+    }
+    conn_print(i, n, text)
+}
+
+/// `stderr()`'s writes under `sink(type = "message")`, out of line.
+#[cold]
+#[inline(never)]
+fn stderr_sunk(i: &mut Interp, text: &str) {
+    reprintf_sink(i, text);
+}
+
+/// conn_write once `stderr()` is the terminal: the terminals write to the
+/// process streams directly.
+fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     match n {
         1 => {
             let _ = i.out.write_all(text.as_bytes());
@@ -1160,13 +1181,16 @@ pub fn rprintf_sink(i: &mut Interp, text: &str) {
     }
 }
 
-/// `REprintf` while the message connection is diverted.
+/// `REprintf` while the message connection is diverted: written, then
+/// flushed (R: printutils.c:REvprintf_internal).
 pub fn reprintf_sink(i: &mut Interp, text: &str) {
     let n = i.conns.error_con;
     if conn_write(i, n, text).is_err() {
         i.conns.error_con = 2;
         let _ = i.err.write_all(text.as_bytes());
+        return;
     }
+    let _ = conn_flush(i, n);
 }
 
 /// R: connections.c:switch_or_tee_stdout. Returns whether the sink stack
