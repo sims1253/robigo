@@ -23,6 +23,56 @@ VM's (`~/oopwork/rivals-here.json`):
 | binarytrees_2 | 0.0191 | 0.015 | 0.0103 | 0.0119 |
 | binarytrees_naive | 0.0184 | 0.0135 | 0.00831 | 0.0129 |
 
+## 2026-11-04: element assignment in native closures, lapply into native code (Bounce_nonames 2.7x)
+
+- Why: `bounce()` in `Bounce_nonames` (`ball[1] <- ball[1] + ball[3]`, `abs`,
+  `list(ball, bounced)`) could not be compiled: `x[i] <- v` was not a native
+  op in call trees (only in loops, which own their vectors), nor `abs()` of a
+  value of any type. And `lapply(balls, ball)` called `ball()` through the
+  AST interpreter, evaluating `FUN(X[[i]], ...)` with a promise for every
+  element; its fast path ran only pure inline closures, and took any closure
+  not analysed yet for one, so it declined `ball()` at every element.
+- Change (`jit/closure.rs`, `jit.rs`'s `types_ok`, `builtins/apply.rs`):
+  - `Op::SetIndex` on a variable of any type: `h_d_set_index` is the VM's own
+    fast path (`vm::set_element`, `Rc::make_mut` copies a shared vector first)
+    and leaves native code wherever the VM would make the call (append past
+    the end + 1, coercion, `NULL`, classed objects, odd indices). A formal so
+    modified enters as a value of any type, and so does one passed on to such
+    a formal (`dyn_formals`, a fixed point over the tree); it gets its own
+    copy at entry, as assigned formals already did. In a tree `x[i] <- v`
+    makes `x` a local, never a cell. A typed vector view is never written
+    (views may be shared): `SetIndex` on one leaves native code.
+  - `Op::Math1` of a value of any type (`h_d_math1`, `vm::math1_fast`).
+  - `lapply`/`sapply`/`vapply` call a closure of one formal that is not pure
+    through `vm::call_native_rval` (counted and given up like a call site's
+    `native_site_call`), so `FUN(X[[i]])` runs as native code when it can.
+    The VM's frames are flushed: the builtin's own call was a real call.
+- Sol review: after a fallback call (warm-up, or a run that left native code)
+  `FUN` or `X` may have been rebound in lapply's frame, say by
+  `assign("FUN", ..., parent.frame())` on a rare path; GNU R evaluates
+  `FUN(X[[i]], ...)` again for every element. The native path now checks both
+  bindings after each fallback (a lookup in the frame, forcing nothing) and
+  stops when either changed (`tests/r/jit/native-closures-setindex.R`, which
+  the first cut failed).
+- Rejected on the way: the root's per-formal flags as a `Vec<bool>` read in
+  the native entry: `profiler-shared` +0.60% (bounds checks, inlined into
+  `native_site_call`); a bit mask: +0.09%.
+- Result (cycles per program body, this VM): Bounce_nonames 29.2 -> 10.9 ms,
+  Bounce_nonames_simple 21.0 -> 8.1 ms (FastR 11.7 / 7.9, Ř 15.4 / 8.3).
+  Instructions, startup included: Bounce_nonames -36.1%,
+  Bounce_nonames_simple -30.6%, `robigo/apply` -27.9%.
+- Open: what is left in `bounce()` is the helpers for values of any type
+  (`h_d_index` 13%, `h_d_copy` 8%, `index_value` 7%): every `ball[1]` clones
+  and drops. A native, owned double vector (copied once at entry, then
+  loads and stores) would remove them.
+- Verified: `tests/r/jit/native-closures-setindex.R` (the bounce step through
+  lapply with a `<<-` counter, the caller's vectors unchanged, names kept,
+  appending, coercion, out-of-range and odd indices, a `[<-` method, lists
+  with `NULL` and list values, a local built in place, `sqrt` warning, an
+  error part way through lapply, `sys.call()` from FUN), recorded with GNU R
+  4.5.0, byte-identical in all tiers.
+- Kept.
+
 ## 2026-11-04: nested arithmetic as call arguments (binarytrees 4x)
 
 - Why: binarytrees' `tree()` was compiled to native code (round 20) but never

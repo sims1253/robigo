@@ -155,6 +155,9 @@ struct FastClosure {
 enum FastApply {
     One(Rc<Closure>),
     Multi(FastClosure),
+    /// A closure of one formal that may have native code (see
+    /// `vm::call_native_rval`).
+    Native(Rc<Closure>),
 }
 
 /// The closure `FUN` when `FUN(X[[i]], ...)` (in `rho`, `X` being `xx`)
@@ -170,9 +173,6 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     let Value::Sym(f) = &l.fun else { return Ok(None) };
     let Ok(fun_val) = i.find_fun(*f, rho) else { return Ok(None) };
     let Value::Closure(c) = fun_val else { return Ok(None) };
-    if !crate::vm::inlinable(&c) {
-        return Ok(None);
-    }
     let nf = c.formals.len();
     if nf == 0 {
         return Ok(None);
@@ -181,6 +181,12 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
         Some((Value::Dots(d), _)) => d,
         _ => Rc::new(Vec::new()),
     };
+    // (Analysed now: a closure not known to be pure yet would take the
+    // inline path, which declines it at every element.)
+    if c.inline.get_or_init(|| crate::vm::inline_info(&c)).is_none() || !crate::vm::inlinable(&c) {
+        let one = nf == 1 && dots.is_empty() && c.formals[0].tag != Some(s::DOTS);
+        return Ok(one.then_some(FastApply::Native(c)));
+    }
     if nf == 1 && dots.is_empty() && c.formals[0].tag != Some(s::DOTS) {
         return Ok(Some(FastApply::One(c)));
     }
@@ -222,6 +228,24 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     Ok(Some(FastApply::Multi(FastClosure { clo: c, args, x_slot })))
 }
 
+/// After a call of `FUN(X[[i]], ...)` was made: whether `FUN` and `X` are
+/// still the closure `c` and the vector `xx`, as the native path assumes.
+/// (A closure with native code can run any R code where it leaves native
+/// code, rebinding them in `rho`, say with `assign(..., parent.frame())`.)
+/// (Looked up in `rho`'s own frame, where lapply's formals and `FUN <-
+/// match.fun(FUN)` are, without forcing anything: anything else is `false`.)
+fn native_still_valid(fcall: &Value, rho: &Env, c: &Rc<Closure>, xx: &Value) -> bool {
+    let Value::Lang(l) = fcall else { return false };
+    let Value::Sym(f) = &l.fun else { return false };
+    let Value::Lang(xi) = &l.args[0].value else { return false };
+    let Value::Sym(x) = &xi.args[0].value else { return false };
+    let value = |sym: Sym| match rho.get_local(sym)? {
+        Value::Promise(p) => p.value(),
+        v => Some(v),
+    };
+    matches!(value(*f), Some(Value::Closure(c2)) if Rc::ptr_eq(&c2, c)) && value(*x).is_some_and(|v| v.same_object(xx))
+}
+
 /// `xx[[k + 1]]` of a plain vector or list as an `RVal` (see [`inline_fun`]).
 #[inline]
 fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
@@ -261,6 +285,17 @@ fn call_fun(
             if let Some(v) = crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
                 return Ok(v.into_value());
             }
+        }
+        Some(FastApply::Native(c)) => {
+            if let Some(v) = crate::vm::call_native_rval(i, c, &[element_rval(xx, k)]) {
+                return Ok(v.into_value());
+            }
+            rho.set_local(isym, Value::int(k as i32 + 1));
+            let v = force_and_call(i, fcall, 1, rho)?;
+            if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
+                *fast = None;
+            }
+            return Ok(v);
         }
         None => {}
     }
@@ -447,7 +482,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
                     }
                 }
             }
-            None => {}
+            Some(FastApply::Native(_)) | None => {}
         }
     }
 

@@ -1536,6 +1536,13 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                     | (JType::VecI, JType::I | JType::L | JType::VecI)
             )
         }
+        // (In a closure compiled whole, a vector's view may be shared: only a
+        // value of any type is assigned to, see `closure::dyn_op`.)
+        Op::SetIndex { val, slot, i, .. } if inl.specs.is_some() => {
+            slot_ty[slot] == JType::Dyn
+                && matches!(lt(i), Some(JType::D | JType::I))
+                && matches!(rt(val), JType::D | JType::I | JType::L | JType::Dyn)
+        }
         Op::SetIndex { val, slot, i, .. } => {
             matches!(lt(i), Some(JType::D | JType::I))
                 && matches!(

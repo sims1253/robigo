@@ -50,7 +50,7 @@ use super::{
     new_module, reg_flow, successors, trace, types_ok, uses,
 };
 use crate::builtins::arith::{ArithOp, RelOp};
-use crate::compile::{Builtin1, Code, InlineArg, Leaf, NativeArg, Op, RangeKind, Reg, Slot};
+use crate::compile::{Builtin1, Code, InlineArg, Leaf, Math1, NativeArg, Op, RangeKind, Reg, Slot};
 use crate::env::{Env, bump_r_epoch, search_epoch};
 use crate::interp::Interp;
 use crate::sym::Sym;
@@ -183,6 +183,9 @@ struct Entry {
     /// Every name the tree looks up in its environments: its cells, the
     /// functions it calls and the functions it guards.
     frame_syms: Vec<Sym>,
+    /// The root's formals (bit `k` for formal `k`) that enter as values of
+    /// any type, which native code may modify (see [`dyn_formals`]).
+    dyn_args: u32,
     /// Words of the context block.
     ctx_words: usize,
     /// What the tree was last found valid for.
@@ -486,6 +489,7 @@ fn native_op(op: &Op) -> bool {
         | Op::Subset { .. }
         | Op::SubsetObj { .. }
         | Op::Builtin1 { .. }
+        | Op::SetIndex { .. }
         | Op::CallBuiltin { .. } => true,
         Op::ForRange { kind, .. } => *kind != RangeKind::SeqAlong,
         _ => false,
@@ -608,6 +612,10 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             }
             let u = uses(op, &inl);
             assigned.extend(u.wslots.iter().map(|s| code.vars[*s as usize]));
+            // (`x[i] <- v` assigns a local `x`, even where `x` was not one.)
+            if let Op::SetIndex { x, .. } = op {
+                assigned.push(*x);
+            }
             read.extend(u.rslots);
             if let Op::SuperSet { sym, slot, .. } = op {
                 supers.push((*sym, *slot));
@@ -694,6 +702,50 @@ fn native_call_arg(a: &NativeArg, guards: &mut Vec<Sym>) -> CallArg {
             CallArg::Nested(Rc::new((n.op, a, b)))
         }
     }
+}
+
+/// By closure of the tree and formal: whether the formal must be a value of
+/// any type, which native code may modify: its elements are assigned
+/// (`x[i] <- v`), or it is passed on to such a formal.
+fn dyn_formals(funs: &[Fun]) -> Vec<Vec<bool>> {
+    let mut need: Vec<Vec<bool>> = funs
+        .iter()
+        .map(|f| {
+            let set = |s: Slot| f.code.ops.iter().any(|o| matches!(o, Op::SetIndex { slot, .. } if *slot == s));
+            f.formal_slots.iter().map(|s| s.is_some_and(set)).collect()
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for (fi, f) in funs.iter().enumerate() {
+            for ic in f.calls.values() {
+                for (k, a) in ic.args.iter().enumerate() {
+                    let CallArg::Leaf(Leaf::Var(_, s)) = a else { continue };
+                    if !need[ic.callee].get(k).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(p) = f.formal_slots.iter().position(|fs| *fs == Some(*s))
+                        && !need[fi][p]
+                    {
+                        need[fi][p] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return need;
+        }
+    }
+}
+
+/// The variables `op` assigns, also by modifying them (`x[i] <- v`).
+fn assigned_slots(op: &Op, inl: &Inl) -> Vec<Slot> {
+    let mut w = uses(op, inl).wslots;
+    if let Op::SetIndex { slot, .. } = op {
+        w.push(*slot);
+    }
+    w
 }
 
 fn written_leaf(l: &Leaf, cells: &[CellDef]) -> bool {
@@ -1185,7 +1237,7 @@ fn define(
             || !dyn_formals.is_empty()
             || !dyn_cells.is_empty()
             || result == JType::Dyn;
-        let assigned: Vec<Slot> = code.ops.iter().flat_map(|op| uses(op, &inl).wslots).collect();
+        let assigned: Vec<Slot> = code.ops.iter().flat_map(|op| assigned_slots(op, &inl)).collect();
         let mut nframe = 0usize;
         let mut dyn_regs = HashMap::new();
         for r in &dyn_reg_list {
@@ -1498,6 +1550,7 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
     }
     frame_syms.sort();
     frame_syms.dedup();
+    let dyn_args = dyn_formals(&funs)[0].iter().enumerate().fold(0u32, |m, (k, d)| m | ((*d as u32) << k));
     let e = Rc::new(Entry {
         id: NEXT_ENTRY.with(|n| {
             n.set(n.get() + 1);
@@ -1508,6 +1561,7 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
         writes,
         cells,
         frame_syms,
+        dyn_args,
         ctx_words,
         valid: RefCell::new(None),
         runs: Cell::new(0),
@@ -1648,7 +1702,7 @@ fn run(
     let mut tys_buf = [JType::D; MAX_ARGS];
     let tys = &mut tys_buf[..args.len()];
     for (k, v) in args.iter().enumerate() {
-        let t = jit_type(v).unwrap_or(JType::Dyn);
+        let t = if e.dyn_args & (1 << k) != 0 { JType::Dyn } else { jit_type(v).unwrap_or(JType::Dyn) };
         tys[k] = t;
         if t == JType::Dyn {
             // (`args` outlives the run.)
@@ -1835,6 +1889,8 @@ pub(crate) fn depth_budget(limit_left: usize, stack_left: usize) -> i32 {
 const ARITH: [ArithOp; 7] =
     [ArithOp::Plus, ArithOp::Minus, ArithOp::Times, ArithOp::Div, ArithOp::Pow, ArithOp::Mod, ArithOp::IDiv];
 const REL: [RelOp; 6] = [RelOp::Eq, RelOp::Ne, RelOp::Lt, RelOp::Le, RelOp::Gt, RelOp::Ge];
+const MATH1: [Math1; 8] =
+    [Math1::Sqrt, Math1::Abs, Math1::Exp, Math1::Floor, Math1::Ceiling, Math1::Sin, Math1::Cos, Math1::Tan];
 const BUILTIN1: [Builtin1; 11] = [
     Builtin1::Length,
     Builtin1::IsNull,
@@ -1971,6 +2027,34 @@ unsafe extern "C" fn h_d_builtin1(f: i32, x: *const RVal, dst: *mut RVal) -> i32
         None => 1,
     }
 }
+unsafe extern "C" fn h_d_math1(f: i32, x: *const RVal, dst: *mut RVal) -> i32 {
+    // SAFETY: see above.
+    match crate::vm::scalar(unsafe { &*x }).and_then(|x| crate::vm::math1_fast(MATH1[f as usize], x)) {
+        Some(v) => {
+            // SAFETY: see above.
+            unsafe { *dst = v };
+            0
+        }
+        None => 1,
+    }
+}
+/// `x[i] <- v` / `x[[i]] <- v` of a variable `x` of the frame, by the VM's
+/// fast path (`vm::set_element`: copies a shared vector first); 1 where the
+/// VM would make the call.
+unsafe extern "C" fn h_d_set_index(x: *mut RVal, i: f64, v: *const RVal, two: i32) -> i32 {
+    // NaN fails both comparisons. R: subassign.c (as `vm::scalar_index`).
+    if !(1.0..4503599627370496.0).contains(&i) {
+        return 1;
+    }
+    // SAFETY: see above; `x` is a slot of this frame, not the caller's (an
+    // assigned formal has its own copy).
+    let (x, v) = unsafe { (&mut *x, &*v) };
+    match x {
+        // (A copy of the value, which `set_element` may take: the slot keeps its own.)
+        RVal::V(xv) => (!crate::vm::set_element(xv, (i.trunc() - 1.0) as usize, &mut v.clone(), two != 0, true)) as i32,
+        _ => 1,
+    }
+}
 /// `list(...)` of untagged arguments: takes them, as the VM does.
 unsafe extern "C" fn h_d_list(argv: *const *mut RVal, n: i64, dst: *mut RVal) {
     let mut v = Vec::with_capacity(n as usize);
@@ -2057,6 +2141,13 @@ pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
     ("robigo_d_builtin1", h_d_builtin1 as *const u8, &[types::I32, types::I64, types::I64], Some(types::I32)),
     ("robigo_d_list", h_d_list as *const u8, &[types::I64, types::I64, types::I64], None),
     ("robigo_d_c", h_d_c as *const u8, &[types::I64, types::I64, types::I64], Some(types::I32)),
+    ("robigo_d_math1", h_d_math1 as *const u8, &[types::I32, types::I64, types::I64], Some(types::I32)),
+    (
+        "robigo_d_set_index",
+        h_d_set_index as *const u8,
+        &[types::I64, types::F64, types::I64, types::I32],
+        Some(types::I32),
+    ),
 ];
 
 /// Register types of the ops that compute with values of any type.
@@ -2090,7 +2181,7 @@ pub(super) fn dyn_defs(
         {
             d(dst)
         }
-        Op::Builtin1 { dst, a, .. } if rt(a) == Some(JType::Dyn) => d(dst),
+        Op::Builtin1 { dst, a, .. } | Op::Math1 { dst, a, .. } if rt(a) == Some(JType::Dyn) => d(dst),
         _ => None,
     }
 }
@@ -2278,6 +2369,23 @@ impl Gen<'_, '_> {
                 let d = self.dyn_reg(*dst);
                 let fi = self.i32c(BUILTIN1.iter().position(|v| v == f).unwrap() as i64);
                 let r = self.hcall("robigo_d_builtin1", &[fi, x, d]).unwrap();
+                self.failed(r, pc);
+            }
+            Op::Math1 { f, dst, a, .. } if rt(a) == dy => {
+                let (x, _) = self.reg(*a);
+                let d = self.dyn_reg(*dst);
+                let fi = self.i32c(MATH1.iter().position(|v| v == f).unwrap() as i64);
+                let r = self.hcall("robigo_d_math1", &[fi, x, d]).unwrap();
+                self.failed(r, pc);
+            }
+            Op::SetIndex { val, slot, i, two, .. } => {
+                let v = self.reg(*val);
+                let pv = self.as_slot(v, 0);
+                let iv = self.leaf(i);
+                let f = self.to_f64(iv.0, iv.1);
+                let (x, _) = self.var(*slot);
+                let two = self.i32c(*two as i64);
+                let r = self.hcall("robigo_d_set_index", &[x, f, pv, two]).unwrap();
                 self.failed(r, pc);
             }
             Op::CallBuiltin { dst, f, args, .. } => {
