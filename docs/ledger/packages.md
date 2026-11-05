@@ -183,3 +183,75 @@ Causes, most blocks first:
   and `skip("Currently broken")` (test-header.r:17), 33 of 96 blocks. The
   floor becomes 59 of 63 (94%). On main dbe74cda (4-vCPU VM): httr 59 / 59,
   files done 20, nothing diverged, **green**. curl unchanged at 50 / 73.
+
+## 2026-11-05: round 1 of the campaign, 9 of 20 green
+
+Main 47ccdf61 on one 8-vCPU boat VM, 4 jobs (`scripts/package-suite.py run`,
+all 20 packages, canary 9 / 9): **7,342 of 8,693 blocks match GNU R (84.5%),
+9 of 20 packages green.** The baseline was 5,222 and 0 (on the dev machine;
+scores depend on the machine, see 2026-11-04).
+
+| package | matching | files |
+|---|---|---|
+| Rcpp | 1,629 / 1,629, green | done 53 |
+| RcppEigen | 131 / 131, green | done 7 |
+| jsonlite | 56 / 56, green | done 30 |
+| lifecycle | 38 / 38, green | done 9 |
+| magrittr | 24 / 24, green | done 9 |
+| scales | 218 / 218, green | done 39 |
+| stringr | 212 / 212, green | done 30 |
+| tibble | 290 / 290, green | done 32 |
+| httr | 59 / 59, green | done 20 |
+| htmltools | 111 / 112 | done 11 |
+| glue | 112 / 114 | done 8 |
+| tidyselect | 217 / 219 | done 16 |
+| cli | 677 / 689 | done 72 |
+| R6 | 66 / 73 | done 12 |
+| ggplot2 | 809 / 846 | done 119, timeout 3, oom 1 |
+| rlang | 1,191 / 1,425 | done 59, crash 1, timeout 1 |
+| curl | 50 / 73 | done 22 |
+| dplyr | 943 / 1,341 | done 79 |
+| purrr | 251 / 452 | done 51, timeout 2 |
+| tidyr | 258 / 692 | done 31 |
+
+The merged root causes, each with a test recorded with GNU R and its
+package-suite effect measured on a VM:
+
+| PR | cause | effect |
+|---|---|---|
+| #339 | `.External2` was always visible (names.c eval 201) | magrittr green |
+| #345 | a C write into a shared `0L` changed every `0L` | purrr's VM panics gone |
+| #348 | internal generics did not find S4 methods; `lengths` port | RcppEigen green |
+| #355 | the bridge dropped closures' S4 bit | jsonlite green |
+| #356 | the simple-.Internal memo kept callers alive | R6 finalizers |
+| #358 | C-bound envs/functions read as active bindings | lifecycle, stringr |
+| #359 | `on.exit` inside `eval()` never ran | lifecycle, tidyselect |
+| #360 | `stderr()` ignored `sink(type = "message")` | Rcpp green |
+| #361, #392, #253 | `R_Busy`; `...` through C; `adist` | scales green |
+| #363 | S3 dispatch context of primitives hidden from `sys.*()` | tibble |
+| #346, #369 | a local httpbin; own skips leave the floor | curl scorable, httr green |
+| #372 | every `.Call` replaced every proxied closure's attributes | ggplot2 39 → 236, no oom |
+| #386 | every `.Call` walked every pinned proxy (council round 5) | 72 → 5 timed-out files |
+| #395 | GNU R's cairo module, built from its sources | glue (`png()`, `svg()`) |
+| #402 | GNU R's collection trigger (memory.c) | rlang, cli, dplyr faster |
+| #411, #412 | perf drift from #359 and #348 | gate restored |
+
+Found while measuring: ggplot2's `+` (the "Incompatible methods" entry
+above) and withr's global `defer()` work on main; both entries are stale.
+
+What remains, by owner:
+- purrr, tidyr, dplyr (most of the 1,351 missing blocks): C writes into
+  `.Call` arguments seen during the call. Needs #398 (scalar identity,
+  council round 3), then twins (#167, #387, #389, council round 5), then
+  zero-copy. Measured on the zero-copy branch with #398: purrr 415, tidyr
+  648, dplyr 1,058.
+- R6: dead values in VM registers (#357, council round 4), PR #417:
+  73 / 73.
+- rlang, cli: twins (#389's 17 blocks) and causes under investigation.
+- ggplot2: the 3 timeouts and 1 oom (proxy retention, under investigation).
+- curl: `R_new_custom_connection` (#343, design pending) and finalizers in
+  `test_that()` (#344).
+- glue, htmltools: graphics devices after cairo (under investigation).
+- tidyselect: cons-cell tails (#387).
+- The council's third member (Gemini) could not be seated in rounds 4 and 5
+  (provider usage limit); both rounds ran with Opus and Sol.
