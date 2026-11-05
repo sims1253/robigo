@@ -77,6 +77,12 @@ thread_local! {
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
     static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::new());
+    /// SEEN by core address: object -> its key.
+    static SEEN_AT: RefCell<HashMap<usize, usize, robigo_runtime::env::FastHash>> = RefCell::new(HashMap::default());
+    /// SEEN keys in the order native calls converted or were handed them
+    /// (see [`write_backs`]); each running call's start in it.
+    static SEEN_TOUCHED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static TOUCH_START: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// Identity across native calls for a vector C code stored in an
     /// environment (`Rf_defineVar`, `Rf_setVar`): the runtime value it
     /// became -> the core object, preserved. C code keeps such objects in
@@ -1055,6 +1061,7 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
     let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
+            touch_seen(v);
             return x;
         }
     }
@@ -1063,8 +1070,39 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
         core().preserve(x);
         // the Value is kept too, so its address is not reused meanwhile
         SEEN.with(|m| m.borrow_mut().insert(k, (x, v.clone())));
+        SEEN_AT.with(|m| m.borrow_mut().insert(x.addr(), k));
+        SEEN_TOUCHED.with(|t| t.borrow_mut().push(k));
     }
     x
+}
+
+/// A native call was handed an object converted before it in the same
+/// outermost call: it can write that object and what it contains.
+unsafe fn touch_seen(v: &Value) {
+    if CALL_DEPTH.with(|d| d.get()) < 2 {
+        return;
+    }
+    let mut stack = vec![v.clone()];
+    let mut done = std::collections::HashSet::<usize, robigo_runtime::env::FastHash>::default();
+    while let Some(v) = stack.pop() {
+        let Some(k) = vector_identity(&v) else { continue };
+        if !done.insert(k) || !SEEN.with(|m| m.borrow().contains_key(&k)) {
+            continue;
+        }
+        SEEN_TOUCHED.with(|t| t.borrow_mut().push(k));
+        if let Some(a) = v.attrs() {
+            stack.extend(a.0.iter().map(|(_, x)| x.clone()));
+        }
+        match &v {
+            Value::List(x) | Value::Expr(x) => stack.extend(x.data.iter().cloned()),
+            Value::Pairlist(p) => stack.extend(p.items.iter().map(|a| a.value.clone())),
+            Value::Lang(l) => {
+                stack.push(l.fun.clone());
+                stack.extend(l.args.iter().map(|a| a.value.clone()));
+            }
+            _ => {}
+        }
+    }
 }
 
 unsafe fn to_sexp_new(v: &Value) -> Sexp {
@@ -2155,17 +2193,39 @@ fn iface_of(k: c_int) -> Interface {
 /// modify, including writes to list elements and attributes. A value the
 /// routine did not replace is looked up by the address it was converted
 /// from, so unchanged elements keep their identity.
-unsafe fn converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Value {
-    if let Some(v) = originals.get(&x.addr()) {
-        return v.clone();
+unsafe fn converted(x: Sexp, originals: &mut Originals) -> Value {
+    if let Some(v) = originals.get(x.addr()) {
+        return v;
     }
     let v = from_sexp(x);
-    originals.insert(x.addr(), v.clone());
+    originals.0.insert(x.addr(), v.clone());
     v
 }
 
+/// The runtime values of core objects during a write-back: what the
+/// write-back converted, then the objects converted for the native call
+/// (SEEN, through [`SEEN_AT`]).
+#[derive(Default)]
+struct Originals(HashMap<usize, Value>);
+
+impl Originals {
+    // (`try_with`: a finalizer's C code can drain at thread exit, after
+    // the tables are gone)
+    fn get(&self, addr: usize) -> Option<Value> {
+        if let Some(v) = self.0.get(&addr) {
+            return Some(v.clone());
+        }
+        let k = SEEN_AT.try_with(|m| m.borrow().get(&addr).copied()).ok().flatten()?;
+        SEEN.try_with(|m| m.borrow().get(&k).filter(|e| e.0.addr() == addr).map(|e| e.1.clone())).ok().flatten()
+    }
+
+    fn contains(&self, addr: usize) -> bool {
+        self.0.contains_key(&addr) || SEEN_AT.try_with(|m| m.borrow().contains_key(&addr)).unwrap_or(false)
+    }
+}
+
 /// A cons chain as runtime cells, keeping unchanged elements' identity.
-unsafe fn pair_items_converted(mut p: Sexp, originals: &mut HashMap<usize, Value>) -> Vec<Arg> {
+unsafe fn pair_items_converted(mut p: Sexp, originals: &mut Originals) -> Vec<Arg> {
     let mut items = Vec::new();
     while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
         let tag = if p.tag().typ() == SYMSXP { Some(sym_of(p.tag())) } else { None };
@@ -2175,7 +2235,7 @@ unsafe fn pair_items_converted(mut p: Sexp, originals: &mut HashMap<usize, Value
     items
 }
 
-unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+unsafe fn attrs_converted(x: Sexp, originals: &mut Originals) -> AttrBox {
     if x.typ() == CHARSXP {
         return None;
     }
@@ -2194,7 +2254,7 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Att
 /// chain for it at every native call, so its cells, not the chain, say
 /// whether C changed it. Unchanged, the list keeps its own object (in GNU
 /// R it is the same DOTSXP or LISTSXP).
-unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) -> bool {
+unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut Originals) -> bool {
     let items = match (old, x.typ()) {
         (Value::Dots(a), DOTSXP) => &a[..],
         (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
@@ -2215,7 +2275,7 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>
 
 /// The attribute cells of `x` are those of `attrs`' conversion: what C
 /// wrote into the attribute values themselves comes back in place.
-unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usize, Value>) {
+unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut Originals) {
     let Some(a) = attrs.as_deref() else { return };
     if x.typ() == CHARSXP {
         return;
@@ -2226,7 +2286,7 @@ unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usi
             return;
         }
         // (an object this call converted is written back on its own)
-        if !originals.contains_key(&cell.car().addr()) {
+        if !originals.contains(cell.car().addr()) {
             write_back(value, cell.car(), originals);
         }
         cell = cell.cdr();
@@ -2234,7 +2294,7 @@ unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usi
 }
 
 /// The attributes of a cons cell as a runtime attribute box (with its S4 bit).
-unsafe fn cells_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
     let mut attrs = attrs_converted(x, originals);
     if x.gp() & gp::S4 != 0 {
         attrs.get_or_insert_with(Default::default).1 = true;
@@ -2244,7 +2304,7 @@ unsafe fn cells_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox
 
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
-unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
+unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
     // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
         return;
@@ -2267,7 +2327,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             (*p).data.copy_from_slice(src);
         }
     }
-    unsafe fn box_attrs(x: Sexp, originals: &mut HashMap<usize, Value>) -> AttrBox {
+    unsafe fn box_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
         let s4 = x.gp() & gp::S4 != 0;
         match attrs_converted(x, originals) {
             Some(mut a) => {
@@ -2281,7 +2341,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     // Only what the routine wrote: the attribute cells are compared with
     // those of the conversion (`agree_attrs`); converting unchanged cells
     // back would make new objects of the same values.
-    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut HashMap<usize, Value>) {
+    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut Originals) {
         if attrs_agreed(x) {
             attr_values_back(&rc.attrs, x, originals);
             return;
@@ -2487,10 +2547,10 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
 /// A list or call cell that `.Call` returned and that came from the runtime:
 /// it is the caller's own object, not a copy (`node_poke_cadr(node_car(x), v)`
 /// writes through `x`). `originals` has the routine's writes.
-unsafe fn original_cell(out: Sexp, originals: &HashMap<usize, Value>) -> Option<Value> {
-    match originals.get(&out.addr()) {
-        Some(v @ Value::Pairlist(_)) if out.typ() == LISTSXP => Some(v.clone()),
-        Some(v @ Value::Lang(_)) if out.typ() == LANGSXP => Some(v.clone()),
+unsafe fn original_cell(out: Sexp, originals: &Originals) -> Option<Value> {
+    match originals.get(out.addr()) {
+        Some(v @ Value::Pairlist(_)) if out.typ() == LISTSXP => Some(v),
+        Some(v @ Value::Lang(_)) if out.typ() == LANGSXP => Some(v),
         _ => None,
     }
 }
@@ -2507,13 +2567,17 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 /// primitives one (eval.c): tracebacks show it, `error()` skips it.
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     CALL_DEPTH.with(|d| d.set(d.get() + 1));
+    TOUCH_START.with(|s| s.borrow_mut().push(SEEN_TOUCHED.with(|t| t.borrow().len())));
     let res = call_routine_ctx(interp, call, r, args, env);
+    TOUCH_START.with(|s| s.borrow_mut().pop());
     crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
         d.get() == 0
     }) {
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
+        SEEN_AT.with(|m| m.borrow_mut().clear());
+        SEEN_TOUCHED.with(|t| t.borrow_mut().clear());
         for (k, (x, _)) in seen {
             core().release(x);
             // the agreement of an object with attributes (`write_back`
@@ -2631,7 +2695,7 @@ unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
 /// (a scan of all of them per call made a file of rlang tests quadratic in
 /// the environments it had created). The arguments `xs` are left to the
 /// caller.
-unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>) {
+unsafe fn write_back_touched(xs: &[Sexp], originals: &mut Originals) {
     // (`try_with` throughout, as the marking side: finalizers can run C code
     // at thread exit, after these tables are gone; then nothing is queued)
     let touched: Vec<usize> = ATTRS_TOUCHED.try_with(|t| t.borrow().iter().copied().collect()).unwrap_or_default();
@@ -2676,15 +2740,31 @@ pub(crate) unsafe fn drain_touched() {
     {
         return;
     }
-    let mut originals: HashMap<_, _> =
-        SEEN.try_with(|m| m.borrow().values().map(|(x, v)| (x.addr(), v.clone())).collect()).unwrap_or_default();
-    write_back_touched(&[], &mut originals);
+    write_back_touched(&[], &mut Originals::default());
 }
 
 /// What a `.Call` changed in the objects it could reach.
-unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
-    let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
-    let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
+    // The outermost call: every object converted for it. A call inside
+    // another (a routine R code runs while C code waits in `Rf_eval`): the
+    // objects this call converted or was handed again, and what they
+    // contain ([`touch_seen`]); what only the waiting routine has is
+    // written back when that one returns. Comparing every object the
+    // outer call converted made each nested call cost its size (ggplot2
+    // under rlang's C `eval`: 60k objects, 11k nested calls per test).
+    let seen: Vec<(Sexp, Value)> = if CALL_DEPTH.with(|d| d.get()) > 1 {
+        let start = TOUCH_START.with(|s| s.borrow().last().copied().unwrap_or(0));
+        let keys: Vec<usize> = SEEN_TOUCHED.with(|t| t.borrow()[start..].to_vec());
+        let mut done =
+            std::collections::HashSet::with_capacity_and_hasher(keys.len(), robigo_runtime::env::FastHash::default());
+        SEEN.with(|m| {
+            let m = m.borrow();
+            keys.into_iter().filter(|k| done.insert(*k)).filter_map(|k| m.get(&k).cloned()).collect()
+        })
+    } else {
+        SEEN.with(|m| m.borrow().values().cloned().collect())
+    };
+    let mut originals = Originals::default();
     for (x, value) in &seen {
         if !xs.contains(x) {
             write_back(value, *x, &mut originals);
@@ -2721,7 +2801,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     let originals = match back {
         Ok(originals) => originals,
         Err(f) if t == 0 => return Err(f),
-        Err(_) => HashMap::new(),
+        Err(_) => Originals::default(),
     };
     if t == 0 {
         if let Some(v) = original_cell(out, &originals) {
