@@ -667,6 +667,13 @@ pub fn c_owned_binding(env: &crate::env::Env, sym: crate::sym::Sym, holder: Valu
     env.set_local_flags(sym, f, crate::env::BIND_ACTIVE);
 }
 
+/// Is `f`, a binding's stored value, the function of a C-owned variable?
+/// Such a variable is a plain binding in GNU R, so what R can see of a
+/// binding treats it as one (`Env::binding_is_active`, serialization).
+pub fn is_c_owned_binding(f: &Value) -> bool {
+    c_owned_holder(f).is_some()
+}
+
 /// The holder of a C-owned variable's object, given its binding function.
 pub fn c_owned_holder(f: &Value) -> Option<Value> {
     match f {

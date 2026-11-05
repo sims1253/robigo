@@ -1535,11 +1535,14 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "serialize" => {
             let v = from_sexp(a[0]);
             let (fmt, version) = (int_arg(a[1]), int_arg(a[2]));
-            let bytes = if fmt == 2 {
-                robigo_runtime::serialize::serialize_binary(&v, version)
+            let format = if fmt == 2 {
+                robigo_runtime::serialize::Format::Binary
             } else {
-                robigo_runtime::serialize::serialize_version(&v, version)
+                robigo_runtime::serialize::Format::Xdr
             };
+            // A C-owned binding is read as R reads it (serialize_r), on
+            // the interpreter this C call runs under.
+            let bytes = with_interp(|i| robigo_runtime::builtins::serialize::serialize_r(i, &v, version, format))?;
             to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))
         }
         // R: deparse.c:deparse1line (MAX_Cutoff, backticks, SIMPLEDEPARSE,

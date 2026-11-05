@@ -70,10 +70,14 @@ const BYTES_MASK: u32 = 1 << 1;
 const UTF8_MASK: u32 = 1 << 3;
 const ASCII_MASK: u32 = 1 << 6;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Format {
+/// The wire format of a serialization stream, named by its first line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Format {
+    /// XDR (`X\n`), the portable default.
     Xdr,
+    /// Native little-endian binary (`B\n`).
     Binary,
+    /// ASCII (`A\n`).
     Ascii,
 }
 
@@ -1937,9 +1941,16 @@ enum RefKey {
 /// a name (character vector) for an object, or `NULL`.
 pub type PersistHook<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
 
+/// Reads the value of a C-owned binding (`native::c_owned_binding`) from
+/// its binding function. In GNU R that variable is a plain binding of the
+/// object C shares, so a frame writes the value, not robigo's function.
+pub type OwnedReader<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
+
 pub struct Writer<'a> {
     pub out: Vec<u8>,
     hook: Option<PersistHook<'a>>,
+    /// how to read a C-owned binding's value (see [`OwnedReader`])
+    owned: Option<OwnedReader<'a>>,
     /// the first error the hook raised (writing stops being meaningful)
     err: Option<Flow>,
     /// Reference table shared by symbols and environments, as in R.
@@ -2062,21 +2073,42 @@ impl Writer<'_> {
     }
     /// A frame pairlist (or hash chain) of `e`'s bindings of `syms`, in
     /// order, ending in `NULL`.
+    // R: serialize.c:WriteItem — a frame cell holds BINDING_VALUE's raw
+    // CAR: an active binding's function, with ACTIVE_BINDING_MASK. A
+    // C-owned binding is a plain binding in GNU R: its value, unmasked.
     fn frame_cells(&mut self, e: &Env, syms: &[Sym]) {
         for &s in syms {
             let flags = e.binding_flags(s).unwrap_or(0);
+            let raw = e.get_local(s).unwrap_or(Value::Null);
+            let c_owned = flags & crate::env::BIND_ACTIVE != 0 && crate::native::is_c_owned_binding(&raw);
             let mut levs = 0;
-            if flags & crate::env::BIND_ACTIVE != 0 {
+            if flags & crate::env::BIND_ACTIVE != 0 && !c_owned {
                 levs |= ACTIVE_BINDING_MASK;
             }
             if flags & crate::env::BIND_LOCKED != 0 {
                 levs |= BINDING_LOCK_MASK;
             }
+            let value = if c_owned { self.owned_value(&raw) } else { raw };
             self.flags(LISTSXP, levs, false, false, true);
             self.symbol(s);
-            self.item(&e.get_local(s).unwrap_or(Value::Null));
+            self.item(&value);
         }
         self.int(NILVALUE_SXP as i32);
+    }
+
+    /// The value of a C-owned binding, from its binding function `f`.
+    fn owned_value(&mut self, f: &Value) -> Value {
+        if self.err.is_some() {
+            return Value::Null;
+        }
+        let r = match self.owned.as_mut() {
+            Some(read) => read(f),
+            None => Err(Flow::error("robigo: serializing a C-owned binding needs the interpreter")),
+        };
+        r.unwrap_or_else(|e| {
+            self.err = Some(e);
+            Value::Null
+        })
     }
 
     fn length(&mut self, n: usize) {
@@ -2531,36 +2563,34 @@ impl Writer<'_> {
     }
 }
 
-/// Serialize to an XDR stream of `version` (2 or 3).
-pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
+/// Serialize `v` in `format` (version 2 or 3), with an optional persistence
+/// hook and a reader for C-owned bindings (see [`OwnedReader`]): the
+/// entry point of the R-level serializers, which have the interpreter.
+pub fn serialize_with<'a>(
+    v: &Value,
+    version: i32,
+    format: Format,
+    hook: Option<PersistHook<'a>>,
+    owned: Option<OwnedReader<'a>>,
+) -> RResult<Vec<u8>> {
+    // R: serialize.c:R_Serialize — only versions 2 and 3 are written.
+    if !(2..=3).contains(&version) {
+        return Err(Flow::error(format!("version {version} not supported")));
+    }
     let mut w = Writer {
-        out: Vec::new(),
-        hook: None,
+        out: match format {
+            Format::Xdr => b"X\n".to_vec(),
+            Format::Binary => b"B\n".to_vec(),
+            Format::Ascii => b"A\n".to_vec(),
+        },
+        hook,
+        owned,
         err: None,
         refs: Vec::new(),
         version,
-        little_endian: false,
-        ascii: false,
+        little_endian: format == Format::Binary,
+        ascii: format == Format::Ascii,
     };
-    w.out.extend_from_slice(b"X\n");
-    write_header(&mut w);
-    w.item(v);
-    w.out
-}
-
-/// Serialize to an XDR stream of `version` with a persistence hook
-/// (R: serialize.c R_Serialize with OutPersistHookFunc).
-pub fn serialize_hooked(v: &Value, version: i32, hook: PersistHook<'_>) -> RResult<Vec<u8>> {
-    let mut w = Writer {
-        out: Vec::new(),
-        hook: Some(hook),
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: false,
-        ascii: false,
-    };
-    w.out.extend_from_slice(b"X\n");
     write_header(&mut w);
     w.item(v);
     match w.err {
@@ -2592,19 +2622,17 @@ fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
     }
 }
 
-/// Serialize to a native binary ("B") stream of `version` (2 or 3).
-pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
-    let mut w =
-        Writer { out: Vec::new(), hook: None, err: None, refs: Vec::new(), version, little_endian: true, ascii: false };
-    w.out.extend_from_slice(b"B\n");
-    write_header(&mut w);
-    w.item(v);
-    w.out
+/// Serialize to a native binary ("B") stream of `version` (2 or 3), without
+/// an interpreter: a C-owned binding is an error here (use the R-level
+/// `builtins::serialize::serialize_r`).
+pub fn serialize_binary(v: &Value, version: i32) -> RResult<Vec<u8>> {
+    serialize_with(v, version, Format::Binary, None, None)
 }
 
-/// Serialize to an XDR version-3 stream.
-pub fn serialize(v: &Value) -> Vec<u8> {
-    serialize_version(v, 3)
+/// Serialize to an XDR version-3 stream, without an interpreter (see
+/// [`serialize_binary`]).
+pub fn serialize(v: &Value) -> RResult<Vec<u8>> {
+    serialize_with(v, 3, Format::Xdr, None, None)
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]
@@ -2613,20 +2641,4 @@ mod tests {
     fn call_cells_do_not_enlarge_deserialization_nodes() {
         assert_eq!(std::mem::size_of::<super::PNode>(), 48);
     }
-}
-
-/// R: serialize.c:R_Serialize, R_pstream_ascii_format.
-pub fn serialize_ascii(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer {
-        out: b"A\n".to_vec(),
-        hook: None,
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: false,
-        ascii: true,
-    };
-    write_header(&mut w);
-    w.item(v);
-    w.out
 }

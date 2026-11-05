@@ -531,6 +531,17 @@ impl Env {
         self.0.frame().borrow().get(sym).map(|b| b.flags)
     }
 
+    /// Whether `sym` is bound here by an active binding as R sees it
+    /// (`bindingIsActive`, `R_BindingIsActive`); `None` if unbound. A
+    /// C-owned variable (`native::c_owned_binding`) is robigo's way of
+    /// keeping C's object for a plain value binding, and GNU R has a plain
+    /// value there.
+    pub fn binding_is_active(&self, sym: Sym) -> Option<bool> {
+        let frame = self.0.frame().borrow();
+        let b = frame.get(sym)?;
+        Some(b.flags & BIND_ACTIVE != 0 && crate::native::c_owned_holder(&b.value).is_none())
+    }
+
     pub fn has_local(&self, sym: Sym) -> bool {
         self.0.frame().borrow().position(sym).is_some()
     }
