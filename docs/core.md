@@ -723,7 +723,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
-| 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | bridge copies arguments in (EXTDATA unused); ALTREP class planned |
+| 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
 | 23 | console output through C stdio; signal ownership | planned |
 | 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
 | 25 | start G3 once the accessor layer and the fastmap gate exist | noted |

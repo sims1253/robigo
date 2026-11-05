@@ -471,6 +471,11 @@ fn kept_count() -> usize {
 }
 
 fn drain_dead() {
+    for owner in DEAD_SHARED.with(|d| std::mem::take(&mut *d.borrow_mut())) {
+        // SAFETY: `owner` came from Box::into_raw in `shared_atomic`, and
+        // the collector released its object once.
+        drop(unsafe { Box::from_raw(owner as *mut Value) });
+    }
     let dead = DEAD.with(|d| std::mem::take(&mut *d.borrow_mut()));
     let had = !dead.is_empty();
     for h in dead {
@@ -929,7 +934,7 @@ unsafe fn sweep_twins() -> bool {
     let mut any = false;
     loop {
         let dead: Vec<usize> =
-            TWINS.with(|t| t.borrow().iter().filter(|(_, tw)| only_stored(&tw.value)).map(|(k, _)| *k).collect());
+            TWINS.with(|t| t.borrow().iter().filter(|(_, tw)| twin_unreferenced(tw)).map(|(k, _)| *k).collect());
         if dead.is_empty() {
             return any;
         }
@@ -938,6 +943,27 @@ unsafe fn sweep_twins() -> bool {
             drop_twin(k);
         }
     }
+}
+
+/// Does nothing but the bridge hold a twin's value? Besides the table, a
+/// zero-copy twin's core object holds it as the owner of its buffer
+/// (`shared_atomic`); counting that one too would keep the twin, and so its
+/// core object and the vector, alive for good.
+fn twin_unreferenced(tw: &Twin) -> bool {
+    // SAFETY: the table's twins are marked by every collection, so `tw.x`
+    // is live.
+    let own = unsafe { shared_value(tw.x) }.is_some_and(|o| o.same_object(&tw.value));
+    if !own {
+        return only_stored(&tw.value);
+    }
+    let n = match &tw.value {
+        Value::Lgl(x) | Value::Int(x) => Rc::strong_count(x),
+        Value::Real(x) => Rc::strong_count(x),
+        Value::Cplx(x) => Rc::strong_count(x),
+        Value::Raw(x) => Rc::strong_count(x),
+        _ => return only_stored(&tw.value),
+    };
+    n == 2
 }
 
 /// The runtime graphs exclude the table's own reference to each value.
@@ -1437,6 +1463,59 @@ unsafe fn atomic<T: Copy>(t: u8, data: &[T]) -> Sexp {
     x
 }
 
+/// The owner word of a zero-copy vector is a `Box<Value>`: the runtime
+/// vector whose buffer the core object points into, kept alive until the
+/// collector finds the core object dead.
+unsafe extern "C" fn release_shared(owner: usize) {
+    // The collector is sweeping: dropping the vector here could run code
+    // that reaches the core (its attributes can hold proxies), so it waits
+    // for the next safe point, as dead proxies do.
+    DEAD_SHARED.with(|d| d.borrow_mut().push(owner));
+}
+
+thread_local! {
+    /// Owners of zero-copy vectors the collector found dead.
+    static DEAD_SHARED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// An atomic vector handed to C as itself, as GNU R does (docs/core.md §6):
+/// an EXTDATA object whose payload is the runtime vector's buffer, so a
+/// routine that writes through `INTEGER(x)` changes what every R binding
+/// of `x` sees, at once and wherever C found it (an argument, an element
+/// of one, `findVar`). purrr's map writes its index into an argument
+/// before every call back into R; dplyr does the same with the group id
+/// it fetches from the data mask.
+///
+/// The `Value` held as owner keeps the reference count above one, so the
+/// runtime copies before it changes the vector itself (copy-on-modify), and
+/// the buffer the core object points into is never moved or freed while it
+/// lives. C's writes go through a raw pointer, as `write_back`'s did; no
+/// runtime borrow of the elements lasts across a native call.
+unsafe fn shared_atomic<T>(t: u8, v: &Value, data: &[T]) -> Sexp {
+    // C writes in place into what it believes no one else references
+    // (NAMED/REFCNT, e.g. a fresh eval result). The runtime's holders of
+    // the vector are references: one for a temporary nobody else sees
+    // (C may reuse it, nothing else changes), more for a vector bound to
+    // a variable or held by a list (C code following the protocol copies).
+    let holders = sharing(v) as usize + 1;
+    let owner = Box::into_raw(Box::new(v.clone())) as usize;
+    let x = core().alloc_extdata(t, data.as_ptr() as *mut u8, data.len(), owner, Some(release_shared));
+    // marks the owner word as this bridge's (any other EXTDATA's is not a Box<Value>)
+    x.set_extra(x.extra() | robigo_core::extra::HOST_OWNED);
+    x.set_refcnt(holders.min(u16::MAX as usize) as u16);
+    x
+}
+
+/// The runtime vector a zero-copy core object shares its buffer with.
+unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
+    if !x.has_flag(flags::EXTDATA) || x.extra() & robigo_core::extra::HOST_OWNED == 0 {
+        return None;
+    }
+    // SAFETY: a live EXTDATA object made by `shared_atomic` (the HOST_OWNED
+    // bit) owns this box until its release runs, after it is found dead.
+    Some(unsafe { &*(robigo_core::Core::extdata_owner(x) as *const Value) })
+}
+
 unsafe fn set_attrs(x: Sexp, attrs: Option<&Attrs>) {
     let Some(a) = attrs else { return };
     if a.0.is_empty() {
@@ -1529,7 +1608,8 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
     let x = match v {
         Value::Null => return R_NilValue,
         Value::Sym(s) => return sym_sexp(*s),
-        Value::Lgl(x) => atomic(LGLSXP, &x.data),
+        Value::Lgl(x) if v.is_shared_scalar() => atomic(LGLSXP, &x.data),
+        Value::Lgl(x) => shared_atomic(LGLSXP, v, &x.data),
         // GNU R's compact sequences stay compact ALTREP objects in C
         Value::Int(x) if robigo_runtime::value::compact_intseq_of(x).is_some() => {
             let (n, n1, inc) = robigo_runtime::value::compact_intseq_of(x).unwrap();
@@ -1539,10 +1619,11 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             let (n, n1, inc) = robigo_runtime::value::compact_realseq_of(x).unwrap();
             return crate::compact::new_compact_realseq(n as isize, n1, inc);
         }
-        Value::Int(x) => atomic(INTSXP, &x.data),
-        Value::Real(x) => atomic(REALSXP, &x.data),
-        Value::Cplx(x) => atomic(CPLXSXP, &x.data),
-        Value::Raw(x) => atomic(RAWSXP, &x.data),
+        Value::Int(x) if v.is_shared_scalar() => atomic(INTSXP, &x.data),
+        Value::Int(x) => shared_atomic(INTSXP, v, &x.data),
+        Value::Real(x) => shared_atomic(REALSXP, v, &x.data),
+        Value::Cplx(x) => shared_atomic(CPLXSXP, v, &x.data),
+        Value::Raw(x) => shared_atomic(RAWSXP, v, &x.data),
         Value::Str(x) => {
             let r = Rf_protect(core().alloc_vector(STRSXP, x.data.len()));
             for (i, s) in x.data.iter().enumerate() {
@@ -1703,6 +1784,27 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     }
     if let Some(v) = proxied(x) {
         return v;
+    }
+    // A zero-copy vector is the runtime's own: the same object comes back
+    // (C handing an argument back, or building a call of it to evaluate,
+    // as purrr's cleancall does), with the attributes C gave it.
+    if let Some(v) = shared_value(x) {
+        if crate::memory::xlength(x) as usize == v.len() {
+            // C may have changed the type in place (SET_TYPEOF) between the
+            // two types of one storage: utils' typeconvert turns
+            // duplicated()'s logical into a factor's integer codes. Any
+            // other change is copied like a core vector.
+            let v = match (v, x.typ()) {
+                (Value::Lgl(rc), INTSXP) => Some(Value::Int(rc.clone())),
+                (Value::Int(rc), LGLSXP) => Some(Value::Lgl(rc.clone())),
+                (v, _) if twin_shape(x, v) => Some(v.clone()),
+                _ => None,
+            };
+            if let Some(v) = v {
+                write_back(&v, x, &mut HashMap::new());
+                return v;
+            }
+        }
     }
     if let Some((int, n, n1, inc)) = crate::compact::compact_info(x) {
         return if int {
@@ -2718,7 +2820,8 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     }
     unsafe fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
-        if n == 0 || crate::memory::xlength(x) as usize != n {
+        // a zero-copy argument: C wrote into the vector itself
+        if n == 0 || crate::memory::xlength(x) as usize != n || x.std_data() as *const T == rc.data.as_ptr() {
             return;
         }
         let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
@@ -2854,7 +2957,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Raw(rc) => back(rc, x),
         Value::Cplx(rc) => {
             let n = rc.data.len();
-            if n > 0 && crate::memory::xlength(x) as usize == n {
+            if n > 0 && crate::memory::xlength(x) as usize == n && x.std_data() as *const Complex != rc.data.as_ptr() {
                 let src = std::slice::from_raw_parts(x.std_data() as *const Complex, n);
                 if src != rc.data.as_slice() {
                     let p = Rc::as_ptr(rc) as *mut Vector<Complex>;
