@@ -378,6 +378,8 @@ enum Held {
     Wrapped(usize),
     /// A proxy pinned for C, by handle.
     Pinned(usize),
+    /// A twin, by its runtime identity.
+    Twin(usize),
 }
 
 /// The holds the last collection found dead (one mark over both heaps:
@@ -400,6 +402,7 @@ unsafe fn drain_dead_held() {
             Some(Held::Pinned(h)) => {
                 PINNED.with(|m| m.borrow_mut().remove(&h));
             }
+            Some(Held::Twin(k)) => forget_dead_twin(k),
             None => {}
         }
     }
@@ -425,7 +428,12 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
                 graph.root(value);
             }
         });
-        ignore_twin_owners(&mut graph);
+        // a twin left after the collection is one the core heap kept too
+        TWINS.with(|t| {
+            for tw in t.borrow().values() {
+                graph.root(&tw.value);
+            }
+        });
         graph.include_escaped();
         graph.expand();
         graph
@@ -572,12 +580,18 @@ unsafe fn proxy(v: &Value) -> Sexp {
 //
 // The table holds the value, as `STORED` did, so a runtime-side change copies
 // it (copy-on-modify sees it shared) and the twin never goes stale; the
-// sweep drops twins whose value only the table holds. The collector marks
-// every twin (`mark_twins`); shared scalars (`Value::lgl`, small `Value::int`)
+// sweep drops twins whose value only the table holds. A twin is a hold
+// in the core heap (`Held::Twin`): a root in the collections the allocator
+// triggers; in gc() it is marked when the runtime graph shows its value
+// live or a traced proxy's runtime side reaches the value (one mark over
+// both heaps), and a twin nothing reached dies with the collection
+// (`forget_dead_twin`). Shared scalars (`Value::lgl`, small `Value::int`)
 // get a read-only twin, which C cannot write back into every user of them.
 
 struct Twin {
     x: Sexp,
+    /// its hold in the core heap (see `Held::Twin`)
+    hold: u64,
     value: Value,
     readonly: bool,
     /// a constant of code (inside a call): not mutable, as eval.c's
@@ -747,7 +761,11 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     let cells = twin_cells(x);
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
-    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells, original: false }));
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Twin(k)));
+    TWINS.with(|t| {
+        t.borrow_mut().insert(k, Twin { x, hold, value: v.clone(), readonly, constant, cells, original: false })
+    });
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -804,6 +822,8 @@ unsafe fn twin_items(mut p: Sexp, items: &[Arg], constant: bool) {
 /// Drop twin `k` (its value is referenced only by the table).
 unsafe fn drop_twin(k: usize) {
     let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    core().unhold(tw.hold);
+    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
     TWIN_HEAD.with(|h| {
         let mut h = h.borrow_mut();
         if h.get(&tw.x.addr()) == Some(&k) {
@@ -815,6 +835,22 @@ unsafe fn drop_twin(k: usize) {
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
     // address may be another object's after the next collection
+    forget_attrs(tw.x);
+}
+
+/// Twin `k` died in the collection (nothing reached it, through either
+/// heap): forget it without reading its freed cells.
+unsafe fn forget_dead_twin(k: usize) {
+    let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    TWIN_HEAD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.get(&tw.x.addr()) == Some(&k) {
+            h.remove(&tw.x.addr());
+        }
+    });
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    // no cell of it is known live: their bits stay, as unwatch leaves them
+    unwatch_cells(k, &tw.cells, &[]);
     forget_attrs(tw.x);
 }
 
@@ -917,13 +953,25 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
     None
 }
 
-/// Mark every twin (a root of the collector, from `mark_api_roots`).
-pub unsafe fn mark_twins(c: &mut robigo_core::Core) {
+/// The twins whose values the runtime graph shows live (a twin is a
+/// hold: a root in the collections the allocator triggers, marked through
+/// the runtime graph in gc(), one mark over both heaps).
+unsafe fn mark_live_twins(c: &mut robigo_core::Core, graph: &robigo_runtime::reachability::ObjectGraph, live: &[bool]) {
     TWINS.with(|t| {
         for tw in t.borrow().values() {
-            c.mark(tw.x);
+            if graph.is_live(&tw.value, live) {
+                c.mark(tw.x);
+            }
         }
     });
+}
+
+/// The twin of a value the runtime graph reaches from a traced proxy.
+unsafe fn mark_twin_of(c: &mut robigo_core::Core, v: &Value) {
+    let Some(k) = twin_key(v) else { return };
+    if let Some(x) = TWINS.with(|t| t.borrow().get(&k).map(|tw| tw.x)) {
+        c.mark(x);
+    }
 }
 
 /// Drop the twins whose value only the table still holds (inner twins
@@ -1318,6 +1366,7 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 }
             }
         }
+        mark_live_twins(c, &graph, &live);
         // The objects runtime values wrap: live unless the graph shows
         // that only dead runtime objects refer to their wrapper. (Held
         // objects are no roots in gc(): one mark over both heaps.)
@@ -1361,6 +1410,7 @@ pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
                 if let Some(x) = core_ref_of(value) {
                     c.mark(x);
                 }
+                mark_twin_of(c, value);
             });
         });
     });
@@ -1877,8 +1927,11 @@ unsafe fn make_original(x: Sexp, v: &Value) {
     let cells = vec![x];
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Twin(k)));
     TWINS.with(|t| {
-        t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly: false, constant: false, cells, original: true })
+        t.borrow_mut()
+            .insert(k, Twin { x, hold, value: v.clone(), readonly: false, constant: false, cells, original: true })
     });
     robigo_runtime::altrep::register(v, x.addr());
 }
