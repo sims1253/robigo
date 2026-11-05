@@ -51,6 +51,10 @@ thread_local! {
     static FINALIZER_CONTEXTS: RefCell<Vec<FinalizerContext>> = const { RefCell::new(Vec::new()) };
     static INTERP: Cell<*mut Interp> = const { Cell::new(std::ptr::null_mut()) };
     static FLOWS: RefCell<HashMap<usize, Flow>> = RefCell::new(HashMap::new());
+    /// Core symbol -> runtime symbol, and by runtime symbol index the core
+    /// one (see `sym_of`, `sym_sexp`).
+    static SYM_OF: RefCell<HashMap<usize, Sym>> = RefCell::new(HashMap::new());
+    static SYM_SEXP: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(1) };
     /// identity of a runtime object -> its proxy's handle
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::new());
@@ -950,7 +954,20 @@ unsafe fn sym_sexp(s: Sym) -> Sexp {
     if s == s::EMPTY {
         return R_MissingArg;
     }
-    s.with_name(|n| core().install(n.as_bytes()))
+    // (see `sym_of`: by the symbol's index)
+    let k = s.0 as usize;
+    if let Some(x) = SYM_SEXP.with(|v| v.borrow().get(k).copied().filter(|x| !x.is_null())) {
+        return x;
+    }
+    let x = s.with_name(|n| core().install(n.as_bytes()));
+    SYM_SEXP.with(|v| {
+        let mut v = v.borrow_mut();
+        if v.len() <= k {
+            v.resize(k + 1, Sexp::NULL);
+        }
+        v[k] = x;
+    });
+    x
 }
 
 unsafe fn char_sexp(s: &RStr) -> Sexp {
@@ -1171,7 +1188,15 @@ unsafe fn sym_of(x: Sexp) -> Sym {
     if x == R_MissingArg {
         return s::EMPTY;
     }
-    Sym::new(&String::from_utf8_lossy(x.car().char_bytes()))
+    // Symbols on both sides live as long as the process (the core's
+    // install table, the interner): the name is read and hashed once per
+    // symbol, not at every conversion.
+    if let Some(s) = SYM_OF.with(|m| m.borrow().get(&x.addr()).copied()) {
+        return s;
+    }
+    let s = Sym::new(&String::from_utf8_lossy(x.car().char_bytes()));
+    SYM_OF.with(|m| m.borrow_mut().insert(x.addr(), s));
+    s
 }
 
 /// A CHARSXP as a runtime string (UTF-8; Latin-1 converted).
