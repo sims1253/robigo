@@ -2066,8 +2066,7 @@ unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     let Some(flags) = env.binding_flags(sym) else { return Ok(None) };
     let v = env.get_local(sym).unwrap_or(Value::Null);
     if flags & robigo_runtime::env::BIND_ACTIVE != 0 {
-        let g = with_interp(|i| i.global.clone());
-        return with_interp(|i| i.call_value(&v, vec![], &g)).map(Some);
+        return with_interp(|i| i.get_active_value(&v)).map(Some);
     }
     Ok(Some(v))
 }
