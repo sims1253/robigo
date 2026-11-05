@@ -1018,23 +1018,17 @@ fn vector_identity(v: &Value) -> Option<usize> {
 /// Convert a runtime value to a core object (a copy for vectors; the
 /// same copy while a native call runs).
 pub unsafe fn to_sexp(v: &Value) -> Sexp {
+    if let Some(x) = STORED.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
+    }) {
+        return x;
+    }
     let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
             return x;
         }
-    }
-    if let Some(x) = STORED.with(|m| {
-        let m = m.borrow();
-        if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
-    }) {
-        // seen by this call: what C writes into it comes back when the
-        // call returns, as for the objects converted for it
-        if let Some(k) = key {
-            core().preserve(x);
-            SEEN.with(|m| m.borrow_mut().insert(k, (x, v.clone())));
-        }
-        return x;
     }
     let x = to_sexp_new(v);
     if let Some(k) = key {
