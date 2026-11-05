@@ -1,0 +1,97 @@
+dyn.load("const_args.so")
+
+# The probes: how did the constant argument arrive?
+f <- function(x) .Call("capi_arg_state", environment(), quote(x))
+d <- function(...) .Call("capi_dots_state", environment())
+
+cat("top level:", f(1), d(1, "a", TRUE), "\n")
+cat("eval():", eval(quote(f(1))), "\n")
+cat("do.call():", do.call(f, list(1)), do.call(d, list(1, 2)), "\n")
+cat("from C:", .Call("capi_c_call", f, environment()), "\n")
+
+# A small closure at top level: interpreted at its first call, compiled
+# at its second (R_CheckJIT: JIT_score below MIN_JIT_SCORE).
+small <- function() f(1)
+cat("small, 1st call:", small(), "\n")
+cat("small, 2nd call:", small(), "\n")
+cat("small, 3rd call:", small(), "\n")
+
+# A large one is compiled at its first call.
+big <- function() {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  f(1)
+}
+cat("big, 1st call:", big(), "\n")
+
+# A small closure made inside another one is never compiled.
+make <- function() function() f(1)
+inner <- make()
+cat("inner, calls 1-3:", inner(), inner(), inner(), "\n")
+
+# A loop at top level is compiled (R_jit_enabled > 2).
+for (i in 1) cat("top-level for:", f(1), d(2), "\n")
+r <- NULL; i <- 0
+while (i < 1) { r <- f(1); i <- i + 1 }
+cat("top-level while:", r, "\n")
+r <- NULL
+repeat { r <- f(1); break }
+cat("top-level repeat:", r, "\n")
+
+# Inside a compiled closure: eval() and C interpret, local() is inlined
+# as a compiled closure call, promise code is compiled with its caller.
+id <- function(z) z
+comp <- function() {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  c(direct = f(1), eval = eval(quote(f(1))), local = local(f(1)),
+    promise = id(f(1)), c_call = .Call("capi_c_call", f, environment()),
+    dots = paste(d(1, 2), collapse = "/"))
+}
+print(comp())
+# A loop inside eval() at top level is compiled too (rho is the global env).
+eval(quote(for (i in 1) cat("eval'd top-level for:", f(1), "\n")))
+# A closure made in a compiled top-level loop is compiled with it.
+for (i in 1) {
+  h <- function() f(1)
+  cat("closure made in a top-level loop:", h(), "\n")
+}
+# A promise made by interpreted code is interpreted wherever it is forced.
+late <- function(x) {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  x
+}
+cat("top-level promise forced in a compiled closure:", late(f(1)), "\n")
+# on.exit code is evaluated, not compiled.
+oe <- function() {
+  a <- 1; b <- 2; c <- 3; dd <- 4; e <- 5; g <- 6; h <- 7; k <- 8
+  a <- a + b + c + dd + e + g + h + k; b <- a * 2; c <- b - a; dd <- c * c
+  e <- dd + a; g <- e - b; h <- g + c; k <- h + dd
+  on.exit(cat("on.exit in a compiled closure:", f(1), "\n"))
+  invisible()
+}
+oe()
+# A loop inside a function is part of that function's code.
+loopy <- function() { for (i in 1) r <- f(1); r }
+cat("small closure with a loop, 1st call:", loopy(), "\n")
+
+# Which closures are installed bytecode: only those unserialized with a
+# bytecode body (serialize.c ReadBC), as base's and packages' lazy-load
+# databases hold them. Every other closure is left to the JIT, whatever its
+# environment. (The bytes: GNU R 4.5.0's serialize() of
+# compiler::cmpfun(function(g) g(1)).)
+BC_CALL <- as.raw(c(0x58, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x05, 0x00, 0x00, 0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x41, 0x4e, 0x53, 0x49, 0x5f, 0x58, 0x33, 0x2e, 0x34, 0x2d, 0x31, 0x39, 0x36, 0x38, 0x00, 0x00, 0x04, 0x03, 0x00, 0x00, 0x00, 0xfd, 0x00, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0xfb, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x26, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x01, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x01, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x03, 0x0d, 0x00, 0x00, 0x00, 0x08, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x09, 0x00, 0x00, 0x00, 0x05, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x09, 0x00, 0x00, 0x00, 0x10, 0x65, 0x78, 0x70, 0x72, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x73, 0x49, 0x6e, 0x64, 0x65, 0x78, 0x00, 0x00, 0x00, 0xfe))
+installed <- unserialize(BC_CALL)
+cat("unserialized compiled closure:", installed(f), "\n")
+ns <- asNamespace("stats")
+copy <- list2env(as.list(ns, all.names = TRUE), parent = parent.env(ns))
+tf <- eval(quote(function() f(1)), new.env(parent = copy))
+cat("closure made below a namespace copy (a test file's), calls 1-3:", tf(), tf(), tf(), "\n")
+nf <- eval(quote(function() f(1)), new.env(parent = ns))
+cat("closure made below a namespace, calls 1-3:", nf(), nf(), nf(), "\n")
+sf <- eval(parse(text = "function() f(1)")[[1]], ns)
+cat("closure sourced into a namespace, calls 1-3:", sf(), sf(), sf(), "\n")

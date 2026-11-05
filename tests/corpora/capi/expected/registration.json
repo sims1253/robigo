@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "registration",
+ "out": {
+  "t": "[1] 42\n[1] 10\n[1] \"ext-first\"\n[1] 4\n[1] \"Error in .Call(\\\"c_mul\\\", 6L, 7L) : C symbol name \\\"c_mul\\\" not in load table\\n\"\nattr(,\"class\")\n[1] \"try-error\"\nattr(,\"condition\")\n<simpleError in .Call(\"c_mul\", 6L, 7L): C symbol name \"c_mul\" not in load table>\n[1] 42\n"
+ },
+ "sha": "32d8df44fd0e4df9",
+ "status": 0
+}

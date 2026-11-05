@@ -529,7 +529,7 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
         if let Some(b) = b {
             let mut v = b.value;
             if b.flags & BIND_ACTIVE != 0 {
-                v = i.call_value(&v, vec![], &e)?;
+                v = i.get_active_value(&v)?;
             }
             if mode != "any" || matches!(v, Value::Promise(_)) {
                 v = i.force(v)?;
@@ -760,7 +760,7 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         // R: envir.c:FrameValues — BINDING_VALUE calls an active binding
         // (a C-owned variable's included, which reads C's object).
         if env.binding_flags(sym).is_some_and(|f| f & BIND_ACTIVE != 0) {
-            vals.push(i.call_value(&v, vec![], &env)?);
+            vals.push(i.get_active_value(&v)?);
             continue;
         }
         vals.push(i.force(v)?);
@@ -851,9 +851,23 @@ fn do_sys_call(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     }
     let cptr = lexical_context(i);
     Ok(match nth_frame(i, n, cptr)? {
-        Some(k) => i.frames[k].call.clone(),
+        Some(k) => call_with_srcref(i, k),
         None => Value::Null,
     })
+}
+
+/// Frame `k`'s call with the srcref it began under, as `sys.call()` and
+/// `sys.calls()` report it (a copy: the frame's own call is not changed).
+// R: context.c:getCallWithSrcref
+fn call_with_srcref(i: &Interp, k: usize) -> Value {
+    let srcref = i.frame_srcref(k);
+    if srcref.is_null() {
+        return i.frames[k].call.clone();
+    }
+    // (copy-on-write: the frame's call is shared, so this copies it)
+    let mut call = i.frames[k].call.clone();
+    call.set_attr_raw(s::SRCREF, srcref);
+    call
 }
 
 fn do_sys_function(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -894,7 +908,7 @@ fn do_sys_calls(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
     let mut out = Vec::new();
     for k in 1..=nframe {
         if let Some(f) = nth_frame(i, k, cptr)? {
-            out.push(Arg::pos(i.frames[f].call.clone()));
+            out.push(Arg::pos(call_with_srcref(i, f)));
         }
     }
     Ok(Value::pairlist(out))
@@ -1065,6 +1079,9 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         Some(k) => i.frames[k].cloenv.clone(),
         None => i.global.clone(),
     };
+    if i.srcref.is_some() {
+        i.srcref_begin(false);
+    }
     i.frames.push(Context {
         call: ecall,
         function: Value::Builtin(super::lookup_internal("eval").unwrap()),
@@ -1076,11 +1093,20 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         restarts: i.restarts.clone(),
         generic: false,
         builtin: false,
+        prev_bc: i.bc,
     });
+    // R: eval.c:do_eval evaluates with eval(), the AST interpreter, also
+    // when called from compiled code (a loop in the global environment is
+    // compiled again by do_for and friends).
+    i.bc = false;
     let r = (|| -> RResult<Value> {
         match &expr {
             Value::Expr(ev) => {
                 let mut v = Value::Null;
+                // R: eval.c:do_eval -- each element of an expression vector
+                // runs under its srcref (R_Srcref = getSrcref(srcrefs, i)),
+                // when it has them
+                let srcrefs = expr.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_)));
                 // By index and owned: what runs can reach `ev` (GNU R's
                 // loop re-reads VECTOR_ELT each time). The previous value
                 // is dead while the next expression runs (an unprotected
@@ -1088,13 +1114,15 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
                 let mut k = 0;
                 while let Some(e) = ev.data.get(k).cloned() {
                     drop(std::mem::replace(&mut v, Value::Null));
+                    if let Some(refs) = &srcrefs {
+                        i.srcref = crate::interp::statement_srcref(refs, k);
+                    }
                     v = i.eval(&e, &env)?;
                     k += 1;
                 }
                 Ok(v)
             }
             // R: eval.c:do_eval also evaluates BCODESXP, rather than returning it.
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(_) => i.eval(&expr, &env),
             Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => i.eval(&expr, &env),
             v => {
@@ -1113,6 +1141,9 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
     let r = i.run_on_exit(r);
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
+    i.bc = ctx.prev_bc;
+    // (eval.c:eval restores the R_Srcref of the `eval()` call)
+    i.srcref_ended(i.frames.len());
     i.handlers = ctx.handlers;
     i.restarts = ctx.restarts;
     i.visible = vis;

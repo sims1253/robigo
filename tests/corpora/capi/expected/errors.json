@@ -1,0 +1,14 @@
+{
+ "err": {
+  "t": "Warning in print(.Call(\"capi_warn\", quote(warning_target(3)))) :\n  a plain warning, 1 of 2\nWarning in warning_target(3) : a warning reported against the call\nWarning in warning_target(3) : an immediate warning\nError in the_call(1) : fatal via errorcall: 1.5\nCalls: print -> .Call\nExecution halted\n"
+ },
+ "id": "errors",
+ "mask_out": [
+  3
+ ],
+ "out": {
+  "t": "[1] 1\n[1] \"long vectors not supported yet: capi.c:42\"\n[1] \"protect(): protection stack overflow\"\n[1] \"R_Reprotect: only 19 protected items, can't reprotect index -326589776\"\n"
+ },
+ "sha": "7e14e6e331622e8c",
+ "status": 1
+}

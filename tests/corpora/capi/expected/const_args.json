@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "const_args",
+ "out": {
+  "t": "top level: promise promise promise promise \neval(): promise \ndo.call(): promise promise promise \nfrom C: promise \nsmall, 1st call: promise \nsmall, 2nd call: value \nsmall, 3rd call: value \nbig, 1st call: value \ninner, calls 1-3: promise promise promise \ntop-level for: value value \ntop-level while: value \ntop-level repeat: value \n       direct          eval         local       promise        c_call \n      \"value\"     \"promise\"       \"value\"       \"value\"     \"promise\" \n         dots \n\"value/value\" \neval'd top-level for: value \nclosure made in a top-level loop: value \ntop-level promise forced in a compiled closure: promise \non.exit in a compiled closure: promise \nsmall closure with a loop, 1st call: value \nunserialized compiled closure: value \nclosure made below a namespace copy (a test file's), calls 1-3: promise promise promise \nclosure made below a namespace, calls 1-3: promise promise promise \nclosure sourced into a namespace, calls 1-3: promise promise promise \n"
+ },
+ "sha": "12ae94ce6b2be843",
+ "status": 0
+}

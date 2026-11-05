@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "check_class",
+ "out": {
+  "t": "[1] 1\n[1] 1\n[1] -1\n[1] -1\n[1] -1\n[1] -1\n[1] 2\n[1] \"could not find function \\\".selectSuperClasses\\\"\"\n[1] 2\n[1] 2\n[1] 2\n[1] 3\n[1] -1\n[1] -1\n[[1]]\n[1] \"numeric\"\n\n[[2]]\n[1] \"numeric\"\n\n[[1]]\n[1] \"integer\"\n\n[[2]]\n[1] \"integer\"\n\n[[1]]\n[1] \"character\"\n\n[[2]]\n[1] \"character\"\n\n[[1]]\n[1] \"logical\"\n\n[[2]]\n[1] \"logical\"\n\n[[1]]\n[1] \"NULL\"\n\n[[2]]\n[1] \"NULL\"\n\n[[1]]\n[1] \"list\"\n\n[[2]]\n[1] \"list\"\n\n[[1]]\n[1] \"matrix\" \"array\" \n\n[[2]]\n[1] \"matrix\"\n\n[[1]]\n[1] \"array\"\n\n[[2]]\n[1] \"array\"\n\n[[1]]\n[1] \"array\"\n\n[[2]]\n[1] \"array\"\n\n[[1]]\n[1] \"function\"\n\n[[2]]\n[1] \"function\"\n\n[[1]]\n[1] \"function\"\n\n[[2]]\n[1] \"function\"\n\n[[1]]\n[1] \"call\"\n\n[[2]]\n[1] \"call\"\n\n[[1]]\n[1] \"if\"\n\n[[2]]\n[1] \"if\"\n\n[[1]]\n[1] \"<-\"\n\n[[2]]\n[1] \"<-\"\n\n[[1]]\n[1] \"(\"\n\n[[2]]\n[1] \"(\"\n\n[[1]]\n[1] \"{\"\n\n[[2]]\n[1] \"{\"\n\n[[1]]\n[1] \"for\"\n\n[[2]]\n[1] \"for\"\n\n[[1]]\n[1] \"while\"\n\n[[2]]\n[1] \"while\"\n\n[[1]]\n[1] \"=\"\n\n[[2]]\n[1] \"=\"\n\n[[1]]\n[1] \"name\"\n\n[[2]]\n[1] \"name\"\n\n[[1]]\n[1] \"environment\"\n\n[[2]]\n[1] \"environment\"\n\n[[1]]\n[1] \"a\" \"b\"\n\n[[2]]\n[1] \"a\"\n\n[[1]]\n[1] \"m\"\n\n[[2]]\n[1] \"m\"\n\n[[1]]\n[1] \"Base\"\nattr(,\"package\")\n[1] \".GlobalEnv\"\n\n[[2]]\n[1] \"Base\"\nattr(,\"package\")\n[1] \".GlobalEnv\"\n\n[[1]]\n[1] \"Num\"\nattr(,\"package\")\n[1] \".GlobalEnv\"\n\n[[2]]\n[1] \"Num\"\nattr(,\"package\")\n[1] \".GlobalEnv\"\n\n[[1]]\n[1] \"S4\"\n\n[[2]]\n[1] \"S4\"\n\n[[1]]\n[1] \"expression\"\n\n[[2]]\n[1] \"expression\"\n\n[[1]]\n[1] \"complex\"\n\n[[2]]\n[1] \"complex\"\n\n[[1]]\n[1] \"raw\"\n\n[[2]]\n[1] \"raw\"\n\n"
+ },
+ "sha": "a9f429e2a91f22d3",
+ "status": 0
+}

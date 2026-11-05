@@ -43,8 +43,6 @@ pub static DEFS: &[Builtin] = &[
     prim("...elt", do_dots_elt, 1).custom_vis(),
     special("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
-    #[cfg(not(feature = "bytecode-fidelity"))]
-    internal("getconst", do_getconst, 2),
     internal("Recall", do_recall, -1).custom_vis(),
 ];
 
@@ -81,7 +79,25 @@ fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) ->
     Some(crate::vm::run(interp, &code, env))
 }
 
+/// R: eval.c:do_for, do_while, do_repeat — at JIT level 3 a loop the AST
+/// interpreter meets in the global environment is compiled and run by
+/// bcEval (R_compileAndExecute), so its call sites are bytecode ones.
+/// (Everywhere else a loop is part of the code around it.)
+fn loop_bc<T>(interp: &mut Interp, head: Sym, env: &Env, f: impl FnOnce(&mut Interp) -> RResult<T>) -> RResult<T> {
+    if interp.bc || !env.ptr_eq(&interp.global) || !interp.resolves_to_base(head, env) {
+        return f(interp);
+    }
+    interp.bc = true;
+    let r = f(interp);
+    interp.bc = false;
+    r
+}
+
 fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::FOR, env, |interp| for_loop(interp, call, args, env))
+}
+
+fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::FOR, env) {
         return r;
     }
@@ -168,6 +184,10 @@ fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
 }
 
 fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::WHILE, env, |interp| while_loop(interp, call, args, env))
+}
+
+fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::WHILE, env) {
         return r;
     }
@@ -185,6 +205,10 @@ fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
 }
 
 fn do_repeat(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    loop_bc(interp, s::REPEAT, env, |interp| repeat_loop(interp, call, args, env))
+}
+
+fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if let Some(r) = try_compiled_loop(interp, call, s::REPEAT, env) {
         return r;
     }
@@ -274,9 +298,26 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
 // is dead once the next statement starts: drop it, else an object only
 // it holds outlives a gc() in the next statement (R6's finalizer tests:
 // `B <- BC$new()` then `expect_output({ rm(B); gc() })`).
-fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     interp.visible = true;
     let Some((last, init)) = args.split_last() else { return Ok(Value::Null) };
+    // R: eval.c:do_begin -- with source references, each statement runs
+    // under its own srcref (the block's list starts with the block's), and
+    // the srcref before the block comes back after it (eval.c:eval). Code
+    // without them leaves R_Srcref alone.
+    if let Some(refs) = call.get_attr(s::SRCREF).filter(|r| matches!(r, Value::List(_))) {
+        let saved = interp.srcref.clone();
+        let r = (|| {
+            for (j, a) in init.iter().enumerate() {
+                interp.srcref = crate::interp::statement_srcref(&refs, j + 1);
+                interp.eval(&a.value, env)?;
+            }
+            interp.srcref = crate::interp::statement_srcref(&refs, args.len());
+            interp.eval(&last.value, env)
+        })();
+        interp.srcref = saved;
+        return r;
+    }
     for a in init {
         interp.eval(&a.value, env)?;
     }
@@ -685,9 +726,7 @@ fn fast_replace(
 /// value itself; plain values evaluate to themselves already.
 pub fn quote_if_needed(v: Value) -> Value {
     match &v {
-        Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => Value::call_sym("quote", vec![v]),
-        #[cfg(feature = "bytecode-fidelity")]
-        Value::Bytecode(_) => Value::call_sym("quote", vec![v]),
+        Value::Sym(_) | Value::Lang(_) | Value::Promise(_) | Value::Bytecode(_) => Value::call_sym("quote", vec![v]),
         _ => v,
     }
 }
@@ -1592,26 +1631,6 @@ fn do_tilde(_: &mut Interp, call: &Value, _: Vec<Arg>, env: &Env) -> RResult<Val
         f.set_attr_raw(Sym::new(".Environment"), Value::Env(env.clone()));
     }
     Ok(f)
-}
-
-// R: eval.c:do_getconst. The construction module owns the feature build's
-// constant pool; the default build keeps GNU R's reader behavior.
-#[cfg(not(feature = "bytecode-fidelity"))]
-fn do_getconst(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    super::check_arity(&args, 2, "getconst", call)?;
-    let count = super::arg(&args, 1);
-    let n = if count.is_atomic() && !count.is_empty() {
-        crate::coerce::as_integer(&i.coerce(&crate::coerce::first_elt(&count), VType::Int)?)
-    } else {
-        NA_INTEGER
-    };
-    let Value::List(buf) = &args[0].value else {
-        return Err(Flow::error("constant buffer must be a generic vector"));
-    };
-    if n < 0 || n as usize > buf.data.len() {
-        return Err(Flow::error("bad constant count"));
-    }
-    Ok(Value::list(buf.data[..n as usize].to_vec()))
 }
 
 #[cfg(test)]
