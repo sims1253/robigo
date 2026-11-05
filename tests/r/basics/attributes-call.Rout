@@ -9,3 +9,8 @@ $note
 NULL
 NULL
 [1] TRUE
+h(x = x)
+h(x = x)
+attr(,"foo")
+[1] 1
+NULL
