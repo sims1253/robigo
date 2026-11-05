@@ -2746,6 +2746,10 @@ fn direct_call(
     let newenv = crate::interp::bind_positional(clo, &promargs);
     let sysparent = interp.call_sysparent(env);
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
+    // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
+    if crate::autogc::due() {
+        crate::autogc::collect(interp);
+    }
     if clo.jit.inline_blocked() {
         jit_check(interp, clo);
     }
@@ -3993,6 +3997,13 @@ fn run_with(
     // Count iterations of the innermost loop; at the threshold, try native.
     macro_rules! back_edge {
         () => {{
+            // R: eval.c:BC_CHECK_SIGINT at GOTO/BRIFNOT/STEPFOR: a due
+            // collection, with this frame's assignments written out first
+            // (the finalizers it runs are R code)
+            if crate::autogc::due() {
+                flush!();
+                crate::autogc::collect(interp);
+            }
             if gs.jit_on {
                 if let Some(rec) = loops.last_mut() {
                     rec.count += 1;

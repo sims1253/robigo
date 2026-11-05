@@ -5,6 +5,7 @@
 #![deny(unsafe_code)]
 
 pub mod attrib;
+pub mod autogc;
 pub mod bootstrap;
 pub mod builtins;
 pub mod coerce;
