@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "vectors",
+ "out": {
+  "t": "[1] 105\n[1] 100   5\n[1] 5\n[1] \"ABC\"  \"zero\"\n[1] 31+42i\n[1]  TRUE  TRUE FALSE FALSE  TRUE\n[[1]]\n[1] 12\n\n[[2]]\n[1] \"there\"\n\n[1]  TRUE  TRUE  TRUE  TRUE  TRUE FALSE  TRUE  TRUE FALSE\n[[1]]\nf(1L, 20L, 30L)\n\n[[2]]\n[1] NA\n\n[[3]]\n[1] 30\n\n[[1]]\n[1] 1.5+2.5i\n\n[[2]]\n[1] FALSE FALSE FALSE FALSE FALSE\n\n[[3]]\n[1] 0\n\n[[4]]\n[1] 5 4 3 2 1\n\n[[5]]\n[1] 1 2 3 4 5\n\n[1] 421\n"
+ },
+ "sha": "9846ee88a56fb63b",
+ "status": 0
+}
