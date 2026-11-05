@@ -52,8 +52,9 @@ const INHERITED: u64 = 2;
 const NOJIT: u64 = 3;
 /// Compiled; the frozen set is in the high bits.
 const COMPILED: u64 = 4;
-/// Defined in a namespace: compiled when its package was installed, and
-/// lookups from there find base's functions anyway.
+/// Installed: unserialized with a bytecode body (base's and packages'
+/// lazy-load databases); the frozen set it was compiled with, taken at its
+/// first call, is in the high bits for the closures its code makes.
 const IGNORE: u64 = 5;
 // R: print.c:PrintClosure / serialize.c:ReadItem. A loaded BCODESXP body
 // is printed as bytecode without changing the execution/inheritance state.
@@ -119,7 +120,8 @@ impl JitState {
 
     /// Whether GNU R's AST interpreter would run this closure's body: it is
     /// not installed bytecode, and the JIT has not compiled it (`IGNORE`
-    /// marks closures in a namespace, whose installed bodies are bytecode).
+    /// marks installed closures: their bodies were unserialized as
+    /// bytecode).
     /// Only the trace reports differ between the two evaluators
     /// (eval.c:1224 vs 7894).
     pub fn interpreted(&self) -> bool {
@@ -290,8 +292,16 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
     let v = clo.jit.0.get();
     match v & STATE_MASK {
         UNSEEN => {
-            if in_namespace(interp, &clo.env) {
-                clo.jit.set(IGNORE, 0);
+            // Installed code is what the unserializer read with a bytecode
+            // body (serialize.c ReadBC: base's and packages' lazy-load
+            // databases, a saved compiled closure): compiled with the
+            // bindings its environment had then, taken now. Nothing else is
+            // installed, whatever its environment (a closure interpreted
+            // code made below a namespace, testthat's test files): the JIT
+            // decides, as for any closure.
+            if v & LOADED_BYTECODE != 0 {
+                let mask = compile_mask(interp, clo).unwrap_or(0);
+                clo.jit.set(IGNORE, mask);
                 return;
             }
             // R: eval.c:R_CheckJIT, strategy STRATEGY_TOP_SMALL_MAYBE.
@@ -317,27 +327,6 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
             clo.jit.set(COMPILED, outer & !function_locals(interp, clo));
         }
         _ => {}
-    }
-}
-
-/// Is `env` (or an enclosure of it below the global environment) a
-/// namespace or the base environment? Namespaces reach the global
-/// environment through the base namespace (their imports' parent), other
-/// code directly.
-#[inline(never)]
-fn in_namespace(interp: &Interp, env: &Env) -> bool {
-    let mut e = env.clone();
-    loop {
-        if e.ptr_eq(&interp.global) {
-            return false;
-        }
-        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
-            return true;
-        }
-        match e.parent() {
-            Some(p) => e = p,
-            None => return false,
-        }
     }
 }
 
@@ -759,57 +748,17 @@ fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
     for ctx in interp.frames.iter().rev() {
         if ctx.cloenv.ptr_eq(env) {
             let Value::Closure(c) = &ctx.function else { return true };
+            // Compiled by the JIT, or installed (and closures their code
+            // made): base's `local` when it was compiled, by its frozen set.
             let v = c.jit.0.get();
-            if v & LOADED_BYTECODE != 0 {
-                return true;
-            }
             return match v & STATE_MASK {
-                // Compiled by the JIT: base's `local` then by its frozen set;
-                // made by installed code (its frozen set is empty there,
-                // lookups find base's `local`), by its environment.
-                COMPILED => {
-                    index(s::LOCAL).is_some_and(|i| c.jit.mask() >> i & 1 != 0)
-                        || in_registered_namespace(interp, &c.env)
-                }
-                // An installed function: a closure of base or of a
-                // registered namespace itself. (`IGNORE` also marks closures
-                // that interpreted code made below a namespace, which GNU R
-                // leaves to its JIT: not inlined, as GNU R does not.)
-                _ => {
-                    c.env.ptr_eq(&interp.base_ns)
-                        || c.env.ptr_eq(&interp.base)
-                        || c.env.namespace_name().is_some_and(|n| {
-                            matches!(interp.ns_registry.get_local(Sym::new(&n)), Some(Value::Env(r)) if r.ptr_eq(&c.env))
-                        })
-                }
+                COMPILED | IGNORE => index(s::LOCAL).is_some_and(|i| (v >> 8) >> i & 1 != 0),
+                _ => true,
             };
         }
     }
     // A loop in the global environment (do_for and friends).
     true
-}
-
-/// Does `env` reach the base environment or a registered namespace before
-/// the global one? The first namespace on the way up decides: a copy
-/// (rlang's `env_clone()`, testthat's test environment) is not
-/// registered.
-fn in_registered_namespace(interp: &Interp, env: &Env) -> bool {
-    let mut e = env.clone();
-    loop {
-        if e.ptr_eq(&interp.global) {
-            return false;
-        }
-        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
-            return true;
-        }
-        if let Some(name) = e.namespace_name() {
-            return matches!(interp.ns_registry.get_local(Sym::new(&name)), Some(Value::Env(r)) if r.ptr_eq(&e));
-        }
-        match e.parent() {
-            Some(p) => e = p,
-            None => return false,
-        }
-    }
 }
 
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
@@ -883,8 +832,8 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
                 let v = c.jit.0.get();
                 match v & STATE_MASK {
                     COMPILED => clo.jit.set(INHERITED, v >> 8),
-                    // Namespace code runs installed bytecode: its nested
-                    // closures are compiled with it (MAKECLOSURE).
+                    // Installed bytecode: its nested closures are compiled
+                    // with it (MAKECLOSURE), with its frozen set.
                     IGNORE => clo.jit.set(INHERITED, v >> 8),
                     _ => {}
                 }
