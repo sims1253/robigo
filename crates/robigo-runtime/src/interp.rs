@@ -448,6 +448,12 @@ impl Interp {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 
+    /// The base environment or the base namespace, whose bindings GNU R
+    /// keeps in the symbols themselves (SYMVALUE).
+    pub fn is_base_frame(&self, e: &Env) -> bool {
+        e.ptr_eq(&self.base) || e.ptr_eq(&self.base_ns)
+    }
+
     /// The class of a missing-argument error: GNU R reads variables with
     /// getvar() in bcEval (`getvarError`) and with eval() in the AST
     /// evaluator (`evalError`), which is where [`Interp::bc`] says GNU R
@@ -459,9 +465,6 @@ impl Interp {
     }
 
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
-        if sym.is_empty() {
-            return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"));
-        }
         if sym == s::DOTS {
             return Err(Flow::error("'...' used in an incorrect context"));
         }
@@ -486,6 +489,16 @@ impl Interp {
                     }
                     v => Ok(v),
                 };
+            }
+            // R: the missing argument is the symbol "", whose SYMVALUE is
+            // itself (names.c:mkSymMarker), so a lookup that reaches base
+            // finds it: a missing-argument error. One that stops short
+            // (an environment chain ending at emptyenv()) does not. Its
+            // class is the one any missing argument gets: getvar() in
+            // compiled code, eval() otherwise.
+            if sym.is_empty() && self.is_base_frame(&cur) {
+                let class = self.missing_arg_class(env);
+                return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class));
             }
             match cur.parent() {
                 Some(p) => cur = p,
