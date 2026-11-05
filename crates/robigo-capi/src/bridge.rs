@@ -1658,6 +1658,9 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 if let Some(v) = binding(&e, sym)? {
                     return Ok(found(&v, &e, sym));
                 }
+                if missing_marker_at(&e, sym) {
+                    return Ok(R_MissingArg);
+                }
                 env = e.parent();
             }
             R_UnboundValue
@@ -1669,10 +1672,14 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             }
             match binding(&env, sym)? {
                 Some(v) => found(&v, &env, sym),
+                None if missing_marker_at(&env, sym) => R_MissingArg,
                 None => R_UnboundValue,
             }
         }
-        "existsVarInFrame" => crate::list::Rf_ScalarLogical(env_of(a[0])?.has_local(sym_arg(a[1])?) as c_int),
+        "existsVarInFrame" => {
+            let (env, sym) = (env_of(a[0])?, sym_arg(a[1])?);
+            crate::list::Rf_ScalarLogical((env.has_local(sym) || missing_marker_at(&env, sym)) as c_int)
+        }
         "removeVar" => {
             let (sym, env) = (sym_arg(a[0])?, env_of(a[1])?);
             if env.0.locked.get() {
@@ -3124,4 +3131,15 @@ mod tls_drop_tests {
         assert!(out.status.success(), "child aborted ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr));
         assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "child test did not run");
     }
+}
+
+/// R: names.c:mkSymMarker -- R_MissingArg, the symbol "", is its own
+/// SYMVALUE, which is the binding the base environment and the base
+/// namespace give a symbol: base "binds" it to the missing argument.
+///
+/// # Safety
+/// The R thread, with the interpreter current (a host op).
+unsafe fn missing_marker_at(env: &Env, sym: Sym) -> bool {
+    // SAFETY: the caller's contract.
+    sym.is_empty() && unsafe { with_interp(|i| i.is_base_frame(env)) }
 }

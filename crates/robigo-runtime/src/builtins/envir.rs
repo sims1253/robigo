@@ -1263,6 +1263,9 @@ fn do_binding_is_active(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
     };
     match env.binding_is_active(sym) {
         Some(active) => Ok(Value::lgl(active)),
+        // R: envir.c:R_BindingIsActive -- base's bindings are the symbols'
+        // own (IS_ACTIVE_BINDING(sym)): never an error there
+        None if i.is_base_frame(&env) => Ok(Value::lgl(false)),
         None => Err(Flow::error(format!("no binding for \"{}\"", sym))),
     }
 }
