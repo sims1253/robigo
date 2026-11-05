@@ -113,6 +113,10 @@ pub enum ConnKind {
     Sock(super::sock::SockConn),
     /// `serverSocket()`: open while it exists, it only accepts.
     ServSock { port: i32, fd: Option<std::os::fd::OwnedFd> },
+    /// A connection C code made (`R_new_custom_connection`): its methods
+    /// are the function pointers of the package's `struct Rconn` at `con`,
+    /// which the native bridge owns and calls.
+    Native { con: usize },
 }
 
 pub struct Connection {
@@ -134,8 +138,17 @@ pub struct Connection {
     pushback: Vec<Vec<u8>>,
     pos_pushback: usize,
     pub kind: ConnKind,
-    /// The `conn_id` external pointer.
+    /// The `conn_id` external pointer (none for a native connection: its
+    /// own is a C object the bridge keeps, and the table must not keep it
+    /// alive).
     pub ex_ptr: Value,
+    /// GNU R's `con->id`: unique to the connection, never NULL.
+    pub id: usize,
+}
+
+thread_local! {
+    /// R: connections.c `current_id`
+    static CURRENT_ID: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Connection {
@@ -159,7 +172,29 @@ impl Connection {
             pos_pushback: 0,
             kind,
             ex_ptr: Value::Null,
+            id: next_connection_id(),
         }
+    }
+
+    pub fn is_native(&self) -> bool {
+        matches!(self.kind, ConnKind::Native { .. })
+    }
+
+    /// The next byte of the pushed-back lines, if there are any (R:
+    /// connections.c:Rconn_fgetc's pushback branch).
+    #[inline]
+    fn pushback_getc(&mut self) -> Option<i32> {
+        if self.pushback.is_empty() {
+            return None;
+        }
+        let last = self.pushback.len() - 1;
+        let c = self.pushback[last][self.pos_pushback] as i32;
+        self.pos_pushback += 1;
+        if self.pos_pushback >= self.pushback[last].len() {
+            self.pushback.pop();
+            self.pos_pushback = 0;
+        }
+        Some(c)
     }
 
     pub(super) fn reset_save(&mut self) {
@@ -333,11 +368,17 @@ pub fn expand_file_name(name: &str) -> String {
 // truncate, fflush, read, write). Each matches every kind, so a new kind
 // has to say what it does for each of them.
 
+/// The native bridge, which calls a native connection's methods.
+fn native_bridge() -> RResult<&'static dyn crate::native::NativeBridge> {
+    crate::native::bridge().ok_or_else(|| Flow::error("robigo: native connections need the native bridge"))
+}
+
 /// Open connection `n` with its current mode (R's `con->open(con)`).
 /// Failures are reported with a warning and `Ok(false)`.
 pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     match con.kind {
+        ConnKind::Native { .. } => native_bridge()?.conn_open(i, n),
         ConnKind::File { fifo: true, .. } => fifo_open(i, n),
         ConnKind::File { fifo: false, .. } => file_open(i, n),
         ConnKind::Gz { .. } => gz_open(i, n),
@@ -447,11 +488,11 @@ fn set_iconv_check(i: &mut Interp, n: i32) -> RResult<()> {
     // target of the input conversion is "" (the locale charset).
     let enc = if encname == "UTF-8-BOM" { "UTF-8" } else { encname.as_str() };
     if canread && !iconv_converts("", enc) {
-        con_free(i, n);
+        con_free(i, n)?;
         return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
     }
     if canwrite && !iconv_converts(encname.as_str(), "") {
-        con_free(i, n);
+        con_free(i, n)?;
         return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
     }
     Ok(())
@@ -700,7 +741,7 @@ pub fn conn_close(i: &mut Interp, n: i32) -> RResult<()> {
 }
 
 pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
-    Ok(rconn_fgetc(i.conns.get(n)?))
+    rconn_fgetc(i, n)
 }
 
 /// Push a line back onto connection `n` (R's `con_pushback`).
@@ -767,7 +808,7 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
         ConnKind::Terminal => {
             let _ = std::io::stdin().read_to_end(&mut out);
         }
-        ConnKind::Sock(_) => {
+        ConnKind::Sock(_) | ConnKind::Native { .. } => {
             let mut chunk = [0u8; 4096];
             loop {
                 let k = con_read_bytes(i, n, &mut chunk)?;
@@ -794,11 +835,17 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
             | ConnKind::Raw { .. }
             | ConnKind::File { fp: Some(_), .. }
             | ConnKind::Sock(_)
+            | ConnKind::Native { .. }
     );
     if n <= 2 || !byte_kind {
         return conn_write(i, n, &String::from_utf8_lossy(bytes));
     }
-    con_write(i.conns.get(n)?, bytes)
+    let con = i.conns.get(n)?;
+    if con.is_native() {
+        native_bridge()?.conn_write(i, n, bytes)?;
+        return Ok(());
+    }
+    con_write(con, bytes)
 }
 
 /// `con->write(bytes, 1, bytes.len(), con)`.
@@ -851,6 +898,7 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<()> {
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
         | ConnKind::ServSock { .. } => Err(Flow::error("cannot write to this connection")),
+        ConnKind::Native { .. } => unreachable!("a native connection writes through con_write_bytes"),
     }
 }
 
@@ -862,6 +910,7 @@ fn i_tempdir() -> RResult<String> {
 pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     let con = i.conns.get(n)?;
     match &mut con.kind {
+        ConnKind::Native { .. } => return native_bridge()?.conn_close(i, n),
         ConnKind::File { fp, wbuf, .. } => {
             if let Some(mut f) = fp.take() {
                 let _ = flush_file_wbuf(&mut f, wbuf);
@@ -950,37 +999,35 @@ fn check_close(i: &mut Interp, n: i32) -> RResult<()> {
 }
 
 /// R: connections.c:con_destroy
-fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
+pub fn con_destroy(i: &mut Interp, n: i32) -> RResult<i32> {
     check_close(i, n)?;
     let st = i.conns.get(n)?.status;
-    con_free(i, n);
+    con_free(i, n)?;
     Ok(st)
 }
 
 /// `con->destroy(con)`, then the slot is freed (R: the end of
 /// con_close1, and con_destroy's `free`). The caller has closed it if it
 /// needed closing.
-fn con_free(i: &mut Interp, n: i32) {
-    if let Some(con) = i.conns.table[n as usize].as_deref_mut() {
-        con_destroy_kind(con);
-    }
+fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
+    let r = match i.conns.table[n as usize].as_deref().map(|c| &c.kind) {
+        Some(ConnKind::Native { .. }) => native_bridge().and_then(|b| b.conn_destroy(i, n)),
+        // R: connections.c null_destroy, text_destroy, outtext_destroy:
+        // the built-in kinds own nothing beyond their `Connection`
+        Some(
+            ConnKind::Terminal
+            | ConnKind::File { .. }
+            | ConnKind::TextIn { .. }
+            | ConnKind::TextOut { .. }
+            | ConnKind::Gz { .. }
+            | ConnKind::Raw { .. }
+            | ConnKind::Sock(_)
+            | ConnKind::ServSock { .. },
+        )
+        | None => Ok(()),
+    };
     i.conns.table[n as usize] = None;
-}
-
-/// `con->destroy(con)`: what a kind owns besides its `Connection`. The
-/// built-in kinds own nothing more (their buffers drop with it).
-fn con_destroy_kind(con: &mut Connection) {
-    match &mut con.kind {
-        // R: connections.c null_destroy, text_destroy, outtext_destroy
-        ConnKind::Terminal
-        | ConnKind::File { .. }
-        | ConnKind::TextIn { .. }
-        | ConnKind::TextOut { .. }
-        | ConnKind::Gz { .. }
-        | ConnKind::Raw { .. }
-        | ConnKind::Sock(_)
-        | ConnKind::ServSock { .. } => {}
-    }
+    r
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
@@ -1069,11 +1116,44 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
             con.incomplete = incomplete;
             if n == 1 { b[0] as i32 } else { EOF }
         }
+        ConnKind::Native { .. } => unreachable!("a native connection reads through rconn_fgetc"),
     }
 }
 
-/// R: connections.c:Rconn_fgetc
-pub(super) fn rconn_fgetc(con: &mut Connection) -> i32 {
+/// R: connections.c:Rconn_fgetc: the next character of connection `n`,
+/// CR and CRLF read as LF, pushed-back lines first.
+pub(super) fn rconn_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
+    let con = i.conns.get(n)?;
+    if !con.is_native() {
+        return Ok(rconn_fgetc_builtin(con));
+    }
+    if let Some(c) = con.pushback_getc() {
+        return Ok(c);
+    }
+    if con.save != -1000 {
+        let c = con.save;
+        con.save = -1000;
+        return Ok(c);
+    }
+    // con->fgetc(con): the package's, or dummy_fgetc
+    let bridge = native_bridge()?;
+    let c = bridge.conn_fgetc(i, n)?;
+    if c == '\r' as i32 {
+        let c2 = bridge.conn_fgetc(i, n)?;
+        if c2 != '\n' as i32 {
+            i.conns.get(n)?.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
+            return Ok('\n' as i32);
+        }
+        return Ok(c2);
+    }
+    Ok(c)
+}
+
+/// [`rconn_fgetc`] for a connection of a built-in kind, which loops hold
+/// borrowed: no table lookup per character.
+// R: connections.c:Rconn_fgetc
+#[inline]
+pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
             let c = con.save;
@@ -1139,8 +1219,13 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     }
     let con = i.conns.get(n)?;
     let mut raw_bytes: Option<Vec<u8>> = None;
+    let mut native = false;
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
+        ConnKind::Native { .. } => {
+            native = true;
+            Ok(())
+        }
         ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
             if !*writing {
@@ -1191,6 +1276,9 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             Ok(())
         }
     }?;
+    if native {
+        return native_bridge()?.conn_vfprintf(i, n, text);
+    }
     if let Some(bytes) = raw_bytes {
         con_write_bytes(i, n, &bytes)?;
     }
@@ -1227,6 +1315,9 @@ fn con_fflush(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::Raw { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => {}
+        ConnKind::Native { .. } => {
+            native_bridge()?.conn_fflush(i, n)?;
+        }
     }
     Ok(())
 }
@@ -1326,10 +1417,104 @@ fn switch_or_tee_stdout(i: &mut Interp, icon: i32, close_on_exit: bool, tee: boo
 fn connection_value(con: &Connection, n: usize) -> Value {
     let mut v = Value::int(n as i32);
     v.set_attr_raw(s::CLASS, Value::strs_from([con.class.as_str(), "connection"]));
-    if n > 2 && !con.ex_ptr.is_null() {
-        v.set_attr_raw(Sym::new("conn_id"), con.ex_ptr.clone());
+    if n > 2 {
+        let id = match &con.kind {
+            ConnKind::Native { .. } => native_bridge().map(|b| b.conn_id_value(n as i32)).unwrap_or(Value::Null),
+            _ => con.ex_ptr.clone(),
+        };
+        if !id.is_null() {
+            v.set_attr_raw(Sym::new("conn_id"), id);
+        }
     }
     v
+}
+
+/// R: connections.c:NextConnection: the first free slot from 3 on; when
+/// none is, a collection (which closes the connections nothing refers
+/// to) and a second look.
+pub fn next_connection(i: &mut Interp) -> RResult<usize> {
+    if let Ok(n) = i.conns.next_connection() {
+        return Ok(n);
+    }
+    // Try to reclaim unused ones
+    super::misc::r_gc(i)?;
+    i.conns.next_connection()
+}
+
+/// Close the connections of built-in kinds whose `conn_id` nothing but
+/// the table refers to, as GNU R's collector does by finalizing it
+/// (conFinalizer); a sink keeps its connection (do_sink preserves its
+/// `conn_id`). A native connection's `conn_id` is a C object with that
+/// finalizer itself. Called by `gc()` after the collection.
+// R: connections.c:conFinalizer
+pub fn close_unused_connections(i: &mut Interp) -> RResult<()> {
+    let st = &i.conns;
+    let sunk = |n: usize| (1..=st.sink_number).any(|k| st.sink_cons[k] == n as i32) || st.error_con == n as i32;
+    let mut dead: Vec<(usize, i32)> = Vec::new();
+    for n in 3..NCONNECTIONS {
+        let Some(con) = st.table[n].as_deref() else { continue };
+        let Value::ExtPtr(p) = &con.ex_ptr else { continue };
+        if con.is_native() || Rc::strong_count(p) > 1 || sunk(n) {
+            continue;
+        }
+        dead.push((con.id, n as i32));
+    }
+    // the collector runs finalizers newest first (R_weak_refs is a stack)
+    dead.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, n) in dead {
+        finalize_connection(i, n)?;
+    }
+    Ok(())
+}
+
+/// conFinalizer once it has found the connection: destroy it, and warn
+/// if it was open (a text connection never warns).
+// R: connections.c:conFinalizer
+pub fn finalize_connection(i: &mut Interp, n: i32) -> RResult<()> {
+    let warn = {
+        let con = i.conns.get(n)?;
+        (con.isopen && con.class != "textConnection")
+            .then(|| format!("closing unused connection {} ({})", n, con.description))
+    };
+    con_destroy(i, n)?;
+    if let Some(msg) = warn {
+        // run as a finalizer: at top level, so against no call
+        i.warningcall(&Value::Null, msg)?;
+    }
+    Ok(())
+}
+
+/// The connection from 3 on whose `con->id` is `id` (conFinalizer's
+/// search).
+pub fn connection_with_id(i: &Interp, id: usize) -> Option<i32> {
+    (3..NCONNECTIONS).find(|&n| i.conns.table[n].as_deref().is_some_and(|c| c.id == id)).map(|n| n as i32)
+}
+
+/// R: connections.c:R_new_custom_connection's `Connections[ncon] = new`:
+/// slot `n` (from [`next_connection`]) holds a native connection over the
+/// C `struct Rconn` at `con`, whose `con->id` is `id` (from
+/// [`next_connection_id`]). The bridge copies the struct's fields in.
+pub fn install_native_connection(i: &mut Interp, n: i32, class: &str, description: &str, con: usize, id: usize) {
+    let mut c = Connection::new(class, description, "", ConnKind::Native { con });
+    c.id = id;
+    i.conns.table[n as usize] = Some(Box::new(c));
+}
+
+/// init_con's `current_id`: the next connection id (never 0).
+pub fn next_connection_id() -> usize {
+    CURRENT_ID.with(|c| {
+        let id = c.get().wrapping_add(1).max(1);
+        c.set(id);
+        id
+    })
+}
+
+/// The C `struct Rconn` of a native connection.
+pub fn native_struct_of(c: &Connection) -> Option<usize> {
+    match c.kind {
+        ConnKind::Native { con } => Some(con),
+        _ => None,
+    }
 }
 
 fn new_ex_ptr() -> Value {
@@ -1338,7 +1523,7 @@ fn new_ex_ptr() -> Value {
 
 /// Register `con` in the next free slot: its R object and number.
 pub(super) fn install_new(i: &mut Interp, con: Connection) -> RResult<(Value, i32)> {
-    let n = i.conns.next_connection()?;
+    let n = next_connection(i)?;
     Ok((install_connection(i, n, con), n as i32))
 }
 
@@ -1348,11 +1533,11 @@ pub(super) fn con_open_new(i: &mut Interp, v: &Value) -> RResult<()> {
     match con_open(i, n) {
         Ok(true) => Ok(()),
         Ok(false) => {
-            con_free(i, n);
+            con_free(i, n)?;
             Err(Flow::error("cannot open the connection"))
         }
         Err(e) => {
-            con_free(i, n);
+            con_free(i, n)?;
             Err(e)
         }
     }
@@ -1537,7 +1722,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     {
         return Err(Flow::error("robigo: URL connections are not implemented yet"));
     }
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     let mut comp: Option<Codec> = None;
     let path = url.strip_prefix("file://").map(|s| s.to_string());
     let description = path.clone().unwrap_or_else(|| url.clone());
@@ -1624,12 +1809,12 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                con_free(i, ncon as i32);
+                con_free(i, ncon as i32)?;
                 return Err(e);
             }
         };
         if !ok {
-            con_free(i, ncon as i32);
+            con_free(i, ncon as i32)?;
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -1668,7 +1853,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             i.warning("fifo(\"\") only supports open = \"w+\" and open = \"w+b\": using the former")?;
         }
     }
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     let mode = if open.is_empty() { "r".to_string() } else { open.clone() };
     let kind = ConnKind::File {
         raw: false,
@@ -1691,12 +1876,12 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                con_free(i, ncon as i32);
+                con_free(i, ncon as i32)?;
                 return Err(e);
             }
         };
         if !ok {
-            con_free(i, ncon as i32);
+            con_free(i, ncon as i32)?;
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -1877,7 +2062,7 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         return Err(Flow::error(format!("robigo: {} compressed file connections are not implemented yet", what)));
     }
     let codec = if ty == 1 { Codec::Bzip2 } else { Codec::Gzip };
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     let mode = if open.is_empty() { "rb".to_string() } else { open.clone() };
     let kind = ConnKind::Gz {
         codec,
@@ -1898,12 +2083,12 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         let ok = match con_open(i, ncon as i32) {
             Ok(ok) => ok,
             Err(e) => {
-                con_free(i, ncon as i32);
+                con_free(i, ncon as i32)?;
                 return Err(e);
             }
         };
         if !ok {
-            con_free(i, ncon as i32);
+            con_free(i, ncon as i32)?;
             return Err(Flow::error("cannot open the connection"));
         }
     }
@@ -1930,7 +2115,7 @@ fn do_textconnection(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     if typ == NA_INTEGER {
         return Err(Flow::error("invalid 'encoding' argument"));
     }
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     let mut con = if open.is_empty() || open.starts_with('r') {
         let Value::Str(t) = &stext else { return Err(Flow::error("invalid 'text' argument")) };
         // R: connections.c:text_init
@@ -2139,50 +2324,14 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // `no_more_lines` handling; `incomplete_buf` holds it for the
     // pushback-or-warn decision.
     let mut incomplete_buf: Option<Vec<u8>> = None;
-    let mut eof = false;
-    {
+    i.conns.get(ncon)?.incomplete = false;
+    let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0 };
+    let eof = if i.conns.get(ncon)?.is_native() {
+        lines.read(|| rconn_fgetc(i, ncon), &mut ans, &mut nul_warnings, &mut incomplete_buf)?
+    } else {
         let con = i.conns.get(ncon)?;
-        con.incomplete = false;
-        let mut nread: i64 = 0;
-        while nread < nnn && !eof {
-            let mut buf: Vec<u8> = Vec::new();
-            let mut c;
-            loop {
-                c = rconn_fgetc(con);
-                if c == EOF {
-                    break;
-                }
-                if skip_nul != 0 && c == 0 {
-                    continue;
-                }
-                if c == '\n' as i32 {
-                    break;
-                }
-                buf.push(c as u8);
-            }
-            // The string stops at the first NUL (mkCharCE semantics).
-            let nul = buf.contains(&0);
-            let mut line: &[u8] = &buf;
-            if nul {
-                let end = line.iter().position(|&b| b == 0).unwrap_or(line.len());
-                line = &line[..end];
-            }
-            if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
-                line = &line[3..];
-            }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
-            if nul && warn != 0 {
-                nul_warnings.push(nread as usize + 1);
-            }
-            nread += 1;
-            if c == EOF {
-                eof = true;
-                if !buf.is_empty() {
-                    incomplete_buf = Some(buf);
-                }
-            }
-        }
-    }
+        lines.read(|| Ok(rconn_fgetc_builtin(con)), &mut ans, &mut nul_warnings, &mut incomplete_buf)?
+    };
     for k in nul_warnings {
         i.warning(format!("line {} appears to contain an embedded nul", k))?;
     }
@@ -2217,6 +2366,67 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         return Err(Flow::error("too few lines read in readLines"));
     }
     Ok(Value::strs(ans))
+}
+
+/// readLines' line loop, over a connection's characters.
+struct ReadLines {
+    nnn: i64,
+    skip_nul: bool,
+    warn: bool,
+}
+
+impl ReadLines {
+    /// Read up to `nnn` lines into `ans`; whether input ended.
+    #[inline(always)]
+    fn read(
+        &self,
+        mut getc: impl FnMut() -> RResult<i32>,
+        ans: &mut Vec<RStr>,
+        nul_warnings: &mut Vec<usize>,
+        incomplete_buf: &mut Option<Vec<u8>>,
+    ) -> RResult<bool> {
+        let mut eof = false;
+        let mut nread: i64 = 0;
+        while nread < self.nnn && !eof {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut c;
+            loop {
+                c = getc()?;
+                if c == EOF {
+                    break;
+                }
+                if self.skip_nul && c == 0 {
+                    continue;
+                }
+                if c == '\n' as i32 {
+                    break;
+                }
+                buf.push(c as u8);
+            }
+            // The string stops at the first NUL (mkCharCE semantics).
+            let nul = buf.contains(&0);
+            let mut line: &[u8] = &buf;
+            if nul {
+                let end = line.iter().position(|&b| b == 0).unwrap_or(line.len());
+                line = &line[..end];
+            }
+            if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
+                line = &line[3..];
+            }
+            ans.push(rstr(&String::from_utf8_lossy(line)));
+            if nul && self.warn {
+                nul_warnings.push(nread as usize + 1);
+            }
+            nread += 1;
+            if c == EOF {
+                eof = true;
+                if !buf.is_empty() {
+                    *incomplete_buf = Some(buf);
+                }
+            }
+        }
+        Ok(eof)
+    }
 }
 
 /// `writeLines(text, con, sep, useBytes)`
@@ -2419,7 +2629,7 @@ fn do_rawconnection(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
     if open.contains('t') {
         return Err(Flow::error("invalid 'open' argument"));
     }
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     // R: connections.c newraw
     let nbytes = raw.len();
     let mut con = Connection::new("rawConnection", &desc, &open, ConnKind::Raw { data: raw, pos: 0, nbytes });
@@ -2474,6 +2684,7 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
         ConnKind::File { fifo: true, .. } => Err(Flow::error("'seek' not enabled for this connection")),
         ConnKind::File { fifo: false, .. } => file_seek(con, r#where, origin, rw),
         ConnKind::Raw { .. } => raw_seek(con, r#where, origin),
+        ConnKind::Native { .. } => native_bridge()?.conn_seek(i, n, r#where, origin, rw),
         ConnKind::Terminal
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
@@ -2627,6 +2838,7 @@ fn con_truncate(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::Gz { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => return Err(Flow::error("truncation not enabled for this connection")),
+        ConnKind::Native { .. } => return native_bridge()?.conn_truncate(i, n),
     }
     Ok(())
 }
@@ -2654,6 +2866,9 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
     }
     if used == buf.len() {
         return Ok(used);
+    }
+    if con.is_native() {
+        return Ok(used + native_bridge()?.conn_read(i, n, &mut buf[used..])?);
     }
     con_read(con, buf, used)
 }
@@ -2707,6 +2922,7 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
         ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
             Err(Flow::error("cannot read from this connection"))
         }
+        ConnKind::Native { .. } => unreachable!("a native connection reads through con_read_bytes"),
     }
 }
 

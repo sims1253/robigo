@@ -72,6 +72,9 @@ struct Entry {
     n: c_int,
     /// the strings `class` and `description` point into
     strings: (CString, CString),
+    /// The package's own struct (R_new_custom_connection), not a mirror:
+    /// its fields and methods are the connection's (custom_conn.rs).
+    native: bool,
 }
 
 thread_local! {
@@ -85,6 +88,13 @@ thread_local! {
 /// cell: atomics, which cost nothing there, rather than a thread-local. The API
 /// belongs to one thread, so the two parts never disagree.
 static LAST_KEY: AtomicUsize = AtomicUsize::new(0);
+/// How many package structs exist (R_new_custom_connection), so that a
+/// native call without any pays nothing for syncing them.
+static NATIVES: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn any_native() -> bool {
+    NATIVES.load(Ordering::Relaxed) != 0
+}
 static LAST_NUMBER: AtomicI32 = AtomicI32::new(0);
 
 #[inline]
@@ -252,12 +262,67 @@ pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
             let p = Box::into_raw(c);
             BY_NUMBER.with(|by| by.borrow_mut().insert(n, p as usize));
             let strings = (CString::default(), CString::default());
-            CONNS.with(|m| m.borrow_mut().insert(p as usize, Entry { n, strings }));
+            CONNS.with(|m| m.borrow_mut().insert(p as usize, Entry { n, strings, native: false }));
             p
         }
     };
-    refresh(con);
+    if !is_native(con) {
+        refresh(con);
+    }
     con
+}
+
+/// Whether `con` is a package's own struct (R_new_custom_connection).
+pub(crate) fn is_native(con: *mut Rconn) -> bool {
+    CONNS.with(|m| m.borrow().get(&(con as usize)).is_some_and(|e| e.native))
+}
+
+/// Connection `n` is the package's struct `con` from now on: getConnection
+/// returns it.
+pub(crate) fn register_native(con: *mut Rconn, n: c_int) {
+    let strings = (CString::default(), CString::default());
+    CONNS.with(|m| m.borrow_mut().insert(con as usize, Entry { n, strings, native: true }));
+    BY_NUMBER.with(|by| by.borrow_mut().insert(n, con as usize));
+    NATIVES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The struct `con` is gone (destroyed and freed).
+pub(crate) fn unregister_native(con: *mut Rconn) {
+    let key = con as usize;
+    if let Some(e) = CONNS.with(|m| m.borrow_mut().remove(&key)) {
+        if e.native {
+            NATIVES.fetch_sub(1, Ordering::Relaxed);
+        }
+        BY_NUMBER.with(|by| {
+            let mut by = by.borrow_mut();
+            if by.get(&e.n) == Some(&key) {
+                by.remove(&e.n);
+            }
+        });
+    }
+    if LAST_KEY.load(Ordering::Relaxed) == key {
+        LAST_KEY.store(0, Ordering::Relaxed);
+    }
+}
+
+/// The package structs and their connection numbers.
+pub(crate) fn native_structs() -> Vec<(*mut Rconn, c_int)> {
+    CONNS.with(|m| m.borrow().iter().filter(|(_, e)| e.native).map(|(&k, e)| (k as *mut Rconn, e.n)).collect())
+}
+
+/// The package struct of connection `n`, if it is one.
+pub(crate) fn native_of(n: c_int) -> Option<*mut Rconn> {
+    let p = BY_NUMBER.with(|by| by.borrow().get(&n).copied())? as *mut Rconn;
+    is_native(p).then_some(p)
+}
+
+/// A dying `conn_id`: no struct's `ex_ptr` may point to it any longer.
+pub(crate) unsafe fn forget_conn_id(ptr: Sexp) {
+    for (con, _) in native_structs() {
+        if (*con).ex_ptr == ptr.addr() as *mut c_void {
+            (*con).ex_ptr = std::ptr::null_mut();
+        }
+    }
 }
 
 // R: connections.c:R_GetConnection
@@ -276,6 +341,19 @@ pub unsafe extern "C" fn R_GetConnection(s_conn: Sexp) -> *mut c_void {
 // allocations could otherwise overwrite via finalizers).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_WriteConnection(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
+    if is_native(con as *mut Rconn) {
+        let c = con as *mut Rconn;
+        if (*c).isopen == 0 {
+            crate::errors::error_str("connection is not open");
+        }
+        if (*c).canwrite == 0 {
+            crate::errors::error_str("cannot write to this connection");
+        }
+        return match (*c).write {
+            Some(write) => write(buf, 1, n, c),
+            None => crate::errors::error_str("robigo: the connection has no write method"),
+        };
+    }
     let t = write_token(con, buf, n);
     if t != 0 {
         crate::errors::jump_host(t);
@@ -295,6 +373,19 @@ unsafe fn write_token(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
 // R: connections.c:R_ReadConnection
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ReadConnection(con: *mut c_void, buf: *mut c_void, n: usize) -> usize {
+    if is_native(con as *mut Rconn) {
+        let c = con as *mut Rconn;
+        if (*c).isopen == 0 {
+            crate::errors::error_str("connection is not open");
+        }
+        if (*c).canread == 0 {
+            crate::errors::error_str("cannot read from this connection");
+        }
+        return match (*c).read {
+            Some(read) => read(buf, 1, n, c),
+            None => crate::errors::error_str("robigo: the connection has no read method"),
+        };
+    }
     let num = number_of(con);
     let r = op("readConnection\0", &[Rf_ScalarInteger(num), Rf_ScalarInteger(n.min(i32::MAX as usize) as c_int)]);
     let got = xlength(r) as usize;

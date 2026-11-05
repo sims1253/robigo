@@ -57,6 +57,7 @@ fn main() {
         "localecharset",
         "robigo_glue",
         "robigo_sys",
+        "robigo_connections",
         "robigo_hashtab",
         "robigo_inline",
         "robigo_util",
