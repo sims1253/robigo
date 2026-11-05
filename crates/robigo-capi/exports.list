@@ -992,6 +992,7 @@
   Rf_ucstoutf8;
   Rf_unprotect;
   Rf_unprotect_ptr;
+  Rf_utf8ToLatin1AdobeSymbol2utf8;
   Rf_utf8Toutf8NoPUA;
   Rf_utf8toAdobeSymbol;
   Rf_utf8toucs;
@@ -1023,6 +1024,7 @@
   Rstd_addhistory;
   Rstd_loadhistory;
   Rstd_savehistory;
+  Rstrdup;
   Rstrlen;
   Runzip;
   Rvprintf;
