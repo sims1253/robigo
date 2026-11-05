@@ -10,3 +10,12 @@ attributes(y)
 attributes(quote(f()))
 attributes(quote(f(a = 1)[[1]]))
 is.null(attributes(call("g", z = 3)))
+# attributes<- keeps a call's tags too (it clears only a pairlist's)
+m <- quote(h(x = x))
+attributes(m) <- NULL
+m
+attributes(m) <- list(foo = 1)
+m
+p <- as.pairlist(list(a = 1))
+attributes(p) <- NULL
+names(p)
