@@ -72,7 +72,6 @@ fn type_name(v: &Value) -> &'static str {
         Value::Dots(_) => "DOTSXP",
         Value::List(_) => "VECSXP",
         Value::Expr(_) => "EXPRSXP",
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => "BCODESXP",
         Value::ExtPtr(_) => "EXTPTRSXP",
         Value::Raw(_) => "RAWSXP",
@@ -103,7 +102,6 @@ fn addr_refs(v: &Value) -> (usize, usize) {
         Value::Dots(x) => rc(x),
         Value::ExtPtr(x) => rc(x),
         Value::Obj(x) => rc(x),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(x) => rc(x),
     }
 }
