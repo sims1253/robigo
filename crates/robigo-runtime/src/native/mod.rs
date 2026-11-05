@@ -123,6 +123,13 @@ pub trait NativeBridge: Sync {
     fn run_exit_finalizers(&self, _interp: &mut Interp) {}
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// An automatic collection ([`crate::autogc`]): `gc()`'s steps.
+    /// Whether it released objects only C held (another round can free
+    /// what they held).
+    fn collect_cycles(&self, interp: &mut Interp) -> bool {
+        self.gc(interp);
+        false
+    }
     /// `gctorture()`/`gctorture2()`: set the C heap's forced collections
     /// (`Core::gc_torture`: every `gap` allocations, the first after
     /// `wait`), returning the old (wait, gap) counters.

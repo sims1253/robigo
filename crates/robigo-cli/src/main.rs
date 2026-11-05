@@ -31,6 +31,8 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_malloc_aligned(layout.size(), layout.align())
             }
         };
+        // what the runtime's automatic collection measures (autogc.rs)
+        robigo_runtime::autogc::note_alloc(layout.size());
         p as *mut u8
     }
 
@@ -45,11 +47,13 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_zalloc_aligned(layout.size(), layout.align())
             }
         };
+        robigo_runtime::autogc::note_alloc(layout.size());
         p as *mut u8
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: std::alloc::Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        robigo_runtime::autogc::note_free(layout.size());
         // SAFETY: `ptr` was allocated by mimalloc.
         unsafe { libmimalloc_sys::mi_free(ptr as *mut std::ffi::c_void) };
     }
@@ -66,6 +70,10 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
                 mi_realloc_aligned(p, new_size, layout.align())
             }
         };
+        if !q.is_null() {
+            robigo_runtime::autogc::note_alloc(new_size);
+            robigo_runtime::autogc::note_free(layout.size());
+        }
         q as *mut u8
     }
 }
@@ -533,6 +541,7 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
+        robigo_runtime::autogc::enable();
         if !robigo_runtime::startup::run(&mut interp, cl.startup) {
             // R: a profile or .First error in an interactive session is
             // reported and the session still reaches the REPL; only the

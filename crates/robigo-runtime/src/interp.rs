@@ -1191,6 +1191,10 @@ impl Interp {
         unboxed: bool,
     ) -> RResult<Value> {
         self.push_closure_context(call, clo, promargs, &newenv, sysparent);
+        // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
+        if crate::autogc::due() {
+            crate::autogc::collect(self);
+        }
         if clo.jit.unsettled() {
             crate::vm::jit_check(self, clo);
         }

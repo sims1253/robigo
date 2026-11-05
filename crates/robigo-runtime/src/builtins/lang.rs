@@ -61,6 +61,11 @@ fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 /// Run a loop body, translating `break`/`next` aimed at this frame.
 /// Returns Ok(true) to continue, Ok(false) on break.
 fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
+    // R: eval.c:eval's interrupt check, which every iteration's eval of the
+    // body passes
+    if crate::autogc::due() {
+        crate::autogc::collect(interp);
+    }
     match interp.eval(body, env) {
         Ok(_) => Ok(true),
         Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(false),
