@@ -491,6 +491,22 @@ fn escaping_read(env: &Env, sym: Sym, v: RVal) -> Value {
     v.to_binding()
 }
 
+/// [`call_builtin_op`] of a builtin calling native code (`.Call` & co).
+#[inline(never)]
+fn native_builtin_op(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    b: &'static Builtin,
+    args: u32,
+    call: u32,
+) -> RResult<Value> {
+    let argv = native_args(code, args, regs, env);
+    let r = interp.invoke_builtin(b, &code.consts[call as usize], argv, env);
+    signal(interp, r)
+}
+
 /// The arguments of a `CallBuiltin` of a builtin calling native code
 /// (`Code::argvars`): a variable passed as it is is its binding's own
 /// object.
@@ -3722,14 +3738,13 @@ fn call_builtin_op(
     if crate::builtins::debug::any_prim_traced() {
         trace_builtin(interp, b, &code.consts[call as usize]);
     }
-    let argv: Vec<Arg> = if !native {
-        code.arglists[args as usize]
-            .iter()
-            .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
-            .collect()
-    } else {
-        native_args(code, args, regs, env)
-    };
+    if native {
+        return native_builtin_op(interp, code, env, regs, b, args, call);
+    }
+    let argv: Vec<Arg> = code.arglists[args as usize]
+        .iter()
+        .map(|(tag, r)| Arg::new(*tag, std::mem::replace(&mut regs[*r as usize], RVal::I(0)).into_value()))
+        .collect();
     let r = interp.invoke_builtin(b, &code.consts[call as usize], argv, env);
     signal(interp, r)
 }

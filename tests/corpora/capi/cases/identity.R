@@ -73,8 +73,8 @@ n <- length(1:4)
 .Call("capi_id_set", n, 98L)
 print(c(n, length(1:4)))
 
-# a literal passed straight to C: the shared small integers go as copies
-# whose writes are not carried back (#345), so other 0L/1L/3L are intact
+# a literal passed straight to C is an object of its own (gram.y mkInt):
+# C's write changes that literal only, other 0L/1L/3L are intact
 .Call("capi_id_set", 0L, 9L)
 print(0L)
 k <- function() {
