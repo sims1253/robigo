@@ -2400,9 +2400,10 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     // for .Call, as rlang's r_on_exit test routine is) leaves whatever its
     // last call left in the return register; GNU R keeps that pointer
     // unread unless R uses the value. robigo converts every result, so it
-    // checks that the pointer is an object of the heap first instead of
-    // reading through it.
-    if !out.is_null() && out != R_NilValue && crate::state::core().resolve(out.addr()) != Some(out) {
+    // checks that the pointer is in its heap at all before reading through
+    // it. (Inside the heap a stale object is #389's to fix: rlang's
+    // rlang_zap static still reads as the zap object there.)
+    if !out.is_null() && out != R_NilValue && !crate::state::core().in_heap(out.addr()) {
         return Err(Flow::error(format!(
             "robigo: a native routine returned {:#x}, which is not an R object (a routine declared void?)",
             out.addr()
