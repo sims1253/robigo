@@ -39,7 +39,7 @@ fn do_serialize(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         3 => serialize_r(i, &object, version, crate::serialize::Format::Binary)?,
         1 => serialize_r(i, &object, version, crate::serialize::Format::Ascii)?,
         2 => return Err(Flow::error("robigo: asciihex serialization is not implemented yet")),
-        _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
+        // serialize_with rejects versions other than 2 and 3 (R_Serialize)
         _ => serialize_r(i, &object, version, crate::serialize::Format::Xdr)?,
     };
     match arg(&args, 1) {
@@ -64,7 +64,7 @@ fn do_serializeb(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     let version = serialize_version_arg(&arg(&args, 3))?;
     let bytes = match format {
         3 => serialize_r(i, &object, version, crate::serialize::Format::Binary)?,
-        _ if version > 3 => return Err(Flow::error(format!("version {version} not supported"))),
+        // serialize_with rejects versions other than 2 and 3 (R_Serialize)
         _ => serialize_r(i, &object, version, crate::serialize::Format::Xdr)?,
     };
     write_to_conn(i, n, &bytes, format)
