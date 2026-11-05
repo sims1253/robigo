@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "lookup_loop_memory",
+ "out": {
+  "t": "[1] TRUE\n[1] TRUE\n[1] 20001 20002 20003\n"
+ },
+ "sha": "c17f8fefbe86f79a",
+ "status": 0
+}
