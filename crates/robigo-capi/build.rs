@@ -30,6 +30,32 @@ fn main() {
         .flag_if_supported("-Wno-maybe-uninitialized")
         .flag_if_supported("-Wno-unused-but-set-variable")
         .compile("robigo_appl");
+    // GNU R's TRE (src/extra/tre, extra/README.md), as its Makefile.in
+    // builds libtre.a: the regular expression engine grep.c calls
+    println!("cargo:rerun-if-changed=extra");
+    cc::Build::new()
+        .files(
+            [
+                "regcomp",
+                "regerror",
+                "regexec",
+                "tre-ast",
+                "tre-compile",
+                "tre-match-approx",
+                "tre-match-backtrack",
+                "tre-match-parallel",
+                "tre-mem",
+                "tre-parse",
+                "tre-stack",
+            ]
+            .map(|f| format!("extra/tre/{f}.c")),
+        )
+        .include("extra/tre")
+        .include("main/include")
+        .include("include")
+        .define("HAVE_CONFIG_H", None)
+        .flag_if_supported("-w")
+        .compile("robigo_tre");
     // GNU R's graphics engine (main/README.md): its own sources and
     // internal headers, linked whole so every engine function is in the
     // executable for the graphics packages' shared objects

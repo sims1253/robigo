@@ -35,6 +35,7 @@ pub static BRIDGE: Bridge = Bridge;
 /// Register the bridge with the runtime (the executable calls this first).
 pub fn install() {
     robigo_runtime::native::set_bridge(&BRIDGE);
+    robigo_runtime::builtins::grep::set_tre_engine(&crate::tre::TRE);
 }
 
 struct FinalizerContext {
@@ -226,6 +227,25 @@ fn store_flow(f: Flow) -> usize {
     t
 }
 
+/// The R condition a jump out of C code carried (its token).
+pub(crate) fn flow_of_token(t: usize) -> Flow {
+    take_flow(t)
+}
+
+/// Run `f` with `interp` current, as a native call does (see `enter`).
+pub(crate) fn with_current<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> T {
+    enter(interp, |_| f())
+}
+
+/// Set up the C side (the library state, the C locale) before C code that
+/// is not a package's runs, such as GNU R's TRE.
+///
+/// # Safety
+/// On the R thread.
+pub(crate) unsafe fn ready_for_c(interp: &mut Interp) {
+    enter(interp, |i| ensure_ready(i));
+}
+
 pub(crate) fn take_flow(t: usize) -> Flow {
     FLOWS
         .with(|m| m.borrow_mut().remove(&t))
@@ -284,6 +304,7 @@ fn only_stored(v: &Value) -> bool {
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x) == 1,
         Value::Lang(x) => Rc::strong_count(x) == 1,
         Value::Pairlist(x) => Rc::strong_count(x) == 1,
+        Value::Dots(x) => Rc::strong_count(x) == 1,
         _ => true,
     }
 }
@@ -2201,9 +2222,10 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>
         (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
         _ => return false,
     };
-    // a chain C lengthened or shortened needs no conversion to tell
+    // a chain C lengthened or shortened needs no conversion to tell (the
+    // cells pair_items_converted collects, a LANGSXP tail included)
     let (mut p, mut n) = (x, 0usize);
-    while p != R_NilValue && matches!(p.typ(), LISTSXP | DOTSXP) {
+    while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
         n += 1;
         p = p.cdr();
     }
@@ -2419,6 +2441,7 @@ fn sharing(v: &Value) -> u16 {
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x),
         Value::Lang(x) => Rc::strong_count(x),
         Value::Pairlist(x) => Rc::strong_count(x),
+        Value::Dots(x) => Rc::strong_count(x),
         _ => return 0,
     };
     n.saturating_sub(1).min(u16::MAX as usize) as u16
