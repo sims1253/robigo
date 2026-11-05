@@ -732,6 +732,43 @@ fn frame_mask(interp: &Interp, env: &Env) -> u64 {
     0
 }
 
+/// The call `l` of `clo` in compiled code (the caller checks `Interp::bc`):
+/// did GNU R's compiler inline it as `(function() expr)()`? It does for
+/// `local` with one argument when `local` was base's as the code was
+/// compiled: the frozen set of a closure the JIT compiled, else (installed
+/// package code, a top-level loop) base's `local` as found now.
+// R: compiler/R/cmp.R: setInlineHandler("local") (length(e) == 2)
+#[inline]
+pub fn inlines_local(interp: &Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) -> bool {
+    if l.args.len() != 1 || l.fun.as_sym().is_none_or(|f| f != s::LOCAL) {
+        return false;
+    }
+    inlines_local_slow(interp, clo, env)
+}
+
+#[cold]
+#[inline(never)]
+fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
+    let base = match interp.base.get_local(s::LOCAL) {
+        Some(Value::Promise(p)) => p.forced_fun(),
+        v => v,
+    };
+    if !base.is_some_and(|b| matches!(&b, Value::Closure(c) if Rc::ptr_eq(c, clo))) {
+        return false;
+    }
+    for ctx in interp.frames.iter().rev() {
+        if ctx.cloenv.ptr_eq(env) {
+            if let Value::Closure(c) = &ctx.function
+                && c.jit.0.get() & STATE_MASK == COMPILED
+            {
+                return index(s::LOCAL).is_some_and(|i| c.jit.mask() >> i & 1 != 0);
+            }
+            return true;
+        }
+    }
+    true
+}
+
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
 /// code there still use base's `sym`?
 #[cold]
