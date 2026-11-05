@@ -1,0 +1,10 @@
+dyn.load("util_text.so")
+
+print(.Call("capi_rstrdup", "a copy"))
+print(.Call("capi_rstrdup", ""))
+print(.Call("capi_symbol_utf8", "abcd pqr", FALSE))
+print(.Call("capi_symbol_utf8", "abcd pqr", TRUE))
+x <- .Call("capi_symbol_utf8", "¥³ å", FALSE)
+print(utf8ToInt(x))
+x <- .Call("capi_symbol_utf8", "¥³ å", TRUE)
+print(utf8ToInt(x))
