@@ -245,13 +245,22 @@ fn settings() -> &'static Settings {
     })
 }
 
+/// The vector heap size in VECRECs, as InitMemory computes it from the
+/// bytes: `R_VSize = (R_VSize + 1)/vsfac` in R_size_t, unsigned, so it
+/// wraps as C does (`R_VSIZE=-1` reaches here as R_SIZE_T_MAX: Max_Vsize
+/// is R_SIZE_T_MAX, so R_SizeFromEnv accepts it).
+// R: memory.c:InitMemory
+fn vsize_vecrecs(vsize: usize) -> usize {
+    vsize.wrapping_add(1) / VSFAC
+}
+
 impl HeapSizes {
     // R: memory.c:InitMemory (R_VSize in VECRECs; the originals are the
     // floors) and the static defaults above init_gc_grow_settings
     pub fn new() -> HeapSizes {
         let s = settings();
         let (grow_frac, n_incr, v_incr) = s.grow;
-        let v_size = (s.vsize + 1) / VSFAC;
+        let v_size = vsize_vecrecs(s.vsize);
         HeapSizes {
             n_size: s.nsize,
             v_size,
@@ -396,6 +405,14 @@ mod tests {
         // nodes have no vector data
         assert_eq!(vec_cells(LISTSXP, 1), 0);
         assert_eq!(vec_cells(CLOSXP, 0), 0);
+    }
+
+    #[test]
+    fn vsize_arithmetic_wraps_as_r_size_t_does() {
+        // R_VSIZE=-1: strtol gives -1, cast to R_size_t
+        assert_eq!(decode2long("-1"), Ok(usize::MAX));
+        assert_eq!(vsize_vecrecs(usize::MAX), 0);
+        assert_eq!(vsize_vecrecs(R_VSIZE), (R_VSIZE + 1) / VSFAC);
     }
 
     #[test]
