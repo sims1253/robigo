@@ -126,7 +126,6 @@ pub enum Op {
     GetVarBoxed {
         dst: Reg,
         sym: Sym,
-        slot: Slot,
     },
     /// `sym <<- src`: assign in the first enclosing frame that binds `sym`,
     /// or the global environment (`slot`: this code's slot for `sym`, whose
@@ -2087,8 +2086,7 @@ impl Compiler {
                         // VM would unbox: the interpreter evaluates it.
                         self.fallback(&a.value, r);
                     } else if let (true, Some(sym)) = (native, var_arg(&a.value)) {
-                        let slot = self.slot(sym);
-                        self.emit(Op::GetVarBoxed { dst: r, sym, slot });
+                        self.emit(Op::GetVarBoxed { dst: r, sym });
                     } else {
                         self.expr(&a.value, r, Want::Value);
                     }

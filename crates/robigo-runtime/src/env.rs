@@ -557,10 +557,16 @@ impl Env {
     #[cold]
     #[inline(never)]
     fn expand_binding(&self, sym: Sym, i: i32) -> Value {
-        let mut f = self.0.frame().borrow_mut();
-        let b = f.get_mut(sym).expect("the binding just read");
-        b.value = Value::int_fresh(i);
-        b.value.clone()
+        let v = Value::int_fresh(i);
+        // (A reader that holds a borrow of this frame meanwhile gets the
+        // box without storing it: reading never panics.)
+        if let Ok(mut f) = self.0.frame().try_borrow_mut()
+            && let Some(b) = f.get_mut(sym)
+            && b.value.shared_int() == Some(i)
+        {
+            b.value = v.clone();
+        }
+        v
     }
 
     pub fn binding_flags(&self, sym: Sym) -> Option<u8> {

@@ -4174,11 +4174,10 @@ fn run_with(
                     regs[*dst as usize] = v;
                 }
             }
-            Op::GetVarBoxed { dst, sym, slot } => {
+            Op::GetVarBoxed { dst, sym } => {
                 interp.visible = true;
                 // C reads the binding: write pending assignments first.
                 flush!();
-                let _ = slot;
                 let v = match binding_object(env, *sym) {
                     Some(v) => v,
                     None => {

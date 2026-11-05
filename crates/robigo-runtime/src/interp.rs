@@ -211,6 +211,11 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                         }
                         if q.code.is_none() && !q.forcing.get() {
                             if let Value::Sym(next_sym) = q.expr {
+                                // (no borrow of this frame is held while
+                                // chasing: the chase may read it again, and
+                                // a read may expand a binding)
+                                let q = q.clone();
+                                drop(frame);
                                 let next_env = q.env.borrow().clone();
                                 if let Some(next_env) = next_env {
                                     q.forcing.set(true);
@@ -534,10 +539,14 @@ impl Interp {
     /// as GNU R expands an unboxed promise value (R_expand_promise_value).
     #[inline]
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
-        if let crate::value::PromiseVal::Boxed(v) = &*p.value.borrow()
-            && v.shared_int().is_none()
-        {
-            return Ok(v.clone());
+        let forced = match &*p.value.borrow() {
+            crate::value::PromiseVal::Boxed(v) if v.shared_int().is_none() => return Ok(v.clone()),
+            crate::value::PromiseVal::Unforced => false,
+            _ => true,
+        };
+        if forced {
+            // (an unboxed value or a shared small integer: boxed once)
+            return Ok(p.value().unwrap_or(Value::Null));
         }
         let v = self.force_promise_raw(p)?;
         if v.shared_int().is_some() {
@@ -549,13 +558,12 @@ impl Interp {
     /// [`Interp::force_promise`] for a reader that takes the value unboxed
     /// (the VM): a shared small integer stays as it is, unexpanded.
     pub(crate) fn force_promise_raw(&mut self, p: &Rc<Promise>) -> RResult<Value> {
-        let unboxed = match &*p.value.borrow() {
+        match &*p.value.borrow() {
             crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
-            crate::value::PromiseVal::Unforced => false,
-            _ => true,
-        };
-        if unboxed {
-            return Ok(p.value().unwrap_or(Value::Null));
+            crate::value::PromiseVal::ScalarInt(i) => return Ok(Value::int(*i)),
+            crate::value::PromiseVal::ScalarReal(d) => return Ok(Value::real(*d)),
+            crate::value::PromiseVal::ScalarLgl(l) => return Ok(Value::lgl_raw(*l)),
+            crate::value::PromiseVal::Unforced => {}
         }
         if p.forcing.get() {
             return Err(Flow::error(
