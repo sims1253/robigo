@@ -130,3 +130,14 @@ print(j2)
 m2 <- 1L + 1L
 .Call("capi_id_set", mget("m2")[[1]], 22L)
 print(m2)
+
+# R_forceAndCall forces the first n promises before the call (purrr's
+# "map forces arguments in same way as base R")
+g <- function(i) function() i
+fc <- function(n) {
+  k <- 1L
+  f <- .Call("capi_id_force", quote(g(k)), environment(), n)
+  k <- 2L
+  f()
+}
+print(c(fc(1L), fc(0L)))

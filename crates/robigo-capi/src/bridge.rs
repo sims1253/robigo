@@ -1663,6 +1663,12 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             with_interp(robigo_runtime::builtins::random::put_rng_state)?;
             R_NilValue
         }
+        "forceAndCall" => {
+            // R: eval.c:R_forceAndCall
+            let (e, n, rho) = (from_sexp(a[0]), *INTEGER(a[1]), env_of(a[2])?);
+            let v = with_interp(|i| robigo_runtime::builtins::apply::force_and_call(i, &e, n.max(0) as usize, &rho))?;
+            to_sexp(&v)
+        }
         "newEnv" => {
             // R: envir.c:R_NewEnv — NewEnvironment(R_NilValue, R_NilValue,
             // enclos): a NULL enclos is allowed and leaves ENCLOS as
