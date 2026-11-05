@@ -814,6 +814,9 @@ unsafe fn drop_twin(k: usize) {
     TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
     let live = twin_cells(tw.x);
     unwatch_cells(k, &tw.cells, &live);
+    // its attribute agreement (to_sexp_new, write_back) goes with it: the
+    // address may be another object's after the next collection
+    forget_attrs(tw.x);
 }
 
 /// A setter wrote to the watched object `x` (memory.rs `watch_write`).
@@ -3003,7 +3006,11 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
             // the agreement of an object with attributes (`write_back`
             // forgets the others); a value C stored keeps its own
             let attributed = (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0;
-            if attributed && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
+            // (and a twin keeps its own until it is dropped)
+            if attributed
+                && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x))
+                && !TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr()))
+            {
                 forget_attrs(x);
             }
         }
