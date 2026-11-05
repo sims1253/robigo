@@ -17,7 +17,10 @@ big <- function(a = 1, b = "x", h = c(1, 2)) {
 }
 print(big())
 
-# Forcing a default leaves a forced promise.
+# Forcing a default leaves a forced promise. robigo still shows an unforced
+# one here: it makes the promise when C first looks, after R read the
+# constant (docs/core.md §6, "Constant formal defaults"), so this case is
+# not ratcheted.
 forced <- function(a = 1) { a; st(environment(), "a") }
 print(forced())
 

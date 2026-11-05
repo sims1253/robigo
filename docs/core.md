@@ -535,6 +535,20 @@ reach the caller's object only when the call returns; `NAMED`/
 `MAYBE_SHARED` on arguments report "shared" (always safe for C code: it
 copies).
 
+**Constant formal defaults.** GNU R binds every missing argument with a
+default to a promise of it (eval.c:applyClosure), a constant one
+included. robigo binds a constant default as the constant itself, flagged
+`BIND_MISSING_DEFAULT`, because a real promise per call cost 1% of startup
+and 12% of the `closures` benchmark. R cannot tell the two apart: forcing
+gives the constant, `missing()` reads the flag, `substitute()` the
+expression. C can, so the bridge's `findVar`, `findVarInFrame`, `getVar`
+and frame walk turn such a binding into the unforced default promise in
+place, the first time C looks (`interp::materialize_default`). The
+remaining gap: when R has read the default before C looks, GNU R's promise
+is already forced (`PRVALUE` bound), while robigo's is made then and is
+unforced. The capi case `default_args` records that difference, and is not
+ratcheted for it.
+
 ## 7. Crates and boundaries
 
 - `crates/robigo-core` (rlib): `heap` (blocks, size classes), `gc`
