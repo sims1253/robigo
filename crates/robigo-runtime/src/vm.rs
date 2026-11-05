@@ -4532,6 +4532,24 @@ fn run_with(
                 let v = tryop!(interp.eval_special(b, &code.consts[*k as usize], env));
                 regs[*dst as usize] = RVal::V(v);
             }
+            // No flush: making a closure runs no R code, and the closure's
+            // first chance to read this frame is a call, which flushes.
+            Op::MakeClosure { dst, t, k } => {
+                if crate::builtins::debug::any_prim_traced()
+                    && let Some(b) = crate::builtins::lookup_primitive("function")
+                {
+                    flush!();
+                    trace_builtin(interp, b, &code.consts[*k as usize]);
+                }
+                let tpl = &code.closures[*t as usize];
+                regs[*dst as usize] = RVal::V(crate::builtins::lang::make_closure(
+                    interp,
+                    tpl.formals.clone(),
+                    tpl.body.clone(),
+                    tpl.srcref.as_ref(),
+                    env,
+                ));
+            }
             Op::Eval { dst, k } => {
                 flush!();
                 let v = tryop!(interp.eval(&code.consts[*k as usize], env));

@@ -400,6 +400,14 @@ pub enum Op {
         table: u32,
         call: u32,
     },
+    /// `function(formals) body`: a closure of `closures[t]` over the
+    /// current frame (`consts[k]` is the call, for `trace()` of the
+    /// primitive). R: eval.c, MAKECLOSURE.
+    MakeClosure {
+        dst: Reg,
+        t: u32,
+        k: u32,
+    },
     /// If `sym` is rebound outside base, evaluate `consts[k]` instead and
     /// continue at `skip`.
     Guard {
@@ -739,6 +747,8 @@ pub struct Code {
     pub guard_memo: Box<[std::cell::Cell<GuardMemo>]>,
     /// Tables of `Switch` ops.
     pub switches: Vec<SwitchTable>,
+    /// What `MakeClosure` ops make closures of.
+    pub closures: Vec<ClosureTemplate>,
 }
 
 impl Code {
@@ -796,6 +806,7 @@ impl Code {
             is_body,
             guard_memo,
             switches: c.switches,
+            closures: c.closures,
         }
     }
 }
@@ -815,6 +826,14 @@ impl Want {
     fn value(self) -> Want {
         if self == Want::Effect { Want::Effect } else { Want::Value }
     }
+}
+
+/// The formals, body and source reference of a `function` expression,
+/// converted once when its code is compiled.
+pub struct ClosureTemplate {
+    pub formals: Rc<[Arg]>,
+    pub body: Value,
+    pub srcref: Option<Value>,
 }
 
 struct Loop {
@@ -837,6 +856,7 @@ struct Compiler {
     nguards: usize,
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
+    closures: Vec<ClosureTemplate>,
     /// A promise thunk (an argument or default expression). GNU R never
     /// compiles promise expressions: forcing evaluates the AST, so a
     /// call runs the callee's closure — an inlined simple `.Internal`
@@ -2026,6 +2046,25 @@ impl Compiler {
                 let inner = Value::lang(Value::Sym(f), l.args[2..].to_vec());
                 let Value::Lang(il) = &inner else { unreachable!() };
                 self.call_site(il, &inner, dst, f, force_count(&l.args[0].value).unwrap());
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "function"
+                if (l.args.len() == 2 || l.args.len() == 3)
+                    && l.args.iter().all(|a| a.tag.is_none())
+                    && matches!(l.args[0].value, Value::Pairlist(_) | Value::Null) =>
+            {
+                let g = self.guard(h, whole, dst);
+                let formals: Rc<[Arg]> = match &l.args[0].value {
+                    Value::Pairlist(p) => p.items.iter().cloned().collect(),
+                    _ => Rc::from(Vec::new()),
+                };
+                let srcref = l.args.get(2).map(|a| a.value.clone()).filter(|v| !v.is_null());
+                let t = self.closures.len() as u32;
+                self.closures.push(ClosureTemplate { formals, body: l.args[1].value.clone(), srcref });
+                let k = self.konst(whole.clone());
+                self.emit(Op::MakeClosure { dst, t, k });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }

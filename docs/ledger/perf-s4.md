@@ -30,6 +30,57 @@ all three tiers.
 - Calls with named arguments (`f(a = x)`, everywhere in methods) took the
   general `match_args` path: 0.32 us against 0.21 us positional, GNU R 0.22.
 
+## 2026-11-04: measured, not changed
+
+- PGO (scripts/pgo-build.sh's training, this branch): cycles -13% on
+  `validObject`, -8% on `setClass`, -14% on `new`, -15% on generic
+  dispatch (min of 3, `perf stat`); instructions -11..-15%. The nightly
+  binary is built that way; `rivals.py` measures `scripts/build.sh`'s,
+  which is not. Most of the IPC gap to GNU R above is code layout.
+- Smaller inline buffers in `vm::run_pre` (registers 32 -> 16, slots
+  24 -> 12, guard marks 128 -> 32; the frame 2.6 KB -> 1.3 KB): no cycle
+  change outside noise, +0.1-0.3% instructions. Rejected.
+- Call frames indexed only past 20 bindings: no cycle change (the -8%
+  measured earlier with 32 did not repeat; cycles on this VM vary by +-5%
+  between runs), +0.1% startup instructions. Rejected.
+- `try(x, silent = TRUE)` is 46.7K instructions (GNU R 42.4K) and 28% of
+  `validObject`. 10% of it is guard checking: `tryCatch`'s helpers are
+  closures defined in its frame, so every call is a new chain of frames
+  and `guard_ok_slow` walks it for each guard (17 walks, 66
+  `local_may_bind_fun` per `try`). GNU R decides this at compile time for
+  namespace code. Left to perf-vm (guards).
+- The loop JIT has no `SlotRead`: s4-slot-read's 10,000 `x@x` run in the
+  VM at 427 instructions each (35 ns, GNU R 34 ns). Native code would need
+  `Dyn` variables in loops (only whole-closure native code has them).
+- Per call, robigo's machinery is not the instruction problem:
+  `h3(x)` 3,123 instructions vs GNU R 3,769, generic dispatch 10.7K vs
+  12.0K; the same R-level work (21 frames per `validObject`, 663 per
+  `setClass` in both) runs at lower IPC.
+
+## 2026-11-04: `function` compiled to MakeClosure (kept)
+
+- why: compiled code evaluated `function(x) ...` as a call of the special
+  (`CallSpecial`: flush, the call's arguments copied, `do_function` looking
+  its formals up in a thread-local table): 1,180 instructions per closure
+  against GNU R's 364 (MAKECLOSURE). methods makes several per operation
+  (`validObject`'s `anyStrings`, `tryCatch`'s three helpers, `try`'s
+  handler).
+- what: `Op::MakeClosure`, its formals converted once at compile time
+  (`ClosureTemplate`), no flush (making a closure runs no R code; the
+  closure reads the frame only from a call, which flushes), the `function`
+  binding guarded as before; `do_function` and the op share `make_closure`.
+- result: 1,180 -> 488 instructions per closure; `validObject` 168.2K ->
+  166.0K. `perf.py compare`: 0 faster, 1 slower: `convolution_v` +0.61%,
+  all of it `memset` in the allocator (+2.9M: a 2.7 MB `matrix(0, ...)`
+  lands on a reused block that must be zeroed instead of fresh pages, as
+  the allocation sequence changed); its R code makes no closures in the
+  loop.
+- verified: `tests/r/basics/compiled-closure-creation.R` in all tiers.
+- gap (interpreter tier only, so no `tests/r` script, which must agree
+  across tiers): `m <- function() { for (i in 1) local(2); 1 }; m()` fails
+  with "attempt to apply non-function" under `ROBIGO_COMPILE=0`; the VM and
+  GNU R return 1.
+
 ## 2026-11-04: named arguments and `...` without match_args (kept)
 
 - why: a call with a tagged argument or to a closure with `...` took the
