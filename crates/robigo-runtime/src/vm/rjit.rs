@@ -416,6 +416,7 @@ fn compile(interp: &mut Interp, clo: &Closure) {
             single_na: true,
             attrib_as_set: true,
             ignore_env: true,
+            ignore_bytecode: true,
             ignore_srcref: false,
         };
         crate::builtins::identical::identical_flags(&e.body, &clo.body, flags).then_some(Some(e.mask))
@@ -781,6 +782,14 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
 #[inline(never)]
 pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
     if env.is_search() {
+        // R: eval.c:do_for and friends compile a loop the interpreter meets
+        // in the global environment (`Interp::bc`); `function` there makes
+        // a compiled closure (MAKECLOSURE), with the global environment's
+        // bindings as the loop was compiled with them. (Taken now: a frozen
+        // function rebound earlier in the same loop would differ.)
+        if interp.bc && env.ptr_eq(&interp.global) {
+            clo.jit.set(INHERITED, top_mask(interp, env, &frozen_syms()));
+        }
         return;
     }
     for ctx in interp.frames.iter().rev() {
