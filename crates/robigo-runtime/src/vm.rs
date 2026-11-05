@@ -213,9 +213,16 @@ thread_local! {
 
 /// Discard implementation-only owners before testing weak-key reachability.
 pub fn clear_gc_caches() {
+    clear_gc_caches_running();
+    rjit::clear_gc_caches();
+}
+
+/// [`clear_gc_caches`] without the JIT's: a collection at an interrupt
+/// check can run inside native code the JIT cache owns (a compiled loop
+/// that calls a closure), which must outlive it.
+pub fn clear_gc_caches_running() {
     CACHE.with(|c| c.borrow_mut().clear());
     DEFAULTS.with(|c| c.borrow_mut().clear());
-    rjit::clear_gc_caches();
 }
 
 pub fn enabled() -> bool {
