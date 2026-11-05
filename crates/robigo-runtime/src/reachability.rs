@@ -187,6 +187,14 @@ impl ObjectGraph {
                 Owner::Value(value) => {
                     self.attrs(&mut edges, value.attrs());
                     match &value {
+                        // A namespace or a search-path environment (global,
+                        // base, attached packages) is held by the session
+                        // itself: walking its bindings (every function, and
+                        // every function's body) cannot change what is live,
+                        // because what it holds keeps a count from outside
+                        // the graph, and would make each collection cost the
+                        // size of every loaded package.
+                        Value::Env(env) if env.is_search() || crate::dispatch::is_namespace(env) => {}
                         Value::Env(env) => {
                             if let Some(parent) = &*env.0.parent.borrow() {
                                 self.env(&mut edges, parent);
@@ -622,8 +630,10 @@ mod tests {
         assert!(g.is_live(&a, &g.externally_live()));
         drop(g);
         drop(temporary);
+        // A search-path environment is the session's: the walk does not
+        // enter it, so what it binds stays live.
         let g = graph(&[&base, &alias, &a]);
-        assert!(!g.is_live(&a, &g.externally_live()));
+        assert!(g.is_live(&a, &g.externally_live()));
         cleanup(&g);
     }
 
