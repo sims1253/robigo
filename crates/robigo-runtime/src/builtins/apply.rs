@@ -62,6 +62,24 @@ fn plain_elements(i: &mut Interp, xx: &Value, rho: &Env) -> bool {
         && i.resolves_to_base(s::BRACKET2, rho)
 }
 
+/// Whether `X` and `[[` in the `.Internal`'s frame are still what the
+/// element reads assume (`xx`, base's). A `FUN` that runs R code may rebind
+/// them (`assign("X", ..., parent.frame())`), and GNU R's next `X[[i]]`
+/// reads the new binding; checked after every call that may have run code.
+fn unchanged(rho: &Env, x: &Value, xx: &Value) -> bool {
+    let Value::Sym(xsym) = x else { return false };
+    let same = |v: &Value| match (v, xx) {
+        (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
+        _ => v.ptr_eq(xx),
+    };
+    let bound = match rho.get_local(*xsym) {
+        Some(Value::Promise(p)) => p.value().is_some_and(|v| same(&v)),
+        Some(v) => same(&v),
+        None => false,
+    };
+    bound && !rho.local_may_bind_fun(s::BRACKET2)
+}
+
 /// `X[[k + 1]]` of a [`plain_elements`] `X`: the element, without the
 /// vector's attributes.
 fn plain_element(xx: &Value, k: usize) -> Value {
@@ -219,6 +237,7 @@ fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
 
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn call_fun(
     i: &mut Interp,
     fast: &mut Option<FastApply>,
@@ -227,7 +246,8 @@ fn call_fun(
     fcall: &Value,
     isym: Sym,
     rho: &Env,
-    plain: bool,
+    plain: &mut bool,
+    x: &Value,
 ) -> RResult<Value> {
     match fast {
         Some(FastApply::One(c)) => {
@@ -245,10 +265,16 @@ fn call_fun(
         None => {}
     }
     rho.set_local(isym, Value::int(k as i32 + 1));
-    if plain {
-        return force_and_call_elem(i, fcall, plain_element(xx, k), rho);
+    let r = if *plain {
+        force_and_call_elem(i, fcall, plain_element(xx, k), rho)
+    } else {
+        force_and_call(i, fcall, 1, rho)
+    };
+    if (*plain || fast.is_some()) && !unchanged(rho, x, xx) {
+        *plain = false;
+        *fast = None;
     }
-    force_and_call(i, fcall, 1, rho)
+    r
 }
 
 /// `FUN(X[[i]], ...)`
@@ -265,46 +291,13 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let n = xx.len();
     let fun = check_arg_is_symbol(&arg(&args, 1))?;
     let names = get_attrib(&xx, s::NAMES);
-    let fcall = fun_x_i_call(fun, x);
+    let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut out = Vec::with_capacity(n);
-    let fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
-    let plain = n > 0 && plain_elements(i, &xx, rho);
-    // FUN(X[[i]], ...) for element `k` when it cannot run inline.
-    let call = |i: &mut Interp, k: usize| -> RResult<Value> {
-        rho.set_local(isym, Value::int(k as i32 + 1));
-        if plain {
-            force_and_call_elem(i, &fcall, plain_element(&xx, k), rho)
-        } else {
-            force_and_call(i, &fcall, 1, rho)
-        }
-    };
-    match fast {
-        Some(FastApply::One(c)) => {
-            for k in 0..n {
-                let rk = element_rval(&xx, k);
-                if let Some(v) = crate::vm::call_inline_rval(i, &c, &[rk]) {
-                    out.push(v.into_value());
-                } else {
-                    out.push(call(i, k)?);
-                }
-            }
-        }
-        Some(FastApply::Multi(mut fc)) => {
-            for k in 0..n {
-                fc.args[fc.x_slot] = element_rval(&xx, k);
-                if let Some(v) = crate::vm::call_inline_rval(i, &fc.clo, &fc.args) {
-                    out.push(v.into_value());
-                } else {
-                    out.push(call(i, k)?);
-                }
-            }
-        }
-        None => {
-            for k in 0..n {
-                out.push(call(i, k)?);
-            }
-        }
+    let mut fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
+    let mut plain = n > 0 && plain_elements(i, &xx, rho);
+    for k in 0..n {
+        out.push(call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?);
     }
     let mut ans = Value::list(out);
     if !names.is_null() {
@@ -357,7 +350,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         }
         row_names = get_attrib(&value, if array_value { s::DIMNAMES } else { s::NAMES });
     }
-    let fcall = fun_x_i_call(fun, x);
+    let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut parts: Vec<Value> = Vec::with_capacity(n);
     let mut fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
@@ -459,9 +452,9 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     }
 
     let start_k = parts.len();
-    let plain = start_k < n && plain_elements(i, &xx, rho);
+    let mut plain = start_k < n && plain_elements(i, &xx, rho);
     for k in start_k..n {
-        let mut val = call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, plain)?;
+        let mut val = call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?;
         if val.len() != common_len {
             return Err(Flow::error(format!(
                 "values must be length {},\n but FUN(X[[{}]]) result is length {}",

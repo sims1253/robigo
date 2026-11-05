@@ -42,3 +42,8 @@ print(sapply(list(a = 1:3, b = 4:6), mean))
 print(Map(function(a, b) a + b, 1:2, 3:4))
 print(lapply(integer(), identity))
 print(vapply(character(), nchar, 1L))
+# FUN rebinding X or `[[` in the frame of lapply/vapply: later elements
+# are read from the new binding, as GNU R evaluates X[[i]] each time.
+print(lapply(1:3, function(v) { if (v == 1L) assign("X", 11:13, parent.frame()); v }))
+print(vapply(1:3, function(v) { if (v == 1L) assign("X", c(5, 6, 7), parent.frame()); v + 0 }, 0))
+print(lapply(c(a = 1, b = 2), function(v) { assign("[[", function(x, i) -i, parent.frame()); v }))
