@@ -55,4 +55,9 @@ profiles are in `docs/ledger/perf-nbody.md`.
   next `gc()`; they now clear it.
   `tests/r/env/vm-dead-registers-slices.R` (fails in the VM tiers without
   that).
+- Against main 7a0d27bd (its dispatch loop keeps only hot paths inline):
+  the three ops' fast paths are out of line too (`index_n_fast`,
+  `set_index_n_fast`, `super_set_index_n_fast`), as main's store ops are:
+  `profiler-microbenchmark` +0.14% -> +0.01% (code size in `run_with`
+  alone), `nbody_2`/`_3`/`_naive_2` unchanged.
 

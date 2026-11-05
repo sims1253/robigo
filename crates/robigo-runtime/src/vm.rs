@@ -1091,6 +1091,79 @@ fn stored(val: &mut RVal, take: bool) -> Value {
     if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
 }
 
+/// `Op::IndexN`'s fast path (out of line, as the store ops' are): the slice
+/// of a plain array by in-range scalar and empty indices.
+#[inline(never)]
+fn index_n_fast(
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+) -> Option<RVal> {
+    let ix = slice_indices(vars, env, regs, &code.index_lists[idx as usize])?;
+    read_var(vars, env, x, slot).and_then(|xv| array_slice(xv, &ix))
+}
+
+/// `Op::SetIndexN`'s fast path: in place on a plain local array. In effect
+/// position (`take`) the value is dead once its elements are copied (#357).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_index_n_fast(
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+    take: bool,
+) -> bool {
+    let done = match slice_indices(vars, env, regs, &code.index_lists[idx as usize]) {
+        Some(ix) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => array_assign(xv, &ix, &regs[val as usize]),
+            _ => false,
+        },
+        _ => false,
+    };
+    if done && take {
+        regs[val as usize] = DEAD;
+    }
+    done
+}
+
+/// `Op::SuperSetIndexN`'s fast path: in place on the binding `<<-` assigns
+/// (the frame's cached copy dropped first, as for `Op::SuperSetIndex`).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn super_set_index_n_fast(
+    interp: &Interp,
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+    take: bool,
+) -> bool {
+    if !matches!(vars.slots[slot as usize], SlotVal::Dirty(_)) {
+        vars.slots[slot as usize] = SlotVal::Empty;
+    }
+    let done = match slice_indices(vars, env, regs, &code.index_lists[idx as usize]) {
+        Some(ix) => super_set_slice(interp, env, x, &ix, &regs[val as usize]),
+        None => false,
+    };
+    if done && take {
+        regs[val as usize] = DEAD;
+    }
+    done
+}
+
 /// The geometry of `x[i, , k]` on a plain array: the offset of the first
 /// element, and (extent, stride) of each empty index in order.
 struct Slice {
@@ -4466,11 +4539,7 @@ fn run_with(
             }
             Op::IndexN { dst, x, slot, idx, k } => {
                 interp.visible = true;
-                let fast = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
-                    Some(ix) => read_var(vars, env, *x, *slot).and_then(|xv| array_slice(xv, &ix)),
-                    None => None,
-                };
-                regs[*dst as usize] = match fast {
+                regs[*dst as usize] = match index_n_fast(code, vars, env, regs, *x, *slot, *idx) {
                     Some(v) => v,
                     None => {
                         flush!();
@@ -4479,35 +4548,13 @@ fn run_with(
                 };
             }
             Op::SetIndexN { val, x, slot, idx, k, take } => {
-                let done = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
-                    Some(ix) if own_var(vars, env, *x, *slot) => match &mut vars.slots[*slot as usize] {
-                        SlotVal::Dirty(RVal::V(xv)) => array_assign(xv, &ix, &regs[*val as usize]),
-                        _ => false,
-                    },
-                    _ => false,
-                };
-                if done && *take {
-                    // (The elements were copied; the value is dead: #357.)
-                    regs[*val as usize] = DEAD;
-                }
-                if !done {
+                if !set_index_n_fast(code, vars, env, regs, *val, *x, *slot, *idx, *take) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
                 }
             }
             Op::SuperSetIndexN { val, x, slot, idx, k, take } => {
-                // (As for `Op::SuperSetIndex`.)
-                if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
-                    vars.slots[*slot as usize] = SlotVal::Empty;
-                }
-                let done = match slice_indices(vars, env, regs, &code.index_lists[*idx as usize]) {
-                    Some(ix) => super_set_slice(interp, env, *x, &ix, &regs[*val as usize]),
-                    None => false,
-                };
-                if done && *take {
-                    regs[*val as usize] = DEAD;
-                }
-                if !done {
+                if !super_set_index_n_fast(interp, code, vars, env, regs, *val, *x, *slot, *idx, *take) {
                     flush!();
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, true, *take));
                 }
