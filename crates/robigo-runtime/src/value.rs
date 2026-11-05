@@ -1482,8 +1482,10 @@ impl Value {
             Value::Closure(c) => &c.attrs,
             Value::Obj(o) => &o.attrs,
             // out of line, so the hot match is what it is without code
-            // objects (perf gate: dim_view, get_attr)
-            _ => return self.attrs_cold(),
+            // objects (perf gate: dim_view, get_attr); every other value
+            // has none, without a call
+            Value::Bytecode(_) => return self.attrs_cold(),
+            _ => return None,
         };
         b.as_deref()
     }
@@ -1538,7 +1540,8 @@ impl Value {
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
-            _ => return self.attrs_slot_mut_cold(),
+            Value::Bytecode(_) => return self.attrs_slot_mut_cold(),
+            _ => return None,
         })
     }
 
