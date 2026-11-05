@@ -8,9 +8,9 @@ e <- new.env()
 assign("marker", structure(list(), class = "marker"), envir = e)
 assign("pair", c(a = 1.5, b = 2.5), envir = e)
 invisible(.Call("capi_lookup_init", e))
-gctorture2(20)
+gctorture2(1)
 for (i in 1:3) {
-    invisible(.Call("capi_lookup_churn", 300L))
+    invisible(.Call("capi_lookup_churn", 50L))
     r <- .Call("capi_lookup_cached")
 }
 gctorture2(0)
