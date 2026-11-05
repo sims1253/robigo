@@ -217,9 +217,10 @@ pub fn clear_gc_caches() {
     rjit::clear_gc_caches();
 }
 
-/// [`clear_gc_caches`] without the JIT's: a collection at an interrupt
-/// check can run inside native code the JIT cache owns (a compiled loop
-/// that calls a closure), which must outlive it.
+/// [`clear_gc_caches`] without the JIT's, for an automatic collection:
+/// those caches hold compiled loops' bodies and environments, and clearing
+/// them at every collection would recompile the hot loops after each one
+/// (what they hold waits for an explicit `gc()`).
 pub fn clear_gc_caches_running() {
     CACHE.with(|c| c.borrow_mut().clear());
     DEFAULTS.with(|c| c.borrow_mut().clear());
