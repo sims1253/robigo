@@ -16,6 +16,7 @@ typedef struct {
     char *data;
     size_t len, pos;
     size_t chunk;   // bytes per read when not blocking (0: all)
+    int bad;        // reads fail: a negative count
     Rconnection self;
     char name[16];
 } mem;
@@ -48,6 +49,8 @@ static void mem_destroy(Rconnection con) {
 
 static size_t mem_read(void *target, size_t sz, size_t ni, Rconnection con) {
     mem *m = con->private;
+    if (m->bad)
+        return (size_t) -1;
     size_t want = sz * ni, left = m->len - m->pos;
     if (!con->blocking && m->chunk && want > m->chunk)
         want = m->chunk;
@@ -74,7 +77,9 @@ SEXP cc_new(SEXP name, SEXP text, SEXP chunk) {
     m->data = malloc(m->len + 1);
     memcpy(m->data, s, m->len + 1);
     m->pos = 0;
-    m->chunk = (size_t) Rf_asInteger(chunk);
+    int ch = Rf_asInteger(chunk);
+    m->bad = ch < 0;
+    m->chunk = ch < 0 ? 0 : (size_t) ch;
     m->self = con;
     strncpy(m->name, CHAR(STRING_ELT(name, 0)), sizeof(m->name) - 1);
     m->name[sizeof(m->name) - 1] = '\0';
@@ -122,4 +127,15 @@ SEXP cc_read(SEXP sc, SEXP n) {
     SEXP out = Rf_lengthgets(ans, (R_xlen_t) got);
     UNPROTECT(1);
     return out;
+}
+
+// C writes a field, then R code reads it in the same .Call: it sees the
+// struct (GNU R has only the struct)
+SEXP cc_flip_then_eval(SEXP sc, SEXP fun, SEXP rho) {
+    Rconnection con = R_GetConnection(sc);
+    con->incomplete = !con->incomplete;
+    SEXP call = PROTECT(Rf_lang1(fun));
+    SEXP ans = Rf_eval(call, rho);
+    UNPROTECT(1);
+    return ans;
 }

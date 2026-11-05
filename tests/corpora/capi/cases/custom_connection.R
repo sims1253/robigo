@@ -20,6 +20,19 @@ print(readBin(con, raw(), 100))
 print(isIncomplete(con))
 close(con)  # close, then destroy
 
+# C writes a field, then R code it evaluates reads it
+flip <- .Call("cc_new", "flip", "f", 0L)
+print(isIncomplete(flip))
+print(.Call("cc_flip_then_eval", flip, function() isIncomplete(flip), environment()))
+print(isIncomplete(flip))
+close(flip)
+
+# a read method's negative count is its error
+bad <- .Call("cc_new", "bad", "b", -1L)
+open(bad, "rb")
+print(tryCatch(readBin(bad, raw(), 4), error = function(e) conditionMessage(e)))
+close(bad)
+
 # an error from the open method; close() still destroys
 two <- .Call("cc_new", "two", "x", 0L)
 print(tryCatch(open(two, "w"), error = function(e) conditionMessage(e)))

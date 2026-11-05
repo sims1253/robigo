@@ -6,10 +6,15 @@
 //! here: each copies the runtime's fields into the struct, calls the method
 //! in a context (an `Rf_error` from it becomes the runtime's error), and
 //! copies the fields back, also on the error path. The fields are synced
-//! at the boundary of every native call too, where the package reads and
-//! writes them directly (curl sets them after `R_new_custom_connection`).
+//! wherever control passes between C and R code, so that while C runs the
+//! struct is the connection's state, and while R runs the runtime's copy
+//! is: into the structs when a native call starts and when a callback
+//! returns to C (`Rf_eval`, a warning's handlers, a host operation), back
+//! when the native call returns and when C calls back into R. The package
+//! reads and writes its fields directly (curl sets them after
+//! `R_new_custom_connection`).
 
-use crate::connections::{Rconn, native_of, native_structs, register_native, unregister_native};
+use crate::connections::{Rconn, for_each_native, native_of, register_native, unregister_native};
 use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
@@ -126,11 +131,11 @@ pub(crate) unsafe fn sync_to_c(i: &mut Interp) {
     if !crate::connections::any_native() {
         return;
     }
-    for (con, n) in native_structs() {
+    for_each_native(|con, n| {
         if let Some(c) = same(i, n, con, (*con).id as usize) {
             push(con, c);
         }
-    }
+    });
 }
 
 /// After a native call: what the package wrote into its structs.
@@ -138,10 +143,24 @@ pub(crate) unsafe fn sync_from_c(i: &mut Interp) {
     if !crate::connections::any_native() {
         return;
     }
-    for (con, n) in native_structs() {
+    for_each_native(|con, n| {
         if let Some(c) = same(i, n, con, (*con).id as usize) {
             pull(con, c);
         }
+    });
+}
+
+/// C calls back into R code: what it wrote into its structs.
+pub(crate) unsafe fn c_to_r() {
+    if crate::connections::any_native() {
+        crate::bridge::with_interp(|i| sync_from_c(i));
+    }
+}
+
+/// The callback returns to C: what R code changed, into the structs.
+pub(crate) unsafe fn r_to_c() {
+    if crate::connections::any_native() {
+        crate::bridge::with_interp(|i| sync_to_c(i));
     }
 }
 
@@ -179,7 +198,10 @@ enum Method {
 struct Call {
     con: *mut Rconn,
     method: Method,
+    /// `Method::Read`'s target
     buf: *mut c_void,
+    /// `Method::Write`'s source
+    cbuf: *const c_void,
     len: usize,
     text: *const c_char,
     r#where: f64,
@@ -196,6 +218,7 @@ impl Call {
             con: std::ptr::null_mut(),
             method,
             buf: std::ptr::null_mut(),
+            cbuf: std::ptr::null(),
             len: 0,
             text: std::ptr::null(),
             r#where: 0.0,
@@ -223,7 +246,7 @@ unsafe extern "C" fn call_method(data: *mut c_void) {
         Method::Destroy => robigo_destroy_connection(con),
         Method::Fgetc => c.int_ret = ((*con).fgetc.unwrap_or_else(|| missing("fgetc")))(con),
         Method::Read => c.size_ret = ((*con).read.unwrap_or_else(|| missing("read")))(c.buf, 1, c.len, con),
-        Method::Write => c.size_ret = ((*con).write.unwrap_or_else(|| missing("write")))(c.buf, 1, c.len, con),
+        Method::Write => c.size_ret = ((*con).write.unwrap_or_else(|| missing("write")))(c.cbuf, 1, c.len, con),
         Method::Vfprintf => {
             if (*con).vfprintf.is_none() {
                 missing("vfprintf");
@@ -286,14 +309,19 @@ pub(crate) unsafe fn read(i: &mut Interp, n: c_int, buf: &mut [u8]) -> RResult<u
     let mut c = Call::new(Method::Read);
     c.buf = buf.as_mut_ptr() as *mut c_void;
     c.len = buf.len();
-    // C's size_t: a negative count (an error some read methods return)
-    // reads nothing
-    Ok(call(i, n, c)?.size_ret.min(buf.len()))
+    // A read method returns size_t; a negative one is its error, which
+    // readBin, readOneString and buff_fill raise
+    // R: connections.c:do_readbin (`if (m0 < 0) error(...)`)
+    let got = call(i, n, c)?.size_ret as isize;
+    if got < 0 {
+        return Err(Flow::error("error reading from the connection"));
+    }
+    Ok((got as usize).min(buf.len()))
 }
 
 pub(crate) unsafe fn write(i: &mut Interp, n: c_int, bytes: &[u8]) -> RResult<usize> {
     let mut c = Call::new(Method::Write);
-    c.buf = bytes.as_ptr() as *mut c_void;
+    c.cbuf = bytes.as_ptr() as *const c_void;
     c.len = bytes.len();
     Ok(call(i, n, c)?.size_ret)
 }

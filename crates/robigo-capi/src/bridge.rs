@@ -1341,12 +1341,15 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let e = from_sexp(expr);
         let rho = match env_of(env) {
             Ok(r) => r,
             Err(f) => return store_flow(f),
         };
-        match with_interp(|i| i.eval(&e, &rho)) {
+        let r = with_interp(|i| i.eval(&e, &rho));
+        crate::custom_conn::r_to_c();
+        match r {
             Ok(v) => {
                 *out = to_sexp(&v);
                 0
@@ -1364,6 +1367,7 @@ unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let r = if call.is_null() {
             with_interp(|i| i.warning(m))
@@ -1371,6 +1375,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
             let c = from_sexp(call);
             with_interp(|i| i.warningcall(&c, m))
         };
+        crate::custom_conn::r_to_c();
         match r {
             Ok(()) => 0,
             Err(f) => store_flow(f),
@@ -1384,6 +1389,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
         let f = match f {
@@ -1482,6 +1488,13 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // (lookups force promises and call active bindings, `internal` and
     // `applyBuiltin` run builtins that can dispatch to R code)
     drain_touched();
+    crate::custom_conn::c_to_r();
+    let r = op_run(name, a);
+    crate::custom_conn::r_to_c();
+    r
+}
+
+unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     Ok(match name {
         "envlength" => {
             let e = env_of(a[0])?;

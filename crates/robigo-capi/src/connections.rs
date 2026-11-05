@@ -312,6 +312,18 @@ pub(crate) fn native_structs() -> Vec<(*mut Rconn, c_int)> {
     CONNS.with(|m| m.borrow().iter().filter(|(_, e)| e.native).map(|(&k, e)| (k as *mut Rconn, e.n)).collect())
 }
 
+/// `f` on each package struct and its connection number, without a copy
+/// of the table; `f` must not register or remove structs.
+pub(crate) fn for_each_native(mut f: impl FnMut(*mut Rconn, c_int)) {
+    CONNS.with(|m| {
+        for (&k, e) in m.borrow().iter() {
+            if e.native {
+                f(k as *mut Rconn, e.n);
+            }
+        }
+    })
+}
+
 /// The package struct of connection `n`, if it is one.
 pub(crate) fn native_of(n: c_int) -> Option<*mut Rconn> {
     let p = BY_NUMBER.with(|by| by.borrow().get(&n).copied())? as *mut Rconn;
