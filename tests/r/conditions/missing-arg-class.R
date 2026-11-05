@@ -23,3 +23,17 @@ f5 <- function(a, b = a) { for (i in 1) NULL; b }
 cls(f5())
 k2 <- function(a) { for (i in 1) NULL; a }
 cls(k2())
+# A compiled caller's argument promise is bytecode: forcing it in the
+# callee reads with getvar, whether or not the callee is compiled; an
+# interpreted caller's promise is read by the AST evaluator.
+fa <- function(arg) { for (i in 1) NULL; is.factor(arg) }
+ga <- function(x) { for (i in 1) NULL; fa(x) }
+cls(ga())
+gb <- function(x) fa(x)
+cls(gb())
+fc <- function(arg) is.factor(arg)
+gc <- function(x) { for (i in 1) NULL; fc(x) }
+cls(gc())
+fd <- function(arg) is.factor(arg)
+gd <- function(x) fd(x)
+cls(gd())

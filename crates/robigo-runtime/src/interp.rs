@@ -404,11 +404,12 @@ impl Interp {
         if self.ast_frames == self.frames.len() {
             return "evalError";
         }
-        match self.frames.last() {
-            Some(ctx) if ctx.cloenv.ptr_eq(env) => match &ctx.function {
-                Value::Closure(c) if c.jit.is_bytecode() => "getvarError",
-                _ => "evalError",
-            },
+        // The frame `env` belongs to: a read in a compiled closure's body,
+        // or in a promise its compiled code created for an argument (GNU R
+        // gives those bytecode, forced by bcEval: getvar), even when another
+        // closure forces it.
+        match self.frame_of_env(env).map(|k| &self.frames[k].function) {
+            Some(Value::Closure(c)) if c.jit.is_bytecode() => "getvarError",
             _ => "evalError",
         }
     }
@@ -505,9 +506,13 @@ impl Interp {
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
-        // R: eval.c:forcePromise evaluates with eval(), so its own reads are
-        // the AST evaluator's
-        let saved_ast = std::mem::replace(&mut self.ast_frames, self.frames.len());
+        // R: eval.c:forcePromise evaluates PRCODE with eval(): bytecode (an
+        // argument of compiled code) runs on bcEval and reads with getvar,
+        // an expression on the AST evaluator. A formal's default and a
+        // promise made outside compiled code (delayedAssign, interpreted
+        // calls) are expressions there.
+        let ast = p.default || p.code.is_none();
+        let saved_ast = if ast { std::mem::replace(&mut self.ast_frames, self.frames.len()) } else { self.ast_frames };
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
