@@ -25,7 +25,10 @@ SHA256=3b33ea113e0d1ddc9793874d5949cec2c7386f66e4abfb1cef9aec22846c3ce1
 if [ ! -f "$RSRC/src/include/Defn.h" ]; then
     mkdir -p "$(dirname "$RSRC")"
     tgz=$(dirname "$RSRC")/R-4.5.0.tar.gz
-    [ -f "$tgz" ] || curl -sSL -o "$tgz" https://cran.r-project.org/src/base/R-4/R-4.5.0.tar.gz
+    # retried (CRAN's TLS handshake fails now and then: curl exit 35), and
+    # renamed into place only when complete
+    [ -f "$tgz" ] || { curl -sSL --retry 5 --retry-delay 5 --retry-all-errors -o "$tgz.part" \
+        https://cran.r-project.org/src/base/R-4/R-4.5.0.tar.gz && mv "$tgz.part" "$tgz"; }
     echo "$SHA256  $tgz" | sha256sum -c - > /dev/null
     tar xzf "$tgz" -C "$(dirname "$RSRC")"
 fi
