@@ -1204,10 +1204,15 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             }
         }
         CHARSXP => wrap_core(x),
-        LISTSXP | DOTSXP => {
+        LISTSXP => {
             let items = items_of(x);
             return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_with_s4(x) }));
         }
+        // `...` stays `...` (to_sexp makes it a DOTSXP chain): read back as
+        // a pairlist, a list element that held `...` changed type when the
+        // list went through a native call, and code walking it (waldo's
+        // compare()) forced promises GNU R never forces.
+        DOTSXP => return Value::Dots(Rc::new(items_of(x))),
         LANGSXP => {
             let fun = from_sexp(x.car());
             let args = items_of(x.cdr());
@@ -2116,6 +2121,20 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut HashMap<usize, Value>) -> Att
 
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
+/// A `...` or pairlist element C left as it was: to_sexp builds a fresh
+/// chain for it at every native call, so its cells, not the chain, say
+/// whether C changed it. Unchanged, the list keeps its own object (in GNU
+/// R it is the same DOTSXP or LISTSXP).
+unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) -> bool {
+    let items = match (old, x.typ()) {
+        (Value::Dots(a), DOTSXP) => &a[..],
+        (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
+        _ => return false,
+    };
+    let new = pair_items_converted(x, originals);
+    items.len() == new.len() && items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
+}
+
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) {
     // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
@@ -2184,8 +2203,13 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             let n = xlength(x);
             if n as usize == rc.data.len() {
                 for j in 0..n {
-                    let new = converted(VECTOR_ELT(x, j), originals);
-                    if !rc.data[j as usize].same_object(&new) {
+                    let xj = VECTOR_ELT(x, j);
+                    let old = &rc.data[j as usize];
+                    if same_cells(old, xj, originals) {
+                        continue;
+                    }
+                    let new = converted(xj, originals);
+                    if !old.same_object(&new) {
                         v.set_vector_elt_through_alias(j as usize, new);
                     }
                 }
