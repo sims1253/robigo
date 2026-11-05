@@ -756,7 +756,12 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
             index(sym)?;
         }
     }
-    let base = interp.base.get_local(sym)?;
+    // (A lazily loaded base binding is a forced promise: its value is the
+    // function, as findFun takes PRVALUE.)
+    let base = match interp.base.get_local(sym)? {
+        Value::Promise(p) => p.value().filter(|v| matches!(v, Value::Closure(_) | Value::Builtin(_)))?,
+        v => v,
+    };
     if base.ptr_eq(f) {
         return None;
     }
