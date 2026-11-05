@@ -116,7 +116,7 @@ unsafe fn pull(con: *const Rconn, c: &mut Connection) {
 }
 
 /// Connection `n`, if it is still the native one over `con`.
-fn same<'a>(i: &'a mut Interp, n: c_int, con: *mut Rconn, id: usize) -> Option<&'a mut Connection> {
+fn same(i: &mut Interp, n: c_int, con: *mut Rconn, id: usize) -> Option<&mut Connection> {
     let c = i.conns.get(n).ok()?;
     (c.id == id && robigo_runtime::builtins::io::native_struct_of(c) == Some(con as usize)).then_some(c)
 }
