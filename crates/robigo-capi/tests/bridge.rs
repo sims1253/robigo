@@ -81,6 +81,43 @@ unsafe extern "C" fn store_altrep(x: Sexp) -> Sexp {
     }
 }
 
+// ---- write-backs of proxies C keeps ---------------------------------------
+
+const KEPT: usize = 9;
+
+thread_local! {
+    static KEPT_ENVS: Cell<[*mut u8; KEPT]> = const { Cell::new([std::ptr::null_mut(); KEPT]) };
+}
+
+/// C keeps the environments of list `l` (rlang's cached environments).
+unsafe extern "C" fn keep_envs(l: Sexp) -> Sexp {
+    unsafe {
+        let mut kept = [std::ptr::null_mut(); KEPT];
+        for (k, slot) in kept.iter_mut().enumerate() {
+            let e = capi::memory::VECTOR_ELT(l, k as isize);
+            capi::memory::R_PreserveObject(e);
+            *slot = e.0;
+        }
+        KEPT_ENVS.set(kept);
+        R_NilValue
+    }
+}
+
+/// With no arguments: an attribute whose conversion raises on the first
+/// environment, plain ones on the others.
+unsafe extern "C" fn set_kept_attrs() -> Sexp {
+    unsafe {
+        let kept = KEPT_ENVS.get();
+        capi::attrib::Rf_setAttrib(Sexp(kept[0]), capi::strings::Rf_install(c"a".as_ptr()), altrep_result());
+        for (k, &e) in kept.iter().enumerate().skip(1) {
+            let v = capi::memory::Rf_protect(capi::list::Rf_ScalarInteger(k as i32));
+            capi::attrib::Rf_setAttrib(Sexp(e), capi::strings::Rf_install(c"b".as_ptr()), v);
+            capi::memory::Rf_unprotect(1);
+        }
+        R_NilValue
+    }
+}
+
 unsafe extern "C" fn nothing() -> Sexp {
     unsafe { R_NilValue }
 }
@@ -184,6 +221,38 @@ fn eval_text(i: &mut Interp, text: &str) -> Value {
     let exprs = robigo_runtime::builtins::parsing::parse_text(text, "<text>").ok().expect("parses");
     let global = i.global.clone();
     i.eval(&exprs[0], &global).ok().expect("evaluates")
+}
+
+/// A conversion that raises while a call writes back the proxies C wrote
+/// to reports its error and leaves the other proxies for the next call:
+/// none of C's writes to them is lost.
+fn raising_write_back_keeps_the_rest(i: &mut Interp) {
+    // (the test's interpreter has the builtins, not base's R functions)
+    let names: Vec<String> = (0..KEPT).map(|k| format!("kept{k}")).collect();
+    eval_text(
+        i,
+        &format!(
+            "{{ {} }}",
+            names
+                .iter()
+                .map(|n| format!("{n} <- .Internal(new.env(TRUE, globalenv(), 29L))"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    );
+    let envs = eval_text(i, &format!("list({})", names.join(", ")));
+    let f = keep_envs as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![envs])), "(no error)");
+    let f = set_kept_attrs as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "Length raised 7");
+    let f = nothing as *const () as usize;
+    assert_eq!(message(call(i, Interface::Call, f, vec![])), "(no error)", "the raising one is not retried");
+    for (k, n) in names.iter().enumerate().skip(1) {
+        let v = eval_text(i, &format!("attr({n}, \"b\")"));
+        assert_eq!(robigo_runtime::coerce::as_integer(&v), k as i32, "{n}'s attribute reached R");
+    }
+    assert_eq!(unsafe { R_PPStackTop }, 0, "the protect stack is restored");
+    assert_eq!(capi::unwind_depth(), 0);
 }
 
 /// What a write-back replaces stays alive until R is back at top level:
@@ -334,6 +403,7 @@ fn the_bridge() {
     too_many_arguments(i);
     protect_overflow(i);
     raising_altrep_conversions(i);
+    raising_write_back_keeps_the_rest(i);
 }
 
 const OTHER_THREAD_CHILD: &str = "ROBIGO_OTHER_THREAD_CHILD";

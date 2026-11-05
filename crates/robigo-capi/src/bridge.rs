@@ -2303,8 +2303,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Cplx(rc) => attrs(rc, x, originals),
         Value::Str(rc) => attrs(rc, x, originals),
         Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
-        // A proxy's attributes are copies made when it was created: only
-        // what the routine itself wrote comes back (see `agree_attrs`).
+        // A proxy's attributes are copies made when it was created: what
+        // the routine wrote to the attribute cells comes back (see
+        // `agree_attrs`); a routine writing into an attribute's value in
+        // place, without replacing the cells, is not seen (#167's twins
+        // close that).
         Value::Closure(rc) if !attrs_agreed(x) => {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
@@ -2516,19 +2519,35 @@ unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
 /// the environments it had created). The arguments `xs` are left to the
 /// caller.
 unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>) {
-    let touched = ATTRS_TOUCHED.with(|t| std::mem::take(&mut *t.borrow_mut()));
+    // (`try_with` throughout, as the marking side: finalizers can run C code
+    // at thread exit, after these tables are gone; then nothing is queued)
+    let touched: Vec<usize> = ATTRS_TOUCHED.try_with(|t| t.borrow().iter().copied().collect()).unwrap_or_default();
     if touched.is_empty() {
         return;
     }
-    let proxies: Vec<_> = PROXIED.with(|m| {
-        PINNED.with(|p| {
-            let (m, p) = (m.borrow(), p.borrow());
-            touched.iter().filter_map(|h| Some((*p.get(h)?, m.get(h)?.1.clone()))).collect()
-        })
-    });
-    for (x, value) in &proxies {
-        if !xs.contains(x) {
-            write_back(value, *x, originals);
+    for h in touched {
+        // Each handle leaves the set as its own write-back starts, not all
+        // of them first: a conversion that jumps (an ALTREP method raising,
+        // caught by the caller's context) leaves the others queued for the
+        // next call or drain, where the scan of every pinned proxy used to
+        // retry them. The one that raised is not retried: its error has
+        // been reported, and a retry would raise it again in every later
+        // call. A nested drain (R code an ALTREP method runs) can have
+        // taken a handle already; C writing the proxy again during its
+        // write-back queues it again.
+        if !ATTRS_TOUCHED.try_with(|t| t.borrow_mut().remove(&h)).unwrap_or(false) {
+            continue;
+        }
+        let proxy = PROXIED
+            .try_with(|m| {
+                PINNED.try_with(|p| Some((*p.borrow().get(&h)?, m.borrow().get(&h)?.1.clone()))).ok().flatten()
+            })
+            .ok()
+            .flatten();
+        if let Some((x, value)) = proxy {
+            if !xs.contains(&x) {
+                write_back(&value, x, originals);
+            }
         }
     }
 }
@@ -2539,10 +2558,13 @@ unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>)
 pub(crate) unsafe fn drain_touched() {
     // (not in the middle of the bridge's own push of a runtime object's
     // attributes: the core side is half written)
-    if ATTRS_TOUCHED.with(|t| t.borrow().is_empty()) || PUSHING_ATTRS.with(|p| p.get()) {
+    if ATTRS_TOUCHED.try_with(|t| t.borrow().is_empty()).unwrap_or(true)
+        || PUSHING_ATTRS.try_with(|p| p.get()).unwrap_or(true)
+    {
         return;
     }
-    let mut originals: HashMap<_, _> = SEEN.with(|m| m.borrow().values().map(|(x, v)| (x.addr(), v.clone())).collect());
+    let mut originals: HashMap<_, _> =
+        SEEN.try_with(|m| m.borrow().values().map(|(x, v)| (x.addr(), v.clone())).collect()).unwrap_or_default();
     write_back_touched(&[], &mut originals);
 }
 
