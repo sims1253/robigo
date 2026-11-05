@@ -47,4 +47,8 @@ profiles are in `docs/ledger/perf-nbody.md`.
   body length); `nbody_naive`'s loops have 100-300. `robigo/fannkuch`
   +1.0% -> +0.4%, `nbody_naive` -24.2% (was -24.3%); `fasta_naive` loses
   the -6% it had from heat (a light short loop).
+- Rebased onto main 7a0d27bd: #357 changed `super_set_fast` to take a
+  `&mut` value and a `take` flag; #294's write-back of a `<<-` scalar after
+  a native loop passes its local value (taken). Reviewed with the rebase
+  (sol-loop): no finding on it.
 
