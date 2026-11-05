@@ -42,6 +42,7 @@ pub mod sort;
 pub mod state;
 pub mod strings;
 pub mod stubs;
+pub mod tre;
 pub mod util;
 
 pub use robigo_core::Sexp;
