@@ -300,10 +300,11 @@ other builds of GNU R 4.5.0 can differ in the last bit).
 ### Self-hosted runners
 
 The host runner is GitHub's `ubuntu-24.04` unless a repository variable
-names the self-hosted label `robigo-docker`: `ROBIGO_RUNNER_BUILD` for the
-compiling jobs (lint, build, test, bytecode-fidelity) and
+names a self-hosted label: `ROBIGO_RUNNER_BUILD` for the compiling jobs
+(lint, build, test, bytecode-fidelity), set to `robigo-docker`, and
 `ROBIGO_RUNNER_CORPORA` for the jobs that run the built binary (corpora,
-fuzz, cran). Self-hosted runners do not count against GitHub's limit of
+fuzz, cran), set to `robigo-docker-16g`: slots with GitHub's 16 GB, as
+`serialize(1:2147483649, ...)` in the fastr corpus peaks at 16 GB. Self-hosted runners do not count against GitHub's limit of
 concurrent jobs. Clear a variable (`gh variable delete NAME`) when the
 machines are offline: queued jobs wait for a runner with their label and
 do not fall back. perf, perf-diagnostic, miri and progress always run on
@@ -317,7 +318,8 @@ contributor wait for a maintainer's approval (Settings → Actions →
 "Require approval for all external contributors"). Read the whole diff,
 build scripts included, before approving.
 
-`scripts/ci-runner/install.sh --slots N --cpus C --memory M` sets a
+`scripts/ci-runner/install.sh --slots N --cpus C --memory M [--labels
+robigo-docker]` sets a
 machine up (Docker, `gh` logged in as a repository admin, `loginctl
 enable-linger`): N systemd user units `robigo-runner@0..N-1`, slot k pinned
 to CPUs [kC, (k+1)C) so `nproc` in a job reports its share. Each slot
@@ -328,7 +330,8 @@ official runner container, and deletes both with their volumes when the
 job ends. Job containers cannot reach private address ranges (the LAN).
 Image pulls go through a per-machine pull-through mirror
 (`robigo-ci-mirror`), as Docker Hub limits anonymous pulls. A slot waits
-while the Docker disk has under 15 GB free. `journalctl --user -u
+while the Docker disk has under 15 GB free, and logs each job's peak
+memory. `journalctl --user -u
 'robigo-runner@*'` shows what the slots do; `--slots 0` removes them.
 
 The dind container is privileged on the host's rootful Docker, so the

@@ -17,7 +17,7 @@ conf=${ROBIGO_RUNNER_CONF:-$HOME/.config/robigo-runner/env}
 # shellcheck disable=SC1090
 [ -f "$conf" ] && . "$conf"
 : "${REPO:=sims1253/robigo}"
-: "${LABEL:=robigo-docker}"
+: "${LABELS:=robigo-docker}"
 : "${CPUS_PER_SLOT:=6}"
 : "${MEMORY_PER_SLOT:=10g}"
 : "${MIN_FREE_GB:=15}"
@@ -35,6 +35,9 @@ prefix="$host-$slot"
 c="robigo-ci-$slot"
 first=$((slot * CPUS_PER_SLOT))
 cpus="$first-$((first + CPUS_PER_SLOT - 1))"
+label_args=()
+IFS=, read -ra labels <<<"$LABELS"
+for l in "${labels[@]}"; do label_args+=(-f "labels[]=$l"); done
 # The runner's `docker` group: dind's sockets belong to it.
 docker_gid=123
 
@@ -136,7 +139,7 @@ while true; do
 
   name="$prefix-$(date +%s)"
   if ! jit=$(gh api -X POST "repos/$REPO/actions/runners/generate-jitconfig" \
-    -f name="$name" -F runner_group_id=1 -f "labels[]=$LABEL" -f work_folder=_work \
+    -f name="$name" -F runner_group_id=1 "${label_args[@]}" -f work_folder=_work \
     --jq .encoded_jit_config); then
     log "could not register; retrying in 60s"
     sleep 60 & wait $!
@@ -149,4 +152,7 @@ while true; do
     -e DOCKER_HOST=unix:///run/ci/docker.sock -e JIT="$jit" \
     --entrypoint bash "$runner_image" -c 'exec ./run.sh --jitconfig "$JIT"' &
   wait $! || log "runner exited with status $?"
+  # The job's containers live in dind's cgroup: size the slots by this.
+  log "job done; peak memory $(docker exec "$c-dind" cat /sys/fs/cgroup/memory.peak 2>/dev/null |
+    awk '{printf "%.1fG", $1 / 2^30}')"
 done

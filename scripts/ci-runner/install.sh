@@ -4,20 +4,25 @@
 # group), gh logged in as a repository admin, and lingering enabled
 # (`loginctl enable-linger`) so the slots run without a login session.
 #
-#   scripts/ci-runner/install.sh --slots 3 --cpus 6 --memory 10g
+#   scripts/ci-runner/install.sh --slots 3 --cpus 6 --memory 16g
+#   scripts/ci-runner/install.sh --slots 1 --cpus 8 --memory 8g --labels robigo-docker
 #   scripts/ci-runner/install.sh --slots 0      # stop and remove every slot
 #
 # Slot N is pinned to CPUs [N*cpus, (N+1)*cpus), so `nproc` in a job
-# reports its share. See docs/verification.md, "Self-hosted runners".
+# reports its share. Every slot is labelled `robigo-docker`; give it
+# `robigo-docker-16g` too only with 16 GB (the default): a corpus case
+# allocates that much, as GitHub's runners allow. See
+# docs/verification.md, "Self-hosted runners".
 set -euo pipefail
 
-slots=1 cpus=6 memory=10g
+slots=1 cpus=6 memory=16g labels=robigo-docker,robigo-docker-16g
 while [ $# -gt 0 ]; do
   case $1 in
     --slots) slots=$2; shift 2 ;;
     --cpus) cpus=$2; shift 2 ;;
     --memory) memory=$2; shift 2 ;;
-    *) echo "usage: $0 [--slots N] [--cpus N] [--memory SIZE]" >&2; exit 2 ;;
+    --labels) labels=$2; shift 2 ;;
+    *) echo "usage: $0 [--slots N] [--cpus N] [--memory SIZE] [--labels A,B]" >&2; exit 2 ;;
   esac
 done
 if [ $((slots * cpus)) -gt "$(nproc)" ]; then
@@ -33,6 +38,7 @@ install -m 755 "$here/robigo-runner.sh" "$share/robigo-runner.sh"
 cat >"$HOME/.config/robigo-runner/env" <<EOF
 CPUS_PER_SLOT=$cpus
 MEMORY_PER_SLOT=$memory
+LABELS=$labels
 EOF
 cat >"$units/robigo-runner@.service" <<'EOF'
 [Unit]
