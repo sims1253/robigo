@@ -808,7 +808,13 @@ fn do_docall(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         })
         .collect();
     let c = Value::lang(f, items);
-    i.eval(&c, &envir)
+    // R: coerce.c:do_docall evaluates the call it built with eval(), the
+    // AST interpreter, which promises every argument (promiseArgs), the
+    // values from `args` included.
+    let bc = std::mem::replace(&mut i.bc, false);
+    let r = i.eval(&c, &envir);
+    i.bc = bc;
+    r
 }
 
 fn do_asfunction(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

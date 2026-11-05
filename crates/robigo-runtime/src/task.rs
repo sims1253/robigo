@@ -115,7 +115,9 @@ impl Interp {
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
         let saved_ccode = std::mem::take(&mut self.ccode_calls);
+        let saved_bc = std::mem::replace(&mut self.bc, false);
         let r = self.eval(&call, &rho);
+        self.bc = saved_bc;
         self.frames = saved_frames;
         (self.srcref, self.srcref_saved) = saved_srcrefs;
         self.handlers = saved_handlers;
