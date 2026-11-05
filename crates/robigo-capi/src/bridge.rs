@@ -124,6 +124,10 @@ thread_local! {
     /// (see [`write_backs`]); each running call's start in it.
     static SEEN_TOUCHED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static TOUCH_START: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// The atomic vectors converted for the running native calls (SEEN)
+    /// that became twins since (C bound or looked them up): see
+    /// [`write_backs`].
+    static SEEN_TWINS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     /// C-assembled promise nodes (see `CPROMISE_MEMO`): the runtime
     /// promise -> its node, preserved. The entry holds the promise too;
     /// `gc()` drops entries whose promise only it still holds. (Vectors,
@@ -785,6 +789,11 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
     TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells }));
+    if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
+        && SEEN_AT.with(|m| m.borrow().get(&x.addr()) == Some(&k))
+    {
+        SEEN_TWINS.with(|s| s.borrow_mut().push(x));
+    }
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -3154,6 +3163,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
         SEEN_AT.with(|m| m.borrow_mut().clear());
         SEEN_TOUCHED.with(|t| t.borrow_mut().clear());
+        SEEN_TWINS.with(|s| s.borrow_mut().clear());
         for (k, (x, _)) in seen {
             core().release(x);
             // the agreement of an object with attributes (`write_back`
@@ -3370,7 +3380,12 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     } else {
         SEEN.with(|m| m.borrow().values().cloned().collect())
     };
-    for (x, _) in &seen {
+    // C can write an atomic twin through a pointer it took at any time:
+    // the ones converted for the running calls are compared at every call
+    // (a routine binds the counter it then writes per group, and R code
+    // reads it from a nested call: dplyr's `cur_group_id()`).
+    let seen_twins: Vec<Sexp> = SEEN_TWINS.with(|s| s.borrow().clone());
+    for x in &seen_twins {
         mark(x);
     }
     for x in xs {
