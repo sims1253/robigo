@@ -61,7 +61,7 @@ thread_local! {
     /// empty if absent. Addresses, not values: a
     /// reference from here would count as the runtime holding what the
     /// attributes refer to.
-    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced>> = RefCell::new(HashMap::new());
+    static SYNCED_ATTRS: RefCell<HashMap<usize, Synced, robigo_runtime::env::FastHash>> = RefCell::new(HashMap::default());
     /// A `push_attrs` is running: attributes can refer back to the object.
     static PUSHING_ATTRS: Cell<bool> = const { Cell::new(false) };
     static NEXT_HANDLE: Cell<usize> = const { Cell::new(1) };
@@ -548,8 +548,36 @@ struct Synced {
 }
 
 unsafe fn attrs_agreed(x: Sexp) -> bool {
-    let cells = attr_cells(x);
-    SYNCED_ATTRS.with(|m| m.borrow().get(&x.addr()).map_or(cells.is_empty(), |c| c.cells == cells))
+    // (compared in place: this runs for every object a call writes back)
+    let none =
+        x.typ() == CHARSXP || ((x.attrib_raw() == R_NilValue || x.attrib_raw().is_null()) && x.gp() & gp::S4 == 0);
+    SYNCED_ATTRS.with(|m| {
+        let m = m.borrow();
+        let Some(c) = m.get(&x.addr()) else { return none };
+        if none {
+            return c.cells.is_empty();
+        }
+        let mut want = c.cells.iter();
+        let mut a = x.attrib_raw();
+        while a != R_NilValue && !a.is_null() {
+            if want.next() != Some(&(a.tag().addr(), a.car().addr())) {
+                return false;
+            }
+            a = a.cdr();
+        }
+        if x.gp() & gp::S4 != 0 && want.next() != Some(&(0, 0)) {
+            return false;
+        }
+        want.next().is_none()
+    })
+}
+
+/// [`agree_attrs`] for a fresh conversion: nothing to record (and nothing
+/// to forget) when it has no attributes.
+unsafe fn agree_converted(x: Sexp) {
+    if (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0 {
+        agree_attrs(x);
+    }
 }
 
 /// The two sides agree on `x`'s attributes as they are now. For a proxy,
@@ -1080,7 +1108,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
-            agree_attrs(r);
+            agree_converted(r);
             return r;
         }
         Value::Lang(l) => {
@@ -1095,7 +1123,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
-            agree_attrs(r);
+            agree_converted(r);
             return r;
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => {
@@ -1122,7 +1150,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         SET_S4_OBJECT(x);
     }
     // what `write_back` compares the routine's writes with
-    agree_attrs(x);
+    agree_converted(x);
     x
 }
 
@@ -2197,7 +2225,10 @@ unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut HashMap<usi
         if cell == R_NilValue || cell.is_null() || cell.tag().typ() != SYMSXP || sym_of(cell.tag()) != *name {
             return;
         }
-        write_back(value, cell.car(), originals);
+        // (an object this call converted is written back on its own)
+        if !originals.contains_key(&cell.car().addr()) {
+            write_back(value, cell.car(), originals);
+        }
         cell = cell.cdr();
     }
 }
@@ -2485,8 +2516,10 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
         for (k, (x, _)) in seen {
             core().release(x);
-            // a value C stored keeps its agreement (`remember_stored`)
-            if STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
+            // the agreement of an object with attributes (`write_back`
+            // forgets the others); a value C stored keeps its own
+            let attributed = (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0;
+            if attributed && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
                 forget_attrs(x);
             }
         }
