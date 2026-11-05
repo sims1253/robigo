@@ -13,8 +13,10 @@ use std::rc::Rc;
 
 use crate::compile::Code;
 use crate::env::{Env, Frame};
+#[cfg(feature = "bytecode-fidelity")]
+use crate::value::Bytecode;
 use crate::value::{Arg, Attrs, Value};
-use crate::value::{Bytecode, BytecodeCells, BytecodeInstructions};
+use crate::value::{BytecodeCells, BytecodeInstructions};
 
 thread_local! {
     /// The environment epoch the last reclamation saw. Nothing that could
