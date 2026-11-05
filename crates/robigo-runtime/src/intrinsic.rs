@@ -82,6 +82,27 @@ fn is_base_closure(interp: &Interp, sym: Sym, clo: &Rc<Closure>) -> bool {
     }
 }
 
+/// The closures match.arg calls on the way (`formals(sys.function(...))`,
+/// `eval(..., envir = sys.frame(...))`, `identical`, `pmatch`): base's
+/// plain, untraced closures, so that skipping their calls is unobservable.
+/// (`trace()` marks or rebinds them, which changes the search epoch, so
+/// this is checked again then.)
+fn helpers_plain(interp: &Interp) -> bool {
+    const HELPERS: [&str; 7] = ["formals", "sys.function", "sys.parent", "sys.frame", "eval", "identical", "pmatch"];
+    let frame = interp.base.0.frame().borrow();
+    HELPERS.iter().all(|h| {
+        let Some(b) = frame.get(Sym::new(h)) else { return false };
+        let f = match &b.value {
+            Value::Promise(p) => match &*p.value.borrow() {
+                PromiseVal::Boxed(v) => v.clone(),
+                _ => return false,
+            },
+            v => v.clone(),
+        };
+        matches!(&f, Value::Closure(c) if !c.jit.traced() && c.attrs.is_none())
+    })
+}
+
 /// The strings of a default `c("a", "b", ...)`: untagged, ASCII, not NA.
 fn plain_choices(e: &Value) -> Option<Value> {
     let Value::Lang(l) = e else { return None };
@@ -115,7 +136,7 @@ pub(crate) fn match_arg(interp: &mut Interp, site: &Site, clo: &Rc<Closure>, env
     }
     let key = (crate::env::search_epoch(), Rc::as_ptr(clo) as usize);
     if site.base_memo.get() != key {
-        if !is_base_closure(interp, site.fun, clo) {
+        if !is_base_closure(interp, site.fun, clo) || !helpers_plain(interp) {
             return None;
         }
         // (The memo holds no reference: an address seen at this epoch is

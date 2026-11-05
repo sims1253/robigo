@@ -1,4 +1,4 @@
-# perf-base-r: base R library code on the general closure path
+# perf-base-r / match-arg: `match.arg` without running its R code
 
 Benchmarks: `robigo/lm`, `robigo/sortorder`, `rbench/real/flexclust_kcca`
 (`apply(m, 1, rank, ties.method = "random")` over 110k rows). Metric: peak
@@ -72,3 +72,10 @@ Baseline (main 5ce8d760, seconds, peak / shot):
   frame-local and a global `c`, a user `match.arg`, a symbol that is not a
   formal of the caller, S3 methods, `eval()`, non-ASCII choices, tagged
   and computed defaults), identical in all tiers.
+- Sol review (round 1) found a traced helper unobserved:
+  `trace(pmatch)` prints `trace: pmatch` in GNU R on every match.arg
+  call, and the fast path skipped it. The base-binding memo (recomputed
+  when the search epoch changes, which `trace()` does) now also requires
+  `formals`, `sys.function`, `sys.parent`, `sys.frame`, `eval`,
+  `identical` and `pmatch` to be base's plain, untraced closures; the
+  case is in `tests/r/lang/match-arg-fast.R`.

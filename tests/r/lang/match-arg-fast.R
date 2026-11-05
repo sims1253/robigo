@@ -90,3 +90,22 @@ print(order(x, decreasing = TRUE, method = "radix"))
 print(sort(x, method = "quick"))
 print(tryCatch(rank(x, ties.method = "bogus"), error = conditionMessage))
 for (i in 1:3) print(f(c("linear", "quadratic", "cubic")[i]))
+
+# A traced helper closure of match.arg still reports its calls. (Only
+# whether it reported: the interpreter tier prints the whole call. The
+# sink is set up before tracing, so sink() itself reports nothing.)
+th <- function(x = c("aaa", "bbb")) { force(x); match.arg(x) }
+out <- character()
+tc <- textConnection("out", "w")
+sink(tc)
+trace(pmatch)
+r1 <- th("bb")
+untrace(pmatch)
+trace(formals)
+r2 <- th("aa")
+untrace(formals)
+r3 <- th("bb")
+sink()
+close(tc)
+print(c(r1, r2, r3))
+print(c(pmatch = any(grepl("^trace: pmatch", out)), formals = any(grepl("^trace: formals", out))))
