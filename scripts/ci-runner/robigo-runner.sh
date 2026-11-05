@@ -153,6 +153,6 @@ while true; do
     --entrypoint bash "$runner_image" -c 'exec ./run.sh --jitconfig "$JIT"' &
   wait $! || log "runner exited with status $?"
   # The job's containers live in dind's cgroup: size the slots by this.
-  log "job done; peak memory $(docker exec "$c-dind" cat /sys/fs/cgroup/memory.peak 2>/dev/null |
+  log "job done; peak memory (page cache included) $(docker exec "$c-dind" cat /sys/fs/cgroup/memory.peak 2>/dev/null |
     awk '{printf "%.1fG", $1 / 2^30}')"
 done

@@ -332,7 +332,7 @@ job ends. Job containers cannot reach private address ranges (the LAN).
 Image pulls go through a per-machine pull-through mirror
 (`robigo-ci-mirror`), as Docker Hub limits anonymous pulls. A slot waits
 while the Docker disk has under 15 GB free, and logs each job's peak
-memory. `journalctl --user -u
+memory (page cache included: cargo jobs fill the cap without needing it). `journalctl --user -u
 'robigo-runner@*'` shows what the slots do; `--slots 0` removes them.
 
 The dind container is privileged on the host's rootful Docker, so the

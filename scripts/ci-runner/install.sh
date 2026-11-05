@@ -5,7 +5,7 @@
 # (`loginctl enable-linger`) so the slots run without a login session.
 #
 #   scripts/ci-runner/install.sh --slots 3 --cpus 6 --memory 20g
-#   scripts/ci-runner/install.sh --slots 1 --cpus 8 --memory 8g --labels robigo-docker
+#   scripts/ci-runner/install.sh --slots 1 --cpus 8 --memory 12g --labels robigo-docker
 #   scripts/ci-runner/install.sh --slots 0      # stop and remove every slot
 #
 # Slot N is pinned to CPUs [N*cpus, (N+1)*cpus), so `nproc` in a job
