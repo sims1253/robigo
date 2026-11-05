@@ -33,6 +33,11 @@ static TRIGGER: AtomicIsize = AtomicIsize::new(isize::MAX);
 /// A collection is due at the next safe point.
 static DUE: AtomicBool = AtomicBool::new(false);
 
+/// The heap once the base environment was loaded: GNU R's sizes apply to
+/// what the program allocates beyond it (GNU R's own base takes a few
+/// megabytes of its heap, robigo's environments and compiled code tens).
+static BOOT: AtomicIsize = AtomicIsize::new(0);
+
 /// `sizeof(VECREC)`: GNU R's vector heap is counted in these.
 const VECREC: f64 = 8.0;
 
@@ -89,7 +94,7 @@ pub fn due() -> bool {
 }
 
 /// Start collecting automatically, once the base environment is loaded:
-/// the heap it took is sized as if a collection had just found it live.
+/// the program's heap starts at `R_VSIZE` above what that took.
 pub fn enable() {
     if std::env::var("ROBIGO_CYCLES").is_ok_and(|v| v == "0") {
         return;
@@ -102,7 +107,8 @@ pub fn enable() {
             return;
         }
     }
-    adjust();
+    BOOT.store(heap_bytes(), Relaxed);
+    TRIGGER.store(BOOT.load(Relaxed) + V_SIZE.with(|v| v.get()) as isize, Relaxed);
 }
 
 /// Size the heap for what a collection left.
@@ -112,10 +118,11 @@ fn adjust() {
         DUE.store(true, Relaxed);
         return;
     }
-    let live = heap_bytes().max(0) as f64;
+    let boot = BOOT.load(Relaxed);
+    let live = (heap_bytes() - boot).max(0) as f64;
     let v_size = next_size(live, V_SIZE.with(|v| v.get()));
     V_SIZE.with(|v| v.set(v_size));
-    TRIGGER.store(v_size as isize, Relaxed);
+    TRIGGER.store(boot + v_size as isize, Relaxed);
 }
 
 /// `R_VSize` after a collection that left `live` bytes in a heap of
