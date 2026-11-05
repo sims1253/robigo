@@ -6,6 +6,8 @@
 SEXP capi_c_env_fill(SEXP parent, SEXP values) {
     SEXP env = PROTECT(R_NewEnv(parent, TRUE, 29));
     SEXP names = getAttrib(values, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) < XLENGTH(values))
+        error("capi_c_env_fill: 'values' needs a name for each element");
     for (R_xlen_t i = 0; i < XLENGTH(values); i++)
         defineVar(installChar(STRING_ELT(names, i)), VECTOR_ELT(values, i), env);
     UNPROTECT(1);
@@ -24,7 +26,10 @@ SEXP capi_c_env_active(SEXP env, SEXP names) {
 
 /* A double C keeps writing into after binding it (stats' numericDeriv). */
 SEXP capi_c_env_poke(SEXP env, SEXP sym, SEXP value) {
-    double *p = REAL(findVarInFrame(env, sym));
+    SEXP cur = findVarInFrame(env, sym);
+    if (TYPEOF(cur) != REALSXP)
+        error("capi_c_env_poke: the binding is not a plain double");
+    double *p = REAL(cur);
     p[0] = asReal(value);
     return R_NilValue;
 }

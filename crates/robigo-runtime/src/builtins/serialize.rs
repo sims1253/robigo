@@ -71,8 +71,9 @@ fn do_serializeb(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 }
 
 /// Serialize from R: a C-owned binding is read through its binding
-/// function, as R reads the variable (`serialize::OwnedReader`).
-fn serialize_r(i: &mut Interp, v: &Value, version: i32, format: crate::serialize::Format) -> RResult<Vec<u8>> {
+/// function, as R reads the variable (`serialize::OwnedReader`). Also the
+/// C API's `R_Serialize`, on the interpreter its call runs under.
+pub fn serialize_r(i: &mut Interp, v: &Value, version: i32, format: crate::serialize::Format) -> RResult<Vec<u8>> {
     let g = i.global.clone();
     let mut read = |f: &Value| -> RResult<Value> { i.call_value(f, vec![], &g) };
     crate::serialize::serialize_with(v, version, format, None, Some(&mut read))
@@ -571,6 +572,11 @@ fn do_lazy_load_db_insert_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &E
     } else {
         // R: serialize.c:CallHook — FUN(x) evaluated in the global environment
         let g = i.global.clone();
+        // The hook and the C-owned reader share the interpreter. Each
+        // borrow lasts one closure call, and the writer calls them one
+        // after the other. R code they run reaches the interpreter through
+        // the `&mut` that call_value hands down, never through this cell (a
+        // nested serialize() builds its own), so two borrows cannot overlap.
         let i = std::cell::RefCell::new(i);
         let mut call_hook =
             |x: &Value| -> RResult<Value> { i.borrow_mut().call_value(&hook, vec![Arg::pos(x.clone())], &g) };

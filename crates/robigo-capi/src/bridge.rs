@@ -1540,13 +1540,9 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             } else {
                 robigo_runtime::serialize::Format::Xdr
             };
-            // A C-owned binding is read as R reads it, through its binding
-            // function, on the interpreter this C call runs under.
-            let bytes = with_interp(|i| {
-                let g = i.global.clone();
-                let mut read = |f: &Value| i.call_value(f, vec![], &g);
-                robigo_runtime::serialize::serialize_with(&v, version, format, None, Some(&mut read))
-            })?;
+            // A C-owned binding is read as R reads it (serialize_r), on
+            // the interpreter this C call runs under.
+            let bytes = with_interp(|i| robigo_runtime::builtins::serialize::serialize_r(i, &v, version, format))?;
             to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))
         }
         // R: deparse.c:deparse1line (MAX_Cutoff, backticks, SIMPLEDEPARSE,

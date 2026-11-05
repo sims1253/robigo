@@ -24,28 +24,28 @@ mod bytecode_lazy_tests {
         assert!(code.consts.get().is_none());
         assert!(code.code.get().is_none());
         assert!(!code.cells.encoded.is_empty());
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
         assert!(code.consts.get().is_none());
         assert!(!code.constants().is_empty());
         assert!(matches!(code.code(), Value::Int(_)));
         assert!(code.consts.get().is_some());
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
     }
 
     #[test]
     fn native_binary_import_replays_oracle_xdr_without_forcing() {
         for name in ["body-code.rds", "real-constants.rds", "string-constants.rds"] {
             let (bytes, value) = fixture(name);
-            let native = serialize_binary(&value, 3);
+            let native = serialize_binary(&value, 3).ok().expect("serialize");
             let mut interp = Interp::new();
             let Ok(value) = unserialize(&mut interp, &native, Value::Null) else { panic!("native bytecode") };
             let Value::Bytecode(code) = &value else { panic!("bytecode fixture") };
             assert!(code.code.get().is_none());
             assert!(code.consts.get().is_none());
-            assert_eq!(serialize(&value), bytes);
+            assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
             code.constants();
             code.code();
-            assert_eq!(serialize(&value), bytes);
+            assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
         }
     }
 
@@ -53,7 +53,7 @@ mod bytecode_lazy_tests {
     fn deferred_real_constants_preserve_ieee_bits() {
         let (bytes, value) = fixture("real-constants.rds");
         let Value::Bytecode(code) = &value else { panic!("bytecode fixture") };
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
         let constants = code.constants();
         assert_eq!(constants.len(), 8);
         let expected = [
@@ -69,7 +69,7 @@ mod bytecode_lazy_tests {
             let Value::Real(v) = value else { panic!("oracle real") };
             assert_eq!(v.data[0].to_bits(), bits);
         }
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
     }
 
     #[test]
@@ -77,7 +77,7 @@ mod bytecode_lazy_tests {
         let (bytes, value) = fixture("string-constants.rds");
         let Value::Bytecode(code) = &value else { panic!("bytecode fixture") };
         assert!(code.consts.get().is_none());
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
         let pool = code.constants();
         assert_eq!(pool.len(), 5);
         let Value::Str(v) = &pool[1] else { panic!("strings") };
@@ -88,7 +88,7 @@ mod bytecode_lazy_tests {
         assert_eq!(latin.data[0].as_ref().unwrap().encoding_name(), "latin1");
         let Value::Str(raw) = &pool[3] else { panic!("bytes") };
         assert_eq!(&*raw.data[0].as_ref().unwrap().raw_bytes(), &[255, 128]);
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
     }
 
     #[test]
@@ -102,7 +102,7 @@ mod bytecode_lazy_tests {
         assert!(Rc::ptr_eq(&before.rep_values, &after.rep_values));
         assert!(before.consts.get().is_none());
         assert!(after.consts.get().is_none());
-        assert_eq!(serialize(&value), bytes);
+        assert_eq!(serialize(&value).ok().expect("serialize"), bytes);
         before.constants();
         let mut forced_alias = value.clone();
         forced_alias.set_attr_raw(Sym::new("note"), Value::str("forced"));
@@ -150,10 +150,10 @@ fn default_import_keeps_the_expression_without_bytecode_serialization() {
     let env = interp.global.clone();
     let Ok(result) = interp.eval(&expression, &env) else { panic!("evaluate source") };
     assert!(result.ptr_eq(&expression));
-    assert_ne!(serialize(&expression), bytes);
+    assert_ne!(serialize(&expression).ok().expect("serialize"), bytes);
     let bytes = std::fs::read(root.join("closure-v3-xdr.rds")).unwrap();
     let Ok(closure) = unserialize(&mut interp, &bytes, Value::Null) else { panic!("oracle closure") };
     let Value::Closure(f) = &closure else { panic!("closure") };
     assert!(matches!(f.body, Value::Lang(_)));
-    assert_ne!(serialize(&closure), bytes);
+    assert_ne!(serialize(&closure).ok().expect("serialize"), bytes);
 }

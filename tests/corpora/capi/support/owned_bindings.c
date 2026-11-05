@@ -23,6 +23,8 @@ SEXP capi_owned_env(void) {
 }
 
 SEXP capi_owned_bump(void) {
+    if (kept == NULL)
+        error("capi_owned_bump: capi_owned_env has not run");
     REAL(kept)[0] += 10;
     return R_NilValue;
 }

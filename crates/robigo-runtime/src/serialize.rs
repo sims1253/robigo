@@ -70,10 +70,14 @@ const BYTES_MASK: u32 = 1 << 1;
 const UTF8_MASK: u32 = 1 << 3;
 const ASCII_MASK: u32 = 1 << 6;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The wire format of a serialization stream, named by its first line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
+    /// XDR (`X\n`), the portable default.
     Xdr,
+    /// Native little-endian binary (`B\n`).
     Binary,
+    /// ASCII (`A\n`).
     Ascii,
 }
 
@@ -2559,46 +2563,6 @@ impl Writer<'_> {
     }
 }
 
-/// Serialize to an XDR stream of `version` (2 or 3).
-pub fn serialize_version(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer {
-        out: Vec::new(),
-        hook: None,
-        owned: None,
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: false,
-        ascii: false,
-    };
-    w.out.extend_from_slice(b"X\n");
-    write_header(&mut w);
-    w.item(v);
-    w.out
-}
-
-/// Serialize to an XDR stream of `version` with a persistence hook
-/// (R: serialize.c R_Serialize with OutPersistHookFunc).
-pub fn serialize_hooked(v: &Value, version: i32, hook: PersistHook<'_>) -> RResult<Vec<u8>> {
-    let mut w = Writer {
-        out: Vec::new(),
-        hook: Some(hook),
-        owned: None,
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: false,
-        ascii: false,
-    };
-    w.out.extend_from_slice(b"X\n");
-    write_header(&mut w);
-    w.item(v);
-    match w.err {
-        Some(e) => Err(e),
-        None => Ok(w.out),
-    }
-}
-
 /// Serialize `v` in `format` (version 2 or 3), with an optional persistence
 /// hook and a reader for C-owned bindings (see [`OwnedReader`]): the
 /// entry point of the R-level serializers, which have the interpreter.
@@ -2609,6 +2573,10 @@ pub fn serialize_with<'a>(
     hook: Option<PersistHook<'a>>,
     owned: Option<OwnedReader<'a>>,
 ) -> RResult<Vec<u8>> {
+    // R: serialize.c:R_Serialize — only versions 2 and 3 are written.
+    if !(2..=3).contains(&version) {
+        return Err(Flow::error(format!("version {version} not supported")));
+    }
     let mut w = Writer {
         out: match format {
             Format::Xdr => b"X\n".to_vec(),
@@ -2654,27 +2622,17 @@ fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
     }
 }
 
-/// Serialize to a native binary ("B") stream of `version` (2 or 3).
-pub fn serialize_binary(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer {
-        out: Vec::new(),
-        hook: None,
-        owned: None,
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: true,
-        ascii: false,
-    };
-    w.out.extend_from_slice(b"B\n");
-    write_header(&mut w);
-    w.item(v);
-    w.out
+/// Serialize to a native binary ("B") stream of `version` (2 or 3), without
+/// an interpreter: a C-owned binding is an error here (use the R-level
+/// `builtins::serialize::serialize_r`).
+pub fn serialize_binary(v: &Value, version: i32) -> RResult<Vec<u8>> {
+    serialize_with(v, version, Format::Binary, None, None)
 }
 
-/// Serialize to an XDR version-3 stream.
-pub fn serialize(v: &Value) -> Vec<u8> {
-    serialize_version(v, 3)
+/// Serialize to an XDR version-3 stream, without an interpreter (see
+/// [`serialize_binary`]).
+pub fn serialize(v: &Value) -> RResult<Vec<u8>> {
+    serialize_with(v, 3, Format::Xdr, None, None)
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]
@@ -2683,21 +2641,4 @@ mod tests {
     fn call_cells_do_not_enlarge_deserialization_nodes() {
         assert_eq!(std::mem::size_of::<super::PNode>(), 48);
     }
-}
-
-/// R: serialize.c:R_Serialize, R_pstream_ascii_format.
-pub fn serialize_ascii(v: &Value, version: i32) -> Vec<u8> {
-    let mut w = Writer {
-        out: b"A\n".to_vec(),
-        hook: None,
-        owned: None,
-        err: None,
-        refs: Vec::new(),
-        version,
-        little_endian: false,
-        ascii: true,
-    };
-    write_header(&mut w);
-    w.item(v);
-    w.out
 }
