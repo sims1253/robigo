@@ -273,8 +273,10 @@ pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
 }
 
 /// Whether `con` is a package's own struct (R_new_custom_connection).
+/// Free while none exists: write.table asks for every cell it writes.
+#[inline]
 pub(crate) fn is_native(con: *mut Rconn) -> bool {
-    CONNS.with(|m| m.borrow().get(&(con as usize)).is_some_and(|e| e.native))
+    any_native() && CONNS.with(|m| m.borrow().get(&(con as usize)).is_some_and(|e| e.native))
 }
 
 /// Connection `n` is the package's struct `con` from now on: getConnection
