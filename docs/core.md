@@ -467,6 +467,32 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
+**One mark over both heaps** (#344, council round 6). A cycle can cross
+the heaps: a runtime frame holds an `ExtPtr` whose core object's
+protected field holds the proxy of a closure of that frame (curl's
+handles and their callbacks). GNU R's one heap frees it in one `gc()`.
+So does robigo:
+
+- The core objects runtime values wrap (`CoreRef`) and the proxies
+  pinned for C (`PINNED`) are *held* (`Core::hold`), a set apart from
+  the precious list. In collections the allocator triggers, and in a
+  `gc()` with C frames active, held objects are roots.
+- In a `gc()` from R they are not: the bridge marks the held objects it
+  still reaches, through the runtime graph (`mark_proxies`: a wrapper
+  the graph does not show dead; `trace_proxy`: what a traced proxy's
+  runtime object reaches). The core queues the holds it found dead
+  between its mark and its sweep, without calling the bridge. The bridge
+  drains that queue after the collection and before any finalizer runs,
+  making those `CoreRef`s inert and dropping their `WRAPPED` entries, so
+  a reused slot is never handed out as the old object. One
+  `reclaim_host_cycles` then frees the runtime half.
+- The invariant this needs: **every runtime reference that the cycle
+  graph ignores must be an edge from a core object that marks its target
+  when the core traces it.** `PROXIED`'s clones are (a traced proxy
+  marks its runtime object through `trace_proxy`); every new table of
+  runtime values the bridge keeps for core objects (twins) must be one
+  too. `STORED` is precious until it is.
+
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* do not reach the
 caller's object; `NAMED`/`MAYBE_SHARED` on arguments report "shared"
