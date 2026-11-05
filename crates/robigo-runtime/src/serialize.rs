@@ -130,7 +130,6 @@ struct PNode {
     car: Value,
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 struct BcLevel {
     pos: Option<usize>,
     lang: bool,
