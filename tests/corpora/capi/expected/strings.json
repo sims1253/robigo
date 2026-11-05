@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "strings",
+ "out": {
+  "t": "[[1]]\n[1] \"plain\"      \"via R_CHAR\" \"tru\"        \"\"          \n\n[[2]]\n[1] \"mkString\"\n\n[[1]]\n[1] 1 2 3 0\n\n[[2]]\n<CHARSXP: \"truncated\">\n\n[1] \"café\" \"été\" \n[[1]]\n<CHARSXP: \"café\">\n\n[[2]]\n<CHARSXP: \"é\">\n\n[[3]]\n[1] 0\n\n[[4]]\n<CHARSXP: \"é\">\n\n[[5]]\n[1] TRUE\n\n[[6]]\n[1] TRUE\n\n[[7]]\n[1] TRUE\n\n[1] \"42\"\n[1] \"1.5\"\n[1] \"TRUE\"\n[1] NA\n[1]  TRUE FALSE  TRUE\n[1] 5 4 4\n"
+ },
+ "sha": "5a3364ce59593c99",
+ "status": 0
+}

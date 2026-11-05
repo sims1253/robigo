@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "closure",
+ "out": {
+  "t": "function (x, y = 2) \nx * (y + 1L)\n[1] 9\n[1] 15\n[1] TRUE\n[1] \"x\" \"y\"\n[1] 2\n[1] TRUE\n"
+ },
+ "sha": "8433e86097b2b725",
+ "status": 0
+}

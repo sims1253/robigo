@@ -8,7 +8,10 @@ corpus, described in `corpora.toml`:
 - `expected.jsonl.gz`: GNU R's stdout, stderr and exit status per case
   (`{"id", "sha", "out", "err", "status"}`; `unstable` marks cases whose
   output differed between two GNU R runs). Written only by
-  `scripts/corpus.py record`.
+  `scripts/corpus.py record`. A corpus whose `expected_file` has no
+  `.jsonl.gz` suffix (capi: `expected`) keeps one `<id>.json` per case in
+  that directory instead, so branches that add or re-record different
+  cases never conflict.
 - `passing/`: the ratchet: one empty marker file per case id that must keep
   passing, `<id>.pass` (an id with `/` nests directories). One file per case,
   so two branches that ratchet different cases never conflict.

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "envir",
+ "out": {
+  "t": "[[1]]\n[1] 42\n\n[[2]]\n[1] TRUE\n\n[[3]]\n[1] TRUE\n\n[[4]]\n[1] \"via_installChar\"\n\n[[5]]\n[1] \"via_Rf_installChar\"\n\n[[6]]\n[1] \"café\"\n\n[[1]]\n[1] FALSE\n\n[[2]]\n[1] \"value\"\n\n[[3]]\n[1] TRUE\n\n[[1]]\n[1] TRUE\n\n[[2]]\n[1] FALSE\n\n[1] \"promise\"\nfunction (x)  .Primitive(\"sin\")\n[[1]]\n[1] FALSE\n\n[[2]]\n[1] FALSE\n\n[[3]]\n[1] TRUE\n\n[[4]]\n[1] 1\n\n[[5]]\n[1] \"...\"\n\n[[6]]\n[1] TRUE\n\n[[7]]\n<environment: namespace:base>\n\n[[8]]\n[1] TRUE\n\n[1] TRUE\n[[1]]\n[1] TRUE\n\n[[2]]\nfunction () \n99\n\n[[3]]\n[1] TRUE\n\n[1] 99\n[1] 3 1\n[1] 0 0\n[[1]]\nalpha  beta gamma \n   10    20    30 \n\n[[2]]\n[1] 7\n\n[[3]]\n[1] \"known\"\n\n[[4]]\n[1] 3\n\n[[1]]\n[1] \"{\"\n\n[[2]]\n[1] \"[\"\n\n[[3]]\n[1] \"[[\"\n\n[[4]]\n[1] \"::\"\n\n[[5]]\n[1] \":::\"\n\n[[6]]\n[1] \"srcref\"\n\n[[7]]\n[1] TRUE\n\n[[8]]\n[1] TRUE\n\n[[9]]\n[1] 0\n\n[[10]]\n[1] 0\n\n[[11]]\n[1] FALSE\n\n[[12]]\n[1] 1\n\n[1] TRUE\n[1] TRUE\n[1] FALSE FALSE FALSE FALSE\n[1] TRUE\n[1] FALSE\n[1] TRUE\n[1] \"use of NULL environment is defunct\"\n[1] \"not an environment\"\n[1] TRUE\n[1] 42\nNULL\n<environment: R_GlobalEnv>\n[1] 42\n[1] TRUE\n[1] 42\nNULL\n"
+ },
+ "sha": "0728f617c97e355b",
+ "status": 0
+}
