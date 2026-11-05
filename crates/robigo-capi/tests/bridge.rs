@@ -303,7 +303,10 @@ fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
     assert_eq!(l.data.len(), 1);
     assert!(element.upgrade().is_some(), "the old buffer outlives the native call");
     top_level(i);
-    assert!(element.upgrade().is_none(), "the old buffer is released at top level");
+    // C saw the element zero-copy: its core object keeps the vector until
+    // the collector finds that object dead
+    BRIDGE.gc(i);
+    assert!(element.upgrade().is_none(), "the old buffer is released once nothing holds it");
 
     // attributes: the box is replaced
     let x = Value::reals(vec![1.0]);
@@ -316,7 +319,8 @@ fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
     assert!(x.attrs().is_none_or(|a| a.0.is_empty()), "the attribute is gone");
     assert!(old_attr.upgrade().is_some(), "the old attributes outlive the native call");
     top_level(i);
-    assert!(old_attr.upgrade().is_none(), "the old attributes are released at top level");
+    BRIDGE.gc(i); // the attribute went to C zero-copy, as an argument
+    assert!(old_attr.upgrade().is_none(), "the old attributes are released once nothing holds them");
 
     // a pairlist whose spine got shorter: the runtime's write-back swaps it
     let second = Value::reals(vec![3.0, 4.0]);
