@@ -11,7 +11,9 @@ pub fn const_to_value(c: &Const) -> Value {
         Const::Lgl(None) => Value::lgl_na(),
         Const::Lgl(Some(b)) => Value::lgl(*b),
         Const::Int(None) => Value::int(NA_INTEGER),
-        Const::Int(Some(i)) => Value::int(*i),
+        // R: gram.y:mkInt -- each literal its own object (ScalarInteger),
+        // never a shared small integer native code could write into
+        Const::Int(Some(i)) => Value::int_fresh(*i),
         Const::Dbl(x) => Value::real(*x),
         Const::DblNa => Value::real(NA_REAL),
         Const::Cplx(re, im) => Value::cplx(Complex::new(*re, *im)),

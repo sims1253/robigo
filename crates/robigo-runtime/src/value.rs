@@ -699,17 +699,25 @@ impl Promise {
         }
     }
 
+    /// The promise's value as R reads an object: an unboxed scalar, or a
+    /// shared small integer, is boxed into the promise's own object once
+    /// and stored back, so every reader sees that object.
+    // R: memory.c:R_expand_promise_value
     pub fn value(&self) -> Option<Value> {
         match &*self.value.borrow() {
-            PromiseVal::Boxed(v) => return Some(v.clone()),
+            PromiseVal::Boxed(v) if v.shared_int().is_none() => return Some(v.clone()),
             PromiseVal::Unforced => return None,
             _ => {}
         }
         let mut b = self.value.borrow_mut();
         match &*b {
-            PromiseVal::Boxed(v) => Some(v.clone()),
+            PromiseVal::Boxed(v) => {
+                let v = v.clone().for_binding();
+                *b = PromiseVal::Boxed(v.clone());
+                Some(v)
+            }
             PromiseVal::ScalarInt(i) => {
-                let v = Value::int(*i);
+                let v = Value::int_fresh(*i);
                 *b = PromiseVal::Boxed(v.clone());
                 Some(v)
             }
@@ -1077,11 +1085,28 @@ struct Scalars {
 
 const SMALL_INTS: usize = 128;
 
+/// The index of `i` among the shared small integers (`Value::int`), if it
+/// is one of them.
+#[inline(always)]
+fn small_int_index(i: i32) -> Option<usize> {
+    usize::try_from(i).ok().filter(|&k| k < SMALL_INTS)
+}
+
 thread_local! {
     static SCALARS: Scalars = Scalars {
         lgl: [0, 1, NA_LOGICAL].map(|x| Value::Lgl(Rc::new(Vector::new(vec![x])))),
-        int: (0..SMALL_INTS as i32).map(|i| Value::Int(Rc::new(Vector::new(vec![i])))).collect(),
+        int: (0..SMALL_INTS as i32)
+            .map(|i| {
+                let rc = Rc::new(Vector::new(vec![i]));
+                SHARED_INTS.with(|p| p[i as usize].set(Rc::as_ptr(&rc) as usize));
+                Value::Int(rc)
+            })
+            .collect(),
     };
+    /// The addresses of the shared small integers (0 until they exist), to
+    /// recognize one without the lazily initialized `SCALARS`.
+    static SHARED_INTS: [std::cell::Cell<usize>; SMALL_INTS] =
+        const { [const { std::cell::Cell::new(0) }; SMALL_INTS] };
 }
 
 impl Value {
@@ -1092,10 +1117,41 @@ impl Value {
     pub fn is_shared_scalar(&self) -> bool {
         match self {
             Value::Lgl(x) => SCALARS.with(|c| c.lgl.iter().any(|s| matches!(s, Value::Lgl(y) if Rc::ptr_eq(x, y)))),
-            Value::Int(x) if x.data.len() == 1 && (0..SMALL_INTS as i32).contains(&x.data[0]) => {
-                SCALARS.with(|c| matches!(&c.int[x.data[0] as usize], Value::Int(y) if Rc::ptr_eq(x, y)))
-            }
+            Value::Int(x) if x.data.len() == 1 => match small_int_index(x.data[0]) {
+                Some(k) => SCALARS.with(|c| matches!(&c.int[k], Value::Int(y) if Rc::ptr_eq(x, y))),
+                None => false,
+            },
             _ => false,
+        }
+    }
+
+    /// The integer of one of the process-wide shared small-integer
+    /// scalars (`Value::int`), if `self` is one.
+    #[inline(always)]
+    pub fn shared_int(&self) -> Option<i32> {
+        match self {
+            Value::Int(x) if Rc::strong_count(x) > 1 && x.data.len() == 1 => {
+                let i = x.data[0];
+                let k = small_int_index(i)?;
+                SHARED_INTS.with(|p| p[k].get() == Rc::as_ptr(x) as usize).then_some(i)
+            }
+            _ => None,
+        }
+    }
+
+    /// `self` as a variable binds it: the shared small integers are
+    /// replaced by an object of their own. GNU R allocates every integer
+    /// scalar (`ScalarInteger`, and `R_expand_binding_value` boxing an
+    /// unboxed binding cell), so native code that writes into a variable's
+    /// value (purrr's map writes its loop index `i`) changes that variable
+    /// only. The logical constants stay shared, as GNU R's
+    /// `ScalarLogical` shares `R_TrueValue` & co.
+    // R: memory.c:R_expand_binding_value
+    #[inline(always)]
+    pub fn for_binding(self) -> Value {
+        match self.shared_int() {
+            Some(i) => Value::int_fresh(i),
+            None => self,
         }
     }
 
@@ -1126,9 +1182,15 @@ impl Value {
     }
 
     pub fn int(i: i32) -> Value {
-        if (0..SMALL_INTS as i32).contains(&i) {
-            return SCALARS.with(|c| c.int[i as usize].clone());
+        if let Some(k) = small_int_index(i) {
+            return SCALARS.with(|c| c.int[k].clone());
         }
+        Value::Int(Rc::new(Vector::new(vec![i])))
+    }
+
+    /// An integer scalar of its own, never one of the shared ones.
+    #[inline]
+    pub fn int_fresh(i: i32) -> Value {
         Value::Int(Rc::new(Vector::new(vec![i])))
     }
 

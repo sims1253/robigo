@@ -64,6 +64,18 @@ impl RVal {
     fn to_value(&self) -> Value {
         self.clone().into_value()
     }
+
+    /// The value as an object of its own, never a shared small integer
+    /// (`Value::for_binding`): what native code gets for a computed scalar
+    /// (GNU R's is a fresh box).
+    #[inline]
+    pub(crate) fn to_binding(&self) -> Value {
+        match self {
+            RVal::I(x) => Value::int_fresh(*x),
+            RVal::V(v) => v.clone().for_binding(),
+            r => r.to_value(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -453,6 +465,102 @@ pub(crate) fn unbox_ref(v: &Value) -> RVal {
     }
 }
 
+/// The object a read of variable `sym` gives to whatever it escapes to (a
+/// call's argument, the value of a promise), when `v` is what the VM read:
+/// an unboxed scalar stands for the binding's own object, which native code
+/// may write into and R then reads (GNU R hands out the binding's value,
+/// boxing an unboxed binding cell into it the first time:
+/// `R_expand_binding_value`). Pending assignments must have been flushed.
+/// An object of its own when the binding no longer holds that value.
+// R: envir.c:BINDING_VALUE
+fn escaping_read(env: &Env, sym: Sym, v: RVal) -> Value {
+    if let Some(b) = binding_object(env, sym) {
+        let same = match (&b, &v) {
+            (Value::Int(x), RVal::I(i)) => x.data.len() == 1 && x.data[0] == *i && x.attrs.is_none(),
+            (Value::Real(x), RVal::D(d)) => {
+                x.data.len() == 1 && x.data[0].to_bits() == d.to_bits() && x.attrs.is_none()
+            }
+            (Value::Lgl(x), RVal::L(l)) => x.data.len() == 1 && x.data[0] == *l && x.attrs.is_none(),
+            _ => false,
+        };
+        if same {
+            return b;
+        }
+    }
+    v.to_binding()
+}
+
+/// [`call_builtin_op`] of a builtin calling native code (`.Call` & co).
+#[inline(never)]
+fn native_builtin_op(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    b: &'static Builtin,
+    args: u32,
+    call: u32,
+) -> RResult<Value> {
+    let argv = native_args(code, args, regs, env);
+    let r = interp.invoke_builtin(b, &code.consts[call as usize], argv, env);
+    signal(interp, r)
+}
+
+/// The arguments of a `CallBuiltin` of a builtin calling native code
+/// (`Code::argvars`): a variable passed as it is is its binding's own
+/// object.
+#[inline(never)]
+fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg> {
+    code.arglists[args as usize]
+        .iter()
+        .zip(&code.argvars[args as usize])
+        .map(|((tag, r), var)| {
+            let v = std::mem::replace(&mut regs[*r as usize], RVal::I(0));
+            Arg::new(
+                *tag,
+                match (var, &v) {
+                    (Some(sym), RVal::I(_) | RVal::D(_) | RVal::L(_)) => escaping_read(env, *sym, v),
+                    // (a computed value: an object of its own, never a
+                    // shared small integer C could write into)
+                    _ => v.to_binding(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The object variable `sym` is bound to (a plain binding, or a forced
+/// promise's value), expanded into an object of its own the first time it
+/// is read as one (`Env::binding_value`, `Promise::value`), if reading it
+/// runs no code; `None` otherwise (`interp::plain_value`'s cases, for the
+/// variables the VM has just read).
+#[inline]
+fn binding_object(env: &Env, sym: Sym) -> Option<Value> {
+    // (a variable's object: Env::binding_value, Promise::value)
+    #[inline(always)]
+    fn in_frame(e: &Env, sym: Sym) -> Option<Option<Value>> {
+        let (v, flags) = e.binding_value(sym)?;
+        if flags & crate::env::BIND_ACTIVE != 0 {
+            return Some(None);
+        }
+        Some(match v {
+            Value::Promise(p) => p.value(),
+            v if v.is_missing_arg() => None,
+            v => Some(v),
+        })
+    }
+    if let Some(r) = in_frame(env, sym) {
+        return r;
+    }
+    let mut cur = env.parent()?;
+    loop {
+        if let Some(r) = in_frame(&cur, sym) {
+            return r;
+        }
+        cur = cur.parent()?;
+    }
+}
+
 /// Whether an assignment of `sym` in `env` may be deferred: the binding is
 /// plain (not locked or active) or can be created, and the value is not a
 /// function (function bindings affect lookups and guards).
@@ -526,7 +634,8 @@ fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)>
         _ => None,
     };
     match p {
-        Some(p) => interp.force_promise(&p).map(|v| (v, true)),
+        // (taken unboxed: no expansion)
+        Some(p) => interp.force_promise_raw(&p).map(|v| (v, true)),
         None => interp.eval_sym(sym, env).map(|v| (v, false)),
     }
 }
@@ -1100,7 +1209,7 @@ fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
             if !matches!(&*p.value.borrow(), crate::value::PromiseVal::Unforced) {
                 continue;
             }
-            interp.force_promise(p)?;
+            interp.force_promise_raw(p)?;
         }
     }
     Ok(())
@@ -1444,6 +1553,11 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
                     (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
                     (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
                     (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
+                    // (a shared small integer like an unboxed one)
+                    (Value::Int(rc), RVal::V(v)) => match v.shared_int() {
+                        Some(x) => scalar!(rc, &x),
+                        None => false,
+                    },
                     _ => false,
                 };
                 if done {
@@ -1531,6 +1645,10 @@ pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool
         (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
         (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
         (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
+        (Value::Int(rc), RVal::V(v)) => match v.shared_int() {
+            Some(x) => scalar!(rc, &x),
+            None => false,
+        },
         _ => false,
     };
     if !done {
@@ -2771,8 +2889,18 @@ fn caller_promargs(
     regs: &[RVal],
 ) -> RResult<Vec<Arg>> {
     if let Some(eager) = eager_args(interp, site, clo, env, vars, regs) {
+        // A variable's promise has the binding's own object as its value
+        // (pending assignments were flushed for the call), when the body
+        // can hand it to native code.
+        let escapes = matches!(clo.code.get(), Some(Some(c)) if c.escapes);
         let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
+            let v = match (v, &a.value) {
+                (Some(v @ (RVal::I(_) | RVal::D(_) | RVal::L(_))), Value::Sym(sym)) if escapes => {
+                    Some(RVal::V(escaping_read(env, *sym, v)))
+                }
+                (v, _) => v,
+            };
             out.push(match (v, &a.value) {
                 (Some(RVal::I(i)), _) => {
                     Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i))))
@@ -3593,7 +3721,8 @@ fn call_op(
 }
 
 /// `Op::CallBuiltin` (after a flush): the builtin `consts[f]` with the
-/// values of `arglists[args]`, which are moved out of their registers.
+/// values of `arglists[args]`, which are moved out of their registers (for
+/// a `native` call, a variable's binding object: [`native_args`]).
 #[inline(never)]
 fn call_builtin_op(
     interp: &mut Interp,
@@ -3603,10 +3732,14 @@ fn call_builtin_op(
     f: u32,
     args: u32,
     call: u32,
+    native: bool,
 ) -> RResult<Value> {
     let Value::Builtin(b) = &code.consts[f as usize] else { unreachable!() };
     if crate::builtins::debug::any_prim_traced() {
         trace_builtin(interp, b, &code.consts[call as usize]);
+    }
+    if native {
+        return native_builtin_op(interp, code, env, regs, b, args, call);
     }
     let argv: Vec<Arg> = code.arglists[args as usize]
         .iter()
@@ -4051,6 +4184,21 @@ fn run_with(
                     regs[*dst as usize] = v;
                 }
             }
+            Op::GetVarBoxed { dst, sym, slot } => {
+                interp.visible = true;
+                // C reads the binding: write pending assignments first.
+                flush!();
+                let _ = slot;
+                let v = match binding_object(env, *sym) {
+                    Some(v) => v,
+                    None => {
+                        let r = force_var(interp, env, *sym);
+                        let (v, _) = tryop!(signal_var(interp, r));
+                        binding_object(env, *sym).unwrap_or(v)
+                    }
+                };
+                regs[*dst as usize] = RVal::V(v);
+            }
             Op::SetVar { src, sym, slot, take } => {
                 // R: bcEval SETVAR then POP: in effect position the value
                 // lives on in the binding only (#357).
@@ -4362,9 +4510,10 @@ fn run_with(
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false, *take));
                 }
             }
-            Op::CallBuiltin { dst, f, args, call } => {
+            Op::CallBuiltin { dst, f, args, call, native } => {
                 flush!();
-                regs[*dst as usize] = RVal::V(tryop!(call_builtin_op(interp, code, env, regs, *f, *args, *call)));
+                regs[*dst as usize] =
+                    RVal::V(tryop!(call_builtin_op(interp, code, env, regs, *f, *args, *call, *native)));
             }
             Op::Builtin1 { f, dst, a, call } => {
                 interp.visible = true;

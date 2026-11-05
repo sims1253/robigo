@@ -276,7 +276,7 @@ fn extract_exact_arg(args: &mut Vec<Arg>) -> i32 {
 /// `R_findVarInFrame` for `[[` and `$` on environments: forces promises
 /// and calls active bindings.
 fn find_var_in_frame(interp: &mut Interp, e: &Env, sym: Sym) -> RResult<Option<Value>> {
-    let b = e.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+    let b = e.binding_value(sym);
     match b {
         None => Ok(None),
         Some((f, flags)) if flags & BIND_ACTIVE != 0 => {
