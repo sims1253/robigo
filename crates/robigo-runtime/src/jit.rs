@@ -1466,6 +1466,15 @@ impl Gen<'_, '_> {
     /// A 0-based index from `i` (`vm::scalar_index`), checked against the
     /// length; leaves at `pc` otherwise.
     fn index(&mut self, i: (CValue, JType), len: CValue, pc: usize) -> CValue {
+        if i.1 != JType::D {
+            // An integer: `i - 1` as unsigned is below the length exactly
+            // when `1 <= i <= len` (NA, 0 and negatives wrap around).
+            let w = self.b.ins().sextend(types::I64, i.0);
+            let k = self.b.ins().iadd_imm_s(w, -1);
+            let out = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, k, len);
+            self.deopt_if(out, pc);
+            return k;
+        }
         let f = match i.1 {
             JType::D => i.0,
             _ => {
