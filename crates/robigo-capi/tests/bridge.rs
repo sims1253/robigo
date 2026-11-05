@@ -330,6 +330,9 @@ fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
     assert_eq!(p.items.len(), 1);
     assert!(element.upgrade().is_some(), "the old spine outlives the native call");
     top_level(i);
+    // the element was the pairlist's (a twin's), and is released by the
+    // bridge's sweep once nothing else holds it
+    BRIDGE.gc(i);
     assert!(element.upgrade().is_none(), "the old spine is released at top level");
 }
 

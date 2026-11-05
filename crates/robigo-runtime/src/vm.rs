@@ -1404,7 +1404,7 @@ fn subset_values(
     if ivals.is_empty() {
         args.push(Arg::new(
             l.args[1].tag,
-            Value::Promise(Rc::new(Promise::arg(l.args[1].value.clone(), env.clone(), None))),
+            Value::Promise(Rc::new(Promise::arg(l.args[1].value.clone(), env.clone(), None, interp.bc))),
         ));
     }
     for (a, v) in l.args[1..].iter().zip(ivals) {
@@ -2578,6 +2578,12 @@ fn try_inline_site(
             if !ns && !interp.resolves_to_base(head, env) {
                 return None;
             }
+            // C code can rewrite the call in place through its cells (a
+            // spliced spine, sims1253/robigo#387): a resolution made for
+            // other arguments no longer applies, and the call runs generic
+            if inline.args.iter().any(|m| matches!(m, SiArg::Actual(j) if *j >= l.args.len())) {
+                return None;
+            }
             let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
         }
@@ -2643,6 +2649,10 @@ pub(crate) fn try_inline_expr(
     if let Some((_, _, hit)) = interp.si_expr_memo.get(&key) {
         let inline = hit.clone()?;
         if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
+            return None;
+        }
+        // (a call C rewrote in place, as above)
+        if inline.args.iter().any(|m| matches!(m, SiArg::Actual(j) if *j >= l.args.len())) {
             return None;
         }
         return Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env));
@@ -2735,6 +2745,8 @@ fn direct_call(
     if clo.jit.inline_blocked() {
         jit_check(interp, clo);
     }
+    // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
+    interp.bc = !clo.jit.interpreted();
     let r = match run_closure(interp, code, &newenv, clo, true) {
         Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
         r => r,
@@ -2777,9 +2789,14 @@ fn caller_promargs(
                     Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced(a.value.clone(), v.into_value()))))
                 }
                 (None, Value::Sym(_) | Value::Lang(_)) => {
-                    Arg::new(a.tag, Value::Promise(Rc::new(Promise::arg(a.value.clone(), env.clone(), c.clone()))))
+                    let p = Promise::arg(a.value.clone(), env.clone(), c.clone(), interp.bc);
+                    Arg::new(a.tag, Value::Promise(Rc::new(p)))
                 }
-                (None, _) => a.clone(),
+                (None, Value::Promise(_)) => a.clone(),
+                // (Interp::promise_args_with: GNU R's AST interpreter
+                // promises a constant, bytecode passes its value.)
+                (None, _) if interp.bc => a.clone(),
+                (None, _) => crate::interp::const_promise(a, env),
             });
         }
         return Ok(out);
