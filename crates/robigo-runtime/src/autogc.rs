@@ -33,9 +33,10 @@ static TRIGGER: AtomicIsize = AtomicIsize::new(isize::MAX);
 /// A collection is due at the next safe point.
 static DUE: AtomicBool = AtomicBool::new(false);
 
-/// The heap once the session was up (base and the default packages loaded): GNU R's sizes apply to
-/// what the program allocates beyond it (GNU R's own base takes a few
-/// megabytes of its heap, robigo's environments and compiled code tens).
+/// The heap once the session was up (base and the default packages
+/// loaded): GNU R's sizes apply to what the program allocates beyond it
+/// (GNU R's own base takes a few megabytes of its heap, robigo's
+/// environments and compiled code tens).
 static BOOT: AtomicIsize = AtomicIsize::new(0);
 
 /// `sizeof(VECREC)`: GNU R's vector heap is counted in these.
