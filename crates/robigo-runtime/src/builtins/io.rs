@@ -180,23 +180,6 @@ impl Connection {
         matches!(self.kind, ConnKind::Native { .. })
     }
 
-    /// The next byte of the pushed-back lines, if there are any (R:
-    /// connections.c:Rconn_fgetc's pushback branch).
-    #[inline]
-    fn pushback_getc(&mut self) -> Option<i32> {
-        if self.pushback.is_empty() {
-            return None;
-        }
-        let last = self.pushback.len() - 1;
-        let c = self.pushback[last][self.pos_pushback] as i32;
-        self.pos_pushback += 1;
-        if self.pos_pushback >= self.pushback[last].len() {
-            self.pushback.pop();
-            self.pos_pushback = 0;
-        }
-        Some(c)
-    }
-
     pub(super) fn reset_save(&mut self) {
         self.save = -1000;
     }
