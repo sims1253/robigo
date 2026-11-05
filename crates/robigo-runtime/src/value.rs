@@ -1051,6 +1051,13 @@ struct Scalars {
 
 const SMALL_INTS: usize = 128;
 
+/// The index of `i` among the shared small integers (`Value::int`), if it
+/// is one of them.
+#[inline(always)]
+fn small_int_index(i: i32) -> Option<usize> {
+    usize::try_from(i).ok().filter(|&k| k < SMALL_INTS)
+}
+
 thread_local! {
     static SCALARS: Scalars = Scalars {
         lgl: [0, 1, NA_LOGICAL].map(|x| Value::Lgl(Rc::new(Vector::new(vec![x])))),
@@ -1076,9 +1083,10 @@ impl Value {
     pub fn is_shared_scalar(&self) -> bool {
         match self {
             Value::Lgl(x) => SCALARS.with(|c| c.lgl.iter().any(|s| matches!(s, Value::Lgl(y) if Rc::ptr_eq(x, y)))),
-            Value::Int(x) if x.data.len() == 1 && (0..SMALL_INTS as i32).contains(&x.data[0]) => {
-                SCALARS.with(|c| matches!(&c.int[x.data[0] as usize], Value::Int(y) if Rc::ptr_eq(x, y)))
-            }
+            Value::Int(x) if x.data.len() == 1 => match small_int_index(x.data[0]) {
+                Some(k) => SCALARS.with(|c| matches!(&c.int[k], Value::Int(y) if Rc::ptr_eq(x, y))),
+                None => false,
+            },
             _ => false,
         }
     }
@@ -1090,9 +1098,8 @@ impl Value {
         match self {
             Value::Int(x) if Rc::strong_count(x) > 1 && x.data.len() == 1 => {
                 let i = x.data[0];
-                ((0..SMALL_INTS as i32).contains(&i)
-                    && SHARED_INTS.with(|p| p[i as usize].get() == Rc::as_ptr(x) as usize))
-                .then_some(i)
+                let k = small_int_index(i)?;
+                SHARED_INTS.with(|p| p[k].get() == Rc::as_ptr(x) as usize).then_some(i)
             }
             _ => None,
         }
@@ -1141,8 +1148,8 @@ impl Value {
     }
 
     pub fn int(i: i32) -> Value {
-        if (0..SMALL_INTS as i32).contains(&i) {
-            return SCALARS.with(|c| c.int[i as usize].clone());
+        if let Some(k) = small_int_index(i) {
+            return SCALARS.with(|c| c.int[k].clone());
         }
         Value::Int(Rc::new(Vector::new(vec![i])))
     }
