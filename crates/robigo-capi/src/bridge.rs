@@ -125,7 +125,8 @@ thread_local! {
     static SEEN_TOUCHED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static TOUCH_START: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// The atomic vectors converted for the running native calls (SEEN)
-    /// that became twins since (C bound or looked them up): see
+    /// that became twins since (C bound or looked them up, or a container
+    /// of theirs: the value may be another one of the same object): see
     /// [`write_backs`].
     static SEEN_TWINS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     /// C-assembled promise nodes (see `CPROMISE_MEMO`): the runtime
@@ -790,7 +791,7 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
     TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells }));
     if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
-        && SEEN_AT.with(|m| m.borrow().get(&x.addr()) == Some(&k))
+        && SEEN_AT.with(|m| m.borrow().contains_key(&x.addr()))
     {
         SEEN_TWINS.with(|s| s.borrow_mut().push(x));
     }
