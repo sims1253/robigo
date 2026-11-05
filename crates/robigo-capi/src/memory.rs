@@ -545,6 +545,7 @@ pub unsafe extern "C" fn OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_OBJECT(x: Sexp, v: c_int) {
+    crate::bridge::touch_attrs(x);
     x.set_flag(flags::OBJECT, v != 0)
 }
 
@@ -555,11 +556,13 @@ pub unsafe extern "C" fn IS_S4_OBJECT(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SET_S4_OBJECT(x: Sexp) {
+    crate::bridge::touch_attrs(x);
     x.set_gp(x.gp() | gp::S4)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNSET_S4_OBJECT(x: Sexp) {
+    crate::bridge::touch_attrs(x);
     x.set_gp(x.gp() & !gp::S4)
 }
 
@@ -570,6 +573,8 @@ pub unsafe extern "C" fn LEVELS(x: Sexp) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SETLEVELS(x: Sexp, v: c_int) -> c_int {
+    // the S4 bit is one of the levels
+    crate::bridge::touch_attrs(x);
     x.set_gp(v as u16);
     v
 }
@@ -604,6 +609,7 @@ pub unsafe extern "C" fn SET_ATTRIB(x: Sexp, v: Sexp) {
         // R: attrib.c:installAttrib
         error_str("cannot set attribute on a CHARSXP")
     }
+    crate::bridge::touch_attrs(x);
     fix_refcnt(x, x.attrib_raw(), v);
     x.set_attrib_raw(v);
 }
@@ -1142,6 +1148,9 @@ pub unsafe extern "C" fn SETCAR(x: Sexp, y: Sexp) -> Sexp {
         set_field(x, 0, y);
         return y;
     }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
+    }
     fix_refcnt(x, x.car(), y);
     x.set_car_raw(y);
     // A promise node written through the cons setter: keep the
@@ -1162,6 +1171,9 @@ pub unsafe extern "C" fn SETCDR(x: Sexp, y: Sexp) -> Sexp {
         set_field(x, 1, y);
         return y;
     }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
+    }
     fix_refcnt(x, x.cdr(), y);
     x.set_cdr_raw(y);
     if x.typ() == PROMSXP {
@@ -1176,6 +1188,9 @@ pub unsafe extern "C" fn SET_TAG(x: Sexp, y: Sexp) {
     if x.has_flag(flags::HOST) {
         set_field(x, 2, y);
         return;
+    }
+    if x.extra() & robigo_core::extra::WATCHED != 0 {
+        crate::bridge::watched_cell_written(x);
     }
     fix_refcnt(x, x.tag(), y);
     x.set_tag_raw(y);

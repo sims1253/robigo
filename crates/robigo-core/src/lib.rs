@@ -43,6 +43,15 @@ pub mod types {
 }
 use types::*;
 
+/// Bits of the header's `extra` word (+6) besides GNU R's debug, trace
+/// and step bits (RDEBUG 1, RTRACE 2, NOJIT 4).
+pub mod extra {
+    /// The cell is an attribute cell of a host proxy that the bridge
+    /// recorded: SETCAR/SETCDR/SET_TAG tell the bridge when C writes it.
+    /// A fresh allocation's header has it clear.
+    pub const WATCHED: u16 = 1 << 15;
+}
+
 /// Header flag bits (byte +1).
 pub mod flags {
     /// GNU R's `obj` bit: the object has a class attribute.
