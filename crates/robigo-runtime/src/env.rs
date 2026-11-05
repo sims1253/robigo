@@ -621,11 +621,13 @@ impl Env {
     /// Bind a formal argument in a new function frame: no lookup for an
     /// existing binding (R's NewEnvironment builds the frame from the
     /// matched arguments; with repeated formals the first one is found).
+    #[inline(always)]
     pub fn bind_arg(&self, sym: Sym, value: Value, flags: u8) {
         if function_like(&value) {
             self.bump_fn_version();
         }
-        self.0.frame().borrow_mut().push_new(sym, value, flags);
+        // (A variable's value is its own object: `Value::for_binding`.)
+        self.0.frame().borrow_mut().push_new(sym, value.for_binding(), flags);
     }
 
     /// Bind a new symbol without looking for an existing binding, as

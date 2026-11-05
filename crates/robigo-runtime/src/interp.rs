@@ -575,7 +575,10 @@ impl Interp {
         self.ast_frames = saved_ast;
         drop(_default);
         p.forcing.set(false);
-        let v = r?;
+        // (The promise's value is an object of its own, as the value of a
+        // variable is: a default argument's literal or a computed small
+        // integer is never the shared one native code could write into.)
+        let v = r?.for_binding();
         p.set_value(v.clone());
         *p.env.borrow_mut() = None;
         p.note_c_forced();

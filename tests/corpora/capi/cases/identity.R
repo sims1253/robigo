@@ -87,3 +87,24 @@ z <- 3L
 w <- function() 3L
 .Call("capi_id_set", z, 4L)
 print(c(z, w(), 3L))
+
+# a computed small integer, and a default argument's literal, are objects
+# of their own too
+.Call("capi_id_set", 0L + 0L, 9L)
+print(0L)
+cz <- function(n) {
+  .Call("capi_id_set", n + 0L, 9L)
+  .Call("capi_id_set", 0L * n, 9L)
+  c(n, 0L)
+}
+print(cz(0L))
+d <- function(n = 0L) {
+  .Call("capi_id_set", n, 5L)
+  n
+}
+print(d())
+print(d())
+print(0L)
+# a value bound by eval()'s list environment
+print(eval(quote({ .Call("capi_id_set", i, 7L); i }), list(i = 2L)))
+print(2L)
