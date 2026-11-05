@@ -2070,3 +2070,13 @@ mod shared_pairlist_tests {
         assert_eq!(int(&elt(&call_replacement, 1)), 2);
     }
 }
+
+#[cfg(test)]
+mod layout_tests {
+    /// `Value::Bytecode` is in every build (council round 6, #370) on the
+    /// condition that a value stays two words.
+    #[test]
+    fn a_value_is_two_words() {
+        assert_eq!(std::mem::size_of::<super::Value>(), 2 * std::mem::size_of::<usize>());
+    }
+}
