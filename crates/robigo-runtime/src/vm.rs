@@ -3135,8 +3135,9 @@ pub(crate) fn call_inline_rval(interp: &mut Interp, clo: &Closure, args: &[RVal]
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run
-/// inline: a pure closure without free variables (see [`inline_info`])
-/// called with plain arguments.
+/// inline: a pure closure without free variables (see [`inline_info`], or
+/// [`native_inline`]) called with plain arguments or element reads (`x[i]`,
+/// `x[a:b]`, which native code evaluates where it has them).
 fn inline_call(
     interp: &mut Interp,
     code: &Code,
@@ -3145,32 +3146,92 @@ fn inline_call(
     env: &Env,
     vars: &Vars<'_>,
 ) -> Option<crate::jit::InlineCall> {
+    use crate::jit::CallArg;
     let cs = &code.call_sites[site as usize];
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
     }
-    let leaves = cs.leaf_args.as_ref()?;
+    let mut arg_syms = Vec::new();
+    let args: Vec<CallArg> = match (&cs.leaf_args, &cs.inline_args) {
+        (Some(leaves), _) => leaves.iter().map(|l| CallArg::Leaf(*l)).collect(),
+        (None, Some(ia)) => ia
+            .iter()
+            .map(|a| match a {
+                InlineArg::Leaf(l) => Some(CallArg::Leaf(*l)),
+                InlineArg::Index { slot, i, two, sym, .. } => {
+                    if !arg_syms.contains(sym) {
+                        arg_syms.push(*sym);
+                    }
+                    Some(CallArg::Index(*slot, *i, *two))
+                }
+                InlineArg::Arith { .. } => None,
+            })
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if clo.jit.traced() || leaves.len() != clo.formals.len() {
+    if clo.jit.traced() || args.len() != clo.formals.len() {
         return None;
     }
-    let info = clo.inline.get_or_init(|| inline_info(&clo)).clone()?;
-    if info.free_vars {
-        return None;
-    }
+    let (body, formal_slots, guard_syms) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
+        Some(info) if !info.free_vars => (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone()),
+        Some(_) => return None,
+        None => native_inline(&clo)?,
+    };
     // Native code does not count calls: take the loop to call the closure
     // at least twice (GNU R's JIT decides by the second call).
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
-    Some(crate::jit::InlineCall {
-        code: info.code.clone(),
-        formal_slots: info.formal_slots.clone(),
-        guard_syms: info.guard_syms.clone(),
-        args: leaves.iter().map(|l| crate::jit::CallArg::Leaf(*l)).collect(),
-        clo: clo.clone(),
-        callee: 0,
-    })
+    Some(crate::jit::InlineCall { code: body, formal_slots, guard_syms, args, clo: clo.clone(), callee: 0, arg_syms })
+}
+
+/// A closure body only native code runs inline: as [`inline_analysis`]
+/// requires, but also with `a:b` and `x[i]`, which the VM's inline path does
+/// not have (a closure like `rev.default`). Its code, formal slots and
+/// guarded functions.
+fn native_inline(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>)> {
+    if !may_inline() || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    let formals: Vec<Sym> = clo.formals.iter().map(|f| f.tag.unwrap()).collect();
+    if code.vars.iter().any(|v| !formals.contains(v)) {
+        return None;
+    }
+    let mut guard_syms = Vec::new();
+    for op in &code.ops {
+        match op {
+            Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
+                if formals.contains(sym) {
+                    return None;
+                }
+                if !guard_syms.contains(sym) {
+                    guard_syms.push(*sym);
+                }
+            }
+            Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::Builtin1 { .. }
+            | Op::JumpIfNot { .. }
+            | Op::JumpIf { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Return { .. }
+            | Op::Colon { .. }
+            | Op::Index { two: false, .. } => {}
+            _ => return None,
+        }
+    }
+    let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
+    Some((code, formal_slots, guard_syms))
 }
 
 /// Run the loop entered at op `enter` natively (compiling it first if
@@ -3286,6 +3347,9 @@ fn jit_enter(
     if jl.builtins && crate::builtins::debug::any_prim_traced() {
         return None;
     }
+    if !jl.arg_syms.iter().all(|s| interp.resolves_to_base(*s, env)) {
+        return None;
+    }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
@@ -3389,6 +3453,18 @@ fn jit_enter(
             None if s.needs_entry => return None,
             None => {}
         }
+    }
+    // The temporary vectors' buffers, after the variables' views.
+    for t in &jl.temps {
+        let k = ctx.bufs.len() as u64;
+        let buf = if *t == JType::VecD { crate::jit::Buf::D(Vec::new()) } else { crate::jit::Buf::I(Vec::new()) };
+        ctx.bufs.push(buf);
+        vecs.push(crate::jit::VecView {
+            ptr: std::ptr::NonNull::<f64>::dangling().as_ptr() as *mut u8,
+            len: 0,
+            nrow: 0,
+            ncol: k,
+        });
     }
     for (reg, ty) in &jl.live_in {
         let idx = jl.reg_idx[reg];

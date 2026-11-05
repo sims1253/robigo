@@ -190,6 +190,11 @@ pub struct JitLoop {
     /// exit (a `return` the VM makes after leaving returns a value as visible
     /// as the VM would have left it).
     pub vis: usize,
+    /// The element types of the temporary vectors the loop computes (`x[a:b]`,
+    /// ...), each a buffer of the run's [`LoopCtx`] after the variables'.
+    pub temps: Vec<JType>,
+    /// The functions call arguments evaluated by native code use (`[`).
+    pub arg_syms: Vec<Sym>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -205,6 +210,9 @@ pub struct InlineCall {
     /// In a closure compiled whole ([`closure`]): the callee's index in its
     /// call tree.
     pub callee: usize,
+    /// In a loop: the functions its arguments use (`[` of `f(x[i])`), which
+    /// must be base's.
+    pub arg_syms: Vec<Sym>,
 }
 
 /// An argument of a call in native code: evaluated by the caller, which is
@@ -221,14 +229,15 @@ pub enum CallArg {
 }
 
 impl CallArg {
-    fn ty(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
+    /// Its type (`vectors`: in a loop, which reads several elements too).
+    fn ty(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>, vectors: bool) -> Option<JType> {
         match self {
             CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
             CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
             CallArg::Nested(n) => {
-                let a = n.1.ty(st, slot_ty)?;
+                let a = n.1.ty(st, slot_ty, vectors)?;
                 match &n.2 {
-                    Some(b) => arith_type(n.0, a, b.ty(st, slot_ty)?),
+                    Some(b) => arith_type(n.0, a, b.ty(st, slot_ty, vectors)?),
                     None => match a {
                         JType::D => Some(JType::D),
                         JType::I | JType::L => Some(JType::I),
@@ -236,8 +245,12 @@ impl CallArg {
                     },
                 }
             }
-            CallArg::Index(x, i, _) => {
-                if !matches!(leaf_type(i, st, slot_ty)?, JType::D | JType::I) {
+            CallArg::Index(x, i, two) => {
+                let it = leaf_type(i, st, slot_ty);
+                if !*two && vector_index(it) && vectors {
+                    return slot_ty.get(x).copied().filter(|t| matches!(t, JType::VecD | JType::VecI));
+                }
+                if !matches!(it?, JType::D | JType::I) {
                     return None;
                 }
                 match slot_ty.get(x)? {
@@ -317,8 +330,9 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
     let mut states: Vec<Option<RegState>> = vec![None; len + 1];
     states[0] = Some(vec![None; code.nregs]);
     let mut result: Option<JType> = None;
+    // (A result is a scalar or a vector: `inline_body` passes no ranges.)
     let mut merge_result = |t: Option<JType>| -> Option<()> {
-        let t = t?;
+        let t = t.filter(|t| *t != JType::Range)?;
         match result {
             Some(r) if r != t => None,
             _ => {
@@ -357,10 +371,13 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             | Op::Visible { .. }
             | Op::Guard { .. } => {}
             Op::JumpIf { cond, .. } | Op::JumpIfNot { cond, .. } => {
-                if st[*cond as usize] != Some(JType::L) {
+                if !matches!(st[*cond as usize], Some(JType::L | JType::I | JType::D)) {
                     return None;
                 }
             }
+            Op::Colon { .. }
+            | Op::Builtin1 { f: Builtin1::Length | Builtin1::IsNull, .. }
+            | Op::Index { two: false, .. } => {}
             Op::Return { src } => {
                 merge_result(st[*src as usize])?;
                 continue;
@@ -370,10 +387,12 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
         for reg in uses(op, &inl).rregs {
             st[reg as usize]?;
         }
+        if !types_ok(op, &st, &slot_ty, &inl) {
+            return None;
+        }
         let mut out = st.clone();
         for (reg, t) in defs(op, &st, &slot_ty, &inl) {
-            // (Inline bodies compute with scalars.)
-            out[reg] = Some(t.filter(|t| t.is_scalar())?);
+            out[reg] = Some(t.filter(|t| loop_value(*t))?);
         }
         successors(op, pc, &mut succ);
         for &t in &succ {
@@ -632,6 +651,10 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             leaf_uses(b, &mut u);
             u.wregs.push(*dst);
         }
+        Op::Colon { dst, a, b, .. } => {
+            u.rregs.extend([*a, *b]);
+            u.wregs.push(*dst);
+        }
         Op::Neg { dst, a, .. } | Op::Not { dst, a, .. } | Op::Math1 { dst, a, .. } | Op::AndOrArg { dst, a, .. } => {
             u.rregs.push(*a);
             u.wregs.push(*dst);
@@ -800,7 +823,9 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::SetIndex2 { .. }
         // (No code: the register is dead, see `defs`. A NULL value is
         // not supported.)
-        | Op::Null { dead: true, .. } => true,
+        | Op::Null { dead: true, .. }
+        | Op::Colon { .. }
+        | Op::Builtin1 { f: Builtin1::Length | Builtin1::IsNull, .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
@@ -1007,6 +1032,9 @@ pub fn compile(
         let u = uses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
+                if trace() {
+                    eprintln!("jit: variable {} has no type at {}: {:?}", code.vars[*s as usize], pc, op);
+                }
                 return Err(not_now(8));
             }
         }
@@ -1192,7 +1220,7 @@ pub fn compile(
         nvals += 1;
         nvals - 1
     });
-    let builtins = native_ops().any(|pc| matches!(ops[pc], Op::CallBuiltin { .. }));
+    let builtins = native_ops().any(|pc| matches!(ops[pc], Op::CallBuiltin { .. } | Op::Builtin1 { .. }));
     nvals += 1;
     let vis = nvals - 1;
     let vis_at = visibility(code, &r, &inl);
@@ -1209,7 +1237,15 @@ pub fn compile(
         vis,
         vis_at: &vis_at,
     };
-    let func = codegen(code, &r, &lay, &mut deopt_regs, &inl)?;
+    let (func, temps) = codegen(code, &r, &lay, &mut deopt_regs, &inl)?;
+    let mut arg_syms = Vec::new();
+    for ic in calls.values() {
+        for s in &ic.arg_syms {
+            if !arg_syms.contains(s) {
+                arg_syms.push(*s);
+            }
+        }
+    }
     let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
     let mut nulled: Vec<Reg> = ops[r.start..r.end]
         .iter()
@@ -1234,6 +1270,8 @@ pub fn compile(
         stats: std::cell::Cell::new((0, 0)),
         builtins,
         vis,
+        temps,
+        arg_syms,
     })
 }
 
@@ -1466,7 +1504,13 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         }
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
-        Op::Index { i, .. } => matches!(lt(i), Some(JType::D | JType::I)),
+        Op::Index { i, slot, two, .. } => {
+            matches!(lt(i), Some(JType::D | JType::I))
+                || (!*two
+                    && inl.specs.is_none()
+                    && vector_index(lt(i))
+                    && matches!(slot_ty.get(slot), Some(JType::VecD | JType::VecI)))
+        }
         Op::Index2 { slot, i, j, .. } => {
             matches!(slot_ty[slot], JType::MatD | JType::MatI)
                 && matches!(lt(i), Some(JType::D | JType::I))
@@ -1480,6 +1524,13 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                     (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
                 )
         }
+        Op::SetIndex { val, slot, i, two, .. } if !*two && inl.specs.is_none() && vector_index(lt(i)) => {
+            matches!(
+                (slot_ty[slot], rt(val)),
+                (JType::VecD, JType::D | JType::I | JType::L | JType::VecD | JType::VecI)
+                    | (JType::VecI, JType::I | JType::L | JType::VecI)
+            )
+        }
         Op::SetIndex { val, slot, i, .. } => {
             matches!(lt(i), Some(JType::D | JType::I))
                 && matches!(
@@ -1492,10 +1543,16 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::ForRange { kind: RangeKind::Colon, a, b, .. } => rt(a).is_scalar() && rt(b).is_scalar(),
         Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
         Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
+        Op::Colon { a, b, .. } => matches!(rt(a), JType::D | JType::I) && matches!(rt(b), JType::D | JType::I),
         Op::GetVar { slot, .. } => inl.specs.is_some() || loop_value(slot_ty[slot]),
         Op::Null { dead: true, .. } => true,
         _ => defs(op, st, slot_ty, inl).iter().all(|(_, t)| t.is_some()),
     }
+}
+
+/// An index that selects several elements: a range or a plain vector.
+fn vector_index(t: Option<JType>) -> bool {
+    matches!(t, Some(JType::Range | JType::VecD | JType::VecI))
 }
 
 /// The types a variable of a loop can have in a register: scalars, ranges
@@ -1525,7 +1582,13 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
     match op {
         Op::Call { dst, site, .. } => {
             let t = inl.calls.get(site).and_then(|ic| {
-                let tys: Option<Vec<JType>> = ic.args.iter().map(|a| a.ty(st, slot_ty)).collect();
+                let tys: Option<Vec<JType>> = ic
+                    .args
+                    .iter()
+                    .map(|a| {
+                        a.ty(st, slot_ty, inl.specs.is_none()).filter(|t| inl.specs.is_some() || *t != JType::Range)
+                    })
+                    .collect();
                 inl.result(*site, tys?)
             });
             vec![(*dst as usize, t)]
@@ -1600,6 +1663,13 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::ForRange { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
         Op::ForInit { seq, .. } => vec![(*seq as usize + 1, Some(JType::I))],
         Op::ForStep { idx, .. } => vec![(*idx as usize, Some(JType::I))],
+        Op::Colon { dst, a, b, .. } => {
+            let ok = matches!(rt(a), Some(JType::D | JType::I)) && matches!(rt(b), Some(JType::D | JType::I));
+            vec![(*dst as usize, ok.then_some(JType::Range))]
+        }
+        Op::Index { dst, slot, i, two: false, .. } if vector_index(leaf_type(i, st, slot_ty)) => {
+            vec![(*dst as usize, slot_ty.get(slot).copied().filter(|t| matches!(t, JType::VecD | JType::VecI)))]
+        }
         Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
             let t = match slot_ty.get(slot) {
                 Some(JType::VecD | JType::MatD) => Some(JType::D),
@@ -1740,6 +1810,13 @@ struct LoopVars {
     vis: Option<Variable>,
 }
 
+/// The elements an index selects (see `Gen::index_src`).
+#[derive(Clone, Copy)]
+enum IndexSrc {
+    Range(CValue, CValue, CValue),
+    Vec(CValue, CValue, JType),
+}
+
 /// What code generation for a loop has besides [`Gen`]'s: the views, the
 /// [`LoopCtx`], the vector registers live before each op, and where the
 /// back-edge counter is stored.
@@ -1750,6 +1827,9 @@ struct LoopGen<'a> {
     counter: Option<usize>,
     vis: usize,
     vis_at: &'a [Vis],
+    /// The views of the variables; then one per temporary vector.
+    nvecs: usize,
+    temps: Vec<JType>,
 }
 
 struct Gen<'a, 'b> {
@@ -1761,7 +1841,7 @@ struct Gen<'a, 'b> {
     /// Inside an inlined callee: leave at this op (the call) instead, and
     /// where a `Return` stores the result and continues.
     deopt_at: Option<usize>,
-    ret: Option<(Variable, Block)>,
+    ret: Option<(Variable, Option<Variable>, Block)>,
     reg_idx: &'a HashMap<Reg, usize>,
     vals: CValue,
     blocks: Vec<Block>,
@@ -2163,14 +2243,15 @@ impl Gen<'_, '_> {
         {
             self.set_visible(true);
         }
-        if self.lp.is_some() && self.deopt_at.is_none() {
-            let back = match op {
-                Op::Jump { target } | Op::JumpIf { target, .. } | Op::JumpIfNot { target, .. } => {
-                    *target as usize <= pc
-                }
-                Op::ForStep { body, .. } => *body as usize <= pc,
-                _ => false,
-            };
+        if self.lp.is_some() {
+            let back = self.deopt_at.is_none()
+                && match op {
+                    Op::Jump { target } | Op::JumpIf { target, .. } | Op::JumpIfNot { target, .. } => {
+                        *target as usize <= pc
+                    }
+                    Op::ForStep { body, .. } => *body as usize <= pc,
+                    _ => false,
+                };
             if let (true, Some(c)) = (back, self.v.lp.counter) {
                 let x = self.b.use_var(c);
                 let x = self.b.ins().iadd_imm_s(x, 1);
@@ -2393,28 +2474,7 @@ impl Gen<'_, '_> {
             }
             Op::ForRange { kind, a, b, seq, .. } => {
                 let (start, step, n) = match kind {
-                    RangeKind::Colon => {
-                        let (x, tx) = self.reg(*a);
-                        let (y, ty) = self.reg(*b);
-                        let x = self.to_f64(x, tx);
-                        let y = self.to_f64(y, ty);
-                        // vm::colon_range: integer-valued ends in range.
-                        let ok_x = self.int_valued(x);
-                        let ok_y = self.int_valued(y);
-                        let ok = self.b.ins().band(ok_x, ok_y);
-                        let bad = self.b.ins().bxor_imm_s(ok, 1);
-                        self.deopt_if(bad, pc);
-                        let xi = self.b.ins().fcvt_to_sint_sat(types::I64, x);
-                        let yi = self.b.ins().fcvt_to_sint_sat(types::I64, y);
-                        let up = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, xi, yi);
-                        let one = self.b.ins().iconst(types::I64, 1);
-                        let mone = self.b.ins().iconst(types::I64, -1);
-                        let step = self.b.ins().select(up, one, mone);
-                        let d = self.b.ins().isub(yi, xi);
-                        let ad = self.b.ins().iabs(d);
-                        let n = self.b.ins().iadd_imm_s(ad, 1);
-                        (xi, step, n)
-                    }
+                    RangeKind::Colon => self.colon(*a, *b, pc),
                     _ => {
                         // seq_len
                         let (x, t) = self.reg(*a);
@@ -2512,9 +2572,9 @@ impl Gen<'_, '_> {
                     self.b.ins().jump(n, &[]);
                     return;
                 }
-                let args: Vec<(CValue, JType)> = args;
-                let ct = self.inl.callee(*site, args.iter().map(|a| a.1).collect()).unwrap();
-                let v = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+                let args: Vec<(CValue, Option<CValue>, JType)> = args.into_iter().map(|(x, t)| (x, None, t)).collect();
+                let ct = self.inl.callee(*site, args.iter().map(|a| a.2).collect()).unwrap();
+                let (v, _) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
                 self.set_reg(*dst, v);
             }
             Op::Return { src } if self.whole.is_some() => {
@@ -2523,10 +2583,8 @@ impl Gen<'_, '_> {
                 falls = false;
             }
             Op::Return { src } => {
-                let (rv, after) = self.ret.expect("Return outside an inlined callee");
-                let (x, _) = self.reg(*src);
-                self.b.def_var(rv, x);
-                self.b.ins().jump(after, &[]);
+                let (rv, rl, after) = self.ret.expect("Return outside an inlined callee");
+                self.return_to(*src, rv, rl, after);
                 falls = false;
             }
             // Checked at entry, or no effect in native code (a cleared
@@ -2545,28 +2603,40 @@ impl Gen<'_, '_> {
     }
 
     /// The body of a pure closure called at op `call` with argument values
-    /// `args`, translated in place; its result. Anything its fast paths do
-    /// not cover leaves native code at the call, which the VM then makes.
+    /// `args` (a value, its length for a vector, its type), translated in
+    /// place; its result (and its length, for a vector). Anything its fast
+    /// paths do not cover leaves native code at the call, which the VM then
+    /// makes.
     fn inline_body(
         &mut self,
         call: usize,
         code: &Code,
         formal_slots: &[Option<Slot>],
         ct: &CalleeTy,
-        args: &[(CValue, JType)],
-    ) -> CValue {
+        args: &[(CValue, Option<CValue>, JType)],
+    ) -> (CValue, Option<CValue>) {
         let len = code.ops.len();
+        let ptr = types::I64;
         let res = self.b.declare_var(cl_type(ct.result));
+        let res_len = ct.result.is_vector().then(|| self.b.declare_var(types::I64));
         let after = self.b.create_block();
         // The callee's frame: its formals hold the arguments; its registers
         // get variables of their own.
         let mut slot = HashMap::new();
+        let mut vec = HashMap::new();
         for (k, s) in formal_slots.iter().enumerate() {
             if let Some(s) = s {
-                let (x, t) = args[k];
-                let var = self.b.declare_var(cl_type(t));
-                self.b.def_var(var, x);
-                slot.insert(*s, (var, t));
+                let (x, n, t) = args[k];
+                if let Some(n) = n {
+                    let (pv, lv) = (self.b.declare_var(ptr), self.b.declare_var(types::I64));
+                    self.b.def_var(pv, x);
+                    self.b.def_var(lv, n);
+                    vec.insert(*s, (pv, lv, t));
+                } else {
+                    let var = self.b.declare_var(cl_type(t));
+                    self.b.def_var(var, x);
+                    slot.insert(*s, (var, t));
+                }
             }
         }
         let mut pairs: Vec<(Reg, JType)> = Vec::new();
@@ -2588,7 +2658,28 @@ impl Gen<'_, '_> {
         pairs.sort_by_key(|(r, t)| (*r, *t as u8));
         pairs.dedup();
         let mut reg = HashMap::new();
+        let mut range = HashMap::new();
+        let mut vreg = HashMap::new();
         for (r, t) in pairs {
+            if t == JType::Range {
+                if let std::collections::hash_map::Entry::Vacant(e) = range.entry(r) {
+                    let vs: Vec<Variable> = (0..3).map(|_| self.b.declare_var(types::I64)).collect();
+                    for v in &vs {
+                        let z = self.b.ins().iconst(types::I64, 0);
+                        self.b.def_var(*v, z);
+                    }
+                    e.insert((vs[0], vs[1], vs[2]));
+                }
+                continue;
+            }
+            if t.is_vector() {
+                let (pv, lv) = (self.b.declare_var(ptr), self.b.declare_var(types::I64));
+                let z = self.b.ins().iconst(types::I64, 0);
+                self.b.def_var(pv, z);
+                self.b.def_var(lv, z);
+                vreg.insert((r, t), (pv, lv));
+                continue;
+            }
             let var = self.b.declare_var(cl_type(t));
             let z = if t == JType::D { self.f64c(0.0) } else { self.i32c(0) };
             self.b.def_var(var, z);
@@ -2599,8 +2690,13 @@ impl Gen<'_, '_> {
         self.b.ins().jump(blocks[0], &[]);
         let saved_states = std::mem::replace(&mut self.states, ct.states.clone());
         let saved_reg = std::mem::replace(&mut self.v.reg, reg);
+        let saved_range = std::mem::replace(&mut self.v.range, range);
         let saved_slot = std::mem::replace(&mut self.v.slot, slot);
+        let saved_vec = std::mem::replace(&mut self.v.vec, vec);
         let saved_flag = std::mem::take(&mut self.v.flag);
+        let saved_dims = std::mem::take(&mut self.v.dims);
+        let saved_lp = LoopVars { vreg, counter: self.v.lp.counter, ..Default::default() };
+        let saved_lp = std::mem::replace(&mut self.v.lp, saved_lp);
         let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
         let (saved_start, saved_cur, saved_exit, saved_deopt, saved_ret) =
             (self.start, self.cur, self.exit, self.deopt_at, self.ret);
@@ -2608,7 +2704,7 @@ impl Gen<'_, '_> {
         self.start = 0;
         self.exit = end;
         self.deopt_at = Some(call);
-        self.ret = Some((res, after));
+        self.ret = Some((res, res_len, after));
         for pc in 0..len {
             let blk = self.block(pc);
             self.b.switch_to_block(blk);
@@ -2628,17 +2724,19 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(end);
         if self.states[len].is_some() {
             self.cur = len;
-            let (x, _) = self.reg(code.result);
-            self.b.def_var(res, x);
-            self.b.ins().jump(after, &[]);
+            self.return_to(code.result, res, res_len, after);
         } else {
             let d = self.deopt_block(len);
             self.b.ins().jump(d, &[]);
         }
         self.states = saved_states;
         self.v.reg = saved_reg;
+        self.v.range = saved_range;
         self.v.slot = saved_slot;
+        self.v.vec = saved_vec;
         self.v.flag = saved_flag;
+        self.v.dims = saved_dims;
+        self.v.lp = saved_lp;
         self.blocks = saved_blocks;
         self.start = saved_start;
         self.cur = saved_cur;
@@ -2647,7 +2745,21 @@ impl Gen<'_, '_> {
         self.ret = saved_ret;
         self.cur_defs = saved_defs;
         self.b.switch_to_block(after);
-        self.b.use_var(res)
+        (self.b.use_var(res), res_len.map(|l| self.b.use_var(l)))
+    }
+
+    /// Store register `src` as an inlined callee's result and continue after
+    /// the call.
+    fn return_to(&mut self, src: Reg, res: Variable, res_len: Option<Variable>, after: Block) {
+        if let Some(lv) = res_len {
+            let (p, l, _) = self.vreg(src);
+            self.b.def_var(res, p);
+            self.b.def_var(lv, l);
+        } else {
+            let (x, _) = self.reg(src);
+            self.b.def_var(res, x);
+        }
+        self.b.ins().jump(after, &[]);
     }
 
     /// The ops of a loop on its range and vector variables and registers,
@@ -2655,6 +2767,24 @@ impl Gen<'_, '_> {
     fn loop_op(&mut self, pc: usize, op: &Op) -> bool {
         let mf = MemFlagsData::trusted();
         match op {
+            Op::Colon { dst, a, b, .. } => {
+                let (x, y, z) = self.colon(*a, *b, pc);
+                self.set_range(*dst, x, y, z);
+                true
+            }
+            Op::Index { dst, slot, i, two: false, .. } if self.multi(i) => {
+                let (p, n) = self.index_vector(*slot, i, pc);
+                self.set_vreg(*dst, p, n);
+                true
+            }
+            Op::SetIndex { val, slot, i, two: false, .. } if self.multi(i) => {
+                self.set_index_vector(*slot, i, *val, pc);
+                true
+            }
+            Op::Call { dst, site, .. } if self.whole.is_none() => {
+                self.loop_call(pc, *dst, *site);
+                true
+            }
             Op::GetVar { dst, slot, .. } => {
                 if let Some((a, b2, c)) = self.v.lp.rslot.get(slot).copied() {
                     let (x, y, z) = (self.b.use_var(a), self.b.use_var(b2), self.b.use_var(c));
@@ -2740,6 +2870,290 @@ impl Gen<'_, '_> {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// `a:b` of scalar registers as a range (`vm::colon_range`: integer-valued
+    /// ends in range); leaves at `pc` otherwise.
+    fn colon(&mut self, a: Reg, b: Reg, pc: usize) -> (CValue, CValue, CValue) {
+        let (x, tx) = self.reg(a);
+        let (y, ty) = self.reg(b);
+        let x = self.to_f64(x, tx);
+        let y = self.to_f64(y, ty);
+        let ok_x = self.int_valued(x);
+        let ok_y = self.int_valued(y);
+        let ok = self.b.ins().band(ok_x, ok_y);
+        let bad = self.b.ins().bxor_imm_s(ok, 1);
+        self.deopt_if(bad, pc);
+        let xi = self.b.ins().fcvt_to_sint_sat(types::I64, x);
+        let yi = self.b.ins().fcvt_to_sint_sat(types::I64, y);
+        let up = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, xi, yi);
+        let one = self.b.ins().iconst(types::I64, 1);
+        let mone = self.b.ins().iconst(types::I64, -1);
+        let step = self.b.ins().select(up, one, mone);
+        let d = self.b.ins().isub(yi, xi);
+        let ad = self.b.ins().iabs(d);
+        let n = self.b.ins().iadd_imm_s(ad, 1);
+        (xi, step, n)
+    }
+
+    /// The elements an index selects: a range (start, step, length) or a
+    /// vector (pointer, length, type).
+    fn index_src(&mut self, i: &Leaf) -> IndexSrc {
+        let t = leaf_type(i, self.state(self.cur), &HashMap::new());
+        match i {
+            Leaf::Var(_, s) => {
+                if let Some((a, b2, c)) = self.v.lp.rslot.get(s).copied() {
+                    let (x, y, z) = (self.b.use_var(a), self.b.use_var(b2), self.b.use_var(c));
+                    return IndexSrc::Range(x, y, z);
+                }
+                let (pv, lv, t) = self.v.vec[s];
+                IndexSrc::Vec(self.b.use_var(pv), self.b.use_var(lv), t)
+            }
+            Leaf::R(r) if t == Some(JType::Range) => {
+                let (x, y, z) = self.range_reg(*r);
+                IndexSrc::Range(x, y, z)
+            }
+            Leaf::R(r) => {
+                let (p, l, t) = self.vreg(*r);
+                IndexSrc::Vec(p, l, t)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Whether every element of a range index is in `1..=len`.
+    fn range_in(&mut self, start: CValue, step: CValue, n: CValue, len: CValue) -> CValue {
+        let n1 = self.b.ins().iadd_imm_s(n, -1);
+        let span = self.b.ins().imul(n1, step);
+        let last = self.b.ins().iadd(start, span);
+        let mut ok = self.b.ins().icmp_imm_s(IntCC::Equal, n, 0);
+        let mut all = None;
+        for e in [start, last] {
+            let ge = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, e, 1);
+            let le = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, e, len);
+            let both = self.b.ins().band(ge, le);
+            all = Some(match all {
+                None => both,
+                Some(a) => self.b.ins().band(a, both),
+            });
+        }
+        ok = self.b.ins().bor(ok, all.unwrap());
+        ok
+    }
+
+    /// The 0-based position element `k` of an index selects in a vector of
+    /// length `len` (leaving at `pc` for one native code does not take).
+    fn src_elem(&mut self, src: &IndexSrc, k: CValue, len: CValue, pc: usize) -> CValue {
+        match *src {
+            IndexSrc::Range(start, step, _) => {
+                let off = self.b.ins().imul(k, step);
+                let e = self.b.ins().iadd(start, off);
+                self.b.ins().iadd_imm_s(e, -1)
+            }
+            IndexSrc::Vec(p, _, t) => {
+                let (sz, ty, et) = if t == JType::VecD { (8, types::F64, JType::D) } else { (4, types::I32, JType::I) };
+                let off = self.b.ins().imul_imm_s(k, sz);
+                let a = self.b.ins().iadd(p, off);
+                let x = self.b.ins().load(ty, MemFlagsData::trusted(), a, 0);
+                self.index((x, et), len, pc)
+            }
+        }
+    }
+
+    /// Emit `for k in 0..n { body(k) }`.
+    fn each(&mut self, n: CValue, mut body: impl FnMut(&mut Self, CValue)) {
+        let head = self.b.create_block();
+        let blk = self.b.create_block();
+        let out = self.b.create_block();
+        self.b.append_block_param(head, types::I64);
+        let z = self.b.ins().iconst(types::I64, 0);
+        self.b.ins().jump(head, &[z.into()]);
+        self.b.switch_to_block(head);
+        let k = self.b.block_params(head)[0];
+        let fin = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, k, n);
+        self.b.ins().brif(fin, out, &[], blk, &[]);
+        self.b.switch_to_block(blk);
+        body(self, k);
+        let k1 = self.b.ins().iadd_imm_s(k, 1);
+        self.b.ins().jump(head, &[k1.into()]);
+        self.b.switch_to_block(out);
+    }
+
+    /// A buffer for `n` elements of a new temporary vector of type `t`.
+    fn temp(&mut self, t: JType, n: CValue) -> CValue {
+        let lp = self.lp.as_mut().unwrap();
+        let k = lp.nvecs + lp.temps.len();
+        lp.temps.push(t);
+        let (vecs, ctx) = (lp.vecs, lp.ctx);
+        let view = self.b.ins().iadd_imm_s(vecs, (k * std::mem::size_of::<VecView>()) as i64);
+        let cap = self.b.ins().load(types::I64, MemFlagsData::trusted(), view, 16);
+        let small = self.b.ins().icmp(IntCC::SignedGreaterThan, n, cap);
+        let grow = self.b.create_block();
+        let go = self.b.create_block();
+        self.b.set_cold_block(grow);
+        self.b.ins().brif(small, grow, &[], go, &[]);
+        self.b.switch_to_block(grow);
+        self.call("robigo_reserve", &[ctx, view, n]);
+        self.b.ins().jump(go, &[]);
+        self.b.switch_to_block(go);
+        self.b.ins().load(types::I64, MemFlagsData::trusted(), view, 0)
+    }
+
+    /// `x[i]` for a vector variable `x` and an index selecting several
+    /// elements: a new temporary vector (pointer, length).
+    fn index_vector(&mut self, x: Slot, i: &Leaf, pc: usize) -> (CValue, CValue) {
+        let (pv, lv, xt) = self.v.vec[&x];
+        let (xp, xl) = (self.b.use_var(pv), self.b.use_var(lv));
+        let src = self.index_src(i);
+        let n = match src {
+            IndexSrc::Range(start, step, n) => {
+                let ok = self.range_in(start, step, n, xl);
+                let bad = self.b.ins().bxor_imm_s(ok, 1);
+                self.deopt_if(bad, pc);
+                n
+            }
+            IndexSrc::Vec(_, l, _) => l,
+        };
+        let tp = self.temp(xt, n);
+        let (sz, ty) = if xt == JType::VecD { (8, types::I64) } else { (4, types::I32) };
+        self.each(n, |g, k| {
+            let e = g.src_elem(&src, k, xl, pc);
+            let off = g.b.ins().imul_imm_s(e, sz);
+            let a = g.b.ins().iadd(xp, off);
+            let v = g.b.ins().load(ty, MemFlagsData::trusted(), a, 0);
+            let off = g.b.ins().imul_imm_s(k, sz);
+            let d = g.b.ins().iadd(tp, off);
+            g.b.ins().store(MemFlagsData::trusted(), v, d, 0);
+        });
+        (tp, n)
+    }
+
+    /// `x[i] <- val` for an index selecting several elements, all in range
+    /// (checked before anything is written), and a scalar or a vector of as
+    /// many elements that is not `x` itself.
+    fn set_index_vector(&mut self, x: Slot, i: &Leaf, val: Reg, pc: usize) {
+        let (pv, lv, xt) = self.v.vec[&x];
+        let (xp, xl) = (self.b.use_var(pv), self.b.use_var(lv));
+        let src = self.index_src(i);
+        let vt = self.state(self.cur)[val as usize].unwrap();
+        let n = match src {
+            IndexSrc::Range(_, _, n) | IndexSrc::Vec(_, n, _) => n,
+        };
+        let value = if vt.is_vector() {
+            let (vp, vl, _) = self.vreg(val);
+            let ne = self.b.ins().icmp(IntCC::NotEqual, vl, n);
+            self.deopt_if(ne, pc);
+            let same = self.b.ins().icmp(IntCC::Equal, vp, xp);
+            self.deopt_if(same, pc);
+            Err(vp)
+        } else {
+            Ok(self.reg(val))
+        };
+        match src {
+            IndexSrc::Range(start, step, n) => {
+                let ok = self.range_in(start, step, n, xl);
+                let bad = self.b.ins().bxor_imm_s(ok, 1);
+                self.deopt_if(bad, pc);
+            }
+            IndexSrc::Vec(ip, ..) => {
+                // (`x[x] <- v`: writing would change the indices still to come.)
+                let same = self.b.ins().icmp(IntCC::Equal, ip, xp);
+                self.deopt_if(same, pc);
+                self.each(n, |g, k| {
+                    g.src_elem(&src, k, xl, pc);
+                })
+            }
+        }
+        let dsz = if xt == JType::VecD { 8 } else { 4 };
+        self.each(n, |g, k| {
+            let e = g.src_elem(&src, k, xl, pc);
+            let (x, t) = match value {
+                Ok(s) => s,
+                Err(vp) => {
+                    let (sz, ty, et) =
+                        if vt == JType::VecD { (8, types::F64, JType::D) } else { (4, types::I32, JType::I) };
+                    let off = g.b.ins().imul_imm_s(k, sz);
+                    let a = g.b.ins().iadd(vp, off);
+                    (g.b.ins().load(ty, MemFlagsData::trusted(), a, 0), et)
+                }
+            };
+            let x = if xt == JType::VecD { g.to_f64(x, t) } else { x };
+            let off = g.b.ins().imul_imm_s(e, dsz);
+            let d = g.b.ins().iadd(xp, off);
+            g.b.ins().store(MemFlagsData::trusted(), x, d, 0);
+        });
+    }
+
+    /// A call of a closure run inline, with its arguments evaluated here.
+    fn loop_call(&mut self, pc: usize, dst: Reg, site: u32) {
+        let ic = &self.inl.calls[&site];
+        let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
+        let st = self.state(self.cur).clone();
+        let mut args = Vec::new();
+        for a in &arg_list {
+            args.push(match a {
+                CallArg::Leaf(Leaf::Var(_, s)) if self.v.vec.contains_key(s) => {
+                    let (pv, lv, t) = self.v.vec[s];
+                    (self.b.use_var(pv), Some(self.b.use_var(lv)), t)
+                }
+                CallArg::Leaf(l) => {
+                    let (x, t) = self.leaf(l);
+                    (x, None, t)
+                }
+                CallArg::Arith(op, x, y) => {
+                    let (x, y) = (self.leaf(x), self.leaf(y));
+                    let t = arith_type(*op, x.1, y.1).unwrap();
+                    (self.arith(*op, x, y, pc), None, t)
+                }
+                // (`vm::inline_call` makes none: closure trees only.)
+                CallArg::Nested(_) => {
+                    let (x, t) = self.call_arg(0, a, pc);
+                    (x, None, t)
+                }
+                CallArg::Index(x, i, false)
+                    if vector_index(leaf_type(i, &st, &HashMap::new()).or_else(|| self.leaf_kind(i))) =>
+                {
+                    let (p, n) = self.index_vector(*x, i, pc);
+                    (p, Some(n), self.v.vec[x].2)
+                }
+                CallArg::Index(x, i, _) => {
+                    let (pv, lv, t) = self.v.vec[x];
+                    let iv = self.leaf(i);
+                    let len = self.b.use_var(lv);
+                    let k = self.index(iv, len, pc);
+                    let p = self.b.use_var(pv);
+                    let (sz, ty, et) =
+                        if t == JType::VecD { (8, types::F64, JType::D) } else { (4, types::I32, JType::I) };
+                    let off = self.b.ins().imul_imm_s(k, sz);
+                    let a = self.b.ins().iadd(p, off);
+                    (self.b.ins().load(ty, MemFlagsData::trusted(), a, 0), None, et)
+                }
+            });
+        }
+        let ct = self.inl.callee(site, args.iter().map(|a| a.2).collect()).unwrap();
+        let (v, n) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+        match n {
+            Some(n) => self.set_vreg(dst, v, n),
+            None => self.set_reg(dst, v),
+        }
+    }
+
+    /// Whether index `i` selects several elements.
+    fn multi(&self, i: &Leaf) -> bool {
+        match i {
+            Leaf::R(r) => vector_index(self.state(self.cur)[*r as usize]),
+            Leaf::Var(..) => self.leaf_kind(i).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The type of a variable leaf from the loop's variables (range, vector).
+    fn leaf_kind(&self, i: &Leaf) -> Option<JType> {
+        match i {
+            Leaf::Var(_, s) if self.v.lp.rslot.contains_key(s) => Some(JType::Range),
+            Leaf::Var(_, s) => self.v.vec.get(s).map(|v| v.2),
+            _ => None,
         }
     }
 
@@ -2861,7 +3275,7 @@ fn codegen(
     lay: &Layout,
     deopt_regs: &mut HashMap<u32, Vec<(Reg, JType)>>,
     inl: &Inl,
-) -> Result<LoopFn, Reject> {
+) -> Result<(LoopFn, Vec<JType>), Reject> {
     let (slots, slot_ty, states, reg_idx, live) = (lay.slots, lay.slot_ty, lay.states, lay.reg_idx, lay.live);
     MODULE.with(|m| {
         let mut m = m.borrow_mut();
@@ -2884,6 +3298,7 @@ fn codegen(
             helper_ids.push((name, id));
         }
         let mut fbc = FunctionBuilderContext::new();
+        let temps;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
             let mut helpers = HashMap::new();
@@ -3059,6 +3474,8 @@ fn codegen(
                     counter: lay.counter,
                     vis: lay.vis,
                     vis_at: lay.vis_at,
+                    nvecs: slots.iter().filter(|s| s.ty.is_vector()).count(),
+                    temps: Vec::new(),
                 }),
             };
             for pc in r.start..r.end {
@@ -3090,6 +3507,7 @@ fn codegen(
                 let p = g.b.ins().iconst(types::I32, pc as i64);
                 g.b.ins().return_(&[p]);
             }
+            temps = std::mem::take(&mut g.lp.as_mut().unwrap().temps);
             g.b.seal_all_blocks();
             g.b.finalize(tcfg);
         }
@@ -3111,6 +3529,6 @@ fn codegen(
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         let f = module.get_finalized_function(id);
         // SAFETY: the function was built with the `LoopFn` signature.
-        Ok(unsafe { std::mem::transmute::<*const u8, LoopFn>(f) })
+        Ok((unsafe { std::mem::transmute::<*const u8, LoopFn>(f) }, temps))
     })
 }

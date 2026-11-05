@@ -83,3 +83,48 @@ robigo/fannkuch 0.05.
 - Next: `fannkuchredux` itself needs `:` in native code, indexing with ranges
   and vectors, range assignment, and inlining `rev.default` with a vector
   argument.
+
+## 2026-11-04: round 2, ranges, vector indexing and `rev.default` in native loops
+
+- Why: `fannkuchredux` (23.9 ms peak; FastR 0.49, Ř 3.9, GNU R 11.8) flips with
+  `perm[k_range] <- rev.default(perm[k_range])` and rotates with
+  `perm1[1:r] <- perm1[2:(r + 1L)]` and `perm1[one_two] <- perm1[two_one]`. Its
+  loop was rejected at the first `:`, and the VM ran each flip through the
+  interpreter (the promise `perm[k_range]`, the complex assignment).
+- Change (`jit.rs`, `vm::inline_call`), loop tier, stacked on round 1:
+  - `a:b` of scalars is a range register (`vm::colon_range`'s conditions).
+  - `x[i]` with a range or a plain vector `i` is a *temporary* vector: a buffer
+    of the run's `LoopCtx` per op that computes one, reused across iterations
+    (a register is redefined before its op runs again). Every index is checked
+    (in range, not NA, not below 1; a fraction truncates) or native code leaves.
+  - `x[i] <- v` with such an index and a scalar or a vector of as many
+    elements: all indices are checked before anything is written (an NA index
+    is an error in R and must leave `x` untouched), `v` must not view `x`
+    itself (`x[3:1] <- x`), and the target is never grown.
+  - Closures run inline take vectors: arguments `x[i]`/`x[a:b]` are evaluated
+    by native code where it has them (and `[` must be base's), bodies may use
+    `length`, `:`, `x[i]` and numeric conditions and return vectors. A closure
+    the VM's inline path does not take for those ops (`rev.default`) is
+    analysed for native code only (`native_inline`), so the VM pays nothing.
+  - `length()`/`is.null()` in loops.
+- Result: `fannkuchredux` peak 23.9 ms -> **0.371 ms** (FastR 0.488, Ř 3.87,
+  GNU R 11.8), shot 59 -> 38 ms; `robigo/fannkuch` 50 -> 32.5 ms. Instruction
+  gate against main bf7332ee: 3 faster (`fannkuchredux` -46.7%,
+  `robigo/fannkuch` -27.0%, `fannkuchredux_naive` -7.5%, startup included), 0
+  slower, worst +0.33% (`robigo/nbody`).
+- Verified: `tests/r/jit/loop-vector-index.R` (range and vector reads with
+  every index native code leaves for, assignments with ranges, vectors and
+  scalars, the fannkuch rotation, `x[3:1] <- x`, mismatched lengths, NA
+  indices leaving `x` unchanged, growth, a value of another type, range
+  variables, `rev.default` and user closures with vector arguments and
+  results, rebound `rev.default` and `[`), byte-identical in all tiers.
+- Found by an adversarial review (a subagent with a random program
+  generator, ~11,400 programs over 60 templates, both tiers): `x[x] <- v`
+  re-read its indices from `x` while writing `x`; native code now leaves when
+  the index vector is the target's storage (test case added). Also a gap in
+  every tier, not a native one: `tests/r/basics/return-assign-visible.R`
+  (GNU R's compiled `return(s <- v)` is visible).
+- Found: the first version of the round-1 test called each function once, and
+  small closures are only compiled at their second call (GNU R's JIT
+  heuristic), so most of its loops ran in the interpreter: tests now call
+  twice and the trace (`ROBIGO_JIT_TRACE=1`) was checked for each loop.
