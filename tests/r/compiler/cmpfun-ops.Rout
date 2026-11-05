@@ -1,0 +1,10 @@
+[1] "Ops.a +"
+[1] "Ops.a =="
+[1] "Ops.a *"
+[1] "Ops.a -"
+[1] 4
+attr(,"class")
+[1] "a"
+[1] "Ops.c >"
+[1] TRUE
+[1] TRUE

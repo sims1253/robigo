@@ -304,7 +304,6 @@ fn only_stored(v: &Value) -> bool {
     match v {
         Value::Env(e) => Rc::strong_count(&e.0) == 1,
         Value::Closure(x) => Rc::strong_count(x) == 1,
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(x) => Rc::strong_count(x) == 1,
         Value::Promise(x) => Rc::strong_count(x) == 1,
         Value::ExtPtr(x) => Rc::strong_count(x) == 1,
@@ -490,7 +489,6 @@ fn identity(v: &Value) -> Option<(usize, u8)> {
     Some(match v {
         Value::Env(e) => (Rc::as_ptr(&e.0) as *const u8 as usize, ENVSXP),
         Value::Closure(c) => (Rc::as_ptr(c) as *const u8 as usize, CLOSXP),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(b) => (Rc::as_ptr(b) as *const u8 as usize, BCODESXP),
         Value::Promise(p) => (Rc::as_ptr(p) as *const u8 as usize, PROMSXP),
         Value::Builtin(b) => (
@@ -530,7 +528,6 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // "type")
     let attrs = match v {
         Value::Closure(_) => v.attrs().cloned(),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => v.attrs().cloned(),
         Value::Env(_) | Value::ExtPtr(_) => v.ref_attrs(),
         _ => None,
@@ -869,7 +866,6 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 let held = match value {
                     Value::Env(e) => Rc::strong_count(&e.0) > 1,
                     Value::Closure(f) => Rc::strong_count(f) > 1,
-                    #[cfg(feature = "bytecode-fidelity")]
                     Value::Bytecode(b) => Rc::strong_count(b) > 1,
                     Value::ExtPtr(p) => Rc::strong_count(p) > 1,
                     _ => false,
@@ -1167,7 +1163,6 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return args_list(d, DOTSXP);
         }
         Value::Obj(_) => core().alloc_node(OBJSXP, R_NilValue, R_NilValue, R_NilValue),
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => return proxy(v),
         Value::Env(_) | Value::Closure(_) | Value::Promise(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             return proxy(v);
@@ -1902,9 +1897,7 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
             to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
         }
         (Value::Closure(c), 1) => to_sexp(&c.body),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 0) => to_sexp(b.code()),
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
         (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
         (Value::Promise(p), 0) => match p.value() {
@@ -1966,24 +1959,13 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         }
         (Value::Closure(c), 1) => {
             let p = Rc::as_ptr(c).cast_mut();
+            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y));
+            retire(&raw mut (*p).body, body);
             #[cfg(feature = "bytecode-fidelity")]
-            match from_sexp(y) {
-                Value::Bytecode(b) => {
-                    retire(&raw mut (*p).body, b.expression.clone());
-                    retire(&raw mut (*p).gnu_bytecode, Some(b));
-                    (*p).jit = robigo_runtime::vm::JitState::from_bytecode();
-                }
-                val => {
-                    retire(&raw mut (*p).body, val);
-                    retire(&raw mut (*p).gnu_bytecode, None);
-                    (*p).jit = Default::default();
-                }
-            }
+            retire(&raw mut (*p).gnu_bytecode, code);
             #[cfg(not(feature = "bytecode-fidelity"))]
-            {
-                retire(&raw mut (*p).body, from_sexp(y));
-                (*p).jit = Default::default();
-            }
+            drop(code);
+            (*p).jit = jit;
             retire_code(p);
         }
         (Value::Closure(c), 2) => {
@@ -2451,7 +2433,6 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
         }
-        #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(rc) if !attrs_agreed(x) => {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);

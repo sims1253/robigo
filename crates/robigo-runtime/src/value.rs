@@ -13,7 +13,6 @@
 //! * Environments are reference objects (`Rc<EnvData>` with interior
 //!   mutability). Closure/environment cycles are not collected yet.
 
-#[cfg(feature = "bytecode-fidelity")]
 use std::cell::OnceCell;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -784,7 +783,6 @@ pub enum Value {
     /// An `OBJSXP` (S4 object without a data part, `typeof` "S4" or
     /// "object"): nothing but attributes.
     Obj(Rc<Obj>),
-    #[cfg(feature = "bytecode-fidelity")]
     Bytecode(Rc<Bytecode>),
 }
 
@@ -793,7 +791,6 @@ pub enum Value {
 /// Constants retain the ReadBC stream's cell definitions and references because
 /// flattened Lang/Pairlist values cannot express shared CDR cells.
 #[derive(Clone)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct Bytecode {
     pub attrs: AttrBox,
     pub code: OnceCell<Value>,
@@ -805,7 +802,18 @@ pub struct Bytecode {
     pub rep_values: Rc<OnceCell<Vec<Value>>>,
 }
 
-#[cfg(feature = "bytecode-fidelity")]
+/// The body, GNU code object and JIT mark of a closure whose body is `v`:
+/// a code object (mkCode's) becomes its source, the first constant, marked
+/// as bytecode for robigo's VM to compile, as bcClose makes it; anything
+/// else is the body as it is. Only the bytecode-fidelity build keeps the
+/// code object (`Closure::gnu_bytecode`).
+pub fn closure_body(v: Value) -> (Value, Option<Rc<Bytecode>>, crate::vm::JitState) {
+    match v {
+        Value::Bytecode(b) => (b.expression.clone(), Some(b), crate::vm::JitState::from_bytecode()),
+        v => (v, None, Default::default()),
+    }
+}
+
 impl Bytecode {
     pub fn code(&self) -> &Value {
         self.code.get_or_init(|| crate::serialize::materialize_bytecode_code(self))
@@ -819,7 +827,6 @@ impl Bytecode {
 // Keep copying the cold BCODESXP metadata out of ordinary attribute updates.
 #[cold]
 #[inline(never)]
-#[cfg(feature = "bytecode-fidelity")]
 fn bytecode_attrs_slot(b: &mut Rc<Bytecode>) -> &mut AttrBox {
     &mut Rc::make_mut(b).attrs
 }
@@ -827,7 +834,6 @@ fn bytecode_attrs_slot(b: &mut Rc<Bytecode>) -> &mut AttrBox {
 /// Cell operations are packed separately from their R objects. Integer
 /// records have no destructor; objects are visited only once on drop.
 #[derive(Clone, Default)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct BytecodeCells {
     pub operations: BytecodeSpan,
     pub operation_len: usize,
@@ -839,19 +845,16 @@ pub struct BytecodeCells {
 }
 
 #[derive(Clone, Copy, Default)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct BytecodeSpan {
     pub chunk: usize,
     pub offset: usize,
 }
 
 #[derive(Clone)]
-#[cfg(feature = "bytecode-fidelity")]
 pub enum BytecodeInstructions {
     Encoded { span: BytecodeSpan, words: usize, version: i32, mismatch: bool },
     Decoded(Value),
 }
-#[cfg(feature = "bytecode-fidelity")]
 impl BytecodeInstructions {
     pub fn len(&self) -> usize {
         match self {
@@ -869,7 +872,6 @@ impl BytecodeInstructions {
 }
 
 #[derive(Clone)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct BytecodeEncodedVector {
     pub flags: u32,
     pub span: BytecodeSpan,
@@ -880,11 +882,9 @@ pub struct BytecodeEncodedVector {
 /// Bounded byte chunks avoid both per-vector R allocations and repeated
 /// reallocations of a large contiguous metadata buffer.
 #[derive(Default)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct BytecodeBytes {
     pub chunks: Vec<Vec<u8>>,
 }
-#[cfg(feature = "bytecode-fidelity")]
 impl BytecodeBytes {
     pub fn append(&mut self, bytes: &[u8]) -> BytecodeSpan {
         if self.chunks.last().is_none_or(|c| c.capacity() - c.len() < bytes.len()) {
@@ -900,11 +900,9 @@ impl BytecodeBytes {
 /// The replay log owns no R objects. Small chunks keep its backing allocation
 /// separate from the short-lived per-code builders and their unused capacity.
 #[derive(Default)]
-#[cfg(feature = "bytecode-fidelity")]
 pub struct BytecodeWords {
     pub chunks: Vec<Vec<i64>>,
 }
-#[cfg(feature = "bytecode-fidelity")]
 impl BytecodeWords {
     pub fn append(&mut self, words: &[i64]) -> BytecodeSpan {
         if self.chunks.last().is_none_or(|c| c.capacity() - c.len() < words.len()) {
@@ -917,7 +915,6 @@ impl BytecodeWords {
     }
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 impl BytecodeCells {
     pub fn record(operations: &mut Vec<i64>, value: i64) {
         operations.push(value);
@@ -1441,7 +1438,6 @@ impl Value {
             Value::Pairlist(_) => "pairlist",
             Value::Lang(_) => "language",
             Value::Closure(_) => "closure",
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(_) => "bytecode",
             Value::Builtin(b) => match b.kind {
                 BuiltinKind::Builtin => "builtin",
@@ -1498,12 +1494,23 @@ impl Value {
             Value::Pairlist(p) => &p.attrs,
             Value::Lang(l) => &l.attrs,
             Value::Closure(c) => &c.attrs,
-            #[cfg(feature = "bytecode-fidelity")]
-            Value::Bytecode(b) => &b.attrs,
             Value::Obj(o) => &o.attrs,
+            // out of line, so the hot match is what it is without code
+            // objects (perf gate: dim_view, get_attr); every other value
+            // has none, without a call
+            Value::Bytecode(_) => return self.attrs_cold(),
             _ => return None,
         };
         b.as_deref()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attrs_cold(&self) -> Option<&Attrs> {
+        match self {
+            Value::Bytecode(b) => b.attrs.as_deref(),
+            _ => None,
+        }
     }
 
     /// Attributes of environments and external pointers live behind a
@@ -1546,11 +1553,19 @@ impl Value {
             Value::Pairlist(p) => &mut Rc::make_mut(p).attrs,
             Value::Lang(l) => &mut Rc::make_mut(l).attrs,
             Value::Closure(c) => &mut Rc::make_mut(c).attrs,
-            #[cfg(feature = "bytecode-fidelity")]
-            Value::Bytecode(b) => bytecode_attrs_slot(b),
             Value::Obj(o) => &mut Rc::make_mut(o).attrs,
+            Value::Bytecode(_) => return self.attrs_slot_mut_cold(),
             _ => return None,
         })
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attrs_slot_mut_cold(&mut self) -> Option<&mut AttrBox> {
+        match self {
+            Value::Bytecode(b) => Some(bytecode_attrs_slot(b)),
+            _ => None,
+        }
     }
 
     /// GNU R's `IS_S4_OBJECT`.
@@ -1738,7 +1753,6 @@ impl Value {
             (Value::Sym(a), Value::Sym(b)) => a == b,
             (Value::Env(a), Value::Env(b)) => a.ptr_eq(b),
             (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
-            #[cfg(feature = "bytecode-fidelity")]
             (Value::Bytecode(a), Value::Bytecode(b)) => Rc::ptr_eq(a, b),
             (Value::Builtin(a), Value::Builtin(b)) => std::ptr::eq(*a, *b),
             (Value::Lang(a), Value::Lang(b)) => Rc::ptr_eq(a, b),
@@ -2157,6 +2171,11 @@ mod shared_pairlist_tests {
         assert_eq!(int(&elt(&call_replacement, 1)), 2);
     }
 }
+
+// `Value::Bytecode` is in every build (council round 6, #370) on the
+// condition that a value stays two words: checked at compile time, so no
+// build can break it.
+const _: () = assert!(std::mem::size_of::<Value>() == 2 * std::mem::size_of::<usize>());
 
 #[cfg(test)]
 mod forced_fun_tests {
