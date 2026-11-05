@@ -810,7 +810,6 @@ impl Clone for Value {
             Value::Dots(r) => std::mem::forget(Rc::clone(r)),
             Value::ExtPtr(r) => std::mem::forget(Rc::clone(r)),
             Value::Obj(r) => std::mem::forget(Rc::clone(r)),
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(r) => std::mem::forget(Rc::clone(r)),
         }
         // SAFETY: the reference count of the payload, if it has one, was
