@@ -2690,10 +2690,26 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
         Z(Vec<Complex>),
         R(Vec<u8>),
         S(#[allow(dead_code)] Vec<CString>, Vec<*mut c_char>),
+        /// `.Fortran`'s character argument: one string, in a buffer of at
+        /// least 256 bytes
+        F(Vec<u8>),
     }
+    let fortran = r.interface == Interface::Fortran;
     let mut bufs = Vec::with_capacity(args.len());
     for a in &args {
         bufs.push(match &a.value {
+            // R: dotcode.c:do_dotCode, STRSXP with Fort
+            Value::Str(v) if fortran => {
+                let ss = v.data.first().map(|s| s.as_deref().unwrap_or("NA")).unwrap_or("");
+                if v.data.len() > 1 {
+                    interp.warning("only the first string in a char vector used in .Fortran")?;
+                } else {
+                    interp.warning("passing a char vector to .Fortran is not portable")?;
+                }
+                let mut b = vec![0u8; ss.len().max(255) + 1];
+                b[..ss.len()].copy_from_slice(ss.as_bytes());
+                Buf::F(b)
+            }
             Value::Lgl(v) | Value::Int(v) => Buf::I(v.data.clone()),
             Value::Real(v) => Buf::D(v.data.clone()),
             Value::Cplx(v) => Buf::Z(v.data.clone()),
@@ -2720,6 +2736,7 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
             Buf::Z(v) => v.as_mut_ptr() as *mut c_void,
             Buf::R(v) => v.as_mut_ptr() as *mut c_void,
             Buf::S(_, p) => p.as_mut_ptr() as *mut c_void,
+            Buf::F(b) => b.as_mut_ptr() as *mut c_void,
         })
         .collect();
     publish(interp);
@@ -2737,6 +2754,11 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
                 (Buf::D(d), _) => Value::Real(Rc::new(Vector::new(d))),
                 (Buf::Z(d), _) => Value::Cplx(Rc::new(Vector::new(d))),
                 (Buf::R(d), _) => Value::Raw(Rc::new(Vector::new(d))),
+                // only return one string: warned on the R -> Fortran step
+                (Buf::F(b), _) => {
+                    let end = b.iter().take(255).position(|&c| c == 0).unwrap_or(255.min(b.len()));
+                    Value::Str(Rc::new(Vector::new(vec![Some(RString::from_bytes(&b[..end], Encoding::Native))])))
+                }
                 (Buf::S(_, p), _) => Value::Str(Rc::new(Vector::new(
                     p.iter()
                         .map(|&q| Some(RString::from_bytes(CStr::from_ptr(q).to_bytes(), Encoding::Native)))
