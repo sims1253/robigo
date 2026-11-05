@@ -499,16 +499,19 @@ fn do_commentgets(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
     set_attrib(x, s::COMMENT, v)
 }
 
-fn do_short_row_names(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_short_row_names(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = arg(&args, 0);
     let t = crate::coerce::as_integer(&arg(&args, 1));
     if !(0..=2).contains(&t) {
         return Err(Flow::error("invalid 'type' argument"));
     }
     let s0 = x.get_attr(s::ROW_NAMES).unwrap_or(Value::Null);
+    // type 0 hands back the attribute unread; the others read its length
+    // (LENGTH: a deferred package ALTREP value is read, crate::altrep)
     if t == 0 {
         return Ok(s0);
     }
+    let s0 = crate::altrep::forced(i, s0)?;
     let n = match &s0 {
         Value::Int(iv) if iv.data.len() == 2 && iv.data[0] == NA_INTEGER => iv.data[1],
         Value::Null => 0,

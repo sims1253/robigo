@@ -767,6 +767,7 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     if x.is_null() {
         return Ok(x);
     }
+    let x = crate::altrep::forced(interp, x)?;
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     let nsubs = subs.len();
     let is_lang = matches!(x, Value::Lang(_));
@@ -844,6 +845,7 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     let exact = extract_exact_arg(&mut args);
     let pok = if exact == -1 { -1 } else { (exact == 0) as i32 };
     let x = if args.is_empty() { Value::Null } else { std::mem::replace(&mut args[0].value, Value::Null) };
+    let x = crate::altrep::forced(interp, x)?;
     let subs: Vec<Value> = if args.is_empty() { vec![] } else { args.drain(1..).map(|a| a.value).collect() };
     let nsubs = subs.len();
     if nsubs == 0 {
@@ -976,6 +978,9 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 /// R's `R_subset3_dflt`: `x$name` with partial matching.
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
+    if let Some(f) = crate::altrep::force(interp, x)? {
+        return subset3_dflt(interp, &f, input, call);
+    }
     // R: subset.c:R_subset3_dflt — classes extending environment.
     if x.is_s4() && matches!(x, Value::Obj(_)) {
         let d = interp.get_s4_data_slot(x, None)?;

@@ -841,6 +841,10 @@ pub fn first_elt(v: &Value) -> Value {
 
 /// The condition of `if`/`while`: R's `asLogicalNoNA`.
 pub fn as_condition(interp: &mut Interp, v: &Value, call: &Value) -> RResult<bool> {
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(interp, v)? {
+        return as_condition(interp, &f, call);
+    }
     let len = v.len();
     // R: coerce.c:asLogicalNoNA reads an ALTREP scalar through its class
     // (LOGICAL_ELT; its scalar fast path skips ALTREP objects)

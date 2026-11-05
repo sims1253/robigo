@@ -1134,7 +1134,10 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
 /// complex — not raw, not NULL, not string) and length <= 1
 /// (R: logic.c:do_logic2, asLogical2 with checking).
 pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
-    let _ = i;
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(i, v)? {
+        return scalar_logical(i, call, &f, which, op);
+    }
     if !matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_)) {
         return Err(Flow::error_call(call.clone(), format!("invalid '{which}' type in 'x {op} y'")));
     }
@@ -1670,7 +1673,8 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // evalListKeepMissing: evaluate the arguments, expanding `...` and
     // keeping the missing markers (an explicit `x=` stays missing).
-    let ev = super::subset::eval_keep_missing(i, &args, env)?;
+    let mut ev = super::subset::eval_keep_missing(i, &args, env)?;
+    crate::altrep::force_all(i, &mut ev)?;
     let is_tag = |a: &Arg, names: &[&str]| a.tag.is_none_or(|t| names.contains(&&*t.name()));
     if ev.len() == 1 && is_tag(&ev[0], &["x"]) {
         let x = &ev[0].value;

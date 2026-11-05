@@ -106,7 +106,12 @@ fn implicit_type_class(v: &Value) -> &'static str {
         #[cfg(feature = "bytecode-fidelity")]
         Value::Bytecode(_) => "bytecode",
         Value::Dots(_) => "...",
-        Value::ExtPtr(_) => "externalptr",
+        // (a deferred package ALTREP value by its type: crate::altrep)
+        Value::ExtPtr(_) => match crate::altrep::deferred_type(v) {
+            Some(crate::value::VType::Str) => "character",
+            Some(crate::value::VType::List) => "list",
+            _ => "externalptr",
+        },
         // R: attrib.c:R_data_class (OBJSXP)
         Value::Obj(_) => {
             if v.is_s4() {

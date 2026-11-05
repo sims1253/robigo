@@ -48,6 +48,32 @@ pub fn take_restore() -> Option<Value> {
     RESTORE.with(|r| r.borrow_mut().take())
 }
 
+/// `x` and `y` with deferred package ALTREP values read (crate::altrep),
+/// but `y` when `keep_in_list` and `x` is a list, pairlist or environment,
+/// which store it as it is. On an error, `x` is handed back to stash.
+fn force_operands(
+    interp: &mut Interp,
+    x: Value,
+    y: Value,
+    keep_in_list: bool,
+) -> Result<(Value, Value), (Value, Flow)> {
+    if !crate::altrep::any_deferred() {
+        return Ok((x, y));
+    }
+    let x = match crate::altrep::force(interp, &x) {
+        Ok(f) => f.unwrap_or(x),
+        Err(f) => return Err((x, f)),
+    };
+    let keep = keep_in_list && matches!(x, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Env(_));
+    if keep {
+        return Ok((x, y));
+    }
+    match crate::altrep::force(interp, &y) {
+        Ok(f) => Ok((x, f.unwrap_or(y))),
+        Err(f) => Err((x, f)),
+    }
+}
+
 fn stash(x: Value) {
     RESTORE.with(|r| *r.borrow_mut() = Some(x));
 }
@@ -432,6 +458,16 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
     }
     let y = args.pop().unwrap().value;
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
+    // deferred package ALTREP operands are read (crate::altrep): `[<-`
+    // coerces the value to the target's type (subassign.c:SubassignN)
+    let (x0, y) = match force_operands(interp, x, y, false) {
+        Ok(xy) => xy,
+        Err((x0, f)) => {
+            stash(x0);
+            return Err(f);
+        }
+    };
+    x = x0;
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     match subassign_core(interp, call, &mut x, &subs, y) {
         Ok(()) => Ok(x),
@@ -823,6 +859,16 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
     }
     let y = args.pop().unwrap().value;
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
+    // `[[<-` stores the value into a list as it is (subassign.c:
+    // do_subassign2_dflt, SET_VECTOR_ELT); elsewhere it reads it
+    let (x0, y) = match force_operands(interp, x, y, true) {
+        Ok(xy) => xy,
+        Err((x0, f)) => {
+            stash(x0);
+            return Err(f);
+        }
+    };
+    x = x0;
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     let r = if x.is_null() {
         if y.is_null() {
@@ -1189,7 +1235,16 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
         Dispatched::Args(mut a) => {
             let nlist = sym.unwrap_or_else(|| Sym::new(char_of(&input)));
             let val = a.get_mut(2).map(|v| std::mem::replace(&mut v.value, Value::Null)).unwrap_or(Value::Null);
-            let mut x = std::mem::replace(&mut a[0].value, Value::Null);
+            let x = std::mem::replace(&mut a[0].value, Value::Null);
+            // the value is stored as it is (subassign.c:R_subassign3_dflt
+            // makes the target a list); a deferred target is read
+            let mut x = match crate::altrep::force(interp, &x) {
+                Ok(f) => f.unwrap_or(x),
+                Err(f) => {
+                    stash(x);
+                    return Err(f);
+                }
+            };
             // R: subassign.c:R_subassign3_dflt — an OBJSXP needs a data part.
             if let Value::Obj(_) = x {
                 if interp.get_s4_data_slot(&x, None)?.is_null() {

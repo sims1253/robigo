@@ -151,6 +151,131 @@ pub fn inspect(interp: &mut Interp, handle: usize, pre: i32, deep: i32, pvec: i3
     bridge()?.altrep_inspect(interp, handle, pre, deep, pvec)
 }
 
+// ---- deferred package ALTREP strings and lists (#468) -----------------
+//
+// A package ALTREP string or list vector whose data GNU R has not been
+// handed yet (`Dataptr_or_null` is NULL: vctrs' lazy character, vroom's
+// columns) reaches R unread, as a wrapper of the core object (an `ExtPtr`
+// the bridge makes): reading it would run the class's `Length`/`Elt`/
+// `Dataptr`, which GNU R calls only where R uses the contents. The wrapper
+// is forced, into #453's eager copy, where R uses its contents: before a
+// builtin body runs (`Interp::invoke_builtin`, which the interpreter, the
+// VM and `.Internal` all go through) and where the specials that read
+// their operands (`if`, `while`, `for`, `switch`, `&&`, `||`, `[`, `[[`,
+// `$`, the assignment forms, `rep`, `round`, `signif`, `log`) evaluate
+// them. The builtins GNU R runs without touching an operand's contents
+// keep it unread ([`may_stay_deferred`]).
+
+static ANY_DEFERRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a deferred value was ever made (one load on every builtin call).
+#[inline(always)]
+pub fn any_deferred() -> bool {
+    ANY_DEFERRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The bridge made a deferred value.
+pub fn note_deferred() {
+    ANY_DEFERRED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The type a deferred value has (`Str` or `List`), if `v` is one; its
+/// contents stay unread.
+#[inline]
+pub fn deferred_type(v: &Value) -> Option<crate::value::VType> {
+    if !any_deferred() || !matches!(v, Value::ExtPtr(_)) {
+        return None;
+    }
+    crate::native::bridge()?.deferred_type(v)
+}
+
+/// The contents of `v` if it is a deferred value (its class's methods run
+/// now, and can raise or run R code), else `None`.
+#[inline]
+pub fn force(interp: &mut Interp, v: &Value) -> RResult<Option<Value>> {
+    if !any_deferred() || !matches!(v, Value::ExtPtr(_)) {
+        return Ok(None);
+    }
+    bridge()?.force_deferred(interp, v)
+}
+
+/// `v`, forced if it is a deferred value.
+#[inline]
+pub fn forced(interp: &mut Interp, v: Value) -> RResult<Value> {
+    Ok(match force(interp, &v)? {
+        Some(f) => f,
+        None => v,
+    })
+}
+
+/// Force every deferred argument.
+pub fn force_all(interp: &mut Interp, args: &mut [crate::value::Arg]) -> RResult<()> {
+    if !any_deferred() {
+        return Ok(());
+    }
+    for a in args.iter_mut() {
+        if let Some(f) = force(interp, &a.value)? {
+            a.value = f;
+        }
+    }
+    Ok(())
+}
+
+/// Force the deferred arguments of builtin `b` but those GNU R's
+/// implementation of `b` never reads ([`may_stay_deferred`]).
+#[cold]
+#[inline(never)]
+pub fn force_builtin_args(
+    interp: &mut Interp,
+    b: &crate::value::Builtin,
+    args: &mut [crate::value::Arg],
+) -> RResult<()> {
+    for k in 0..args.len() {
+        if !matches!(args[k].value, Value::ExtPtr(_)) || may_stay_deferred(b, args, k) {
+            continue;
+        }
+        if let Some(f) = force(interp, &args[k].value)? {
+            args[k].value = f;
+        }
+    }
+    Ok(())
+}
+
+/// Whether builtin `b` uses argument `k` without its contents in GNU R,
+/// so that a deferred value there stays unread (council round 8):
+/// - `list` stores its arguments (builtin.c:do_makelist), `.Call` and
+///   `.External` hand them to C as they are (dotcode.c);
+/// - `typeof`, `is.character`, `is.list` read the type (coerce.c:do_typeof,
+///   do_is), `class`, `oldClass` and `inherits` the class attribute and
+///   the type (attrib.c:R_data_class2, objects.c:inherits3), `attributes`
+///   the attribute list (attrib.c:do_attributes);
+/// - `identical` of an object and itself is TRUE before anything is read
+///   (identical.c:R_compute_identical, `x == y`);
+/// - `attr<-` stores its value as it is, but for the attributes
+///   attrib.c:setAttrib checks or coerces (names, dim, dimnames, class,
+///   tsp, comment); row.names only check the type (row_names_gets).
+fn may_stay_deferred(b: &crate::value::Builtin, args: &[crate::value::Arg], k: usize) -> bool {
+    match b.name {
+        "list" | ".Call" | ".External" | ".External2" | ".Call.graphics" | ".External.graphics" => true,
+        "typeof" | "is.character" | "is.list" | "class" | "oldClass" | "inherits" | "attributes" => k == 0,
+        "identical" => {
+            k < 2
+                && args.len() >= 2
+                && matches!((&args[0].value, &args[1].value), (Value::ExtPtr(a), Value::ExtPtr(b)) if Rc::ptr_eq(a, b))
+        }
+        "attr<-" => {
+            k == 2
+                && args.get(1).is_some_and(|w| match &w.value {
+                    Value::Str(s) if s.data.len() == 1 => s.data[0]
+                        .as_deref()
+                        .is_some_and(|n| !matches!(n, "names" | "dim" | "dimnames" | "class" | "tsp" | "comment")),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}
+
 /// One of the summaries an ALTREP class can answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Summary {

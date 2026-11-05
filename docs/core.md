@@ -520,8 +520,39 @@ the value's weak count): an ordinary vector pays one load. Native JIT
 kernels never take a registered value. A modified copy is an ordinary
 vector, as GNU R's is, so R modifying it in place breaks the link
 (`Set_elt` and `Duplicate` are not called). Out of scope: true laziness
-(vroom, arrow: the data are read once at conversion) and string and list
-classes (read in full at conversion).
+for numeric classes (vroom, arrow: the data are read once at conversion).
+
+**Deferred package ALTREP strings and lists** (#468, council round 8). A
+package's string or list instance whose class has not handed out its
+data (`Dataptr_or_null` is NULL: vctrs' lazy character, vroom's columns)
+reaches R unread, as a wrapped core object whose payload is the original
+(`DeferredCore`): `to_sexp` gives back the original and `from_sexp` the
+same wrapper, so it goes through lists, attributes, closures and `.Call`
+without a `Length`, `Elt` or `Dataptr` call, as in GNU R (dplyr's #6525
+row names). It is *forced*, into the eager copy above, made then and
+behind `altrep_call`'s boundary (the class can raise or run R code), where
+R reads its contents:
+
+- before a builtin body runs (`Interp::invoke_builtin`, which the
+  interpreter, the VM and `.Internal` all go through), except for the
+  operands GNU R's implementation never reads: `list`, `.Call`/
+  `.External` transit, `typeof`, `is.character`, `is.list`, `class`,
+  `oldClass`, `inherits`, `attributes`, `identical(x, x)`, and `attr<-`'s
+  value for attributes `setAttrib` does not check
+  (`robigo_runtime::altrep::may_stay_deferred`, each cited from GNU R);
+- where the specials that read their operands evaluate them: `if`,
+  `while`, `for` (interpreter and VM), `switch`, `&&`, `||`, `[`, `[[`,
+  `$`, `rep`, `round`, `signif`, `log`, and the assignment forms, whose
+  stored value stays unread where GNU R stores it as it is (`[[<-` and
+  `$<-` into a list);
+- where robigo reads an attribute's or element's contents itself
+  (printing, `.row_names_info(x, 1:2)`).
+
+Known gap: forcing reads every element where GNU R's `length()` calls
+only `Length`; exact per-operation method calls come with G3.
+`ROBIGO_DEFER_TORTURE=1` defers every string or list vector a native
+routine returns, so that a missed forcing site shows as a difference in
+the capi corpus and the package suite.
 
 **`.Internal(inspect)`** prints GNU R's format line for line: the type,
 flags, `(len=, tl=)`, the preview, the recursion and the attributes,

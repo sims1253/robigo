@@ -1389,7 +1389,11 @@ fn colon_range(n1: f64, n2: f64) -> Option<(i64, i64, u64)> {
 
 /// An operand of `&&`/`||` as a logical(1).
 // R: logic.c:do_logic2, coerce.c:asLogical2
-fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
+fn andor_operand(interp: &mut Interp, v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(interp, v)? {
+        return andor_operand(interp, &f, and, is_y, call);
+    }
     let is_number = matches!(v, Value::Lgl(_) | Value::Real(_) | Value::Cplx(_))
         || (matches!(v, Value::Int(_)) && !v.inherits("factor"));
     if !is_number {
@@ -4420,7 +4424,7 @@ fn run_with(
                     None => {
                         flush!();
                         let v = regs[*a as usize].to_value();
-                        let r = andor_operand(&v, *and, *is_y, &code.consts[*call as usize]);
+                        let r = andor_operand(interp, &v, *and, *is_y, &code.consts[*call as usize]);
                         crate::coerce::as_logical(&tryop!(signal(interp, r.map(Value::lgl_raw))))
                     }
                 };
@@ -4596,6 +4600,13 @@ fn run_with(
                 if matches!(regs[*seq as usize], RVal::Range { .. }) {
                     regs[*seq as usize + 1] = RVal::I(0);
                     continue;
+                }
+                // a deferred package ALTREP sequence is read now (crate::altrep)
+                if crate::altrep::any_deferred() && matches!(regs[*seq as usize], RVal::V(Value::ExtPtr(_))) {
+                    flush!();
+                    let v = regs[*seq as usize].to_value();
+                    let r = crate::altrep::forced(interp, v);
+                    regs[*seq as usize] = RVal::V(tryop!(signal(interp, r)));
                 }
                 let v = match for_seq(&regs[*seq as usize], &code.consts[*call as usize]) {
                     Ok(v) => v,

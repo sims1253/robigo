@@ -755,7 +755,18 @@ impl Interp {
     }
 
     /// Call a builtin with already prepared arguments.
-    pub fn invoke_builtin(&mut self, b: &'static Builtin, call: &Value, argv: Vec<Arg>, env: &Env) -> RResult<Value> {
+    pub fn invoke_builtin(
+        &mut self,
+        b: &'static Builtin,
+        call: &Value,
+        mut argv: Vec<Arg>,
+        env: &Env,
+    ) -> RResult<Value> {
+        // a deferred package ALTREP value never reaches a builtin body
+        // unread, unless GNU R's never reads it (crate::altrep)
+        if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {
+            crate::altrep::force_builtin_args(self, b, &mut argv)?;
+        }
         if b.visibility != Visibility::Custom {
             self.visible = b.visibility == Visibility::On;
         }
