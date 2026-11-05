@@ -75,9 +75,15 @@ fi
 # (HAVE_PANGOCAIRO), with which grDevices makes Xlib, not cairo, png()'s
 # default type (bitmapType) as GNU R does: configure it again once they
 # are there.
+# The pkg-config packages present when the tree was configured are kept
+# in a stamp: a package that has appeared since, and whose feature the
+# tree lacks, calls for configure again. (configure's own test is
+# stricter than pkg-config's; once it has said no with the package
+# present, the stamp keeps every later build from configuring again.)
+stamp="$build/.robigo-configured-with"
 stale_feature() {
-    [ -f "$build/src/include/config.h" ] && ! grep -q "^#define $1" "$build/src/include/config.h" &&
-        pkg-config --exists "$2" 2> /dev/null
+    [ -f "$build/src/include/config.h" ] && ! grep -qE "^#define $1( |$)" "$build/src/include/config.h" &&
+        pkg-config --exists "$2" 2> /dev/null && ! grep -qx "$2" "$stamp" 2> /dev/null
 }
 if stale_feature HAVE_WORKING_CAIRO cairo || stale_feature HAVE_PANGOCAIRO pangocairo; then
     rm -f "$build/src/include/config.h"
@@ -90,6 +96,9 @@ if [ ! -f "$build/src/include/config.h" ]; then
         echo "build-natives: configuring the R sources failed (see $build/configure.log)" >&2
         exit 1
     }
+    for pkg in cairo pangocairo; do
+        if pkg-config --exists "$pkg" 2> /dev/null; then echo "$pkg"; fi
+    done > "$stamp"
 fi
 
 # a variable of GNU R's Makeconf (what `R CMD config` prints)
