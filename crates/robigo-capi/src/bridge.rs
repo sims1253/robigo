@@ -2275,8 +2275,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
         Value::Cplx(rc) => attrs(rc, x, originals),
         Value::Str(rc) => attrs(rc, x, originals),
         Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
-        // A proxy's attributes are copies made when it was created: only
-        // what the routine itself wrote comes back (see `agree_attrs`).
+        // A proxy's attributes are copies made when it was created: what
+        // the routine wrote to the attribute cells comes back (see
+        // `agree_attrs`); a routine writing into an attribute's value in
+        // place, without replacing the cells, is not seen (#167's twins
+        // close that).
         Value::Closure(rc) if !attrs_agreed(x) => {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
             agree_attrs(x);
