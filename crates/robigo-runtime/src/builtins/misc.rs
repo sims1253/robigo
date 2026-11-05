@@ -644,7 +644,20 @@ pub(crate) fn is_debugged(f: &Value) -> bool {
 
 /// robigo does not track allocations by R's cell classes; report NA rather
 /// than invented numbers.
-fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_gc(i: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: the finalizers it runs report getCurrentCall(), the expression
+    // gc()'s bytecode is at: `.Internal(gc(verbose, reset, full))`
+    let current = Value::lang(Value::sym(".Internal"), vec![Arg::pos(call.clone())]);
+    i.ccode_calls.push((i.frames.len(), current));
+    let r = r_gc(i);
+    i.ccode_calls.pop();
+    r?;
+    Ok(Value::reals(vec![NA_REAL; 14]))
+}
+
+/// R: memory.c:R_gc: a full collection and the finalizers it makes ready
+/// (`gc()`, and NextConnection when the connection table is full).
+pub fn r_gc(i: &mut Interp) -> RResult<()> {
     // Implementation caches are weak in R: they must not retain otherwise
     // unreachable environments through closure bodies or call-site memos.
     // the C API's heap collects, sweeps unreachable runtime cycles and runs
@@ -658,7 +671,8 @@ fn do_gc(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     if let Some(b) = crate::native::bridge() {
         b.gc(i);
     }
-    Ok(Value::reals(vec![NA_REAL; 14]))
+    // the connections whose conn_id died (conFinalizer)
+    crate::builtins::io::close_unused_connections(i)
 }
 
 thread_local! {

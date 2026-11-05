@@ -1,0 +1,14 @@
+Warning message:
+In .Internal(gc(verbose, reset, full)) :
+  closing unused connection 3 (autoclose-a.txt)
+Warning message:
+In .Internal(gc(verbose, reset, full)) :
+  closing unused connection 3 (autoclose-d.txt)
+Warning messages:
+1: In open.connection(file(nm, "w")) : connection is already open
+2: In open.connection(file(nm, "w")) : connection is already open
+Warning messages:
+1: In .Internal(gc(verbose, reset, full)) :
+  closing unused connection 4 (autoclose-f.txt)
+2: In .Internal(gc(verbose, reset, full)) :
+  closing unused connection 3 (autoclose-e.txt)

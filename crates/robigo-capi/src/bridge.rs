@@ -258,7 +258,7 @@ pub(crate) unsafe fn ready_for_c(interp: &mut Interp) {
     enter(interp, |i| ensure_ready(i));
 }
 
-fn take_flow(t: usize) -> Flow {
+pub(crate) fn take_flow(t: usize) -> Flow {
     FLOWS
         .with(|m| m.borrow_mut().remove(&t))
         .unwrap_or_else(|| Flow::error("robigo: a non-local exit from C code was lost"))
@@ -1984,12 +1984,15 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let e = from_sexp(expr);
         let rho = match env_of(env) {
             Ok(r) => r,
             Err(f) => return store_flow(f),
         };
-        match with_interp(|i| i.eval(&e, &rho)) {
+        let r = with_interp(|i| i.eval(&e, &rho));
+        crate::custom_conn::r_to_c();
+        match r {
             Ok(v) => {
                 *out = to_sexp(&v);
                 0
@@ -2007,6 +2010,7 @@ unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let r = if call.is_null() {
             with_interp(|i| i.warning(m))
@@ -2014,6 +2018,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
             let c = from_sexp(call);
             with_interp(|i| i.warningcall(&c, m))
         };
+        crate::custom_conn::r_to_c();
         match r {
             Ok(()) => 0,
             Err(f) => store_flow(f),
@@ -2027,6 +2032,7 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
     guarded(|| {
         drain_touched();
+        crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
         let f = match f {
@@ -2115,6 +2121,13 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // (lookups force promises and call active bindings, `internal` and
     // `applyBuiltin` run builtins that can dispatch to R code)
     drain_touched();
+    crate::custom_conn::c_to_r();
+    let r = op_run(name, a);
+    crate::custom_conn::r_to_c();
+    r
+}
+
+unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     Ok(match name {
         "envlength" => {
             let e = env_of(a[0])?;
@@ -2187,6 +2200,28 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "connClose" => {
             let n = int_arg(a[0]);
             with_interp(|i| robigo_runtime::builtins::io::conn_close(i, n))?;
+            R_NilValue
+        }
+        // R_new_custom_connection's uses of the connection table
+        // (main/robigo_connections.c, custom_conn.rs)
+        "nextConnection" => {
+            let n = with_interp(robigo_runtime::builtins::io::next_connection)?;
+            crate::list::Rf_ScalarInteger(n as c_int)
+        }
+        "installNativeConnection" => {
+            let n = int_arg(a[0]);
+            let con = crate::extptr::R_ExternalPtrAddr(a[1]) as *mut crate::connections::Rconn;
+            with_interp(|i| crate::custom_conn::install(i, n, con));
+            R_NilValue
+        }
+        "connectionWithId" => {
+            let id = crate::extptr::R_ExternalPtrAddr(a[0]) as usize;
+            let n = with_interp(|i| robigo_runtime::builtins::io::connection_with_id(i, id));
+            crate::list::Rf_ScalarInteger(n.unwrap_or(-1))
+        }
+        "conDestroy" => {
+            let n = int_arg(a[0]);
+            with_interp(|i| robigo_runtime::builtins::io::con_destroy(i, n))?;
             R_NilValue
         }
         "connGetc" => {
@@ -2396,13 +2431,19 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         // handlers are hidden until it returns
         "finalizerBegin" => {
             with_interp(|i| {
+                // R: errors.c:getCurrentCall: C code run here (a C
+                // finalizer) reports the expression that was being
+                // evaluated (R_getBCInterpreterExpression: gc()'s
+                // `.Internal(gc(...))`); R code run here has its own calls
+                let current = i.context_call();
+                let calls = if current.is_null() { Vec::new() } else { vec![(0, current)] };
                 let saved = FinalizerContext {
                     frames: std::mem::take(&mut i.frames),
                     srcrefs: (i.srcref.take(), std::mem::take(&mut i.srcref_saved)),
                     handlers: i.handlers.take(),
                     global_handlers: i.global_handlers.take(),
                     restarts: i.restarts.take(),
-                    ccode_calls: std::mem::take(&mut i.ccode_calls),
+                    ccode_calls: std::mem::replace(&mut i.ccode_calls, calls),
                     visible: i.visible,
                     // R_RunFinalizers evaluates the finalizer call with eval
                     bc: std::mem::replace(&mut i.bc, false),
@@ -3132,8 +3173,11 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 /// primitives one (eval.c): tracebacks show it, `error()` skips it.
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     CALL_DEPTH.with(|d| d.set(d.get() + 1));
+    // package code reads and writes its connections' structs directly
+    crate::custom_conn::sync_to_c(interp);
     let res = call_routine_ctx(interp, call, r, args, env);
     flush_twins();
+    crate::custom_conn::sync_from_c(interp);
     crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
@@ -3878,6 +3922,63 @@ impl NativeBridge for Bridge {
         let old = c.torture_counters();
         c.gc_torture(gap, wait);
         old
+    }
+
+    fn conn_open(&self, interp: &mut Interp, n: i32) -> RResult<bool> {
+        // SAFETY: the R thread with `interp` current; native connections
+        // exist only once libR is ready.
+        enter(interp, |i| unsafe { crate::custom_conn::open(i, n) })
+    }
+
+    fn conn_close(&self, interp: &mut Interp, n: i32) -> RResult<()> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::close(i, n) })
+    }
+
+    fn conn_destroy(&self, interp: &mut Interp, n: i32) -> RResult<()> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::destroy(i, n) })
+    }
+
+    fn conn_fgetc(&self, interp: &mut Interp, n: i32) -> RResult<i32> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::fgetc(i, n) })
+    }
+
+    fn conn_read(&self, interp: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> {
+        // SAFETY: as in conn_open; `buf` outlives the call.
+        enter(interp, |i| unsafe { crate::custom_conn::read(i, n, buf) })
+    }
+
+    fn conn_write(&self, interp: &mut Interp, n: i32, bytes: &[u8]) -> RResult<usize> {
+        // SAFETY: as in conn_read.
+        enter(interp, |i| unsafe { crate::custom_conn::write(i, n, bytes) })
+    }
+
+    fn conn_vfprintf(&self, interp: &mut Interp, n: i32, text: &str) -> RResult<()> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::vfprintf(i, n, text) })
+    }
+
+    fn conn_seek(&self, interp: &mut Interp, n: i32, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::seek(i, n, r#where, origin, rw) })
+    }
+
+    fn conn_truncate(&self, interp: &mut Interp, n: i32) -> RResult<()> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::truncate(i, n) })
+    }
+
+    fn conn_fflush(&self, interp: &mut Interp, n: i32) -> RResult<i32> {
+        // SAFETY: as in conn_open.
+        enter(interp, |i| unsafe { crate::custom_conn::fflush(i, n) })
+    }
+
+    fn conn_id_value(&self, n: i32) -> Value {
+        // SAFETY: on the R thread; a native struct's ex_ptr is cleared
+        // when its object dies (conFinalizer).
+        unsafe { crate::custom_conn::conn_id_value(n) }
     }
 
     fn gc(&self, interp: &mut Interp) {

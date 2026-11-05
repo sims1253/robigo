@@ -98,15 +98,12 @@ fn read_dcf(i: &mut Interp, ncon: i32, args: &[Arg]) -> RResult<Value> {
     loop {
         let mut buf = Vec::new();
         let mut c;
-        {
-            let con = i.conns.get(ncon)?;
-            loop {
-                c = rconn_fgetc(con);
-                if c == EOF || c == b'\n' as i32 {
-                    break;
-                }
-                buf.push(c as u8);
+        loop {
+            c = rconn_fgetc(i, ncon)?;
+            if c == EOF || c == b'\n' as i32 {
+                break;
             }
+            buf.push(c as u8);
         }
         if buf.is_empty() && c == EOF {
             break;
