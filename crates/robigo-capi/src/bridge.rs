@@ -2396,6 +2396,18 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
     if t != 0 {
         return Err(take_flow(t));
     }
+    // A routine that returns no object (one declared void but registered
+    // for .Call, as rlang's r_on_exit test routine is) leaves whatever its
+    // last call left in the return register; GNU R keeps that pointer
+    // unread unless R uses the value. robigo converts every result, so it
+    // checks that the pointer is an object of the heap first instead of
+    // reading through it.
+    if !out.is_null() && out != R_NilValue && crate::state::core().resolve(out.addr()) != Some(out) {
+        return Err(Flow::error(format!(
+            "robigo: a native routine returned {:#x}, which is not an R object (a routine declared void?)",
+            out.addr()
+        )));
+    }
     converting(interp, || from_sexp(out))
 }
 
