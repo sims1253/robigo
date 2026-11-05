@@ -46,10 +46,25 @@ use types::*;
 
 /// Bits of the header's `extra` word (+6) besides GNU R's debug, trace
 /// and step bits (RDEBUG 1, RTRACE 2, NOJIT 4).
+/// Bits of the header's `extra` word (+6). Bits 0 to 3 are GNU R's debug,
+/// trace, step and NOJIT bits (RDEBUG, RTRACE, RSTEP, NOJIT); the others
+/// are robigo's. A fresh allocation writes the whole header, so every bit
+/// starts clear.
+///
+/// | bit | name | set by |
+/// |---|---|---|
+/// | 8 | [`TWIN`] | the bridge's twins (cells of a runtime value's long-lived core copy) |
+/// | 14 | `HOST_OWNED` | reserved: zero-copy arguments (`track/bridge-zero-copy-on-identity`) |
+/// | 15 | [`WATCHED`] | the bridge's proxy attribute cells (#386) |
 pub mod extra {
+    /// A cell of a twin (docs/core.md §6): the header, spine or attribute
+    /// cell of the core object the bridge keeps for a runtime value. The C
+    /// API's setters (`SETCAR`, `SET_VECTOR_ELT`, `SET_ATTRIB`, a writable
+    /// `DATAPTR`, ...) report writes to it, which the bridge writes back
+    /// into the runtime value.
+    pub const TWIN: u16 = 1 << 8;
     /// The cell is an attribute cell of a host proxy that the bridge
     /// recorded: SETCAR/SETCDR/SET_TAG tell the bridge when C writes it.
-    /// A fresh allocation's header has it clear.
     pub const WATCHED: u16 = 1 << 15;
 }
 
@@ -343,6 +358,27 @@ impl Sexp {
     pub unsafe fn extra(self) -> u16 {
         // SAFETY: header bytes +6..+8 of a live, 16-byte aligned object.
         unsafe { *(self.0.add(6) as *const u16) }
+    }
+    /// Is this a cell of a twin ([`extra::TWIN`])?
+    ///
+    /// # Safety
+    /// `self` must be live.
+    #[inline(always)]
+    pub unsafe fn is_twin_cell(self) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { self.extra() & extra::TWIN != 0 }
+    }
+    /// Set or clear [`extra::TWIN`], keeping the other bits.
+    ///
+    /// # Safety
+    /// `self` must be live.
+    #[inline(always)]
+    pub unsafe fn set_twin_cell(self, on: bool) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let e = self.extra();
+            self.set_extra(if on { e | extra::TWIN } else { e & !extra::TWIN });
+        }
     }
     /// Overwrite the debug, trace and step bits.
     ///
