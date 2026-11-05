@@ -1093,7 +1093,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         restarts: i.restarts.clone(),
         generic: false,
         builtin: false,
+        prev_bc: i.bc,
     });
+    // R: eval.c:do_eval evaluates with eval(), the AST interpreter, also
+    // when called from compiled code (a loop in the global environment is
+    // compiled again by do_for and friends).
+    i.bc = false;
     let r = (|| -> RResult<Value> {
         match &expr {
             Value::Expr(ev) => {
@@ -1137,6 +1142,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
     let r = i.run_on_exit(r);
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
+    i.bc = ctx.prev_bc;
     // (eval.c:eval restores the R_Srcref of the `eval()` call)
     i.srcref_ended(i.frames.len());
     i.handlers = ctx.handlers;

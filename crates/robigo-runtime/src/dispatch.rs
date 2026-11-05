@@ -432,6 +432,7 @@ impl Interp {
             restarts: self.restarts.clone(),
             generic: false,
             builtin: false,
+            prev_bc: self.bc,
         });
         let base = self.base.clone();
         let r = self.usemethod(generic, obj, call, pargs, &rho1, env, &base);

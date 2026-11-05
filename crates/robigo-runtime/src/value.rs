@@ -596,10 +596,11 @@ pub struct Promise {
     /// bridge, which keeps the C node's fields in step when it is
     /// forced (robigo-capi's promise memo).
     pub from_c: bool,
-    /// An argument promise of a call (not a default, `delayedAssign`, a
-    /// lazy-loaded value): one compiled code makes is bytecode in GNU R,
-    /// read with getvar when forced.
-    pub arg: bool,
+    /// An argument promise made by code GNU R runs as bytecode
+    /// (`Interp::bc`): GNU R compiles it too (MAKEPROM), so forcing it runs
+    /// bcEval, reading with getvar. Defaults, `delayedAssign` and lazy-load
+    /// promises are expressions (false).
+    pub bc: bool,
 }
 
 impl Promise {
@@ -616,13 +617,14 @@ impl Promise {
             code,
             default: false,
             from_c: false,
-            arg: false,
+            bc: false,
         }
     }
 
-    /// An argument promise of a call (see `arg`).
-    pub fn arg(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
-        Promise { arg: true, ..Promise::with_code(expr, env, code) }
+    /// An argument promise of a call, made by code GNU R runs as bytecode
+    /// or not (`bc`, see the field).
+    pub fn arg(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>, bc: bool) -> Self {
+        Promise { bc, ..Promise::with_code(expr, env, code) }
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
@@ -634,7 +636,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
-            arg: false,
+            bc: false,
         }
     }
 
@@ -648,7 +650,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
-            arg: false,
+            bc: false,
         }
     }
 
@@ -662,7 +664,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
-            arg: false,
+            bc: false,
         }
     }
 
@@ -676,7 +678,7 @@ impl Promise {
             code: None,
             default: false,
             from_c: false,
-            arg: false,
+            bc: false,
         }
     }
 

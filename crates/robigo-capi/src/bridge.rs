@@ -46,6 +46,7 @@ struct FinalizerContext {
     restarts: robigo_runtime::conditions::RestartStack,
     ccode_calls: Vec<(usize, Value)>,
     visible: bool,
+    bc: bool,
 }
 
 thread_local! {
@@ -2387,6 +2388,8 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     restarts: i.restarts.take(),
                     ccode_calls: std::mem::take(&mut i.ccode_calls),
                     visible: i.visible,
+                    // R_RunFinalizers evaluates the finalizer call with eval
+                    bc: std::mem::replace(&mut i.bc, false),
                 };
                 FINALIZER_CONTEXTS.with(|s| s.borrow_mut().push(saved));
             });
@@ -2402,6 +2405,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     i.restarts = saved.restarts;
                     i.ccode_calls = saved.ccode_calls;
                     i.visible = saved.visible;
+                    i.bc = saved.bc;
                 });
             }
             R_NilValue
@@ -3169,9 +3173,14 @@ unsafe fn call_routine_ctx(
         }
         found
     };
+    // What C evaluates (Rf_eval of a call it built, R_forceAndCall) runs
+    // in GNU R's AST interpreter, whoever called the routine; a promise C
+    // forces still runs in the evaluator that made it.
     if compiled_caller {
         let (handlers, restarts) = (interp.handlers.clone(), interp.restarts.clone());
+        let bc = std::mem::replace(&mut interp.bc, false);
         let r = call_routine_in(interp, call, r, args, env);
+        interp.bc = bc;
         let r = match r {
             Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
             other => other,
@@ -3194,7 +3203,9 @@ unsafe fn call_routine_ctx(
         restarts: interp.restarts.clone(),
         generic: false,
         builtin: true,
+        prev_bc: interp.bc,
     });
+    interp.bc = false;
     // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
     // so what it calls back reports no srcref
     interp.srcref = robigo_runtime::interp::null_srcref();
@@ -3207,6 +3218,7 @@ unsafe fn call_routine_ctx(
     interp.srcref_ended(interp.frames.len());
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
+    interp.bc = ctx.prev_bc;
     r
 }
 
