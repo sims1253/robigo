@@ -1047,7 +1047,21 @@ pub fn compile(
         .collect();
     nulled.sort_unstable();
     nulled.dedup();
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nulled, nvals, nvecs, nested, guards, calls, free, builtins })
+    Ok(JitLoop {
+        func,
+        slots,
+        reg_idx,
+        live_in: live,
+        deopt_regs,
+        nulled,
+        nvals,
+        nvecs,
+        nested,
+        guards,
+        calls,
+        free,
+        builtins,
+    })
 }
 
 /// Register types before an op: `None` for undefined, or different types
