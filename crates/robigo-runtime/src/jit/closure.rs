@@ -827,7 +827,7 @@ fn bail_ops(fun: &Fun, states: &[Option<RegState>], slot_ty: &HashMap<Slot, JTyp
             || matches!(op, Op::Subset { x, i, .. }
                 if st[*x as usize] != Some(JType::Dyn)
                     || !matches!(st[*i as usize], Some(JType::D | JType::I | JType::Dyn)))
-            || matches!(op, Op::Const { dst, .. } | Op::Null { dst } | Op::CallBuiltin { dst, .. }
+            || matches!(op, Op::Const { dst, .. } | Op::Null { dst, dead: false } | Op::CallBuiltin { dst, .. }
                 if !defs(op, st, slot_ty, inl).iter().any(|(r, t)| *r == *dst as usize && *t == Some(JType::Dyn)))
             // (Typed operands: only these builtins have native code.)
             || matches!(op, Op::Builtin1 { f, a, .. }
@@ -1710,7 +1710,7 @@ fn run(
     for (c, t) in e.cells.iter().zip(&cell_ty) {
         if c.written && ctx[c.off + 1] != 0 {
             let o = owner(&insts[c.users[0]].env, c.sym)?;
-            set_plain_in_place(&o, c.sym, &from_bits(*t, ctx[c.off]));
+            set_plain_in_place(&o, c.sym, &mut from_bits(*t, ctx[c.off]), false);
             wrote = true;
         }
     }
@@ -1789,6 +1789,15 @@ unsafe extern "C" fn h_d_copy(dst: *mut RVal, src: *const RVal) {
     unsafe {
         if !std::ptr::eq(dst, src) {
             *dst = (*src).clone();
+        }
+    }
+}
+unsafe extern "C" fn h_d_move(dst: *mut RVal, src: *mut RVal) {
+    // SAFETY: see above; this one writes both slots, which the check makes
+    // distinct, so the two borrows do not overlap.
+    unsafe {
+        if !std::ptr::eq(dst, src) {
+            *dst = std::mem::replace(&mut *src, crate::vm::DEAD);
         }
     }
 }
@@ -1950,6 +1959,7 @@ pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
     ("robigo_d_init", h_d_init as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_release", h_d_release as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_copy", h_d_copy as *const u8, &[types::I64, types::I64], None),
+    ("robigo_d_move", h_d_move as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_set_d", h_d_set_d as *const u8, &[types::I64, types::F64], None),
     ("robigo_d_set_i", h_d_set_i as *const u8, &[types::I64, types::I32], None),
     ("robigo_d_set_l", h_d_set_l as *const u8, &[types::I64, types::I32], None),
@@ -1981,7 +1991,9 @@ pub(super) fn dyn_defs(
     let d = |dst: &Reg| Some(vec![(*dst as usize, Some(JType::Dyn))]);
     match op {
         Op::GetVar { dst, slot, .. } if slot_ty.get(slot) == Some(&JType::Dyn) => d(dst),
-        Op::Const { dst, .. } | Op::Null { dst } | Op::CallBuiltin { dst, .. } => d(dst),
+        Op::Const { dst, .. } | Op::Null { dst, dead: false } | Op::CallBuiltin { dst, .. } => d(dst),
+        // The clear of a dead register: it has no value (see `dyn_op`).
+        Op::Null { dst, dead: true } => Some(vec![(*dst as usize, None)]),
         Op::Arith { dst, a, b, .. } | Op::Rel { dst, a, b, .. } if some_dyn(rt(a), rt(b)) => d(dst),
         Op::ArithL { dst, a, b, .. } | Op::RelL { dst, a, b, .. } if some_dyn(lt(a), lt(b)) => d(dst),
         Op::Index { dst, slot, i, .. }
@@ -2085,10 +2097,12 @@ impl Gen<'_, '_> {
                 let d = self.dyn_reg(*dst);
                 self.hcall("robigo_d_copy", &[d, src]);
             }
-            Op::SetVar { src, slot, .. } if rt(src) == dy => {
+            Op::SetVar { src, slot, take, .. } if rt(src) == dy => {
                 let (s, _) = self.reg(*src);
                 let (d, _) = self.var(*slot);
-                self.hcall("robigo_d_copy", &[d, s]);
+                // (In effect position the register gives its value up, as
+                // the VM's SetVar does: #357.)
+                self.hcall(if *take { "robigo_d_move" } else { "robigo_d_copy" }, &[d, s]);
             }
             Op::Const { dst, k } => {
                 let consts = self.whole.as_ref().unwrap().consts;
@@ -2099,10 +2113,14 @@ impl Gen<'_, '_> {
                 let d = self.dyn_reg(*dst);
                 self.hcall("robigo_d_const", &[d, p]);
             }
-            Op::Null { dst } => {
+            Op::Null { dst, dead: false } => {
                 let d = self.dyn_reg(*dst);
                 self.hcall("robigo_d_null", &[d]);
             }
+            // The clear of a dead register (#357): nothing to do, as native
+            // code runs no R code (no gc() can see the frame: native code
+            // leaves first, and leaving releases the frame).
+            Op::Null { dead: true, .. } => {}
             Op::Arith { op: o, dst, a, b, .. } if rt(a) == dy || rt(b) == dy => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
                 self.dyn_arith(true, ARITH.iter().position(|v| v == o).unwrap(), x, y, *dst, pc);

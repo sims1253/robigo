@@ -643,6 +643,17 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
     Ok(())
 }
 
+/// What a dead register holds: a scalar, which (unlike `RVal::V(NULL)`)
+/// the next write into the register drops without a call. Nothing reads
+/// it (as in the arithmetic ops, which clear their operands the same way).
+pub(crate) const DEAD: RVal = RVal::I(0);
+
+/// Move a register's value out, leaving it dead.
+#[inline(always)]
+fn take_reg(regs: &mut [RVal], r: Reg) -> RVal {
+    std::mem::replace(&mut regs[r as usize], DEAD)
+}
+
 /// The general case of `Op::SetIndex`/`Op::SetIndex2`/`Op::SetDollar`
 /// (`x[i] <- val`, `x[i, j] <- val`, `x$name <- val`: no `idx`; call
 /// `consts[k]`), after a flush: the complex
@@ -662,10 +673,11 @@ fn set_index_slow(
     val: Reg,
     k: u32,
     sup: bool,
+    take: bool,
 ) -> RResult<()> {
     let whole = &code.consts[k as usize];
     let Value::Lang(l) = whole else { unreachable!() };
-    let rhs = regs[val as usize].to_value();
+    let rhs = if take { take_reg(regs, val).into_value() } else { regs[val as usize].to_value() };
     let pre = match idx {
         [Leaf::R(r)] => Some(vec![regs[*r as usize].to_value()]),
         [_] => None,
@@ -889,7 +901,7 @@ fn range_subset(x: &RVal, start: i64, step: i64, n: u64) -> Option<RVal> {
 /// `x[a:b] <- val` in place: `x` a non-object vector, the range within
 /// it, `val` of x's type (or an integer into a double vector) and of
 /// length 1 or the range's length. Otherwise false (use `[<-`).
-fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
+fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &mut RVal, take: bool) -> bool {
     if x.is_object() {
         return false;
     }
@@ -902,7 +914,7 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
         }
     }
     let fits = |len: usize| len == n || len == 1;
-    match (x, val) {
+    match (x, &*val) {
         (Value::Real(v), RVal::D(d)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*d]),
         (Value::Real(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[int_to_real(*i)]),
         (Value::Int(v), RVal::I(i)) => fill(&mut Rc::make_mut(v).data, n, pos, &[*i]),
@@ -925,17 +937,21 @@ fn set_range(x: &mut Value, start: i64, step: i64, n: u64, val: &RVal) -> bool {
         }
         _ => return false,
     }
+    // (The elements are copied: in effect position the value is dead.)
+    if take {
+        *val = DEAD;
+    }
     true
 }
 
-fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
+fn set_element(x: &mut Value, i: usize, val: &mut RVal, two: bool, take: bool) -> bool {
     if i == x.len() && x.attrs().is_none() {
-        return append_element(x, val, two);
+        return append_element(x, val, two, take);
     }
     if x.is_object() || i >= x.len() {
         return false;
     }
-    match (x, val) {
+    match (x, &*val) {
         (Value::Real(v), RVal::D(d)) => Rc::make_mut(v).data[i] = *d,
         (Value::Real(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = int_to_real(*n),
         (Value::Int(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data[i] = *n,
@@ -943,9 +959,7 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
         (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
             Rc::make_mut(v).data[i] = s.data[0].clone()
         }
-        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => {
-            Rc::make_mut(v).data[i] = val.to_value()
-        }
+        (Value::List(v), x) if two && !matches!(x, RVal::V(Value::Null)) => Rc::make_mut(v).data[i] = stored(val, take),
         _ => return false,
     }
     true
@@ -956,7 +970,8 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
 // are large, and the dispatch loop's register allocation is shared by all
 // its ops. Each
 // returns whether it did the store; if not, the op flushes and takes the
-// general path (`set_index_slow`).
+// general path (`set_index_slow`). `take`: in effect position, the value
+// register must not keep the value alive (#357; see `stored`).
 
 /// `Op::SetIndex`: an in-range scalar or range index into a plain local
 /// vector. (Inline: the commonest store, in hot loops.)
@@ -965,12 +980,13 @@ fn set_element(x: &mut Value, i: usize, val: &RVal, two: bool) -> bool {
 fn set_index_fast(
     vars: &mut Vars<'_>,
     env: &Env,
-    regs: &[RVal],
+    regs: &mut [RVal],
     val: Reg,
     x: Sym,
     slot: Slot,
     i: &Leaf,
     two: bool,
+    take: bool,
 ) -> bool {
     let range = match (i, two) {
         (Leaf::R(r), false) => match regs[*r as usize] {
@@ -981,11 +997,11 @@ fn set_index_fast(
     };
     match (range, scalar_index(vars, env, regs, i)) {
         (Some((start, step, n)), _) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
-            SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &regs[val as usize]),
+            SlotVal::Dirty(RVal::V(xv)) => set_range(xv, start, step, n, &mut regs[val as usize], take),
             _ => false,
         },
         (None, Some(ix)) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
-            SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &regs[val as usize], two),
+            SlotVal::Dirty(RVal::V(xv)) => set_element(xv, ix as usize, &mut regs[val as usize], two, take),
             _ => false,
         },
         _ => false,
@@ -999,18 +1015,19 @@ fn set_index_fast(
 fn set_index2_fast(
     vars: &mut Vars<'_>,
     env: &Env,
-    regs: &[RVal],
+    regs: &mut [RVal],
     val: Reg,
     x: Sym,
     slot: Slot,
     i: &Leaf,
     j: &Leaf,
     two: bool,
+    take: bool,
 ) -> bool {
     match (scalar_index(vars, env, regs, i), scalar_index(vars, env, regs, j)) {
         (Some(a), Some(b)) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
             SlotVal::Dirty(RVal::V(xv)) => match matrix_offset(xv, a as usize, b as usize) {
-                Some(off) => set_element(xv, off, &regs[val as usize], two),
+                Some(off) => set_element(xv, off, &mut regs[val as usize], two, take),
                 None => false,
             },
             _ => false,
@@ -1026,16 +1043,17 @@ fn set_dollar_fast(
     code: &Code,
     vars: &mut Vars<'_>,
     env: &Env,
-    regs: &[RVal],
+    regs: &mut [RVal],
     val: Reg,
     x: Sym,
     slot: Slot,
     name: u32,
+    take: bool,
 ) -> bool {
     let Value::Str(nm) = &code.consts[name as usize] else { unreachable!() };
     own_var(vars, env, x, slot)
         && match &mut vars.slots[slot as usize] {
-            SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &regs[val as usize]),
+            SlotVal::Dirty(RVal::V(xv)) => set_list_field(xv, &nm.data[0], &mut regs[val as usize], take),
             _ => false,
         }
 }
@@ -1047,12 +1065,13 @@ fn super_set_index_fast(
     interp: &Interp,
     vars: &mut Vars<'_>,
     env: &Env,
-    regs: &[RVal],
+    regs: &mut [RVal],
     val: Reg,
     x: Sym,
     slot: Slot,
     i: &Leaf,
     two: bool,
+    take: bool,
 ) -> bool {
     // (The current frame's cached copy of `x` would make the vector look
     // shared, and may be stale afterwards.)
@@ -1060,9 +1079,16 @@ fn super_set_index_fast(
         vars.slots[slot as usize] = SlotVal::Empty;
     }
     match scalar_index(vars, env, regs, i) {
-        Some(ix) => super_set_element(interp, env, x, ix as usize, &regs[val as usize], two),
+        Some(ix) => super_set_element(interp, env, x, ix as usize, &mut regs[val as usize], two, take),
         None => false,
     }
+}
+
+/// The value a store puts into a list: in effect position (`take`) moved
+/// out of its register, which must not keep it alive (#357).
+#[inline(always)]
+fn stored(val: &mut RVal, take: bool) -> Value {
+    if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
 }
 
 /// `forceAndCall`: force the first `n` promise arguments.
@@ -1163,7 +1189,7 @@ fn matrix_element_at(
 /// `x$name <- val` in place: an existing element (first exact match of a
 /// non-NA name, as R's `$<-` finds it) of a list that is not an object,
 /// and a value other than NULL (which deletes).
-fn set_list_field(x: &mut Value, name: &RStr, val: &RVal) -> bool {
+fn set_list_field(x: &mut Value, name: &RStr, val: &mut RVal, take: bool) -> bool {
     if x.is_object() || matches!(val, RVal::V(Value::Null)) {
         return false;
     }
@@ -1171,18 +1197,18 @@ fn set_list_field(x: &mut Value, name: &RStr, val: &RVal) -> bool {
     let Some(Value::Str(names)) = x.get_attr(s::NAMES) else { return false };
     let Some(i) = names.data.iter().position(|n| n.as_deref() == Some(name)) else { return false };
     let Value::List(v) = x else { return false };
-    Rc::make_mut(v).data[i] = val.to_value();
+    Rc::make_mut(v).data[i] = stored(val, take);
     true
 }
 
 /// `x[length(x) + 1] <- val` for a vector without attributes and a value
 /// of its type: append (the vector's buffer grows geometrically, as R's
 /// growable vectors do), instead of reallocating it through `[<-`.
-fn append_element(x: &mut Value, val: &RVal, two: bool) -> bool {
+fn append_element(x: &mut Value, val: &mut RVal, two: bool, take: bool) -> bool {
     if x.len() >= i32::MAX as usize {
         return false;
     }
-    match (x, val) {
+    match (x, &*val) {
         (Value::Real(v), RVal::D(d)) => Rc::make_mut(v).data.push(*d),
         (Value::Real(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data.push(int_to_real(*n)),
         (Value::Int(v), RVal::I(n) | RVal::L(n)) => Rc::make_mut(v).data.push(*n),
@@ -1190,8 +1216,8 @@ fn append_element(x: &mut Value, val: &RVal, two: bool) -> bool {
         (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
             Rc::make_mut(v).data.push(s.data[0].clone())
         }
-        (Value::List(v), val) if two && !matches!(val, RVal::V(Value::Null)) => {
-            Rc::make_mut(v).data.push(val.to_value())
+        (Value::List(v), x) if two && !matches!(x, RVal::V(Value::Null)) => {
+            Rc::make_mut(v).data.push(stored(val, take))
         }
         _ => return false,
     }
@@ -1442,7 +1468,7 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
 /// code: the binding `x <<- ` would assign (see [`super_set_fast`]) is a
 /// plain binding of a vector [`set_element`] can update. `false` (nothing
 /// done) otherwise.
-fn super_set_element(interp: &Interp, env: &Env, sym: Sym, i: usize, val: &RVal, two: bool) -> bool {
+fn super_set_element(interp: &Interp, env: &Env, sym: Sym, i: usize, val: &mut RVal, two: bool, take: bool) -> bool {
     let mut cur = env.parent();
     let target = loop {
         match cur {
@@ -1456,7 +1482,7 @@ fn super_set_element(interp: &Interp, env: &Env, sym: Sym, i: usize, val: &RVal,
     if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
         return false;
     }
-    set_element(&mut b.value, i, val, two)
+    set_element(&mut b.value, i, val, two, take)
 }
 
 /// `sym <<- val` without running code, as `Interp::super_assign` would do
@@ -1465,23 +1491,23 @@ fn super_set_element(interp: &Interp, env: &Env, sym: Sym, i: usize, val: &RVal,
 /// and `val` is not either (those change function bindings, see
 /// `Env::set_local_flags`): an unshared scalar of `val`'s type is updated
 /// in place, anything else replaced. `false` (nothing done) otherwise.
-fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &RVal) -> bool {
+fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &mut RVal, take: bool) -> bool {
     if matches!(val, RVal::V(Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) | RVal::Range { .. }) {
         return false;
     }
     let mut cur = env.parent();
     while let Some(e) = cur {
         if e.has_local(sym) {
-            return set_plain_in_place(&e, sym, val);
+            return set_plain_in_place(&e, sym, val, take);
         }
         cur = e.parent();
     }
-    set_plain_in_place(&interp.global, sym, val)
+    set_plain_in_place(&interp.global, sym, val, take)
 }
 
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
-/// `val` (see [`super_set_fast`]).
-pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
+/// `val` (see [`super_set_fast`]; `take`: moved out, see [`stored`]).
+pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool) -> bool {
     let mut frame = env.0.frame().borrow_mut();
     let Some(b) = frame.get_mut(sym) else { return false };
     if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
@@ -1498,14 +1524,14 @@ pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &RVal) -> bool {
             }
         };
     }
-    let done = match (&mut b.value, val) {
+    let done = match (&mut b.value, &*val) {
         (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
         (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
         (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
         _ => false,
     };
     if !done {
-        let prev = std::mem::replace(&mut b.value, val.to_value());
+        let prev = std::mem::replace(&mut b.value, stored(val, take));
         drop(frame);
         drop(prev);
     }
@@ -1987,7 +2013,7 @@ macro_rules! inline_runner {
                     Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
                     Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
                     Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
-                    Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
+                    Op::Null { dst, .. } => regs[*dst as usize] = RVal::V(Value::Null),
                     Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(slots, env, *sym, *slot)?,
                     Op::Guard { sym, .. } => {
                         if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
@@ -3291,6 +3317,14 @@ fn jit_enter(
         vars.dirty = true;
         vars.touch(s.slot as usize);
     }
+    // A register native code cleared is dead; the VM's copy may still hold
+    // a value from before the loop (#357).
+    let live = if ret == crate::jit::EXIT { None } else { jl.deopt_regs.get(&ret) };
+    for reg in &jl.nulled {
+        if !live.is_some_and(|l| l.iter().any(|(r, _)| r == reg)) {
+            regs[*reg as usize] = DEAD;
+        }
+    }
     if ret == crate::jit::EXIT {
         if crate::jit::trace() {
             eprintln!("jit: loop at {} finished", enter);
@@ -3946,7 +3980,8 @@ fn run_with(
             Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
             Op::ConstI { dst, x } => regs[*dst as usize] = RVal::I(*x),
             Op::ConstL { dst, x } => regs[*dst as usize] = RVal::L(*x),
-            Op::Null { dst } => regs[*dst as usize] = RVal::V(Value::Null),
+            Op::Null { dst, dead: false } => regs[*dst as usize] = RVal::V(Value::Null),
+            Op::Null { dst, dead: true } => regs[*dst as usize] = DEAD,
             Op::Visible { on } => interp.visible = *on,
             Op::GetVar { dst, sym, slot } => {
                 // R: eval() sets R_Visible before the lookup, so forcing a
@@ -3970,8 +4005,10 @@ fn run_with(
                     regs[*dst as usize] = v;
                 }
             }
-            Op::SetVar { src, sym, slot } => {
-                let v = regs[*src as usize].clone();
+            Op::SetVar { src, sym, slot, take } => {
+                // R: bcEval SETVAR then POP: in effect position the value
+                // lives on in the binding only (#357).
+                let v = if *take { take_reg(regs, *src) } else { regs[*src as usize].clone() };
                 assign!(*sym, *slot, v);
             }
             Op::Arith { op, dst, a, b, call } => {
@@ -4055,8 +4092,10 @@ fn run_with(
                 }
                 let truth = match &regs[*cond as usize] {
                     RVal::L(x) if *x != NA_LOGICAL => *x != 0,
-                    other => {
-                        let v = other.to_value();
+                    _ => {
+                        // R: bcEval BRIFNOT pops the condition: the
+                        // register does not keep it (#357).
+                        let v = take_reg(regs, *cond).into_value();
                         flush!();
                         let c = code.consts[*call as usize].clone();
                         let r = crate::coerce::as_condition(interp, &v, &c).map(Value::lgl);
@@ -4234,46 +4273,47 @@ fn run_with(
                     }
                 };
             }
-            Op::SetComplex { val, slot, k } => {
+            Op::SetComplex { val, slot, k, take } => {
                 flush!();
                 let Value::Lang(l) = &code.consts[*k as usize] else { unreachable!() };
                 regs[*val as usize] = RVal::V(tryop!(interp.eval(&l.args[1].value, env)));
-                tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
+                tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
             }
-            Op::SetIndex2 { val, x, slot, i, j, two, k } => {
-                if !set_index2_fast(vars, env, regs, *val, *x, *slot, i, j, *two) {
+            Op::SetIndex2 { val, x, slot, i, j, two, k, take } => {
+                if !set_index2_fast(vars, env, regs, *val, *x, *slot, i, j, *two, *take) {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k, false));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i, j], *val, *k, false, *take));
                 }
             }
-            Op::SuperSet { src, sym, slot } => {
+            Op::SuperSet { src, sym, slot, take } => {
                 // The current frame's cached value of `sym` may be the old
                 // value of the binding assigned here.
                 if !matches!(vars.slots[*slot as usize], SlotVal::Dirty(_)) {
                     vars.slots[*slot as usize] = SlotVal::Empty;
                 }
-                if !super_set_fast(interp, env, *sym, &regs[*src as usize]) {
+                if !super_set_fast(interp, env, *sym, &mut regs[*src as usize], *take) {
                     flush!();
-                    let r = interp.super_assign(*sym, regs[*src as usize].to_value(), env);
+                    let v = if *take { take_reg(regs, *src).into_value() } else { regs[*src as usize].to_value() };
+                    let r = interp.super_assign(*sym, v, env);
                     tryop!(signal(interp, r.map(|_| Value::Null)));
                 }
             }
-            Op::SuperSetIndex { val, x, slot, i, two, k } => {
-                if !super_set_index_fast(interp, vars, env, regs, *val, *x, *slot, i, *two) {
+            Op::SuperSetIndex { val, x, slot, i, two, k, take } => {
+                if !super_set_index_fast(interp, vars, env, regs, *val, *x, *slot, i, *two, *take) {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, true));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, true, *take));
                 }
             }
-            Op::SetDollar { val, x, slot, name, k } => {
-                if !set_dollar_fast(code, vars, env, regs, *val, *x, *slot, *name) {
+            Op::SetDollar { val, x, slot, name, k, take } => {
+                if !set_dollar_fast(code, vars, env, regs, *val, *x, *slot, *name, *take) {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
                 }
             }
-            Op::SetIndex { val, x, slot, i, two, k } => {
-                if !set_index_fast(vars, env, regs, *val, *x, *slot, i, *two) {
+            Op::SetIndex { val, x, slot, i, two, k, take } => {
+                if !set_index_fast(vars, env, regs, *val, *x, *slot, i, *two, *take) {
                     flush!();
-                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false));
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false, *take));
                 }
             }
             Op::CallBuiltin { dst, f, args, call } => {
@@ -4413,12 +4453,13 @@ fn run_with(
                         None
                     }
                 {
-                    regs[*dst as usize] = v;
+                    regs[*dst as usize] = if site.effect { DEAD } else { v };
                     continue;
                 }
                 flush!();
                 let v = tryop!(call_op(interp, site, *f, fast_fun, env, vars, regs));
-                regs[*dst as usize] = v;
+                // (In effect position the value is dead: #357.)
+                regs[*dst as usize] = if site.effect { DEAD } else { v };
             }
             Op::ForSeqLength { len, seq, call } => {
                 let n = match leaf_num(vars, env, regs, len) {

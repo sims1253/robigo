@@ -269,13 +269,18 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     Ok(Value::Closure(Rc::new(clo)))
 }
 
+// R: eval.c:do_begin — each value is a C local the collector does not see
+// (only the last one is returned and protected), so a statement's value
+// is dead once the next statement starts: drop it, else an object only
+// it holds outlives a gc() in the next statement (R6's finalizer tests:
+// `B <- BC$new()` then `expect_output({ rm(B); gc() })`).
 fn do_begin(interp: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let mut v = Value::Null;
     interp.visible = true;
-    for a in &args {
-        v = interp.eval(&a.value, env)?;
+    let Some((last, init)) = args.split_last() else { return Ok(Value::Null) };
+    for a in init {
+        interp.eval(&a.value, env)?;
     }
-    Ok(v)
+    interp.eval(&last.value, env)
 }
 
 fn do_paren(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {

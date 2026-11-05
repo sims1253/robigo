@@ -1082,9 +1082,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             Value::Expr(ev) => {
                 let mut v = Value::Null;
                 // By index and owned: what runs can reach `ev` (GNU R's
-                // loop re-reads VECTOR_ELT each time).
+                // loop re-reads VECTOR_ELT each time). The previous value
+                // is dead while the next expression runs (an unprotected
+                // C local in GNU R): drop it first.
                 let mut k = 0;
                 while let Some(e) = ev.data.get(k).cloned() {
+                    drop(std::mem::replace(&mut v, Value::Null));
                     v = i.eval(&e, &env)?;
                     k += 1;
                 }
