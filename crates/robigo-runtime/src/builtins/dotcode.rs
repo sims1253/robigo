@@ -4,6 +4,7 @@
 //! dotcode.c). See [`crate::native`] for how robigo handles native code.
 
 use super::{arg, internal, prim};
+use crate::coerce;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -195,14 +196,15 @@ fn do_isloaded(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(Value::lgl(native::find_routine(i, &sym, &pkg, interface).is_some()))
 }
 
-/// Resolve `.NAME` and drop `PACKAGE`/`NAOK`/`DUP`/`ENCODING` arguments.
+/// Resolve `.NAME` and drop `PACKAGE`/`NAOK`/`DUP`/`ENCODING` arguments;
+/// the flag is `NAOK` (`.C`/`.Fortran` only).
 // R: dotcode.c:resolveNativeRoutine, pkgtrim, naokfind
 fn resolve(
     i: &mut Interp,
     call: &Value,
     mut args: Vec<Arg>,
     interface: Interface,
-) -> RResult<(std::rc::Rc<native::Routine>, Vec<Arg>)> {
+) -> RResult<(std::rc::Rc<native::Routine>, Vec<Arg>, bool)> {
     let mut package = String::new();
     let tag_is = |a: &Arg, n: &str| a.tag.is_some_and(|t| t.with_name(|x| x == n));
     if let Some(k) = args.iter().position(|a| tag_is(a, "PACKAGE")) {
@@ -212,7 +214,29 @@ fn resolve(
             _ => return Err(Flow::error_call(call.clone(), "PACKAGE argument must be a single character string")),
         }
     }
+    let mut naok = false;
     if matches!(interface, Interface::C | Interface::Fortran) {
+        // R: dotcode.c:naokfind (the last NAOK wins), then
+        // resolveNativeRoutine refuses an NA one
+        let (mut naok_used, mut dup_used, mut naok_lgl) = (0, 0, 0);
+        for a in &args {
+            if tag_is(a, "NAOK") {
+                naok_lgl = coerce::as_logical(&a.value);
+                naok_used += 1;
+                if naok_used == 2 {
+                    i.warning("'NAOK' used more than once")?;
+                }
+            } else if tag_is(a, "DUP") {
+                dup_used += 1;
+                if dup_used == 2 {
+                    i.warning("'DUP' used more than once")?;
+                }
+            }
+        }
+        if naok_lgl == NA_LOGICAL {
+            return Err(Flow::error_call(call.clone(), "invalid 'naok' value"));
+        }
+        naok = naok_lgl != 0;
         args.retain(|a| !(tag_is(a, "NAOK") || tag_is(a, "DUP") || tag_is(a, "ENCODING")));
     }
     if args.is_empty() {
@@ -265,7 +289,7 @@ fn resolve(
             ));
         }
     };
-    Ok((routine, args))
+    Ok((routine, args, naok))
 }
 
 /// R: dotcode.c:resolveNativeRoutine — "Fortran" for .Fortran, "C" for
@@ -285,7 +309,7 @@ fn interface_name(i: Interface) -> &'static str {
 }
 
 fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, env: &Env) -> RResult<Value> {
-    let (r, args) = resolve(i, call, args, interface)?;
+    let (r, args, naok) = resolve(i, call, args, interface)?;
     // R: dotcode.c do_External/do_dotCode — a registered routine with a
     // known arity (numArgs > -1) is checked on every interface, .External
     // included.
@@ -295,7 +319,35 @@ fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, 
             format!("Incorrect number of arguments ({}), expecting {} for '{}'", args.len(), r.nargs, r.name),
         ));
     }
+    if matches!(interface, Interface::C | Interface::Fortran) && !naok {
+        check_finite_args(&args)?;
+    }
     native::invoke(i, call, &r, args, env)
+}
+
+/// Without `NAOK = TRUE`, `.C` and `.Fortran` refuse missing and
+/// non-finite values, argument by argument. An argument of a mode that
+/// cannot be passed stops the scan: its own error comes first.
+// R: dotcode.c:do_dotCode, the argument loop (error(), so reported
+// against the calling closure)
+fn check_finite_args(args: &[Arg]) -> RResult<()> {
+    for (k, a) in args.iter().enumerate() {
+        let bad = match &a.value {
+            Value::Lgl(v) | Value::Int(v) => v.data.contains(&NA_INTEGER).then_some("NAs in foreign function call"),
+            Value::Real(v) => v.data.iter().any(|d| !d.is_finite()).then_some("NA/NaN/Inf in foreign function call"),
+            Value::Cplx(v) => v
+                .data
+                .iter()
+                .any(|z| !z.re.is_finite() || !z.im.is_finite())
+                .then_some("complex NA/NaN/Inf in foreign function call"),
+            Value::Raw(_) | Value::Str(_) | Value::List(_) => None,
+            _ => return Ok(()),
+        };
+        if let Some(msg) = bad {
+            return Err(Flow::error(format!("{} (arg {})", msg, k + 1)));
+        }
+    }
+    Ok(())
 }
 
 fn do_dotcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
