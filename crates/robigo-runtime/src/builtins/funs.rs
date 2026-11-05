@@ -50,6 +50,16 @@ fn do_body_code(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRes
             return Ok(Value::Bytecode(b.clone()));
         }
     }
+    // A compiled closure keeps only its source here (robigo's VM compiles
+    // that); GNU R's code object is retained by the bytecode-fidelity build.
+    #[cfg(not(feature = "bytecode-fidelity"))]
+    if let Value::Closure(c) = arg(&args, 0) {
+        if c.jit.is_bytecode() {
+            return Err(crate::error::Flow::error(
+                "robigo: the byte code of a compiled closure (bodyCode) is not implemented yet",
+            ));
+        }
+    }
     do_body(i, call, args, env)
 }
 

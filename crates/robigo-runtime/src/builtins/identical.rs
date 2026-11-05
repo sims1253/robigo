@@ -16,11 +16,21 @@ pub struct IdFlags {
     pub attrib_as_set: bool,
     pub ignore_env: bool,
     pub ignore_srcref: bool,
+    /// `ignore.bytecode` (GNU R's flag 8 unset): compare closure bodies as
+    /// source, not as their byte code.
+    pub ignore_bytecode: bool,
 }
 
 impl Default for IdFlags {
     fn default() -> Self {
-        IdFlags { num_eq: true, single_na: true, attrib_as_set: true, ignore_env: false, ignore_srcref: true }
+        IdFlags {
+            num_eq: true,
+            single_na: true,
+            attrib_as_set: true,
+            ignore_env: false,
+            ignore_srcref: true,
+            ignore_bytecode: true,
+        }
     }
 }
 
@@ -118,12 +128,16 @@ pub fn identical_flags(a: &Value, b: &Value, f: IdFlags) -> bool {
                     .iter()
                     .zip(y.formals.iter())
                     .all(|(p, q)| p.tag == q.tag && identical_flags(&p.value, &q.value, f))
+                // R: identical.c, CLOSXP: without IGNORE_BYTECODE the bodies
+                // are compared as BODY(), so a byte-compiled closure differs
+                // from its uncompiled source; robigo keeps the source of
+                // both and their bytecode mark.
+                && (f.ignore_bytecode || x.jit.is_bytecode() == y.jit.is_bytecode())
                 && identical_flags(&x.body, &y.body, f)
                 && (f.ignore_env || x.env.ptr_eq(&y.env))
         }
         // R: identical.c:R_compute_identical, BCODESXP. The expression tag
         // is NULL for loaded bytecode; the source is constant zero.
-        #[cfg(feature = "bytecode-fidelity")]
         (Value::Bytecode(x), Value::Bytecode(y)) => {
             identical_flags(x.code(), y.code(), f)
                 && x.constants().len() == y.constants().len()
@@ -155,6 +169,7 @@ fn do_identical(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         attrib_as_set: b(4, true),
         ignore_env: b(6, false),
         ignore_srcref: b(7, true),
+        ignore_bytecode: b(5, true),
     };
     Ok(Value::lgl(identical_flags(&arg(&args, 0), &arg(&args, 1), f)))
 }
