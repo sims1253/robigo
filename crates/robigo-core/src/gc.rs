@@ -385,10 +385,14 @@ impl Core {
 
     // ---- allocation ---------------------------------------------------
 
-    /// The collection trigger's state in GNU R's units: (`R_NSize`,
-    /// `R_VSize` in VECRECs, nodes in use, VECRECs in use).
-    pub fn heap_sizes(&self) -> (usize, usize, usize, usize) {
-        (self.sizes.n_size, self.sizes.v_size, self.sizes.nodes_in_use, self.sizes.valloc)
+    /// The collection trigger's state in GNU R's units.
+    pub fn heap_sizes(&self) -> HeapReport {
+        HeapReport {
+            n_size: self.sizes.n_size,
+            v_size: self.sizes.v_size,
+            nodes_in_use: self.sizes.nodes_in_use,
+            vecrecs_in_use: self.sizes.valloc,
+        }
     }
 
     /// Collect if one is due before allocating an object whose vector data
@@ -1473,4 +1477,17 @@ impl Core {
         // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected)
         self.sizes.nodes_in_use = live_objects as usize;
     }
+}
+
+/// [`Core::heap_sizes`]: the collection trigger's state in GNU R's units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeapReport {
+    /// `R_NSize`: nodes the heap may hold before a collection.
+    pub n_size: usize,
+    /// `R_VSize`: the vector heap in VECRECs.
+    pub v_size: usize,
+    /// Nodes in use.
+    pub nodes_in_use: usize,
+    /// VECRECs in use (`R_VSize` counts against these).
+    pub vecrecs_in_use: usize,
 }

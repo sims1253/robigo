@@ -13,7 +13,7 @@ mod heap;
 mod heapsize;
 pub mod unwind;
 
-pub use gc::{Core, GcStats, ReleaseFn};
+pub use gc::{Core, GcStats, HeapReport, ReleaseFn};
 
 /// GNU R's SEXPTYPE numbers (Rinternals.h).
 pub mod types {

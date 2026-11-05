@@ -188,7 +188,7 @@ fn rooted_objects_survive_and_garbage_is_freed() {
 fn allocation_collects_when_the_node_count_reaches_r_nsize() {
     let mut c = core_with_roots();
     c.set_torture(false);
-    let (n_size, _, in_use, _) = c.heap_sizes();
+    let robigo_core::HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     assert_eq!(n_size, 350_000);
     let n0 = c.stats.collections;
     for _ in in_use..n_size {
@@ -198,7 +198,7 @@ fn allocation_collects_when_the_node_count_reaches_r_nsize() {
     unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
     assert_eq!(c.stats.collections, n0 + 1);
     // the garbage is gone from the count, and the heap kept its size
-    let (n_size, _, in_use, _) = c.heap_sizes();
+    let robigo_core::HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     assert_eq!(n_size, 350_000);
     assert!(in_use < 1_000, "{in_use} nodes in use after the collection");
 }
@@ -210,7 +210,7 @@ fn allocation_collects_when_the_node_count_reaches_r_nsize() {
 fn allocation_collects_when_the_vector_heap_is_full() {
     let mut c = core_with_roots();
     c.set_torture(false);
-    let (_, v_size, _, _) = c.heap_sizes();
+    let v_size = c.heap_sizes().v_size;
     assert_eq!(v_size, (67_108_864 + 1) / 8);
     let n0 = c.stats.collections;
     // seven 8 MB vectors fit in 64 MB (with what startup took)
@@ -218,7 +218,7 @@ fn allocation_collects_when_the_vector_heap_is_full() {
         c.alloc_vector(REALSXP, 1 << 20);
     }
     assert_eq!(c.stats.collections, n0);
-    let (_, _, _, valloc) = c.heap_sizes();
+    let valloc = c.heap_sizes().vecrecs_in_use;
     assert!(valloc >= 7 << 20);
     c.alloc_vector(REALSXP, 1 << 20);
     assert_eq!(c.stats.collections, n0 + 1, "the eighth 8 MB vector collects first");
@@ -242,7 +242,7 @@ fn a_growing_live_heap_grows_r_nsize() {
             assert!(c.stats.collections <= 10, "{} collections", c.stats.collections);
         }
     }
-    let (n_size, _, in_use, _) = c.heap_sizes();
+    let robigo_core::HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     assert!(in_use >= 1_000_000);
     assert!(n_size > in_use, "R_NSize {n_size} grew past the live nodes {in_use}");
     assert!(c.stats.collections <= 10, "{} collections for 1M live nodes", c.stats.collections);
@@ -255,14 +255,14 @@ fn a_growing_live_heap_grows_r_nsize() {
 fn an_inhibited_collection_runs_at_the_next_allocation() {
     let mut c = core_with_roots();
     c.set_torture(false);
-    let (n_size, _, in_use, _) = c.heap_sizes();
+    let robigo_core::HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     let n0 = c.stats.collections;
     c.gc_inhibit += 1;
     for _ in in_use..n_size + 10 {
         unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
     }
     assert_eq!(c.stats.collections, n0);
-    let (grown, _, _, _) = c.heap_sizes();
+    let grown = c.heap_sizes().n_size;
     assert!(grown > n_size);
     c.gc_inhibit -= 1;
     unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
