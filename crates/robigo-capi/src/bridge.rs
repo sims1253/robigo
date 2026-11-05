@@ -1713,9 +1713,20 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     // as purrr's cleancall does), with the attributes C gave it.
     if let Some(v) = shared_value(x) {
         if crate::memory::xlength(x) as usize == v.len() {
-            let v = v.clone();
-            write_back(&v, x, &mut HashMap::new());
-            return v;
+            // C may have changed the type in place (SET_TYPEOF) between the
+            // two types of one storage: utils' typeconvert turns
+            // duplicated()'s logical into a factor's integer codes. Any
+            // other change is copied like a core vector.
+            let v = match (v, x.typ()) {
+                (Value::Lgl(rc), INTSXP) => Some(Value::Int(rc.clone())),
+                (Value::Int(rc), LGLSXP) => Some(Value::Lgl(rc.clone())),
+                (v, _) if twin_shape(x, v) => Some(v.clone()),
+                _ => None,
+            };
+            if let Some(v) = v {
+                write_back(&v, x, &mut HashMap::new());
+                return v;
+            }
         }
     }
     if let Some((int, n, n1, inc)) = crate::compact::compact_info(x) {

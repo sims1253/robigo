@@ -36,3 +36,9 @@ print(attributes(a))
 # the shared constants are never written: TRUE and small integers stay
 t <- TRUE
 print(c(0L, 1L, TRUE))
+
+# C changes a fresh logical's type in place and returns it
+y <- .Call("capi_zc_retype", duplicated(c("a", "b", "a")))
+print(typeof(y))
+print(y)
+str(type.convert(c("abc", NA, "def"), as.is = FALSE))

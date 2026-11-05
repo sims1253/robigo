@@ -51,3 +51,11 @@ SEXP capi_zc_attr(SEXP x) {
     Rf_setAttrib(x, Rf_install("tag"), Rf_mkString("set in C"));
     return R_NilValue;
 }
+
+// a logical argument turned into integer codes in place, as utils'
+// typeconvert does with duplicated()'s result (io.c: SET_TYPEOF(dup, INTSXP))
+SEXP capi_zc_retype(SEXP x) {
+    SET_TYPEOF(x, INTSXP);
+    INTEGER(x)[0] = 7;
+    return x;
+}
