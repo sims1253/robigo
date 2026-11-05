@@ -295,6 +295,12 @@ fn call_fun(
             if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
                 *fast = None;
             }
+            // (The call may have rebound `X`: the plain element reads of the
+            // next elements assume it did not, as below.)
+            if *plain && !unchanged(rho, x, xx) {
+                *plain = false;
+                *fast = None;
+            }
             return Ok(v);
         }
         None => {}
