@@ -68,8 +68,6 @@ pub static DEFS: &[Builtin] = &[
     internal("activeBindingFunction", do_active_binding_function, 2),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
-    #[cfg(not(feature = "bytecode-fidelity"))]
-    internal("is.builtin.internal", do_is_builtin_internal, 1),
     internal("setNumMathThreads", do_one, 1),
     internal("setMaxNumMathThreads", do_one, 1),
     internal("makeLazy", do_make_lazy, 5).invisible(),
@@ -934,13 +932,4 @@ fn do_one(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::real(f64::INFINITY))
-}
-
-#[cfg(not(feature = "bytecode-fidelity"))]
-fn do_is_builtin_internal(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let name = match arg(&args, 0) {
-        Value::Sym(s) => s.name().to_string(),
-        _ => return Err(Flow::error("invalid symbol")),
-    };
-    Ok(Value::lgl(super::lookup_internal(&name).is_some_and(|b| b.kind == BuiltinKind::Builtin)))
 }

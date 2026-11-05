@@ -134,7 +134,6 @@ struct PNode {
     car: Value,
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 struct BcLevel {
     pos: Option<usize>,
     lang: bool,
@@ -1367,7 +1366,6 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 fn vector_width(ty: u32) -> Option<usize> {
     match ty {
         INTSXP | LGLSXP => Some(4),
@@ -1377,17 +1375,14 @@ fn vector_width(ty: u32) -> Option<usize> {
         _ => None,
     }
 }
-#[cfg(feature = "bytecode-fidelity")]
 fn code_word(bytes: &[u8], i: usize, little: bool) -> i32 {
     let a = bytes[i * 4..i * 4 + 4].try_into().unwrap();
     if little { i32::from_le_bytes(a) } else { i32::from_be_bytes(a) }
 }
-#[cfg(feature = "bytecode-fidelity")]
 fn real_word(bytes: &[u8], i: usize, little: bool) -> f64 {
     let a = bytes[i * 8..i * 8 + 8].try_into().unwrap();
     f64::from_bits(if little { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) })
 }
-#[cfg(feature = "bytecode-fidelity")]
 fn instruction_word(bytes: &[u8], i: usize, little: bool, version: i32, mismatch: bool) -> i32 {
     if i == 0 {
         version
@@ -1397,7 +1392,6 @@ fn instruction_word(bytes: &[u8], i: usize, little: bool, version: i32, mismatch
         code_word(bytes, i, little)
     }
 }
-#[cfg(feature = "bytecode-fidelity")]
 pub(crate) fn materialize_bytecode_code(b: &Bytecode) -> Value {
     match &b.instructions {
         BytecodeInstructions::Decoded(value) => value.clone(),
@@ -1410,7 +1404,6 @@ pub(crate) fn materialize_bytecode_code(b: &Bytecode) -> Value {
         }
     }
 }
-#[cfg(feature = "bytecode-fidelity")]
 fn materialize_encoded_vector(cells: &BytecodeCells, index: usize) -> Value {
     let item = &cells.encoded[index];
     let arena = cells.bytes.as_ref().unwrap().borrow();
@@ -1439,7 +1432,6 @@ fn materialize_encoded_vector(cells: &BytecodeCells, index: usize) -> Value {
 // R: serialize.c:ReadBCConsts / ReadBCLang, deferred until metadata inspection.
 // WriteBC replays cells directly and never forces this vector. The shared
 // repetition table preserves cross-nested-code identity without copying it.
-#[cfg(feature = "bytecode-fidelity")]
 pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
     let mut reader = ConstantReader { cells: &b.cells, pos: 0 };
     let reps = b.rep_values.get().expect("completed bytecode repetition table");
@@ -1459,12 +1451,10 @@ pub(crate) fn materialize_bytecode_constants(b: &Bytecode) -> Vec<Value> {
     result.unwrap_or_else(|_| panic!("invalid validated bytecode cells"))
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 struct ConstantReader<'a> {
     cells: &'a BytecodeCells,
     pos: usize,
 }
-#[cfg(feature = "bytecode-fidelity")]
 impl ConstantReader<'_> {
     fn record(&mut self) -> RResult<i64> {
         self.cells.next_record(&mut self.pos).ok_or_else(corrupt)
@@ -1595,7 +1585,6 @@ impl ConstantReader<'_> {
     }
 }
 
-#[cfg(feature = "bytecode-fidelity")]
 const BC_ARGC: &[usize] = &[
     0, 0, 1, 2, 0, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 2, 0,
@@ -1606,7 +1595,6 @@ const BC_ARGC: &[usize] = &[
 // R: eval.c:R_bcEncode / R_bcDecode. Opcode cells remain integer indices;
 // robigo never installs GNU R's threaded addresses. Normalize the version and
 // check instruction boundaries using OP(name, argc) in the R 4.5.0 evaluator.
-#[cfg(feature = "bytecode-fidelity")]
 pub(crate) fn portable_bc_code(mut code: Value) -> RResult<Value> {
     let Value::Int(v) = &mut code else { return Err(corrupt()) };
     let Some(&version) = v.data.first() else { return Ok(Value::Null) };
@@ -2263,7 +2251,6 @@ impl Writer<'_> {
     }
     // R: serialize.c:WriteBC1 / WriteBCLang. Replay cell definitions with
     // WriteItem so symbols and environments enter this stream's reference table.
-    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode(&mut self, b: &Bytecode) {
         if let Some(code) = b.code.get() {
             self.item(code);
@@ -2298,7 +2285,6 @@ impl Writer<'_> {
         }
     }
 
-    #[cfg(feature = "bytecode-fidelity")]
     fn bytecode_instructions(&mut self, b: &Bytecode) {
         match &b.instructions {
             BytecodeInstructions::Decoded(value) => self.item(value),
@@ -2314,7 +2300,6 @@ impl Writer<'_> {
         }
     }
 
-    #[cfg(feature = "bytecode-fidelity")]
     fn encoded_vector(&mut self, cells: &BytecodeCells, index: usize) {
         let item = &cells.encoded[index];
         self.int(item.flags as i32);
@@ -2439,7 +2424,6 @@ impl Writer<'_> {
             Value::Pairlist(p) => self.pairlist_items(LISTSXP, &p.items, Some(v), &[]),
             Value::Lang(l) => self.pairlist_items(LANGSXP, &l.items(), Some(v), &lang_cells(l)),
             Value::Dots(d) => self.pairlist_items(DOTSXP, d, None, &[]),
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => {
                 self.flags(BCODESXP, levs, obj, has_attr, false);
                 self.int(b.reps as i32);

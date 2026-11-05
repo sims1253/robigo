@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "external2",
+ "out": {
+  "t": "  value visible \n      1       0 \n  value visible \n      2       0 \n  value visible \n      3       1 \n  value visible \n      5       1 \n  value visible \n      6       0 \nvisible \n   TRUE \n[1] 8\n[1] 1 4 6 7\n  value visible \n     10       1 \n[1] 11\n[1] 10 11\n"
+ },
+ "sha": "58f8eafd51052ada",
+ "status": 0
+}

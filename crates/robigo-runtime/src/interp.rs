@@ -12,6 +12,41 @@ use crate::error::{Flow, RResult};
 use crate::sym::{Sym, s};
 use crate::value::*;
 
+/// R's `R_Srcref`, the srcref of the statement being evaluated, as the
+/// interpreter keeps it: `None` is the value a closure's entry sets
+/// (eval.c:R_execClosure, `R_Srcref = getAttrib(op, R_SrcrefSymbol)`),
+/// read from the innermost closure context only when `sys.call()` or
+/// `sys.calls()` asks ([`Interp::frame_srcref`]); `Some` a statement's
+/// srcref, which only code with source references sets (`{`, `eval()` of an
+/// expression vector, `Op::Srcref` in compiled code). An entry shorter
+/// than a srcref (see [`null_srcref`]) is an explicit NULL. A context that
+/// begins under `Some` saves it in [`Interp::srcref_saved`]; contexts do
+/// not carry it, so code without source references pays one test per call.
+pub type SrcPos = Option<Rc<Vector<i32>>>;
+
+thread_local! {
+    static NULL_SRCREF: Rc<Vector<i32>> = Rc::new(Vector::new(Vec::new()));
+}
+
+/// The [`SrcPos`] of an explicit NULL srcref (R_Srcref = R_NilValue).
+pub fn null_srcref() -> SrcPos {
+    Some(NULL_SRCREF.with(Rc::clone))
+}
+
+/// One statement's srcref from a `srcref` attribute list (`ind` is its
+/// index; a `{` block's list starts with the block's own); a malformed or
+/// absent entry is NULL.
+// R: eval.c:getSrcref
+pub fn statement_srcref(srcrefs: &Value, ind: usize) -> SrcPos {
+    match srcrefs {
+        Value::List(l) => match l.data.get(ind) {
+            Some(Value::Int(v)) if v.data.len() >= 6 => Some(v.clone()),
+            _ => null_srcref(),
+        },
+        _ => null_srcref(),
+    }
+}
+
 /// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
 pub struct Context {
     pub call: Value,
@@ -28,6 +63,8 @@ pub struct Context {
     /// A builtin's context (R's `CTXT_BUILTIN`, which `.Call` and friends
     /// get): not a function context, so `sys.call()` and friends skip it.
     pub builtin: bool,
+    /// [`Interp::bc`] when this context was entered, restored when it ends.
+    pub prev_bc: bool,
 }
 
 /// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
@@ -42,6 +79,12 @@ pub struct Interp {
     pub base_ns: Env,
     pub empty: Env,
     pub frames: Vec<Context>,
+    /// `R_Srcref` (see [`SrcPos`]).
+    pub srcref: SrcPos,
+    /// R: `cptr->srcref` (context.c:begincontext) of the contexts that began
+    /// while `srcref` was `Some`: (index in `frames`, the value), in stack
+    /// order. A context without an entry began under `None`.
+    pub srcref_saved: Vec<(usize, SrcPos)>,
     pub visible: bool,
     /// `R_Interactive`: the session reads from an interactive console.
     /// `q()` reports a `.Last` error back to the REPL only there; the
@@ -102,6 +145,14 @@ pub struct Interp {
     /// still loading stay generic (and unmemoized): resolving against a
     /// partial snapshot would poison the memo for user code.
     pub si_ready: bool,
+    /// Whether GNU R's evaluator would be `bcEval` here: the body of a
+    /// closure its JIT compiled (or installed bytecode), code a compiled
+    /// body made into promises, a top-level loop (JIT level 3). Not robigo's
+    /// own tier, which compiles everything. Call sites differ between the
+    /// two evaluators: the AST interpreter promises constant arguments
+    /// (eval.c:promiseArgs), bytecode pushes them as values (PUSHCONSTARG).
+    /// `eval()`, on.exit code and C's evaluation interpret.
+    pub bc: bool,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -187,6 +238,15 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
     }
 }
 
+/// A constant argument as GNU R's AST interpreter passes it: an unforced
+/// promise of the constant (eval.c:promiseArgs). rlang's dots_info and
+/// check_dots_used tell it from a value ("delayed").
+#[cold]
+#[inline(never)]
+pub(crate) fn const_promise(a: &Arg, env: &Env) -> Arg {
+    Arg::new(a.tag, Value::Promise(Rc::new(Promise::new(a.value.clone(), env.clone()))))
+}
+
 /// The current stack pointer, approximately.
 #[inline(always)]
 fn stack_address() -> usize {
@@ -221,6 +281,8 @@ impl Interp {
             base_ns,
             empty,
             frames: Vec::new(),
+            srcref: None,
+            srcref_saved: Vec::new(),
             visible: true,
             interactive: false,
             exit_value: None,
@@ -247,6 +309,7 @@ impl Interp {
             ccode_calls: Vec::new(),
             si_snaps: std::array::from_fn(|_| None),
             si_ready: false,
+            bc: false,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -365,7 +428,6 @@ impl Interp {
                 r => r,
             },
             Value::Lang(l) => self.eval_lang(e, |s| s.eval_call(l, e, env)),
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => self.eval_bytecode(b, env),
             Value::Promise(p) => self.force_promise(p),
             Value::Dots(_) => Err(Flow::error("'...' used in an incorrect context")),
@@ -377,7 +439,6 @@ impl Interp {
     // recursive just for imported code; it changes LLVM's hot-path lowering.
     #[cold]
     #[inline(never)]
-    #[cfg(feature = "bytecode-fidelity")]
     fn eval_bytecode(&mut self, b: &Bytecode, env: &Env) -> RResult<Value> {
         self.eval(&b.expression, env)
     }
@@ -385,6 +446,16 @@ impl Interp {
     // R: context.c:getLexicalCall
     fn lexical_call(&self, env: &Env) -> Value {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
+    }
+
+    /// The class of a missing-argument error: GNU R reads variables with
+    /// getvar() in bcEval (`getvarError`) and with eval() in the AST
+    /// evaluator (`evalError`), which is where [`Interp::bc`] says GNU R
+    /// would be: a compiled closure's body, a promise its code made, a
+    /// top-level loop; not eval(), on.exit code, a default.
+    // R: eval.c:getvar, eval.c:eval (SYMSXP)
+    fn missing_arg_class(&self, _env: &Env) -> &'static str {
+        if self.bc { "getvarError" } else { "evalError" }
     }
 
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
@@ -405,12 +476,13 @@ impl Interp {
             };
             if let Some((v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
-                    return self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]));
+                    return self.get_active_value(&v);
                 }
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
                     v if v.is_missing_arg() => {
-                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"))
+                        let class = self.missing_arg_class(env);
+                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class))
                     }
                     v => Ok(v),
                 };
@@ -478,6 +550,13 @@ impl Interp {
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
+        // R: eval.c:forcePromise evaluates PRCODE with eval(): bytecode (an
+        // argument promise compiled code made, MAKEPROM) runs on bcEval and
+        // reads with getvar, an expression on the AST evaluator. A formal's
+        // default, delayedAssign and lazy-load promises are expressions
+        // (`Promise::bc` false); the promise's creator decides, not who
+        // forces it.
+        let saved_bc = std::mem::replace(&mut self.bc, p.bc && !p.default);
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -488,6 +567,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
+        self.bc = saved_bc;
         drop(_default);
         p.forcing.set(false);
         let v = r?;
@@ -526,7 +606,7 @@ impl Interp {
             };
             if let Some((mut v, flags)) = found {
                 if flags & BIND_ACTIVE != 0 {
-                    v = self.apply_function(&v, vec![], env, &Value::lang(v.clone(), vec![]))?;
+                    v = self.get_active_value(&v)?;
                 }
                 if let Value::Promise(p) = &v {
                     v = self.force_promise(p)?;
@@ -728,11 +808,30 @@ impl Interp {
                 {
                     return r;
                 }
+                if self.bc && crate::vm::inlines_local(self, c, l, env) {
+                    return self.eval_inlined_local(l, env);
+                }
                 let promargs = self.promise_args(&l.args, env)?;
                 self.apply_closure(call, c, promargs, env, None)
             }
             _ => Err(Flow::error("attempt to apply non-function")),
         }
+    }
+
+    /// `local(expr)` in code GNU R compiled: the compiler's inline handler
+    /// turns it into the call `(function() expr)()` (a compiled closure of
+    /// the current frame, `jit_inherit`), which is what runs, and what
+    /// `sys.call()` and `sys.function()` there see.
+    // R: compiler/R/cmp.R: setInlineHandler("local")
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn eval_inlined_local(&mut self, l: &Lang, env: &Env) -> RResult<Value> {
+        let fun = Value::lang(
+            Value::Sym(s::FUNCTION),
+            vec![Arg::pos(Value::Null), Arg::pos(l.args[0].value.clone()), Arg::pos(Value::Null)],
+        );
+        let call = Value::lang(fun, Vec::new());
+        self.eval(&call, env)
     }
 
     /// An interpreted call taking the simple-internal path (see
@@ -807,12 +906,15 @@ impl Interp {
                 v if v.is_missing_arg() => out.push(a.clone()),
                 Value::Sym(_) | Value::Lang(_) => {
                     let code = codes.get(i).cloned().flatten();
-                    let p = Promise::with_code(a.value.clone(), env.clone(), code);
+                    let p = Promise::arg(a.value.clone(), env.clone(), code, self.bc);
                     out.push(Arg::new(a.tag, Value::Promise(Rc::new(p))))
                 }
                 Value::Promise(_) => out.push(a.clone()),
-                // Constants are their own value; no promise needed.
-                _ => out.push(a.clone()),
+                // R: a constant is pushed as its value by bytecode
+                // (PUSHCONSTARG) and promised by the AST interpreter
+                // (eval.c:promiseArgs), which GNU R runs here unless `bc`.
+                _ if self.bc => out.push(a.clone()),
+                _ => out.push(const_promise(a, env)),
             }
         }
         Ok(out)
@@ -1103,6 +1205,8 @@ impl Interp {
         if clo.jit.unsettled() {
             crate::vm::jit_check(self, clo);
         }
+        // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
+        self.bc = !clo.jit.interpreted();
         let code = if crate::vm::enabled() {
             clo.code.get_or_init(|| crate::vm::code_for(&clo.body, true)).clone()
         } else {
@@ -1140,6 +1244,12 @@ impl Interp {
         sysparent: Env,
     ) {
         crate::env::bump_r_epoch();
+        // R: context.c:begincontext saves R_Srcref; eval.c:R_execClosure
+        // then sets the closure's own srcref, which `None` stands for (read
+        // when asked, not per call).
+        if self.srcref.is_some() {
+            self.srcref_begin(true);
+        }
         self.frames.push(Context {
             call: call.clone(),
             function: Value::Closure(clo.clone()),
@@ -1151,7 +1261,67 @@ impl Interp {
             restarts: self.restarts.clone(),
             generic: false,
             builtin: false,
+            prev_bc: self.bc,
         });
+    }
+
+    /// A context begins (the next one in `frames`) under `R_Srcref`
+    /// `Some`: save it; a closure's then starts at its entry value.
+    #[cold]
+    #[inline(never)]
+    pub fn srcref_begin(&mut self, closure: bool) {
+        let pos = if closure { self.srcref.take() } else { self.srcref.clone() };
+        self.srcref_saved.push((self.frames.len(), pos));
+    }
+
+    /// The context at `frames[k]` ended (and is popped): `R_Srcref` is what
+    /// it began under again (eval.c:R_execClosure, eval.c:eval). Call it
+    /// only when `srcref` is `Some` or `srcref_saved` is not empty.
+    #[cold]
+    #[inline(never)]
+    pub fn srcref_end(&mut self, k: usize) {
+        // (entries above `k` are of contexts gone without one: none should be)
+        while self.srcref_saved.last().is_some_and(|(j, _)| *j > k) {
+            self.srcref_saved.pop();
+        }
+        self.srcref = match self.srcref_saved.last() {
+            Some((j, _)) if *j == k => self.srcref_saved.pop().unwrap().1,
+            _ => None,
+        };
+    }
+
+    /// [`Self::srcref_end`] where a context ends, if it has anything to do.
+    #[inline(always)]
+    pub fn srcref_ended(&mut self, k: usize) {
+        if self.srcref.is_some() || !self.srcref_saved.is_empty() {
+            self.srcref_end(k);
+        }
+    }
+
+    /// The srcref `sys.call()` attaches to frame `k`'s call: `R_Srcref` when
+    /// it began, `NULL` if none. A closure's entry value is its `srcref`
+    /// attribute, looked up now.
+    // R: context.c:getCallWithSrcref
+    pub fn frame_srcref(&self, k: usize) -> Value {
+        let saved = self.srcref_saved.iter().rev().find(|(j, _)| *j == k).map(|(_, p)| p);
+        let pos = match saved {
+            Some(p) => p.clone(),
+            None => self.frames[..k]
+                .iter()
+                .rev()
+                .find_map(|c| match &c.function {
+                    Value::Closure(f) => Some(match f.attrs.as_ref().and_then(|a| a.get(s::SRCREF)) {
+                        Some(Value::Int(v)) => Some(v.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+                .flatten(),
+        };
+        match pos {
+            Some(v) if v.data.len() >= 6 => Value::Int(v),
+            _ => Value::Null,
+        }
     }
 
     /// Pop the current context, running `on.exit` code.
@@ -1166,6 +1336,9 @@ impl Interp {
         // instead of moving it through `run_on_exit` and back.
         let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
+        self.bc = ctx.prev_bc;
+        // R: eval.c:R_execClosure restores the R_Srcref saved at the call.
+        self.srcref_ended(self.frames.len());
         // The executor and this context own two references. Extra owners
         // include escaped closures and unforced default-promise cycles.
         if Rc::strong_count(&ctx.cloenv.0) > 2 {
@@ -1195,6 +1368,9 @@ impl Interp {
         // instead of letting a `return()` there swallow it.
         if !self.abort_to_toplevel && !on_exit.is_empty() {
             let env = self.frames.last().unwrap().cloenv.clone();
+            // on.exit code is kept as an expression and evaluated (context.c
+            // endcontext -> eval): the AST interpreter, in compiled code too.
+            let saved_bc = std::mem::replace(&mut self.bc, false);
             // R: context.c:endcontext makes this frame the exit context
             // (R_ExitContext) while its on.exit code runs, with the pending
             // return value; after an error unwind the value is undefined.
@@ -1222,6 +1398,7 @@ impl Interp {
             }
             self.exit_value = saved_exit_value;
             self.visible = saved_visible;
+            self.bc = saved_bc;
         }
         result
     }
@@ -1286,12 +1463,33 @@ impl Interp {
     // ------------------------------------------------------------------
     // assignment
 
+    /// An active binding's value: `fun()` evaluated in the global
+    /// environment.
+    // R: envir.c:getActiveValue
+    pub fn get_active_value(&mut self, fun: &Value) -> RResult<Value> {
+        let expr = Value::lang(fun.clone(), vec![]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)
+    }
+
+    /// Assigning to an active binding: `fun(base::quote(val))` evaluated in
+    /// the global environment, so the function sees (and argument matching
+    /// reports) the quoted value.
+    // R: envir.c:setActiveValue
+    pub fn set_active_value(&mut self, fun: &Value, val: Value) -> RResult<()> {
+        let qfun = Value::lang(Value::sym("::"), vec![Arg::pos(Value::sym("base")), Arg::pos(Value::sym("quote"))]);
+        let arg = Value::lang(qfun, vec![Arg::pos(val)]);
+        let expr = Value::lang(fun.clone(), vec![Arg::pos(arg)]);
+        let global = self.global.clone();
+        self.eval(&expr, &global)?;
+        Ok(())
+    }
+
     pub fn define(&mut self, sym: Sym, value: Value, env: &Env) -> RResult<()> {
         if let Some(flags) = env.binding_flags(sym) {
             if flags & BIND_ACTIVE != 0 {
                 let f = env.get_local(sym).unwrap();
-                self.call_value(&f, vec![Arg::pos(value)], env)?;
-                return Ok(());
+                return self.set_active_value(&f, value);
             }
         }
         if !env.set_local(sym, value) {
@@ -1410,10 +1608,12 @@ impl Interp {
         // caller's frames so an interactive q() error can still unwind
         // through them after .Last returns it.
         let saved_frames = std::mem::take(&mut self.frames);
+        let saved_srcrefs = (self.srcref.take(), std::mem::take(&mut self.srcref_saved));
         let saved_handlers = std::mem::replace(&mut self.handlers, self.global_handlers.clone());
         let saved_restarts = self.restarts.take();
         let saved_depth = std::mem::replace(&mut self.depth, 0);
         let saved_ccode = std::mem::take(&mut self.ccode_calls);
+        let saved_bc = std::mem::replace(&mut self.bc, false);
         let global = self.global.clone();
         let base = self.base_ns.clone();
         let mut result = Ok(());
@@ -1428,10 +1628,12 @@ impl Interp {
             }
         }
         self.frames = saved_frames;
+        (self.srcref, self.srcref_saved) = saved_srcrefs;
         self.handlers = saved_handlers;
         self.restarts = saved_restarts;
         self.depth = saved_depth;
         self.ccode_calls = saved_ccode;
+        self.bc = saved_bc;
         result
     }
 
@@ -1443,9 +1645,12 @@ impl Interp {
             b.at_top_level();
         }
         self.frames.clear();
+        self.srcref = None;
+        self.srcref_saved.clear();
         self.handlers = self.global_handlers.clone();
         self.restarts = None;
         self.depth = 0;
+        self.bc = false;
         self.restore_expressions();
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;

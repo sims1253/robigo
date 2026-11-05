@@ -216,7 +216,6 @@ impl Printer {
                 }
             }
             // R: print.c:PrintValueRec (OBJSXP)
-            #[cfg(feature = "bytecode-fidelity")]
             Value::Bytecode(b) => self.p(&format!("<bytecode: {:p}>\n", Rc::as_ptr(b))),
             Value::Obj(_) => self.p(if v.is_s4() { "<S4 Type Object>\n" } else { "<object>\n" }),
             Value::List(_) => {

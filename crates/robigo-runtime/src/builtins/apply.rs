@@ -610,7 +610,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         let v = env.get_local(*sy).unwrap_or(Value::Null);
         // R: envir.c:FrameValues (BINDING_VALUE calls an active binding)
         if env.binding_flags(*sy).is_some_and(|f| f & crate::env::BIND_ACTIVE != 0) {
-            vals.push(i.call_value(&v, vec![], &env)?);
+            vals.push(i.get_active_value(&v)?);
             continue;
         }
         vals.push(i.force(v)?);

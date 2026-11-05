@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "cycles",
+ "out": {
+  "t": "finalizer of closure-cycle ran\nfinalizer of self-bound ran\nafter one gc()\nafter two gc()s\n[1] 11\n[1] 12\n[1] 101\nR finalizer ran\n[1] 1001\n[1] 3\nfinalizer of weak-mode cycle ran\nafter one more gc()\n"
+ },
+ "sha": "b69a7e96f73731db",
+ "status": 0
+}
