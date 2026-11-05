@@ -10,8 +10,8 @@ void cfort_(char *s, int *n) {
         s[0] = 'X';
 }
 
-// writes up to 300 characters: only 255 come back
+// overwrites the string it got (the buffer holds it): only its first
+// 255 characters come back
 void cfortlong_(char *s) {
-    memset(s, 'y', 300);
-    s[300] = '\0';
+    memset(s, 'y', strlen(s));
 }
