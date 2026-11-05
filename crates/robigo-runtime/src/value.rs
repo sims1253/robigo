@@ -673,6 +673,18 @@ impl Promise {
         }
     }
 
+    /// The forced promise's value when it is a function, as `findFun`
+    /// takes PRVALUE (a lazily loaded base binding is such a promise):
+    /// `None` while unforced or when the value is not a function. Unlike
+    /// [`Promise::value`], it never boxes a scalar value.
+    // R: envir.c:findFun3 (PRVALUE of a forced promise)
+    pub fn forced_fun(&self) -> Option<Value> {
+        match &*self.value.borrow() {
+            PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     pub fn value(&self) -> Option<Value> {
         match &*self.value.borrow() {
             PromiseVal::Boxed(v) => return Some(v.clone()),
@@ -2087,5 +2099,28 @@ mod shared_pairlist_tests {
         Rc::make_mut(l).args[0].value = Value::int(2);
         assert_eq!(int(&elt(&call_alias, 1)), 1);
         assert_eq!(int(&elt(&call_replacement, 1)), 2);
+    }
+}
+
+#[cfg(test)]
+mod forced_fun_tests {
+    use super::*;
+
+    #[test]
+    fn a_forced_promise_of_a_function_is_the_function() {
+        let sum = Value::Builtin(crate::builtins::lookup_primitive("sum").unwrap());
+        let p = Promise::forced(Value::Null, sum.clone());
+        assert!(p.forced_fun().is_some_and(|f| f.ptr_eq(&sum)));
+    }
+
+    #[test]
+    fn unforced_and_non_function_promises_are_not() {
+        let unforced = Promise::new(Value::Null, crate::env::Env::new(None));
+        assert!(unforced.forced_fun().is_none());
+        assert!(Promise::forced(Value::Null, Value::str("x")).forced_fun().is_none());
+        let scalar = Promise::forced_int(Value::Null, 3);
+        assert!(scalar.forced_fun().is_none());
+        // and the scalar stays unboxed
+        assert!(matches!(&*scalar.value.borrow(), PromiseVal::ScalarInt(3)));
     }
 }
