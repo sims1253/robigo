@@ -174,11 +174,19 @@ pub fn collect(interp: &mut Interp) {
     }
     let log = std::env::var_os("ROBIGO_CYCLES_LOG").is_some();
     let (t0, before) = (std::time::Instant::now(), if log { heap_bytes() } else { 0 });
-    // (as gc(): implementation caches are weak in R, see misc.rs do_gc)
-    if !interp.fun_cache.is_empty() {
-        interp.fun_cache.clear();
+    if std::env::var_os("ROBIGO_CYCLES_NOT_IN_C").is_some()
+        && crate::native::bridge().is_some_and(|b| b.in_native_call())
+    {
+        COLLECTING.with(|c| c.set(false));
+        return;
     }
-    crate::vm::clear_gc_caches_running();
+    // (as gc(): implementation caches are weak in R, see misc.rs do_gc)
+    if std::env::var_os("ROBIGO_CYCLES_NO_CACHES").is_none() {
+        if !interp.fun_cache.is_empty() {
+            interp.fun_cache.clear();
+        }
+        crate::vm::clear_gc_caches_running();
+    }
     match crate::native::bridge() {
         Some(b) => {
             if b.collect_cycles(interp) {

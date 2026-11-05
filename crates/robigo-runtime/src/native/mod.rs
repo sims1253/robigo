@@ -130,6 +130,10 @@ pub trait NativeBridge: Sync {
         self.gc(interp);
         false
     }
+    /// A native routine is running (R code it called is running now).
+    fn in_native_call(&self) -> bool {
+        false
+    }
     /// `gctorture()`/`gctorture2()`: set the C heap's forced collections
     /// (`Core::gc_torture`: every `gap` allocations, the first after
     /// `wait`), returning the old (wait, gap) counters.
