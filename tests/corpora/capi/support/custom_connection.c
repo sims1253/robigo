@@ -62,7 +62,7 @@ static size_t mem_read(void *target, size_t sz, size_t ni, Rconnection con) {
 // fgetc_internal only: R's dummy_fgetc (the default fgetc) calls it
 static int mem_fgetc_internal(Rconnection con) {
     unsigned char c;
-    return mem_read(&c, 1, 1, con) ? c : R_EOF;
+    return mem_read(&c, 1, 1, con) ? c : -1; /* R_EOF */
 }
 
 SEXP cc_new(SEXP name, SEXP text, SEXP chunk) {
