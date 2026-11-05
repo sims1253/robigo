@@ -632,6 +632,17 @@ thread_local! {
     static TWIN_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::default());
     /// twins C wrote to since their last write-back
     static TWIN_DIRTY: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+    /// Atomic twins whose writable data pointer C took (a writable
+    /// `DATAPTR`, `INTEGER`, `REAL`, ...): C can write through it later
+    /// without any setter (rlang's `*sys_frame_n_addr = n`), so these are
+    /// compared with their runtime values whenever R gets a twin back.
+    static TWIN_EXPOSED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+    /// `resync_exposed` is running (a write-back can convert, and so
+    /// come back here).
+    static RESYNCING: Cell<bool> = const { Cell::new(false) };
+    /// `adopt_twin` is running: the twins made now are of C's own objects,
+    /// to which C may hold data pointers already.
+    static ADOPTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The identity a twin is kept under: a value C can hold as an object of
@@ -763,6 +774,16 @@ unsafe fn make_twin(x: Sexp, v: &Value) {
     make_twin_as(x, v, false)
 }
 
+/// [`make_twin`] of an object C made (and what it contains): C may already
+/// hold a data pointer into its atomic vectors (rlang takes `INTEGER()` of
+/// a call's argument once, then binds the call in its precious
+/// environment), so they count as exposed (see `resync_exposed`).
+unsafe fn adopt_twin(x: Sexp, v: &Value) {
+    let was = ADOPTING.with(|a| a.replace(true));
+    make_twin(x, v);
+    ADOPTING.with(|a| a.set(was));
+}
+
 unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     let Some(k) = twin_key(v) else { return };
     if x.is_null() || x == R_NilValue || x.has_flag(flags::HOST) || x.has_flag(flags::IMMORTAL) || x.typ() == SYMSXP {
@@ -779,6 +800,9 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     watch_cells(k, &cells);
     TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
     TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: v.clone(), readonly, constant, cells }));
+    if ADOPTING.with(|a| a.get()) && matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
+        TWIN_EXPOSED.with(|e| e.borrow_mut().insert(k));
+    }
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -842,6 +866,7 @@ unsafe fn drop_twin(k: usize) {
         }
     });
     TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    TWIN_EXPOSED.with(|e| e.borrow_mut().remove(&k));
     let live = twin_cells(tw.x);
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
@@ -855,6 +880,12 @@ unsafe fn drop_twin(k: usize) {
 pub(crate) unsafe fn twin_written(x: Sexp) {
     let owners = TWIN_CELLS.with(|m| m.borrow().get(&x.addr()).cloned());
     if let Some(owners) = owners {
+        // an atomic twin's own data: C may keep the pointer
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
+            if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
+                TWIN_EXPOSED.with(|e| e.borrow_mut().insert(k));
+            }
+        }
         TWIN_DIRTY.with(|d| d.borrow_mut().extend(owners));
         ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -927,7 +958,7 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
             return None;
         }
         flush_twin(k);
-        resync_atomics(x, &v, 0);
+        resync_exposed();
         return Some(v);
     }
     if matches!(x.typ(), LISTSXP | DOTSXP) && TWIN_CELLS.with(|m| m.borrow().contains_key(&x.addr())) {
@@ -939,63 +970,35 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
         } else {
             Value::Pairlist(Rc::new(Pairlist { items: items_of(x), attrs: attrs_from(x) }))
         };
-        make_twin(x, &v);
+        adopt_twin(x, &v);
         return Some(v);
     }
     None
 }
 
 /// C writes into an atomic vector through a pointer it took once (rlang's
-/// `*sys_frame_n_addr = n` into the argument of a call it keeps): no setter
-/// sees that, so a twin's atomic vectors, and those of the twins it
-/// contains, are compared with the runtime values whenever R gets the twin
-/// back, and C's writes copied in place (`write_back`).
-unsafe fn resync_atomics(x: Sexp, v: &Value, depth: u32) {
-    if depth > 256 || x.is_altrep() {
+/// `*sys_frame_n_addr = n` into the argument of a call it keeps, rlang's
+/// dynamic arrays): no setter sees that, so the atomic twins whose
+/// writable pointer C took are compared with their runtime values whenever
+/// R gets a twin back, and C's writes copied in place (`write_back`). A
+/// twin's runtime value is shared by reference, so every container of it
+/// sees the write. (Usually none or a few small counters: no walk of what
+/// R gets back.)
+unsafe fn resync_exposed() {
+    if TWIN_EXPOSED.with(|e| e.borrow().is_empty()) || RESYNCING.with(|r| r.replace(true)) {
         return;
     }
-    match v {
-        Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) => {
-            if !v.is_shared_scalar() && twin_shape(x, v) {
-                write_back(v, x, &mut HashMap::default());
-            }
+    let keys: Vec<usize> = TWIN_EXPOSED.with(|e| e.borrow().iter().copied().collect());
+    for k in keys {
+        let Some((x, v)) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.clone()))) else {
+            TWIN_EXPOSED.with(|e| e.borrow_mut().remove(&k));
+            continue;
+        };
+        if !v.is_shared_scalar() && !x.is_altrep() && twin_shape(x, &v) {
+            write_back(&v, x, &mut HashMap::default());
         }
-        Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) => {
-            if x.std_len() as usize == rc.data.len() {
-                for (i, e) in rc.data.iter().enumerate() {
-                    resync_child(VECTOR_ELT(x, i as isize), e, depth);
-                }
-            }
-        }
-        Value::Lang(l) if x.typ() == LANGSXP => {
-            resync_child(x.car(), &l.fun, depth);
-            resync_items(x.cdr(), &l.args, depth);
-        }
-        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => resync_items(x, &p.items, depth),
-        Value::Dots(d) if x.typ() == DOTSXP => resync_items(x, d, depth),
-        _ => {}
     }
-}
-
-/// [`resync_atomics`] of a contained object that is a twin of `v`.
-unsafe fn resync_child(x: Sexp, v: &Value, depth: u32) {
-    if x.is_null() || x == R_NilValue || !x.is_twin_cell() {
-        return;
-    }
-    let Some(k) = twin_key(v) else { return };
-    if TWIN_HEAD.with(|h| h.borrow().get(&x.addr()) == Some(&k)) {
-        resync_atomics(x, v, depth + 1);
-    }
-}
-
-unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
-    for item in items {
-        if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
-            return;
-        }
-        resync_child(p.car(), &item.value, depth);
-        p = p.cdr();
-    }
+    RESYNCING.with(|r| r.set(false));
 }
 
 /// Mark every twin (a root of the collector, from `mark_api_roots`).
@@ -1039,7 +1042,7 @@ unsafe fn bound(x: Sexp, v: &Value) {
     if matches!(v, Value::Promise(_)) {
         remember_stored(x, v);
     } else {
-        make_twin(x, v);
+        adopt_twin(x, v);
     }
 }
 
