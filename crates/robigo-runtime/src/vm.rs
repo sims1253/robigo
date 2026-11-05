@@ -3557,10 +3557,16 @@ fn jit_enter(
         }
     }
     vals[jl.vis] = interp.visible as u64;
-    // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and the
-    // vectors they view are held by `regs`, `vars` and `ctx` for the whole
-    // call.
-    let ret = unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) };
+    // A closed form, where it applies, leaves `vals` as the native code would
+    // at its exit (the visibility flag included: a closed form only ever
+    // exits, and the VM sets visibility after a loop where it is used).
+    let ret = match &jl.summary {
+        Some(sm) if sm.run(&mut vals) => crate::jit::EXIT,
+        // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and
+        // the vectors they view are held by `regs`, `vars` and `ctx` for the
+        // whole call.
+        _ => unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) },
+    };
     interp.visible = vals[jl.vis] != 0;
     // Registers the VM continues with (vector ones are copied out of what
     // they view, which the write-back below may take).

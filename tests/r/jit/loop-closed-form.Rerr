@@ -1,0 +1,10 @@
+Warning messages:
+1: In s + 1L : NAs produced by integer overflow
+2: In s + 1L : NAs produced by integer overflow
+3: In s + 1L : NAs produced by integer overflow
+There were 50 or more warnings (use warnings() to see the first 50)
+There were 24 warnings (use warnings() to see them)
+There were 50 or more warnings (use warnings() to see the first 50)
+Error in while (i < n) { : missing value where TRUE/FALSE needed
+Calls: w1
+Execution halted
