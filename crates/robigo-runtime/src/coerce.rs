@@ -842,6 +842,14 @@ pub fn first_elt(v: &Value) -> Value {
 /// The condition of `if`/`while`: R's `asLogicalNoNA`.
 pub fn as_condition(interp: &mut Interp, v: &Value, call: &Value) -> RResult<bool> {
     let len = v.len();
+    // R: coerce.c:asLogicalNoNA reads an ALTREP scalar through its class
+    // (LOGICAL_ELT; its scalar fast path skips ALTREP objects)
+    if len == 1 {
+        if let Some(h) = crate::altrep::lookup(v) {
+            let e = crate::altrep::elt(interp, h, 0)?;
+            return as_condition(interp, &e, call);
+        }
+    }
     if len > 1 {
         return Err(Flow::error_call(call.clone(), "the condition has length > 1"));
     }

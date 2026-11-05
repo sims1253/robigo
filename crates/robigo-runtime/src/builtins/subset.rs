@@ -313,6 +313,38 @@ pub fn extract_subset(x: &Value, idx: &[i64], call: ECall) -> RResult<Value> {
     })
 }
 
+/// [`extract_subset`] of a package ALTREP vector (crate::altrep): its
+/// class's `Extract_subset` if that answers, else `Elt` at each position
+/// (R: subset.c:ExtractSubset, ALTVEC_EXTRACT_SUBSET, then the *_ELT
+/// loop). No attributes, as the plain path.
+fn altrep_extract_subset(interp: &mut Interp, x: &Value, h: usize, idx: &[i64]) -> RResult<Value> {
+    let indx = if idx.iter().all(|&i| i <= i32::MAX as i64) {
+        Value::ints(idx.iter().map(|&i| i as i32).collect())
+    } else {
+        Value::reals(idx.iter().map(|&i| i as f64).collect())
+    };
+    if let Some(r) = crate::altrep::extract_subset(interp, h, &indx)? {
+        return Ok(r);
+    }
+    let nx = x.len() as i64;
+    let mut elts = Vec::with_capacity(idx.len());
+    for &i in idx {
+        elts.push(if i >= 1 && i <= nx { Some(crate::altrep::elt(interp, h, (i - 1) as usize)?) } else { None });
+    }
+    Ok(match x {
+        Value::Int(_) => {
+            Value::ints(elts.iter().map(|e| e.as_ref().map_or(NA_INTEGER, crate::coerce::as_integer)).collect())
+        }
+        Value::Lgl(_) => {
+            Value::lgls(elts.iter().map(|e| e.as_ref().map_or(NA_LOGICAL, crate::coerce::as_logical)).collect())
+        }
+        Value::Real(_) => {
+            Value::reals(elts.iter().map(|e| e.as_ref().map_or(NA_REAL, crate::coerce::as_real)).collect())
+        }
+        _ => extract_subset(x, idx, None)?,
+    })
+}
+
 /// A pairlist or call as a list for `[` (names from the tags).
 fn pairlike_as_list(x: &Value) -> Value {
     let mut ax = Value::list(crate::coerce::to_list(x));
@@ -358,14 +390,15 @@ fn list_as_lang(ans: Value) -> Value {
 
 /// R's `VectorSubset`: `x[s]` with a single subscript.
 // R: subset.c:VectorSubset
-fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
+fn vector_subset(interp: &mut Interp, x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     if s.is_missing_arg() {
         return Ok(x.clone());
     }
     let mat = matrix_subscript(x, s, Some(call), Some(call))?;
+    let alt = crate::altrep::lookup(x);
     // A logical subscript as long as `x` without NA (`x[x > 0]`): filter
     // directly instead of going through positions.
-    if let (None, Value::Lgl(m)) = (&mat, s) {
+    if let (None, Value::Lgl(m), None) = (&mat, s, alt) {
         if m.data.len() == x.len() && !m.data.contains(&NA_LOGICAL) {
             if let Some(r) = mask_subset(x, &m.data) {
                 return Ok(r);
@@ -375,7 +408,10 @@ fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     let s = mat.as_ref().unwrap_or(s);
     let mut stretch = 1;
     let indx = make_subscript(x, s, &mut stretch, Some(call))?;
-    let mut result = extract_subset(x, &indx.idx, Some(call))?;
+    let mut result = match alt {
+        Some(h) => altrep_extract_subset(interp, x, h, &indx.idx)?,
+        None => extract_subset(x, &indx.idx, Some(call))?,
+    };
     if !result.is_null() {
         let mut names = get_attrib(x, s::NAMES);
         if names.is_null() && is_array(x) {
@@ -746,7 +782,7 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     let ndim = ndim_of(ax);
     let mut ans = if nsubs < 2 {
         let missing = Value::missing_arg();
-        let mut ans = vector_subset(ax, if nsubs == 1 { &subs[0] } else { &missing }, call)?;
+        let mut ans = vector_subset(interp, ax, if nsubs == 1 { &subs[0] } else { &missing }, call)?;
         if ndim == 1 {
             let dim = ax.attrs().and_then(|a| a.get(s::DIM));
             let len = ans.len();
@@ -886,6 +922,11 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
         offset = off + pindx[0];
     }
     let o = offset as usize;
+    // R: subset.c:do_subset2_dflt reads an ALTREP vector through its
+    // class (INTEGER_ELT etc.): a package class's Elt (crate::altrep)
+    if let Some(h) = crate::altrep::lookup(&x) {
+        return crate::altrep::elt(interp, h, o);
+    }
     Ok(match &x {
         Value::Pairlist(_) | Value::Lang(_) | Value::List(_) | Value::Expr(_) => generic_elt(&x, o),
         Value::Lgl(v) => Value::lgls(vec![v.data[o]]),

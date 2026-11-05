@@ -95,6 +95,19 @@ fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     let body = args[2].value.clone();
     let n = val.len();
     interp.define(sym, Value::Null, env)?;
+    // R: eval.c:do_for reads a package ALTREP sequence through its class
+    // (INTEGER_ELT / REAL_ELT / LOGICAL_ELT): checked once per loop
+    if let Some(h) = crate::altrep::lookup(&val) {
+        for i in 0..n {
+            let v = crate::altrep::elt(interp, h, i)?;
+            interp.define(sym, v, env)?;
+            if !loop_body(interp, &body, env)? {
+                break;
+            }
+        }
+        interp.visible = false;
+        return Ok(Value::Null);
+    }
     for i in 0..n {
         // Reuse the previous iteration's scalar if nothing else holds it
         // (R's ALLOC_LOOP_VAR).

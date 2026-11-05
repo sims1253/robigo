@@ -97,6 +97,11 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     {
         return Ok(None);
     }
+    // a package ALTREP `X` is read by `X[[i]]`, through its class
+    // (crate::altrep): checked once per loop
+    if crate::altrep::lookup(xx).is_some() {
+        return Ok(None);
+    }
     let Value::Lang(l) = fcall else { return Ok(None) };
     let Value::Sym(f) = &l.fun else { return Ok(None) };
     let Ok(fun_val) = i.find_fun(*f, rho) else { return Ok(None) };

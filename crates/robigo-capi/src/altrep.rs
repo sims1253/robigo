@@ -60,6 +60,48 @@ unsafe fn mt(x: Sexp) -> *const Methods {
     methods(class_of(x))
 }
 
+/// Whether `x` is an instance of a class a package made, not one of
+/// robigo's own (the compact sequences, registered for package "base").
+pub unsafe fn package_class(x: Sexp) -> bool {
+    let info = class_of(x).attrib_raw();
+    if info.is_null() || info == R_NilValue {
+        return false;
+    }
+    let p = info.cdr().car();
+    p.typ() == SYMSXP && p.car().char_bytes() != b"base"
+}
+
+/// The class's `Sum`, `Min` or `Max` (0: none).
+pub unsafe fn summary_method(x: Sexp, which: u8) -> usize {
+    let m = &*mt(x);
+    match which {
+        0 => m.sum,
+        1 => m.min,
+        _ => m.max,
+    }
+}
+
+/// The class's `Is_sorted` (`no_na`: `No_NA`) (0: none).
+pub unsafe fn sorted_method(x: Sexp, no_na: bool) -> usize {
+    let m = &*mt(x);
+    if no_na { m.no_na } else { m.is_sorted }
+}
+
+/// The class's `Inspect` (0: none).
+pub unsafe fn inspect_method(x: Sexp) -> usize {
+    (*mt(x)).inspect
+}
+
+/// The class's `Serialized_state` (0: none).
+pub unsafe fn serialized_state_method(x: Sexp) -> usize {
+    (*mt(x)).serialized_state
+}
+
+/// The class's `Extract_subset` (0: none).
+pub unsafe fn extract_subset_method(x: Sexp) -> usize {
+    (*mt(x)).extract_subset
+}
+
 /// ALTREP_ERROR_IN_CLASS: "msg [class: c, pkg: p]"
 #[cold]
 unsafe fn error_in_class(msg: &str, x: Sexp) -> ! {
