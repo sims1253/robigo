@@ -778,6 +778,11 @@ fn leave_reads(op: &Op, code: &Code) -> Option<Vec<Reg>> {
         Op::ForRange { .. } | Op::ForInit { .. } | Op::ForStep { .. } | Op::LoopEnter { .. } | Op::LoopExit => {
             return None;
         }
+        // (Closure creation and srcref bookkeeping: native loops do not
+        // leave at these; the loop stays in the VM.)
+        Op::MakeClosure { .. } | Op::Srcref { .. } | Op::SrcrefSave { .. } | Op::SrcrefRestore { .. } => {
+            return None;
+        }
     }
     Some(out)
 }
