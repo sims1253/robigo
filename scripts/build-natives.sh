@@ -70,10 +70,16 @@ if [ ! -f "$build/src/include/config.h" ] && [ ! -x "$(command -v curl-config)" 
     LDFLAGS="${LDFLAGS:-} -L$p/usr/lib/$(gcc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)"
     export CPPFLAGS LDFLAGS
 fi
-# A tree configured before cairo's headers were installed has no cairo
-# devices (HAVE_WORKING_CAIRO): configure it again once they are there.
-if [ -f "$build/src/include/config.h" ] && ! grep -q '^#define HAVE_WORKING_CAIRO' "$build/src/include/config.h" &&
-    pkg-config --exists cairo 2> /dev/null; then
+# A tree configured before cairo's or pango's headers were installed has
+# no cairo devices (HAVE_WORKING_CAIRO), or cairo without pango
+# (HAVE_PANGOCAIRO), with which grDevices makes Xlib, not cairo, png()'s
+# default type (bitmapType) as GNU R does: configure it again once they
+# are there.
+stale_feature() {
+    [ -f "$build/src/include/config.h" ] && ! grep -q "^#define $1" "$build/src/include/config.h" &&
+        pkg-config --exists "$2" 2> /dev/null
+}
+if stale_feature HAVE_WORKING_CAIRO cairo || stale_feature HAVE_PANGOCAIRO pangocairo; then
     rm -f "$build/src/include/config.h"
 fi
 if [ ! -f "$build/src/include/config.h" ]; then

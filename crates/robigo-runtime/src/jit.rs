@@ -113,6 +113,10 @@ pub struct JitLoop {
     /// The registers live at each op where native code leaves, and their
     /// types, to restore for the VM.
     pub deopt_regs: HashMap<u32, Vec<(Reg, JType)>>,
+    /// The registers the loop clears (`Op::Null`, which has no native
+    /// code): the VM clears those not live where native code leaves, so
+    /// they do not keep a value from before the loop alive (#357).
+    pub nulled: Vec<Reg>,
     pub nvals: usize,
     pub nvecs: usize,
     /// (LoopEnter index, break target, next target) of loops inside the
@@ -523,7 +527,7 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         | Op::ConstI { dst, .. }
         | Op::ConstL { dst, .. }
         | Op::Const { dst, .. }
-        | Op::Null { dst } => u.wregs.push(*dst),
+        | Op::Null { dst, .. } => u.wregs.push(*dst),
         Op::Subset { dst, x, i, .. } => {
             u.rregs.extend([*x, *i]);
             u.wregs.push(*dst);
@@ -637,7 +641,10 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::LoopExit
         | Op::Index { .. }
         | Op::Index2 { .. }
-        | Op::SetIndex2 { .. } => true,
+        | Op::SetIndex2 { .. }
+        // (No code: the register is dead, see `defs`. A NULL value is
+        // not supported.)
+        | Op::Null { dead: true, .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
@@ -903,7 +910,13 @@ pub fn compile(
     let mut deopt_regs = HashMap::new();
     let func = codegen(code, &r, &slots, &slot_ty, &states, &reg_idx, &live, &mut deopt_regs, &inl)?;
     let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
-    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nvals, nvecs, nested, guards, calls })
+    let mut nulled: Vec<Reg> = ops[r.start..r.end]
+        .iter()
+        .filter_map(|op| if let Op::Null { dst, dead: true } = op { Some(*dst) } else { None })
+        .collect();
+    nulled.sort_unstable();
+    nulled.dedup();
+    Ok(JitLoop { func, slots, reg_idx, live_in: live, deopt_regs, nulled, nvals, nvecs, nested, guards, calls })
 }
 
 /// Register types before an op: `None` for undefined, or different types
@@ -948,6 +961,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::ForRange { a, .. } => matches!(rt(a), JType::D | JType::I),
         Op::ForInit { seq, .. } | Op::ForStep { seq, .. } => rt(seq) == JType::Range,
         Op::GetVar { slot, .. } => inl.specs.is_some() || slot_ty[slot].is_scalar(),
+        Op::Null { dead: true, .. } => true,
         _ => defs(op, st, slot_ty, inl).iter().all(|(_, t)| t.is_some()),
     }
 }
@@ -981,6 +995,10 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::ConstD { dst, .. } => vec![(*dst as usize, Some(JType::D))],
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
         Op::ConstL { dst, .. } => vec![(*dst as usize, Some(JType::L))],
+        // A clear of a dead register (#357): it has no value native code
+        // could read; the VM gets `NULL` there when native code leaves
+        // (`JitLoop::nulled`).
+        Op::Null { dst, dead: true } => vec![(*dst as usize, None)],
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
         Op::GetVar { dst, slot, .. } => vec![(*dst as usize, scalar(slot_ty.get(slot).copied()))],
         Op::Builtin1 { f: Builtin1::Length, dst, a, .. } => vec![(*dst as usize, rt(a).map(|_| JType::I))],
@@ -1845,8 +1863,13 @@ impl Gen<'_, '_> {
                 self.b.ins().jump(after, &[]);
                 falls = false;
             }
-            // Checked at entry, or no effect in native code.
-            Op::Guard { .. } | Op::Visible { .. } | Op::LoopEnter { .. } | Op::LoopExit => {}
+            // Checked at entry, or no effect in native code (a cleared
+            // register is dead: see `defs`).
+            Op::Guard { .. }
+            | Op::Visible { .. }
+            | Op::LoopEnter { .. }
+            | Op::LoopExit
+            | Op::Null { dead: true, .. } => {}
             _ => unreachable!("unsupported op in native loop: {:?}", op),
         }
         if falls {

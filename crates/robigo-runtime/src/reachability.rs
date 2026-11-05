@@ -411,7 +411,9 @@ impl ObjectGraph {
     /// the sweep half of GNU R's collector: an unreachable environment's
     /// frame, parent and attributes are dropped; a shared frame is kept
     /// while any live environment still uses it. Returns the number of
-    /// environments (and shared frames) reached.
+    /// environments (and shared frames) that had edges to break: one
+    /// already reclaimed by an earlier pass, and still referenced by dead
+    /// objects, does not count again.
     // R: memory.c:RunGenCollect -- the sweep of unreachable cells
     pub fn reclaim_unreachable(&self, live: &[bool]) -> usize {
         let mut reclaimed = 0;
@@ -421,16 +423,20 @@ impl ObjectGraph {
             }
             match &node.owner {
                 Owner::Value(Value::Env(env)) => {
+                    let mut changed = false;
                     if env.shared_frame().is_none() {
-                        env.0.frame().borrow_mut().clear();
+                        let mut frame = env.0.frame().borrow_mut();
+                        changed |= !frame.is_empty();
+                        frame.clear();
                     }
-                    env.0.parent.borrow_mut().take();
-                    *env.0.attrs.borrow_mut() = None;
-                    reclaimed += 1;
+                    changed |= env.0.parent.borrow_mut().take().is_some();
+                    changed |= env.0.attrs.borrow_mut().take().is_some();
+                    reclaimed += changed as usize;
                 }
                 Owner::Frame(frame) => {
-                    frame.borrow_mut().clear();
-                    reclaimed += 1;
+                    let mut frame = frame.borrow_mut();
+                    reclaimed += !frame.is_empty() as usize;
+                    frame.clear();
                 }
                 _ => {}
             }

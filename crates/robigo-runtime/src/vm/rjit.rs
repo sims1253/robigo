@@ -757,10 +757,12 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
             index(sym)?;
         }
     }
-    // (A lazily loaded base binding is a forced promise: its value is the
-    // function, as findFun takes PRVALUE.)
+    // (A lazily loaded base binding is a promise: once forced, its value is
+    // the function, as findFun takes PRVALUE. Still unforced, `f` was found
+    // below base and base's function has not been needed yet; the call then
+    // keeps `f`, since forcing here would need `&mut Interp`.)
     let base = match interp.base.get_local(sym)? {
-        Value::Promise(p) => p.value().filter(|v| matches!(v, Value::Closure(_) | Value::Builtin(_)))?,
+        Value::Promise(p) => p.forced_fun()?,
         v => v,
     };
     if base.ptr_eq(f) {

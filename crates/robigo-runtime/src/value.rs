@@ -672,6 +672,18 @@ impl Promise {
         }
     }
 
+    /// The forced promise's value when it is a function, as `findFun`
+    /// takes PRVALUE (a lazily loaded base binding is such a promise):
+    /// `None` while unforced or when the value is not a function. Unlike
+    /// [`Promise::value`], it never boxes a scalar value.
+    // R: envir.c:findFun3 (PRVALUE of a forced promise)
+    pub fn forced_fun(&self) -> Option<Value> {
+        match &*self.value.borrow() {
+            PromiseVal::Boxed(v @ (Value::Closure(_) | Value::Builtin(_))) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     pub fn value(&self) -> Option<Value> {
         match &*self.value.borrow() {
             PromiseVal::Boxed(v) => return Some(v.clone()),
@@ -1234,6 +1246,24 @@ impl Value {
         let m = unsafe { &mut *Rc::as_ptr(p).cast_mut() };
         rewrite_cells(&mut m.items, items);
         m.attrs = attrs;
+        true
+    }
+
+    /// Rewrite the cells of a `...` in the allocation, as a native routine
+    /// that ran SETCAR/SET_TAG over the DOTSXP chain did (the bridge's
+    /// write-back): the frame binding that `...` sees the cells.
+    ///
+    /// # Safety
+    /// As for [`Value::set_pairlist_cells_through_alias`].
+    pub unsafe fn set_dots_cells_through_alias(&self, items: Vec<Arg>) -> bool {
+        let Value::Dots(d) = self else { return false };
+        if same_cells(d, &items) {
+            return true;
+        }
+        crate::env::Env::mark_cycle_dirty();
+        // SAFETY: as in set_pairlist_cells_through_alias. R: memory.c:SETCAR
+        let m = unsafe { &mut *Rc::as_ptr(d).cast_mut() };
+        rewrite_cells(m, items);
         true
     }
 
@@ -2078,5 +2108,28 @@ mod layout_tests {
     #[test]
     fn a_value_is_two_words() {
         assert_eq!(std::mem::size_of::<super::Value>(), 2 * std::mem::size_of::<usize>());
+    }
+}
+
+#[cfg(test)]
+mod forced_fun_tests {
+    use super::*;
+
+    #[test]
+    fn a_forced_promise_of_a_function_is_the_function() {
+        let sum = Value::Builtin(crate::builtins::lookup_primitive("sum").unwrap());
+        let p = Promise::forced(Value::Null, sum.clone());
+        assert!(p.forced_fun().is_some_and(|f| f.ptr_eq(&sum)));
+    }
+
+    #[test]
+    fn unforced_and_non_function_promises_are_not() {
+        let unforced = Promise::new(Value::Null, crate::env::Env::new(None));
+        assert!(unforced.forced_fun().is_none());
+        assert!(Promise::forced(Value::Null, Value::str("x")).forced_fun().is_none());
+        let scalar = Promise::forced_int(Value::Null, 3);
+        assert!(scalar.forced_fun().is_none());
+        // and the scalar stays unboxed
+        assert!(matches!(&*scalar.value.borrow(), PromiseVal::ScalarInt(3)));
     }
 }

@@ -33,7 +33,10 @@ SEXP capi_static_poke(void) {
             SETCAR(a, mkString("poked"));
     SEXP cell = PROTECT(CONS(ScalarLogical(1), R_NilValue));
     SET_TAG(cell, install("added"));
-    SETCDR(ATTRIB(kept_fun), cell);
+    SEXP last = ATTRIB(kept_fun);
+    while (CDR(last) != R_NilValue)
+        last = CDR(last);
+    SETCDR(last, cell);
     UNPROTECT(1);
     return R_NilValue;
 }

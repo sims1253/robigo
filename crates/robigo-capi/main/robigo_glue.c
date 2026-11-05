@@ -448,6 +448,29 @@ const char* Rf_utf8Toutf8NoPUA(const char *in)
     return result;
 }
 
+/* R: util.c Rf_utf8ToLatin1AdobeSymbol2utf8 (cairo's symbol-font text
+   without pango) */
+const char* Rf_utf8ToLatin1AdobeSymbol2utf8(const char *in, Rboolean usePUA)
+{
+  const char *latinStr;
+  char *utf8str;
+  latinStr = reEnc(in, CE_UTF8, CE_LATIN1, 2);
+  int nc = 3*(int)strlen(latinStr) + 1;
+  utf8str = R_alloc(nc, sizeof(char));
+  Rf_AdobeSymbol2utf8(utf8str, latinStr, nc, usePUA);
+  return utf8str;
+}
+
+/* R: util.c Rstrdup (cairo's font cache without pango) */
+char *Rstrdup(const char *s)
+{
+    size_t nb = strlen(s) + 1;
+    void *cpy = malloc(nb);
+    if (cpy == NULL) error("allocation error in Rstrdup");
+    memcpy (cpy, s, nb);
+    return (char *) cpy;
+}
+
 /* R: dotcode.c do_Externalgr / do_dotcallgr, split around the call
    (called as .Call routines, so that errors unwind to the host): before,
    the current device's recordGraphics is saved and cleared ... */

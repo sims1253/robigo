@@ -1,0 +1,21 @@
+previous statement's value: during 1, after 1
+call temporary: during 1, after 1
+loop body's last value: during 2, after 2
+if branch value: during 1, after 1
+bare call: during 1, after 1
+bare variable: during 1, after 1
+while body: during 2, after 2
+repeat body: during 1, after 1
+effect store: during 1, after 1
+effect store in a loop: during 3, after 3
+effect index store: during 1, after 1
+effect index store [: during 1, after 1
+effect dollar store: during 1, after 1
+effect complex store: during 1, after 1
+effect superassignment: during 1, after 1
+for sequence during the loop: during 0 0 1, after 1
+for sequence after a break: during 1, after 1
+value returned past on.exit(gc()): during 0 1, after 1
+argument while a later one runs gc(): during 0 1, after 1
+value of an assignment: during 0 1, after 1
+last value is the result: during 0 1, after 1

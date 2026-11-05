@@ -755,7 +755,14 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let names = env_names(&env, all, sorted);
     let mut vals = Vec::new();
     for n in &names {
-        let v = env.get_local(Sym::new(n)).unwrap_or(Value::Null);
+        let sym = Sym::new(n);
+        let v = env.get_local(sym).unwrap_or(Value::Null);
+        // R: envir.c:FrameValues — BINDING_VALUE calls an active binding
+        // (a C-owned variable's included, which reads C's object).
+        if env.binding_flags(sym).is_some_and(|f| f & BIND_ACTIVE != 0) {
+            vals.push(i.call_value(&v, vec![], &env)?);
+            continue;
+        }
         vals.push(i.force(v)?);
     }
     let mut v = Value::list(vals);
@@ -1075,9 +1082,12 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
             Value::Expr(ev) => {
                 let mut v = Value::Null;
                 // By index and owned: what runs can reach `ev` (GNU R's
-                // loop re-reads VECTOR_ELT each time).
+                // loop re-reads VECTOR_ELT each time). The previous value
+                // is dead while the next expression runs (an unprotected
+                // C local in GNU R): drop it first.
                 let mut k = 0;
                 while let Some(e) = ev.data.get(k).cloned() {
+                    drop(std::mem::replace(&mut v, Value::Null));
                     v = i.eval(&e, &env)?;
                     k += 1;
                 }
@@ -1154,7 +1164,10 @@ fn do_make_active_binding(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) ->
 // R: envir.c:R_MakeActiveBinding
 pub(crate) fn make_active_binding(sym: Sym, fun: Value, env: &Env) -> RResult<()> {
     match env.binding_flags(sym) {
-        Some(f) if f & BIND_ACTIVE == 0 => Err(Flow::error("symbol already has a regular binding")),
+        // a C-owned variable is a regular binding to R
+        Some(_) if env.binding_is_active(sym) == Some(false) => {
+            Err(Flow::error("symbol already has a regular binding"))
+        }
         Some(f) if f & BIND_LOCKED != 0 => Err(Flow::error("cannot change active binding if binding is locked")),
         _ if env.set_local_flags(sym, fun, BIND_ACTIVE) => Ok(()),
         _ => Err(Flow::error("cannot add bindings to a locked environment")),
@@ -1247,8 +1260,8 @@ fn do_binding_is_active(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
             None => return Err(Flow::error("not an environment")),
         },
     };
-    match env.binding_flags(sym) {
-        Some(f) => Ok(Value::lgl(f & BIND_ACTIVE != 0)),
+    match env.binding_is_active(sym) {
+        Some(active) => Ok(Value::lgl(active)),
         None => Err(Flow::error(format!("no binding for \"{}\"", sym))),
     }
 }
