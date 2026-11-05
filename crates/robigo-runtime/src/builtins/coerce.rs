@@ -684,8 +684,12 @@ fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
         }
     }
     let x = &args[0].value;
+    // R: coerce.c:do_isnan -- character, raw, NULL, logical and integer
+    // vectors are never NaN.
     let out: Vec<Lgl> = match x {
         Value::Lgl(v) | Value::Int(v) => vec![FALSE; v.data.len()],
+        Value::Str(v) => vec![FALSE; v.data.len()],
+        Value::Raw(v) => vec![FALSE; v.data.len()],
         Value::Real(v) => v.data.iter().map(|e| (e.is_nan() && !is_na_real(*e)) as Lgl).collect(),
         Value::Cplx(v) => v
             .data
