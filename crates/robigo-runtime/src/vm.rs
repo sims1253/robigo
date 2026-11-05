@@ -4175,10 +4175,8 @@ fn run_with(
                     None => {
                         // An error or a warning to signal.
                         flush!();
-                        match switch_slow(interp, &code.consts[*call as usize], &code.switches[*table as usize], &xv) {
-                            Ok(r) => tryop!(r),
-                            Err(e) => return Err(e),
-                        }
+                        // (`?`: its errors leave at once; the warning's may unwind.)
+                        tryop!(switch_slow(interp, &code.consts[*call as usize], &code.switches[*table as usize], &xv)?)
                     }
                 } as usize;
                 interp.visible = true;
