@@ -120,13 +120,6 @@ pub enum Op {
         sym: Sym,
         slot: Slot,
     },
-    /// A variable as an argument of a builtin calling native code: the
-    /// binding's own object (`Env::binding_value`), pending assignments
-    /// flushed first.
-    GetVarBoxed {
-        dst: Reg,
-        sym: Sym,
-    },
     /// `sym <<- src`: assign in the first enclosing frame that binds `sym`,
     /// or the global environment (`slot`: this code's slot for `sym`, whose
     /// cached value the assignment may make stale).
@@ -2085,8 +2078,6 @@ impl Compiler {
                         // `x[[i]]` are the container's object), which the
                         // VM would unbox: the interpreter evaluates it.
                         self.fallback(&a.value, r);
-                    } else if let (true, Some(sym)) = (native, var_arg(&a.value)) {
-                        self.emit(Op::GetVarBoxed { dst: r, sym });
                     } else {
                         self.expr(&a.value, r, Want::Value);
                     }
@@ -2148,7 +2139,7 @@ pub fn compile_body(body: &Value) -> Code {
 /// variable passed to it is the binding's own object, which C may write
 /// into. (Other builtins do not keep a scalar argument where native code
 /// could reach it later.)
-fn native_call(b: &Builtin) -> bool {
+pub(crate) fn native_call(b: &Builtin) -> bool {
     matches!(b.name, ".Call" | ".External" | ".External2" | ".C" | ".Fortran" | ".Call.graphics" | ".External.graphics")
 }
 

@@ -865,7 +865,7 @@ impl Interp {
     pub fn call_builtin(&mut self, b: &'static Builtin, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
         let argv = match b.kind {
             BuiltinKind::Special => args.to_vec(),
-            BuiltinKind::Builtin => self.eval_args(args, env, call)?,
+            BuiltinKind::Builtin => self.eval_args_for(args, env, call, b.values_only)?,
         };
         self.invoke_builtin(b, call, argv, env)
     }
@@ -938,6 +938,15 @@ impl Interp {
 
     /// Evaluate arguments for a builtin; expand `...`.
     pub fn eval_args(&mut self, args: &[Arg], env: &Env, call: &Value) -> RResult<Vec<Arg>> {
+        self.eval_args_for(args, env, call, false)
+    }
+
+    /// [`Interp::eval_args`]; for a builtin whose result never holds an
+    /// argument's object (`values_only`, `Builtin::values_only`) a variable
+    /// is read as the VM reads it, its binding not expanded
+    /// (`Env::binding_value`): only its value is used.
+    #[inline]
+    fn eval_args_for(&mut self, args: &[Arg], env: &Env, call: &Value, values_only: bool) -> RResult<Vec<Arg>> {
         let mut out = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
             match &a.value {
@@ -957,6 +966,10 @@ impl Interp {
                 },
                 v if v.is_missing_arg() => {
                     return Err(Flow::error_call(call.clone(), format!("argument {} is empty", i + 1)));
+                }
+                Value::Sym(sym) if values_only && let Some(r) = crate::vm::plain_lookup(env, *sym) => {
+                    self.visible = true;
+                    out.push(Arg::new(a.tag, r.into_value()));
                 }
                 v => {
                     let v = self.eval(v, env)?;

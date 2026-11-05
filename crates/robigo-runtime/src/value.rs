@@ -747,6 +747,11 @@ pub struct Builtin {
     pub visibility: Visibility,
     /// Declared arity, or -1 for variadic.
     pub arity: i16,
+    /// Its result never holds an argument's object (arithmetic, `c`,
+    /// `length`, ...): the interpreter reads its variable arguments
+    /// without expanding their bindings (`Env::binding_value`), as the VM
+    /// does for every builtin that does not call native code.
+    pub values_only: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

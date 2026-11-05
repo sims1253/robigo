@@ -3699,7 +3699,16 @@ fn call_op(
                         Some(v) => v,
                         None => run(interp, c, env)?,
                     },
-                    None => interp.eval(&a.value, env)?,
+                    // (a variable: its value, unboxed scalars as they are,
+                    // except for native code, which gets the binding's
+                    // object as `CallBuiltin` hands it over)
+                    None => match a.value.as_sym().filter(|_| !crate::compile::native_call(b)) {
+                        Some(sym) => match plain_lookup(env, sym) {
+                            Some(r) => r.into_value(),
+                            None => interp.eval(&a.value, env)?,
+                        },
+                        None => interp.eval(&a.value, env)?,
+                    },
                 };
                 argv.push(Arg::new(a.tag, v));
             }
@@ -4173,20 +4182,6 @@ fn run_with(
                     }
                     regs[*dst as usize] = v;
                 }
-            }
-            Op::GetVarBoxed { dst, sym } => {
-                interp.visible = true;
-                // C reads the binding: write pending assignments first.
-                flush!();
-                let v = match binding_object(env, *sym) {
-                    Some(v) => v,
-                    None => {
-                        let r = force_var(interp, env, *sym);
-                        let (v, _) = tryop!(signal_var(interp, r));
-                        binding_object(env, *sym).unwrap_or(v)
-                    }
-                };
-                regs[*dst as usize] = RVal::V(v);
             }
             Op::SetVar { src, sym, slot, take } => {
                 // R: bcEval SETVAR then POP: in effect position the value
