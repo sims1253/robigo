@@ -255,3 +255,41 @@ What remains, by owner:
 - tidyselect: cons-cell tails (#387).
 - The council's third member (Gemini) could not be seated in rounds 4 and 5
   (provider usage limit); both rounds ran with Opus and Sol.
+
+## 2026-11-05: round 2, 11 of 20 green
+
+Full suite on main 9d9dff72, one VM, 4 jobs: 11 of 20 green, 7,365 of
+8,693 blocks (round 1: 9, 7,342).
+
+| package | round 1 | round 2 | cause of the change |
+|---|---|---|---|
+| glue | 112 | 114 / 114, green | #420, #421: natives configured without pango; cairo's FreeType exports |
+| htmltools | 111 | 112 / 112, green | the same |
+| R6 | 66 | 71 / 73 | #417 (dead registers); the rest is nondeterministic, below |
+| curl | 50 | 59 / 73 | |
+| cli | 677 | 679 / 689 | |
+| rlang | 1,191 | 1,194 / 1,425 | |
+| ggplot2 | 809 | 810 / 846 | |
+
+R6's two blocks are test-finalizer's and differ run to run (two `show R6`
+on the same VM fail different tests): sometimes an R6 object is
+finalized one `gc()` late, in the next test. GNU R is deterministic here.
+Under investigation.
+
+Council round 7 (#422: package-defined ALTREP vectors and `inspect`;
+Opus and Sol, Gemini's endpoint unavailable): a two-way ALTREP twin
+(the runtime keeps a copy linked to the original C object; the class's
+`Elt`, `Sum`, `Inspect`, ... are called where GNU R calls them, behind
+one global flag), with every class call behind a protected C boundary.
+cli's live `cli_timer_t` flag needs the per-read `Elt` call. Recorded on
+#422.
+
+What remains, by owner:
+- purrr, tidyr, dplyr: unchanged; #398, then twins, then zero-copy.
+- rlang: twins (#389, #167; ~100 blocks), a crash in test-c-api's
+  `r_on_exit` (68), #387 (16), #197 srcrefs (8), #419 (7).
+- cli: #422 ALTREP (5), #423 tail calls (1), #389 (3).
+- curl: native custom connections (#343) and one mark over both heaps
+  (#344), council round 6.
+- ggplot2: 3 timeouts and 1 oom (proxy retention).
+- tidyselect: #387.

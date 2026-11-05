@@ -297,6 +297,7 @@ fn only_stored(v: &Value) -> bool {
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x) == 1,
         Value::Lang(x) => Rc::strong_count(x) == 1,
         Value::Pairlist(x) => Rc::strong_count(x) == 1,
+        Value::Dots(x) => Rc::strong_count(x) == 1,
         _ => true,
     }
 }
@@ -2260,9 +2261,10 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut Originals) -> bool {
         (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
         _ => return false,
     };
-    // a chain C lengthened or shortened needs no conversion to tell
+    // a chain C lengthened or shortened needs no conversion to tell (the
+    // cells pair_items_converted collects, a LANGSXP tail included)
     let (mut p, mut n) = (x, 0usize);
-    while p != R_NilValue && matches!(p.typ(), LISTSXP | DOTSXP) {
+    while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
         n += 1;
         p = p.cdr();
     }
@@ -2523,6 +2525,7 @@ fn sharing(v: &Value) -> u16 {
         Value::List(x) | Value::Expr(x) | Value::Obj(x) => Rc::strong_count(x),
         Value::Lang(x) => Rc::strong_count(x),
         Value::Pairlist(x) => Rc::strong_count(x),
+        Value::Dots(x) => Rc::strong_count(x),
         _ => return 0,
     };
     n.saturating_sub(1).min(u16::MAX as usize) as u16
