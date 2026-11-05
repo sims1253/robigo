@@ -5,9 +5,10 @@
 //! collection that traces it: `gc()`'s cycle steps (the native bridge's, or
 //! [`crate::reachability::reclaim_cycles`] without one). GNU R collects when
 //! its heap is full, so a program never has to call `gc()` to get its
-//! memory back; here a collection is due when the bytes the runtime has
-//! allocated reach a threshold sized as GNU R sizes its vector heap
-//! (memory.c's `R_VSize` and `AdjustHeapSize`).
+//! memory back; here a collection is due when the heap (the allocator's
+//! committed bytes, measured off the allocation fast path) reaches a
+//! threshold sized as GNU R sizes its vector heap (memory.c's `R_VSize`
+//! and `AdjustHeapSize`).
 //!
 //! A due collection runs only where GNU R runs pending finalizers, its
 //! interrupt-check points: closure calls (the bytecode's
@@ -16,18 +17,21 @@
 //! can run there in GNU R; never at a native call's exit.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 
 use crate::interp::Interp;
 
-/// Bytes the global allocator has handed out and not taken back. The
-/// executable's allocator keeps it ([`note_alloc`], [`note_free`]); in a
-/// process whose allocator does not, it stays 0 and nothing is collected.
-static HEAP_BYTES: AtomicIsize = AtomicIsize::new(0);
+/// The heap's size in bytes, as the executable's allocator reports it
+/// ([`set_heap_probe`]); without one nothing is collected.
+static PROBE: OnceLock<fn() -> usize> = OnceLock::new();
 
 /// The heap size at which a collection is due (`R_VSize`, in bytes):
 /// unreachable until [`enable`].
 static TRIGGER: AtomicIsize = AtomicIsize::new(isize::MAX);
+
+/// A collection is due at the next safe point.
+static DUE: AtomicBool = AtomicBool::new(false);
 
 /// `sizeof(VECREC)`: GNU R's vector heap is counted in these.
 const VECREC: f64 = 8.0;
@@ -54,30 +58,31 @@ thread_local! {
     static TORTURE_SEEN: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The global allocator handed out `n` bytes.
-#[inline(always)]
-pub fn note_alloc(n: usize) {
-    // (A load and a store, not an atomic add: the R thread allocates
-    // nearly everything, and a lost update from another thread only moves
-    // the next collection a little.)
-    HEAP_BYTES.store(HEAP_BYTES.load(Relaxed).wrapping_add(n as isize), Relaxed);
+/// How the executable measures the heap (mimalloc's committed bytes).
+pub fn set_heap_probe(probe: fn() -> usize) {
+    let _ = PROBE.set(probe);
 }
 
-/// The global allocator took back `n` bytes.
-#[inline(always)]
-pub fn note_free(n: usize) {
-    HEAP_BYTES.store(HEAP_BYTES.load(Relaxed).wrapping_sub(n as isize), Relaxed);
-}
-
-/// The bytes allocated and not freed.
+/// The heap's size now (0 without a probe).
 pub fn heap_bytes() -> isize {
-    HEAP_BYTES.load(Relaxed)
+    PROBE.get().map_or(0, |p| p() as isize)
+}
+
+/// The allocator's periodic call (mimalloc's deferred-free hook, every
+/// hundred allocations that leave its fast path): the heap is measured
+/// there, so the allocations themselves pay nothing. It only notes that a
+/// collection is due; the next safe point runs it.
+// R: memory.c:allocVector3's `VHEAP_FREE() < alloc_size`
+pub fn heartbeat() {
+    if !DUE.load(Relaxed) && heap_bytes() >= TRIGGER.load(Relaxed) {
+        DUE.store(true, Relaxed);
+    }
 }
 
 /// Is a collection due? (The check at every safe point.)
 #[inline(always)]
 pub fn due() -> bool {
-    HEAP_BYTES.load(Relaxed) >= TRIGGER.load(Relaxed)
+    DUE.load(Relaxed)
 }
 
 /// Start collecting automatically, once the base environment is loaded:
@@ -90,6 +95,7 @@ pub fn enable() {
         if n > 0 {
             TORTURE.with(|t| t.set(n));
             TRIGGER.store(0, Relaxed);
+            DUE.store(true, Relaxed);
             return;
         }
     }
@@ -100,9 +106,10 @@ pub fn enable() {
 fn adjust() {
     if TORTURE.with(|t| t.get()) > 0 {
         TRIGGER.store(0, Relaxed);
+        DUE.store(true, Relaxed);
         return;
     }
-    let live = HEAP_BYTES.load(Relaxed).max(0) as f64;
+    let live = heap_bytes().max(0) as f64;
     let v_size = next_size(live, V_SIZE.with(|v| v.get()));
     V_SIZE.with(|v| v.set(v_size));
     TRIGGER.store(v_size as isize, Relaxed);
@@ -153,6 +160,9 @@ pub fn collect(interp: &mut Interp) {
     if COLLECTING.with(|c| c.replace(true)) {
         return;
     }
+    DUE.store(false, Relaxed);
+    let log = std::env::var_os("ROBIGO_CYCLES_LOG").is_some();
+    let (t0, before) = (std::time::Instant::now(), if log { heap_bytes() } else { 0 });
     // (as gc(): implementation caches are weak in R, see misc.rs do_gc)
     if !interp.fun_cache.is_empty() {
         interp.fun_cache.clear();
@@ -169,6 +179,15 @@ pub fn collect(interp: &mut Interp) {
         }
     }
     adjust();
+    if log {
+        eprintln!(
+            "[cycles] heap {} -> {} MB, next at {} MB, {:.1} ms",
+            before >> 20,
+            heap_bytes() >> 20,
+            TRIGGER.load(Relaxed) >> 20,
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
     COLLECTING.with(|c| c.set(false));
 }
 
