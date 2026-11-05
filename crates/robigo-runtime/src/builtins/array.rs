@@ -598,6 +598,21 @@ fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: u
     // finite the two are the same bits whatever Y holds (a product with a
     // finite factor has the same value and NaN payload either way round;
     // TEMP never is -0), so the n^2 scan of Y is not needed.
+    // A dot product: dgemv("N") sums Y(j) * X(j) from 0 for ascending j
+    // when both are finite, simple_matprod X(j) * Y(j) otherwise: with X
+    // finite the products are the same bits either way round (see above),
+    // so one loop in simple_matprod's order is both, without the scans.
+    // (The C code's operand order, which decides which NaN payload
+    // survives a product or a sum of two NaNs: `sum += x * y`.)
+    if nrx == 1 && ncy == 1 {
+        use super::complex::sse;
+        let mut sum = 0.0;
+        for (&a, &b) in x[..ncx].iter().zip(&y[..ncx]) {
+            sum = sse::add(sum, sse::mul(a, b));
+        }
+        z[0] = sum;
+        return z;
+    }
     if nrx == 1 && ncy != 1 && all_finite(x) {
         dot_columns(x, y, nry, &mut z);
         return z;
