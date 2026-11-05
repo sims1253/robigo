@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "envattr_eval",
+ "out": {
+  "t": "[1] \"pronoun\"\n[1] TRUE\n[1] \"set in C\"\n[1] \"set in C\"\n[1] \"environment\"\n[1] \"environment\"\n[1] TRUE\n[1] TRUE\n"
+ },
+ "sha": "631f5898d8b45397",
+ "status": 0
+}

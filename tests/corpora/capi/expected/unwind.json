@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "unwind",
+ "out": {
+  "t": "body: about to error\ncleanup: jump = 1\n[1] \"caught: boom from the body\"\nok body\ncleanup: jump = 0\n[1] 41\newc body\newc cleanup\n[1] 5\ntoplevel body\n[1] TRUE\n"
+ },
+ "sha": "63673b2b6a1a0e3e",
+ "status": 0
+}

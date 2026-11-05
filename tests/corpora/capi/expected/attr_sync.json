@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "attr_sync",
+ "out": {
+  "t": "[1] 1\n[1] \"foo\"\n[1] TRUE\n[1] \"foo\"\n[1] TRUE\n[1] \"foo\"\n[1] 1 2 3\nNULL\n[1] \"class\"\n[1] FALSE\nNULL\nNULL\n[1] \"yes\"\n[1] \"yes\"\n[1] \"also\"\nNULL\n[1] \"from_r\"\nNULL\n[1] \"viaR\"\n[1] TRUE\n[1] TRUE\n[1] 1\n[1] \"ptr\"\n[1] \"ptr\"\n[1] TRUE\n[1] \"ptr\"\n[1] \"by reference\"\n[1] \"by reference\"\nNULL\n[1] 1\nNULL\n[1] \"class\"  \"from_c\"\n[1] TRUE\n[1] TRUE\n[1] TRUE\nNULL\n[[1]]\n[1] 99\n\n[[2]]\n[1] 2\n\n[[1]]\n[1] 99\n\n[[2]]\n[1] 2\n\n"
+ },
+ "sha": "2321d792454dbf5b",
+ "status": 0
+}

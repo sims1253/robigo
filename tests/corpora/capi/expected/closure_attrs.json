@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "closure_attrs",
+ "out": {
+  "t": "[1] 1 2 3\nNULL\n[1] \"yes\"\n[1] \"yes\"\n[1] 1\n[1] \"yes\"\n[1] 4 5 6\n[1] 1 2 3\nNULL\n[1] \"from_c\"\nNULL\n[1] TRUE\n[1] 51 52 53\n[1] 3 4 5\n"
+ },
+ "sha": "bf7212c1fad16e3e",
+ "status": 0
+}
