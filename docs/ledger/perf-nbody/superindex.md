@@ -55,7 +55,11 @@ profiles are in `docs/ledger/perf-nbody.md`.
   loop-state map (`Code::jit`) is looked up at every loop entry (main does
   that too) and hashed with std's SipHash; with heat it now holds entries
   for short loops as well. It hashes with `env::FastHash` now:
-  `robigo/fannkuch` -0.88% against main, `nbody_naive` -24.7%. Rejected on
-  the way: the entry decision out of line with the heat flag in a bit of
-  `LoopRec::enter` (+1.22%: the lookup was the cost, not the layout).
+  `robigo/fannkuch` -0.88% against main, `nbody_naive` -24.7%. The entry
+  decision (`loop_enter_state`) and the exit's heat (`loop_heat`) are out
+  of line, and the heat flag is a bit of `LoopRec::enter`, which keeps the
+  dispatch loop's code close to main's: `profiler-microbenchmark` +0.90%
+  -> +0.51% (+0.35% of it from the levels below). Alone, without the
+  hasher, that layout was worse (`robigo/fannkuch` +1.22%: the lookup is
+  the cost).
 

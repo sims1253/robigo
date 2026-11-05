@@ -3382,11 +3382,15 @@ fn unforced_promise(env: &Env, sym: Sym) -> bool {
 struct LoopRec {
     brk: u32,
     nxt: u32,
+    /// Its `LoopEnter` index, with [`HEAT_BIT`] set when its back edges
+    /// count toward `JitSlot::Heat` as it ends (a flag of its own made
+    /// every loop entry copy 20 bytes instead of 16).
     enter: u32,
     count: u32,
-    /// Its back edges count toward `JitSlot::Heat` when it ends.
-    heat: bool,
 }
+
+/// See [`LoopRec::enter`] (op indices stay far below it).
+const HEAT_BIT: u32 = 1 << 31;
 
 /// The state of `run_with`'s guard memo (`checked`) and native loops. Kept
 /// in memory (its re-check is out of line, so it has an address): the
@@ -3478,12 +3482,32 @@ const JIT_HEAT: u32 = 1024;
 /// eight ops and one or two iterations natively 108k times).
 const JIT_HEAT_WORK: u64 = 64;
 
+/// Whether the loop entered at op `enter` (ending at `brk`) runs natively
+/// now, and whether this entry counts toward its heat. Out of line: the
+/// dispatch loop's register allocation is shared by all its ops.
+#[inline(never)]
+fn loop_enter_state(code: &Code, enter: u32, brk: u32) -> (bool, bool) {
+    match code.jit.borrow().get(&enter) {
+        Some(crate::jit::JitSlot::Ready(_)) => (true, false),
+        // (Hot but too little work per entry: no more counting.)
+        Some(crate::jit::JitSlot::Heat { back, entries }) if *back >= JIT_HEAT => {
+            let body = (brk as u64).saturating_sub(enter as u64);
+            (*back as u64 * body >= JIT_HEAT_WORK * *entries as u64, false)
+        }
+        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
+        Some(_) => (false, false),
+    }
+}
+
 /// Add the back edges of an entry of the loop at `enter` that ended below
 /// the threshold to its heat.
 #[cold]
 #[inline(never)]
 fn loop_heat(code: &Code, enter: u32, count: u32) {
     use crate::jit::JitSlot;
+    if count == 0 || count >= JIT_THRESHOLD {
+        return;
+    }
     let mut cache = code.jit.borrow_mut();
     match cache.get_mut(&enter) {
         None => {
@@ -4538,7 +4562,7 @@ fn run_with(
     macro_rules! jit_loop {
         () => {{
             let rec = *loops.last().unwrap();
-            match jit_enter(interp, code, rec.enter as usize, env, regs, &mut vars) {
+            match jit_enter(interp, code, (rec.enter & !HEAT_BIT) as usize, env, regs, &mut vars) {
                 Some((crate::jit::Outcome::Exited, _)) => {
                     loops.pop();
                     pc = rec.brk as usize + 1;
@@ -4546,7 +4570,7 @@ fn run_with(
                 }
                 Some((crate::jit::Outcome::Deopt(p), nested)) => {
                     for (e, b, n) in nested {
-                        loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1, heat: false });
+                        loops.push(LoopRec { brk: b, nxt: n, enter: e, count: JIT_THRESHOLD + 1 });
                     }
                     loops.last_mut().unwrap().count = JIT_THRESHOLD + 1;
                     pc = p;
@@ -5181,31 +5205,23 @@ fn run_with(
             Op::LoopEnter { brk, nxt } => {
                 // A loop compiled on an earlier entry runs natively at once,
                 // and so does one whose short entries add up to the threshold.
-                let (go, heat) = if gs.jit_on {
-                    match code.jit.borrow().get(&((pc - 1) as u32)) {
-                        Some(crate::jit::JitSlot::Ready(_)) => (true, false),
-                        // (Hot but too little work per entry: no more counting.)
-                        Some(crate::jit::JitSlot::Heat { back, entries }) if *back >= JIT_HEAT => {
-                            let body = (*brk as u64).saturating_sub(pc as u64 - 1);
-                            let go = *back as u64 * body >= JIT_HEAT_WORK * *entries as u64;
-                            (go, false)
-                        }
-                        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
-                        Some(_) => (false, false),
-                    }
-                } else {
-                    (false, false)
-                };
-                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0, heat });
+                let enter = (pc - 1) as u32;
+                let (go, heat) = if gs.jit_on { loop_enter_state(code, enter, *brk) } else { (false, false) };
+                loops.push(LoopRec {
+                    brk: *brk,
+                    nxt: *nxt,
+                    enter: if heat { enter | HEAT_BIT } else { enter },
+                    count: 0,
+                });
                 if go {
                     jit_loop!();
                 }
             }
             Op::LoopExit => {
-                if let Some(rec) = loops.pop() {
-                    if rec.heat && rec.count > 0 && rec.count < JIT_THRESHOLD {
-                        loop_heat(code, rec.enter, rec.count);
-                    }
+                if let Some(rec) = loops.pop()
+                    && rec.enter & HEAT_BIT != 0
+                {
+                    loop_heat(code, rec.enter & !HEAT_BIT, rec.count);
                 }
             }
             Op::ForInit { seq, call } => {
