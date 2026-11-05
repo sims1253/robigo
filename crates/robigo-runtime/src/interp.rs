@@ -54,6 +54,11 @@ pub struct Interp {
     /// the frame's exit code runs, and nested calls read the outer frame's
     /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
     pub exit_value: Option<Value>,
+    /// `frames.len()` when the AST evaluator took over from compiled code:
+    /// forcing a promise (eval.c:forcePromise) or running on.exit code
+    /// (context.c:R_run_onexits). A missing argument read before another
+    /// closure is entered is an `evalError` (see `missing_arg_class`).
+    pub(crate) ast_frames: usize,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -224,6 +229,7 @@ impl Interp {
             visible: true,
             interactive: false,
             exit_value: None,
+            ast_frames: usize::MAX,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -385,6 +391,26 @@ impl Interp {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 
+    /// The class of a missing-argument error for a variable read in `env`:
+    /// GNU R reads the variables of a byte-compiled closure's body with
+    /// getvar() (`getvarError`), and evaluates everything else, eval()
+    /// included, with the AST evaluator (`evalError`). A closure counts as
+    /// compiled once GNU R's JIT would have compiled it (R_CheckJIT, see
+    /// `JitState::is_bytecode`).
+    // R: eval.c:getvar, eval.c:eval (SYMSXP)
+    fn missing_arg_class(&self, env: &Env) -> &'static str {
+        if self.ast_frames == self.frames.len() {
+            return "evalError";
+        }
+        match self.frames.last() {
+            Some(ctx) if ctx.cloenv.ptr_eq(env) => match &ctx.function {
+                Value::Closure(c) if c.jit.is_bytecode() => "getvarError",
+                _ => "evalError",
+            },
+            _ => "evalError",
+        }
+    }
+
     pub fn eval_sym(&mut self, sym: Sym, env: &Env) -> RResult<Value> {
         if sym.is_empty() {
             return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"));
@@ -408,7 +434,8 @@ impl Interp {
                 return match v {
                     Value::Promise(p) => self.force_promise(&p),
                     v if v.is_missing_arg() => {
-                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), "evalError"))
+                        let class = self.missing_arg_class(env);
+                        Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class))
                     }
                     v => Ok(v),
                 };
@@ -476,6 +503,9 @@ impl Interp {
         p.forcing.set(true);
         crate::env::bump_r_epoch();
         let _default = p.default.then(|| crate::vm::begin_default_force(&env));
+        // R: eval.c:forcePromise evaluates with eval(), so its own reads are
+        // the AST evaluator's
+        let saved_ast = std::mem::replace(&mut self.ast_frames, self.frames.len());
         let r = match &p.code {
             Some(code) => match crate::vm::run_simple(self, code, &env) {
                 Some(v) => Ok(v),
@@ -486,6 +516,7 @@ impl Interp {
             },
             None => self.eval(&p.expr, &env),
         };
+        self.ast_frames = saved_ast;
         drop(_default);
         p.forcing.set(false);
         let v = r?;
@@ -1192,6 +1223,8 @@ impl Interp {
             if raise {
                 self.expressions = self.expressions_keep + 500;
             }
+            // R: context.c:R_run_onexits evaluates the code with eval()
+            let saved_ast = std::mem::replace(&mut self.ast_frames, self.frames.len());
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
@@ -1204,6 +1237,7 @@ impl Interp {
                     }
                 }
             }
+            self.ast_frames = saved_ast;
             if raise {
                 self.restore_expressions();
             }
