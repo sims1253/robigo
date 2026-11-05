@@ -4,18 +4,18 @@
 # group), gh logged in as a repository admin, and lingering enabled
 # (`loginctl enable-linger`) so the slots run without a login session.
 #
-#   scripts/ci-runner/install.sh --slots 3 --cpus 6 --memory 16g
+#   scripts/ci-runner/install.sh --slots 3 --cpus 6 --memory 20g
 #   scripts/ci-runner/install.sh --slots 1 --cpus 8 --memory 8g --labels robigo-docker
 #   scripts/ci-runner/install.sh --slots 0      # stop and remove every slot
 #
 # Slot N is pinned to CPUs [N*cpus, (N+1)*cpus), so `nproc` in a job
 # reports its share. Every slot is labelled `robigo-docker`; give it
-# `robigo-docker-16g` too only with 16 GB (the default): a corpus case
-# allocates that much, as GitHub's runners allow. See
+# `robigo-docker-20g` too only with 20 GB (the default): a corpus case
+# needs 17 GB, which GitHub's runners give with swap. See
 # docs/verification.md, "Self-hosted runners".
 set -euo pipefail
 
-slots=1 cpus=6 memory=16g labels=robigo-docker,robigo-docker-16g
+slots=1 cpus=6 memory=20g labels=robigo-docker,robigo-docker-20g
 while [ $# -gt 0 ]; do
   case $1 in
     --slots) slots=$2; shift 2 ;;

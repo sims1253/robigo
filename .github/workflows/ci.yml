@@ -41,8 +41,8 @@ env:
 # Runners (docs/verification.md, "Self-hosted runners"): the repository
 # variables ROBIGO_RUNNER_BUILD (compiling jobs) and ROBIGO_RUNNER_CORPORA
 # (jobs that run the built binary) may name the self-hosted labels
-# `robigo-docker` and `robigo-docker-16g`; unset, they run on GitHub's. Pull requests from forks
-# always run on GitHub's. perf and perf-diagnostic stay there because their
+# `robigo-docker` and `robigo-docker-20g`; unset, they run on GitHub's.
+# Pull requests from forks always run on GitHub's. perf and perf-diagnostic stay there because their
 # instruction counts are compared with main's from GitHub's machines;
 # progress because it writes to the repository; miri because it runs on
 # the host, not in a container.

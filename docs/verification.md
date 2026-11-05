@@ -303,9 +303,10 @@ The host runner is GitHub's `ubuntu-24.04` unless a repository variable
 names a self-hosted label: `ROBIGO_RUNNER_BUILD` for the compiling jobs
 (lint, build, test, bytecode-fidelity), set to `robigo-docker`, and
 `ROBIGO_RUNNER_CORPORA` for the jobs that run the built binary (corpora,
-fuzz, cran), set to `robigo-docker-16g`: slots with GitHub's 16 GB, as
-`serialize(1:2147483649, ...)` in the fastr corpus peaks at 16 GB. Self-hosted runners do not count against GitHub's limit of
-concurrent jobs. Clear a variable (`gh variable delete NAME`) when the
+fuzz, cran), set to `robigo-docker-20g`: slots with the 20 GB of GitHub's
+runners (16 GB of memory and 4 GB of swap), as `serialize(1:2147483649,
+...)` in the fastr corpus needs 17 GB. Self-hosted runners do not count
+against GitHub's limit of concurrent jobs. Clear a variable (`gh variable delete NAME`) when the
 machines are offline: queued jobs wait for a runner with their label and
 do not fall back. perf, perf-diagnostic, miri and progress always run on
 GitHub's (see the comment above `jobs:` in `ci.yml`), and so does every
