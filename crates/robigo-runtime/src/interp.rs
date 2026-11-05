@@ -808,11 +808,30 @@ impl Interp {
                 {
                     return r;
                 }
+                if self.bc && crate::vm::inlines_local(self, c, l, env) {
+                    return self.eval_inlined_local(l, env);
+                }
                 let promargs = self.promise_args(&l.args, env)?;
                 self.apply_closure(call, c, promargs, env, None)
             }
             _ => Err(Flow::error("attempt to apply non-function")),
         }
+    }
+
+    /// `local(expr)` in code GNU R compiled: the compiler's inline handler
+    /// turns it into the call `(function() expr)()` (a compiled closure of
+    /// the current frame, `jit_inherit`), which is what runs, and what
+    /// `sys.call()` and `sys.function()` there see.
+    // R: compiler/R/cmp.R: setInlineHandler("local")
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn eval_inlined_local(&mut self, l: &Lang, env: &Env) -> RResult<Value> {
+        let fun = Value::lang(
+            Value::Sym(s::FUNCTION),
+            vec![Arg::pos(Value::Null), Arg::pos(l.args[0].value.clone()), Arg::pos(Value::Null)],
+        );
+        let call = Value::lang(fun, Vec::new());
+        self.eval(&call, env)
     }
 
     /// An interpreted call taking the simple-internal path (see
