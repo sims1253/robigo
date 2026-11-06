@@ -52,6 +52,19 @@ pub enum JType {
     /// A matrix with only a dim attribute.
     MatD,
     MatI,
+    /// A character vector without attributes, and a character matrix with
+    /// only a dim attribute (in a loop).
+    VecS,
+    MatS,
+    /// An element of a character vector or matrix: its address. (Elements
+    /// are only copied, see `compile`.)
+    S,
+    /// A number that is an integer or a double depending on the path taken
+    /// (`hi <- n` then `hi <- mid`, in a loop): its value as a double and a
+    /// tag (an i32, 1 for an integer). While the tag says integer, the value
+    /// is never NA and arithmetic is R's integer arithmetic: native code
+    /// leaves where that would overflow or divide by zero.
+    N,
     /// Any value, held in an `RVal` slot of the frame (in a closure compiled
     /// whole): native code knows it by the slot's address.
     Dyn,
@@ -63,7 +76,7 @@ impl JType {
     }
 
     pub fn is_vector(self) -> bool {
-        matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI)
+        matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::VecS | JType::MatS)
     }
 }
 
@@ -87,6 +100,11 @@ pub struct SlotInfo {
     /// [`LoopCtx`] (copied from the value at entry if `needs_entry`) and
     /// written back as a new vector.
     pub owned: bool,
+    /// For a variable of type `N`: index of its tag in the value buffer.
+    pub tag: Option<usize>,
+    /// Assigned with `<<-`: the variable is the binding of an enclosing
+    /// environment, written back there.
+    pub superset: bool,
 }
 
 /// A view of a vector's data passed to native code.
@@ -172,12 +190,14 @@ pub struct JitLoop {
     /// (LoopEnter index, break target, next target) of loops inside the
     /// region, outermost first (not the region's own loop).
     pub nested: Vec<(u32, u32, u32)>,
+    /// Variables of the environments of closures called inline.
+    pub cells: Vec<LoopCell>,
     /// The functions the loop's guards check, with the index of a guarding
     /// op (for its memo).
     pub guards: Vec<(Sym, usize)>,
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
-    pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+    pub calls: Vec<LoopCall>,
     /// The ops native code does not have, where it always leaves (sorted).
     pub leaves: Vec<u32>,
     /// With `leaves`: the value-buffer index where native code counts the
@@ -198,6 +218,9 @@ pub struct JitLoop {
     pub arg_syms: Vec<Sym>,
     /// The loop's closed form, tried before the native code.
     pub summary: Option<summary::Summary>,
+    /// The free variables of those closures: call site, name, type, and the
+    /// index of the value (scalars) or view (vectors) it is passed in.
+    pub free: Vec<(u32, Sym, JType, usize)>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -216,6 +239,54 @@ pub struct InlineCall {
     /// In a loop: the functions its arguments use (`[` of `f(x[i])`), which
     /// must be base's.
     pub arg_syms: Vec<Sym>,
+    /// In a loop: the callee's variables of its enclosing environments,
+    /// which are the loop's [`LoopCell`]s.
+    pub cells: Vec<CalleeCell>,
+    /// In a loop: the callee's free variables (its slot, the name and the
+    /// type of the value its environment binds), read-only for the loop
+    /// (`vm::jit_enter` reads them from the instance called).
+    pub free: Vec<(Slot, Sym, JType)>,
+}
+
+/// A variable of an enclosing environment that a closure called inline
+/// from a loop reads (see [`LoopCell`]).
+#[derive(Clone, Copy)]
+pub struct CalleeCell {
+    /// Its slot in the callee's code.
+    pub slot: Slot,
+    pub sym: Sym,
+    /// The type of its value.
+    pub ty: JType,
+    /// Assigned with `<<-`.
+    pub written: bool,
+}
+
+/// A call a loop runs inline: its site, the function it names, the closure
+/// it was compiled for, and the functions the body guards, each with a memo
+/// of its last check from the closure's environment (`vm::guard_ok`).
+pub struct LoopCall {
+    pub site: u32,
+    pub f: Sym,
+    pub clo: std::rc::Rc<crate::value::Closure>,
+    pub guards: Vec<(Sym, std::cell::Cell<crate::compile::GuardMemo>)>,
+}
+
+/// A variable of an enclosing environment of closures a loop calls inline:
+/// read when native code is entered, and (when they assign it with `<<-`)
+/// written back to its binding when it leaves. Nothing else can read or
+/// write the binding meanwhile: no R code runs, and the loop itself does
+/// not name it (see [`compile`]). An inlined call assigns a copy, which
+/// becomes the cell's value only when the call completes, so a call that
+/// leaves native code midway leaves the cell as it was: the VM makes the
+/// call from scratch.
+pub struct LoopCell {
+    pub sym: Sym,
+    pub ty: JType,
+    /// Index into the value buffer.
+    pub idx: usize,
+    pub written: bool,
+    /// The call sites whose closures read it.
+    pub sites: Vec<u32>,
 }
 
 /// An argument of a call in native code: evaluated by the caller, which is
@@ -234,6 +305,11 @@ pub enum CallArg {
 impl CallArg {
     /// Its type (`vectors`: in a loop, which reads several elements too).
     fn ty(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>, vectors: bool) -> Option<JType> {
+        // (A callee's formals have one type.)
+        self.ty_any(st, slot_ty, vectors).filter(|t| *t != JType::N)
+    }
+
+    fn ty_any(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>, vectors: bool) -> Option<JType> {
         match self {
             CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
             CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
@@ -342,6 +418,13 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             slot_ty.insert(*s, *args.get(k)?);
         }
     }
+    for c in &ic.cells {
+        slot_ty.insert(c.slot, c.ty);
+    }
+    for (s, _, t) in &ic.free {
+        slot_ty.insert(*s, *t);
+    }
+    let free_vec = |s: &Slot| ic.free.iter().any(|(f, _, t)| f == s && t.is_vector());
     let empty = HashMap::new();
     let inl = Inl::new(&empty);
     let len = code.ops.len();
@@ -374,6 +457,14 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
         }
         let op = &code.ops[pc];
         match op {
+            // (A free vector is only indexed; a free scalar is read.)
+            Op::GetVar { slot, .. } if free_vec(slot) => return None,
+            Op::Index { slot, .. } | Op::Index2 { slot, .. } if free_vec(slot) => {
+                if uses(op, &inl).rregs.iter().any(|r| st[*r as usize].is_none()) || !types_ok(op, &st, &slot_ty, &inl)
+                {
+                    return None;
+                }
+            }
             Op::ConstD { .. }
             | Op::ConstI { .. }
             | Op::ConstL { .. }
@@ -399,6 +490,13 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             Op::Return { src } => {
                 merge_result(st[*src as usize])?;
                 continue;
+            }
+            // Into a cell, keeping its type.
+            Op::SuperSet { src, slot, .. } => {
+                let cell = ic.cells.iter().find(|c| c.slot == *slot)?;
+                if !cell.written || st[*src as usize] != Some(cell.ty) {
+                    return None;
+                }
             }
             _ => return None,
         }
@@ -439,6 +537,13 @@ pub enum JitSlot {
     /// Not compiled yet: this many attempts failed for the values seen.
     Failed(u8),
     Never,
+    /// Not tried yet: the back edges of the entries that ended before the
+    /// threshold, summed, and the number of those entries (a short loop run
+    /// often is hot too).
+    Heat {
+        back: u32,
+        entries: u32,
+    },
 }
 
 /// Why a loop was not compiled.
@@ -535,7 +640,21 @@ extern "C" fn h_tan(x: f64) -> f64 {
     x.tan()
 }
 
+/// `*dst <- *src` for elements of character vectors (`dst` may be `src`).
+extern "C" fn h_str_set(dst: *mut crate::value::RStr, src: *const crate::value::RStr) -> i32 {
+    // SAFETY: native code passes the addresses of elements of vectors it
+    // was entered with (`JType::S`), which their variables hold alive and
+    // which nothing else accesses while it runs; `dst`'s vector is not
+    // shared (`vm::jit_enter` made it unique).
+    unsafe {
+        let s = (*src).clone();
+        *dst = s;
+    }
+    0
+}
+
 const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
+    ("robigo_str_set", h_str_set as *const u8, &[types::I64, types::I64], types::I32),
     ("robigo_pow", h_pow as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod", h_fmod as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod_warns", h_fmod_warns as *const u8, &[types::F64, types::F64], types::I32),
@@ -732,7 +851,7 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             leaf_uses(i, &mut u);
             u.wregs.push(*dst);
         }
-        Op::SetIndex { val, slot, i, .. } => {
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
             u.rregs.push(*val);
             leaf_uses(i, &mut u);
             // The vector is read and modified in place, not reassigned.
@@ -800,6 +919,17 @@ fn leave_reads(op: &Op, code: &Code) -> Option<Vec<Reg>> {
             leaf(b, &mut out);
         }
         Op::ForSeqLength { len, .. } => leaf(len, &mut out),
+        Op::IndexN { idx, .. } => code.index_lists[*idx as usize].iter().flatten().for_each(|l| leaf(l, &mut out)),
+        Op::SetIndexN { val, idx, .. } | Op::SuperSetIndexN { val, idx, .. } => {
+            out.push(*val);
+            code.index_lists[*idx as usize].iter().flatten().for_each(|l| leaf(l, &mut out));
+        }
+        Op::ForSeqBy { k, .. } => {
+            for sa in &code.seq_by[*k as usize] {
+                leaf(&sa.a, &mut out);
+                leaf(&sa.b, &mut out);
+            }
+        }
         // (Structure: these stay in the VM with the whole loop.)
         Op::ForRange { .. } | Op::ForInit { .. } | Op::ForStep { .. } | Op::LoopEnter { .. } | Op::LoopExit => {
             return None;
@@ -858,6 +988,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Colon { .. }
         | Op::Builtin1 { f: Builtin1::Length | Builtin1::IsNull, .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
+        // (Of a scalar: see `compile`.)
+        Op::SuperSet { .. } => true,
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
         | Op::JumpIf { target, .. }
@@ -869,11 +1001,28 @@ fn supported(op: &Op, r: &Region) -> bool {
         // vectors and in-range scalar indices native code handles, it does
         // what `x[i] <- v` does; anything else deoptimizes.)
         Op::SetIndex { .. } => true,
+        // (On the enclosing binding's vector in place: see `compile`.)
+        Op::SuperSetIndex { .. } => true,
         _ => false,
     }
 }
 
+/// A double, an integer or a number of either kind.
+fn num(t: JType) -> bool {
+    matches!(t, JType::D | JType::I | JType::N)
+}
+
 fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
+    if a == JType::N || b == JType::N {
+        if !num(a) || !num(b) {
+            return None;
+        }
+        return Some(match op {
+            _ if a == JType::D || b == JType::D => JType::D,
+            ArithOp::Div | ArithOp::Pow => JType::D,
+            _ => JType::N,
+        });
+    }
     if !a.is_scalar() || !b.is_scalar() {
         return None;
     }
@@ -890,6 +1039,16 @@ fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
 /// Compile the loop starting at the `LoopEnter` op `enter`. `entry(slot)`
 /// gives the type of a variable's current value (`None`: unbound or not
 /// representable); `live_in(reg)` that of a register set before the loop.
+/// [`uses`] in a loop: `sym <<- x` writes the loop variable that stands for
+/// the binding it assigns.
+fn luses(op: &Op, inl: &Inl) -> Uses {
+    let mut u = uses(op, inl);
+    if let Op::SuperSet { slot, .. } = op {
+        u.wslots.push(*slot);
+    }
+    u
+}
+
 pub fn compile(
     code: &Code,
     enter: usize,
@@ -899,6 +1058,22 @@ pub fn compile(
 ) -> Result<JitLoop, Reject> {
     let mut inl = Inl::new(&calls);
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
+    // The cells of the calls run inline, one per symbol.
+    let mut cells: Vec<LoopCell> = Vec::new();
+    let mut sites: Vec<u32> = calls.keys().copied().collect();
+    sites.sort();
+    for site in sites {
+        for cc in &calls[&site].cells {
+            match cells.iter_mut().find(|c| c.sym == cc.sym) {
+                Some(c) if c.ty != cc.ty => return Err(not_now(10)),
+                Some(c) => {
+                    c.written |= cc.written;
+                    c.sites.push(site);
+                }
+                None => cells.push(LoopCell { sym: cc.sym, ty: cc.ty, idx: 0, written: cc.written, sites: vec![site] }),
+            }
+        }
+    }
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
         return Err(Reject::Never);
@@ -933,6 +1108,17 @@ pub fn compile(
             leave[pc] = true;
             continue;
         }
+        // A cell is not a variable of the loop: the loop must not name it,
+        // even where it would be another binding of the same name.
+        if !cells.is_empty() {
+            let u = luses(op, &inl);
+            if u.rslots.iter().chain(&u.wslots).any(|s| cells.iter().any(|c| c.sym == code.vars[*s as usize])) {
+                if trace() {
+                    eprintln!("jit: the loop names a variable of a closure it calls at {}: {:?}", pc, op);
+                }
+                return Err(Reject::Never);
+            }
+        }
         match op {
             Op::LoopEnter { brk, nxt } => nested.push((pc as u32, *brk, *nxt)),
             Op::Guard { sym, .. } => guards.push((*sym, pc)),
@@ -950,6 +1136,7 @@ pub fn compile(
     for pc in native_ops() {
         if let Op::Index { slot, .. }
         | Op::SetIndex { slot, .. }
+        | Op::SuperSetIndex { slot, .. }
         | Op::Index2 { slot, .. }
         | Op::SetIndex2 { slot, .. } = &ops[pc]
         {
@@ -966,7 +1153,7 @@ pub fn compile(
         }
     }
     for pc in native_ops() {
-        for s in uses(&ops[pc], &inl).rslots {
+        for s in luses(&ops[pc], &inl).rslots {
             if let std::collections::hash_map::Entry::Vacant(e) = slot_ty.entry(s) {
                 if let Some(t) = entry(s) {
                     e.insert(t);
@@ -982,7 +1169,7 @@ pub fn compile(
     let mut written = vec![false; code.nregs];
     let mut live = Vec::new();
     for pc in native_ops() {
-        let u = uses(&ops[pc], &inl);
+        let u = luses(&ops[pc], &inl);
         for reg in u.rregs {
             if written[reg as usize] {
                 continue;
@@ -1060,7 +1247,7 @@ pub fn compile(
             }
             continue;
         }
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
                 if trace() {
@@ -1083,6 +1270,18 @@ pub fn compile(
             }
             return Err(Reject::Never);
         }
+        // A string register is the address of an element: where an element
+        // of a character vector is assigned, it must be the only one, so
+        // that none can stand for a value the assignment replaced.
+        if let Op::SetIndex { slot, val, .. } | Op::SetIndex2 { slot, val, .. } = op
+            && matches!(slot_ty[slot], JType::VecS | JType::MatS)
+            && st.iter().enumerate().any(|(r, t)| *t == Some(JType::S) && r != *val as usize)
+        {
+            if trace() {
+                eprintln!("jit: another string held where one is assigned at {}: {:?}", pc, op);
+            }
+            return Err(Reject::Never);
+        }
     }
 
     // Must-defined analysis of variables: those read before written need
@@ -1100,7 +1299,7 @@ pub fn compile(
         }
         let Some(mut sd) = state[pc - r.start].clone() else { continue };
         let op = &ops[pc];
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in &u.rslots {
             if !sd[*s as usize] {
                 needs_entry[*s as usize] = true;
@@ -1129,11 +1328,13 @@ pub fn compile(
     let mut writable = vec![false; nslots];
     let mut assigned = vec![false; nslots];
     for pc in native_ops() {
-        for s in uses(&ops[pc], &inl).wslots {
+        for s in luses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
         match &ops[pc] {
-            Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } => writable[*slot as usize] = true,
+            Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } | Op::SuperSetIndex { slot, .. } => {
+                writable[*slot as usize] = true
+            }
             Op::SetVar { slot, .. } => assigned[*slot as usize] = true,
             _ => {}
         }
@@ -1159,20 +1360,64 @@ pub fn compile(
     // change that vector while the register is live (R's value would be
     // the old one).
     for pc in native_ops() {
-        let (Op::SetVar { slot, .. } | Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. }) = &ops[pc] else {
+        let (Op::SetVar { slot, .. }
+        | Op::SetIndex { slot, .. }
+        | Op::SetIndex2 { slot, .. }
+        | Op::SuperSetIndex { slot, .. }) = &ops[pc]
+        else {
             continue;
         };
         if !slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
             continue;
         }
         let after = &vlive[pc + 1 - r.start];
+        let after_ty = states[pc + 1 - r.start].as_ref();
         for (reg, live) in after.iter().enumerate() {
-            let views = native_ops()
-                .any(|q| matches!(&ops[q], Op::GetVar { dst, slot: s2, .. } if *dst as usize == reg && s2 == slot));
+            // (A vector a call run inline returns may be its argument's
+            // view, `id(x)`: any vector result counts.)
+            let call_vec = after_ty.and_then(|st| st[reg]).is_some_and(|t| t.is_vector())
+                && native_ops().any(|q| matches!(&ops[q], Op::Call { dst, .. } if *dst as usize == reg));
+            let views = call_vec
+                || native_ops()
+                    .any(|q| matches!(&ops[q], Op::GetVar { dst, slot: s2, .. } if *dst as usize == reg && s2 == slot));
             if *live && views {
                 if trace() {
                     eprintln!("jit: register {} views a vector the loop changes, at {}", reg, pc);
                 }
+                return Err(Reject::Never);
+            }
+        }
+    }
+    // A variable assigned with `<<-` is the enclosing binding (`vm::jit_enter`
+    // checks that the frame has none of its own): the body must not also
+    // assign it locally, in the loop or anywhere else.
+    // The same for `x[[i]] <<- v` (a vector written in place, `vm::jit_enter`
+    // views the binding): nothing may assign or modify the local `x`.
+    let mut supersets: Vec<Slot> = Vec::new();
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } = &ops[pc] {
+            supersets.push(*slot);
+        }
+    }
+    // (Only with a `<<-`: most loops have none, and this scans the function.)
+    for pc in (0..ops.len()).filter(|_| !supersets.is_empty()) {
+        let local_write = match &ops[pc] {
+            Op::SuperSet { .. } | Op::SuperSetIndex { .. } | Op::SuperSetIndexN { .. } => false,
+            Op::SetIndex { slot, .. }
+            | Op::SetIndex2 { slot, .. }
+            | Op::SetIndexN { slot, .. }
+            | Op::SetComplex { slot, .. }
+            | Op::SetDollar { slot, .. } => supersets.contains(slot),
+            op => uses(op, &inl).wslots.iter().any(|s| supersets.contains(s)),
+        };
+        if local_write {
+            return Err(Reject::Never);
+        }
+    }
+    // A vector both `<<-`-assigned and scalar `<<-`-assigned: not here.
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } = &ops[pc] {
+            if slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
                 return Err(Reject::Never);
             }
         }
@@ -1191,9 +1436,18 @@ pub fn compile(
             return Err(Reject::Never);
         }
         let ne = needs_entry[s as usize] || (ty.is_vector() && !owned);
-        if ne && entry(s) != Some(ty) && !(ty == JType::VecI && entry(s) == Some(JType::Range)) {
+        let fits = match ty {
+            JType::N => matches!(entry(s), Some(JType::I | JType::D)),
+            JType::VecI => matches!(entry(s), Some(JType::VecI | JType::Range)),
+            _ => entry(s) == Some(ty),
+        };
+        if ne && !fits {
             return Err(not_now(9));
         }
+        let tag = (ty == JType::N).then(|| {
+            nvals += 1;
+            nvals - 1
+        });
         let idx = if ty.is_vector() {
             nvecs += 1;
             nvecs - 1
@@ -1201,7 +1455,7 @@ pub fn compile(
             nvals += if ty == JType::Range { 3 } else { 1 };
             nvals - if ty == JType::Range { 3 } else { 1 }
         };
-        let flag = if written[s as usize] && !ne && (ty.is_scalar() || ty == JType::Range || owned) {
+        let flag = if written[s as usize] && !ne && (ty.is_scalar() || ty == JType::Range || ty == JType::N || owned) {
             nvals += 1;
             Some(nvals - 1)
         } else {
@@ -1217,6 +1471,8 @@ pub fn compile(
             flag,
             writable: writable[s as usize],
             owned,
+            tag,
+            superset: supersets.contains(&s),
         });
     }
     let width = |t: JType| match t {
@@ -1256,7 +1512,43 @@ pub fn compile(
     let vis = nvals - 1;
     let vis_at = visibility(code, &r, &inl);
 
+    for c in &mut cells {
+        c.idx = nvals;
+        nvals += 1;
+    }
+
     let mut deopt_regs = HashMap::new();
+    // The inlined callees' free variables: values and views after the
+    // loop's own. The loop must not assign a variable of the same name (it
+    // could be the binding read).
+    let mut free = Vec::new();
+    let mut sites: Vec<u32> = calls.keys().copied().collect();
+    sites.sort();
+    for site in sites {
+        for (_, sym, ty) in &calls[&site].free {
+            let written = code.vars.iter().position(|v| v == sym).is_some_and(|s| {
+                (r.start..r.end).any(|pc| {
+                    let u = uses(&ops[pc], &inl);
+                    u.wslots.contains(&(s as Slot))
+                        || matches!(&ops[pc], Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. }
+                            | Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } if *slot as usize == s)
+                })
+            });
+            // (Nor may another callee assign it, as a cell (#312): the
+            // snapshot would miss that write.)
+            if written || cells.iter().any(|c| c.written && c.sym == *sym) {
+                return Err(Reject::Never);
+            }
+            let idx = if ty.is_scalar() {
+                nvals += 1;
+                nvals - 1
+            } else {
+                nvecs += 1;
+                nvecs - 1
+            };
+            free.push((site, *sym, *ty, idx));
+        }
+    }
     let lay = Layout {
         slots: &slots,
         slot_ty: &slot_ty,
@@ -1267,6 +1559,9 @@ pub fn compile(
         counter,
         vis,
         vis_at: &vis_at,
+        cells: &cells,
+        free: &free,
+        nvecs,
     };
     let (func, temps) = codegen(code, &r, &lay, &mut deopt_regs, &inl)?;
     let mut arg_syms = Vec::new();
@@ -1285,7 +1580,21 @@ pub fn compile(
     if trace() && summary.is_some() {
         eprintln!("jit: loop at {} has a closed form", enter);
     }
-    let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
+    let calls = calls
+        .into_iter()
+        .map(|(site, c)| {
+            let f = ops
+                .iter()
+                .find_map(|o| match o {
+                    Op::Call { f, site: s2, .. } if *s2 == site => Some(*f),
+                    _ => None,
+                })
+                .expect("an inlined call's op");
+            let guards =
+                c.guard_syms.iter().map(|s| (*s, std::cell::Cell::new(crate::compile::GuardMemo::NONE))).collect();
+            LoopCall { site, f, clo: c.clo, guards }
+        })
+        .collect();
     let mut nulled: Vec<Reg> = ops[r.start..r.end]
         .iter()
         .filter_map(|op| if let Op::Null { dst, dead: true } = op { Some(*dst) } else { None })
@@ -1312,6 +1621,8 @@ pub fn compile(
         temps,
         arg_syms,
         summary,
+        cells,
+        free,
     })
 }
 
@@ -1328,6 +1639,13 @@ struct Layout<'a> {
     counter: Option<usize>,
     vis: usize,
     vis_at: &'a [Vis],
+    /// The cells of the calls run inline (see [`LoopCell`]).
+    cells: &'a [LoopCell],
+    /// The free variables of the calls run inline (see [`JitLoop::free`]).
+    free: &'a [(u32, Sym, JType, usize)],
+    /// The views of the variables and free variables; temporary vectors'
+    /// come after them.
+    nvecs: usize,
 }
 
 /// What the VM's visibility flag is before an op: as at entry, set to a
@@ -1506,6 +1824,7 @@ fn vm_writes(op: &Op) -> Option<Reg> {
         | Op::Index { dst, .. }
         | Op::Subset { dst, .. }
         | Op::Index2 { dst, .. }
+        | Op::IndexN { dst, .. }
         | Op::CallBuiltin { dst, .. }
         | Op::Math1 { dst, .. }
         | Op::AndOrArg { dst, .. }
@@ -1521,7 +1840,7 @@ fn vm_writes(op: &Op) -> Option<Reg> {
         | Op::RelL { dst, .. }
         | Op::Colon { dst, .. }
         | Op::Builtin1 { dst, .. } => Some(*dst),
-        Op::ForRange { seq, .. } | Op::ForSeqLength { seq, .. } => Some(*seq),
+        Op::ForRange { seq, .. } | Op::ForSeqLength { seq, .. } | Op::ForSeqBy { seq, .. } => Some(*seq),
         Op::ForInit { seq, .. } => Some(*seq + 1),
         _ => None,
     }
@@ -1545,23 +1864,25 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
         Op::Index { i, slot, two, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
                 || (!*two
                     && inl.specs.is_none()
                     && vector_index(lt(i))
                     && matches!(slot_ty.get(slot), Some(JType::VecD | JType::VecI)))
         }
         Op::Index2 { slot, i, j, .. } => {
-            matches!(slot_ty[slot], JType::MatD | JType::MatI)
-                && matches!(lt(i), Some(JType::D | JType::I))
-                && matches!(lt(j), Some(JType::D | JType::I))
+            matches!(slot_ty[slot], JType::MatD | JType::MatI | JType::MatS)
+                && matches!(lt(i), Some(JType::D | JType::I | JType::N))
+                && matches!(lt(j), Some(JType::D | JType::I | JType::N))
         }
         Op::SetIndex2 { val, slot, i, j, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
-                && matches!(lt(j), Some(JType::D | JType::I))
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
+                && matches!(lt(j), Some(JType::D | JType::I | JType::N))
                 && matches!(
                     (slot_ty[slot], rt(val)),
-                    (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
+                    (JType::MatD, JType::D | JType::I | JType::L | JType::N)
+                        | (JType::MatI, JType::I | JType::L)
+                        | (JType::MatS, JType::S)
                 )
         }
         Op::SetIndex { val, slot, i, two, .. } if !*two && inl.specs.is_none() && vector_index(lt(i)) => {
@@ -1578,12 +1899,13 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                 && matches!(lt(i), Some(JType::D | JType::I))
                 && matches!(rt(val), JType::D | JType::I | JType::L | JType::Dyn)
         }
-        Op::SetIndex { val, slot, i, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
                 && matches!(
                     (slot_ty[slot], rt(val)),
-                    (JType::VecD | JType::MatD, JType::D | JType::I | JType::L)
+                    (JType::VecD | JType::MatD, JType::D | JType::I | JType::L | JType::N)
                         | (JType::VecI | JType::MatI, JType::I | JType::L)
+                        | (JType::VecS | JType::MatS, JType::S)
                 )
         }
         // (seq_len only takes the fast path for integers and doubles)
@@ -1605,7 +1927,7 @@ fn vector_index(t: Option<JType>) -> bool {
 /// The types a variable of a loop can have in a register: scalars, ranges
 /// and plain vectors (whose register views the vector).
 fn loop_value(t: JType) -> bool {
-    t.is_scalar() || matches!(t, JType::Range | JType::VecD | JType::VecI)
+    t.is_scalar() || matches!(t, JType::Range | JType::VecD | JType::VecI | JType::N)
 }
 
 fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
@@ -1680,11 +2002,13 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             vec![(*dst as usize, t)]
         }
         Op::Rel { dst, a, b, .. } => {
-            let ok = scalar(rt(a)).is_some() && scalar(rt(b)).is_some();
+            let sn = |t: Option<JType>| t.filter(|t| t.is_scalar() || *t == JType::N);
+            let ok = sn(rt(a)).is_some() && sn(rt(b)).is_some();
             vec![(*dst as usize, ok.then_some(JType::L))]
         }
         Op::RelL { dst, a, b, .. } => {
-            let ok = scalar(leaf_type(a, st, slot_ty)).is_some() && scalar(leaf_type(b, st, slot_ty)).is_some();
+            let sn = |t: Option<JType>| t.filter(|t| t.is_scalar() || *t == JType::N);
+            let ok = sn(leaf_type(a, st, slot_ty)).is_some() && sn(leaf_type(b, st, slot_ty)).is_some();
             vec![(*dst as usize, ok.then_some(JType::L))]
         }
         Op::Neg { dst, a, .. } => {
@@ -1721,6 +2045,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             let t = match slot_ty.get(slot) {
                 Some(JType::VecD | JType::MatD) => Some(JType::D),
                 Some(JType::VecI | JType::MatI) => Some(JType::I),
+                Some(JType::VecS | JType::MatS) => Some(JType::S),
                 _ => None,
             };
             vec![(*dst as usize, t)]
@@ -1760,9 +2085,17 @@ fn reg_flow(
         if (inl.specs.is_some() && closure::leaves(op, inl)) || inl.leaves_at(pc) {
             continue;
         }
-        let mut assign = |slot: Slot, t: JType| -> Result<(), Reject> {
+        // (`wide`: a variable assigned integers and doubles is a number, in
+        // a loop.)
+        let mut assign = |slot: Slot, t: JType, wide: bool| -> Result<(), Reject> {
             match slot_ty.get(&slot) {
                 Some(old) if *old == t => Ok(()),
+                Some(JType::N) if wide && num(t) => Ok(()),
+                Some(old) if wide && num(*old) && num(t) => {
+                    slot_ty.insert(slot, JType::N);
+                    new_slot = true;
+                    Ok(())
+                }
                 Some(_) => Err(not_now(3)),
                 None => {
                     slot_ty.insert(slot, t);
@@ -1775,13 +2108,23 @@ fn reg_flow(
             Op::SetVar { slot, .. } if inl.is_dead(*slot) => {}
             Op::SetVar { src, slot, .. } => {
                 if let Some(t) = st[*src as usize] {
-                    if !(if inl.specs.is_some() { t.is_scalar() || t == JType::Dyn } else { loop_value(t) }) {
+                    let wide = inl.specs.is_none();
+                    if !(if !wide { t.is_scalar() || t == JType::Dyn } else { loop_value(t) }) {
                         return Err(Reject::Never);
                     }
-                    assign(*slot, t)?;
+                    assign(*slot, t, wide)?;
                 }
             }
-            Op::ForStep { slot, .. } => assign(*slot, JType::I)?,
+            Op::ForStep { slot, .. } => assign(*slot, JType::I, false)?,
+            // (In a loop; in a closure compiled whole the slot is a cell.)
+            Op::SuperSet { src, slot, .. } if inl.specs.is_none() => {
+                if let Some(t) = st[*src as usize] {
+                    if !t.is_scalar() {
+                        return Err(Reject::Never);
+                    }
+                    assign(*slot, t, false)?;
+                }
+            }
             _ => {}
         }
         let mut out = st.clone();
@@ -1826,6 +2169,8 @@ fn cl_type(t: JType) -> Type {
         JType::D => types::F64,
         // (A pointer to a `VecView`, in a closure compiled whole.)
         JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::Dyn => types::I64,
+        JType::VecS | JType::MatS | JType::S => types::I64,
+        JType::N => types::F64,
         _ => types::I32,
     }
 }
@@ -1840,6 +2185,11 @@ struct Vars {
     /// Per register and type: one variable, or three for a range.
     reg: HashMap<(Reg, JType), Variable>,
     range: HashMap<Reg, (Variable, Variable, Variable)>,
+    /// Per [`LoopCell`]: its variable.
+    cells: Vec<Variable>,
+    /// The tags of variables and registers of type `N`.
+    slot_tag: HashMap<Slot, Variable>,
+    reg_tag: HashMap<Reg, Variable>,
     lp: LoopVars,
 }
 
@@ -1884,6 +2234,7 @@ struct Gen<'a, 'b> {
     b: FunctionBuilder<'b>,
     v: Vars,
     slots: &'a [SlotInfo],
+    cells: &'a [LoopCell],
     states: Vec<Option<RegState>>,
     inl: &'a Inl<'a>,
     /// Inside an inlined callee: leave at this op (the call) instead, and
@@ -1904,6 +2255,17 @@ struct Gen<'a, 'b> {
     whole: Option<closure::Whole<'a>>,
     /// Compiling a loop.
     lp: Option<LoopGen<'a>>,
+    /// Per call site: the variables of the inlined callee's free variables
+    /// (scalars, vectors, matrix extents), keyed by the callee's slots.
+    free: HashMap<u32, Free>,
+}
+
+/// See [`Gen::free`].
+#[derive(Clone, Default)]
+struct Free {
+    slot: HashMap<Slot, (Variable, JType)>,
+    vec: HashMap<Slot, (Variable, Variable, JType)>,
+    dims: HashMap<Slot, (Variable, Variable)>,
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -2007,6 +2369,10 @@ impl Gen<'_, '_> {
                 let x = self.b.use_var(*var);
                 self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
             }
+            if let (Some(t), Some(ti)) = (self.v.slot_tag.get(&s.slot), s.tag) {
+                let x = self.b.use_var(*t);
+                self.b.ins().store(mf, x, self.vals, (ti * 8) as i32);
+            }
             if let Some((a, b2, c)) = self.v.lp.rslot.get(&s.slot).copied() {
                 for (k, var) in [a, b2, c].into_iter().enumerate() {
                     let x = self.b.use_var(var);
@@ -2041,6 +2407,12 @@ impl Gen<'_, '_> {
                 self.b.ins().store(mf, x, self.vals, (vis * 8) as i32);
             }
         }
+        for (c, var) in self.cells.iter().zip(&self.v.cells) {
+            if c.written {
+                let x = self.b.use_var(*var);
+                self.b.ins().store(mf, x, self.vals, (c.idx * 8) as i32);
+            }
+        }
         let mut live = Vec::new();
         let Some(pc) = pc else { return live };
         let st = self.state(pc).clone();
@@ -2071,6 +2443,10 @@ impl Gen<'_, '_> {
                 let var = self.v.reg[&(reg, t)];
                 let x = self.b.use_var(var);
                 self.b.ins().store(mf, x, self.vals, (idx * 8) as i32);
+                if t == JType::N {
+                    let x = self.b.use_var(self.v.reg_tag[&reg]);
+                    self.b.ins().store(mf, x, self.vals, ((idx + 1) * 8) as i32);
+                }
             }
             live.push((reg, t));
         }
@@ -2148,6 +2524,20 @@ impl Gen<'_, '_> {
         (self.b.use_var(var), t)
     }
 
+    /// The type the current op gives register `r`.
+    fn def_type(&self, r: Reg) -> Option<JType> {
+        self.cur_defs.iter().find(|(k, _)| *k == r as usize).and_then(|(_, t)| *t)
+    }
+
+    /// `dst <- a op b` giving a number.
+    fn op_n(&mut self, op: ArithOp, dst: Reg, a: &Leaf, b: &Leaf, pc: usize) {
+        let (x, y) = (self.leaf(a), self.leaf(b));
+        let (at, bt) = (self.tag(a, x.1), self.tag(b, y.1));
+        let (v, tag) = self.arith_n(op, x, at, y, bt, pc);
+        self.set_reg(dst, v);
+        self.set_tag(dst, tag);
+    }
+
     /// Define register `r` (with the type the current op gives it).
     fn set_reg(&mut self, r: Reg, x: CValue) {
         let t = self.cur_defs.iter().find(|(k, _)| *k == r as usize).and_then(|(_, t)| *t).unwrap();
@@ -2161,7 +2551,7 @@ impl Gen<'_, '_> {
 
     /// `int_to_real`: NA becomes NA_REAL.
     fn to_f64(&mut self, x: CValue, t: JType) -> CValue {
-        if t == JType::D {
+        if t == JType::D || t == JType::N {
             return x;
         }
         let na = self.is_na_i(x);
@@ -2200,9 +2590,102 @@ impl Gen<'_, '_> {
         }
     }
 
+    /// The tag of an operand of type `t` (see `JType::N`).
+    fn tag(&mut self, l: &Leaf, t: JType) -> CValue {
+        match (l, t) {
+            (Leaf::Var(_, s), JType::N) => {
+                let v = self.v.slot_tag[s];
+                self.b.use_var(v)
+            }
+            (Leaf::R(r), JType::N) => {
+                let v = self.v.reg_tag[r];
+                self.b.use_var(v)
+            }
+            (_, JType::I) => self.i32c(1),
+            _ => self.i32c(0),
+        }
+    }
+
+    /// Define the tag of register `r`.
+    fn set_tag(&mut self, r: Reg, tag: CValue) {
+        let v = self.v.reg_tag[&r];
+        self.b.def_var(v, tag);
+    }
+
+    /// Arithmetic giving a number (`JType::N`): R's integer arithmetic while
+    /// both tags say integer, its double arithmetic otherwise. Leaves at
+    /// `pc` where the integer result would be NA (an NA operand, overflow,
+    /// division by zero), which the VM computes with its warning.
+    fn arith_n(
+        &mut self,
+        op: ArithOp,
+        a: (CValue, JType),
+        at: CValue,
+        b: (CValue, JType),
+        bt: CValue,
+        pc: usize,
+    ) -> (CValue, CValue) {
+        for (x, t) in [a, b] {
+            if t == JType::I {
+                let na = self.is_na_i(x);
+                self.deopt_if(na, pc);
+            }
+        }
+        let x = self.to_f64(a.0, a.1);
+        let y = self.to_f64(b.0, b.1);
+        let tag = self.b.ins().band(at, bt);
+        let int = self.b.ins().icmp_imm_s(IntCC::NotEqual, tag, 0);
+        let r = match op {
+            ArithOp::Plus | ArithOp::Minus | ArithOp::Times => {
+                let r = match op {
+                    ArithOp::Plus => self.b.ins().fadd(x, y),
+                    ArithOp::Minus => self.b.ins().fsub(x, y),
+                    _ => self.b.ins().fmul(x, y),
+                };
+                // (Exact below 2^53, so out of range exactly when the integer
+                // result overflows; INT_MIN is NA.)
+                let lo = self.f64c(i32::MIN as f64);
+                let hi = self.f64c(i32::MAX as f64);
+                let gt = self.b.ins().fcmp(FloatCC::GreaterThan, r, lo);
+                let le = self.b.ins().fcmp(FloatCC::LessThanOrEqual, r, hi);
+                let ok = self.b.ins().band(gt, le);
+                let out = self.b.ins().bxor_imm_s(ok, 1);
+                let bad = self.b.ins().band(int, out);
+                self.deopt_if(bad, pc);
+                r
+            }
+            ArithOp::Mod | ArithOp::IDiv => {
+                // R's integer `%%` and `%/%` are its double ones on integer
+                // values, but for a zero divisor (NA).
+                let zero = self.f64c(0.0);
+                let z = self.b.ins().fcmp(FloatCC::Equal, y, zero);
+                let bad = self.b.ins().band(int, z);
+                self.deopt_if(bad, pc);
+                if op == ArithOp::Mod {
+                    let w = self.call("robigo_fmod_warns", &[x, y]);
+                    let warns = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+                    self.deopt_if(warns, pc);
+                    self.call("robigo_fmod", &[x, y])
+                } else {
+                    self.call("robigo_fidiv", &[x, y])
+                }
+            }
+            ArithOp::Div | ArithOp::Pow => unreachable!("a double, not a number"),
+        };
+        // An integer has no negative zero (`0L * -1L`): `+ 0.0` turns -0 into
+        // 0 and keeps every other value.
+        let zero = self.f64c(0.0);
+        let rz = self.b.ins().fadd(r, zero);
+        let r = self.b.ins().select(int, rz, r);
+        (r, tag)
+    }
+
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
     fn arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
-        if a.1 == JType::D || b.1 == JType::D {
+        if a.1 == JType::D
+            || b.1 == JType::D
+            || matches!(op, ArithOp::Div | ArithOp::Pow) && (a.1 == JType::N || b.1 == JType::N)
+        {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
             return match op {
@@ -2256,7 +2739,25 @@ impl Gen<'_, '_> {
                 self.b.ins().select(na, nar, q)
             }
             ArithOp::Pow => self.call("robigo_ipow", &[x, y]),
-            ArithOp::Mod => self.call("robigo_imod", &[x, y]),
+            // `h_imod`: `x % y` when `x >= 0` and `y > 0` (neither is NA
+            // then), the helper otherwise.
+            ArithOp::Mod => {
+                let xp = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, 0);
+                let yp = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, y, 0);
+                let fast = self.b.ins().band(xp, yp);
+                let (fb, sb, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(done, types::I32);
+                self.b.ins().brif(fast, fb, &[], sb, &[]);
+                self.b.switch_to_block(fb);
+                let r = self.b.ins().urem(x, y);
+                self.b.ins().jump(done, &[r.into()]);
+                self.b.switch_to_block(sb);
+                self.b.set_cold_block(sb);
+                let r = self.call("robigo_imod", &[x, y]);
+                self.b.ins().jump(done, &[r.into()]);
+                self.b.switch_to_block(done);
+                self.b.block_params(done)[0]
+            }
             ArithOp::IDiv => self.call("robigo_iidiv", &[x, y]),
         }
     }
@@ -2271,7 +2772,7 @@ impl Gen<'_, '_> {
 
     /// The comparison `rel` makes a logical of: (NA, TRUE).
     fn compare(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> (CValue, CValue) {
-        if a.1 == JType::D || b.1 == JType::D {
+        if matches!(a.1, JType::D | JType::N) || matches!(b.1, JType::D | JType::N) {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
             let na = self.b.ins().fcmp(FloatCC::Unordered, x, y);
@@ -2345,7 +2846,7 @@ impl Gen<'_, '_> {
     /// A 0-based index from `i` (`vm::scalar_index`), checked against the
     /// length; leaves at `pc` otherwise.
     fn index(&mut self, i: (CValue, JType), len: CValue, pc: usize) -> CValue {
-        if i.1 != JType::D {
+        if !matches!(i.1, JType::D | JType::N) {
             // An integer: `i - 1` as unsigned is below the length exactly
             // when `1 <= i <= len` (NA, 0 and negatives wrap around).
             let w = self.b.ins().sextend(types::I64, i.0);
@@ -2355,7 +2856,7 @@ impl Gen<'_, '_> {
             return k;
         }
         let f = match i.1 {
-            JType::D => i.0,
+            JType::D | JType::N => i.0,
             _ => {
                 let na = self.is_na_i(i.0);
                 self.deopt_if(na, pc);
@@ -2379,7 +2880,7 @@ impl Gen<'_, '_> {
 
     fn element_offset(&mut self, op: &Op, slot: Slot, lv: Variable, pc: usize) -> CValue {
         let (i, j) = match op {
-            Op::Index { i, .. } | Op::SetIndex { i, .. } => (i, None),
+            Op::Index { i, .. } | Op::SetIndex { i, .. } | Op::SuperSetIndex { i, .. } => (i, None),
             Op::Index2 { i, j, .. } | Op::SetIndex2 { i, j, .. } => (i, Some(j)),
             _ => unreachable!(),
         };
@@ -2472,19 +2973,51 @@ impl Gen<'_, '_> {
                 let v = self.i32c(*x as i64);
                 self.set_reg(*dst, v);
             }
-            Op::GetVar { dst, slot, .. } => {
-                let (x, _) = self.var(*slot);
+            Op::GetVar { dst, slot, sym } => {
+                let (x, t) = self.var(*slot);
                 self.set_reg(*dst, x);
+                if t == JType::N && self.whole.is_none() {
+                    let tag = self.tag(&Leaf::Var(*sym, *slot), t);
+                    self.set_tag(*dst, tag);
+                }
             }
             Op::Visible { on } if self.whole.is_some() => self.set_visible(*on),
-            Op::SuperSet { src, slot, .. } => {
+            Op::SuperSet { src, slot, .. } if self.whole.is_some() => {
                 let (x, _) = self.reg(*src);
                 self.super_set(*slot, x);
+            }
+            // In a callee run inline: its copy of the cell. In a loop: the
+            // variable that stands for the binding.
+            Op::SuperSet { src, slot, .. } => {
+                let (x, _) = self.reg(*src);
+                let (var, _) = self.v.slot[slot];
+                self.b.def_var(var, x);
+                if let Some(f) = self.v.flag.get(slot).copied() {
+                    let one = self.b.ins().iconst(types::I64, 1);
+                    self.b.def_var(f, one);
+                }
             }
             Op::Builtin1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
                 let v = self.builtin1(*f, x, t, pc);
                 self.set_reg(*dst, v);
+            }
+            Op::SetVar { src, slot, .. } if self.whole.is_none() && self.v.slot[slot].1 == JType::N => {
+                let (x, t) = self.reg(*src);
+                if t == JType::I {
+                    let na = self.is_na_i(x);
+                    self.deopt_if(na, pc);
+                }
+                let tag = self.tag(&Leaf::R(*src), t);
+                let x = self.to_f64(x, t);
+                let (var, _) = self.v.slot[slot];
+                self.b.def_var(var, x);
+                let tv = self.v.slot_tag[slot];
+                self.b.def_var(tv, tag);
+                if let Some(f) = self.v.flag.get(slot).copied() {
+                    let one = self.b.ins().iconst(types::I64, 1);
+                    self.b.def_var(f, one);
+                }
             }
             Op::SetVar { src, slot, .. } => {
                 let (x, _) = self.reg(*src);
@@ -2494,6 +3027,16 @@ impl Gen<'_, '_> {
                     let one = self.b.ins().iconst(types::I64, 1);
                     self.b.def_var(f, one);
                 }
+            }
+            Op::Arith { op, dst, a, b, .. } | Op::ArithL { op, dst, a: Leaf::R(a), b: Leaf::R(b), .. }
+                if self.def_type(*dst) == Some(JType::N) =>
+            {
+                let (la, lb) = (Leaf::R(*a), Leaf::R(*b));
+                self.op_n(*op, *dst, &la, &lb, pc);
+            }
+            Op::ArithL { op, dst, a, b, .. } if self.def_type(*dst) == Some(JType::N) => {
+                let (la, lb) = (*a, *b);
+                self.op_n(*op, *dst, &la, &lb, pc);
             }
             Op::Arith { op, dst, a, b, .. } => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
@@ -2721,6 +3264,27 @@ impl Gen<'_, '_> {
                 self.b.ins().jump(bb, &[]);
                 falls = false;
             }
+            Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. }
+                if matches!(self.v.vec[slot].2, JType::VecS | JType::MatS) =>
+            {
+                let (pv, lv, _) = self.v.vec[slot];
+                let k = self.element_offset(op, *slot, lv, pc);
+                let p = self.b.use_var(pv);
+                let off = self.b.ins().imul_imm_s(k, std::mem::size_of::<crate::value::RStr>() as i64);
+                let addr = self.b.ins().iadd(p, off);
+                self.set_reg(*dst, addr);
+            }
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. }
+                if matches!(self.v.vec[slot].2, JType::VecS | JType::MatS) =>
+            {
+                let (pv, lv, _) = self.v.vec[slot];
+                let k = self.element_offset(op, *slot, lv, pc);
+                let (x, _) = self.reg(*val);
+                let p = self.b.use_var(pv);
+                let off = self.b.ins().imul_imm_s(k, std::mem::size_of::<crate::value::RStr>() as i64);
+                let addr = self.b.ins().iadd(p, off);
+                self.call("robigo_str_set", &[addr, x]);
+            }
             Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
                 let k = self.element_offset(op, *slot, lv, pc);
@@ -2731,7 +3295,7 @@ impl Gen<'_, '_> {
                 let x = self.b.ins().load(ty, MemFlagsData::trusted(), addr, 0);
                 self.set_reg(*dst, x);
             }
-            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } => {
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } | Op::SuperSetIndex { val, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
                 let k = self.element_offset(op, *slot, lv, pc);
                 let (x, xt) = self.reg(*val);
@@ -2744,6 +3308,7 @@ impl Gen<'_, '_> {
             Op::Call { dst, site, .. } => {
                 let ic = &self.inl.calls[site];
                 let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
+                let cells = ic.cells.clone();
                 let args: Vec<(CValue, JType)> =
                     arg_list.iter().enumerate().map(|(k, a)| self.call_arg(k, a, pc)).collect();
                 if self.whole.is_some() {
@@ -2755,7 +3320,7 @@ impl Gen<'_, '_> {
                 }
                 let args: Vec<(CValue, Option<CValue>, JType)> = args.into_iter().map(|(x, t)| (x, None, t)).collect();
                 let ct = self.inl.callee(*site, args.iter().map(|a| a.2).collect()).unwrap();
-                let (v, _) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+                let (v, _) = self.inline_body(pc, *site, &code, &formal_slots, &cells, &ct, &args);
                 self.set_reg(*dst, v);
             }
             Op::Return { src } if self.whole.is_some() => {
@@ -2791,8 +3356,10 @@ impl Gen<'_, '_> {
     fn inline_body(
         &mut self,
         call: usize,
+        site: u32,
         code: &Code,
         formal_slots: &[Option<Slot>],
+        cells: &[CalleeCell],
         ct: &CalleeTy,
         args: &[(CValue, Option<CValue>, JType)],
     ) -> (CValue, Option<CValue>) {
@@ -2820,6 +3387,26 @@ impl Gen<'_, '_> {
                 }
             }
         }
+        // Its cells: copies, which become the cells' values if it completes.
+        let mut copies: Vec<(Variable, Variable)> = Vec::new();
+        for cc in cells {
+            let k = self
+                .cells
+                .iter()
+                .position(|c| c.sym == cc.sym)
+                .expect("a callee's cell is one of the loop's (`compile` collects them all)");
+            let cell = self.v.cells[k];
+            let var = self.b.declare_var(cl_type(cc.ty));
+            let x = self.b.use_var(cell);
+            self.b.def_var(var, x);
+            slot.insert(cc.slot, (var, cc.ty));
+            if cc.written {
+                copies.push((cell, var));
+            }
+        }
+        // Its free variables, read at the loop's entry.
+        let free = self.free.get(&site).cloned().unwrap_or_default();
+        slot.extend(free.slot);
         let mut pairs: Vec<(Reg, JType)> = Vec::new();
         for (pc, st) in ct.states.iter().enumerate() {
             let Some(st) = st else { continue };
@@ -2862,7 +3449,7 @@ impl Gen<'_, '_> {
                 continue;
             }
             let var = self.b.declare_var(cl_type(t));
-            let z = if t == JType::D { self.f64c(0.0) } else { self.i32c(0) };
+            let z = if cl_type(t) == types::F64 { self.f64c(0.0) } else { self.b.ins().iconst(cl_type(t), 0) };
             self.b.def_var(var, z);
             reg.insert((r, t), var);
         }
@@ -2873,9 +3460,10 @@ impl Gen<'_, '_> {
         let saved_reg = std::mem::replace(&mut self.v.reg, reg);
         let saved_range = std::mem::replace(&mut self.v.range, range);
         let saved_slot = std::mem::replace(&mut self.v.slot, slot);
+        vec.extend(free.vec);
         let saved_vec = std::mem::replace(&mut self.v.vec, vec);
         let saved_flag = std::mem::take(&mut self.v.flag);
-        let saved_dims = std::mem::take(&mut self.v.dims);
+        let saved_dims = std::mem::replace(&mut self.v.dims, free.dims);
         let saved_lp = LoopVars { vreg, counter: self.v.lp.counter, ..Default::default() };
         let saved_lp = std::mem::replace(&mut self.v.lp, saved_lp);
         let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
@@ -2926,6 +3514,10 @@ impl Gen<'_, '_> {
         self.ret = saved_ret;
         self.cur_defs = saved_defs;
         self.b.switch_to_block(after);
+        for (cell, var) in copies {
+            let x = self.b.use_var(var);
+            self.b.def_var(cell, x);
+        }
         (self.b.use_var(res), res_len.map(|l| self.b.use_var(l)))
     }
 
@@ -3003,6 +3595,9 @@ impl Gen<'_, '_> {
                     return false;
                 }
                 let v = match f {
+                    // (A number and a string element are scalars too, of
+                    // their own representation: #317.)
+                    Builtin1::Length if matches!(t, JType::N | JType::S) => self.i32c(1),
                     Builtin1::Length => {
                         let len = if t == JType::Range { self.range_reg(*a).2 } else { self.vreg(*a).1 };
                         let big = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, len, i32::MAX as i64);
@@ -3312,8 +3907,9 @@ impl Gen<'_, '_> {
                 }
             });
         }
+        let cells = self.inl.calls[&site].cells.clone();
         let ct = self.inl.callee(site, args.iter().map(|a| a.2).collect()).unwrap();
-        let (v, n) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+        let (v, n) = self.inline_body(pc, site, &code, &formal_slots, &cells, &ct, &args);
         match n {
             Some(n) => self.set_vreg(dst, v, n),
             None => self.set_reg(dst, v),
@@ -3500,11 +4096,21 @@ fn codegen(
                 flag: HashMap::new(),
                 reg: HashMap::new(),
                 range: HashMap::new(),
+                cells: Vec::new(),
                 lp: LoopVars::default(),
+                slot_tag: HashMap::new(),
+                reg_tag: HashMap::new(),
             };
+            for c in lay.cells {
+                let ty = cl_type(c.ty);
+                let var = b.declare_var(ty);
+                let x = b.ins().load(ty, mf, vals, (c.idx * 8) as i32);
+                b.def_var(var, x);
+                v.cells.push(var);
+            }
             let view = |k: usize, field: usize| (k * std::mem::size_of::<VecView>() + 8 * field) as i32;
             for s in slots {
-                if s.ty.is_scalar() || s.ty == JType::Range {
+                if s.ty.is_scalar() || s.ty == JType::Range || s.ty == JType::N {
                     let n = if s.ty == JType::Range { 3 } else { 1 };
                     let ty = cl_type(s.ty);
                     let ty = if s.ty == JType::Range { types::I64 } else { ty };
@@ -3520,6 +4126,12 @@ fn codegen(
                         v.lp.rslot.insert(s.slot, (vs[0], vs[1], vs[2]));
                     } else {
                         v.slot.insert(s.slot, (vs[0], s.ty));
+                        if let Some(ti) = s.tag {
+                            let t = b.declare_var(types::I32);
+                            let x = b.ins().load(types::I32, mf, vals, (ti * 8) as i32);
+                            b.def_var(t, x);
+                            v.slot_tag.insert(s.slot, t);
+                        }
                     }
                     if let Some(fi) = s.flag {
                         let f = b.declare_var(types::I64);
@@ -3547,7 +4159,7 @@ fn codegen(
                             v.flag.insert(s.slot, f);
                         }
                     }
-                    if matches!(s.ty, JType::MatD | JType::MatI) {
+                    if matches!(s.ty, JType::MatD | JType::MatI | JType::MatS) {
                         let nr = b.declare_var(types::I64);
                         let nc = b.declare_var(types::I64);
                         let r = b.ins().load(types::I64, mf, vecs, view(s.idx, 2));
@@ -3569,6 +4181,37 @@ fn codegen(
                 let z = b.ins().iconst(types::I64, 0);
                 b.def_var(c, z);
                 v.lp.counter = Some(c);
+            }
+            let mut free_vars: HashMap<u32, Free> = HashMap::new();
+            for (site, sym, ty, idx) in lay.free {
+                let ic = &inl.calls[site];
+                let Some(&(slot, _, _)) = ic.free.iter().find(|(_, s, _)| s == sym) else { continue };
+                let f = free_vars.entry(*site).or_default();
+                if ty.is_scalar() {
+                    let t = cl_type(*ty);
+                    let var = b.declare_var(t);
+                    let x = b.ins().load(t, mf, vals, (*idx * 8) as i32);
+                    b.def_var(var, x);
+                    f.slot.insert(slot, (var, *ty));
+                    continue;
+                }
+                let at = |k: usize| (*idx * std::mem::size_of::<VecView>() + 8 * k) as i32;
+                let pv = b.declare_var(ptr);
+                let lv = b.declare_var(types::I64);
+                let p = b.ins().load(ptr, mf, vecs, at(0));
+                let l = b.ins().load(types::I64, mf, vecs, at(1));
+                b.def_var(pv, p);
+                b.def_var(lv, l);
+                f.vec.insert(slot, (pv, lv, *ty));
+                if matches!(ty, JType::MatD | JType::MatI) {
+                    let nr = b.declare_var(types::I64);
+                    let nc = b.declare_var(types::I64);
+                    let r = b.ins().load(types::I64, mf, vecs, at(2));
+                    let c = b.ins().load(types::I64, mf, vecs, at(3));
+                    b.def_var(nr, r);
+                    b.def_var(nc, c);
+                    f.dims.insert(slot, (nr, nc));
+                }
             }
             // A variable for every (register, type) that occurs; live-ins
             // loaded, others zero.
@@ -3618,22 +4261,30 @@ fn codegen(
                     let var = b.declare_var(ty);
                     let x = if li {
                         b.ins().load(ty, mf, vals, (idx * 8) as i32)
-                    } else if t == JType::D {
+                    } else if ty == types::F64 {
                         b.ins().f64const(0.0)
                     } else {
-                        b.ins().iconst(types::I32, 0)
+                        b.ins().iconst(ty, 0)
                     };
                     b.def_var(var, x);
                     v.reg.insert((reg, t), var);
+                    if t == JType::N && !v.reg_tag.contains_key(&reg) {
+                        let tv = b.declare_var(types::I32);
+                        let z = b.ins().iconst(types::I32, 0);
+                        b.def_var(tv, z);
+                        v.reg_tag.insert(reg, tv);
+                    }
                 }
             }
             let blocks: Vec<Block> = (r.start..=r.end).map(|_| b.create_block()).collect();
             let exit = b.create_block();
             b.ins().jump(blocks[0], &[]);
             let mut g = Gen {
+                free: free_vars,
                 b,
                 v,
                 slots,
+                cells: lay.cells,
                 states: states.to_vec(),
                 inl,
                 deopt_at: None,
@@ -3655,7 +4306,7 @@ fn codegen(
                     counter: lay.counter,
                     vis: lay.vis,
                     vis_at: lay.vis_at,
-                    nvecs: slots.iter().filter(|s| s.ty.is_vector()).count(),
+                    nvecs: lay.nvecs,
                     temps: Vec::new(),
                 }),
             };

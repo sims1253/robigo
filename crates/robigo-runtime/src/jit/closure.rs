@@ -614,6 +614,8 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             clo: callee,
                             callee: k,
                             arg_syms: Vec::new(),
+                            cells: Vec::new(),
+                            free: Vec::new(),
                         },
                     );
                 }
@@ -849,7 +851,7 @@ fn resolve(interp: &mut Interp, e: &Entry, root: &Rc<Closure>) -> Option<Vec<Rc<
 }
 
 /// The frame binding `sym`, from `env` outwards.
-fn owner(env: &Env, sym: Sym) -> Option<Env> {
+pub(crate) fn owner(env: &Env, sym: Sym) -> Option<Env> {
     let mut cur = env.clone();
     loop {
         if cur.has_local(sym) {
@@ -1157,6 +1159,9 @@ fn define(
             reg: HashMap::new(),
             range: HashMap::new(),
             lp: Default::default(),
+            cells: Vec::new(),
+            slot_tag: HashMap::new(),
+            reg_tag: HashMap::new(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -1362,9 +1367,11 @@ fn define(
         b.set_cold_block(bail);
         b.ins().jump(blocks[0], &[]);
         let mut g = Gen {
+            free: HashMap::new(),
             b,
             v,
             slots: &[],
+            cells: &[],
             states: fl.states.clone(),
             inl: &inl,
             deopt_at: None,
@@ -2327,8 +2334,11 @@ impl Gen<'_, '_> {
     /// An argument `x[[i]]` / `x[i]` of call argument `k`.
     pub(super) fn index_arg(&mut self, k: usize, x: Slot, i: &Leaf, two: bool, pc: usize) -> (CValue, JType) {
         let iv = self.leaf(i);
-        let (xv, t) = self.var(x);
-        if t == JType::Dyn {
+        // (A loop's vectors are views only; values of any type are a whole
+        // closure's.)
+        if self.whole.is_some()
+            && let (xv, JType::Dyn) = self.var(x)
+        {
             let f = self.to_f64(iv.0, iv.1);
             let dst = self.tmp(k);
             let two = self.i32c(two as i64);
@@ -2568,6 +2578,8 @@ fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usi
             flag: None,
             writable: false,
             owned: false,
+            tag: None,
+            superset: false,
         });
     }
     let mut nvals = slots.len();

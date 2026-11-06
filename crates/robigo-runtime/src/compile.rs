@@ -288,6 +288,41 @@ pub enum Op {
         /// As for `SetVar`.
         take: bool,
     },
+    /// `x[i, , k]` (two or more indices, each empty, a constant or a
+    /// variable; `index_lists[idx]`, `None` for an empty one) for a
+    /// variable `x`: a slice of a plain atomic array by in-range scalar
+    /// indices is read directly; anything else evaluates the call
+    /// `consts[k]`.
+    IndexN {
+        dst: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+    },
+    /// `x[i, , k] <- val`: in place for a plain local array, in-range
+    /// scalar indices and a value that fills the slice; otherwise the
+    /// complex assignment `consts[k]`.
+    SetIndexN {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+        /// As for `SetVar`.
+        take: bool,
+    },
+    /// `x[i, , k] <<- val`, as [`Op::SetIndexN`] on the binding `<<-`
+    /// assigns.
+    SuperSetIndexN {
+        val: Reg,
+        x: Sym,
+        slot: Slot,
+        idx: u32,
+        k: u32,
+        /// As for `SetVar`.
+        take: bool,
+    },
     /// `x$name <- val` (name `consts[name]`): in place for an existing
     /// element of a plain local list, otherwise the complex assignment
     /// `consts[k]`.
@@ -355,6 +390,16 @@ pub enum Op {
     /// else the value of the call (see `vm::seq_length_range`).
     ForSeqLength {
         len: Leaf,
+        seq: Reg,
+        call: u32,
+    },
+    /// Set up `seq` for a `for` loop over `seq(from, to, by)` (call
+    /// `consts[call]`, the arguments `seq_by[k]`): the integer range GNU R's
+    /// `seq.default` returns for integer arguments when it can be read off
+    /// without running code, else the value of the call (see
+    /// `vm::seq_by_range`).
+    ForSeqBy {
+        k: u32,
         seq: Reg,
         call: u32,
     },
@@ -518,6 +563,12 @@ pub struct GuardMemo {
     /// result unless they bind the name themselves.
     pub outer: usize,
     pub outer_version: u32,
+}
+
+impl GuardMemo {
+    /// Valid for nothing.
+    pub const NONE: GuardMemo =
+        GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
 }
 
 /// R: compiler/R/cmp.R:safeBaseInternals. Base closures that installed
@@ -732,6 +783,8 @@ pub struct Code {
     pub vars: Vec<Sym>,
     /// Argument lists of `CallBuiltin`: (tag, register) pairs.
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    /// The indices of `Op::IndexN` and its assignments.
+    pub index_lists: Vec<Vec<Option<Leaf>>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
     /// The result register of the whole body.
@@ -767,7 +820,7 @@ pub struct Code {
     /// frame binds none of their names (see `vm::fresh_nested_ok`).
     pub fresh_outer: std::cell::Cell<(u64, usize, u32, usize)>,
     /// Native code for loops, by `LoopEnter` index (see `crate::jit`).
-    pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot>>,
+    pub jit: std::cell::RefCell<std::collections::HashMap<u32, crate::jit::JitSlot, crate::env::FastHash>>,
     /// Native code for the whole closure (see `crate::jit::closure`).
     pub native: crate::jit::closure::NativeSlot,
     /// Per-op memo of `Guard` results (see `vm::guard_ok`).
@@ -776,6 +829,18 @@ pub struct Code {
     pub switches: Vec<SwitchTable>,
     /// What `MakeClosure` ops make closures of.
     pub closures: Vec<ClosureTemplate>,
+    /// Arguments of `ForSeqBy` ops.
+    pub seq_by: Vec<[SeqArg; 3]>,
+}
+
+/// An argument of `seq(from, to, by)` in a `for` loop: a constant, a
+/// variable, or the arithmetic of two of them (`x_start - 1L`), computed by
+/// the VM only where that cannot be observed (no warning, no dispatch).
+#[derive(Clone, Copy, Debug)]
+pub struct SeqArg {
+    pub op: Option<ArithOp>,
+    pub a: Leaf,
+    pub b: Leaf,
 }
 
 impl Code {
@@ -819,6 +884,7 @@ impl Code {
             nregs: c.nregs,
             vars: c.vars,
             arglists: c.arglists,
+            index_lists: c.index_lists,
             call_sites: c.call_sites,
             nguards: c.nguards,
             guard_syms,
@@ -835,6 +901,7 @@ impl Code {
             guard_memo,
             switches: c.switches,
             closures: c.closures,
+            seq_by: c.seq_by,
         }
     }
 }
@@ -880,6 +947,7 @@ struct Compiler {
     top: usize,
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    index_lists: Vec<Vec<Option<Leaf>>>,
     call_sites: Vec<CallSite>,
     /// The `consts` index of the srcref of the `{` statement being compiled,
     /// inside a block with source references (see [`Op::Srcref`]).
@@ -888,6 +956,7 @@ struct Compiler {
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
     closures: Vec<ClosureTemplate>,
+    seq_by: Vec<[SeqArg; 3]>,
     /// A promise thunk (an argument or default expression). GNU R never
     /// compiles promise expressions: forcing evaluates the AST, so a
     /// call runs the callee's closure — an inlined simple `.Internal`
@@ -995,6 +1064,32 @@ fn index2_form(e: &Value) -> Option<(Sym, bool, &Value, &Value)> {
     (is_pure(i, 0) && is_pure(j, 0)).then_some((x, two, i, j))
 }
 
+/// `x[i, , k]`: `[` of a variable `x` with two or more untagged indices,
+/// each empty, a variable or a numeric constant (evaluating none of them
+/// can be observed), not all of two given (that is [`index2_form`]).
+fn indexn_form(e: &Value) -> Option<(Sym, &[Arg])> {
+    let Value::Lang(l) = e else { return None };
+    if !head(l)?.with_name(|n| n == "[") || l.args.len() < 3 || l.args.len() > 9 {
+        return None;
+    }
+    if l.args.iter().any(|a| a.tag.is_some()) {
+        return None;
+    }
+    let x = l.args[0].value.as_sym().filter(|s| is_var(*s))?;
+    let idx = &l.args[1..];
+    let ok = |a: &Arg| match &a.value {
+        v if v.is_missing_arg() => true,
+        Value::Sym(s) => is_var(*s),
+        Value::Real(v) => v.data.len() == 1 && v.attrs.is_none(),
+        Value::Int(v) => v.data.len() == 1 && v.attrs.is_none(),
+        _ => false,
+    };
+    if !idx.iter().all(ok) || (idx.len() == 2 && !idx.iter().any(|a| a.value.is_missing_arg())) {
+        return None;
+    }
+    Some((x, idx))
+}
+
 /// The `n` of `forceAndCall(n, ...)` when it is a small constant.
 fn force_count(e: &Value) -> Option<u32> {
     let n = match e {
@@ -1076,12 +1171,50 @@ fn seq_length_form(e: &Value) -> Option<(Sym, &Value)> {
         return None;
     }
     let v = &l.args[0].value;
-    let leaf = match v {
+    leaf_shape(v).then_some((h, v))
+}
+
+/// What [`Compiler::leaf`] converts: a variable, or a length-1 numeric
+/// constant without attributes. (The forms above match only these, so the
+/// compiler's conversions of their operands cannot fail.)
+fn leaf_shape(v: &Value) -> bool {
+    match v {
         Value::Sym(s) => is_var(*s),
         Value::Real(_) | Value::Int(_) => v.len() == 1 && v.attrs().is_none(),
         _ => false,
-    };
-    leaf.then_some((h, v))
+    }
+}
+
+/// `seq(from, to, by)` with three positional arguments, each a variable, a
+/// numeric constant, or `+`/`-` of two of those: `seq`, the arguments, and
+/// the operators they use.
+fn seq_by_form(e: &Value) -> Option<(Sym, [&Value; 3], Vec<Sym>)> {
+    let Value::Lang(l) = e else { return None };
+    let h = head(l)?;
+    if &*h.name() != "seq" || !plain_args(l, 3) {
+        return None;
+    }
+    let leaf = leaf_shape;
+    let mut ops = Vec::new();
+    for a in &l.args {
+        let v = &a.value;
+        if leaf(v) {
+            continue;
+        }
+        let Value::Lang(al) = v else { return None };
+        let op = head(al)?;
+        let unary_minus = &*op.name() == "-" && plain_args(al, 1);
+        if !matches!(&*op.name(), "+" | "-")
+            || !(plain_args(al, 2) || unary_minus)
+            || !al.args.iter().all(|x| leaf(&x.value))
+        {
+            return None;
+        }
+        if !ops.contains(&op) {
+            ops.push(op);
+        }
+    }
+    Some((h, [&l.args[0].value, &l.args[1].value, &l.args[2].value], ops))
 }
 
 fn arith_op(name: &str) -> Option<ArithOp> {
@@ -1127,6 +1260,13 @@ impl Compiler {
     }
 
     /// An index operand: a leaf, or the register `e` is evaluated into.
+    /// The indices of an [`indexn_form`] (all leaves or empty).
+    fn index_list(&mut self, idx: &[Arg]) -> u32 {
+        let list = idx.iter().map(|a| if a.value.is_missing_arg() { None } else { self.leaf(&a.value) }).collect();
+        self.index_lists.push(list);
+        (self.index_lists.len() - 1) as u32
+    }
+
     fn index_operand(&mut self, e: &Value) -> Leaf {
         match self.leaf(e) {
             Some(l) => l,
@@ -1552,6 +1692,30 @@ impl Compiler {
                 self.patch(g, end);
                 self.patch(g2, end);
             }
+            "<-" | "=" | "<<-"
+                if l.args.len() == 2
+                    && l.args[0].tag.is_none()
+                    && index2_form(&l.args[0].value).is_none()
+                    && indexn_form(&l.args[0].value).is_some() =>
+            {
+                let (x, idx) = indexn_form(&l.args[0].value).unwrap();
+                let g = self.guard(h, whole, dst);
+                let g2 = self.guard(Sym::new("[<-"), whole, dst);
+                self.expr(&l.args[1].value, dst, Want::Value);
+                let idx = self.index_list(idx);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                let take = w == Want::Effect;
+                if h.with_name(|n| n == "<<-") {
+                    self.emit(Op::SuperSetIndexN { val: dst, x, slot, idx, k, take });
+                } else {
+                    self.emit(Op::SetIndexN { val: dst, x, slot, idx, k, take });
+                }
+                self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+                self.patch(g2, end);
+            }
             "<-" | "=" if l.args.len() == 2 && l.args[0].tag.is_none() && index2_form(&l.args[0].value).is_some() => {
                 let (x, two, i, j) = index2_form(&l.args[0].value).unwrap();
                 let g = self.guard(h, whole, dst);
@@ -1599,6 +1763,17 @@ impl Compiler {
                 let take = w == Want::Effect;
                 self.emit(Op::SetComplex { val: dst, slot, k, take });
                 self.vis(w, false);
+                let end = self.here();
+                self.patch(g, end);
+            }
+            "[" if index2_form(whole).is_none() && indexn_form(whole).is_some() => {
+                let (x, idx) = indexn_form(whole).unwrap();
+                let g = self.guard(h, whole, dst);
+                let idx = self.index_list(idx);
+                let slot = self.slot(x);
+                let k = self.konst(whole.clone());
+                self.emit(Op::IndexN { dst, x, slot, idx, k });
+                self.vis(w, true);
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -1789,7 +1964,40 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                let generic = if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
+                let generic = if let Some((rh, args, ops)) = seq_by_form(&l.args[1].value) {
+                    // (The guards evaluate the whole call when one fails.)
+                    let mut gs = vec![self.guard(rh, &l.args[1].value, seq)];
+                    for op in ops {
+                        gs.push(self.guard(op, &l.args[1].value, seq));
+                    }
+                    let mut sa = [SeqArg { op: None, a: Leaf::I(0), b: Leaf::I(0) }; 3];
+                    for (k, a) in args.iter().enumerate() {
+                        sa[k] = match a {
+                            // (`-x` as `0L - x`: the same for the integers
+                            // the VM takes, anything else makes the call.)
+                            Value::Lang(al) if al.args.len() == 1 => SeqArg {
+                                op: Some(ArithOp::Minus),
+                                a: Leaf::I(0),
+                                b: self.leaf(&al.args[0].value).unwrap(),
+                            },
+                            Value::Lang(al) => SeqArg {
+                                op: arith_op(&head(al).unwrap().name()),
+                                a: self.leaf(&al.args[0].value).unwrap(),
+                                b: self.leaf(&al.args[1].value).unwrap(),
+                            },
+                            v => SeqArg { op: None, a: self.leaf(v).unwrap(), b: Leaf::I(0) },
+                        };
+                    }
+                    let k = self.seq_by.len() as u32;
+                    self.seq_by.push(sa);
+                    let kseq = self.konst(l.args[1].value.clone());
+                    self.emit(Op::ForSeqBy { k, seq, call: kseq });
+                    let here = self.here();
+                    for g in gs {
+                        self.patch(g, here);
+                    }
+                    false
+                } else if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
                     let gs = self.guard(rh, &l.args[1].value, seq);
                     let len = self.leaf(len).unwrap();
                     let kseq = self.konst(l.args[1].value.clone());

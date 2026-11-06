@@ -1,0 +1,35 @@
+acNAté
+a c NA t  é 
+a-c+NA
+t-+é
+
+a|c|NA|t||é|1.5|2|TRUE|NA|a|c|NA|t||é|
+x  y z
+a c NA t  
+é
+L1: a c 
+L2: NA 
+L1: t  
+L2: é
+a
+c
+NA
+t
+
+é
+end
+acNAté
+[1] "acNAté"
+[1] "a+c+NA+t++é"
+[1] "a_1|c_2|NA_1|t_2|_1|é_2"
+[1] "a"  "c"  "NA" "t"  ""   "é" 
+[1] "a"  "c"  "NA" "t"  ""   "é" 
+[1] ""
+[1] "a "
+[1] "abNAcad"
+[1] "a/1/TRUE/NULL"
+[1] "UTF-8"
+[1] 60
+gcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgc
+gcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgc
+gcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgcgc
