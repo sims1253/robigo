@@ -147,6 +147,13 @@ pub fn missing_arg_error(sym: crate::sym::Sym, call: Value, subclass: &'static s
     }))
 }
 
+/// What errors.c:try_jump_to_restart did: jumped to a restart's exit, or
+/// (a NULL exit) cleared the restart stack for jump_to_toplevel.
+enum RestartJump {
+    Exit(Flow),
+    Toplevel,
+}
+
 impl Interp {
     /// The call of the closure that called the current builtin, as used by
     /// `stop()` and `warning()` (R's `findCall`).
@@ -347,8 +354,18 @@ impl Interp {
             Err(f) => return f,
         };
         self.print_warnings();
+        // R: errors.c:jump_to_top_ex tries the restarts before
+        // .Traceback is written (try_jump_to_restart): an
+        // unhandled error invokes the innermost "browser", "tryRestart" or
+        // "abort" restart (source(catch.aborts = TRUE) relies on this).
+        let to_toplevel = match self.try_jump_to_restart() {
+            Some(RestartJump::Exit(f)) => return f,
+            // invokeRestart's NULL exit: jump_to_toplevel, no traceback.
+            Some(RestartJump::Toplevel) => true,
+            None => false,
+        };
         // Only a session that goes on can read it.
-        if self.interactive || have_handler || self.option_lgl("catch.script.errors", false) {
+        if !to_toplevel && (self.interactive || have_handler || self.option_lgl("catch.script.errors", false)) {
             let calls = self.traceback_calls(0).into_iter().map(Arg::pos).collect();
             self.base.force_set(Sym::new(".Traceback"), Value::pairlist(calls));
         }
@@ -360,6 +377,65 @@ impl Interp {
             signaled: true,
             classes: vec![],
         }))
+    }
+
+    /// R: errors.c:try_jump_to_restart — invoke the innermost restart named
+    /// "browser", "tryRestart" or "abort", unwinding as `.invokeRestart`
+    /// does; `None` when the stack has none.
+    fn try_jump_to_restart(&mut self) -> Option<RestartJump> {
+        let mut cur = self.restarts.clone();
+        while let Some(node) = cur {
+            // R matches only a VECSXP of length > 1 with a length-1 name.
+            let name = match &node.restart {
+                Value::List(l) if l.data.len() > 1 => match l.data.first() {
+                    Some(Value::Str(s)) if s.data.len() == 1 => s.data.first().and_then(|x| x.as_deref()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if name.is_some_and(|n| n == "browser" || n == "tryRestart" || n == "abort") {
+                let Value::List(l) = &node.restart else { return None };
+                let exit = match &l.data[1] {
+                    Value::Env(exit) => exit,
+                    // R: errors.c:invokeRestart -- a NULL exit clears the
+                    // restart stack and jumps to top level.
+                    Value::Null => {
+                        self.restarts = None;
+                        return Some(RestartJump::Toplevel);
+                    }
+                    _ => return None,
+                };
+                // R: errors.c:invokeRestart pops through the first node with
+                // this exit env — a sibling restart of the same withRestarts
+                // shares it, so this walk can stop above the matched node.
+                let is_target = |n: &Rc<RestartNode>| match &n.restart {
+                    Value::List(rl) => matches!(rl.data.get(1), Some(Value::Env(x)) if x.ptr_eq(exit)),
+                    _ => false,
+                };
+                let mut depth = 0usize;
+                let mut cur = self.restarts.clone();
+                let found = loop {
+                    let Some(n) = cur else { break false };
+                    if is_target(&n) {
+                        break true;
+                    }
+                    depth += 1;
+                    cur = n.next.clone();
+                };
+                if !found {
+                    return None;
+                }
+                let mut rest = self.restarts.clone();
+                for _ in 0..=depth {
+                    rest = rest.and_then(|n| n.next.clone());
+                }
+                self.restarts = rest;
+                self.restore_expressions();
+                return Some(RestartJump::Exit(Flow::Return(Value::Null, exit.clone())));
+            }
+            cur = node.next.clone();
+        }
+        None
     }
 
     /// R: errors.c:jump_to_top_ex -- evaluate `options("error")` with the

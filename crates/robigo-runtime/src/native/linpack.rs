@@ -451,3 +451,84 @@ pub fn dqrutl(
     }
     info
 }
+
+/// dtrco estimates the reciprocal 1-norm condition of the triangular matrix
+/// `t` (column-major, leading dimension `ldt`), `job == 0` for lower.
+/// Returns `rcond` and the approximate null vector `z`.
+// R: appl/dtrco.f
+#[allow(clippy::too_many_arguments)]
+pub fn dtrco(t: &[f64], ldt: usize, n: usize, z: &mut [f64], job: i32) -> f64 {
+    let at = |i: usize, j: usize| i + j * ldt; // 0-based (i, j)
+    let dasum = |k: usize, x: &[f64]| x[..k].iter().map(|v| v.abs()).sum::<f64>();
+    let lower = job == 0;
+    // 1-norm of t
+    let mut tnorm = 0.0f64;
+    for j in 0..n {
+        let (l, i1) = if lower { (n - j, j) } else { (j + 1, 0) };
+        tnorm = tnorm.max(dasum(l, &t[at(i1, j)..]));
+    }
+    // Solve trans(t) * y = e, with rescaling to avoid overflow.
+    // ek is Fortran's SIGN(ek, -z(k)): |ek| with the sign of -z(k).
+    let mut ek = 1.0f64;
+    z[..n].fill(0.0);
+    for kk in 0..n {
+        let k = if lower { n - 1 - kk } else { kk };
+        if z[k] != 0.0 {
+            ek = ek.abs() * if -z[k] < 0.0 { -1.0 } else { 1.0 };
+        }
+        if (ek - z[k]).abs() > t[at(k, k)].abs() {
+            let s = t[at(k, k)].abs() / (ek - z[k]).abs();
+            dscal(n, s, z);
+            ek *= s;
+        }
+        let mut wk = ek - z[k];
+        let mut wkm = -ek - z[k];
+        let mut s = wk.abs();
+        let mut sm = wkm.abs();
+        if t[at(k, k)] == 0.0 {
+            wk = 1.0;
+            wkm = 1.0;
+        } else {
+            wk /= t[at(k, k)];
+            wkm /= t[at(k, k)];
+        }
+        if kk + 1 != n {
+            let (j1, j2) = if lower { (0, k) } else { (k + 1, n) };
+            for j in j1..j2 {
+                sm += (z[j] + wkm * t[at(k, j)]).abs();
+                z[j] += wk * t[at(k, j)];
+                s += z[j].abs();
+            }
+            if s < sm {
+                let w = wkm - wk;
+                wk = wkm;
+                for j in j1..j2 {
+                    z[j] += w * t[at(k, j)];
+                }
+            }
+        }
+        z[k] = wk;
+    }
+    let s = 1.0 / dasum(n, z);
+    dscal(n, s, z);
+    let mut ynorm = 1.0f64;
+    // Solve t * z = y.
+    for kk in 0..n {
+        let k = if lower { kk } else { n - 1 - kk };
+        if z[k].abs() > t[at(k, k)].abs() {
+            let s = t[at(k, k)].abs() / z[k].abs();
+            dscal(n, s, z);
+            ynorm *= s;
+        }
+        z[k] = if t[at(k, k)] == 0.0 { 1.0 } else { z[k] / t[at(k, k)] };
+        let i1 = if lower { k + 1 } else { 0 };
+        if kk + 1 < n {
+            let w = -z[k];
+            daxpy(n - kk - 1, w, &t[at(i1, k)..], &mut z[i1..]);
+        }
+    }
+    let s = 1.0 / dasum(n, z);
+    dscal(n, s, z);
+    ynorm *= s;
+    if tnorm == 0.0 { 0.0 } else { ynorm / tnorm }
+}

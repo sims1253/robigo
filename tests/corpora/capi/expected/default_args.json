@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "default_args",
+ "out": {
+  "t": "[1] \"promise\" \"promise\" \"promise\" \"promise\" \"promise\" \"promise\" \"promise\"\n[8] \"value\"  \n[1] \"promise\" \"promise\" \"promise\" \"promise\" \"promise\" \"promise\" \"promise\"\n[8] \"promise\"\n[1] \"promise\" \"promise\" \"promise\"\n[1] \"forced\"\n[1] \"TRUE\" \"1\"    \"1\"   \n[1] \"FALSE\" \"5\"     \"5\"    \n"
+ },
+ "sha": "6df0e28cfe40cdf0",
+ "status": 0
+}
