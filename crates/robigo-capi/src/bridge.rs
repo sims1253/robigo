@@ -510,7 +510,7 @@ unsafe fn drain_dead_held() {
             Some(Held::Wrapped(addr)) => {
                 let w = WRAPPED.with(|m| m.borrow_mut().remove(&addr));
                 if let Some(p) = w.and_then(|w| w.upgrade()) {
-                    if let Some(c) = p.payload.as_ref().and_then(|p| p.downcast_ref::<CoreRef>()) {
+                    if let Some(c) = p.payload.as_deref().and_then(wrapped_core) {
                         c.inert.set(true);
                     }
                 }
@@ -1990,11 +1990,89 @@ impl Drop for CoreRef {
     }
 }
 
+/// The core object a wrapper's payload keeps: a wrapped object's, or a
+/// deferred package ALTREP vector's (#469).
+fn wrapped_core(a: &dyn std::any::Any) -> Option<&CoreRef> {
+    a.downcast_ref::<CoreRef>().or_else(|| a.downcast_ref::<DeferredCore>().map(|d| &d.core))
+}
+
 pub fn core_ref_of(v: &Value) -> Option<Sexp> {
     match v {
-        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().filter(|c| !c.inert.get()).map(|c| c.x),
+        Value::ExtPtr(p) => wrapped_core(p.payload.as_deref()?).filter(|c| !c.inert.get()).map(|c| c.x),
         _ => None,
     }
+}
+
+/// A package ALTREP string or list vector R has not read (#468, council
+/// round 8): the wrapper's payload, with the copy forcing makes. The
+/// wrapper is a wrapped core object like any other (`WRAPPED` gives it back
+/// for the same object, `to_sexp` gives back the object), so it goes
+/// through lists, attributes and `.Call` unread; robigo_runtime::altrep
+/// forces it where R reads it.
+struct DeferredCore {
+    core: CoreRef,
+    forced: RefCell<Option<Value>>,
+}
+
+fn deferred_core(v: &Value) -> Option<&DeferredCore> {
+    match v {
+        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<DeferredCore>(),
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// The object being forced: its conversion reads it (from_sexp).
+    static FORCING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether `x`, a package ALTREP string or list vector whose class has not
+/// handed out its data (`Dataptr_or_null` is NULL), reaches R unread.
+unsafe fn defers(x: Sexp) -> bool {
+    x.is_altrep()
+        && matches!(x.typ(), STRSXP | VECSXP)
+        && FORCING.with(|f| f.get()) != x.addr()
+        && crate::altrep::package_class(x)
+        && crate::memory::DATAPTR_OR_NULL(x).is_null()
+}
+
+/// The wrapper of `x` that reaches R unread (one per object while it lives).
+unsafe fn wrap_deferred(x: Sexp) -> Value {
+    if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
+        return Value::ExtPtr(p);
+    }
+    // a hold, as wrap_core's (one mark over both heaps)
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Wrapped(x.addr())));
+    // the attributes are not the contents: GNU R reads them unforced
+    let attrs = attrs_with_s4(x);
+    agree_attrs(x);
+    let payload = DeferredCore { core: CoreRef { x, hold, inert: Cell::new(false) }, forced: RefCell::new(None) };
+    let p = Rc::new(ExtPtr { tag: Value::Null, attrs: RefCell::new(attrs), payload: Some(Rc::new(payload)) });
+    WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
+    robigo_runtime::altrep::note_deferred();
+    Value::ExtPtr(p)
+}
+
+/// `ROBIGO_DEFER_TORTURE=1`: every string or list vector a native routine
+/// returns reaches R deferred, so that a missed forcing site shows in the
+/// capi corpus and the package suite (#468).
+fn defer_torture() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ROBIGO_DEFER_TORTURE").is_some_and(|v| v == "1"))
+}
+
+/// The value of what a native routine returned.
+unsafe fn native_value(out: Sexp) -> Value {
+    if defer_torture()
+        && !out.is_null()
+        && matches!(out.typ(), STRSXP | VECSXP)
+        && !out.is_twin_cell()
+        && !out.has_flag(flags::HOST)
+    {
+        return wrap_deferred(out);
+    }
+    from_sexp(out)
 }
 
 pub unsafe fn wrap_core(x: Sexp) -> Value {
@@ -2494,6 +2572,9 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         } else {
             Value::compact_realseq(n as usize, n1, inc)
         };
+    }
+    if x.is_altrep() && defers(x) {
+        return wrap_deferred(x);
     }
     let mut v = match x.typ() {
         SYMSXP => {
@@ -3955,7 +4036,7 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
         return Err(take_flow(t));
     }
     check_result(out)?;
-    let v = converting(interp, || from_sexp(out))?;
+    let v = converting(interp, || native_value(out))?;
     escaped(out, &v, false);
     Ok(v)
 }
@@ -4306,7 +4387,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
                 v
             }
             None => {
-                let v = from_sexp(out);
+                let v = native_value(out);
                 escaped(out, &v, false);
                 v
             }
@@ -4646,6 +4727,45 @@ impl NativeBridge for Bridge {
                 v
             })
         }
+    }
+
+    fn deferred_type(&self, v: &Value) -> Option<robigo_runtime::value::VType> {
+        let d = deferred_core(v)?;
+        if d.core.inert.get() {
+            return None;
+        }
+        // SAFETY: a live CoreRef keeps its object held.
+        match unsafe { d.core.x.typ() } {
+            STRSXP => Some(robigo_runtime::value::VType::Str),
+            VECSXP => Some(robigo_runtime::value::VType::List),
+            // (wrap_deferred takes only these two)
+            _ => None,
+        }
+    }
+
+    fn force_deferred(&self, interp: &mut Interp, v: &Value) -> RResult<Option<Value>> {
+        let Some(d) = deferred_core(v) else { return Ok(None) };
+        if let Some(f) = d.forced.borrow().as_ref() {
+            return Ok(Some(f.clone()));
+        }
+        // (a collection found the object dead: only a dead cycle has it)
+        if d.core.inert.get() {
+            return Ok(None);
+        }
+        let x = d.core.x;
+        // #453's eager copy, made now: the class's Length, Elt or Dataptr
+        // can raise or run R code, so behind altrep_call's boundary
+        let prev = FORCING.with(|f| f.replace(x.addr()));
+        // SAFETY: the R thread; the CoreRef keeps `x` held.
+        let r = unsafe { altrep_call(interp, || from_sexp(x)) };
+        FORCING.with(|f| f.set(prev));
+        let f = r?;
+        // the copy gives back `x` to C from now on (to_sexp), as the
+        // wrapper does
+        // SAFETY: as above.
+        unsafe { make_original(x, &f) };
+        *d.forced.borrow_mut() = Some(f.clone());
+        Ok(Some(f))
     }
 
     fn altrep_serialized(&self, interp: &mut Interp, handle: usize) -> RResult<Option<(Value, Value)>> {

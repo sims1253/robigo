@@ -109,7 +109,8 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     let Some(sym) = args[0].value.as_sym() else {
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
-    let mut val = interp.eval(&args[1].value, env)?;
+    let val = interp.eval(&args[1].value, env)?;
+    let mut val = crate::altrep::forced(interp, val)?;
     if val.inherits("factor") {
         val = crate::builtins::envir::as_character_factor(&val)?;
     }
@@ -1289,6 +1290,7 @@ fn do_switch(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
         return Err(Flow::error_call(call.clone(), "'EXPR' is missing"));
     }
     let x = interp.eval(&args[0].value, env)?;
+    let x = crate::altrep::forced(interp, x)?;
     if !x.is_vector() || x.len() != 1 {
         return Err(Flow::error_call(call.clone(), "EXPR must be a length 1 vector"));
     }

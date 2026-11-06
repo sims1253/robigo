@@ -398,7 +398,8 @@ fn match_math2_dflt_args(args: Vec<Arg>, call: &Value) -> RResult<(Value, Value)
 fn do_math2_group(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_signif: bool) -> RResult<Value> {
     let name = if is_signif { "signif" } else { "round" };
     let dflt_digits = if is_signif { 6.0 } else { 0.0 };
-    let args = super::subset::eval_keep_missing(i, &args, env)?;
+    let mut args = super::subset::eval_keep_missing(i, &args, env)?;
+    crate::altrep::force_all(i, &mut args)?;
     let args: Vec<Arg> = if is_signif {
         let (x, mut d) = match_math2_dflt_args(args, call)?;
         if d.is_missing_arg() {

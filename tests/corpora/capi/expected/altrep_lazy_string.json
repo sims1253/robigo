@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "altrep_lazy_string",
+ "out": {
+  "t": "[1] FALSE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] \"character\"\n[1] TRUE\n[1] \"character\"\n[1] TRUE\n[1] TRUE\n[1] FALSE\n[1] TRUE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] 2\n[1] TRUE\n[1] TRUE\n[1] \"p\" \"q\"\n[1] 1\nbefore\nmaterializing\n[1] 1\n[1] \"boom\"\n[1] FALSE\n"
+ },
+ "sha": "ec39de8cfd842e77",
+ "status": 0
+}

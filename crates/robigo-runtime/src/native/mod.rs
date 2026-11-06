@@ -144,6 +144,15 @@ pub trait NativeBridge: Sync {
     fn altrep_subset(&self, _interp: &mut Interp, _handle: usize, _indx: &Value) -> RResult<Option<Value>> {
         Ok(None)
     }
+    /// The type of a deferred value (crate::altrep), if `v` is one.
+    fn deferred_type(&self, _v: &Value) -> Option<crate::value::VType> {
+        None
+    }
+    /// The contents of a deferred value (crate::altrep), read now through
+    /// its class; `None` if `v` is not one.
+    fn force_deferred(&self, _interp: &mut Interp, _v: &Value) -> RResult<Option<Value>> {
+        Ok(None)
+    }
     /// The class info and `Serialized_state`, if the class has the method
     /// and it answers.
     fn altrep_serialized(&self, _interp: &mut Interp, _handle: usize) -> RResult<Option<(Value, Value)>> {
