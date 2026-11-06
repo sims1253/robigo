@@ -1371,9 +1371,15 @@ pub fn compile(
             continue;
         }
         let after = &vlive[pc + 1 - r.start];
+        let after_ty = states[pc + 1 - r.start].as_ref();
         for (reg, live) in after.iter().enumerate() {
-            let views = native_ops()
-                .any(|q| matches!(&ops[q], Op::GetVar { dst, slot: s2, .. } if *dst as usize == reg && s2 == slot));
+            // (A vector a call run inline returns may be its argument's
+            // view, `id(x)`: any vector result counts.)
+            let call_vec = after_ty.and_then(|st| st[reg]).is_some_and(|t| t.is_vector())
+                && native_ops().any(|q| matches!(&ops[q], Op::Call { dst, .. } if *dst as usize == reg));
+            let views = call_vec
+                || native_ops()
+                    .any(|q| matches!(&ops[q], Op::GetVar { dst, slot: s2, .. } if *dst as usize == reg && s2 == slot));
             if *live && views {
                 if trace() {
                     eprintln!("jit: register {} views a vector the loop changes, at {}", reg, pc);

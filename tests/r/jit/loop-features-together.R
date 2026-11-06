@@ -47,3 +47,25 @@ run2 <- function() {
 }
 print(run2())
 print(x)
+
+# The same with the old vector returned by a call run inline, for `<<-`
+# and for a local `<-`.
+x <- c(1, 2)
+id <- function(v) v
+run3 <- function() {
+    ans <- 0
+    for (i in 1:3000) {
+        if (i == 2000L) ans <- sum(id(x), { x[[1L]] <<- 10; 0 })
+    }
+    ans
+}
+print(run3())
+run4 <- function() {
+    y <- c(1, 2)
+    ans <- 0
+    for (i in 1:3000) {
+        if (i == 2000L) ans <- sum(id(y), { y[[1L]] <- 10; 0 })
+    }
+    c(ans, y)
+}
+print(run4())
