@@ -409,6 +409,21 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
     Ok(val)
 }
 
+/// `x op y` for attribute-free double vectors whose lengths are equal or
+/// one of them 0 or 1, as [`arith_binary`] computes it: nothing can warn
+/// or fail (`%%` can, and is not for here), so the VM calls this without
+/// the call machinery.
+pub fn plain_real_arith(op: ArithOp, mut x: Value, mut y: Value) -> Value {
+    debug_assert!(op != ArithOp::Mod && !x.has_attrs() && !y.has_attrs());
+    let (nx, ny) = (x.len(), y.len());
+    let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
+    if let Some(out) = real_binary_inplace(op, &mut x, &mut y, n) {
+        return Value::reals(out);
+    }
+    let (a, b) = (real_view(&x), real_view(&y));
+    Value::reals(real_binary(op, &a, &b, n, false))
+}
+
 /// Apply `f` elementwise with R's recycling: one operand has length `n`
 /// or both are recycled. Written as plain iterator maps per operator so
 /// the loops vectorize; results are the same IEEE operations as R's.

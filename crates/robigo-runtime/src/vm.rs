@@ -32,7 +32,7 @@ use crate::value::*;
 mod rjit;
 pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_local, jit_check, jit_inherit};
 mod slow;
-use slow::{Kind, Slow, arith_slow, leaf_op_slow, math1_slow};
+use slow::{Kind, OTHER, Pure, Shape, Slow, arith_slow, dbl_arith, leaf_op_slow, math1_slow, pure_plan, shape};
 
 #[derive(Clone)]
 pub enum RVal {
@@ -1530,6 +1530,130 @@ fn super_set_slice(interp: &Interp, env: &Env, sym: Sym, idx: &[Option<usize>], 
         return false;
     }
     array_assign(&mut b.value, idx, val)
+}
+
+/// A leaf operand as it stands, without running code (a constant, a
+/// register, a variable's cached or plain value); `None` otherwise.
+#[inline]
+fn leaf_peek<'a>(vars: &'a mut Vars<'_>, env: &Env, regs: &'a [RVal], l: &Leaf) -> Option<&'a RVal> {
+    match l {
+        Leaf::R(r) => Some(&regs[*r as usize]),
+        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot),
+        Leaf::D(_) | Leaf::I(_) => None,
+    }
+}
+
+/// The [`Shape`] of a leaf operand as it stands (see [`leaf_peek`]).
+#[inline]
+fn leaf_shape(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], l: &Leaf) -> Shape {
+    match l {
+        Leaf::D(d) => shape(&RVal::D(*d)),
+        Leaf::I(i) => shape(&RVal::I(*i)),
+        _ => leaf_peek(vars, env, regs, l).map_or(OTHER, shape),
+    }
+}
+
+/// Whether a first operand may qualify for [`pure_plan`] (inline: a cheap
+/// test that spares complex vectors and other values a call).
+#[inline(always)]
+fn may_be_pure(v: &RVal) -> bool {
+    match v {
+        RVal::D(_) | RVal::I(_) | RVal::L(_) | RVal::V(Value::Real(_)) => true,
+        RVal::V(Value::Cplx(z)) => z.data.len() == 1,
+        _ => false,
+    }
+}
+
+/// [`may_be_pure`] for a leaf, from what is at hand (a variable's cached
+/// value; one not cached may be).
+#[inline(always)]
+fn leaf_may_be_pure(vars: &Vars<'_>, regs: &[RVal], l: &Leaf) -> bool {
+    match l {
+        Leaf::D(_) | Leaf::I(_) => true,
+        Leaf::R(r) => may_be_pure(&regs[*r as usize]),
+        Leaf::Var(_, s) => match &vars.slots[*s as usize] {
+            SlotVal::Clean(v) | SlotVal::Dirty(v) => may_be_pure(v),
+            _ => true,
+        },
+    }
+}
+
+/// `Op::Arith` on registers without a flush where [`pure_plan`] allows it;
+/// `None` (nothing done) otherwise. Out of line: the dispatch loop's
+/// register allocation is shared by all its ops.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn reg_arith_pure(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    op: ArithOp,
+    a: Reg,
+    b: Reg,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Option<Slow> {
+    match pure_plan(op, shape(&regs[a as usize]), shape(&regs[b as usize])) {
+        Pure::Val(v) => {
+            regs[a as usize] = RVal::I(0);
+            regs[b as usize] = RVal::I(0);
+            Some(Slow::Val(v))
+        }
+        Pure::Dbl => {
+            let x = std::mem::replace(&mut regs[a as usize], RVal::I(0));
+            let y = std::mem::replace(&mut regs[b as usize], RVal::I(0));
+            Some(dbl_arith(code, pc, dst, op, x, y, vars, env, regs))
+        }
+        Pure::No => None,
+    }
+}
+
+/// `Op::ArithL` without a flush where [`pure_plan`] allows it (see
+/// [`reg_arith_pure`]).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn leaf_arith_pure(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    op: ArithOp,
+    a: &Leaf,
+    b: &Leaf,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Option<Slow> {
+    let sa = leaf_shape(vars, env, regs, a);
+    if !sa.any() {
+        return None;
+    }
+    match pure_plan(op, sa, leaf_shape(vars, env, regs, b)) {
+        Pure::Val(v) => {
+            for l in [a, b] {
+                if let Leaf::R(r) = l {
+                    regs[*r as usize] = RVal::I(0);
+                }
+            }
+            Some(Slow::Val(v))
+        }
+        Pure::Dbl => {
+            let x = leaf_take(vars, env, regs, a);
+            let y = leaf_take(vars, env, regs, b);
+            Some(dbl_arith(code, pc, dst, op, x, y, vars, env, regs))
+        }
+        Pure::No => None,
+    }
+}
+
+/// The value of a leaf [`pure_plan`] accepted as a double (a register is
+/// taken, so that an unshared temporary can hold the result).
+fn leaf_take(vars: &mut Vars<'_>, env: &Env, regs: &mut [RVal], l: &Leaf) -> RVal {
+    match l {
+        Leaf::D(d) => RVal::D(*d),
+        Leaf::R(r) => std::mem::replace(&mut regs[*r as usize], RVal::I(0)),
+        _ => leaf_peek(vars, env, regs, l).cloned().expect("checked by pure_plan"),
+    }
 }
 
 /// `forceAndCall`: force the first `n` promise arguments.
@@ -4980,7 +5104,10 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {
+            leaf_op!($dst, $a, $b, $call, $sym, $g, $fast, $kind, None::<ArithOp>)
+        };
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr, $dbl:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -5014,9 +5141,20 @@ fn run_with(
                     v
                 }
                 None => {
-                    flush!();
-                    let r = leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs);
-                    match tryop!(r) {
+                    let pure = match $dbl {
+                        Some(op) if leaf_may_be_pure(&vars, &regs, $a) => {
+                            leaf_arith_pure(code, pc, dst as Reg, op, $a, $b, &mut vars, env, regs)
+                        }
+                        _ => None,
+                    };
+                    let r = match pure {
+                        Some(r) => r,
+                        None => {
+                            flush!();
+                            tryop!(leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs))
+                        }
+                    };
+                    match r {
                         Slow::Val(v) => v,
                         Slow::Next(r, v) => {
                             pc += 1;
@@ -5144,9 +5282,21 @@ fn run_with(
                         v
                     }
                     None => {
-                        flush!();
-                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, vars, env, regs);
-                        match tryop!(r) {
+                        // Doubles and complex scalars without a flush (out of
+                        // line, behind a cheap test of the first operand).
+                        let pure = if may_be_pure(&regs[*a as usize]) {
+                            reg_arith_pure(code, pc, *dst, *op, *a, *b, vars, env, regs)
+                        } else {
+                            None
+                        };
+                        let r = match pure {
+                            Some(r) => r,
+                            None => {
+                                flush!();
+                                tryop!(arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, vars, env, regs))
+                            }
+                        };
+                        match r {
                             Slow::Val(v) => v,
                             Slow::Next(r, v) => {
                                 pc += 1;
@@ -5158,7 +5308,7 @@ fn run_with(
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call), Some(*op));
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
                 leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), Kind::Rel(*op, *call));
