@@ -2464,12 +2464,13 @@ fn gzcon_close_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<()> {
             .and_then(|_| enc.finish())
             .map_err(|_| Flow::error("writing error whilst flushing 'gzcon' connection"))
             .and_then(|body| {
-                con_write_bytes(i, inner, &body).and(con_write_bytes(i, inner, &{
-                    let mut trailer = Vec::with_capacity(8);
-                    trailer.extend_from_slice(&crc.to_le_bytes());
-                    trailer.extend_from_slice(&total_in.to_le_bytes());
-                    trailer
-                }))
+                // R: putLong of the trailer only after the body was
+                // written (a failed write errors out first).
+                con_write_bytes(i, inner, &body)?;
+                let mut trailer = Vec::with_capacity(8);
+                trailer.extend_from_slice(&crc.to_le_bytes());
+                trailer.extend_from_slice(&total_in.to_le_bytes());
+                con_write_bytes(i, inner, &trailer)
             })?;
     }
     if i.conns.get(inner)?.isopen {
