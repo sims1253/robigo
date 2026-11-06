@@ -197,6 +197,18 @@ pub fn collect(interp: &mut Interp) {
             crate::reachability::reclaim_cycles();
         }
     }
+    // R: connections.c:conFinalizer runs at any collection: an unused
+    // connection closes (with its warning) here too, not only at gc().
+    // Its error (a warning under options(warn = 2)) is reported as
+    // RunFinalizers reports a finalizer's, without the caller's handlers,
+    // and the evaluation goes on.
+    if let Err(crate::error::Flow::Error(e)) = crate::builtins::io::close_unused_connections(interp) {
+        if !e.signaled {
+            let saved = interp.handlers.take();
+            let _ = interp.signal_error(e);
+            interp.handlers = saved;
+        }
+    }
     DUE.store(false, Relaxed);
     adjust();
     if log {
