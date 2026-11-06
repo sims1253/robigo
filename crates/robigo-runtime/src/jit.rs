@@ -102,6 +102,9 @@ pub struct SlotInfo {
     pub owned: bool,
     /// For a variable of type `N`: index of its tag in the value buffer.
     pub tag: Option<usize>,
+    /// Assigned with `<<-`: the variable is the binding of an enclosing
+    /// environment, written back there.
+    pub superset: bool,
 }
 
 /// A view of a vector's data passed to native code.
@@ -534,6 +537,13 @@ pub enum JitSlot {
     /// Not compiled yet: this many attempts failed for the values seen.
     Failed(u8),
     Never,
+    /// Not tried yet: the back edges of the entries that ended before the
+    /// threshold, summed, and the number of those entries (a short loop run
+    /// often is hot too).
+    Heat {
+        back: u32,
+        entries: u32,
+    },
 }
 
 /// Why a loop was not compiled.
@@ -841,7 +851,7 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             leaf_uses(i, &mut u);
             u.wregs.push(*dst);
         }
-        Op::SetIndex { val, slot, i, .. } => {
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
             u.rregs.push(*val);
             leaf_uses(i, &mut u);
             // The vector is read and modified in place, not reassigned.
@@ -978,6 +988,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Colon { .. }
         | Op::Builtin1 { f: Builtin1::Length | Builtin1::IsNull, .. } => true,
         Op::Guard { skip, .. } => inside(*skip),
+        // (Of a scalar: see `compile`.)
+        Op::SuperSet { .. } => true,
         Op::LoopEnter { brk, nxt } => inside(*brk) && inside(*nxt),
         Op::Jump { target }
         | Op::JumpIf { target, .. }
@@ -989,6 +1001,8 @@ fn supported(op: &Op, r: &Region) -> bool {
         // vectors and in-range scalar indices native code handles, it does
         // what `x[i] <- v` does; anything else deoptimizes.)
         Op::SetIndex { .. } => true,
+        // (On the enclosing binding's vector in place: see `compile`.)
+        Op::SuperSetIndex { .. } => true,
         _ => false,
     }
 }
@@ -1025,6 +1039,16 @@ fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
 /// Compile the loop starting at the `LoopEnter` op `enter`. `entry(slot)`
 /// gives the type of a variable's current value (`None`: unbound or not
 /// representable); `live_in(reg)` that of a register set before the loop.
+/// [`uses`] in a loop: `sym <<- x` writes the loop variable that stands for
+/// the binding it assigns.
+fn luses(op: &Op, inl: &Inl) -> Uses {
+    let mut u = uses(op, inl);
+    if let Op::SuperSet { slot, .. } = op {
+        u.wslots.push(*slot);
+    }
+    u
+}
+
 pub fn compile(
     code: &Code,
     enter: usize,
@@ -1087,7 +1111,7 @@ pub fn compile(
         // A cell is not a variable of the loop: the loop must not name it,
         // even where it would be another binding of the same name.
         if !cells.is_empty() {
-            let u = uses(op, &inl);
+            let u = luses(op, &inl);
             if u.rslots.iter().chain(&u.wslots).any(|s| cells.iter().any(|c| c.sym == code.vars[*s as usize])) {
                 if trace() {
                     eprintln!("jit: the loop names a variable of a closure it calls at {}: {:?}", pc, op);
@@ -1112,6 +1136,7 @@ pub fn compile(
     for pc in native_ops() {
         if let Op::Index { slot, .. }
         | Op::SetIndex { slot, .. }
+        | Op::SuperSetIndex { slot, .. }
         | Op::Index2 { slot, .. }
         | Op::SetIndex2 { slot, .. } = &ops[pc]
         {
@@ -1128,7 +1153,7 @@ pub fn compile(
         }
     }
     for pc in native_ops() {
-        for s in uses(&ops[pc], &inl).rslots {
+        for s in luses(&ops[pc], &inl).rslots {
             if let std::collections::hash_map::Entry::Vacant(e) = slot_ty.entry(s) {
                 if let Some(t) = entry(s) {
                     e.insert(t);
@@ -1144,7 +1169,7 @@ pub fn compile(
     let mut written = vec![false; code.nregs];
     let mut live = Vec::new();
     for pc in native_ops() {
-        let u = uses(&ops[pc], &inl);
+        let u = luses(&ops[pc], &inl);
         for reg in u.rregs {
             if written[reg as usize] {
                 continue;
@@ -1222,7 +1247,7 @@ pub fn compile(
             }
             continue;
         }
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
                 if trace() {
@@ -1274,7 +1299,7 @@ pub fn compile(
         }
         let Some(mut sd) = state[pc - r.start].clone() else { continue };
         let op = &ops[pc];
-        let u = uses(op, &inl);
+        let u = luses(op, &inl);
         for s in &u.rslots {
             if !sd[*s as usize] {
                 needs_entry[*s as usize] = true;
@@ -1303,11 +1328,13 @@ pub fn compile(
     let mut writable = vec![false; nslots];
     let mut assigned = vec![false; nslots];
     for pc in native_ops() {
-        for s in uses(&ops[pc], &inl).wslots {
+        for s in luses(&ops[pc], &inl).wslots {
             written[s as usize] = true;
         }
         match &ops[pc] {
-            Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } => writable[*slot as usize] = true,
+            Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. } | Op::SuperSetIndex { slot, .. } => {
+                writable[*slot as usize] = true
+            }
             Op::SetVar { slot, .. } => assigned[*slot as usize] = true,
             _ => {}
         }
@@ -1347,6 +1374,38 @@ pub fn compile(
                 if trace() {
                     eprintln!("jit: register {} views a vector the loop changes, at {}", reg, pc);
                 }
+                return Err(Reject::Never);
+            }
+        }
+    }
+    // A variable assigned with `<<-` is the enclosing binding (`vm::jit_enter`
+    // checks that the frame has none of its own): the body must not also
+    // assign it locally, in the loop or anywhere else.
+    // The same for `x[[i]] <<- v` (a vector written in place, `vm::jit_enter`
+    // views the binding): nothing may assign or modify the local `x`.
+    let mut supersets: Vec<Slot> = Vec::new();
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } = &ops[pc] {
+            supersets.push(*slot);
+        }
+    }
+    for pc in 0..ops.len() {
+        let local_write = match &ops[pc] {
+            Op::SuperSet { .. } | Op::SuperSetIndex { .. } => false,
+            Op::SetIndex { slot, .. }
+            | Op::SetIndex2 { slot, .. }
+            | Op::SetComplex { slot, .. }
+            | Op::SetDollar { slot, .. } => supersets.contains(slot),
+            op => uses(op, &inl).wslots.iter().any(|s| supersets.contains(s)),
+        };
+        if local_write {
+            return Err(Reject::Never);
+        }
+    }
+    // A vector both `<<-`-assigned and scalar `<<-`-assigned: not here.
+    for pc in r.start..r.end {
+        if let Op::SuperSet { slot, .. } = &ops[pc] {
+            if slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
                 return Err(Reject::Never);
             }
         }
@@ -1401,6 +1460,7 @@ pub fn compile(
             writable: writable[s as usize],
             owned,
             tag,
+            superset: supersets.contains(&s),
         });
     }
     let width = |t: JType| match t {
@@ -1825,7 +1885,7 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                 && matches!(lt(i), Some(JType::D | JType::I))
                 && matches!(rt(val), JType::D | JType::I | JType::L | JType::Dyn)
         }
-        Op::SetIndex { val, slot, i, .. } => {
+        Op::SetIndex { val, slot, i, .. } | Op::SuperSetIndex { val, slot, i, .. } => {
             matches!(lt(i), Some(JType::D | JType::I | JType::N))
                 && matches!(
                     (slot_ty[slot], rt(val)),
@@ -2042,6 +2102,15 @@ fn reg_flow(
                 }
             }
             Op::ForStep { slot, .. } => assign(*slot, JType::I, false)?,
+            // (In a loop; in a closure compiled whole the slot is a cell.)
+            Op::SuperSet { src, slot, .. } if inl.specs.is_none() => {
+                if let Some(t) = st[*src as usize] {
+                    if !t.is_scalar() {
+                        return Err(Reject::Never);
+                    }
+                    assign(*slot, t, false)?;
+                }
+            }
             _ => {}
         }
         let mut out = st.clone();
@@ -2797,7 +2866,7 @@ impl Gen<'_, '_> {
 
     fn element_offset(&mut self, op: &Op, slot: Slot, lv: Variable, pc: usize) -> CValue {
         let (i, j) = match op {
-            Op::Index { i, .. } | Op::SetIndex { i, .. } => (i, None),
+            Op::Index { i, .. } | Op::SetIndex { i, .. } | Op::SuperSetIndex { i, .. } => (i, None),
             Op::Index2 { i, j, .. } | Op::SetIndex2 { i, j, .. } => (i, Some(j)),
             _ => unreachable!(),
         };
@@ -2903,11 +2972,16 @@ impl Gen<'_, '_> {
                 let (x, _) = self.reg(*src);
                 self.super_set(*slot, x);
             }
-            // In a callee run inline: its copy of the cell.
+            // In a callee run inline: its copy of the cell. In a loop: the
+            // variable that stands for the binding.
             Op::SuperSet { src, slot, .. } => {
                 let (x, _) = self.reg(*src);
                 let (var, _) = self.v.slot[slot];
                 self.b.def_var(var, x);
+                if let Some(f) = self.v.flag.get(slot).copied() {
+                    let one = self.b.ins().iconst(types::I64, 1);
+                    self.b.def_var(f, one);
+                }
             }
             Op::Builtin1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
@@ -3207,7 +3281,7 @@ impl Gen<'_, '_> {
                 let x = self.b.ins().load(ty, MemFlagsData::trusted(), addr, 0);
                 self.set_reg(*dst, x);
             }
-            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } => {
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. } | Op::SuperSetIndex { val, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
                 let k = self.element_offset(op, *slot, lv, pc);
                 let (x, xt) = self.reg(*val);

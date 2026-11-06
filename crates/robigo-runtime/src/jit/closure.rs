@@ -2579,6 +2579,7 @@ fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usi
             writable: false,
             owned: false,
             tag: None,
+            superset: false,
         });
     }
     let mut nvals = slots.len();

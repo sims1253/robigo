@@ -2073,6 +2073,51 @@ fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &mut RVal, take: bo
     set_plain_in_place(&interp.global, sym, val, take)
 }
 
+/// Whether [`super_set_fast`] of a scalar to `sym` from `env` cannot fail:
+/// the binding it assigns exists and is plain.
+fn super_target_plain(interp: &Interp, env: &Env, sym: Sym) -> bool {
+    let mut cur = env.parent();
+    while let Some(e) = cur {
+        if e.has_local(sym) {
+            return e.plain_binding(sym);
+        }
+        cur = e.parent();
+    }
+    interp.global.plain_binding(sym)
+}
+
+/// A writable view of the vector of the binding `x[[i]] <<- v` assigns
+/// from `env` (see [`super_set_element`]), unshared first: a plain binding
+/// of a vector of native type `ty` that is not an object.
+fn super_vec_view(interp: &Interp, env: &Env, sym: Sym, ty: crate::jit::JType) -> Option<crate::jit::VecView> {
+    use crate::jit::JType;
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let b = frame.get_mut(sym)?;
+    if b.flags != 0 || b.value.is_object() || jit_type(&RVal::V(b.value.clone())) != Some(ty) {
+        return None;
+    }
+    macro_rules! view {
+        ($x:expr) => {{
+            let (nrow, ncol) = jit_matrix_dims($x).unwrap_or((0, 0));
+            let v = Rc::make_mut($x);
+            Some(crate::jit::VecView { ptr: v.data.as_mut_ptr() as *mut u8, len: v.data.len() as u64, nrow, ncol })
+        }};
+    }
+    match (&mut b.value, ty) {
+        (Value::Real(x), JType::VecD | JType::MatD) => view!(x),
+        (Value::Int(x), JType::VecI | JType::MatI) => view!(x),
+        _ => None,
+    }
+}
+
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
 /// `val` (see [`super_set_fast`]; `take`: moved out, see [`stored`]).
 pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool) -> bool {
@@ -3704,9 +3749,15 @@ fn unforced_promise(env: &Env, sym: Sym) -> bool {
 struct LoopRec {
     brk: u32,
     nxt: u32,
+    /// Its `LoopEnter` index, with [`HEAT_BIT`] set when its back edges
+    /// count toward `JitSlot::Heat` as it ends (a flag of its own made
+    /// every loop entry copy 20 bytes instead of 16).
     enter: u32,
     count: u32,
 }
+
+/// See [`LoopRec::enter`] (op indices stay far below it).
+const HEAT_BIT: u32 = 1 << 31;
 
 /// The state of `run_with`'s guard memo (`checked`) and native loops. Kept
 /// in memory (its re-check is out of line, so it has an address): the
@@ -3784,6 +3835,58 @@ fn unwind_to(f: Flow, env: &Env, loops: &[LoopRec]) -> Result<usize, Flow> {
 
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
+
+/// Back edges, summed over entries that each ended below
+/// [`JIT_THRESHOLD`], before a loop is compiled at its next entry. Higher:
+/// compiling costs as much as thousands of iterations in the VM, so a short
+/// loop must be run often to repay it (at 16, `robigo/nbody` was +25%,
+/// compiling its inner loops before the outer one).
+const JIT_HEAT: u32 = 1024;
+
+/// Ops per entry (its back edges per entry times the length of its body)
+/// a loop compiled by heat must average: entering native code costs more
+/// than a few ops in the VM (`robigo/fannkuch` +0.7% entering two loops of
+/// eight ops and one or two iterations natively 108k times).
+const JIT_HEAT_WORK: u64 = 64;
+
+/// Whether the loop entered at op `enter` (ending at `brk`) runs natively
+/// now, and whether this entry counts toward its heat. Out of line: the
+/// dispatch loop's register allocation is shared by all its ops.
+#[inline(never)]
+fn loop_enter_state(code: &Code, enter: u32, brk: u32) -> (bool, bool) {
+    match code.jit.borrow().get(&enter) {
+        Some(crate::jit::JitSlot::Ready(_)) => (true, false),
+        // (Hot but too little work per entry: no more counting.)
+        Some(crate::jit::JitSlot::Heat { back, entries }) if *back >= JIT_HEAT => {
+            let body = (brk as u64).saturating_sub(enter as u64);
+            (*back as u64 * body >= JIT_HEAT_WORK * *entries as u64, false)
+        }
+        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
+        Some(_) => (false, false),
+    }
+}
+
+/// Add the back edges of an entry of the loop at `enter` that ended below
+/// the threshold to its heat.
+#[cold]
+#[inline(never)]
+fn loop_heat(code: &Code, enter: u32, count: u32) {
+    use crate::jit::JitSlot;
+    if count == 0 || count >= JIT_THRESHOLD {
+        return;
+    }
+    let mut cache = code.jit.borrow_mut();
+    match cache.get_mut(&enter) {
+        None => {
+            cache.insert(enter, JitSlot::Heat { back: count, entries: 1 });
+        }
+        Some(JitSlot::Heat { back, entries }) => {
+            *back = back.saturating_add(count);
+            *entries = entries.saturating_add(1);
+        }
+        Some(_) => {}
+    }
+}
 
 /// Native matrix views accept only a dimension attribute, with validated
 /// storage bounds. No native op can change the dimensions during a loop.
@@ -4290,7 +4393,29 @@ fn jit_enter(
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
     let mut ctx = crate::jit::LoopCtx::default();
     for s in &jl.slots {
-        if s.written && !s.ty.is_vector() || s.owned {
+        if s.ty.is_vector() && s.superset {
+            // `x[[i]] <<- v`: the binding `<<-` assigns, viewed in place (the
+            // frame has none of its own, and its cached copy is dropped so
+            // that the binding's vector is not shared through it).
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_)) || env.has_local(s.sym) {
+                return None;
+            }
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let view = super_vec_view(interp, env, s.sym, s.ty)?;
+            debug_assert_eq!(vecs.len(), s.idx);
+            vecs.push(view);
+            continue;
+        }
+        if s.superset {
+            // The variable is the binding `<<-` assigns: the frame must not
+            // have one of its own, and writing it back must not fail.
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_))
+                || env.has_local(s.sym)
+                || !super_target_plain(interp, env, s.sym)
+            {
+                return None;
+            }
+        } else if s.written && !s.ty.is_vector() || s.owned {
             let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
             if !deferrable(env, s.sym, &RVal::I(0), pending) {
                 return None;
@@ -4576,6 +4701,14 @@ fn jit_enter(
             JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
         };
+        if s.superset {
+            // As `Op::SuperSet` does (checked above not to fail).
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let mut v = v;
+            let done = super_set_fast(interp, env, s.sym, &mut v, true);
+            debug_assert!(done);
+            continue;
+        }
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
         vars.any = true;
         vars.dirty = true;
@@ -5263,7 +5396,7 @@ fn run_with(
     macro_rules! jit_loop {
         () => {{
             let rec = *loops.last().unwrap();
-            match jit_enter(interp, code, rec.enter as usize, env, regs, &mut vars) {
+            match jit_enter(interp, code, (rec.enter & !HEAT_BIT) as usize, env, regs, &mut vars) {
                 Some((crate::jit::Outcome::Exited, _)) => {
                     loops.pop();
                     pc = rec.brk as usize + 1;
@@ -5942,15 +6075,26 @@ fn run_with(
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {
-                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
-                // A loop compiled on an earlier entry runs natively at once.
-                if gs.jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_)))
-                {
+                // A loop compiled on an earlier entry runs natively at once,
+                // and so does one whose short entries add up to the threshold.
+                let enter = (pc - 1) as u32;
+                let (go, heat) = if gs.jit_on { loop_enter_state(code, enter, *brk) } else { (false, false) };
+                loops.push(LoopRec {
+                    brk: *brk,
+                    nxt: *nxt,
+                    enter: if heat { enter | HEAT_BIT } else { enter },
+                    count: 0,
+                });
+                if go {
                     jit_loop!();
                 }
             }
             Op::LoopExit => {
-                loops.pop();
+                if let Some(rec) = loops.pop()
+                    && rec.enter & HEAT_BIT != 0
+                {
+                    loop_heat(code, rec.enter & !HEAT_BIT, rec.count);
+                }
             }
             Op::ForInit { seq, call } => {
                 if matches!(regs[*seq as usize], RVal::Range { .. }) {
