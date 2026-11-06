@@ -206,3 +206,29 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   warning, zero-length values, copy-on-modify, `a[a] <- a * 10`, a global
   copied into the frame, a lazy index, the fasta_3 search), recorded with
   GNU R 4.5.0, identical in all tiers.
+
+## 2026-11-04: cat() and paste(collapse=) of strings without a copy per element
+
+- Why: every fasta program writes each 60-character line with
+  `cat(x, "\n", sep = "")` or `cat(paste(x, collapse = ""), "\n", sep = "")`.
+  Per call of 60 one-character strings `cat` took ~16.6k instructions and
+  `paste` ~17.8k (~280 per element): `paste` built a `String` per element
+  and joined them, `cat` allocated one per element (`encode_element_cat`),
+  built `PrintParams` (five option lookups) on every call, and took a
+  modulo for the separator per element. With the naive programs' loops
+  native, these were half of what was left of fastaredux_naive.
+- What (`builtins/paste.rs`, `builtins/io.rs`): `paste` with `collapse`
+  writes every piece straight into one buffer of the right size; `cat`
+  borrows string elements, builds `PrintParams` only for numbers, reserves
+  the output, and writes a character vector element by element when not
+  filling (widths matter only for `fill`). The bytes are the same.
+- Result (us per call, release): `cat(x, "\n", sep = "")` 2.45 -> 1.60,
+  `paste(x, collapse = "")` 1.80 -> 1.00, both together 3.60 -> 2.15 (GNU R
+  18.3, 3.75, 6.50). Gate (full suite against main bf7332ee): 7 faster (the
+  whole fasta family, -1.3% to -2.9%), 0 slower, worst +0.02%.
+- Verified: `tests/r/io/cat-paste-strings.R` (NA and empty strings, vector
+  separators, numbers among strings, empty and NULL arguments, `fill`,
+  `labels`, `paste` with several arguments, recycling, `collapse = NULL`,
+  empty inputs, lists, encodings), recorded with GNU R 4.5.0, identical in
+  all tiers and to main; the FastR corpus slices for cat/paste/format/print/
+  sprintf/strsplit/writeLines/printing/connections: 591/592, 0 regressions.
