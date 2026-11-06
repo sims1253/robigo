@@ -452,6 +452,9 @@ plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
   host, request headers) are identical with GNU R 4.5.0 apart from the
   verbose trace GNU R prints when `internet.info` is unset (as under
   R_DEFAULT_PACKAGES=NULL, main's behaviour too).
-- Open: a transfer that fails after data arrived keeps that data and
-  warns at open; GNU R serves it and then fails the read with "cannot
-  read from connection".
+- Open: the open waits for the whole transfer, so a stream that stays
+  open (GNU R returns from Curl_open once data arrives and reads as it
+  comes) blocks until EOF or the timeout; and a transfer that fails
+  after data arrived keeps that data and warns at open, where GNU R
+  serves it and then fails the read with "cannot read from
+  connection". Both need Curl_read's streaming.
