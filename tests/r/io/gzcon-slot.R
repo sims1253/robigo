@@ -1,0 +1,16 @@
+# gzcon(con) takes over con's number (connections.c: Connections[icon] = new);
+# the wrapped connection leaves the table, and close() frees both.
+fil <- tempfile("gzc")
+con <- file(fil, "wb")
+zz <- gzcon(con)
+print(as.integer(zz) == as.integer(con))
+print(summary(con)$class)
+print(rownames(showConnections(all = TRUE)))
+writeLines("x", zz)
+close(zz)
+print(rownames(showConnections(all = TRUE)))
+zz <- gzcon(file(fil, "rb"))
+print(readLines(zz))
+close(zz)
+print(rownames(showConnections(all = TRUE)))
+unlink(fil)
