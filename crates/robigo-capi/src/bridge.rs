@@ -1078,9 +1078,23 @@ unsafe fn drop_lost_twin(k: usize) {
 fn r_owners(v: &Value) -> usize {
     let n = sharing(v) as usize + 1;
     let Some(k) = twin_key(v) else { return n };
-    let twin = TWINS.with(|t| t.borrow().get(&k).is_some_and(|tw| tw.value.strong().is_some())) as usize;
-    let seen = SEEN.with(|m| m.borrow().contains_key(&k)) as usize;
-    n.saturating_sub(twin + seen)
+    let twin = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.strong().is_some())));
+    let seen = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0));
+    let mut bridge = twin.is_some_and(|(_, strong)| strong) as usize + seen.is_some() as usize;
+    // #458: a zero-copy core object holds the value as its buffer's owner,
+    // a reference of the bridge's too (counted once when the twin is the
+    // call's own conversion)
+    let mut objs = [twin.map(|(x, _)| x), seen];
+    if objs[0] == objs[1] {
+        objs[1] = None;
+    }
+    for x in objs.into_iter().flatten() {
+        // SAFETY: a twin's object is held, a SEEN one preserved: both live.
+        if unsafe { shared_value(x) }.is_some_and(|o| o.same_object(v)) {
+            bridge += 1;
+        }
+    }
+    n.saturating_sub(bridge)
 }
 
 /// Is `v` shared in R (#278's crossing rule: such a value reaches C as its
