@@ -1940,7 +1940,7 @@ fn do_url(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
     if !meth {
         return Err(Flow::error("the 'internal' method of url() is defunct for http:// and ftp:// URLs"));
     }
-    let ncon = i.conns.next_connection()?;
+    let ncon = next_connection(i)?;
     let mode = if open.is_empty() { "r" } else { open.as_str() };
     let kind = ConnKind::Url { data: Vec::new(), cur: 0, headers };
     let mut con = Connection::new("url-libcurl", &url, mode, kind);

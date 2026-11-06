@@ -455,6 +455,12 @@ plus Cairo svg devices), jsonlite 1542/9 vs 1555/6 (url() above).
 - Open: the open waits for the whole transfer, so a stream that stays
   open (GNU R returns from Curl_open once data arrives and reads as it
   comes) blocks until EOF or the timeout; and a transfer that fails
-  after data arrived keeps that data and warns at open, where GNU R
-  serves it and then fails the read with "cannot read from
-  connection". Both need Curl_read's streaming.
+  after data arrived fails the open (the warnings, then "cannot open
+  the connection to '...'"), where GNU R serves those bytes and then
+  fails the read with "cannot read from connection". Both need
+  Curl_read's streaming.
+- Review of fecf11ac: a failing curl_multi_perform or curl_multi_wait
+  ends the transfer as a failure (GNU R keeps calling perform, with an
+  interrupt check robigo's loop has no equivalent of, so a perform that
+  never progresses would spin); a NUL in the URL or a header is an
+  error; url() takes its slot through NextConnection's gc-and-retry.

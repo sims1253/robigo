@@ -874,15 +874,17 @@ impl Drop for Fetch {
 /// Fetch `url` for a `url()` connection opened for reading: libcurl.c's
 /// Curl_open (its options, curlCommon, the `headers`) and fetchData's
 /// transfer loop, run to the end of the resource. Failures are reported
-/// as download_report_url_error does; the result is `None` when nothing
-/// arrived, so that the open fails ("cannot open the connection to ..."),
-/// and otherwise what was received (GNU R would serve those bytes and
-/// fail the read after them).
+/// as download_report_url_error does, and the result is then `None`, so
+/// that the open fails ("cannot open the connection to ..."), even when
+/// some bytes arrived first: GNU R would serve those and fail the read
+/// after them ("cannot read from connection"); a truncated resource must
+/// not read as a complete one.
 pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResult<Option<Vec<u8>>> {
     let Some(l) = lib() else {
         return Err(Flow::error("robigo: url() connections need the system's libcurl (libcurl.so.4)"));
     };
-    let curl_url = CString::new(url).unwrap_or_default();
+    // (an R string cannot hold a NUL; refuse rather than send another URL)
+    let curl_url = CString::new(url).map_err(|_| Flow::error("embedded nul in string"))?;
     let user_agent = match i.get_option("HTTPUserAgent") {
         Some(Value::Str(s)) if s.data.len() == 1 => {
             let p = s.data[0].as_deref().unwrap_or("NA");
@@ -908,7 +910,7 @@ pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResul
     // transfer, and every option value has the type curl.h gives it.
     unsafe {
         for h in headers {
-            let c = CString::new(h.as_str()).unwrap_or_default();
+            let c = CString::new(h.as_str()).map_err(|_| Flow::error("embedded nul in string"))?;
             let tmp = (l.slist_append)(f.headers, c.as_ptr());
             if tmp.is_null() {
                 return Err(Flow::error("allocation of url connection failed"));
@@ -947,6 +949,8 @@ pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResul
             let mc = (l.multi_wait)(f.mhnd, std::ptr::null_mut(), 0, 100, &mut numfds);
             if mc != 0 {
                 i.warning(format!("curl_multi_wait() failed, code {}", mc))?;
+                // the transfer is unfinished: no message will report it
+                n_err += 1;
                 break;
             }
             if numfds == 0 {
@@ -957,7 +961,15 @@ pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResul
             } else {
                 repeats = 0;
             }
-            (l.multi_perform)(f.mhnd, &mut running);
+            // A failing curl_multi_perform need not update `running`; GNU R
+            // goes on calling it (and checks for interrupts), robigo stops
+            // rather than spin. (CURLM_CALL_MULTI_PERFORM, -1, is no error.)
+            let mc = (l.multi_perform)(f.mhnd, &mut running);
+            if mc > 0 {
+                i.warning(format!("curl_multi_perform() failed, code {}", mc))?;
+                n_err += 1;
+                break;
+            }
         }
         // R: libcurl.c:curlMultiCheckerrs
         loop {
@@ -976,5 +988,5 @@ pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResul
         }
     }
     drop(f);
-    Ok(if n_err > 0 && data.is_empty() { None } else { Some(data) })
+    Ok(if n_err > 0 { None } else { Some(data) })
 }
