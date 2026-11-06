@@ -15,6 +15,7 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("dqrqy", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Qy)),
     ("dqrrsd", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Rsd)),
     ("dqrxb", |i, c, a, e| f_dqrutl(i, c, a, e, Util::Xb)),
+    ("dtrco", f_dtrco),
     ("R_addTaskCallback", crate::task::add_task_callback),
     ("R_removeTaskCallback", crate::task::remove_task_callback),
     ("R_getTaskCallbackNames", crate::task::get_task_callback_names),
@@ -59,4 +60,16 @@ fn f_dqrutl(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env, what: Util) -> R
         replaced.push((7, Value::ints(vec![info])));
     }
     Ok(dotc_result(args, replaced))
+}
+
+/// `.Fortran(.F_dtrco, z, ldt, n, k = double(1), double(n), job)` — kappa's
+/// exact triangular condition estimate.
+fn f_dtrco(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let t = real_arg(&args, 0);
+    let ldt = int_arg(&args, 1)[0] as usize;
+    let n = int_arg(&args, 2)[0] as usize;
+    let mut z = real_arg(&args, 4);
+    let job = int_arg(&args, 5)[0];
+    let k = linpack::dtrco(&t, ldt, n, &mut z, job);
+    Ok(dotc_result(args, vec![(3, Value::reals(vec![k])), (4, Value::reals(z))]))
 }

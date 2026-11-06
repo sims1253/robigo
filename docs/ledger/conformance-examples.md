@@ -394,3 +394,12 @@ robigo errored with `size 16 is unknown on this machine` (write) and read
 only the first 8 bytes. Both now go through robigo-numerics' x87 `LDouble`
 (`to_bytes`/`from_bytes` added; the 80-bit store matches the zero-tail
 static). Marked: `base/readBin`.
+
+## 2026-11-03: LINPACK dtrco, kappa's exact triangular estimate (1 case)
+
+`base/kappa`'s `kappa(*, exact = TRUE)` calls `.Fortran(.F_dtrco, ...)` (R's
+appl/dtrco.f, registered with 6 args). Ported to native/linpack.rs (the
+1-norm estimate with Fortran SIGN semantics and the rescaling sweeps) and
+registered as `dtrco` next to dqrdc2/dqrsl. Verified against the oracle on
+upper and lower triangular matrices and a zero diagonal entry (rcond 0 →
+kappa Inf). Marked: `base/kappa`.
