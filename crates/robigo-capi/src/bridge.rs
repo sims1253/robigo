@@ -827,8 +827,9 @@ thread_local! {
     /// call created and R got back, or the conversion of a temporary C
     /// had, by the core's watch id. Unrooted: a collection that finds one
     /// kept (C preserved it, or keeps it in an object it keeps) makes it a
-    /// hold and so a twin; one that finds it unreachable drops it.
-    static PENDING: RefCell<HashMap<u64, (Sexp, WeakVal)>> = RefCell::new(HashMap::default());
+    /// hold and so a twin; one that finds it unreachable drops it. With
+    /// the value's runtime identity, its key in `PENDING_OF`.
+    static PENDING: RefCell<HashMap<u64, (Sexp, WeakVal, usize)>> = RefCell::new(HashMap::default());
     /// runtime identity -> its pending object's watch id
     static PENDING_OF: RefCell<HashMap<usize, u64>> = RefCell::new(HashMap::default());
 }
@@ -1122,7 +1123,7 @@ unsafe fn pend(x: Sexp, v: &Value) {
         return;
     }
     let id = core().watch(x);
-    PENDING.with(|m| m.borrow_mut().insert(id, (x, w)));
+    PENDING.with(|m| m.borrow_mut().insert(id, (x, w, k)));
     PENDING_OF.with(|m| m.borrow_mut().insert(k, id));
 }
 
@@ -1144,7 +1145,7 @@ unsafe fn pending_twin(v: &Value) -> Option<Sexp> {
     }
     drain_watched();
     let id = PENDING_OF.with(|m| m.borrow().get(&k).copied())?;
-    let (x, _) = PENDING.with(|m| m.borrow().get(&id).map(|(x, w)| (*x, w.dead())))?;
+    let (x, _) = PENDING.with(|m| m.borrow().get(&id).map(|(x, w, _)| (*x, w.dead())))?;
     // (still watched, so not swept: no collection has decided it)
     make_twin(x, v);
     TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr())).then_some(x)
@@ -1155,16 +1156,16 @@ unsafe fn pending_twin(v: &Value) -> Option<Sexp> {
 unsafe fn drain_watched() {
     let (kept, lost) = core().take_watched();
     for id in lost {
-        if let Some((_, w)) = PENDING.with(|m| m.borrow_mut().remove(&id)) {
-            forget_pending_key(id, &w);
+        if let Some((_, _, k)) = PENDING.with(|m| m.borrow_mut().remove(&id)) {
+            forget_pending_key(id, k);
         }
     }
     for (id, hold) in kept {
-        let Some((x, w)) = PENDING.with(|m| m.borrow_mut().remove(&id)) else {
+        let Some((x, w, k)) = PENDING.with(|m| m.borrow_mut().remove(&id)) else {
             core().unhold(hold);
             continue;
         };
-        forget_pending_key(id, &w);
+        forget_pending_key(id, k);
         if let Some(v) = w.upgrade() {
             make_twin(x, &v);
         }
@@ -1173,20 +1174,16 @@ unsafe fn drain_watched() {
     }
 }
 
-fn forget_pending_key(id: u64, w: &WeakVal) {
-    if let Some(v) = w.upgrade() {
-        if let Some(k) = twin_key(&v) {
-            PENDING_OF.with(|m| {
-                let mut m = m.borrow_mut();
-                if m.get(&k) == Some(&id) {
-                    m.remove(&k);
-                }
-            });
+/// Forget pending object `id` as identity `k`'s, unless `k` is another
+/// value's by now (the value died and its address was reused). Not a
+/// search by id: a gc() after many crossings loses many pending objects.
+fn forget_pending_key(id: u64, k: usize) {
+    PENDING_OF.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.get(&k) == Some(&id) {
+            m.remove(&k);
         }
-        return;
-    }
-    // the value died: its identity is free, find the entry by id
-    PENDING_OF.with(|m| m.borrow_mut().retain(|_, i| *i != id));
+    });
 }
 
 /// An object a native call returned, which R got as `v` (#278, escapes):
