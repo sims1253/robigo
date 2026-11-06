@@ -209,3 +209,18 @@ Completing the fix for the corpus needs one of:
 - or an object-model change (elements reachable through shared storage with interior mutability) — a DESIGN DECISION.
 
 Until then #272 stays parked: its 5 `TestSimpleLists` regressions are exactly this copy, now understood and instrumented.
+
+### Round 14 addendum (2026-11-06): the 5 TestSimpleLists regressions
+
+Rebased on main (#298's take-out path is merged). The copy that made
+`l$x[2:9] <- 42` report was not the VM's registers any more: the in-place
+path of complex assignment (lang.rs `complex_assign_inplace`) built the
+setter's call object from `argv.clone()`, so the call held the element
+and the replacement duplicated it, in every tier. The call now names the
+object `*tmp*`, as fast_replace's and GNU R's do; `l$x[i] <- v`,
+`l$x[[i]] <- v`, `l[["x"]][i] <- v` and `l$a$x[i] <- v` modify in place
+(no report), a list shared with another binding still copies (report).
+Growing a shared vector reports too (enlarge_vector, R's EnlargeVector
+duplicate). The plain and traced element loops come from one macro.
+New `tests/r/debug/tracemem-inplace.R` (GNU R 4.5.0 recording). fastr
+TestBuiltin_tracemem + TestSimpleLists: 89/89.

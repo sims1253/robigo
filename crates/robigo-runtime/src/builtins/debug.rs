@@ -183,6 +183,11 @@ fn address_string(p: usize) -> Value {
 /// empty context an interpreted run has (R prints the byte-code trace
 /// buffer, which is empty without compiled code). Used by the replacement
 /// paths, whose callers hold the interp.
+///
+/// Wired into the element writes of `[<-`/`[[<-` (`assign_values`, the
+/// single-element list write) and `enlarge_vector`; deletion (`x[i] <-
+/// NULL`), the matrix/array fast paths, `$<-`, recursive `[[<-` and
+/// attribute writes still copy without a report.
 #[inline]
 pub fn make_mut_reported<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>>) -> &'a mut Vector<T> {
     if tracing_active() {

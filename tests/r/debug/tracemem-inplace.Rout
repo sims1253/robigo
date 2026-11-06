@@ -1,0 +1,13 @@
+l$x[2] <- 5 : 0 lines
+l$x[[2]] <- 5 : 0 lines
+l[["x"]][2] <- 5 : 0 lines
+after l$x[1] <- 0 : 0 lines
+nested : 0 lines
+fastr TestSimpleLists : 0 lines
+shared list : 1 lines
+tracemem[0xADDR -> 0xADDR]: 
+grow shared vector : 1 lines
+tracemem[0xADDR -> 0xADDR]: 
+grow shared list : 1 lines
+tracemem[0xADDR -> 0xADDR]: 
+grow unshared vector : 0 lines
