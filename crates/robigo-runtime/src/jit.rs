@@ -1389,11 +1389,13 @@ pub fn compile(
             supersets.push(*slot);
         }
     }
-    for pc in 0..ops.len() {
+    // (Only with a `<<-`: most loops have none, and this scans the function.)
+    for pc in (0..ops.len()).filter(|_| !supersets.is_empty()) {
         let local_write = match &ops[pc] {
-            Op::SuperSet { .. } | Op::SuperSetIndex { .. } => false,
+            Op::SuperSet { .. } | Op::SuperSetIndex { .. } | Op::SuperSetIndexN { .. } => false,
             Op::SetIndex { slot, .. }
             | Op::SetIndex2 { slot, .. }
+            | Op::SetIndexN { slot, .. }
             | Op::SetComplex { slot, .. }
             | Op::SetDollar { slot, .. } => supersets.contains(slot),
             op => uses(op, &inl).wslots.iter().any(|s| supersets.contains(s)),
