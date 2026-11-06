@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "identity_across_calls",
+ "out": {
+  "t": "lgl TRUE TRUE TRUE \nint TRUE TRUE TRUE \ndbl TRUE TRUE TRUE \ncplx TRUE TRUE TRUE \nchr TRUE TRUE TRUE \nraw TRUE TRUE TRUE \nlist TRUE TRUE TRUE \nseq TRUE TRUE TRUE \n[1] TRUE\n[1] TRUE TRUE TRUE\n[1] TRUE TRUE TRUE\ndone\n"
+ },
+ "sha": "235eabacd9d78106",
+ "status": 0
+}

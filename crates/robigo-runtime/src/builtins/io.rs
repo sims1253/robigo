@@ -822,8 +822,22 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
 
 /// Write bytes to a connection (R's `con->write`).
 pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
-    // the terminals and text connections take text (Rconn_printf from C
-    // through con->vfprintf, as R's write.table does to stdout())
+    con_write_bytes_or(i, n, bytes, conn_write)
+}
+
+/// [`con_write_bytes`], with `text` for the connections that take text
+/// (the terminals and text connections, as Rconn_printf from C through
+/// con->vfprintf, as R's write.table does to stdout()): only that path can
+/// run R code (a text connection assigns its lines; `sink()` diverts the
+/// terminals), which the C API's callback wraps. A file, gzfile, raw or
+/// socket connection takes the bytes as they are.
+#[inline(always)]
+pub fn con_write_bytes_or(
+    i: &mut Interp,
+    n: i32,
+    bytes: &[u8],
+    text: impl FnOnce(&mut Interp, i32, &str) -> RResult<()>,
+) -> RResult<()> {
     let byte_kind = matches!(
         i.conns.get(n)?.kind,
         ConnKind::Gz { writing: true, .. }
@@ -833,7 +847,7 @@ pub fn con_write_bytes(i: &mut Interp, n: i32, bytes: &[u8]) -> RResult<()> {
             | ConnKind::Native { .. }
     );
     if n <= 2 || !byte_kind {
-        return conn_write(i, n, &String::from_utf8_lossy(bytes));
+        return text(i, n, &String::from_utf8_lossy(bytes));
     }
     if con_write(i.conns.get(n)?, bytes)? {
         return Ok(());

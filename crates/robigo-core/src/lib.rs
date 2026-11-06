@@ -13,7 +13,7 @@ mod heap;
 mod heapsize;
 pub mod unwind;
 
-pub use gc::{Core, GcStats, HeapReport, ReleaseFn};
+pub use gc::{Core, GcStats, HeapReport, ReleaseFn, ScanSegment};
 
 /// GNU R's SEXPTYPE numbers (Rinternals.h).
 pub mod types {
@@ -54,7 +54,7 @@ use types::*;
 /// | bit | name | set by |
 /// |---|---|---|
 /// | 8 | [`TWIN`] | the bridge's twins (cells of a runtime value's long-lived core copy) |
-/// | 14 | `HOST_OWNED` | reserved: zero-copy arguments (`track/bridge-zero-copy-on-identity`) |
+/// | 14 | [`HOST_OWNED`] | the bridge's zero-copy atomic vectors (EXTDATA over a runtime vector's buffer) |
 /// | 15 | [`WATCHED`] | the bridge's proxy attribute cells (#386) |
 pub mod extra {
     /// A cell of a twin (docs/core.md §6): the header, spine or attribute
@@ -63,6 +63,9 @@ pub mod extra {
     /// `DATAPTR`, ...) report writes to it, which the bridge writes back
     /// into the runtime value.
     pub const TWIN: u16 = 1 << 8;
+    /// An EXTDATA vector whose owner word belongs to the host bridge: a
+    /// runtime atomic vector shared with C zero-copy (docs/core.md §6).
+    pub const HOST_OWNED: u16 = 1 << 14;
     /// The cell is an attribute cell of a host proxy that the bridge
     /// recorded: SETCAR/SETCDR/SET_TAG tell the bridge when C writes it.
     pub const WATCHED: u16 = 1 << 15;

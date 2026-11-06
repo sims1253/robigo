@@ -236,6 +236,15 @@ held by C stays valid across collections.
    O(1) via the per-block start bitmap, so `double *p = REAL(x) + i`
    alone keeps `x` alive. This is what makes unprotected-but-live C
    locals (common package bugs that GNU R tolerates by luck) safe.
+   With the runtime as the embedder (before G3) only the frames of C
+   code are scanned: each entry from the runtime into C opens a
+   segment, and each hand-over from libR back to the runtime
+   (`with_interp`) closes it, after spilling the callee-saved
+   registers into the closing frame (`Core::close_scan_segment`). The
+   runtime's own frames hold core objects only through precise roots;
+   scanned, their stale words kept dead objects alive at random, so a
+   finalizer ran one `gc()` late (R6's finalizer tests under rlang's
+   `eval_bare`).
 
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;
@@ -493,6 +502,32 @@ referenced from anywhere but the bridge's table:
   follows the value's sharing on every use; the table's reference is
   ignored by the runtime's reachability graphs, as `PROXIED`'s is.
 
+**Identity across calls** (#278, council round 8). GNU R passes the
+caller's own objects to C (dotcode.c) and never moves them, so an object's
+address is the same in every call while R holds it (data.table's `.onLoad`
+checks it with `address()`). Twins carry it:
+
+- *Crossing*: `to_sexp` of a vector that is shared in R (owned twice, the
+  bridge's own references aside) returns its twin, creating it, in a
+  `.Call`/`.External` argument, a value a host callback hands over, or an
+  attribute. Unshared temporaries stay per-call (`SEEN`); the interned
+  shared scalars have no identity; `.C` copies.
+- *Escapes*: a result that is an argument's object (`original_cell`)
+  becomes a twin at once. A result C created, and the conversion of a
+  temporary R still holds when the outermost call returns, are *watched*
+  (`Core::watch`, unrooted): a collection that marks one (C preserved it,
+  or keeps it in a kept object) makes it a hold and so a twin; one that
+  does not frees it. `to_sexp` of such a value before a collection decided
+  it makes it a twin at once.
+- Atomic twins hold their value strongly (#458's EXTDATA owner); the others
+  weakly, so copy-on-modify keeps its in-place path: `Rc::make_mut` moves a
+  weakly referenced value, which gives it a new identity.
+- Twins are holds (below): roots in the collections the allocator
+  triggers, marked through the runtime graph in `gc()`; a traced value
+  marks its twin; dead ones are dropped before finalizers run.
+- `REFCNT` counts the value's owners in R, the bridge's aside, and never
+  reads an aliased object as unshared.
+
 **One mark over both heaps** (#344, council round 6). A cycle can cross
 the heaps: a runtime frame holds an `ExtPtr` whose core object's
 protected field holds the proxy of a closure of that frame (curl's
@@ -534,6 +569,20 @@ Known differences until G3 (documented, measured by the corpus):
 reach the caller's object only when the call returns; `NAMED`/
 `MAYBE_SHARED` on arguments report "shared" (always safe for C code: it
 copies).
+
+**Constant formal defaults.** GNU R binds every missing argument with a
+default to a promise of it (eval.c:applyClosure), a constant one
+included. robigo binds a constant default as the constant itself, flagged
+`BIND_MISSING_DEFAULT`, because a real promise per call cost 1% of startup
+and 12% of the `closures` benchmark. R cannot tell the two apart: forcing
+gives the constant, `missing()` reads the flag, `substitute()` the
+expression. C can, so the bridge's `findVar`, `findVarInFrame`, `getVar`
+and frame walk turn such a binding into the unforced default promise in
+place, the first time C looks (`interp::materialize_default`). The
+remaining gap: when R has read the default before C looks, GNU R's promise
+is already forced (`PRVALUE` bound), while robigo's is made then and is
+unforced. The capi case `default_args` records that difference, and is not
+ratcheted for it.
 
 ## 7. Crates and boundaries
 
@@ -759,7 +808,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
-| 22 | foreign/read-only buffers as an ALTREP class; no zero-copy EXTDATA bridge args | bridge copies arguments in (EXTDATA unused); ALTREP class planned |
+| 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
 | 23 | console output through C stdio; signal ownership | planned |
 | 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
 | 25 | start G3 once the accessor layer and the fastmap gate exist | noted |
