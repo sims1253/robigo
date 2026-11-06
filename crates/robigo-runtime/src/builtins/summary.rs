@@ -20,10 +20,10 @@ use robigo_numerics::{
 };
 
 pub static DEFS: &[Builtin] = &[
-    prim("sum", do_sum, -1),
-    prim("prod", do_prod, -1),
-    prim("min", do_min, -1),
-    prim("max", do_max, -1),
+    prim("sum", do_sum, -1).values_only(),
+    prim("prod", do_prod, -1).values_only(),
+    prim("min", do_min, -1).values_only(),
+    prim("max", do_max, -1).values_only(),
     prim("range", do_range, -1),
     prim("all", do_all, -1),
     prim("any", do_any, -1),

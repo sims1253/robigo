@@ -14,8 +14,8 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     prim(":", do_colon, 2),
-    prim("seq_len", do_seq_len, 1),
-    prim("seq_along", do_seq_along, 1),
+    prim("seq_len", do_seq_len, 1).values_only(),
+    prim("seq_along", do_seq_along, 1).values_only(),
     prim("seq.int", do_seq, -1),
     special("rep", do_rep, -1),
     internal("rep.int", do_rep_int, 2),

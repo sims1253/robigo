@@ -264,6 +264,18 @@ fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
     }
 }
 
+/// Bind the loop index `i` to `k + 1`, writing into the index object it
+/// has unless that has been captured (GNU R allocates it once and writes
+/// it in place; the index is its own object, never a shared small integer).
+// R: apply.c:do_lapply (`INTEGER(ind)[0] = i + 1`, duplicated when
+// `MAYBE_SHARED(ind)`)
+fn set_index(rho: &Env, isym: Sym, k: usize) {
+    let mut i = crate::vm::RVal::I(k as i32 + 1);
+    if !crate::vm::set_plain_in_place(rho, isym, &mut i, false) {
+        rho.set_local(isym, Value::int_fresh(k as i32 + 1));
+    }
+}
+
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
@@ -295,7 +307,7 @@ fn call_fun(
             if let Some(v) = crate::vm::call_native_rval(i, c, &[element_rval(xx, k)]) {
                 return Ok(v.into_value());
             }
-            rho.set_local(isym, Value::int(k as i32 + 1));
+            set_index(rho, isym, k);
             let v = force_and_call(i, fcall, 1, rho)?;
             if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
                 *fast = None;
@@ -310,7 +322,7 @@ fn call_fun(
         }
         None => {}
     }
-    rho.set_local(isym, Value::int(k as i32 + 1));
+    set_index(rho, isym, k);
     let r = if *plain {
         force_and_call_elem(i, fcall, plain_element(xx, k), rho)
     } else {
@@ -718,7 +730,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, Value::Sym(xsym));
     let mut out = Vec::with_capacity(syms.len());
     for k in 0..syms.len() {
-        rho.set_local(isym, Value::int(k as i32 + 1));
+        set_index(rho, isym, k);
         out.push(force_and_call(i, &fcall, 1, rho)?);
     }
     let mut ans = Value::list(out);

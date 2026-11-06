@@ -476,6 +476,43 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
+**Scalar variables.** As in GNU R, a variable's binding owns its
+object, and an unboxed scalar is boxed into it the first time something
+reads the variable as an object (`R_expand_binding_value`). The VM keeps
+scalars unboxed in its slots and binds them as they are, a small integer
+as one of the shared scalars, the way GNU R's byte code keeps an unboxed
+binding cell. Every read that needs the object goes through
+`Env::binding_value` (and `Promise::value` for a promise's value): it
+boxes a shared small integer into an object of its own and stores it
+back into the binding, so that reader and every later one (`get`,
+`as.list(env)`, an interpreted `list(i)`, a promise of the variable, C's
+`findVar`) see the same object. Only the VM's unboxed reads
+(`vm::plain_lookup`) leave the binding as it is. The VM hands a variable
+to native code through that accessor (`vm::escaping_read`: arguments of
+`.Call` & co, and of callees that can reach native code), a computed
+scalar as an object of its own, and a `.Call` returning bumps the epoch
+so cached slots read the binding again. So what C writes into a
+variable's value is what R reads through the variable, after the call
+and during its callbacks (a dirty twin is written back before R code
+runs: **Twins** below), which purrr's map needs: it writes its index
+`i` before each callback. An integer literal is an object of its own, as GNU R's parser
+makes it (gram.y `mkInt`), and so is a computed value handed to C
+(`native::invoke`): C's write changes that object only, never every
+other `0L`. A logical literal is the shared `TRUE`/`FALSE`, which C gets
+as a read-only twin whose write is not carried back (the bridge skips
+`Value::is_shared_scalar` when it writes back).
+
+Known differences (scalar variables): GNU R disagrees with itself where
+C writes into a *reassigned* scalar (`i <- i + 1L`, a `for` variable)
+passed straight to `.Call`. Its interpreter keeps the write; its byte
+code loses it, since such a scalar lives in an unboxed binding cell that
+`GETVAR` pushes as a fresh box (eval.c `SETVAR`, `DO_GETVAR`). robigo
+keeps the write in every tier
+(`tests/corpora/capi/cases/identity-unboxed.R` records GNU R's byte-code
+output, not ratcheted). Logical variables stay bound to the shared
+`TRUE`/`FALSE`/`NA` (as `ScalarLogical` gives them), so C's write into
+one is lost where GNU R's parsed `TRUE` is an object of its own.
+
 **Twins** (#167, council round 5 in #364). C keeps objects across
 calls without protecting them when something in R holds them (rlang's
 `rlang_zap = rlang_ns_get("zap!")`), compares them by address, and

@@ -202,17 +202,25 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                 if b.flags & BIND_ACTIVE != 0 {
                     return None;
                 }
+                if b.value.shared_int().is_some() {
+                    // (a variable's object: Env::binding_value)
+                    drop(frame);
+                    return cur.binding_value(sym).map(|(v, _)| v);
+                }
                 return match &b.value {
                     Value::Promise(q) => {
-                        let is_unforced = match &*q.value.borrow() {
-                            crate::value::PromiseVal::Boxed(v) => return Some(v.clone()),
-                            crate::value::PromiseVal::ScalarInt(i) => return Some(Value::int(*i)),
-                            crate::value::PromiseVal::ScalarReal(d) => return Some(Value::real(*d)),
-                            crate::value::PromiseVal::ScalarLgl(l) => return Some(Value::lgl_raw(*l)),
-                            crate::value::PromiseVal::Unforced => true,
-                        };
-                        if is_unforced && q.code.is_none() && !q.forcing.get() {
+                        let is_unforced = matches!(&*q.value.borrow(), crate::value::PromiseVal::Unforced);
+                        if !is_unforced {
+                            // (Boxed once: the promise's value is one object.)
+                            return q.value();
+                        }
+                        if q.code.is_none() && !q.forcing.get() {
                             if let Value::Sym(next_sym) = q.expr {
+                                // (no borrow of this frame is held while
+                                // chasing: the chase may read it again, and
+                                // a read may expand a binding)
+                                let q = q.clone();
+                                drop(frame);
                                 let next_env = q.env.borrow().clone();
                                 if let Some(next_env) = next_env {
                                     q.forcing.set(true);
@@ -236,6 +244,14 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
         }
         cur = cur.parent()?;
     }
+}
+
+/// [`Interp::force_promise`]'s boxing of a shared small integer into the
+/// promise's own object (`Promise::value`).
+#[cold]
+#[inline(never)]
+fn expand_promise(p: &Promise, v: Value) -> Value {
+    p.value().unwrap_or(v)
 }
 
 /// A constant argument as GNU R's AST interpreter passes it: an unforced
@@ -473,11 +489,8 @@ impl Interp {
         }
         let mut cur = env.clone();
         loop {
-            let found = {
-                let frame = cur.0.frame().borrow();
-                frame.get(sym).map(|b| (b.value.clone(), b.flags))
-            };
-            if let Some((v, flags)) = found {
+            // (a variable's object: Env::binding_value)
+            if let Some((v, flags)) = cur.binding_value(sym) {
                 if flags & BIND_ACTIVE != 0 {
                     return self.get_active_value(&v);
                 }
@@ -535,7 +548,30 @@ impl Interp {
         }
     }
 
+    /// The value of a promise, forced if need be, as R reads an object:
+    /// boxed into the promise's own object the first time (`Promise::value`),
+    /// as GNU R expands an unboxed promise value (R_expand_promise_value).
+    #[inline]
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
+        let forced = match &*p.value.borrow() {
+            crate::value::PromiseVal::Boxed(v) if v.shared_int().is_none() => return Ok(v.clone()),
+            crate::value::PromiseVal::Unforced => false,
+            _ => true,
+        };
+        if forced {
+            // (an unboxed value or a shared small integer: boxed once)
+            return Ok(p.value().unwrap_or(Value::Null));
+        }
+        let v = self.force_promise_raw(p)?;
+        if v.shared_int().is_some() {
+            return Ok(expand_promise(p, v));
+        }
+        Ok(v)
+    }
+
+    /// [`Interp::force_promise`] for a reader that takes the value unboxed
+    /// (the VM): a shared small integer stays as it is, unexpanded.
+    pub(crate) fn force_promise_raw(&mut self, p: &Rc<Promise>) -> RResult<Value> {
         match &*p.value.borrow() {
             crate::value::PromiseVal::Boxed(v) => return Ok(v.clone()),
             crate::value::PromiseVal::ScalarInt(i) => return Ok(Value::int(*i)),
@@ -867,7 +903,7 @@ impl Interp {
     pub fn call_builtin(&mut self, b: &'static Builtin, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
         let argv = match b.kind {
             BuiltinKind::Special => args.to_vec(),
-            BuiltinKind::Builtin => self.eval_args(args, env, call)?,
+            BuiltinKind::Builtin => self.eval_args_for(args, env, call, b.values_only)?,
         };
         self.invoke_builtin(b, call, argv, env)
     }
@@ -954,6 +990,15 @@ impl Interp {
 
     /// Evaluate arguments for a builtin; expand `...`.
     pub fn eval_args(&mut self, args: &[Arg], env: &Env, call: &Value) -> RResult<Vec<Arg>> {
+        self.eval_args_for(args, env, call, false)
+    }
+
+    /// [`Interp::eval_args`]; for a builtin whose result never holds an
+    /// argument's object (`values_only`, `Builtin::values_only`) a variable
+    /// is read as the VM reads it, its binding not expanded
+    /// (`Env::binding_value`): only its value is used.
+    #[inline]
+    fn eval_args_for(&mut self, args: &[Arg], env: &Env, call: &Value, values_only: bool) -> RResult<Vec<Arg>> {
         let mut out = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
             match &a.value {
@@ -973,6 +1018,10 @@ impl Interp {
                 },
                 v if v.is_missing_arg() => {
                     return Err(Flow::error_call(call.clone(), format!("argument {} is empty", i + 1)));
+                }
+                Value::Sym(sym) if values_only && let Some(r) = crate::vm::plain_lookup(env, *sym) => {
+                    self.visible = true;
+                    out.push(Arg::new(a.tag, r.into_value()));
                 }
                 v => {
                     let v = self.eval(v, env)?;

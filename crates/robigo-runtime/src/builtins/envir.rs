@@ -525,10 +525,8 @@ fn find_var_mode(i: &mut Interp, sym: Sym, env: &Env, mode: &str, inherits: bool
             let v = Value::missing_arg();
             return Ok(mode_matches(&v, mode).then_some(v));
         }
-        let b = e.0.frame().borrow().get(sym).cloned();
-        if let Some(b) = b {
-            let mut v = b.value;
-            if b.flags & BIND_ACTIVE != 0 {
+        if let Some((mut v, flags)) = e.binding_value(sym) {
+            if flags & BIND_ACTIVE != 0 {
                 v = i.get_active_value(&v)?;
             }
             if mode != "any" || matches!(v, Value::Promise(_)) {

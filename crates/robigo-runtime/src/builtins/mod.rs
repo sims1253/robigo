@@ -64,7 +64,19 @@ pub type BuiltinFn = fn(&mut Interp, &Value, Vec<Arg>, &Env) -> RResult<Value>;
 
 impl Builtin {
     pub const fn new(name: &'static str, func: BuiltinFn, arity: i16) -> Builtin {
-        Builtin { name, kind: BuiltinKind::Builtin, func, internal: false, visibility: Visibility::On, arity }
+        Builtin {
+            name,
+            kind: BuiltinKind::Builtin,
+            func,
+            internal: false,
+            visibility: Visibility::On,
+            arity,
+            values_only: false,
+        }
+    }
+    pub const fn values_only(mut self) -> Builtin {
+        self.values_only = true;
+        self
     }
     pub const fn special(mut self) -> Builtin {
         self.kind = BuiltinKind::Special;
