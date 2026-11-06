@@ -1360,7 +1360,11 @@ pub fn compile(
     // change that vector while the register is live (R's value would be
     // the old one).
     for pc in native_ops() {
-        let (Op::SetVar { slot, .. } | Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. }) = &ops[pc] else {
+        let (Op::SetVar { slot, .. }
+        | Op::SetIndex { slot, .. }
+        | Op::SetIndex2 { slot, .. }
+        | Op::SuperSetIndex { slot, .. }) = &ops[pc]
+        else {
             continue;
         };
         if !slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
@@ -1524,7 +1528,9 @@ pub fn compile(
                             | Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } if *slot as usize == s)
                 })
             });
-            if written {
+            // (Nor may another callee assign it, as a cell (#312): the
+            // snapshot would miss that write.)
+            if written || cells.iter().any(|c| c.written && c.sym == *sym) {
                 return Err(Reject::Never);
             }
             let idx = if ty.is_scalar() {
@@ -3583,6 +3589,9 @@ impl Gen<'_, '_> {
                     return false;
                 }
                 let v = match f {
+                    // (A number and a string element are scalars too, of
+                    // their own representation: #317.)
+                    Builtin1::Length if matches!(t, JType::N | JType::S) => self.i32c(1),
                     Builtin1::Length => {
                         let len = if t == JType::Range { self.range_reg(*a).2 } else { self.vreg(*a).1 };
                         let big = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, len, i32::MAX as i64);
