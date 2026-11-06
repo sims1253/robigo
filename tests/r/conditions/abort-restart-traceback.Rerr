@@ -1,0 +1,3 @@
+Error in h() : first
+Error in f() : boom
+Calls: withRestarts -> withOneRestart -> doWithOneRestart -> f

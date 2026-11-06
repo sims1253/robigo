@@ -347,6 +347,13 @@ impl Interp {
             Err(f) => return f,
         };
         self.print_warnings();
+        // R: errors.c:jump_to_top_ex tries the restarts before
+        // .Traceback is written (try_jump_to_restart): an
+        // unhandled error invokes the innermost "browser", "tryRestart" or
+        // "abort" restart (source(catch.aborts = TRUE) relies on this).
+        if let Some(f) = self.try_jump_to_restart() {
+            return f;
+        }
         // Only a session that goes on can read it.
         if self.interactive || have_handler || self.option_lgl("catch.script.errors", false) {
             let calls = self.traceback_calls(0).into_iter().map(Arg::pos).collect();
@@ -354,12 +361,6 @@ impl Interp {
         }
         // R: errors.c:restore_inError
         self.restore_expressions();
-        // R: errors.c:jump_to_top_ex ends in try_jump_to_restart: an
-        // unhandled error invokes the innermost "browser", "tryRestart" or
-        // "abort" restart (source(catch.aborts = TRUE) relies on this).
-        if let Some(f) = self.try_jump_to_restart() {
-            return f;
-        }
         Flow::Error(Box::new(RError {
             message: msg.to_string(),
             call: Some(call.clone()),
