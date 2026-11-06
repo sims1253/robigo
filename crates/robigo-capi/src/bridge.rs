@@ -3736,8 +3736,11 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         for (k, (x, v)) in seen {
             // #278: the conversion of a temporary R still has may be one C
             // kept (preserved, or in an object it keeps): pending until a
-            // collection tells
-            if sharing(&v) > 0 {
+            // collection tells. A zero-copy conversion (#458) holds the
+            // value itself, as its buffer's owner: that is not R's.
+            // SAFETY: `x` is preserved until the release below.
+            let own = unsafe { shared_value(x) }.is_some_and(|o| o.same_object(&v)) as u16;
+            if sharing(&v) > own {
                 pend(x, &v);
             }
             core().release(x);
