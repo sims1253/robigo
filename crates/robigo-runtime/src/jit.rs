@@ -890,6 +890,11 @@ fn leave_reads(op: &Op, code: &Code) -> Option<Vec<Reg>> {
             leaf(b, &mut out);
         }
         Op::ForSeqLength { len, .. } => leaf(len, &mut out),
+        Op::IndexN { idx, .. } => code.index_lists[*idx as usize].iter().flatten().for_each(|l| leaf(l, &mut out)),
+        Op::SetIndexN { val, idx, .. } | Op::SuperSetIndexN { val, idx, .. } => {
+            out.push(*val);
+            code.index_lists[*idx as usize].iter().flatten().for_each(|l| leaf(l, &mut out));
+        }
         Op::ForSeqBy { k, .. } => {
             for sa in &code.seq_by[*k as usize] {
                 leaf(&sa.a, &mut out);
@@ -1689,6 +1694,7 @@ fn vm_writes(op: &Op) -> Option<Reg> {
         | Op::Index { dst, .. }
         | Op::Subset { dst, .. }
         | Op::Index2 { dst, .. }
+        | Op::IndexN { dst, .. }
         | Op::CallBuiltin { dst, .. }
         | Op::Math1 { dst, .. }
         | Op::AndOrArg { dst, .. }
