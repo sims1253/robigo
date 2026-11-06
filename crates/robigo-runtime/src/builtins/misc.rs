@@ -632,8 +632,12 @@ fn do_undebug(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let k = closure_key(&arg(&args, 0));
-    Ok(Value::lgl(k.is_some_and(|k| DEBUGGED.with(|d| d.borrow().contains(&k)))))
+    Ok(Value::lgl(is_debugged(&arg(&args, 0))))
+}
+
+/// RDEBUG: `debug()` marked this function.
+pub(crate) fn is_debugged(f: &Value) -> bool {
+    closure_key(f).is_some_and(|k| DEBUGGED.with(|d| d.borrow().contains(&k)))
 }
 
 /// robigo does not track allocations by R's cell classes; report NA rather

@@ -30,6 +30,7 @@ pub mod envir;
 pub mod funs;
 pub mod grep;
 pub mod identical;
+pub mod inspect;
 #[allow(unsafe_code)] // libcurl through dlopen
 pub mod internet;
 pub mod io;
@@ -136,6 +137,7 @@ static TABLES: &[&[Builtin]] = &[
     envir::DEFS,
     funs::DEFS,
     misc::DEFS,
+    inspect::DEFS,
     debug::DEFS,
     namespace::DEFS,
     parsing::DEFS,

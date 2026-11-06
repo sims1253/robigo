@@ -430,6 +430,21 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
     }
     let narm_v = take_na_rm(&mut args);
     let narm = as_bool2(&narm_v, call)?;
+    // R: summary.c:do_summary asks a single ALTREP integer or double
+    // argument's class first (ALTINTEGER_SUM, ..._MIN, ..._MAX)
+    if args.len() == 1 && matches!(args[0].value, Value::Int(_) | Value::Real(_)) {
+        let alt_op = match op {
+            SumOp::Sum => Some(crate::altrep::Summary::Sum),
+            SumOp::Min => Some(crate::altrep::Summary::Min),
+            SumOp::Max => Some(crate::altrep::Summary::Max),
+            SumOp::Prod => None,
+        };
+        if let (Some(aop), Some(h)) = (alt_op, crate::altrep::lookup(&args[0].value)) {
+            if let Some(v) = crate::altrep::summary(i, h, aop, narm)? {
+                return Ok(v);
+            }
+        }
+    }
 
     let invalid = |a: &Value| -> Flow {
         Flow::error_call(call.clone(), format!("invalid 'type' ({}) of argument", type_to_char(a)))
@@ -1380,6 +1395,12 @@ fn any_na(i: &mut Interp, call: &Value, x: &Value, recursive: &Value, env: &Env)
         let any = i.find_fun(Sym::new("any"), env)?;
         let res = i.call_value(&any, vec![Arg::pos(e0)], env)?;
         return Ok(crate::coerce::as_logical(&res) == 1);
+    }
+    // REAL_NO_NA / INTEGER_NO_NA: only an ALTREP class knows
+    if let (Value::Int(_) | Value::Real(_), Some(h)) = (x, crate::altrep::lookup(x))
+        && crate::altrep::sorted(i, h, true)?.is_some_and(|n| n != 0)
+    {
+        return Ok(false);
     }
     Ok(match x {
         Value::Real(v) => v.data.iter().any(|d| d.is_nan()),

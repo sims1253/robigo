@@ -177,6 +177,15 @@ impl RString {
     fn from_text(text: &str, mark: Encoding) -> Self {
         Self::from_text_tag(text, mark as usize)
     }
+    /// The address of the string's allocation (`.Internal(inspect)`).
+    pub fn addr(&self) -> usize {
+        self.data.as_ptr() as usize
+    }
+    /// How many handles share the allocation (`.Internal(inspect)`).
+    pub fn ref_count(&self) -> usize {
+        // SAFETY: `self` keeps the header alive.
+        unsafe { self.data.as_ref() }.refs.get()
+    }
     #[inline]
     pub fn is_bytes(&self) -> bool {
         self.tag() == Encoding::Bytes as usize

@@ -564,6 +564,46 @@ So does robigo:
 - `PINNED` and the holds of a twin are roots in collections the
   allocator triggers, as before.
 
+**Package ALTREP vectors** (#422, council round 7). An integer, logical
+or double instance of a class a package made (cli's `progress_along`
+and `cli_timer_t`; not robigo's own `base` classes) reaches R as a copy
+of its data (`Dataptr_or_null`, then a read-only `Dataptr`). The
+original is kept as a twin of kind "original": `to_sexp` of the copy
+is the original SEXP, `from_sexp` of the original is the copy, and a
+writable `DATAPTR` marks it dirty so that the copy is refreshed in place.
+The runtime registers the copy (`robigo_runtime::altrep`, weak entries
+keyed by allocation, like the compact sequences) with a handle on the
+original. Where GNU R reads such an object through its class, robigo
+calls the class's method on the original:
+
+- `Elt`: in `for` (interpreter and VM), `[[` (including the VM's fast
+  paths), lapply/vapply's `X[[i]]`, `[` (after `Extract_subset`), and the
+  scalar read of `if`/`while`;
+- `Sum`/`Min`/`Max` for one-argument `sum`/`min`/`max` (summary.c's
+  rule), `Is_sorted` in `is.unsorted`, `No_NA` in `anyNA`;
+- `Serialized_state` in `serialize(version = 3)`, and `Inspect` in
+  `.Internal(inspect)`.
+
+Every call runs behind a protected boundary that returns its error,
+warning or interrupt as an `RResult`, with no runtime borrow held. Each
+site checks the registry once (a global "any package ALTREP" flag, then
+the value's weak count): an ordinary vector pays one load. Native JIT
+kernels never take a registered value. A modified copy is an ordinary
+vector, as GNU R's is, so R modifying it in place breaks the link
+(`Set_elt` and `Duplicate` are not called). Out of scope: true laziness
+(vroom, arrow: the data are read once at conversion) and string and list
+classes (read in full at conversion).
+
+**`.Internal(inspect)`** prints GNU R's format line for line: the type,
+flags, `(len=, tl=)`, the preview, the recursion and the attributes,
+and an ALTREP class's `Inspect` (with `inspect_subtree`), or a compact
+sequence's `n1 : n2 (compact)`. Its heap fields are true of robigo, never
+invented: the address of the object's allocation (0 for `NULL` and
+`NA_character_`, which have none), generation 0, the node class by
+memory.c's `NodeClassSize` rule (0 for ALTREP and non-vector objects),
+no `MARK`, and `REF(n)` from the object's reference count. Environments
+print no `FRAME` or `HASHTAB`: robigo's frames are neither.
+
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* that is not a twin
 reach the caller's object only when the call returns; `NAMED`/
