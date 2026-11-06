@@ -59,6 +59,9 @@ pub fn force_and_call(i: &mut Interp, e: &Value, n: usize, rho: &Env) -> RResult
 fn plain_elements(i: &mut Interp, xx: &Value, rho: &Env) -> bool {
     !xx.is_object()
         && matches!(xx, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_))
+        // a package ALTREP `X` is read by `X[[i]]`, through its class
+        // (crate::altrep, #453), as in inline_fun
+        && crate::altrep::lookup(xx).is_none()
         && i.resolves_to_base(s::BRACKET2, rho)
 }
 
