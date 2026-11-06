@@ -403,3 +403,16 @@ appl/dtrco.f, registered with 6 args). Ported to native/linpack.rs (the
 registered as `dtrco` next to dqrdc2/dqrsl. Verified against the oracle on
 upper and lower triangular matrices and a zero diagonal entry (rcond 0 →
 kappa Inf). Marked: `base/kappa`.
+
+## 2026-11-03: unhandled errors invoke the innermost abort restart (1 case)
+
+`base/source`'s `source(con, catch.aborts = TRUE)` relies on
+errors.c:jump_to_top_ex ending in `try_jump_to_restart()`: after the error
+message is printed and `options("error")` had its chance, the default error
+path walks the restart stack and invokes the first restart named "browser",
+"tryRestart" or "abort" — `withRestarts(expr, abort = ...)` then continues
+with the next expression. robigo's error_dflt returned the Rust-level error
+without that step, so the error escaped and the script halted. The walk and
+the unwind mirror `.invokeRestart` (pop through the target, restore the
+expression limit). Nested abort restarts behave exactly as the oracle
+(the recorded test pins the winner). Marked: `base/source`.
