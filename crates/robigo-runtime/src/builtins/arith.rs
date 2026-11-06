@@ -414,9 +414,19 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
 /// or fail (`%%` can, and is not for here), so the VM calls this without
 /// the call machinery.
 pub fn plain_real_arith(op: ArithOp, mut x: Value, mut y: Value) -> Value {
-    debug_assert!(op != ArithOp::Mod && !x.has_attrs() && !y.has_attrs());
+    debug_assert!(op != ArithOp::Mod);
     let (nx, ny) = (x.len(), y.len());
     let n = if nx == 0 || ny == 0 { 0 } else { nx.max(ny) };
+    // Arrays whose only attribute is `dim`, conformable or with a vector
+    // of their length or a scalar (the VM checked): the result has the
+    // extents (R: arithmetic.c:R_binary, `dims`).
+    let dims = x.attrs().or(y.attrs()).and_then(|a| a.get(s::DIM)).cloned();
+    if let Some(dims) = dims {
+        let (a, b) = (real_view(&x), real_view(&y));
+        let mut out = Value::reals(real_binary(op, &a, &b, n, false));
+        out.set_attr_raw(s::DIM, dims);
+        return out;
+    }
     if let Some(out) = real_binary_inplace(op, &mut x, &mut y, n) {
         return Value::reals(out);
     }

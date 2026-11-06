@@ -1,0 +1,4 @@
+Warning message:
+In matrix(5) + c(1, 2, 3) :
+  Recycling array of length 1 in array-vector arithmetic is deprecated.
+  Use c() or as.vector() instead.
