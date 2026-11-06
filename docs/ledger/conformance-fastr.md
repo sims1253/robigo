@@ -223,4 +223,6 @@ object `*tmp*`, as fast_replace's and GNU R's do; `l$x[i] <- v`,
 Growing a shared vector reports too (enlarge_vector, R's EnlargeVector
 duplicate). The plain and traced element loops come from one macro.
 New `tests/r/debug/tracemem-inplace.R` (GNU R 4.5.0 recording). fastr
-TestBuiltin_tracemem + TestSimpleLists: 89/89.
+TestBuiltin_tracemem + TestSimpleLists: 89/89. Copies of a traced object stay
+traced (duplicate.c SET_RTRACE). Not covered still: the call-stack context
+after the colon (memtrace_stack_dump) for copies inside functions.

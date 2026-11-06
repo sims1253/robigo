@@ -204,6 +204,8 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
     let new = v as *const Vector<T> as usize;
     if old != new && TRACED.with(|t| t.borrow().contains(&old)) {
         i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
+        // R: duplicate.c — the copy is traced too (SET_RTRACE(t, 1)).
+        TRACED.with(|t| t.borrow_mut().insert(new));
     }
     v
 }

@@ -121,3 +121,17 @@ sink()
 close(tc)
 cat("grow unshared vector", ":", length(lines), "lines\n")
 if (length(lines)) cat(norm(lines), sep = "\n")
+
+lines <- character(0)
+tc <- textConnection("lines", "wr")
+sink(tc)
+x <- c(1, 2)
+invisible(tracemem(x))
+y <- x
+y[1] <- 3
+z <- y
+z[1] <- 4
+sink()
+close(tc)
+cat("copies stay traced", ":", length(lines), "lines\n")
+if (length(lines)) cat(norm(lines), sep = "\n")

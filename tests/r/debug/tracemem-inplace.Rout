@@ -11,3 +11,6 @@ tracemem[0xADDR -> 0xADDR]:
 grow shared list : 1 lines
 tracemem[0xADDR -> 0xADDR]: 
 grow unshared vector : 0 lines
+copies stay traced : 2 lines
+tracemem[0xADDR -> 0xADDR]: 
+tracemem[0xADDR -> 0xADDR]: 
