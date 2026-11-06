@@ -52,6 +52,19 @@ pub enum JType {
     /// A matrix with only a dim attribute.
     MatD,
     MatI,
+    /// A character vector without attributes, and a character matrix with
+    /// only a dim attribute (in a loop).
+    VecS,
+    MatS,
+    /// An element of a character vector or matrix: its address. (Elements
+    /// are only copied, see `compile`.)
+    S,
+    /// A number that is an integer or a double depending on the path taken
+    /// (`hi <- n` then `hi <- mid`, in a loop): its value as a double and a
+    /// tag (an i32, 1 for an integer). While the tag says integer, the value
+    /// is never NA and arithmetic is R's integer arithmetic: native code
+    /// leaves where that would overflow or divide by zero.
+    N,
     /// Any value, held in an `RVal` slot of the frame (in a closure compiled
     /// whole): native code knows it by the slot's address.
     Dyn,
@@ -63,7 +76,7 @@ impl JType {
     }
 
     pub fn is_vector(self) -> bool {
-        matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI)
+        matches!(self, JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::VecS | JType::MatS)
     }
 }
 
@@ -87,6 +100,8 @@ pub struct SlotInfo {
     /// [`LoopCtx`] (copied from the value at entry if `needs_entry`) and
     /// written back as a new vector.
     pub owned: bool,
+    /// For a variable of type `N`: index of its tag in the value buffer.
+    pub tag: Option<usize>,
 }
 
 /// A view of a vector's data passed to native code.
@@ -280,6 +295,11 @@ pub enum CallArg {
 impl CallArg {
     /// Its type (`vectors`: in a loop, which reads several elements too).
     fn ty(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>, vectors: bool) -> Option<JType> {
+        // (A callee's formals have one type.)
+        self.ty_any(st, slot_ty, vectors).filter(|t| *t != JType::N)
+    }
+
+    fn ty_any(&self, st: &RegState, slot_ty: &HashMap<Slot, JType>, vectors: bool) -> Option<JType> {
         match self {
             CallArg::Leaf(l) => leaf_type(l, st, slot_ty),
             CallArg::Arith(op, a, b) => arith_type(*op, leaf_type(a, st, slot_ty)?, leaf_type(b, st, slot_ty)?),
@@ -591,7 +611,21 @@ extern "C" fn h_tan(x: f64) -> f64 {
     x.tan()
 }
 
+/// `*dst <- *src` for elements of character vectors (`dst` may be `src`).
+extern "C" fn h_str_set(dst: *mut crate::value::RStr, src: *const crate::value::RStr) -> i32 {
+    // SAFETY: native code passes the addresses of elements of vectors it
+    // was entered with (`JType::S`), which their variables hold alive and
+    // which nothing else accesses while it runs; `dst`'s vector is not
+    // shared (`vm::jit_enter` made it unique).
+    unsafe {
+        let s = (*src).clone();
+        *dst = s;
+    }
+    0
+}
+
 const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
+    ("robigo_str_set", h_str_set as *const u8, &[types::I64, types::I64], types::I32),
     ("robigo_pow", h_pow as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod", h_fmod as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod_warns", h_fmod_warns as *const u8, &[types::F64, types::F64], types::I32),
@@ -929,7 +963,22 @@ fn supported(op: &Op, r: &Region) -> bool {
     }
 }
 
+/// A double, an integer or a number of either kind.
+fn num(t: JType) -> bool {
+    matches!(t, JType::D | JType::I | JType::N)
+}
+
 fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
+    if a == JType::N || b == JType::N {
+        if !num(a) || !num(b) {
+            return None;
+        }
+        return Some(match op {
+            _ if a == JType::D || b == JType::D => JType::D,
+            ArithOp::Div | ArithOp::Pow => JType::D,
+            _ => JType::N,
+        });
+    }
     if !a.is_scalar() || !b.is_scalar() {
         return None;
     }
@@ -1166,6 +1215,18 @@ pub fn compile(
             }
             return Err(Reject::Never);
         }
+        // A string register is the address of an element: where an element
+        // of a character vector is assigned, it must be the only one, so
+        // that none can stand for a value the assignment replaced.
+        if let Op::SetIndex { slot, val, .. } | Op::SetIndex2 { slot, val, .. } = op
+            && matches!(slot_ty[slot], JType::VecS | JType::MatS)
+            && st.iter().enumerate().any(|(r, t)| *t == Some(JType::S) && r != *val as usize)
+        {
+            if trace() {
+                eprintln!("jit: another string held where one is assigned at {}: {:?}", pc, op);
+            }
+            return Err(Reject::Never);
+        }
     }
 
     // Must-defined analysis of variables: those read before written need
@@ -1274,9 +1335,18 @@ pub fn compile(
             return Err(Reject::Never);
         }
         let ne = needs_entry[s as usize] || (ty.is_vector() && !owned);
-        if ne && entry(s) != Some(ty) && !(ty == JType::VecI && entry(s) == Some(JType::Range)) {
+        let fits = match ty {
+            JType::N => matches!(entry(s), Some(JType::I | JType::D)),
+            JType::VecI => matches!(entry(s), Some(JType::VecI | JType::Range)),
+            _ => entry(s) == Some(ty),
+        };
+        if ne && !fits {
             return Err(not_now(9));
         }
+        let tag = (ty == JType::N).then(|| {
+            nvals += 1;
+            nvals - 1
+        });
         let idx = if ty.is_vector() {
             nvecs += 1;
             nvecs - 1
@@ -1284,7 +1354,7 @@ pub fn compile(
             nvals += if ty == JType::Range { 3 } else { 1 };
             nvals - if ty == JType::Range { 3 } else { 1 }
         };
-        let flag = if written[s as usize] && !ne && (ty.is_scalar() || ty == JType::Range || owned) {
+        let flag = if written[s as usize] && !ne && (ty.is_scalar() || ty == JType::Range || ty == JType::N || owned) {
             nvals += 1;
             Some(nvals - 1)
         } else {
@@ -1300,6 +1370,7 @@ pub fn compile(
             flag,
             writable: writable[s as usize],
             owned,
+            tag,
         });
     }
     let width = |t: JType| match t {
@@ -1651,23 +1722,25 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
         Op::AndOrShort { x, .. } => rt(x) == JType::L,
         Op::AndOr { x, y, .. } => rt(x) == JType::L && rt(y) == JType::L,
         Op::Index { i, slot, two, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
                 || (!*two
                     && inl.specs.is_none()
                     && vector_index(lt(i))
                     && matches!(slot_ty.get(slot), Some(JType::VecD | JType::VecI)))
         }
         Op::Index2 { slot, i, j, .. } => {
-            matches!(slot_ty[slot], JType::MatD | JType::MatI)
-                && matches!(lt(i), Some(JType::D | JType::I))
-                && matches!(lt(j), Some(JType::D | JType::I))
+            matches!(slot_ty[slot], JType::MatD | JType::MatI | JType::MatS)
+                && matches!(lt(i), Some(JType::D | JType::I | JType::N))
+                && matches!(lt(j), Some(JType::D | JType::I | JType::N))
         }
         Op::SetIndex2 { val, slot, i, j, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
-                && matches!(lt(j), Some(JType::D | JType::I))
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
+                && matches!(lt(j), Some(JType::D | JType::I | JType::N))
                 && matches!(
                     (slot_ty[slot], rt(val)),
-                    (JType::MatD, JType::D | JType::I | JType::L) | (JType::MatI, JType::I | JType::L)
+                    (JType::MatD, JType::D | JType::I | JType::L | JType::N)
+                        | (JType::MatI, JType::I | JType::L)
+                        | (JType::MatS, JType::S)
                 )
         }
         Op::SetIndex { val, slot, i, two, .. } if !*two && inl.specs.is_none() && vector_index(lt(i)) => {
@@ -1685,11 +1758,12 @@ fn types_ok(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -
                 && matches!(rt(val), JType::D | JType::I | JType::L | JType::Dyn)
         }
         Op::SetIndex { val, slot, i, .. } => {
-            matches!(lt(i), Some(JType::D | JType::I))
+            matches!(lt(i), Some(JType::D | JType::I | JType::N))
                 && matches!(
                     (slot_ty[slot], rt(val)),
-                    (JType::VecD | JType::MatD, JType::D | JType::I | JType::L)
+                    (JType::VecD | JType::MatD, JType::D | JType::I | JType::L | JType::N)
                         | (JType::VecI | JType::MatI, JType::I | JType::L)
+                        | (JType::VecS | JType::MatS, JType::S)
                 )
         }
         // (seq_len only takes the fast path for integers and doubles)
@@ -1711,7 +1785,7 @@ fn vector_index(t: Option<JType>) -> bool {
 /// The types a variable of a loop can have in a register: scalars, ranges
 /// and plain vectors (whose register views the vector).
 fn loop_value(t: JType) -> bool {
-    t.is_scalar() || matches!(t, JType::Range | JType::VecD | JType::VecI)
+    t.is_scalar() || matches!(t, JType::Range | JType::VecD | JType::VecI | JType::N)
 }
 
 fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
@@ -1786,11 +1860,13 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             vec![(*dst as usize, t)]
         }
         Op::Rel { dst, a, b, .. } => {
-            let ok = scalar(rt(a)).is_some() && scalar(rt(b)).is_some();
+            let sn = |t: Option<JType>| t.filter(|t| t.is_scalar() || *t == JType::N);
+            let ok = sn(rt(a)).is_some() && sn(rt(b)).is_some();
             vec![(*dst as usize, ok.then_some(JType::L))]
         }
         Op::RelL { dst, a, b, .. } => {
-            let ok = scalar(leaf_type(a, st, slot_ty)).is_some() && scalar(leaf_type(b, st, slot_ty)).is_some();
+            let sn = |t: Option<JType>| t.filter(|t| t.is_scalar() || *t == JType::N);
+            let ok = sn(leaf_type(a, st, slot_ty)).is_some() && sn(leaf_type(b, st, slot_ty)).is_some();
             vec![(*dst as usize, ok.then_some(JType::L))]
         }
         Op::Neg { dst, a, .. } => {
@@ -1827,6 +1903,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             let t = match slot_ty.get(slot) {
                 Some(JType::VecD | JType::MatD) => Some(JType::D),
                 Some(JType::VecI | JType::MatI) => Some(JType::I),
+                Some(JType::VecS | JType::MatS) => Some(JType::S),
                 _ => None,
             };
             vec![(*dst as usize, t)]
@@ -1866,9 +1943,17 @@ fn reg_flow(
         if (inl.specs.is_some() && closure::leaves(op, inl)) || inl.leaves_at(pc) {
             continue;
         }
-        let mut assign = |slot: Slot, t: JType| -> Result<(), Reject> {
+        // (`wide`: a variable assigned integers and doubles is a number, in
+        // a loop.)
+        let mut assign = |slot: Slot, t: JType, wide: bool| -> Result<(), Reject> {
             match slot_ty.get(&slot) {
                 Some(old) if *old == t => Ok(()),
+                Some(JType::N) if wide && num(t) => Ok(()),
+                Some(old) if wide && num(*old) && num(t) => {
+                    slot_ty.insert(slot, JType::N);
+                    new_slot = true;
+                    Ok(())
+                }
                 Some(_) => Err(not_now(3)),
                 None => {
                     slot_ty.insert(slot, t);
@@ -1881,13 +1966,14 @@ fn reg_flow(
             Op::SetVar { slot, .. } if inl.is_dead(*slot) => {}
             Op::SetVar { src, slot, .. } => {
                 if let Some(t) = st[*src as usize] {
-                    if !(if inl.specs.is_some() { t.is_scalar() || t == JType::Dyn } else { loop_value(t) }) {
+                    let wide = inl.specs.is_none();
+                    if !(if !wide { t.is_scalar() || t == JType::Dyn } else { loop_value(t) }) {
                         return Err(Reject::Never);
                     }
-                    assign(*slot, t)?;
+                    assign(*slot, t, wide)?;
                 }
             }
-            Op::ForStep { slot, .. } => assign(*slot, JType::I)?,
+            Op::ForStep { slot, .. } => assign(*slot, JType::I, false)?,
             _ => {}
         }
         let mut out = st.clone();
@@ -1932,6 +2018,8 @@ fn cl_type(t: JType) -> Type {
         JType::D => types::F64,
         // (A pointer to a `VecView`, in a closure compiled whole.)
         JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::Dyn => types::I64,
+        JType::VecS | JType::MatS | JType::S => types::I64,
+        JType::N => types::F64,
         _ => types::I32,
     }
 }
@@ -1948,6 +2036,9 @@ struct Vars {
     range: HashMap<Reg, (Variable, Variable, Variable)>,
     /// Per [`LoopCell`]: its variable.
     cells: Vec<Variable>,
+    /// The tags of variables and registers of type `N`.
+    slot_tag: HashMap<Slot, Variable>,
+    reg_tag: HashMap<Reg, Variable>,
     lp: LoopVars,
 }
 
@@ -2116,6 +2207,10 @@ impl Gen<'_, '_> {
                 let x = self.b.use_var(*var);
                 self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
             }
+            if let (Some(t), Some(ti)) = (self.v.slot_tag.get(&s.slot), s.tag) {
+                let x = self.b.use_var(*t);
+                self.b.ins().store(mf, x, self.vals, (ti * 8) as i32);
+            }
             if let Some((a, b2, c)) = self.v.lp.rslot.get(&s.slot).copied() {
                 for (k, var) in [a, b2, c].into_iter().enumerate() {
                     let x = self.b.use_var(var);
@@ -2186,6 +2281,10 @@ impl Gen<'_, '_> {
                 let var = self.v.reg[&(reg, t)];
                 let x = self.b.use_var(var);
                 self.b.ins().store(mf, x, self.vals, (idx * 8) as i32);
+                if t == JType::N {
+                    let x = self.b.use_var(self.v.reg_tag[&reg]);
+                    self.b.ins().store(mf, x, self.vals, ((idx + 1) * 8) as i32);
+                }
             }
             live.push((reg, t));
         }
@@ -2263,6 +2362,20 @@ impl Gen<'_, '_> {
         (self.b.use_var(var), t)
     }
 
+    /// The type the current op gives register `r`.
+    fn def_type(&self, r: Reg) -> Option<JType> {
+        self.cur_defs.iter().find(|(k, _)| *k == r as usize).and_then(|(_, t)| *t)
+    }
+
+    /// `dst <- a op b` giving a number.
+    fn op_n(&mut self, op: ArithOp, dst: Reg, a: &Leaf, b: &Leaf, pc: usize) {
+        let (x, y) = (self.leaf(a), self.leaf(b));
+        let (at, bt) = (self.tag(a, x.1), self.tag(b, y.1));
+        let (v, tag) = self.arith_n(op, x, at, y, bt, pc);
+        self.set_reg(dst, v);
+        self.set_tag(dst, tag);
+    }
+
     /// Define register `r` (with the type the current op gives it).
     fn set_reg(&mut self, r: Reg, x: CValue) {
         let t = self.cur_defs.iter().find(|(k, _)| *k == r as usize).and_then(|(_, t)| *t).unwrap();
@@ -2276,7 +2389,7 @@ impl Gen<'_, '_> {
 
     /// `int_to_real`: NA becomes NA_REAL.
     fn to_f64(&mut self, x: CValue, t: JType) -> CValue {
-        if t == JType::D {
+        if t == JType::D || t == JType::N {
             return x;
         }
         let na = self.is_na_i(x);
@@ -2315,9 +2428,102 @@ impl Gen<'_, '_> {
         }
     }
 
+    /// The tag of an operand of type `t` (see `JType::N`).
+    fn tag(&mut self, l: &Leaf, t: JType) -> CValue {
+        match (l, t) {
+            (Leaf::Var(_, s), JType::N) => {
+                let v = self.v.slot_tag[s];
+                self.b.use_var(v)
+            }
+            (Leaf::R(r), JType::N) => {
+                let v = self.v.reg_tag[r];
+                self.b.use_var(v)
+            }
+            (_, JType::I) => self.i32c(1),
+            _ => self.i32c(0),
+        }
+    }
+
+    /// Define the tag of register `r`.
+    fn set_tag(&mut self, r: Reg, tag: CValue) {
+        let v = self.v.reg_tag[&r];
+        self.b.def_var(v, tag);
+    }
+
+    /// Arithmetic giving a number (`JType::N`): R's integer arithmetic while
+    /// both tags say integer, its double arithmetic otherwise. Leaves at
+    /// `pc` where the integer result would be NA (an NA operand, overflow,
+    /// division by zero), which the VM computes with its warning.
+    fn arith_n(
+        &mut self,
+        op: ArithOp,
+        a: (CValue, JType),
+        at: CValue,
+        b: (CValue, JType),
+        bt: CValue,
+        pc: usize,
+    ) -> (CValue, CValue) {
+        for (x, t) in [a, b] {
+            if t == JType::I {
+                let na = self.is_na_i(x);
+                self.deopt_if(na, pc);
+            }
+        }
+        let x = self.to_f64(a.0, a.1);
+        let y = self.to_f64(b.0, b.1);
+        let tag = self.b.ins().band(at, bt);
+        let int = self.b.ins().icmp_imm_s(IntCC::NotEqual, tag, 0);
+        let r = match op {
+            ArithOp::Plus | ArithOp::Minus | ArithOp::Times => {
+                let r = match op {
+                    ArithOp::Plus => self.b.ins().fadd(x, y),
+                    ArithOp::Minus => self.b.ins().fsub(x, y),
+                    _ => self.b.ins().fmul(x, y),
+                };
+                // (Exact below 2^53, so out of range exactly when the integer
+                // result overflows; INT_MIN is NA.)
+                let lo = self.f64c(i32::MIN as f64);
+                let hi = self.f64c(i32::MAX as f64);
+                let gt = self.b.ins().fcmp(FloatCC::GreaterThan, r, lo);
+                let le = self.b.ins().fcmp(FloatCC::LessThanOrEqual, r, hi);
+                let ok = self.b.ins().band(gt, le);
+                let out = self.b.ins().bxor_imm_s(ok, 1);
+                let bad = self.b.ins().band(int, out);
+                self.deopt_if(bad, pc);
+                r
+            }
+            ArithOp::Mod | ArithOp::IDiv => {
+                // R's integer `%%` and `%/%` are its double ones on integer
+                // values, but for a zero divisor (NA).
+                let zero = self.f64c(0.0);
+                let z = self.b.ins().fcmp(FloatCC::Equal, y, zero);
+                let bad = self.b.ins().band(int, z);
+                self.deopt_if(bad, pc);
+                if op == ArithOp::Mod {
+                    let w = self.call("robigo_fmod_warns", &[x, y]);
+                    let warns = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+                    self.deopt_if(warns, pc);
+                    self.call("robigo_fmod", &[x, y])
+                } else {
+                    self.call("robigo_fidiv", &[x, y])
+                }
+            }
+            ArithOp::Div | ArithOp::Pow => unreachable!("a double, not a number"),
+        };
+        // An integer has no negative zero (`0L * -1L`): `+ 0.0` turns -0 into
+        // 0 and keeps every other value.
+        let zero = self.f64c(0.0);
+        let rz = self.b.ins().fadd(r, zero);
+        let r = self.b.ins().select(int, rz, r);
+        (r, tag)
+    }
+
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
     fn arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
-        if a.1 == JType::D || b.1 == JType::D {
+        if a.1 == JType::D
+            || b.1 == JType::D
+            || matches!(op, ArithOp::Div | ArithOp::Pow) && (a.1 == JType::N || b.1 == JType::N)
+        {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
             return match op {
@@ -2386,7 +2592,7 @@ impl Gen<'_, '_> {
 
     /// The comparison `rel` makes a logical of: (NA, TRUE).
     fn compare(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> (CValue, CValue) {
-        if a.1 == JType::D || b.1 == JType::D {
+        if matches!(a.1, JType::D | JType::N) || matches!(b.1, JType::D | JType::N) {
             let x = self.to_f64(a.0, a.1);
             let y = self.to_f64(b.0, b.1);
             let na = self.b.ins().fcmp(FloatCC::Unordered, x, y);
@@ -2470,7 +2676,7 @@ impl Gen<'_, '_> {
             return k;
         }
         let f = match i.1 {
-            JType::D => i.0,
+            JType::D | JType::N => i.0,
             _ => {
                 let na = self.is_na_i(i.0);
                 self.deopt_if(na, pc);
@@ -2587,9 +2793,13 @@ impl Gen<'_, '_> {
                 let v = self.i32c(*x as i64);
                 self.set_reg(*dst, v);
             }
-            Op::GetVar { dst, slot, .. } => {
-                let (x, _) = self.var(*slot);
+            Op::GetVar { dst, slot, sym } => {
+                let (x, t) = self.var(*slot);
                 self.set_reg(*dst, x);
+                if t == JType::N && self.whole.is_none() {
+                    let tag = self.tag(&Leaf::Var(*sym, *slot), t);
+                    self.set_tag(*dst, tag);
+                }
             }
             Op::Visible { on } if self.whole.is_some() => self.set_visible(*on),
             Op::SuperSet { src, slot, .. } if self.whole.is_some() => {
@@ -2607,6 +2817,23 @@ impl Gen<'_, '_> {
                 let v = self.builtin1(*f, x, t, pc);
                 self.set_reg(*dst, v);
             }
+            Op::SetVar { src, slot, .. } if self.whole.is_none() && self.v.slot[slot].1 == JType::N => {
+                let (x, t) = self.reg(*src);
+                if t == JType::I {
+                    let na = self.is_na_i(x);
+                    self.deopt_if(na, pc);
+                }
+                let tag = self.tag(&Leaf::R(*src), t);
+                let x = self.to_f64(x, t);
+                let (var, _) = self.v.slot[slot];
+                self.b.def_var(var, x);
+                let tv = self.v.slot_tag[slot];
+                self.b.def_var(tv, tag);
+                if let Some(f) = self.v.flag.get(slot).copied() {
+                    let one = self.b.ins().iconst(types::I64, 1);
+                    self.b.def_var(f, one);
+                }
+            }
             Op::SetVar { src, slot, .. } => {
                 let (x, _) = self.reg(*src);
                 let (var, _) = self.v.slot[slot];
@@ -2615,6 +2842,16 @@ impl Gen<'_, '_> {
                     let one = self.b.ins().iconst(types::I64, 1);
                     self.b.def_var(f, one);
                 }
+            }
+            Op::Arith { op, dst, a, b, .. } | Op::ArithL { op, dst, a: Leaf::R(a), b: Leaf::R(b), .. }
+                if self.def_type(*dst) == Some(JType::N) =>
+            {
+                let (la, lb) = (Leaf::R(*a), Leaf::R(*b));
+                self.op_n(*op, *dst, &la, &lb, pc);
+            }
+            Op::ArithL { op, dst, a, b, .. } if self.def_type(*dst) == Some(JType::N) => {
+                let (la, lb) = (*a, *b);
+                self.op_n(*op, *dst, &la, &lb, pc);
             }
             Op::Arith { op, dst, a, b, .. } => {
                 let (x, y) = (self.reg(*a), self.reg(*b));
@@ -2842,6 +3079,27 @@ impl Gen<'_, '_> {
                 self.b.ins().jump(bb, &[]);
                 falls = false;
             }
+            Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. }
+                if matches!(self.v.vec[slot].2, JType::VecS | JType::MatS) =>
+            {
+                let (pv, lv, _) = self.v.vec[slot];
+                let k = self.element_offset(op, *slot, lv, pc);
+                let p = self.b.use_var(pv);
+                let off = self.b.ins().imul_imm_s(k, std::mem::size_of::<crate::value::RStr>() as i64);
+                let addr = self.b.ins().iadd(p, off);
+                self.set_reg(*dst, addr);
+            }
+            Op::SetIndex { val, slot, .. } | Op::SetIndex2 { val, slot, .. }
+                if matches!(self.v.vec[slot].2, JType::VecS | JType::MatS) =>
+            {
+                let (pv, lv, _) = self.v.vec[slot];
+                let k = self.element_offset(op, *slot, lv, pc);
+                let (x, _) = self.reg(*val);
+                let p = self.b.use_var(pv);
+                let off = self.b.ins().imul_imm_s(k, std::mem::size_of::<crate::value::RStr>() as i64);
+                let addr = self.b.ins().iadd(p, off);
+                self.call("robigo_str_set", &[addr, x]);
+            }
             Op::Index { dst, slot, .. } | Op::Index2 { dst, slot, .. } => {
                 let (pv, lv, t) = self.v.vec[slot];
                 let k = self.element_offset(op, *slot, lv, pc);
@@ -3002,7 +3260,7 @@ impl Gen<'_, '_> {
                 continue;
             }
             let var = self.b.declare_var(cl_type(t));
-            let z = if t == JType::D { self.f64c(0.0) } else { self.i32c(0) };
+            let z = if cl_type(t) == types::F64 { self.f64c(0.0) } else { self.b.ins().iconst(cl_type(t), 0) };
             self.b.def_var(var, z);
             reg.insert((r, t), var);
         }
@@ -3647,6 +3905,8 @@ fn codegen(
                 range: HashMap::new(),
                 cells: Vec::new(),
                 lp: LoopVars::default(),
+                slot_tag: HashMap::new(),
+                reg_tag: HashMap::new(),
             };
             for c in lay.cells {
                 let ty = cl_type(c.ty);
@@ -3657,7 +3917,7 @@ fn codegen(
             }
             let view = |k: usize, field: usize| (k * std::mem::size_of::<VecView>() + 8 * field) as i32;
             for s in slots {
-                if s.ty.is_scalar() || s.ty == JType::Range {
+                if s.ty.is_scalar() || s.ty == JType::Range || s.ty == JType::N {
                     let n = if s.ty == JType::Range { 3 } else { 1 };
                     let ty = cl_type(s.ty);
                     let ty = if s.ty == JType::Range { types::I64 } else { ty };
@@ -3673,6 +3933,12 @@ fn codegen(
                         v.lp.rslot.insert(s.slot, (vs[0], vs[1], vs[2]));
                     } else {
                         v.slot.insert(s.slot, (vs[0], s.ty));
+                        if let Some(ti) = s.tag {
+                            let t = b.declare_var(types::I32);
+                            let x = b.ins().load(types::I32, mf, vals, (ti * 8) as i32);
+                            b.def_var(t, x);
+                            v.slot_tag.insert(s.slot, t);
+                        }
                     }
                     if let Some(fi) = s.flag {
                         let f = b.declare_var(types::I64);
@@ -3700,7 +3966,7 @@ fn codegen(
                             v.flag.insert(s.slot, f);
                         }
                     }
-                    if matches!(s.ty, JType::MatD | JType::MatI) {
+                    if matches!(s.ty, JType::MatD | JType::MatI | JType::MatS) {
                         let nr = b.declare_var(types::I64);
                         let nc = b.declare_var(types::I64);
                         let r = b.ins().load(types::I64, mf, vecs, view(s.idx, 2));
@@ -3771,13 +4037,19 @@ fn codegen(
                     let var = b.declare_var(ty);
                     let x = if li {
                         b.ins().load(ty, mf, vals, (idx * 8) as i32)
-                    } else if t == JType::D {
+                    } else if ty == types::F64 {
                         b.ins().f64const(0.0)
                     } else {
-                        b.ins().iconst(types::I32, 0)
+                        b.ins().iconst(ty, 0)
                     };
                     b.def_var(var, x);
                     v.reg.insert((reg, t), var);
+                    if t == JType::N && !v.reg_tag.contains_key(&reg) {
+                        let tv = b.declare_var(types::I32);
+                        let z = b.ins().iconst(types::I32, 0);
+                        b.def_var(tv, z);
+                        v.reg_tag.insert(reg, tv);
+                    }
                 }
             }
             let blocks: Vec<Block> = (r.start..=r.end).map(|_| b.create_block()).collect();

@@ -88,3 +88,52 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   in the loop's frame between two loops; in some frames of a function and
   not others; in a callee's environment), recorded with GNU R 4.5.0,
   identical in all tiers; the guard and rebinding scripts of `tests/r/jit`.
+
+## 2026-11-04: character elements and int/double variables in native loops
+
+- Why: after loop cells the naive programs' loops still ran in the VM.
+  `fasta_naive` and `fastaredux_naive` copy strings
+  (`seq[[i]] <- genelist[[2, ind]]`, `s2[[i]] <- chars[[i]]`); native loops
+  knew only double and integer vectors. `fasta_naive_2`'s binary search
+  starts `lo <- 1L; hi <- n` and assigns `mid <- (lo + hi - 1L) %/% 2`, a
+  double, so `lo` and `hi` change type inside the loop, which rejected it
+  (`reason 3`, the only benchmark that hits it).
+- What (`jit.rs`, `vm.rs`):
+  - `JType::VecS`/`MatS` (character vectors without attributes, matrices
+    with only `dim`) and `JType::S`, the address of an element. Reads give
+    the address; a write clones the string into the element (a helper, so
+    `x[[i]] <- x[[j]]` is right when `i == j`). Where an element is assigned,
+    no other string register may be live, so none can stand for a value the
+    assignment replaced. A string register live where native code leaves is
+    rebuilt as a length-1 character vector.
+  - `JType::N`, a number: an f64 value and an integer tag, for a variable
+    assigned integers and doubles in a loop. While the tag says integer the
+    value is never NA and arithmetic is R's integer arithmetic (native code
+    leaves on overflow, NA operands, `%%`/`%/%` by zero); with a double
+    operand it is double arithmetic; `/` and `^` give doubles. Variables
+    and registers are written back as an integer or a double by their tag.
+    Only in loops, never for `for` variables, never as call arguments.
+- Rejected on the way: shipping strings alone. The gate showed
+  `fasta_naive_2` +1.03%, because the two short `repeat_fasta` copy loops
+  (287 and 60 iterations, once per run) now compiled, at ~2.7M instructions
+  each, and its main loop still could not. With numbers its main loop
+  compiles too, and the benchmark drops by 41%.
+- Result, `rivals.py` peak against the loop-cells branch (ms): fasta_naive
+  17.8 -> **5.2** (FastR 5.3), fasta_naive_2 21.8 -> **8.9** (FastR 7.3),
+  fastaredux_naive 21.0 -> **6.9** (FastR 4.7); the others unchanged. Shot
+  improves with peak (fasta_naive 64 -> 41 ms). Gate against the loop-cells
+  branch: 3 faster (`fasta_naive` -41.5%, `fasta_naive_2` -41.5%,
+  `fastaredux_naive` -41.6%), 0 slower, worst +0.15% (`emptyFor`).
+- Verified: `tests/r/jit/loop-strings.R` (vectors and matrices, `[[`/`[`,
+  NA strings, in-place reversal, copy-on-modify, encodings, growth, out of
+  range and NA indices, names, other types meeting strings, swaps through
+  variables, comparisons, two vectors written from each other) and
+  `tests/r/jit/loop-numbers.R` (the binary search, types after the loop,
+  overflow, `%/%`/`%%` by zero, NA integers and doubles, indices,
+  comparisons, stores into double and integer vectors, logicals, negation,
+  the `for` variable, `/` and `^`), recorded with GNU R 4.5.0, identical in
+  all tiers. Conformance: the same failures as main on this VM.
+- Gap left: a register assigned an integer on one branch of `if` and a
+  double on the other (`x <- if (c) 1L else 0.5`) has no single type at the
+  join, so such loops stay in the VM; widening registers at joins would need
+  conversions on the incoming edges.

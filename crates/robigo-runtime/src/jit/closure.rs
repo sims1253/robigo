@@ -1159,6 +1159,8 @@ fn define(
             range: HashMap::new(),
             lp: Default::default(),
             cells: Vec::new(),
+            slot_tag: HashMap::new(),
+            reg_tag: HashMap::new(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -2571,6 +2573,7 @@ fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usi
             flag: None,
             writable: false,
             owned: false,
+            tag: None,
         });
     }
     let mut nvals = slots.len();
