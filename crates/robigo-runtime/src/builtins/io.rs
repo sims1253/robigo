@@ -2334,8 +2334,9 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         };
         let eof = lines.read(getc, &mut ans, &mut nul_warnings, &mut incomplete_buf);
         if let Some(e) = err {
-            // R warns inline, so the warnings earned before the error stand
-            for k in nul_warnings {
+            // R warns inline, so the warnings of the lines before the
+            // error stand; the line the error cut short never got its own
+            for k in nul_warnings.into_iter().filter(|&k| k < ans.len()) {
                 i.warning(format!("line {} appears to contain an embedded nul", k))?;
             }
             return Err(e);
