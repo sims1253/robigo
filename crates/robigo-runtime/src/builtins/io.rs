@@ -2294,13 +2294,24 @@ fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let inner = lend_wrapped(i, n)?;
     let r = gzcon_open_lent(i, n, inner);
     restore_wrapped(i, n, inner);
-    r
+    // A warning runs calling handlers (R code), so it waits until the
+    // wrapped connection is back.
+    match r? {
+        Err(msg) => {
+            i.warning(msg)?;
+            Ok(false)
+        }
+        Ok(opened) => Ok(opened),
+    }
 }
 
 /// The gzcon `n`'s wrapped connection, moved to a hidden slot (see
 /// `ConnState::hide`) so the generic connection methods can work on it;
-/// `restore_wrapped` takes it back. No R code runs in between, so the
-/// slot is never seen from R.
+/// `restore_wrapped` takes it back. gzcon's own warnings wait until it
+/// is back; only opening a wrapped connection that is not open yet can
+/// warn (and run handlers) meanwhile — a handler that closes the hidden
+/// slot by a made-up number leaves the gzcon with no wrapped connection,
+/// whose next open or close is then an "invalid connection" error.
 fn lend_wrapped(i: &mut Interp, n: i32) -> RResult<i32> {
     let ConnKind::Gzcon { inner, .. } = &mut i.conns.get(n)?.kind else { unreachable!() };
     let Some(w) = inner.take() else { return Err(Flow::error("invalid connection")) };
@@ -2314,11 +2325,12 @@ fn restore_wrapped(i: &mut Interp, n: i32, k: i32) {
     }
 }
 
-fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<bool> {
+/// `Ok(Err(msg))`: the open failed with warning `msg`, for the caller.
+fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<Result<bool, &'static str>> {
     let mode = i.conns.get(n)?.mode.clone();
     let wasopen = i.conns.get(inner)?.isopen;
     if !wasopen && !open_in_mode(i, inner, &mode)? {
-        return Ok(false);
+        return Ok(Ok(false));
     }
     let canwrite = i.conns.get(inner)?.canwrite;
     {
@@ -2334,15 +2346,13 @@ fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<bool> {
         let ConnKind::Gzcon { allow, .. } = i.conns.get(n)?.kind else { unreachable!() };
         let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
             if !allow {
-                i.warning("file stream does not have gzip magic number")?;
                 gzcon_close_lent(i, n, inner)?;
-                return Ok(false);
+                return Ok(Err("file stream does not have gzip magic number"));
             }
             raw
         } else if raw.len() < 10 || raw[2] != 8 || raw[3] & 0xe0 != 0 {
-            i.warning("file stream does not have valid gzip header")?;
             gzcon_close_lent(i, n, inner)?;
-            return Ok(false);
+            return Ok(Err("file stream does not have valid gzip header"));
         } else {
             // R: gzcon_open skips the header byte by byte; a truncated
             // header just runs into the end of the stream.
@@ -2417,7 +2427,7 @@ fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<bool> {
         let ConnKind::Gzcon { writing, .. } = &mut con.kind else { unreachable!() };
         *writing = true;
     }
-    Ok(true)
+    Ok(Ok(true))
 }
 
 /// crc32 of `data` (zlib's crc32(0, ...)), little trailer order.
