@@ -3903,22 +3903,21 @@ fn inline_call(
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
     }
-    let mut arg_syms = Vec::new();
+    // Arithmetic and element reads of the caller's variables are evaluated
+    // by native code where they take their fast paths (else it leaves at
+    // the call); `jit_enter` checks their functions are base's (memoized
+    // per argument).
+    let arg_syms = Vec::new();
     let args: Vec<CallArg> = match (&cs.leaf_args, &cs.inline_args) {
         (Some(leaves), _) => leaves.iter().map(|l| CallArg::Leaf(*l)).collect(),
         (None, Some(ia)) => ia
             .iter()
             .map(|a| match a {
-                InlineArg::Leaf(l) => Some(CallArg::Leaf(*l)),
-                InlineArg::Index { slot, i, two, sym, .. } => {
-                    if !arg_syms.contains(sym) {
-                        arg_syms.push(*sym);
-                    }
-                    Some(CallArg::Index(*slot, *i, *two))
-                }
-                InlineArg::Arith { .. } => None,
+                InlineArg::Leaf(l) => CallArg::Leaf(*l),
+                InlineArg::Arith { op, a, b, .. } => CallArg::Arith(*op, *a, *b),
+                InlineArg::Index { slot, i, two, .. } => CallArg::Index(*slot, *i, *two),
             })
-            .collect::<Option<_>>()?,
+            .collect(),
         _ => return None,
     };
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
@@ -4200,8 +4199,16 @@ fn jit_enter(
         }
     }
     for (c, k) in jl.calls.iter().zip(&called) {
+        let cs = &code.call_sites[c.site as usize];
         if !c.guards.iter().all(|(s, memo)| guard_ok(interp, *s, &k.env, memo)) {
             return None;
+        }
+        for a in cs.inline_args.as_deref().unwrap_or(&[]) {
+            if let InlineArg::Arith { sym, memo, .. } | InlineArg::Index { sym, memo, .. } = a {
+                if !guard_ok(interp, *sym, env, memo) {
+                    return None;
+                }
+            }
         }
     }
     if jl.builtins && crate::builtins::debug::any_prim_traced() {
