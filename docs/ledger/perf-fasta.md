@@ -251,3 +251,26 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
 - Verified: `tests/r/jit/loop-int-index-mod.R` (`%%` over every sign
   combination, zero and NA, the fasta generator, and integer indices),
   recorded with GNU R 4.5.0, identical in all tiers.
+
+## 2026-11-04: `%/%` of integer-valued doubles without long double
+
+- Why: fasta_naive_2's search computes `mid <- (lo + hi - 1L) %/% 2` (a
+  double divisor), and fasta_3's does it on vectors. Every element went
+  through `myfloor`'s long double correction, which robigo computes in
+  software (`ldouble.rs`): `myfloor` was 4% of fasta_3.
+- What (`robigo-numerics/src/arith.rs`): after `myfloor`'s early returns
+  (|q| >= 1 from there), integer-valued operands within 2^53 return
+  `floor(x1 / x2)`. That is the long double result: rounding `x1 / x2` up to
+  an integer would take |x1| > 2^53, so `floor(q)` is the exact quotient's
+  floor, the long double remainder is exact with |tmp| < |x2| and the sign
+  of `x2`, and its quotient's floor (0 or -0) adds nothing to the nonzero
+  `floor(q)`.
+- Result: on top of the other changes of this track, fasta_naive_2 (body
+  repeated 20 times) 1,174.4M -> 1,112.0M instructions (-7.6% of the steady
+  state). Gate against main: 2 faster (`fasta_3` -0.77%, `fasta_naive_2`
+  -0.63%), 0 slower.
+- Verified: a unit test compares the fast path with the long double formula
+  bit for bit on 100k+ integer pairs of every magnitude to 2^53 and both
+  signs; `tests/r/math/idiv-doubles.R` (signs, zero and -0, 2^53 and
+  around, infinities, NaN/NA, fractions, huge quotients, loops, vectors),
+  recorded with GNU R 4.5.0, identical in all tiers and to main.
