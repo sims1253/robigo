@@ -1349,6 +1349,21 @@ struct Slice {
     len: usize,
 }
 
+impl Slice {
+    /// The elements are one block, `base..base + len` (`x[, , k]`: the
+    /// empty indices come first): copied as a slice, not offset by offset.
+    fn contiguous(&self) -> bool {
+        let mut stride = 1;
+        for (n, st) in &self.ext {
+            if *st != stride {
+                return false;
+            }
+            stride *= n;
+        }
+        true
+    }
+}
+
 /// The extents of an atomic vector whose only attribute is `dim`.
 fn plain_dims(attrs: &AttrBox) -> Option<&[i32]> {
     let a = attrs.as_ref()?;
@@ -1439,7 +1454,11 @@ fn array_slice(x: &RVal, idx: &[Option<usize>]) -> Option<RVal> {
                 return Some($one($x.data[g.base]));
             }
             let mut data = Vec::with_capacity(g.len);
-            slice_offsets(&g, |o| data.push($x.data[o]));
+            if g.contiguous() {
+                data.extend_from_slice(&$x.data[g.base..g.base + g.len]);
+            } else {
+                slice_offsets(&g, |o| data.push($x.data[o]));
+            }
             let mut out = Vector::new(data);
             let keep: Vec<i32> = g.ext.iter().filter(|(n, _)| *n != 1).map(|(n, _)| *n as i32).collect();
             if keep.len() >= 2 {
@@ -1470,6 +1489,12 @@ fn array_assign(x: &mut Value, idx: &[Option<usize>], val: &RVal) -> bool {
                 return false;
             }
             let data = &mut Rc::make_mut($x).data;
+            if g.contiguous() && src.len() == g.len {
+                for (d, v) in data[g.base..g.base + g.len].iter_mut().zip(src) {
+                    *d = $conv(*v);
+                }
+                return true;
+            }
             let mut t = 0;
             slice_offsets(&g, |o| {
                 data[o] = $conv(src[t]);
@@ -3912,10 +3937,16 @@ fn number(x: f64, tag: u64) -> RVal {
 /// range, or a character vector or matrix (whose elements native loops
 /// read and assign).
 fn loop_type(v: &RVal) -> Option<crate::jit::JType> {
-    use crate::jit::JType;
     if range_of(v).is_some() {
-        return Some(JType::Range);
+        return Some(crate::jit::JType::Range);
     }
+    loop_vec_type(v)
+}
+
+/// [`loop_type`] of a vector variable's value: a compact integer sequence
+/// is an integer vector here, as native code views it.
+fn loop_vec_type(v: &RVal) -> Option<crate::jit::JType> {
+    use crate::jit::JType;
     jit_type(v).or(match v {
         RVal::V(Value::Str(x)) if x.attrs.is_none() => Some(JType::VecS),
         RVal::V(Value::Str(x)) if jit_matrix_dims(x).is_some() => Some(JType::MatS),
@@ -4466,7 +4497,7 @@ fn jit_enter(
                 vars.slots[s.slot as usize] = SlotVal::Dirty(RVal::V(r.clone().into_value()));
             }
             let ok = match read_var(vars, env, s.sym, s.slot) {
-                Some(RVal::V(v)) => !v.is_object() && loop_type(&RVal::V(v.clone())) == Some(s.ty),
+                Some(RVal::V(v)) => !v.is_object() && loop_vec_type(&RVal::V(v.clone())) == Some(s.ty),
                 _ => false,
             };
             if !ok || (s.writable && !own_var(vars, env, s.sym, s.slot)) {
