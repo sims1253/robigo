@@ -215,6 +215,9 @@ pub struct JitLoop {
     pub arg_syms: Vec<Sym>,
     /// The loop's closed form, tried before the native code.
     pub summary: Option<summary::Summary>,
+    /// The free variables of those closures: call site, name, type, and the
+    /// index of the value (scalars) or view (vectors) it is passed in.
+    pub free: Vec<(u32, Sym, JType, usize)>,
 }
 
 /// A call of a pure closure (see `vm::inline_info`) without free
@@ -236,6 +239,10 @@ pub struct InlineCall {
     /// In a loop: the callee's variables of its enclosing environments,
     /// which are the loop's [`LoopCell`]s.
     pub cells: Vec<CalleeCell>,
+    /// In a loop: the callee's free variables (its slot, the name and the
+    /// type of the value its environment binds), read-only for the loop
+    /// (`vm::jit_enter` reads them from the instance called).
+    pub free: Vec<(Slot, Sym, JType)>,
 }
 
 /// A variable of an enclosing environment that a closure called inline
@@ -411,6 +418,10 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
     for c in &ic.cells {
         slot_ty.insert(c.slot, c.ty);
     }
+    for (s, _, t) in &ic.free {
+        slot_ty.insert(*s, *t);
+    }
+    let free_vec = |s: &Slot| ic.free.iter().any(|(f, _, t)| f == s && t.is_vector());
     let empty = HashMap::new();
     let inl = Inl::new(&empty);
     let len = code.ops.len();
@@ -443,6 +454,14 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
         }
         let op = &code.ops[pc];
         match op {
+            // (A free vector is only indexed; a free scalar is read.)
+            Op::GetVar { slot, .. } if free_vec(slot) => return None,
+            Op::Index { slot, .. } | Op::Index2 { slot, .. } if free_vec(slot) => {
+                if uses(op, &inl).rregs.iter().any(|r| st[*r as usize].is_none()) || !types_ok(op, &st, &slot_ty, &inl)
+                {
+                    return None;
+                }
+            }
             Op::ConstD { .. }
             | Op::ConstI { .. }
             | Op::ConstL { .. }
@@ -1427,6 +1446,35 @@ pub fn compile(
     }
 
     let mut deopt_regs = HashMap::new();
+    // The inlined callees' free variables: values and views after the
+    // loop's own. The loop must not assign a variable of the same name (it
+    // could be the binding read).
+    let mut free = Vec::new();
+    let mut sites: Vec<u32> = calls.keys().copied().collect();
+    sites.sort();
+    for site in sites {
+        for (_, sym, ty) in &calls[&site].free {
+            let written = code.vars.iter().position(|v| v == sym).is_some_and(|s| {
+                (r.start..r.end).any(|pc| {
+                    let u = uses(&ops[pc], &inl);
+                    u.wslots.contains(&(s as Slot))
+                        || matches!(&ops[pc], Op::SetIndex { slot, .. } | Op::SetIndex2 { slot, .. }
+                            | Op::SuperSet { slot, .. } | Op::SuperSetIndex { slot, .. } if *slot as usize == s)
+                })
+            });
+            if written {
+                return Err(Reject::Never);
+            }
+            let idx = if ty.is_scalar() {
+                nvals += 1;
+                nvals - 1
+            } else {
+                nvecs += 1;
+                nvecs - 1
+            };
+            free.push((site, *sym, *ty, idx));
+        }
+    }
     let lay = Layout {
         slots: &slots,
         slot_ty: &slot_ty,
@@ -1438,6 +1486,8 @@ pub fn compile(
         vis,
         vis_at: &vis_at,
         cells: &cells,
+        free: &free,
+        nvecs,
     };
     let (func, temps) = codegen(code, &r, &lay, &mut deopt_regs, &inl)?;
     let mut arg_syms = Vec::new();
@@ -1498,6 +1548,7 @@ pub fn compile(
         arg_syms,
         summary,
         cells,
+        free,
     })
 }
 
@@ -1516,6 +1567,11 @@ struct Layout<'a> {
     vis_at: &'a [Vis],
     /// The cells of the calls run inline (see [`LoopCell`]).
     cells: &'a [LoopCell],
+    /// The free variables of the calls run inline (see [`JitLoop::free`]).
+    free: &'a [(u32, Sym, JType, usize)],
+    /// The views of the variables and free variables; temporary vectors'
+    /// come after them.
+    nvecs: usize,
 }
 
 /// What the VM's visibility flag is before an op: as at entry, set to a
@@ -2116,6 +2172,17 @@ struct Gen<'a, 'b> {
     whole: Option<closure::Whole<'a>>,
     /// Compiling a loop.
     lp: Option<LoopGen<'a>>,
+    /// Per call site: the variables of the inlined callee's free variables
+    /// (scalars, vectors, matrix extents), keyed by the callee's slots.
+    free: HashMap<u32, Free>,
+}
+
+/// See [`Gen::free`].
+#[derive(Clone, Default)]
+struct Free {
+    slot: HashMap<Slot, (Variable, JType)>,
+    vec: HashMap<Slot, (Variable, Variable, JType)>,
+    dims: HashMap<Slot, (Variable, Variable)>,
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -3165,7 +3232,7 @@ impl Gen<'_, '_> {
                 }
                 let args: Vec<(CValue, Option<CValue>, JType)> = args.into_iter().map(|(x, t)| (x, None, t)).collect();
                 let ct = self.inl.callee(*site, args.iter().map(|a| a.2).collect()).unwrap();
-                let (v, _) = self.inline_body(pc, &code, &formal_slots, &cells, &ct, &args);
+                let (v, _) = self.inline_body(pc, *site, &code, &formal_slots, &cells, &ct, &args);
                 self.set_reg(*dst, v);
             }
             Op::Return { src } if self.whole.is_some() => {
@@ -3201,6 +3268,7 @@ impl Gen<'_, '_> {
     fn inline_body(
         &mut self,
         call: usize,
+        site: u32,
         code: &Code,
         formal_slots: &[Option<Slot>],
         cells: &[CalleeCell],
@@ -3248,6 +3316,9 @@ impl Gen<'_, '_> {
                 copies.push((cell, var));
             }
         }
+        // Its free variables, read at the loop's entry.
+        let free = self.free.get(&site).cloned().unwrap_or_default();
+        slot.extend(free.slot);
         let mut pairs: Vec<(Reg, JType)> = Vec::new();
         for (pc, st) in ct.states.iter().enumerate() {
             let Some(st) = st else { continue };
@@ -3301,9 +3372,10 @@ impl Gen<'_, '_> {
         let saved_reg = std::mem::replace(&mut self.v.reg, reg);
         let saved_range = std::mem::replace(&mut self.v.range, range);
         let saved_slot = std::mem::replace(&mut self.v.slot, slot);
+        vec.extend(free.vec);
         let saved_vec = std::mem::replace(&mut self.v.vec, vec);
         let saved_flag = std::mem::take(&mut self.v.flag);
-        let saved_dims = std::mem::take(&mut self.v.dims);
+        let saved_dims = std::mem::replace(&mut self.v.dims, free.dims);
         let saved_lp = LoopVars { vreg, counter: self.v.lp.counter, ..Default::default() };
         let saved_lp = std::mem::replace(&mut self.v.lp, saved_lp);
         let saved_blocks = std::mem::replace(&mut self.blocks, blocks);
@@ -3746,7 +3818,7 @@ impl Gen<'_, '_> {
         }
         let cells = self.inl.calls[&site].cells.clone();
         let ct = self.inl.callee(site, args.iter().map(|a| a.2).collect()).unwrap();
-        let (v, n) = self.inline_body(pc, &code, &formal_slots, &cells, &ct, &args);
+        let (v, n) = self.inline_body(pc, site, &code, &formal_slots, &cells, &ct, &args);
         match n {
             Some(n) => self.set_vreg(dst, v, n),
             None => self.set_reg(dst, v),
@@ -4019,6 +4091,37 @@ fn codegen(
                 b.def_var(c, z);
                 v.lp.counter = Some(c);
             }
+            let mut free_vars: HashMap<u32, Free> = HashMap::new();
+            for (site, sym, ty, idx) in lay.free {
+                let ic = &inl.calls[site];
+                let Some(&(slot, _, _)) = ic.free.iter().find(|(_, s, _)| s == sym) else { continue };
+                let f = free_vars.entry(*site).or_default();
+                if ty.is_scalar() {
+                    let t = cl_type(*ty);
+                    let var = b.declare_var(t);
+                    let x = b.ins().load(t, mf, vals, (*idx * 8) as i32);
+                    b.def_var(var, x);
+                    f.slot.insert(slot, (var, *ty));
+                    continue;
+                }
+                let at = |k: usize| (*idx * std::mem::size_of::<VecView>() + 8 * k) as i32;
+                let pv = b.declare_var(ptr);
+                let lv = b.declare_var(types::I64);
+                let p = b.ins().load(ptr, mf, vecs, at(0));
+                let l = b.ins().load(types::I64, mf, vecs, at(1));
+                b.def_var(pv, p);
+                b.def_var(lv, l);
+                f.vec.insert(slot, (pv, lv, *ty));
+                if matches!(ty, JType::MatD | JType::MatI) {
+                    let nr = b.declare_var(types::I64);
+                    let nc = b.declare_var(types::I64);
+                    let r = b.ins().load(types::I64, mf, vecs, at(2));
+                    let c = b.ins().load(types::I64, mf, vecs, at(3));
+                    b.def_var(nr, r);
+                    b.def_var(nc, c);
+                    f.dims.insert(slot, (nr, nc));
+                }
+            }
             // A variable for every (register, type) that occurs; live-ins
             // loaded, others zero.
             let mut pairs: Vec<(Reg, JType)> = Vec::new();
@@ -4086,6 +4189,7 @@ fn codegen(
             let exit = b.create_block();
             b.ins().jump(blocks[0], &[]);
             let mut g = Gen {
+                free: free_vars,
                 b,
                 v,
                 slots,
@@ -4111,7 +4215,7 @@ fn codegen(
                     counter: lay.counter,
                     vis: lay.vis,
                     vis_at: lay.vis_at,
-                    nvecs: slots.iter().filter(|s| s.ty.is_vector()).count(),
+                    nvecs: lay.nvecs,
                     temps: Vec::new(),
                 }),
             };

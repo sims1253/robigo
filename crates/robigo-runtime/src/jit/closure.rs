@@ -615,6 +615,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             callee: k,
                             arg_syms: Vec::new(),
                             cells: Vec::new(),
+                            free: Vec::new(),
                         },
                     );
                 }
@@ -1366,6 +1367,7 @@ fn define(
         b.set_cold_block(bail);
         b.ins().jump(blocks[0], &[]);
         let mut g = Gen {
+            free: HashMap::new(),
             b,
             v,
             slots: &[],

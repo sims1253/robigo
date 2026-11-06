@@ -2469,7 +2469,7 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
             return r;
         }
     }
-    let r = inline_analysis(clo, code.clone());
+    let r = inline_analysis(clo, code.clone(), false);
     if shared {
         // (The code is kept alive by the bytecode cache, so its address is
         // not reused.)
@@ -2478,8 +2478,19 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
     r
 }
 
+/// [`inline_info`] for a closure that native loops may inline although the
+/// VM does not: its body may also read elements (`x[[i]]`, `x[i, j]`) of
+/// free variables, which native code views at the loop's entry.
+fn loop_inline_info(clo: &Closure) -> Option<Rc<Inline>> {
+    if crate::typeprof::enabled() || NO_INLINE.with(|n| *n) {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    inline_analysis(clo, code, true)
+}
+
 #[cold]
-fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
+fn inline_analysis(clo: &Closure, code: Rc<Code>, loops: bool) -> Option<Rc<Inline>> {
     if clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
         return None;
     }
@@ -2511,6 +2522,7 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
             | Op::Visible { .. }
             | Op::Return { .. } => {}
             Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } if !formals.contains(sym) => {}
+            Op::Index { .. } | Op::Index2 { .. } if loops => {}
             _ => return None,
         }
     }
@@ -3924,15 +3936,45 @@ fn inline_call(
     if clo.jit.traced() || args.len() != clo.formals.len() {
         return None;
     }
-    let (body, formal_slots, guard_syms, cells) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
-        Some(info) if !info.free_vars => {
-            (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new())
+    let info = clo.inline.get_or_init(|| inline_info(&clo)).clone();
+    let native = if info.is_none() { native_inline(&clo) } else { None };
+    let (body, formal_slots, guard_syms, cells, free) = match (info, native) {
+        (Some(info), _) if !info.free_vars => {
+            (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new(), Vec::new())
         }
-        // (Free variables: cells of the loop, see `loop_callee`.)
-        Some(_) => loop_callee(&clo)?,
-        None => match native_inline(&clo) {
-            Some((c, f, g)) => (c, f, g, Vec::new()),
-            None => loop_callee(&clo)?,
+        (None, Some((c, f, g))) => (c, f, g, Vec::new(), Vec::new()),
+        (info, _) => match loop_callee(&clo) {
+            // Free variables bound to scalars, read or `<<-`-assigned: cells
+            // of the loop (#312).
+            Some((c, f, g, cells)) => (c, f, g, cells, Vec::new()),
+            None => {
+                // Otherwise read-only free variables, scalars or vectors (and
+                // a body that reads their elements), read once at the loop's
+                // entry from the closure's environment: one that does not
+                // reach the loop's own frame (whose variables may be pending
+                // in the VM).
+                let info = match info {
+                    Some(i) => i,
+                    None => loop_inline_info(&clo)?,
+                };
+                let mut free = Vec::new();
+                if info.free_vars {
+                    if crate::jit::closure::on_chain(&clo.env, env) {
+                        return None;
+                    }
+                    for (s, sym) in info.code.vars.iter().enumerate() {
+                        if info.formal_slots.contains(&Some(s as Slot)) {
+                            continue;
+                        }
+                        let v = plain_lookup(&clo.env, *sym)?;
+                        if matches!(&v, RVal::V(x) if x.is_object()) {
+                            return None;
+                        }
+                        free.push((s as Slot, *sym, jit_type(&v)?));
+                    }
+                }
+                (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new(), free)
+            }
         },
     };
     // Native code does not count calls: take the loop to call the closure
@@ -3949,6 +3991,7 @@ fn inline_call(
         callee: 0,
         arg_syms,
         cells,
+        free,
     })
 }
 
@@ -4366,6 +4409,46 @@ fn jit_enter(
             None => {}
         }
     }
+    // The inlined callees' free variables, from the instance each site
+    // calls now (held in `held` for the call): values, and views after the
+    // variables'.
+    let mut held: SmallVec<[RVal; 4]> = SmallVec::new();
+    for (site, sym, ty, idx) in &jl.free {
+        let c = &called[jl.calls.iter().position(|c| c.site == *site)?];
+        if crate::jit::closure::on_chain(&c.env, env) {
+            return None;
+        }
+        let v = plain_lookup(&c.env, *sym)?;
+        if jit_type(&v) != Some(*ty) || matches!(&v, RVal::V(x) if x.is_object()) {
+            return None;
+        }
+        match (&v, ty) {
+            (RVal::D(x), JType::D) => vals[*idx] = x.to_bits(),
+            (RVal::I(x), JType::I) | (RVal::L(x), JType::L) => vals[*idx] = *x as i64 as u64,
+            (RVal::V(Value::Real(x)), JType::VecD | JType::MatD) => {
+                let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                vecs.push(crate::jit::VecView {
+                    ptr: x.data.as_ptr() as *mut u8,
+                    len: x.data.len() as u64,
+                    nrow,
+                    ncol,
+                });
+                debug_assert_eq!(vecs.len(), *idx + 1);
+            }
+            (RVal::V(Value::Int(x)), JType::VecI | JType::MatI) => {
+                let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                vecs.push(crate::jit::VecView {
+                    ptr: x.data.as_ptr() as *mut u8,
+                    len: x.data.len() as u64,
+                    nrow,
+                    ncol,
+                });
+                debug_assert_eq!(vecs.len(), *idx + 1);
+            }
+            _ => return None,
+        }
+        held.push(v);
+    }
     // The temporary vectors' buffers, after the variables' views.
     for t in &jl.temps {
         let k = ctx.bufs.len() as u64;
@@ -4398,7 +4481,7 @@ fn jit_enter(
     let ret = match &jl.summary {
         Some(sm) if sm.run(&mut vals) => crate::jit::EXIT,
         // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and
-        // the vectors they view are held by `regs`, `vars` and `ctx` for the
+        // the vectors they view are held by `regs`, `vars`, `held` and `ctx` for the
         // whole call.
         _ => unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) },
     };
