@@ -236,6 +236,15 @@ held by C stays valid across collections.
    O(1) via the per-block start bitmap, so `double *p = REAL(x) + i`
    alone keeps `x` alive. This is what makes unprotected-but-live C
    locals (common package bugs that GNU R tolerates by luck) safe.
+   With the runtime as the embedder (before G3) only the frames of C
+   code are scanned: each entry from the runtime into C opens a
+   segment, and each hand-over from libR back to the runtime
+   (`with_interp`) closes it, after spilling the callee-saved
+   registers into the closing frame (`Core::close_scan_segment`). The
+   runtime's own frames hold core objects only through precise roots;
+   scanned, their stale words kept dead objects alive at random, so a
+   finalizer ran one `gc()` late (R6's finalizer tests under rlang's
+   `eval_bare`).
 
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;

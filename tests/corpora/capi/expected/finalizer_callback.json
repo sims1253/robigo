@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "finalizer_callback",
+ "out": {
+  "t": "finalized in their gc(): 20 of 20\nin a function: 10 of 10\n"
+ },
+ "sha": "35f0ec7c0b5c4c96",
+ "status": 0
+}
