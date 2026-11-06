@@ -42,8 +42,10 @@ env:
 # variables ROBIGO_RUNNER_BUILD (compiling jobs) and ROBIGO_RUNNER_CORPORA
 # (jobs that run the built binary) may name the self-hosted labels
 # `robigo-docker` and `robigo-docker-20g`; unset, they run on GitHub's.
-# Pull requests from forks always run on GitHub's. perf and perf-diagnostic stay there because their
-# instruction counts are compared with main's from GitHub's machines;
+# Pull requests from anywhere but this repository (forks, and deleted
+# forks, whose head.repo is null) always run on GitHub's: the test fails
+# closed. perf and perf-diagnostic stay there because their instruction
+# counts are compared with main's from GitHub's machines;
 # progress because it writes to the repository; miri because it runs on
 # the host, not in a container.
 jobs:
@@ -77,7 +79,7 @@ jobs:
   # Seconds of work: a formatting or lint mistake should not wait for a build.
   lint:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 15
     steps:
@@ -105,7 +107,7 @@ jobs:
 
   build:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     steps:
@@ -159,7 +161,7 @@ jobs:
   # build in the quick profile, and conformance tests the release binary.
   test:
     needs: build
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     env:
@@ -196,7 +198,7 @@ jobs:
 
   bytecode-fidelity:
     if: ${{ inputs.perf_diagnostic != true }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_BUILD || 'ubuntu-24.04' }}
     container: debian:trixie
     timeout-minutes: 30
     steps:
@@ -217,7 +219,7 @@ jobs:
 
   corpora:
     needs: build
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -266,7 +268,9 @@ jobs:
   # inputs its change has nothing to do with; main explores new ones.
   fuzz:
     needs: build
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
+    # Self-hosted slots have no 6 h cap of their own; a run takes ~3 min.
+    timeout-minutes: 20
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
@@ -303,7 +307,7 @@ jobs:
     # A backstop only: above the steps' own limits with every package hanging.
     # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
-    runs-on: ${{ github.event.pull_request.head.repo.fork != true && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.ROBIGO_RUNNER_CORPORA || 'ubuntu-24.04' }}
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
