@@ -327,6 +327,17 @@ fn guarded(f: impl FnOnce() -> usize) -> usize {
     // R code may run: it must see what C wrote into twins
     // SAFETY: on the R thread, in a callback from C (no conversion running).
     unsafe { flush_twins() };
+    guarded_unflushed(f)
+}
+
+/// [`guarded`] for a callback that runs no R code, so nothing reads the
+/// twins C may have written: they are written back later, when R code
+/// runs or the native call returns. (write.table's C hands every cell to
+/// R_WriteConnection after reading its column through `INTEGER()`, which
+/// marks the column's twin as written: flushing there compared the whole
+/// column per cell.)
+#[inline(always)]
+fn guarded_unflushed(f: impl FnOnce() -> usize) -> usize {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(t) => t,
         Err(p) => {
@@ -457,6 +468,9 @@ unsafe fn sweep_stored() -> usize {
 
 /// What only the bridge holds, before a collection.
 unsafe fn sweep_bridge_holds() {
+    // objects earlier collections kept are twins before this one, where
+    // holds are no roots (#278)
+    drain_watched();
     sweep_stored();
     cpromise_memo_sweep();
 }
@@ -491,7 +505,7 @@ unsafe fn drain_dead_held() {
             Some(Held::Pinned(h)) => {
                 PINNED.with(|m| m.borrow_mut().remove(&h));
             }
-            Some(Held::Twin(k)) => forget_dead_twin(k),
+            Some(Held::Twin(k)) => drop_lost_twin(k),
             None => {}
         }
     }
@@ -520,7 +534,9 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
         // a twin left after the collection is one the core heap kept too
         TWINS.with(|t| {
             for tw in t.borrow().values() {
-                graph.root(&tw.value);
+                if let Some(v) = tw.value.get() {
+                    graph.root(&v);
+                }
             }
         });
         graph.include_escaped();
@@ -670,21 +686,126 @@ unsafe fn proxy(v: &Value) -> Sexp {
 //   twin of a new runtime tail that shares the cells: a write through any
 //   cell is written back into every twin that contains it.
 //
-// The table holds the value, as `STORED` did, so a runtime-side change copies
-// it (copy-on-modify sees it shared) and the twin never goes stale; the
-// sweep drops twins whose value only the table holds. A twin is a hold
-// in the core heap (`Held::Twin`): a root in the collections the allocator
-// triggers; in gc() it is marked when the runtime graph shows its value
-// live or a traced proxy's runtime side reaches the value (one mark over
-// both heaps), and a twin nothing reached dies with the collection
-// (`forget_dead_twin`). Shared scalars (`Value::lgl`, small `Value::int`)
-// get a read-only twin, which C cannot write back into every user of them.
+// The table holds an atomic value strongly and the others weakly (see
+// `TwinVal`): a runtime-side change gives the value a new identity, so the
+// twin never goes stale; the sweep drops twins whose value only the table
+// holds. Each twin is a hold of the core heap (#442): a root in the
+// collections the allocator triggers, marked through the runtime graph in
+// gc(). Shared scalars (`Value::lgl`, small `Value::int`) get a read-only
+// twin, which C cannot write back into every user of them.
+
+/// A runtime value held weakly, by its kind (`twin_key`'s identities).
+enum WeakVal {
+    Lgl(Weak<Vector<i32>>),
+    Int(Weak<Vector<i32>>),
+    Real(Weak<Vector<f64>>),
+    Cplx(Weak<Vector<Complex>>),
+    Raw(Weak<Vector<u8>>),
+    Str(Weak<Vector<RStr>>),
+    List(Weak<Vector<Value>>),
+    Expr(Weak<Vector<Value>>),
+    Lang(Weak<Lang>),
+    Pairlist(Weak<Pairlist>),
+    Dots(Weak<Vec<Arg>>),
+}
+
+impl WeakVal {
+    fn of(v: &Value) -> Option<WeakVal> {
+        Some(match v {
+            Value::Lgl(r) => WeakVal::Lgl(Rc::downgrade(r)),
+            Value::Int(r) => WeakVal::Int(Rc::downgrade(r)),
+            Value::Real(r) => WeakVal::Real(Rc::downgrade(r)),
+            Value::Cplx(r) => WeakVal::Cplx(Rc::downgrade(r)),
+            Value::Raw(r) => WeakVal::Raw(Rc::downgrade(r)),
+            Value::Str(r) => WeakVal::Str(Rc::downgrade(r)),
+            Value::List(r) => WeakVal::List(Rc::downgrade(r)),
+            Value::Expr(r) => WeakVal::Expr(Rc::downgrade(r)),
+            Value::Lang(r) => WeakVal::Lang(Rc::downgrade(r)),
+            Value::Pairlist(r) => WeakVal::Pairlist(Rc::downgrade(r)),
+            Value::Dots(r) => WeakVal::Dots(Rc::downgrade(r)),
+            _ => return None,
+        })
+    }
+    fn upgrade(&self) -> Option<Value> {
+        Some(match self {
+            WeakVal::Lgl(w) => Value::Lgl(w.upgrade()?),
+            WeakVal::Int(w) => Value::Int(w.upgrade()?),
+            WeakVal::Real(w) => Value::Real(w.upgrade()?),
+            WeakVal::Cplx(w) => Value::Cplx(w.upgrade()?),
+            WeakVal::Raw(w) => Value::Raw(w.upgrade()?),
+            WeakVal::Str(w) => Value::Str(w.upgrade()?),
+            WeakVal::List(w) => Value::List(w.upgrade()?),
+            WeakVal::Expr(w) => Value::Expr(w.upgrade()?),
+            WeakVal::Lang(w) => Value::Lang(w.upgrade()?),
+            WeakVal::Pairlist(w) => Value::Pairlist(w.upgrade()?),
+            WeakVal::Dots(w) => Value::Dots(w.upgrade()?),
+        })
+    }
+    fn dead(&self) -> bool {
+        match self {
+            WeakVal::Lgl(w) | WeakVal::Int(w) => w.strong_count() == 0,
+            WeakVal::Real(w) => w.strong_count() == 0,
+            WeakVal::Cplx(w) => w.strong_count() == 0,
+            WeakVal::Raw(w) => w.strong_count() == 0,
+            WeakVal::Str(w) => w.strong_count() == 0,
+            WeakVal::List(w) | WeakVal::Expr(w) => w.strong_count() == 0,
+            WeakVal::Lang(w) => w.strong_count() == 0,
+            WeakVal::Pairlist(w) => w.strong_count() == 0,
+            WeakVal::Dots(w) => w.strong_count() == 0,
+        }
+    }
+}
+
+/// What a twin holds of its runtime value (#278, council round 8): an
+/// atomic vector strongly (an EXTDATA twin's buffer owner, #458), the
+/// others (STRSXP, VECSXP, EXPRSXP, LANGSXP, LISTSXP, `...`) weakly, so
+/// that R code modifying the value keeps copy-on-modify's in-place path.
+/// `Rc::make_mut` moves a weakly referenced value into a new allocation, so
+/// a modified value has a new identity and the twin dies with the old one:
+/// a weak twin is never stale.
+enum TwinVal {
+    Strong(Value),
+    Weak(WeakVal),
+}
+
+impl TwinVal {
+    fn of(v: &Value) -> TwinVal {
+        match v {
+            Value::Str(_) | Value::List(_) | Value::Expr(_) | Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_) => {
+                TwinVal::Weak(WeakVal::of(v).expect("a weak twin kind"))
+            }
+            _ => TwinVal::Strong(v.clone()),
+        }
+    }
+    /// The value, if it lives.
+    fn get(&self) -> Option<Value> {
+        match self {
+            TwinVal::Strong(v) => Some(v.clone()),
+            TwinVal::Weak(w) => w.upgrade(),
+        }
+    }
+    /// Is the value referenced from nowhere but the bridge?
+    fn only_bridge(&self) -> bool {
+        match self {
+            TwinVal::Strong(v) => only_stored(v),
+            TwinVal::Weak(w) => w.dead(),
+        }
+    }
+    /// The table's own reference to the value, if it has one.
+    fn strong(&self) -> Option<&Value> {
+        match self {
+            TwinVal::Strong(v) => Some(v),
+            TwinVal::Weak(_) => None,
+        }
+    }
+}
 
 struct Twin {
     x: Sexp,
-    /// its hold in the core heap (see `Held::Twin`)
+    value: TwinVal,
+    /// the twin's hold in the core heap (one mark over both heaps: marked
+    /// through the runtime graph in gc(), a root in other collections)
     hold: u64,
-    value: Value,
     readonly: bool,
     /// a constant of code (inside a call): not mutable, as eval.c's
     /// ENSURE_NAMEDMAX makes what a call evaluates to
@@ -702,6 +823,14 @@ thread_local! {
     static TWIN_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::default());
     /// twins C wrote to since their last write-back
     static TWIN_DIRTY: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+    /// Objects that may become twins (#278, escapes): an object a native
+    /// call created and R got back, or the conversion of a temporary C
+    /// had, by the core's watch id. Unrooted: a collection that finds one
+    /// kept (C preserved it, or keeps it in an object it keeps) makes it a
+    /// hold and so a twin; one that finds it unreachable drops it.
+    static PENDING: RefCell<HashMap<u64, (Sexp, WeakVal)>> = RefCell::new(HashMap::default());
+    /// runtime identity -> its pending object's watch id
+    static PENDING_OF: RefCell<HashMap<usize, u64>> = RefCell::new(HashMap::default());
 }
 
 /// The identity a twin is kept under: a value C can hold as an object of
@@ -761,10 +890,11 @@ unsafe fn twin_of(v: &Value) -> Option<Sexp> {
         drop_twin(k);
         return None;
     }
-    // C sees the value as shared as R holds it (the table's own reference
-    // aside), as memory.c's REFCNT would count its owners
+    // C sees the value as shared as R holds it, the bridge's own owners
+    // aside (#278: never less than its owners in R), as memory.c's REFCNT
+    // counts them
     if !readonly {
-        x.set_refcnt(sharing(v).saturating_sub(1).max(1));
+        x.set_refcnt(r_owners(v).clamp(1, u16::MAX as usize) as u16);
     }
     Some(x)
 }
@@ -796,6 +926,7 @@ unsafe fn twin_cells(x: Sexp) -> Vec<Sexp> {
 }
 
 unsafe fn watch_cells(k: usize, cells: &[Sexp]) {
+    forget_last_written();
     TWIN_CELLS.with(|m| {
         let mut m = m.borrow_mut();
         for c in cells {
@@ -811,6 +942,7 @@ unsafe fn watch_cells(k: usize, cells: &[Sexp]) {
 /// Forget `k` as an owner of `cells`. Only cells in `live` (reachable from a
 /// rooted twin now) are touched; the others may have been freed since.
 unsafe fn unwatch_cells(k: usize, cells: &[Sexp], live: &[Sexp]) {
+    forget_last_written();
     let live: HashSet<Sexp> = live.iter().copied().collect();
     TWIN_CELLS.with(|m| {
         let mut m = m.borrow_mut();
@@ -847,10 +979,11 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     let readonly = v.is_shared_scalar();
     let cells = twin_cells(x);
     watch_cells(k, &cells);
-    TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
+    unpend(k);
     let hold = core().hold(x);
     HELD.with(|m| m.borrow_mut().insert(hold, Held::Twin(k)));
-    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, hold, value: v.clone(), readonly, constant, cells }));
+    TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
+    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, value: TwinVal::of(v), hold, readonly, constant, cells }));
     if readonly || constant {
         x.set_refcnt(u16::MAX);
     }
@@ -907,25 +1040,26 @@ unsafe fn twin_items(mut p: Sexp, items: &[Arg], constant: bool) {
 /// Drop twin `k` (its value is referenced only by the table).
 unsafe fn drop_twin(k: usize) {
     let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
-    core().unhold(tw.hold);
-    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
     TWIN_HEAD.with(|h| {
         let mut h = h.borrow_mut();
         if h.get(&tw.x.addr()) == Some(&k) {
             h.remove(&tw.x.addr());
         }
     });
-    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    undirty(k);
     let live = twin_cells(tw.x);
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
     // address may be another object's after the next collection
     forget_attrs(tw.x);
+    core().unhold(tw.hold);
+    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
 }
 
-/// Twin `k` died in the collection (nothing reached it, through either
-/// heap): forget it without reading its freed cells.
-unsafe fn forget_dead_twin(k: usize) {
+/// A twin whose core object a collection found dead (its hold died with
+/// it: nothing reached it, through either heap). Its memory is freed, so
+/// nothing of it is read: only the tables forget it.
+unsafe fn drop_lost_twin(k: usize) {
     let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
     TWIN_HEAD.with(|h| {
         let mut h = h.borrow_mut();
@@ -933,32 +1067,172 @@ unsafe fn forget_dead_twin(k: usize) {
             h.remove(&tw.x.addr());
         }
     });
-    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
-    // no cell of it is known live: their bits stay, as unwatch leaves them
+    undirty(k);
     unwatch_cells(k, &tw.cells, &[]);
     forget_attrs(tw.x);
+}
+
+/// How many owners `v` has in R: its references, less the bridge's own
+/// (a strong twin, a SEEN entry). #278: REFCNT never counts the bridge,
+/// and an object aliased in R never reads as unshared.
+fn r_owners(v: &Value) -> usize {
+    let n = sharing(v) as usize + 1;
+    let Some(k) = twin_key(v) else { return n };
+    let twin = TWINS.with(|t| t.borrow().get(&k).is_some_and(|tw| tw.value.strong().is_some())) as usize;
+    let seen = SEEN.with(|m| m.borrow().contains_key(&k)) as usize;
+    n.saturating_sub(twin + seen)
+}
+
+/// Is `v` shared in R (#278's crossing rule: such a value reaches C as its
+/// twin, the same object in every call, as GNU R passes the caller's own)?
+/// The interned shared scalars have no identity (#436, #398).
+fn shared_in_r(v: &Value) -> bool {
+    twin_key(v).is_some() && !v.is_shared_scalar() && r_owners(v) >= 2
+}
+
+/// Watch `x`, which R has as `v`, as a possible twin (#278, escapes).
+unsafe fn pend(x: Sexp, v: &Value) {
+    let Some(k) = twin_key(v) else { return };
+    if x.is_null() || x == R_NilValue || x.has_flag(flags::HOST) || x.has_flag(flags::IMMORTAL) || x.typ() == SYMSXP {
+        return;
+    }
+    if v.is_shared_scalar() || !twin_shape(x, v) {
+        return;
+    }
+    if TWINS.with(|t| t.borrow().contains_key(&k)) || TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr())) {
+        return;
+    }
+    let Some(w) = WeakVal::of(v) else { return };
+    drain_watched();
+    if PENDING_OF.with(|m| m.borrow().contains_key(&k)) {
+        return;
+    }
+    let id = core().watch(x);
+    PENDING.with(|m| m.borrow_mut().insert(id, (x, w)));
+    PENDING_OF.with(|m| m.borrow_mut().insert(k, id));
+}
+
+/// Forget a pending object of runtime identity `k`.
+unsafe fn unpend(k: usize) {
+    if let Some(id) = PENDING_OF.with(|m| m.borrow_mut().remove(&k)) {
+        PENDING.with(|m| m.borrow_mut().remove(&id));
+        core().unwatch(id);
+    }
+}
+
+/// The pending object of `v`, made its twin: C kept the object R got back
+/// (or the conversion of a temporary it had), and R hands the value to C
+/// again before a collection decided it.
+unsafe fn pending_twin(v: &Value) -> Option<Sexp> {
+    let k = twin_key(v)?;
+    if PENDING_OF.with(|m| m.borrow().is_empty()) {
+        return None;
+    }
+    drain_watched();
+    let id = PENDING_OF.with(|m| m.borrow().get(&k).copied())?;
+    let (x, _) = PENDING.with(|m| m.borrow().get(&id).map(|(x, w)| (*x, w.dead())))?;
+    // (still watched, so not swept: no collection has decided it)
+    make_twin(x, v);
+    TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr())).then_some(x)
+}
+
+/// What the collections decided about the pending objects: a kept one is
+/// a hold already, and becomes its value's twin; a lost one is gone.
+unsafe fn drain_watched() {
+    let (kept, lost) = core().take_watched();
+    for id in lost {
+        if let Some((_, w)) = PENDING.with(|m| m.borrow_mut().remove(&id)) {
+            forget_pending_key(id, &w);
+        }
+    }
+    for (id, hold) in kept {
+        let Some((x, w)) = PENDING.with(|m| m.borrow_mut().remove(&id)) else {
+            core().unhold(hold);
+            continue;
+        };
+        forget_pending_key(id, &w);
+        if let Some(v) = w.upgrade() {
+            make_twin(x, &v);
+        }
+        // the twin holds it now (or nothing does)
+        core().unhold(hold);
+    }
+}
+
+fn forget_pending_key(id: u64, w: &WeakVal) {
+    if let Some(v) = w.upgrade() {
+        if let Some(k) = twin_key(&v) {
+            PENDING_OF.with(|m| {
+                let mut m = m.borrow_mut();
+                if m.get(&k) == Some(&id) {
+                    m.remove(&k);
+                }
+            });
+        }
+        return;
+    }
+    // the value died: its identity is free, find the entry by id
+    PENDING_OF.with(|m| m.borrow_mut().retain(|_, i| *i != id));
+}
+
+/// An object a native call returned, which R got as `v` (#278, escapes):
+/// one that came from the runtime (`original_cell`) is the value's twin at
+/// once; one C created is pending.
+unsafe fn escaped(out: Sexp, v: &Value, original: bool) {
+    if original {
+        make_twin(out, v);
+    } else {
+        pend(out, v);
+    }
 }
 
 /// A setter wrote to the watched object `x` (memory.rs `watch_write`).
 #[cold]
 #[inline(never)]
 pub(crate) unsafe fn twin_written(x: Sexp) {
-    let owners = TWIN_CELLS.with(|m| m.borrow().get(&x.addr()).cloned());
-    if let Some(owners) = owners {
-        TWIN_DIRTY.with(|d| d.borrow_mut().extend(owners));
-        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    // C reading columns through INTEGER() comes here for every cell: a
+    // cell marked lately has its twins in the dirty set still
+    if LAST_WRITTEN.iter().any(|c| c.load(std::sync::atomic::Ordering::Relaxed) == x.addr()) {
+        return;
     }
+    TWIN_CELLS.with(|m| {
+        let m = m.borrow();
+        let Some(owners) = m.get(&x.addr()) else { return };
+        TWIN_DIRTY.with(|d| {
+            let mut d = d.borrow_mut();
+            for &k in owners {
+                if !d.contains(&k) {
+                    d.insert(k);
+                }
+            }
+        });
+        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+        let i = LAST_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LAST_WRITTEN.len();
+        LAST_WRITTEN[i].store(x.addr(), std::sync::atomic::Ordering::Relaxed);
+    });
 }
 
 /// Write twin `k` back into its runtime value, in place, and watch what
 /// the write changed (new cells, new elements).
 unsafe fn flush_twin(k: usize) {
-    if !TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k)) {
+    flush_twin_with(k, &mut HashMap::default())
+}
+
+/// [`flush_twin`], converting what C stored with `originals` (core address
+/// -> the runtime value it came from: a native call's arguments and
+/// temporaries keep their identity).
+unsafe fn flush_twin_with(k: usize, originals: &mut HashMap<usize, Value>) {
+    if !undirty(k) {
         return;
     }
-    let Some((x, value, readonly, constant, old)) = TWINS
-        .with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.clone(), tw.readonly, tw.constant, tw.cells.clone())))
+    let Some((x, value, readonly, constant, old)) =
+        TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.get(), tw.readonly, tw.constant, tw.cells.clone())))
     else {
+        return;
+    };
+    let Some(value) = value else {
+        // a weak twin's value died: nothing to write back into
+        drop_twin(k);
         return;
     };
     if readonly {
@@ -968,7 +1242,7 @@ unsafe fn flush_twin(k: usize) {
         drop_twin(k);
         return;
     }
-    write_back(&value, x, &mut HashMap::default());
+    write_back(&value, x, originals);
     let cells = twin_cells(x);
     let now: HashSet<Sexp> = cells.iter().copied().collect();
     let gone: Vec<Sexp> = old.iter().copied().filter(|c| !now.contains(c)).collect();
@@ -980,6 +1254,24 @@ unsafe fn flush_twin(k: usize) {
         }
     });
     twin_children(x, &value, constant);
+}
+
+/// The cells `twin_written` marked lately, while every twin they are cells
+/// of is dirty (0: none); forgotten when a twin leaves the dirty set or the
+/// cells' owners change. (The R thread is the only one that touches them.)
+static LAST_WRITTEN: [std::sync::atomic::AtomicUsize; 16] = [const { std::sync::atomic::AtomicUsize::new(0) }; 16];
+static LAST_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn forget_last_written() {
+    for c in &LAST_WRITTEN {
+        c.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Take twin `k` off the dirty set; whether it was on it.
+fn undirty(k: usize) -> bool {
+    forget_last_written();
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k))
 }
 
 /// Some twin is dirty (one load on the host callbacks' path: the R thread
@@ -998,11 +1290,17 @@ pub(crate) unsafe fn flush_twins() {
 #[cold]
 #[inline(never)]
 unsafe fn flush_dirty_twins() {
+    flush_dirty_twins_with(&mut HashMap::default())
+}
+
+/// [`flush_dirty_twins`] with a native call's `originals` (see
+/// [`flush_twin_with`]).
+unsafe fn flush_dirty_twins_with(originals: &mut HashMap<usize, Value>) {
     ANY_TWIN_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     // flush_twin takes each off the set (and may flush others first)
     while let Some(k) = TWIN_DIRTY.with(|d| d.borrow().iter().next().copied()) {
-        flush_twin(k);
-        TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+        flush_twin_with(k, originals);
+        undirty(k);
     }
 }
 
@@ -1010,7 +1308,13 @@ unsafe fn flush_dirty_twins() {
 /// which becomes the twin of a new tail sharing those cells).
 unsafe fn twin_value(x: Sexp) -> Option<Value> {
     if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
-        let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.clone(), tw.readonly)))?;
+        let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.get(), tw.readonly)))?;
+        let Some(v) = v else {
+            // the value died (or R modified it, a new identity): the
+            // object is C's own now
+            drop_twin(k);
+            return None;
+        };
         if !twin_shape(x, &v) || (scalar && !scalar_intact(x, &v)) {
             // retyped by C: no longer the value's object
             drop_twin(k);
@@ -1088,27 +1392,6 @@ unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
     }
 }
 
-/// The twins whose values the runtime graph shows live (a twin is a
-/// hold: a root in the collections the allocator triggers, marked through
-/// the runtime graph in gc(), one mark over both heaps).
-unsafe fn mark_live_twins(c: &mut robigo_core::Core, graph: &robigo_runtime::reachability::ObjectGraph, live: &[bool]) {
-    TWINS.with(|t| {
-        for tw in t.borrow().values() {
-            if graph.is_live(&tw.value, live) {
-                c.mark(tw.x);
-            }
-        }
-    });
-}
-
-/// The twin of a value the runtime graph reaches from a traced proxy.
-unsafe fn mark_twin_of(c: &mut robigo_core::Core, v: &Value) {
-    let Some(k) = twin_key(v) else { return };
-    if let Some(x) = TWINS.with(|t| t.borrow().get(&k).map(|tw| tw.x)) {
-        c.mark(x);
-    }
-}
-
 /// Drop the twins whose value only the table still holds (inner twins
 /// follow their container's).
 unsafe fn sweep_twins() -> bool {
@@ -1130,19 +1413,23 @@ unsafe fn sweep_twins() -> bool {
 /// zero-copy twin's core object holds it as the owner of its buffer
 /// (`shared_atomic`); counting that one too would keep the twin, and so its
 /// core object and the vector, alive for good.
+///
+/// A weak twin (#477: not an atomic vector, so never zero-copy) is
+/// unreferenced once its value died.
 fn twin_unreferenced(tw: &Twin) -> bool {
+    let Some(v) = tw.value.strong() else { return tw.value.only_bridge() };
     // SAFETY: the table's twins are marked by every collection, so `tw.x`
     // is live.
-    let own = unsafe { shared_value(tw.x) }.is_some_and(|o| o.same_object(&tw.value));
+    let own = unsafe { shared_value(tw.x) }.is_some_and(|o| o.same_object(v));
     if !own {
-        return only_stored(&tw.value);
+        return only_stored(v);
     }
-    let n = match &tw.value {
+    let n = match v {
         Value::Lgl(x) | Value::Int(x) => Rc::strong_count(x),
         Value::Real(x) => Rc::strong_count(x),
         Value::Cplx(x) => Rc::strong_count(x),
         Value::Raw(x) => Rc::strong_count(x),
-        _ => return only_stored(&tw.value),
+        _ => return only_stored(v),
     };
     n == 2
 }
@@ -1151,7 +1438,9 @@ fn twin_unreferenced(tw: &Twin) -> bool {
 fn ignore_twin_owners(graph: &mut robigo_runtime::reachability::ObjectGraph) {
     TWINS.with(|t| {
         for tw in t.borrow().values() {
-            graph.ignore_owner(&tw.value);
+            if let Some(v) = tw.value.strong() {
+                graph.ignore_owner(v);
+            }
         }
     });
 }
@@ -1521,7 +1810,17 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 }
             }
         }
-        mark_live_twins(c, &graph, &live);
+        // Twins: held, so no roots in gc(); live while the graph shows
+        // their value live (#278, #442's invariant).
+        TWINS.with(|t| {
+            for tw in t.borrow().values() {
+                if let Some(v) = tw.value.get() {
+                    if graph.is_live(&v, &live) {
+                        c.mark(tw.x);
+                    }
+                }
+            }
+        });
         // The objects runtime values wrap: live unless the graph shows
         // that only dead runtime objects refer to their wrapper. (Held
         // objects are no roots in gc(): one mark over both heaps.)
@@ -1560,12 +1859,15 @@ pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
                     if let Some(x) = STORED.with(|s| s.borrow().get(&key).map(|(x, _)| *x)) {
                         c.mark(x);
                     }
+                    // a traced live value marks its twin
+                    if let Some(x) = TWINS.with(|t| t.borrow().get(&key).map(|tw| tw.x)) {
+                        c.mark(x);
+                    }
                 }
                 // a wrapped object the traced object's runtime side holds
                 if let Some(x) = core_ref_of(value) {
                     c.mark(x);
                 }
-                mark_twin_of(c, value);
             });
         });
     });
@@ -1798,6 +2100,19 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
         let x = to_sexp_new(v);
         make_twin(x, v);
         return x;
+    }
+    // #278: an object C kept that R got back is the value's twin, and a
+    // value shared in R reaches C as its twin (GNU R passes the caller's
+    // own object, dotcode.c:1426, and never moves it). The conversion this
+    // call made of it already, if any, becomes the twin.
+    if let Some(x) = pending_twin(v) {
+        return twin_of(v).unwrap_or(x);
+    }
+    if shared_in_r(v) {
+        let seen = twin_key(v).and_then(|k| SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)));
+        let x = seen.unwrap_or_else(|| to_sexp_new(v));
+        make_twin(x, v);
+        return twin_of(v).unwrap_or(x);
     }
     if let Some(x) = STORED.with(|m| {
         let m = m.borrow();
@@ -2301,9 +2616,14 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 /// the caller jumps, as `host::op` does.
 #[inline(always)]
 pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
-    // Only the text path can run R code (a text connection assigns): it
-    // is the one in a host frame; a file takes the bytes, per field.
-    guarded(|| {
+    // Writing to a connection runs no R code of its own, so the twins C
+    // wrote are not written back here (#477): write.table reads every cell
+    // through INTEGER(), which marks its column's twin written, and a
+    // write-back per field compared the whole column. Only the text path
+    // (a text connection, the terminals, a sink) is in a host frame (#470):
+    // through a sink it can reach a package connection's C methods, whose
+    // callbacks into R write the twins back on entry (`guarded`).
+    guarded_unflushed(|| {
         let r = with_interp_leaf(|i| {
             robigo_runtime::builtins::io::con_write_bytes_or(i, num, bytes, |i, n, text| {
                 host_frame(|| robigo_runtime::builtins::io::conn_write(i, n, text))
@@ -3341,7 +3661,9 @@ unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
         return Err(take_flow(t));
     }
     check_result(out)?;
-    converting(interp, || from_sexp(out))
+    let v = converting(interp, || from_sexp(out))?;
+    escaped(out, &v, false);
+    Ok(v)
 }
 
 /// A routine that returns no object (one declared void but registered for
@@ -3400,7 +3722,13 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         d.get() == 0
     }) {
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
-        for (k, (x, _)) in seen {
+        for (k, (x, v)) in seen {
+            // #278: the conversion of a temporary R still has may be one C
+            // kept (preserved, or in an object it keeps): pending until a
+            // collection tells
+            if sharing(&v) > 0 {
+                pend(x, &v);
+            }
             core().release(x);
             // the agreement of an object with attributes (`write_back`
             // forgets the others); a value C stored keeps its own
@@ -3521,7 +3849,8 @@ unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
         // the caller's sharing: a value bound elsewhere (a variable) is
         // referenced, as in GNU R, so code following the NAMED/REFCNT
         // protocol duplicates before writing
-        let refs = sharing(&a.value);
+        // (the bridge's own owners and the argument list's aside, #278)
+        let refs = r_owners(&a.value).saturating_sub(1).min(u16::MAX as usize) as u16;
         let x = Rf_protect(to_sexp(&a.value));
         if refs > 0 && x.refcnt() < refs {
             x.set_refcnt(refs);
@@ -3606,9 +3935,13 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
     for x in xs {
         mark(x);
     }
-    flush_twins();
     let seen: Vec<_> = seen.into_iter().filter(|(x, _)| twin(x).is_none()).collect();
     let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+    // what C stored into a twin from the call's arguments and temporaries
+    // is theirs, not a copy (as main's write-back of an argument)
+    if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+        flush_dirty_twins_with(&mut originals);
+    }
     for (x, value) in &seen {
         if !xs.contains(x) {
             write_back(value, *x, &mut originals);
@@ -3641,7 +3974,17 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
             return Err(take_flow(t));
         }
         check_result(out)?;
-        return Ok(original_cell(out, &originals).unwrap_or_else(|| from_sexp(out)));
+        return Ok(match original_cell(out, &originals) {
+            Some(v) => {
+                escaped(out, &v, true);
+                v
+            }
+            None => {
+                let v = from_sexp(out);
+                escaped(out, &v, false);
+                v
+            }
+        });
     }
     let back = converting_in_context(interp, || write_backs(args, &xs));
     stack_imbalance(interp, ".Call", &info);
@@ -3652,6 +3995,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     };
     if t == 0 {
         if let Some(v) = original_cell(out, &originals) {
+            escaped(out, &v, true);
             return Ok(v);
         }
     }
@@ -3965,6 +4309,11 @@ impl NativeBridge for Bridge {
     fn at_top_level(&self) {
         if RETIRED.with(|r| !r.borrow().is_empty()) {
             drop(RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut())));
+            // What C replaced can have twins (#278): the table's reference
+            // is then the last one, released here as the rest is.
+            // SAFETY: on the R thread at top level: no collection or
+            // collector borrow is active.
+            unsafe { sweep_twins() };
             // The bridge held the last reference of some of it.
             robigo_runtime::env::Env::mark_cycle_dirty();
         }
@@ -4139,6 +4488,7 @@ impl NativeBridge for Bridge {
             GRAPH_MARK.with(|on| on.set(false));
             // before any finalizer: no wrapper may hand out a freed object
             drain_dead_held();
+            drain_watched();
             // Finalizers are C code: the scan is back on, so a collection
             // inside one sees its locals.
             crate::util::safe_point();

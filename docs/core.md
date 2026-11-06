@@ -502,6 +502,32 @@ referenced from anywhere but the bridge's table:
   follows the value's sharing on every use; the table's reference is
   ignored by the runtime's reachability graphs, as `PROXIED`'s is.
 
+**Identity across calls** (#278, council round 8). GNU R passes the
+caller's own objects to C (dotcode.c) and never moves them, so an object's
+address is the same in every call while R holds it (data.table's `.onLoad`
+checks it with `address()`). Twins carry it:
+
+- *Crossing*: `to_sexp` of a vector that is shared in R (owned twice, the
+  bridge's own references aside) returns its twin, creating it, in a
+  `.Call`/`.External` argument, a value a host callback hands over, or an
+  attribute. Unshared temporaries stay per-call (`SEEN`); the interned
+  shared scalars have no identity; `.C` copies.
+- *Escapes*: a result that is an argument's object (`original_cell`)
+  becomes a twin at once. A result C created, and the conversion of a
+  temporary R still holds when the outermost call returns, are *watched*
+  (`Core::watch`, unrooted): a collection that marks one (C preserved it,
+  or keeps it in a kept object) makes it a hold and so a twin; one that
+  does not frees it. `to_sexp` of such a value before a collection decided
+  it makes it a twin at once.
+- Atomic twins hold their value strongly (#458's EXTDATA owner); the others
+  weakly, so copy-on-modify keeps its in-place path: `Rc::make_mut` moves a
+  weakly referenced value, which gives it a new identity.
+- Twins are holds (below): roots in the collections the allocator
+  triggers, marked through the runtime graph in `gc()`; a traced value
+  marks its twin; dead ones are dropped before finalizers run.
+- `REFCNT` counts the value's owners in R, the bridge's aside, and never
+  reads an aliased object as unshared.
+
 **One mark over both heaps** (#344, council round 6). A cycle can cross
 the heaps: a runtime frame holds an `ExtPtr` whose core object's
 protected field holds the proxy of a closure of that frame (curl's
