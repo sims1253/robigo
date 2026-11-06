@@ -120,7 +120,9 @@ pub enum ConnKind {
     /// into the wrapped connection and finishes with the gzip trailer at
     /// close (gzcon_write/gzcon_close).
     Gzcon {
-        inner: i32,
+        /// The wrapped connection, out of the table (R: `Connections[icon]
+        /// = new`); lent to a hidden slot while the gzcon does I/O on it.
+        inner: Option<Box<Connection>>,
         level: u32,
         allow: bool,
         /// The decompressed stream, once open for reading.
@@ -1116,8 +1118,8 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
     if n < 0 || n as usize >= i.conns.table.len() {
         return Ok(());
     }
-    let wrapped = match i.conns.table[n as usize].as_deref() {
-        Some(Connection { kind: ConnKind::Gzcon { inner, .. }, .. }) => Some(*inner),
+    let wrapped = match i.conns.table[n as usize].as_deref_mut() {
+        Some(Connection { kind: ConnKind::Gzcon { inner, .. }, .. }) => inner.take(),
         _ => None,
     };
     let r = match i.conns.table[n as usize].as_deref().map(|c| &c.kind) {
@@ -1140,7 +1142,8 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
     };
     i.conns.table[n as usize] = None;
     // a gzcon's wrapped connection (gzcon_close closed it)
-    if let Some(k) = wrapped {
+    if let Some(w) = wrapped {
+        let k = i.conns.hide(w);
         let _ = check_close(i, k);
         con_free(i, k)?;
     }
@@ -2262,12 +2265,11 @@ fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         ));
     }
     // R: `Connections[icon] = new` — the gzcon takes over the wrapped
-    // connection's number, and the wrapped one leaves the table (it lives
-    // on in a hidden slot, freed with the gzcon).
+    // connection's number, and the wrapped one leaves the table: the gzcon
+    // owns it.
     let Some(wrapped) = i.conns.table[icon as usize].take() else { return Err(Flow::error("invalid connection")) };
-    let inner = i.conns.hide(wrapped);
     let kind = ConnKind::Gzcon {
-        inner,
+        inner: Some(wrapped),
         level: level as u32,
         allow: allow == TRUE,
         data: Vec::new(),
@@ -2289,11 +2291,30 @@ fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 /// reading the stream as-is with `allowNonCompression`), then inflate the
 /// wrapped stream; or write the header for writing.
 fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
-    let inner = {
-        let con = i.conns.get(n)?;
-        let ConnKind::Gzcon { inner, .. } = con.kind else { unreachable!() };
-        inner
-    };
+    let inner = lend_wrapped(i, n)?;
+    let r = gzcon_open_lent(i, n, inner);
+    restore_wrapped(i, n, inner);
+    r
+}
+
+/// The gzcon `n`'s wrapped connection, moved to a hidden slot (see
+/// `ConnState::hide`) so the generic connection methods can work on it;
+/// `restore_wrapped` takes it back. No R code runs in between, so the
+/// slot is never seen from R.
+fn lend_wrapped(i: &mut Interp, n: i32) -> RResult<i32> {
+    let ConnKind::Gzcon { inner, .. } = &mut i.conns.get(n)?.kind else { unreachable!() };
+    let Some(w) = inner.take() else { return Err(Flow::error("invalid connection")) };
+    Ok(i.conns.hide(w))
+}
+
+fn restore_wrapped(i: &mut Interp, n: i32, k: i32) {
+    let w = i.conns.table[k as usize].take();
+    if let Ok(ConnKind::Gzcon { inner, .. }) = i.conns.get(n).map(|c| &mut c.kind) {
+        *inner = w;
+    }
+}
+
+fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<bool> {
     let mode = i.conns.get(n)?.mode.clone();
     let wasopen = i.conns.get(inner)?.isopen;
     if !wasopen && !open_in_mode(i, inner, &mode)? {
@@ -2314,13 +2335,13 @@ fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
         let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
             if !allow {
                 i.warning("file stream does not have gzip magic number")?;
-                con_close_raw(i, n)?;
+                gzcon_close_lent(i, n, inner)?;
                 return Ok(false);
             }
             raw
         } else if raw.len() < 10 || raw[2] != 8 || raw[3] & 0xe0 != 0 {
             i.warning("file stream does not have valid gzip header")?;
-            con_close_raw(i, n)?;
+            gzcon_close_lent(i, n, inner)?;
             return Ok(false);
         } else {
             // R: gzcon_open skips the header byte by byte; a truncated
@@ -2409,11 +2430,14 @@ fn crc32(data: &[u8]) -> u32 {
 /// R: connections.c:gzcon_close — finish the deflate stream, write the
 /// crc and length trailer, and close the wrapped connection.
 fn gzcon_close(i: &mut Interp, n: i32) -> RResult<()> {
-    let (inner, canwrite) = {
-        let con = i.conns.get(n)?;
-        let ConnKind::Gzcon { inner, .. } = &con.kind else { unreachable!() };
-        (*inner, con.canwrite)
-    };
+    let inner = lend_wrapped(i, n)?;
+    let r = gzcon_close_lent(i, n, inner);
+    restore_wrapped(i, n, inner);
+    r
+}
+
+fn gzcon_close_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<()> {
+    let canwrite = i.conns.get(n)?.canwrite;
     if canwrite {
         let (raw, level) = {
             let con = i.conns.get(n)?;
