@@ -1651,6 +1651,8 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
             && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search)
             && !env.local_may_bind_fun(sym)
         {
+            // (This frame's next checks are the fast path's.)
+            memo.set(GuardMemo { env: env.id(), version: env.fn_version(), ..m });
             return m.ok;
         }
         // A new frame of a closure defined in the memoized call frame.
@@ -3472,7 +3474,7 @@ fn jit_enter(
     // calls: they go first.
     if !jl.cells.is_empty()
         && vars.dirty
-        && jl.calls.iter().any(|(_, c, _)| crate::jit::closure::on_chain(&c.env, env))
+        && jl.calls.iter().any(|c| crate::jit::closure::on_chain(&c.clo.env, env))
         && let Err(e) = vars.flush(interp, env, &code.vars)
     {
         vars.failed = Some(Box::new(e));
@@ -3486,55 +3488,32 @@ fn jit_enter(
             return None;
         }
     }
-    for (site, clo, syms) in &jl.calls {
-        let cs = &code.call_sites[*site as usize];
+    for c in &jl.calls {
+        let cs = &code.call_sites[c.site as usize];
         if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
             return None;
         }
-        let Op::Call { f, .. } = code.ops.iter().find(|o| matches!(o, Op::Call { site: s2, .. } if s2 == site))? else {
-            return None;
-        };
         // The same closure, or another instance of it (one made by each call
         // of an enclosing function, say): native code depends only on its
         // body and formals, the guards on its environment.
-        let c = match call_site_fun_fast(interp, *f, cs, env) {
-            Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => c,
-            Some(Value::Closure(c))
-                if Rc::ptr_eq(&c.formals, &clo.formals)
-                    && matches!((c.code.get(), clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
-                    && !c.jit.traced() =>
+        let k = match call_site_fun_fast(interp, c.f, cs, env) {
+            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) => k,
+            Some(Value::Closure(k))
+                if Rc::ptr_eq(&k.formals, &c.clo.formals)
+                    && matches!((k.code.get(), c.clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
+                    && !k.jit.traced() =>
             {
                 // (Native code does not count calls: see `inline_call`.)
-                while c.jit.unsettled() {
-                    jit_check(interp, &c);
+                while k.jit.unsettled() {
+                    jit_check(interp, &k);
                 }
-                c
+                k
             }
             _ => return None,
         };
-        // (Memoized as in the inline runner: once per search epoch and the
-        // environment's function bindings.)
-        let env2 = &c.env;
-        let info = match c.inline.get() {
-            Some(Some(info))
-                if env2.is_search()
-                    || env2.parent_ref().as_ref().is_some_and(|p| p.is_search())
-                    || locked_to_search(env2) =>
-            {
-                Some(info)
-            }
-            _ => None,
-        };
-        let key = (crate::env::search_epoch(), env2.id(), env2.fn_version());
-        if !info.is_some_and(|i| i.guards_key.get() == key) {
-            if !syms.iter().all(|s| interp.resolves_to_base(*s, env2)) {
-                return None;
-            }
-            if let Some(i) = info
-                && i.guard_syms == *syms
-            {
-                i.guards_key.set(key);
-            }
+        // (Memoized per guard: see `guard_ok`.)
+        if !c.guards.iter().all(|(s, memo)| guard_ok(interp, *s, &k.env, memo)) {
+            return None;
         }
     }
     if jl.builtins && crate::builtins::debug::any_prim_traced() {
@@ -3549,7 +3528,7 @@ fn jit_enter(
     // assignments flushed above).
     let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
     if !jl.cells.is_empty() {
-        let clo_at = |site: u32| jl.calls.iter().find(|(s, _, _)| *s == site).map(|(_, c, _)| c);
+        let clo_at = |site: u32| jl.calls.iter().find(|c| c.site == site).map(|c| &c.clo);
         for c in &jl.cells {
             let first = clo_at(c.sites[0])?;
             let o = crate::jit::closure::owner(&first.env, c.sym)?;

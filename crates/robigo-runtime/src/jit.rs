@@ -179,7 +179,7 @@ pub struct JitLoop {
     pub guards: Vec<(Sym, usize)>,
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
-    pub calls: Vec<(u32, std::rc::Rc<crate::value::Closure>, Vec<Sym>)>,
+    pub calls: Vec<LoopCall>,
     /// The ops native code does not have, where it always leaves (sorted).
     pub leaves: Vec<u32>,
     /// With `leaves`: the value-buffer index where native code counts the
@@ -234,6 +234,16 @@ pub struct CalleeCell {
     pub ty: JType,
     /// Assigned with `<<-`.
     pub written: bool,
+}
+
+/// A call a loop runs inline: its site, the function it names, the closure
+/// it was compiled for, and the functions the body guards, each with a memo
+/// of its last check from the closure's environment (`vm::guard_ok`).
+pub struct LoopCall {
+    pub site: u32,
+    pub f: Sym,
+    pub clo: std::rc::Rc<crate::value::Closure>,
+    pub guards: Vec<(Sym, std::cell::Cell<crate::compile::GuardMemo>)>,
 }
 
 /// A variable of an enclosing environment of closures a loop calls inline:
@@ -1364,7 +1374,21 @@ pub fn compile(
     if trace() && summary.is_some() {
         eprintln!("jit: loop at {} has a closed form", enter);
     }
-    let calls = calls.into_iter().map(|(site, c)| (site, c.clo, c.guard_syms)).collect();
+    let calls = calls
+        .into_iter()
+        .map(|(site, c)| {
+            let f = ops
+                .iter()
+                .find_map(|o| match o {
+                    Op::Call { f, site: s2, .. } if *s2 == site => Some(*f),
+                    _ => None,
+                })
+                .expect("an inlined call's op");
+            let guards =
+                c.guard_syms.iter().map(|s| (*s, std::cell::Cell::new(crate::compile::GuardMemo::NONE))).collect();
+            LoopCall { site, f, clo: c.clo, guards }
+        })
+        .collect();
     let mut nulled: Vec<Reg> = ops[r.start..r.end]
         .iter()
         .filter_map(|op| if let Op::Null { dst, dead: true } = op { Some(*dst) } else { None })

@@ -64,3 +64,27 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
 - Gap found: `tests/r/jit/active-binding-compiled-reads.R`. GNU R's bytecode
   runs an active binding's function twice per read once the reading closure
   is compiled; robigo runs it once in every tier.
+
+## 2026-11-04: memoized guards on native-loop entry
+
+- Why: with the generator inlined (loop cells) every line of a fasta program
+  enters a native loop, and entering cost ~4k instructions: per entry 21
+  `guard_ok_slow` calls for the loop's own guards and 8 unmemoized
+  `resolves_to_base` for the callees' guards, plus a scan of the ops for
+  each inlined call's function name.
+- What: `guard_ok_slow`, accepting a new frame directly below the memoized
+  search-path environment, now records that frame in the memo, so the
+  frame's next checks take `guard_ok`'s fast path (before, every check of
+  the frame went the slow way again). The callees' guards go through
+  `guard_ok` with a memo per guard (`jit::LoopCall`), which also keeps the
+  function name each call site names.
+- Result: fastaredux, the body repeated 20 times: 2,158.5M -> 2,114.7M
+  instructions (-2.4% of the steady state). Gate against the loop-cells
+  branch: 3 faster (`fastaredux` -0.69%, `convolution_slow` -0.59%,
+  `fasta_2` -0.55%), 0 slower, worst +0.07%. (Wall time on this VM drifted
+  by 30% while measuring, so no peak numbers.)
+- Verified: `tests/r/jit/loop-callee-guards.R` (operators rebound globally
+  between runs, which GNU R's compiled code ignores as robigo does; locally
+  in the loop's frame between two loops; in some frames of a function and
+  not others; in a callee's environment), recorded with GNU R 4.5.0,
+  identical in all tiers; the guard and rebinding scripts of `tests/r/jit`.
