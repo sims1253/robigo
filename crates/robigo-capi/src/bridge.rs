@@ -1009,8 +1009,10 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     TWINS.with(|t| {
         t.borrow_mut().insert(k, Twin { x, value: TwinVal::of(v), hold, readonly, constant, cells, original: false })
     });
+    // (a zero-copy twin, #458, is its value's buffer: never compared)
     if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
         && SEEN_AT.with(|m| m.borrow().contains_key(&x.addr()))
+        && !shared_value(x).is_some_and(|o| o.same_object(v))
     {
         SEEN_TWINS.with(|s| s.borrow_mut().push(x));
     }
@@ -1370,10 +1372,18 @@ unsafe fn flush_dirty_twins() {
 /// [`flush_twin_with`]).
 unsafe fn flush_dirty_twins_with(originals: &mut Originals) {
     ANY_TWIN_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
-    // flush_twin takes each off the set (and may flush others first)
-    while let Some(k) = TWIN_DIRTY.with(|d| d.borrow().iter().next().copied()) {
-        flush_twin_with(k, originals);
-        undirty(k);
+    // flush_twin takes each off the set (and may flush others first, or
+    // dirty others): rounds over a snapshot. Taking one key at a time with
+    // `iter().next()` rescanned the emptied buckets: O(n^2) in the twins.
+    loop {
+        let ks: Vec<usize> = TWIN_DIRTY.with(|d| d.borrow().iter().copied().collect());
+        if ks.is_empty() {
+            break;
+        }
+        for k in ks {
+            flush_twin_with(k, originals);
+            undirty(k);
+        }
     }
 }
 
@@ -4310,6 +4320,20 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // the cells of the others only through the setters, which report it.
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
     let mark = |x: &Sexp| {
+        // A zero-copy twin (#458) is its value's own buffer: what C wrote
+        // through a pointer is R's already, nothing to compare. (Marking
+        // them made each nested call cost every atomic twin converted for
+        // the running calls: nested_write_back's 50,000.)
+        // SAFETY: a twin's or an argument's object is live.
+        if unsafe { shared_value(*x) }.is_some_and(|o| {
+            twin(x).is_some_and(|k| {
+                TWINS
+                    .with(|t| t.borrow().get(&k).and_then(|tw| tw.value.strong().map(|v| o.same_object(v))))
+                    .unwrap_or(false)
+            })
+        }) {
+            return;
+        }
         if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
             if let Some(k) = twin(x) {
                 TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
