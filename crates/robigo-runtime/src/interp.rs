@@ -1792,34 +1792,39 @@ pub(crate) fn bind_positional(clo: &Closure, promargs: &[Arg]) -> Env {
 // R: eval.c:applyClosure — SETCAR(a, mkPROMISE(CAR(f), newrho))
 pub fn default_arg(clo: &Closure, k: usize, newenv: &Env) -> Value {
     let expr = &clo.formals[k].value;
-    match expr {
-        Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) => expr.clone(),
-        _ => {
-            let code = if crate::vm::enabled() {
-                clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
-            } else {
-                None
-            };
-            let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
-            p.default = true;
-            Value::Promise(Rc::new(p))
-        }
+    if is_constant_default(expr) {
+        return expr.clone();
     }
+    let code = if crate::vm::enabled() {
+        clo.defaults.get_or_init(|| crate::vm::default_codes(&clo.formals))[k].clone()
+    } else {
+        None
+    };
+    let mut p = Promise::with_code(expr.clone(), newenv.clone(), code);
+    p.default = true;
+    Value::Promise(Rc::new(p))
+}
+
+/// A formal default [`default_arg`] binds as itself, not as a promise.
+#[inline]
+fn is_constant_default(v: &Value) -> bool {
+    matches!(v, Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_))
 }
 
 /// `sym`'s binding in `env` as GNU R holds it, for code (C's findVarInFrame,
 /// a frame walk) that can tell an unforced promise from a value: a constant
 /// default ([`default_arg`]) becomes the unforced promise of itself that
 /// applyClosure made, in place, so later looks see the same object.
-pub fn materialize_default(env: &Env, sym: Sym, v: Value) -> Value {
-    if !matches!(v, Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_))
-        || env.binding_flags(sym).is_none_or(|f| f & BIND_MISSING_DEFAULT == 0)
-    {
+/// `v` and `flags` are the binding's value and flags.
+pub fn materialize_default(env: &Env, sym: Sym, v: Value, flags: u8) -> Value {
+    if flags & BIND_MISSING_DEFAULT == 0 || !is_constant_default(&v) {
         return v;
     }
     let mut p = Promise::new(v, env.clone());
     p.default = true;
     let p = Value::Promise(Rc::new(p));
-    env.set_local_flags(sym, p.clone(), BIND_MISSING_DEFAULT);
+    // GNU R's binding held the promise before any lockBinding: store it
+    // regardless of a lock, keeping the flags
+    env.force_set(sym, p.clone());
     p
 }
