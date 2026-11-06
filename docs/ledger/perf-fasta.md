@@ -232,3 +232,22 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   empty inputs, lists, encodings), recorded with GNU R 4.5.0, identical in
   all tiers and to main; the FastR corpus slices for cat/paste/format/print/
   sprintf/strsplit/writeLines/printing/connections: 591/592, 0 regressions.
+
+## 2026-11-04: integer `%%` in native loops without a helper call
+
+- Why: the Cranelift IR of fastaredux_naive's loop (dumped locally) showed
+  every integer `%%` (the generator's `%% 139968L`) as a call of `h_imod`,
+  and every integer index going through floating point.
+- What (`jit.rs`): `x %% y` on integers is `urem` when `x >= 0` and
+  `y > 0` (neither is NA then, the result is `h_imod`'s), the helper
+  otherwise, in a cold block. The integer index part was dropped from this
+  change: #331 (vector loops) makes the same one.
+- Rejected: shipping the index part here too (gate: `convolution` -13.9%,
+  `robigo/nbody` -13.5%, `vectorFor` -13.4%): a duplicate of #331.
+- Result: fastaredux on top of loop cells, body repeated 20 times:
+  2,158.5M -> 2,147.2M instructions (-0.6% of the steady state). Gate
+  against main: 0 faster, 0 slower (on main no fasta loop with `%%` is
+  native yet).
+- Verified: `tests/r/jit/loop-int-index-mod.R` (`%%` over every sign
+  combination, zero and NA, the fasta generator, and integer indices),
+  recorded with GNU R 4.5.0, identical in all tiers.

@@ -2583,7 +2583,25 @@ impl Gen<'_, '_> {
                 self.b.ins().select(na, nar, q)
             }
             ArithOp::Pow => self.call("robigo_ipow", &[x, y]),
-            ArithOp::Mod => self.call("robigo_imod", &[x, y]),
+            // `h_imod`: `x % y` when `x >= 0` and `y > 0` (neither is NA
+            // then), the helper otherwise.
+            ArithOp::Mod => {
+                let xp = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, 0);
+                let yp = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, y, 0);
+                let fast = self.b.ins().band(xp, yp);
+                let (fb, sb, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(done, types::I32);
+                self.b.ins().brif(fast, fb, &[], sb, &[]);
+                self.b.switch_to_block(fb);
+                let r = self.b.ins().urem(x, y);
+                self.b.ins().jump(done, &[r.into()]);
+                self.b.switch_to_block(sb);
+                self.b.set_cold_block(sb);
+                let r = self.call("robigo_imod", &[x, y]);
+                self.b.ins().jump(done, &[r.into()]);
+                self.b.switch_to_block(done);
+                self.b.block_params(done)[0]
+            }
             ArithOp::IDiv => self.call("robigo_iidiv", &[x, y]),
         }
     }
