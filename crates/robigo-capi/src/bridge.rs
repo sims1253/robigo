@@ -307,6 +307,17 @@ fn guarded(f: impl FnOnce() -> usize) -> usize {
     // R code may run: it must see what C wrote into twins
     // SAFETY: on the R thread, in a callback from C (no conversion running).
     unsafe { flush_twins() };
+    guarded_unflushed(f)
+}
+
+/// [`guarded`] for a callback that runs no R code, so nothing reads the
+/// twins C may have written: they are written back later, when R code
+/// runs or the native call returns. (write.table's C hands every cell to
+/// R_WriteConnection after reading its column through `INTEGER()`, which
+/// marks the column's twin as written: flushing there compared the whole
+/// column per cell.)
+#[inline(always)]
+fn guarded_unflushed(f: impl FnOnce() -> usize) -> usize {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(t) => t,
         Err(p) => {
@@ -856,6 +867,7 @@ unsafe fn twin_cells(x: Sexp) -> Vec<Sexp> {
 }
 
 unsafe fn watch_cells(k: usize, cells: &[Sexp]) {
+    forget_last_written();
     TWIN_CELLS.with(|m| {
         let mut m = m.borrow_mut();
         for c in cells {
@@ -871,6 +883,7 @@ unsafe fn watch_cells(k: usize, cells: &[Sexp]) {
 /// Forget `k` as an owner of `cells`. Only cells in `live` (reachable from a
 /// rooted twin now) are touched; the others may have been freed since.
 unsafe fn unwatch_cells(k: usize, cells: &[Sexp], live: &[Sexp]) {
+    forget_last_written();
     let live: HashSet<Sexp> = live.iter().copied().collect();
     TWIN_CELLS.with(|m| {
         let mut m = m.borrow_mut();
@@ -968,15 +981,13 @@ unsafe fn twin_items(mut p: Sexp, items: &[Arg], constant: bool) {
 /// Drop twin `k` (its value is referenced only by the table).
 unsafe fn drop_twin(k: usize) {
     let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
-    core().unhold(tw.hold);
-    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
     TWIN_HEAD.with(|h| {
         let mut h = h.borrow_mut();
         if h.get(&tw.x.addr()) == Some(&k) {
             h.remove(&tw.x.addr());
         }
     });
-    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    undirty(k);
     let live = twin_cells(tw.x);
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
@@ -997,7 +1008,7 @@ unsafe fn drop_lost_twin(k: usize) {
             h.remove(&tw.x.addr());
         }
     });
-    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    undirty(k);
     unwatch_cells(k, &tw.cells, &[]);
     forget_attrs(tw.x);
 }
@@ -1120,17 +1131,39 @@ unsafe fn escaped(out: Sexp, v: &Value, original: bool) {
 #[cold]
 #[inline(never)]
 pub(crate) unsafe fn twin_written(x: Sexp) {
-    let owners = TWIN_CELLS.with(|m| m.borrow().get(&x.addr()).cloned());
-    if let Some(owners) = owners {
-        TWIN_DIRTY.with(|d| d.borrow_mut().extend(owners));
-        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    // C reading columns through INTEGER() comes here for every cell: a
+    // cell marked lately has its twins in the dirty set still
+    if LAST_WRITTEN.iter().any(|c| c.load(std::sync::atomic::Ordering::Relaxed) == x.addr()) {
+        return;
     }
+    TWIN_CELLS.with(|m| {
+        let m = m.borrow();
+        let Some(owners) = m.get(&x.addr()) else { return };
+        TWIN_DIRTY.with(|d| {
+            let mut d = d.borrow_mut();
+            for &k in owners {
+                if !d.contains(&k) {
+                    d.insert(k);
+                }
+            }
+        });
+        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+        let i = LAST_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LAST_WRITTEN.len();
+        LAST_WRITTEN[i].store(x.addr(), std::sync::atomic::Ordering::Relaxed);
+    });
 }
 
 /// Write twin `k` back into its runtime value, in place, and watch what
 /// the write changed (new cells, new elements).
 unsafe fn flush_twin(k: usize) {
-    if !TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k)) {
+    flush_twin_with(k, &mut HashMap::default())
+}
+
+/// [`flush_twin`], converting what C stored with `originals` (core address
+/// -> the runtime value it came from: a native call's arguments and
+/// temporaries keep their identity).
+unsafe fn flush_twin_with(k: usize, originals: &mut HashMap<usize, Value>) {
+    if !undirty(k) {
         return;
     }
     let Some((x, value, readonly, constant, old)) =
@@ -1150,7 +1183,7 @@ unsafe fn flush_twin(k: usize) {
         drop_twin(k);
         return;
     }
-    write_back(&value, x, &mut HashMap::default());
+    write_back(&value, x, originals);
     let cells = twin_cells(x);
     let now: HashSet<Sexp> = cells.iter().copied().collect();
     let gone: Vec<Sexp> = old.iter().copied().filter(|c| !now.contains(c)).collect();
@@ -1162,6 +1195,24 @@ unsafe fn flush_twin(k: usize) {
         }
     });
     twin_children(x, &value, constant);
+}
+
+/// The cells `twin_written` marked lately, while every twin they are cells
+/// of is dirty (0: none); forgotten when a twin leaves the dirty set or the
+/// cells' owners change. (The R thread is the only one that touches them.)
+static LAST_WRITTEN: [std::sync::atomic::AtomicUsize; 16] = [const { std::sync::atomic::AtomicUsize::new(0) }; 16];
+static LAST_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn forget_last_written() {
+    for c in &LAST_WRITTEN {
+        c.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Take twin `k` off the dirty set; whether it was on it.
+fn undirty(k: usize) -> bool {
+    forget_last_written();
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k))
 }
 
 /// Some twin is dirty (one load on the host callbacks' path: the R thread
@@ -1180,11 +1231,17 @@ pub(crate) unsafe fn flush_twins() {
 #[cold]
 #[inline(never)]
 unsafe fn flush_dirty_twins() {
+    flush_dirty_twins_with(&mut HashMap::default())
+}
+
+/// [`flush_dirty_twins`] with a native call's `originals` (see
+/// [`flush_twin_with`]).
+unsafe fn flush_dirty_twins_with(originals: &mut HashMap<usize, Value>) {
     ANY_TWIN_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     // flush_twin takes each off the set (and may flush others first)
     while let Some(k) = TWIN_DIRTY.with(|d| d.borrow().iter().next().copied()) {
-        flush_twin(k);
-        TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+        flush_twin_with(k, originals);
+        undirty(k);
     }
 }
 
@@ -2392,7 +2449,8 @@ unsafe fn int_arg(x: Sexp) -> i32 {
 /// the caller jumps, as `host::op` does.
 #[inline(always)]
 pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
-    guarded(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
+    // (writing bytes to a connection runs no R code)
+    guarded_unflushed(|| match with_interp(|i| robigo_runtime::builtins::io::con_write_bytes(i, num, bytes)) {
         Ok(()) => 0,
         Err(f) => store_flow(f),
     })
@@ -3646,9 +3704,13 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
     for x in xs {
         mark(x);
     }
-    flush_twins();
     let seen: Vec<_> = seen.into_iter().filter(|(x, _)| twin(x).is_none()).collect();
     let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
+    // what C stored into a twin from the call's arguments and temporaries
+    // is theirs, not a copy (as main's write-back of an argument)
+    if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+        flush_dirty_twins_with(&mut originals);
+    }
     for (x, value) in &seen {
         if !xs.contains(x) {
             write_back(value, *x, &mut originals);
@@ -4005,6 +4067,11 @@ impl NativeBridge for Bridge {
     fn at_top_level(&self) {
         if RETIRED.with(|r| !r.borrow().is_empty()) {
             drop(RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut())));
+            // What C replaced can have twins (#278): the table's reference
+            // is then the last one, released here as the rest is.
+            // SAFETY: on the R thread at top level: no collection or
+            // collector borrow is active.
+            unsafe { sweep_twins() };
             // The bridge held the last reference of some of it.
             robigo_runtime::env::Env::mark_cycle_dirty();
         }
