@@ -4652,6 +4652,10 @@ impl NativeBridge for Bridge {
         unsafe { crate::custom_conn::conn_id_value(n) }
     }
 
+    fn in_native_call(&self) -> bool {
+        CALL_DEPTH.with(|d| d.get()) > 0
+    }
+
     fn gc(&self, interp: &mut Interp) {
         if !READY.with(|r| r.get()) {
             // No C objects or proxies exist yet: the runtime's own graph is

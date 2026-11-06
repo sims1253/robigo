@@ -73,6 +73,49 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
 
+/// The runtime's automatic collection measures the heap as mimalloc's
+/// committed bytes, from mimalloc's deferred-free hook (called every
+/// hundred allocations off its fast path), so allocation itself pays
+/// nothing (autogc.rs).
+fn heap_probe_install() {
+    // (mimalloc's extended API, which the static library exports; declared
+    // here rather than through libmimalloc-sys's `extended` feature)
+    type DeferredFree = extern "C" fn(bool, std::ffi::c_ulonglong, *mut std::ffi::c_void);
+    #[allow(unsafe_code)]
+    unsafe extern "C" {
+        fn mi_process_info(
+            elapsed_msecs: *mut usize,
+            user_msecs: *mut usize,
+            system_msecs: *mut usize,
+            current_rss: *mut usize,
+            peak_rss: *mut usize,
+            current_commit: *mut usize,
+            peak_commit: *mut usize,
+            page_faults: *mut usize,
+        );
+        fn mi_register_deferred_free(f: Option<DeferredFree>, arg: *mut std::ffi::c_void);
+    }
+    fn committed() -> usize {
+        let (mut e, mut u, mut s, mut rss, mut prss, mut commit, mut pcommit, mut pf) = (0, 0, 0, 0, 0, 0, 0, 0);
+        // SAFETY: mimalloc writes each out-parameter; all are valid.
+        #[allow(unsafe_code)]
+        unsafe {
+            mi_process_info(&mut e, &mut u, &mut s, &mut rss, &mut prss, &mut commit, &mut pcommit, &mut pf)
+        };
+        commit
+    }
+    extern "C" fn hook(_force: bool, _heartbeat: std::ffi::c_ulonglong, _arg: *mut std::ffi::c_void) {
+        robigo_runtime::autogc::heartbeat();
+    }
+    robigo_runtime::autogc::set_heap_probe(committed);
+    // SAFETY: the hook allocates nothing and only reads mimalloc's
+    // statistics and an atomic; mimalloc guards it against recursion.
+    #[allow(unsafe_code)]
+    unsafe {
+        mi_register_deferred_free(Some(hook), std::ptr::null_mut())
+    };
+}
+
 const USAGE: &str = "\
 usage: robigo [options] [FILE]
 
@@ -533,7 +576,11 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
-        if !robigo_runtime::startup::run(&mut interp, cl.startup) {
+        let started = robigo_runtime::startup::run(&mut interp, cl.startup);
+        // (once the session is up: the default packages are loaded)
+        heap_probe_install();
+        robigo_runtime::autogc::enable();
+        if !started {
             // R: a profile or .First error in an interactive session is
             // reported and the session still reaches the REPL; only the
             // non-interactive console halts.

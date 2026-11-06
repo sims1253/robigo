@@ -213,9 +213,17 @@ thread_local! {
 
 /// Discard implementation-only owners before testing weak-key reachability.
 pub fn clear_gc_caches() {
+    clear_gc_caches_running();
+    rjit::clear_gc_caches();
+}
+
+/// [`clear_gc_caches`] without the JIT's, for an automatic collection:
+/// those caches hold compiled loops' bodies and environments, and clearing
+/// them at every collection would recompile the hot loops after each one
+/// (what they hold waits for an explicit `gc()`).
+pub fn clear_gc_caches_running() {
     CACHE.with(|c| c.borrow_mut().clear());
     DEFAULTS.with(|c| c.borrow_mut().clear());
-    rjit::clear_gc_caches();
 }
 
 pub fn enabled() -> bool {
@@ -2812,6 +2820,10 @@ fn run_direct(
 ) -> RResult<Value> {
     let sysparent = interp.call_sysparent(env);
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
+    // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
+    if crate::autogc::due() {
+        crate::autogc::collect(interp);
+    }
     if clo.jit.inline_blocked() {
         jit_check(interp, clo);
     }
@@ -4352,6 +4364,13 @@ fn run_with(
     // Count iterations of the innermost loop; at the threshold, try native.
     macro_rules! back_edge {
         () => {{
+            // R: eval.c:BC_CHECK_SIGINT at GOTO/BRIFNOT/STEPFOR: a due
+            // collection, with this frame's assignments written out first
+            // (the finalizers it runs are R code)
+            if crate::autogc::due() {
+                flush!();
+                crate::autogc::collect(interp);
+            }
             if gs.jit_on {
                 if let Some(rec) = loops.last_mut() {
                     rec.count += 1;
