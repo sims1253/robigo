@@ -92,9 +92,7 @@ jobs:
         shard: [1, 2, 3, 4]
     # Above the suite's own budget of 30 minutes a package, plus setup.
     timeout-minutes: 240
-    # The container gets SYS_ADMIN and NET_ADMIN (below), so a pull
-    # request's code never runs on a self-hosted machine.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container:
       image: debian:trixie
       # Tests run in a network namespace of their own (unshare -n). The test
@@ -146,7 +144,7 @@ jobs:
     needs: [binary, unit]
     if: ${{ needs.binary.outputs.full == 'true' }}
     timeout-minutes: 240
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
@@ -179,7 +177,7 @@ jobs:
     # An incomplete run is recorded too: it sets no score, and says so.
     needs: [binary, measure, install]
     if: ${{ !cancelled() && needs.binary.outputs.full == 'true' && needs.measure.result != 'skipped' }}
-    runs-on: ${{ vars.ROBIGO_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 15
     concurrency:
