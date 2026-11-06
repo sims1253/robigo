@@ -409,10 +409,10 @@ pub fn arith_binary(interp: &mut Interp, call: &Value, op: ArithOp, x: Value, y:
     Ok(val)
 }
 
-/// `x op y` for attribute-free double vectors whose lengths are equal or
-/// one of them 0 or 1, as [`arith_binary`] computes it: nothing can warn
-/// or fail (`%%` can, and is not for here), so the VM calls this without
-/// the call machinery.
+/// `x op y` for plain double vectors (without attributes, or with only
+/// `dim`) whose lengths are equal or one of them 0 or 1, as
+/// [`arith_binary`] computes it: nothing can warn or fail (`%%` can, and
+/// is not for here), so the VM calls this without the call machinery.
 pub fn plain_real_arith(op: ArithOp, mut x: Value, mut y: Value) -> Value {
     debug_assert!(op != ArithOp::Mod);
     let (nx, ny) = (x.len(), y.len());
@@ -420,7 +420,16 @@ pub fn plain_real_arith(op: ArithOp, mut x: Value, mut y: Value) -> Value {
     // Arrays whose only attribute is `dim`, conformable or with a vector
     // of their length or a scalar (the VM checked): the result has the
     // extents (R: arithmetic.c:R_binary, `dims`).
-    let dims = x.attrs().or(y.attrs()).and_then(|a| a.get(s::DIM)).cloned();
+    // (As `binary_attrs`: each operand's own `dim`, and an array with a
+    // zero-length vector keeps none unless it has length 0 too.)
+    let xdim = x.attrs().and_then(|a| a.get(s::DIM)).cloned();
+    let ydim = y.attrs().and_then(|a| a.get(s::DIM)).cloned();
+    let dims = match (xdim, ydim) {
+        (Some(d), Some(_)) => Some(d),
+        (Some(d), None) if ny != 0 || nx == 0 => Some(d),
+        (None, Some(d)) if nx != 0 || ny == 0 => Some(d),
+        _ => None,
+    };
     if let Some(dims) = dims {
         let (a, b) = (real_view(&x), real_view(&y));
         let mut out = Value::reals(real_binary(op, &a, &b, n, false));
