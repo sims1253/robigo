@@ -2666,7 +2666,7 @@ impl Gen<'_, '_> {
     /// A 0-based index from `i` (`vm::scalar_index`), checked against the
     /// length; leaves at `pc` otherwise.
     fn index(&mut self, i: (CValue, JType), len: CValue, pc: usize) -> CValue {
-        if i.1 != JType::D {
+        if !matches!(i.1, JType::D | JType::N) {
             // An integer: `i - 1` as unsigned is below the length exactly
             // when `1 <= i <= len` (NA, 0 and negatives wrap around).
             let w = self.b.ins().sextend(types::I64, i.0);
