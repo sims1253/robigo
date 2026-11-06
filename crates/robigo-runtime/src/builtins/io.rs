@@ -109,6 +109,10 @@ pub enum ConnKind {
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
     /// smaller than `data.len()` (the allocation is over-sized).
     Raw { data: Vec<u8>, pos: usize, nbytes: usize },
+    /// `url()` over http/https/ftp(s) (R: libcurl.c's url-libcurl):
+    /// fetched into memory when opened, read from there. `headers` are
+    /// the request's extra headers (`url(headers = )`).
+    Url { data: Vec<u8>, cur: usize, headers: Vec<String> },
     /// `socketConnection()` and `socketAccept()`.
     Sock(super::sock::SockConn),
     /// `serverSocket()`: open while it exists, it only accepts.
@@ -377,6 +381,7 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
         ConnKind::File { fifo: true, .. } => fifo_open(i, n),
         ConnKind::File { fifo: false, .. } => file_open(i, n),
         ConnKind::Gz { .. } => gz_open(i, n),
+        ConnKind::Url { .. } => url_open(i, n),
         ConnKind::Sock(_) => super::sock::sock_open(i, n),
         // open from their creation on (text_open, raw_open)
         ConnKind::Terminal
@@ -588,6 +593,37 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     Ok(true)
 }
 
+/// Open a `url()` connection (R: libcurl.c:Curl_open). The resource is
+/// fetched whole here (`internet::url_fetch`) and read from memory.
+fn url_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let (url, mode, headers) = {
+        let con = i.conns.get(n)?;
+        let ConnKind::Url { headers, .. } = &con.kind else { unreachable!() };
+        (con.description.clone(), con.mode.clone(), headers.clone())
+    };
+    // R: write modes print this (REprintf, no newline) and fail the open
+    if !mode.starts_with('r') {
+        i.write_err("can only open URLs for reading");
+        return Ok(false);
+    }
+    let Some(data) = super::internet::url_fetch(i, &url, &headers)? else {
+        return Err(Flow::error(format!("cannot open the connection to '{url}'")));
+    };
+    let con = i.conns.get(n)?;
+    if let ConnKind::Url { data: d, cur, .. } = &mut con.kind {
+        *d = data;
+        *cur = 0;
+    }
+    con.isopen = true;
+    con.canwrite = mode.starts_with('w') || mode.starts_with('a');
+    con.canread = !con.canwrite;
+    // R: text unless the mode ends in "b"
+    con.text = !(mode.len() >= 2 && mode.ends_with('b'));
+    con.save = -1000;
+    set_iconv_check(i, n)?;
+    Ok(true)
+}
+
 /// `mkfifo(name, 00644)`, returning errno on failure (0 on success).
 fn c_open_mkfifo(name: &str) -> i32 {
     crate::sys::mkfifo(name)
@@ -786,7 +822,7 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
     }
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } => {
+        ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
             out.extend_from_slice(&data[*cur..]);
             *cur = data.len();
         }
@@ -903,6 +939,7 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<bool> {
         }
         // R: connections.c null_write
         ConnKind::Gz { writing: false, .. }
+        | ConnKind::Url { .. }
         | ConnKind::File { fp: None, .. }
         | ConnKind::Terminal
         | ConnKind::TextIn { .. }
@@ -984,6 +1021,10 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
             con.isopen = false;
         }
         ConnKind::TextIn { .. } | ConnKind::Terminal | ConnKind::Raw { .. } => {}
+        ConnKind::Url { data, .. } => {
+            data.clear();
+            con.isopen = false;
+        }
         ConnKind::Sock(s) => {
             s.close();
             con.isopen = false;
@@ -1034,6 +1075,7 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
             | ConnKind::TextIn { .. }
             | ConnKind::TextOut { .. }
             | ConnKind::Gz { .. }
+            | ConnKind::Url { .. }
             | ConnKind::Raw { .. }
             | ConnKind::Sock(_)
             | ConnKind::ServSock { .. },
@@ -1089,7 +1131,7 @@ fn file_fgetc(con: &mut Connection) -> i32 {
 /// `con->fgetc(con)` without CR mapping or pushback.
 fn con_fgetc_internal(con: &mut Connection) -> i32 {
     match &mut con.kind {
-        ConnKind::TextIn { data, cur } => {
+        ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
             if *cur >= data.len() {
                 EOF
             } else {
@@ -1250,6 +1292,7 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             raw_bytes = Some(text.as_bytes().to_vec());
             Ok(())
         }
+        ConnKind::Url { .. } => Err(Flow::error("cannot write to this connection")),
         ConnKind::ServSock { .. } => Err(Flow::error("cannot write to this connection")),
         ConnKind::File { fp, wbuf, fifo, last_was_write, .. } => match fp {
             Some(f) => {
@@ -1319,6 +1362,7 @@ fn con_fflush(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
+        | ConnKind::Url { .. }
         | ConnKind::Raw { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => {}
@@ -1832,8 +1876,97 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(v)
 }
 
-fn do_url(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error("robigo: url() connections are not implemented yet"))
+/// `.Internal(url(description, open, blocking, encoding, method, headers))`.
+// R: connections.c:do_url — `file://` descriptions open through the file
+// connection (class "file"); http/https/ftp(s) through libcurl (the
+// connection class "url-libcurl", the object class "url"), fetched into
+// memory when opened.
+fn do_url(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let url = match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => s.data[0].clone().unwrap().to_string(),
+        _ => return Err(Flow::error("invalid 'description' argument")),
+    };
+    let inet = ["http://", "ftp://", "https://", "ftps://"].iter().any(|p| url.starts_with(p));
+    let open = match arg(&args, 1) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("invalid 'open' argument")),
+    };
+    let block = as_logical(&arg(&args, 2));
+    if block == NA_LOGICAL {
+        return Err(Flow::error("invalid 'blocking' argument"));
+    }
+    let enc = match arg(&args, 3) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].as_deref().unwrap_or("NA").len() <= 100 => {
+            s.data[0].as_deref().unwrap_or("NA").to_string()
+        }
+        _ => return Err(Flow::error("invalid 'encoding' argument")),
+    };
+    let cmeth = crate::coerce::as_string(&arg(&args, 4)).as_deref().unwrap_or("NA").to_string();
+    let defmeth = cmeth == "default";
+    let meth = cmeth == "libcurl" || defmeth;
+    if cmeth == "wininet" {
+        return Err(Flow::error("method = \"wininet\" is only supported on Windows"));
+    }
+    // headers: NULL or list(<"name: value" lines>, <flat>)
+    let headers: Vec<String> = match arg(&args, 5) {
+        Value::List(l) => match l.data.first() {
+            Some(Value::Str(h)) => h.data.iter().map(|x| x.as_deref().unwrap_or("NA").to_string()).collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    if !meth {
+        if url.starts_with("ftps://") {
+            return Err(Flow::error("ftps:// URLs are not supported by this method"));
+        }
+        if url.starts_with("https://") {
+            return Err(Flow::error("https:// URLs are not supported by the \"internal\" method"));
+        }
+    }
+    if url.starts_with("file://") {
+        // newfile(url + 7, ...), which do_file does for a `file://`
+        // description; its arguments are (description, open, blocking,
+        // encoding, method, raw).
+        args.truncate(5);
+        while args.len() < 5 {
+            args.push(Arg::pos(Value::Null));
+        }
+        args.push(Arg::pos(Value::lgl_raw(0)));
+        return do_file(i, call, args, env);
+    }
+    if !inet {
+        return Err(Flow::error("URL scheme unsupported by this method"));
+    }
+    if !meth {
+        return Err(Flow::error("the 'internal' method of url() is defunct for http:// and ftp:// URLs"));
+    }
+    let ncon = next_connection(i)?;
+    let mode = if open.is_empty() { "r" } else { open.as_str() };
+    let kind = ConnKind::Url { data: Vec::new(), cur: 0, headers };
+    let mut con = Connection::new("url-libcurl", &url, mode, kind);
+    con.canwrite = false;
+    con.blocking = block != 0;
+    con.encname = enc.chars().take(99).collect();
+    if !con.encname.is_empty() && con.encname != "native.enc" {
+        con.canseek = false;
+    }
+    let mut v = install_connection(i, ncon, con);
+    v.set_attr_raw(s::CLASS, Value::strs_from(["url", "connection"]));
+    if !open.is_empty() {
+        // R: connections.c:checked_open
+        let ok = match con_open(i, ncon as i32) {
+            Ok(ok) => ok,
+            Err(e) => {
+                con_free(i, ncon as i32)?;
+                return Err(e);
+            }
+        };
+        if !ok {
+            con_free(i, ncon as i32)?;
+            return Err(Flow::error("cannot open the connection"));
+        }
+    }
+    Ok(v)
 }
 
 /// `fifo(description, open, blocking, encoding)`.
@@ -2708,8 +2841,10 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
     let r#where = pos_arg;
     let con = i.conns.get(n)?;
     match con.kind {
-        // R: connections.c null_seek — fifos cannot seek.
-        ConnKind::File { fifo: true, .. } => Err(Flow::error("'seek' not enabled for this connection")),
+        // R: connections.c null_seek — fifos and url-libcurl cannot seek.
+        ConnKind::File { fifo: true, .. } | ConnKind::Url { .. } => {
+            Err(Flow::error("'seek' not enabled for this connection"))
+        }
         ConnKind::File { fifo: false, .. } => file_seek(con, r#where, origin, rw),
         ConnKind::Raw { .. } => raw_seek(con, r#where, origin),
         ConnKind::Native { .. } => native_bridge()?.conn_seek(i, n, r#where, origin, rw),
@@ -2861,6 +2996,7 @@ fn con_truncate(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
+        | ConnKind::Url { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => return Err(Flow::error("truncation not enabled for this connection")),
         ConnKind::Native { .. } => return native_bridge()?.conn_truncate(i, n),
@@ -2950,6 +3086,13 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
             let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
             con.incomplete = incomplete;
             Ok(used + k)
+        }
+        // url-libcurl, fetched whole at open (url_open)
+        ConnKind::Url { data, cur, .. } => {
+            let take = (buf.len() - used).min(data.len().saturating_sub(*cur));
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
+            *cur += take;
+            Ok(used + take)
         }
         // R: connections.c null_read
         ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
