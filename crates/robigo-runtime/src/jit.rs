@@ -890,6 +890,12 @@ fn leave_reads(op: &Op, code: &Code) -> Option<Vec<Reg>> {
             leaf(b, &mut out);
         }
         Op::ForSeqLength { len, .. } => leaf(len, &mut out),
+        Op::ForSeqBy { k, .. } => {
+            for sa in &code.seq_by[*k as usize] {
+                leaf(&sa.a, &mut out);
+                leaf(&sa.b, &mut out);
+            }
+        }
         // (Structure: these stay in the VM with the whole loop.)
         Op::ForRange { .. } | Op::ForInit { .. } | Op::ForStep { .. } | Op::LoopEnter { .. } | Op::LoopExit => {
             return None;
@@ -1698,7 +1704,7 @@ fn vm_writes(op: &Op) -> Option<Reg> {
         | Op::RelL { dst, .. }
         | Op::Colon { dst, .. }
         | Op::Builtin1 { dst, .. } => Some(*dst),
-        Op::ForRange { seq, .. } | Op::ForSeqLength { seq, .. } => Some(*seq),
+        Op::ForRange { seq, .. } | Op::ForSeqLength { seq, .. } | Op::ForSeqBy { seq, .. } => Some(*seq),
         Op::ForInit { seq, .. } => Some(*seq + 1),
         _ => None,
     }

@@ -358,6 +358,16 @@ pub enum Op {
         seq: Reg,
         call: u32,
     },
+    /// Set up `seq` for a `for` loop over `seq(from, to, by)` (call
+    /// `consts[call]`, the arguments `seq_by[k]`): the integer range GNU R's
+    /// `seq.default` returns for integer arguments when it can be read off
+    /// without running code, else the value of the call (see
+    /// `vm::seq_by_range`).
+    ForSeqBy {
+        k: u32,
+        seq: Reg,
+        call: u32,
+    },
     /// Evaluate `consts[k]` with the AST interpreter.
     Eval {
         dst: Reg,
@@ -782,6 +792,18 @@ pub struct Code {
     pub switches: Vec<SwitchTable>,
     /// What `MakeClosure` ops make closures of.
     pub closures: Vec<ClosureTemplate>,
+    /// Arguments of `ForSeqBy` ops.
+    pub seq_by: Vec<[SeqArg; 3]>,
+}
+
+/// An argument of `seq(from, to, by)` in a `for` loop: a constant, a
+/// variable, or the arithmetic of two of them (`x_start - 1L`), computed by
+/// the VM only where that cannot be observed (no warning, no dispatch).
+#[derive(Clone, Copy, Debug)]
+pub struct SeqArg {
+    pub op: Option<ArithOp>,
+    pub a: Leaf,
+    pub b: Leaf,
 }
 
 impl Code {
@@ -841,6 +863,7 @@ impl Code {
             guard_memo,
             switches: c.switches,
             closures: c.closures,
+            seq_by: c.seq_by,
         }
     }
 }
@@ -894,6 +917,7 @@ struct Compiler {
     loops: Vec<Loop>,
     switches: Vec<SwitchTable>,
     closures: Vec<ClosureTemplate>,
+    seq_by: Vec<[SeqArg; 3]>,
     /// A promise thunk (an argument or default expression). GNU R never
     /// compiles promise expressions: forcing evaluates the AST, so a
     /// call runs the callee's closure — an inlined simple `.Internal`
@@ -1082,12 +1106,50 @@ fn seq_length_form(e: &Value) -> Option<(Sym, &Value)> {
         return None;
     }
     let v = &l.args[0].value;
-    let leaf = match v {
+    leaf_shape(v).then_some((h, v))
+}
+
+/// What [`Compiler::leaf`] converts: a variable, or a length-1 numeric
+/// constant without attributes. (The forms above match only these, so the
+/// compiler's conversions of their operands cannot fail.)
+fn leaf_shape(v: &Value) -> bool {
+    match v {
         Value::Sym(s) => is_var(*s),
         Value::Real(_) | Value::Int(_) => v.len() == 1 && v.attrs().is_none(),
         _ => false,
-    };
-    leaf.then_some((h, v))
+    }
+}
+
+/// `seq(from, to, by)` with three positional arguments, each a variable, a
+/// numeric constant, or `+`/`-` of two of those: `seq`, the arguments, and
+/// the operators they use.
+fn seq_by_form(e: &Value) -> Option<(Sym, [&Value; 3], Vec<Sym>)> {
+    let Value::Lang(l) = e else { return None };
+    let h = head(l)?;
+    if &*h.name() != "seq" || !plain_args(l, 3) {
+        return None;
+    }
+    let leaf = leaf_shape;
+    let mut ops = Vec::new();
+    for a in &l.args {
+        let v = &a.value;
+        if leaf(v) {
+            continue;
+        }
+        let Value::Lang(al) = v else { return None };
+        let op = head(al)?;
+        let unary_minus = &*op.name() == "-" && plain_args(al, 1);
+        if !matches!(&*op.name(), "+" | "-")
+            || !(plain_args(al, 2) || unary_minus)
+            || !al.args.iter().all(|x| leaf(&x.value))
+        {
+            return None;
+        }
+        if !ops.contains(&op) {
+            ops.push(op);
+        }
+    }
+    Some((h, [&l.args[0].value, &l.args[1].value, &l.args[2].value], ops))
 }
 
 fn arith_op(name: &str) -> Option<ArithOp> {
@@ -1795,7 +1857,40 @@ impl Compiler {
                 let g = self.guard(h, whole, dst);
                 let seq = self.reg();
                 let idx = self.reg();
-                let generic = if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
+                let generic = if let Some((rh, args, ops)) = seq_by_form(&l.args[1].value) {
+                    // (The guards evaluate the whole call when one fails.)
+                    let mut gs = vec![self.guard(rh, &l.args[1].value, seq)];
+                    for op in ops {
+                        gs.push(self.guard(op, &l.args[1].value, seq));
+                    }
+                    let mut sa = [SeqArg { op: None, a: Leaf::I(0), b: Leaf::I(0) }; 3];
+                    for (k, a) in args.iter().enumerate() {
+                        sa[k] = match a {
+                            // (`-x` as `0L - x`: the same for the integers
+                            // the VM takes, anything else makes the call.)
+                            Value::Lang(al) if al.args.len() == 1 => SeqArg {
+                                op: Some(ArithOp::Minus),
+                                a: Leaf::I(0),
+                                b: self.leaf(&al.args[0].value).unwrap(),
+                            },
+                            Value::Lang(al) => SeqArg {
+                                op: arith_op(&head(al).unwrap().name()),
+                                a: self.leaf(&al.args[0].value).unwrap(),
+                                b: self.leaf(&al.args[1].value).unwrap(),
+                            },
+                            v => SeqArg { op: None, a: self.leaf(v).unwrap(), b: Leaf::I(0) },
+                        };
+                    }
+                    let k = self.seq_by.len() as u32;
+                    self.seq_by.push(sa);
+                    let kseq = self.konst(l.args[1].value.clone());
+                    self.emit(Op::ForSeqBy { k, seq, call: kseq });
+                    let here = self.here();
+                    for g in gs {
+                        self.patch(g, here);
+                    }
+                    false
+                } else if let Some((rh, len)) = seq_length_form(&l.args[1].value) {
                     let gs = self.guard(rh, &l.args[1].value, seq);
                     let len = self.leaf(len).unwrap();
                     let kseq = self.konst(l.args[1].value.clone());

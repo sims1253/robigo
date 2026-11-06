@@ -137,3 +137,38 @@ Baseline (main 5ce8d760, `~/scoreboard.txt`), peak seconds:
   double on the other (`x <- if (c) 1L else 0.5`) has no single type at the
   join, so such loops stay in the VM; widening registers at joins would need
   conversions on the incoming edges.
+
+## 2026-11-04: `for (j in seq(from, to, by))` without calling `seq`
+
+- Why: pidigits' bigint multiplication loops over
+  `seq(y_start, 1L, -1L)` and `seq(x_start - 1L, 1L, -1L)` with a few limbs
+  each. GNU R's `Rprof` puts 45% of pidigits in `seq`/`seq.default`; in
+  robigo one such loop cost 8.5 us (GNU R 5.5 us), against 0.02 us for
+  `(x_start - 1L):1L`. robigo was 2x behind GNU R at peak.
+- What (`compile.rs`, `vm.rs`): `Op::ForSeqBy`, like `ForSeqLength`. The
+  arguments are leaves, `leaf +/- leaf` or `-leaf`, guarded with `seq`
+  and the operators. When they are integers (not NA, computed by
+  `arith_fast`, so no warning or dispatch can happen) and the call reaches
+  base's `seq.default` (no `seq.integer`/`seq.numeric` method), the loop gets
+  the range seq.default's `by` branch computes: `from` alone when
+  `from == to`, else `from + (0:n) * by` with `n = as.integer((to -
+  from)/by)`. Every other case (doubles, logicals, objects, a zero or
+  wrong-signed `by`, NA, overflow) evaluates the call, so the errors,
+  warnings and calls are GNU R's.
+- The method check costs three `lookup_method`s (~0.8 us, 10% of pidigits):
+  for function frames below the global environment, the part that depends
+  on the global environment and base is memoized by the search epoch (their
+  function bindings bump it); the frames and base's methods table are
+  checked each time.
+- Rejected: the arm inline in `run_with`. It cost `nbody_naive` +0.70% and
+  `superWhile` +0.57%, by codegen of the dispatch loop alone; with both
+  helpers `#[inline(never)]` they are +0.02% and +0.11%.
+- Result: pidigits peak 21.4 -> **7.1 ms** (GNU R 10.3, FastR 0.94).
+  Gate (full suite against main bf7332ee): 1 faster (`pidigits` -26.2%),
+  0 slower, worst +0.28% (`regexdna`).
+- Verified: `tests/r/basics/for-seq-by.R` (ranges, `from == to`, extreme
+  integers, doubles and logicals, every error of the `by` branch and its
+  call, arithmetic arguments, an overflowing argument warning once, methods
+  in the global environment, a frame, base's table and locally, rebound
+  `seq`, `-` and `+`, promises forced once and in order, objects),
+  recorded with GNU R 4.5.0, identical in all tiers.
