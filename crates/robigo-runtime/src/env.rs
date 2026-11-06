@@ -340,6 +340,47 @@ impl Env {
         trace::track(self);
     }
 
+    /// Free a finished call frame whose only references beyond its
+    /// `owners` come from its own bindings: an unforced promise (a
+    /// default argument's) or a closure made in the frame that nothing
+    /// but its binding holds, or the environment bound in itself. Nothing
+    /// outside reaches such a frame once its owners let go, so its
+    /// bindings are cleared (as `reachability` would, at the next
+    /// collection), breaking the cycle. Returns whether it did. Any
+    /// reference it cannot attribute keeps the frame as it is.
+    pub(crate) fn release_self_cycle(&self, owners: usize) -> bool {
+        let extra = Rc::strong_count(&self.0) - owners;
+        let entries = {
+            let Ok(mut frame) = self.0.frame().try_borrow_mut() else { return false };
+            if frame.search || frame.entries.len() < extra {
+                return false;
+            }
+            let mut inner = 0;
+            for b in &frame.entries {
+                inner += match &b.value {
+                    Value::Promise(p) => usize::from(
+                        Rc::strong_count(p) == 1
+                            && !p.forcing.get()
+                            && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(self)),
+                    ),
+                    Value::Closure(c) => usize::from(Rc::strong_count(c) == 1 && c.env.ptr_eq(self)),
+                    Value::Env(e) => usize::from(e.ptr_eq(self)),
+                    _ => 0,
+                };
+            }
+            if inner != extra {
+                return false;
+            }
+            let entries = std::mem::take(&mut frame.entries);
+            frame.clear();
+            entries
+        };
+        trace::cycle_changed();
+        // Dropped with the frame released: they only lead back here.
+        drop(entries);
+        true
+    }
+
     /// The collector's view of "a cycle may have become unreachable".
     pub fn cycle_epoch() -> u64 {
         trace::cycle_epoch()

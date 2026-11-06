@@ -72,6 +72,21 @@ conformance` (interpreter, VM and VM+JIT against each other).
   (`tests/r/basics/nested-inline-calls.R` pins the rebinding cases it
   can observe).
 
+## 2026-11-03: round 22, loops call other instances of an inlined closure
+
+- Why: the second scoreboard had `spectralnorm` 45x behind FastR at peak.
+  Its helper `eval_A` is defined inside the function, so each call makes a
+  new closure; the native loop checked `Rc::ptr_eq` with the instance it was
+  compiled against, and from the second call ran in the VM (4.3G of 9.9G
+  instructions in `inline_site_call`).
+- Change (`vm::jit_enter`): accept an instance with the same bytecode and
+  formals, settled as `inline_call` settles one, guards checked from its own
+  environment.
+- Result: `spectralnorm(207)` per call at peak 34 ms -> 4.5 ms (FastR 0.8:
+  the outer loop, `double(n)` and `%*%`, is still the VM's). The gate shows
+  nothing, as CI runs each benchmark once.
+- Verified: `tests/r/jit/loop-inline-instances.R`, all tiers.
+
 ## 2026-11-03: round 20, values of any type in native closures
 
 - Why: the sequential four-way scoreboard (`rivals.py`, repeated batches)

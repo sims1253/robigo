@@ -632,8 +632,24 @@ pub(crate) fn complex_binary(op: ArithOp, a: &[Complex], b: &[Complex], n: usize
         ArithOp::Minus if a.len() == n && b.len() == n => zip_unrolled(a, b, csub),
         ArithOp::Minus => real_kernel!(a, b, n, csub),
         // C99 `*`/`/` as compiled to libgcc's __muldc3/__divdc3.
+        #[cfg(target_arch = "x86_64")]
+        ArithOp::Times if a.len() == n && b.len() == n => {
+            super::complex::pair::zip(b, a, super::complex::pair::mul, cmul)
+        }
         ArithOp::Times => real_kernel!(a, b, n, |x: Complex, y: Complex| cmul(y, x)),
         ArithOp::Div => real_kernel!(a, b, n, cdiv),
+        #[cfg(target_arch = "x86_64")]
+        ArithOp::Pow
+            if a.len() == n
+                && n >= 2
+                && b.len() == 1
+                && b[0].im == 0.0
+                && b[0].re >= 2.0
+                && b[0].re <= 65536.0
+                && b[0].re == b[0].re.trunc() =>
+        {
+            super::complex::pair::cpow_n(a, b[0], b[0].re as i32)
+        }
         ArithOp::Pow => real_kernel!(a, b, n, cpow),
         ArithOp::Mod | ArithOp::IDiv if n == 0 => Vec::new(),
         ArithOp::Mod | ArithOp::IDiv => return Err(Flow::error("unimplemented complex operation")),

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": "Warning message:\nIn readLines(con) : incomplete final line found on 'one'\nWarning message:\nIn .Internal(gc(verbose, reset, full)) : closing unused connection 3 (four)\n"
+ },
+ "id": "custom_connection",
+ "out": {
+  "t": "[1] \"memconn\"    \"connection\"\ndescription       class        mode        text      opened    can read \n      \"one\"   \"memconn\"         \"r\"      \"text\"    \"closed\"       \"yes\" \n  can write \n       \"no\" \n[1] FALSE\n[1] TRUE TRUE TRUE\n[one open \"rt\"]\n[one close]\n[1] \"line one\" \"line two\" \"last\"    \n[1] FALSE\n[one open \"rb\"]\n[1] TRUE\n[1] 6c 69 6e 65\n[1] \" one\\n\"\n[1] TRUE\n [1] 6c 69 6e 65 20 74 77 6f 0a 6c 61 73 74\n[1] FALSE\n[one close]\n[one destroy]\n[1] FALSE\n[1] TRUE\n[1] TRUE\n[flip destroy]\n[bad open \"rb\"]\n[1] \"error reading from the connection\"\n[bad close]\n[bad destroy]\n[two open \"w\"]\n[1] \"memconn: can only read\"\n[1] FALSE\n[two destroy]\n[three open \"r\"]\n[1] TRUE\n[1] \"ab\" \"cd\" \"ef\"\n[three close]\n[three destroy]\n[four open \"r\"]\n[four close]\n[four destroy]\nafter gc 1\n[five destroy]\nafter gc 2\n[six open \"r\"]\nNULL\nafter gc 3\n[1] 0 1 2 3\n[1] \"six\"\n[six close]\n[six destroy]\n"
+ },
+ "sha": "8af7eb8302c054a3",
+ "status": 0
+}

@@ -262,21 +262,6 @@ int Rconn_printf(Rconnection con, const char *format, ...)
     return res;
 }
 
-/* robigo: dounzip.c's unz() connection (R_newunz) builds a C connection
-   with connections.c's init_con; robigo's connections live in the
-   runtime, which serves unz() itself */
-void Rf_init_con(Rconnection new, const char *description, int enc,
-		 const char * const mode)
-{
-    error("robigo: C-level connections (init_con) are not implemented yet");
-}
-
-int dummy_fgetc(Rconnection con)
-{
-    error("robigo: C-level connections (dummy_fgetc) are not implemented yet");
-    return -1;
-}
-
 /* R: unix/sys-std.c, the input handlers (the event loop sockets wait in)
    and the polled-events hook */
 #include <R_ext/eventloop.h>

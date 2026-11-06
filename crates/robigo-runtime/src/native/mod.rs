@@ -147,9 +147,65 @@ pub trait NativeBridge: Sync {
     fn owned_holder(&self, _interp: &mut Interp, value: Value) -> RResult<Value> {
         Ok(value)
     }
+    // A native connection's methods (`ConnKind::Native`: a connection C
+    // code made with R_new_custom_connection). Each copies the runtime's
+    // fields of connection `n` into its `struct Rconn`, calls the
+    // function pointer with no borrow of the table held, and copies the
+    // fields back, also when the call raised an error.
+    /// `con->open(con)`
+    fn conn_open(&self, _interp: &mut Interp, _n: i32) -> RResult<bool> {
+        Err(no_native_connections())
+    }
+    /// `con->close(con)`
+    fn conn_close(&self, _interp: &mut Interp, _n: i32) -> RResult<()> {
+        Err(no_native_connections())
+    }
+    /// `con->destroy(con)`, then the struct and its strings are freed.
+    fn conn_destroy(&self, _interp: &mut Interp, _n: i32) -> RResult<()> {
+        Err(no_native_connections())
+    }
+    /// `con->fgetc(con)`
+    fn conn_fgetc(&self, _interp: &mut Interp, _n: i32) -> RResult<i32> {
+        Err(no_native_connections())
+    }
+    /// `con->read(buf, 1, buf.len(), con)`
+    fn conn_read(&self, _interp: &mut Interp, _n: i32, _buf: &mut [u8]) -> RResult<usize> {
+        Err(no_native_connections())
+    }
+    /// `con->write(bytes, 1, bytes.len(), con)`
+    fn conn_write(&self, _interp: &mut Interp, _n: i32, _bytes: &[u8]) -> RResult<usize> {
+        Err(no_native_connections())
+    }
+    /// `con->vfprintf(con, "%s", text)`
+    fn conn_vfprintf(&self, _interp: &mut Interp, _n: i32, _text: &str) -> RResult<()> {
+        Err(no_native_connections())
+    }
+    /// `con->seek(con, where, origin, rw)`
+    fn conn_seek(&self, _interp: &mut Interp, _n: i32, _where: f64, _origin: i32, _rw: i32) -> RResult<f64> {
+        Err(no_native_connections())
+    }
+    /// `con->truncate(con)`
+    fn conn_truncate(&self, _interp: &mut Interp, _n: i32) -> RResult<()> {
+        Err(no_native_connections())
+    }
+    /// `con->fflush(con)`
+    fn conn_fflush(&self, _interp: &mut Interp, _n: i32) -> RResult<i32> {
+        Err(no_native_connections())
+    }
+    /// The `conn_id` external pointer of native connection `n` (its
+    /// `con->ex_ptr`), or NULL once that is gone.
+    fn conn_id_value(&self, _n: i32) -> Value {
+        Value::Null
+    }
     /// options() set an option the C code reads from a global
     /// (`OutDec`, `max.contour.segments`).
     fn option_set(&self, _name: &str, _value: &Value) {}
+    /// `R_interrupts_suspended`, which C code reads and sets too: the value
+    /// before, set to `set` if given; `None` when the bridge keeps no such
+    /// flag.
+    fn interrupts_suspended(&self, _set: Option<bool>) -> Option<bool> {
+        None
+    }
     /// `.External.graphics`/`.Call.graphics` before the call: the current
     /// device's display-list recording, which is turned off.
     fn graphics_begin(&self, _interp: &mut Interp) -> RResult<bool> {
@@ -166,6 +222,10 @@ pub trait NativeBridge: Sync {
     ) -> RResult<()> {
         Ok(())
     }
+}
+
+pub(crate) fn no_native_connections() -> Flow {
+    Flow::error("robigo: native connections need the native bridge")
 }
 
 static BRIDGE: std::sync::OnceLock<&'static dyn NativeBridge> = std::sync::OnceLock::new();

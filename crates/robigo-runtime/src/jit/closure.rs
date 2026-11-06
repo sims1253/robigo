@@ -50,7 +50,7 @@ use super::{
     new_module, reg_flow, successors, trace, types_ok, uses,
 };
 use crate::builtins::arith::{ArithOp, RelOp};
-use crate::compile::{Builtin1, Code, InlineArg, Leaf, NativeArg, Op, RangeKind, Reg, Slot};
+use crate::compile::{Builtin1, Code, InlineArg, Leaf, Math1, NativeArg, Op, RangeKind, Reg, Slot};
 use crate::env::{Env, bump_r_epoch, search_epoch};
 use crate::interp::Interp;
 use crate::sym::Sym;
@@ -121,6 +121,30 @@ impl NativeSlot {
         self.entry.borrow().as_ref().is_none_or(|e| !e.cells.is_empty())
     }
 
+    /// The slots of a caller with variables `syms` that a run may look up
+    /// (all it reads of its environments are its cells and the functions it
+    /// calls and guards), as bits (bit 63: any slot from 63 on), with the
+    /// entry they hold for (`site` caches them, by [`Entry::id`]); all if
+    /// not known yet.
+    #[inline]
+    pub fn reads_slots(&self, site: &std::cell::Cell<(usize, u64)>, syms: &[Sym]) -> u64 {
+        let entry = self.entry.borrow();
+        let Some(e) = entry.as_ref() else { return u64::MAX };
+        let key = e.id;
+        let (k, mask) = site.get();
+        if k == key {
+            return mask;
+        }
+        let mut mask = 0u64;
+        for (i, s) in syms.iter().enumerate() {
+            if e.frame_syms.binary_search(s).is_ok() {
+                mask |= 1 << i.min(63);
+            }
+        }
+        site.set((key, mask));
+        mask
+    }
+
     /// Note how an attempt went. A body that keeps failing to run (a type
     /// that does not fit, say) must not cost every call an attempt.
     #[inline(always)]
@@ -142,14 +166,26 @@ impl NativeSlot {
     }
 }
 
+thread_local! {
+    static NEXT_ENTRY: Cell<usize> = const { Cell::new(0) };
+}
+
 /// The root of a call tree.
 struct Entry {
+    /// Unique among entries (addresses are reused).
+    id: usize,
     funs: Vec<Fun>,
     /// Some body calls builtins (which print when traced).
     builtins: bool,
     /// Some cell is assigned with `<<-`.
     writes: bool,
     cells: Vec<CellDef>,
+    /// Every name the tree looks up in its environments: its cells, the
+    /// functions it calls and the functions it guards.
+    frame_syms: Vec<Sym>,
+    /// The root's formals (bit `k` for formal `k`) that enter as values of
+    /// any type, which native code may modify (see [`dyn_formals`]).
+    dyn_args: u32,
     /// Words of the context block.
     ctx_words: usize,
     /// What the tree was last found valid for.
@@ -188,6 +224,31 @@ struct Valid {
     /// All the closures are defined on the search path: the epoch is all
     /// that can change.
     search: bool,
+    /// Then their environments (search-path environments: they live on).
+    envs: SmallVec<[Env; 4]>,
+}
+
+/// The closures of a tree, or for a tree on the search path just their
+/// environments: what a run needs of them.
+enum Insts {
+    Closures(SmallVec<[Rc<Closure>; 4]>),
+    Envs(SmallVec<[Env; 4]>),
+}
+
+impl Insts {
+    fn len(&self) -> usize {
+        match self {
+            Insts::Closures(c) => c.len(),
+            Insts::Envs(e) => e.len(),
+        }
+    }
+
+    fn env(&self, k: usize) -> &Env {
+        match self {
+            Insts::Closures(c) => &c[k].env,
+            Insts::Envs(e) => &e[k],
+        }
+    }
 }
 
 /// Changes whenever a function binding changes between `env` and the
@@ -228,6 +289,8 @@ struct Fun {
     guards: Vec<Sym>,
     /// Variables of enclosing environments: slot to [`Entry::cells`] index.
     cells: HashMap<Slot, usize>,
+    /// By slot: local variables only assigned (see [`Inl::is_dead`]).
+    dead: Vec<bool>,
 }
 
 /// A variable of an enclosing environment.
@@ -296,6 +359,11 @@ pub(super) struct Whole<'a> {
     /// The frame's `RVal` slots (values of any type), and how many.
     base: Option<CValue>,
     nframe: usize,
+    /// The temporary slots used, and the constants giving the frame's size
+    /// to `robigo_d_init`/`robigo_d_release`: set once code generation knows
+    /// how many temporaries there are (a frame often needs none).
+    tmp_used: usize,
+    frame_sizes: Vec<cranelift_codegen::ir::Inst>,
     /// Offsets in the frame: registers, the temporary slots.
     dyn_regs: HashMap<Reg, i32>,
     tmp: i32,
@@ -448,6 +516,7 @@ fn native_op(op: &Op) -> bool {
         | Op::Subset { .. }
         | Op::SubsetObj { .. }
         | Op::Builtin1 { .. }
+        | Op::SetIndex { .. }
         | Op::CallBuiltin { .. } => true,
         Op::ForRange { kind, .. } => *kind != RangeKind::SeqAlong,
         _ => false,
@@ -544,6 +613,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             args,
                             clo: callee,
                             callee: k,
+                            arg_syms: Vec::new(),
                         },
                     );
                 }
@@ -562,6 +632,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
         let inl = Inl::new(&calls);
         let mut assigned: Vec<Sym> = formals.clone();
         let mut read: Vec<Slot> = Vec::new();
+        let mut set: Vec<Slot> = Vec::new();
         let mut supers: Vec<(Sym, Slot)> = Vec::new();
         for op in &code.ops {
             if !native_op(op) {
@@ -569,7 +640,14 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             }
             let u = uses(op, &inl);
             assigned.extend(u.wslots.iter().map(|s| code.vars[*s as usize]));
+            // (`x[i] <- v` assigns a local `x`, even where `x` was not one.)
+            if let Op::SetIndex { x, .. } = op {
+                assigned.push(*x);
+            }
             read.extend(u.rslots);
+            if let Op::SetVar { slot, .. } = op {
+                set.push(*slot);
+            }
             if let Op::SuperSet { sym, slot, .. } = op {
                 supers.push((*sym, *slot));
             }
@@ -589,11 +667,20 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             cells[k].written |= written;
             k
         };
-        for s in read {
+        for &s in &read {
             let sym = code.vars[s as usize];
             if !assigned.contains(&sym) {
                 fcells.insert(s, cell_for(sym, false));
             }
+        }
+        // A local nothing reads: native code does not assign it (nothing
+        // can see the frame of a closure run natively, and a run that leaves
+        // is replayed by the VM). Its type may change, as in `x <- 0;
+        // for (i in 1:n) x <- i`.
+        let mut dead = vec![false; code.vars.len()];
+        for s in &set {
+            let sym = code.vars[*s as usize];
+            dead[*s as usize] = !read.contains(s) && !formals.contains(&sym) && !supers.iter().any(|(y, _)| *y == sym);
         }
         for (sym, slot) in supers {
             // (`<<-` of a name that is also a local stays in the VM.)
@@ -609,6 +696,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
             sites,
             guards,
             cells: fcells,
+            dead,
         });
     }
     // Arguments are read at the call. That is only unobservable if nothing
@@ -655,6 +743,50 @@ fn native_call_arg(a: &NativeArg, guards: &mut Vec<Sym>) -> CallArg {
             CallArg::Nested(Rc::new((n.op, a, b)))
         }
     }
+}
+
+/// By closure of the tree and formal: whether the formal must be a value of
+/// any type, which native code may modify: its elements are assigned
+/// (`x[i] <- v`), or it is passed on to such a formal.
+fn dyn_formals(funs: &[Fun]) -> Vec<Vec<bool>> {
+    let mut need: Vec<Vec<bool>> = funs
+        .iter()
+        .map(|f| {
+            let set = |s: Slot| f.code.ops.iter().any(|o| matches!(o, Op::SetIndex { slot, .. } if *slot == s));
+            f.formal_slots.iter().map(|s| s.is_some_and(set)).collect()
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for (fi, f) in funs.iter().enumerate() {
+            for ic in f.calls.values() {
+                for (k, a) in ic.args.iter().enumerate() {
+                    let CallArg::Leaf(Leaf::Var(_, s)) = a else { continue };
+                    if !need[ic.callee].get(k).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(p) = f.formal_slots.iter().position(|fs| *fs == Some(*s))
+                        && !need[fi][p]
+                    {
+                        need[fi][p] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return need;
+        }
+    }
+}
+
+/// The variables `op` assigns, also by modifying them (`x[i] <- v`).
+fn assigned_slots(op: &Op, inl: &Inl) -> Vec<Slot> {
+    let mut w = uses(op, inl).wslots;
+    if let Op::SetIndex { slot, .. } = op {
+        w.push(*slot);
+    }
+    w
 }
 
 fn written_leaf(l: &Leaf, cells: &[CellDef]) -> bool {
@@ -751,6 +883,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
     let code = &*fun.code;
     let mut inl = Inl::new(&fun.calls);
     inl.specs = Some(specs);
+    inl.dead = &fun.dead;
     let mut slot_ty: HashMap<Slot, JType> = HashMap::new();
     for (k, s) in fun.formal_slots.iter().enumerate() {
         if let Some(s) = s {
@@ -997,6 +1130,7 @@ fn define(
     let mut fbc = FunctionBuilderContext::new();
     let mut inl = Inl::new(&fun.calls);
     inl.specs = Some(specs);
+    inl.dead = &fun.dead;
     set_written(fun, cells, cell_ty, specs);
     let empty_regs = HashMap::new();
     {
@@ -1022,6 +1156,7 @@ fn define(
             flag: HashMap::new(),
             reg: HashMap::new(),
             range: HashMap::new(),
+            lp: Default::default(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -1145,7 +1280,7 @@ fn define(
             || !dyn_formals.is_empty()
             || !dyn_cells.is_empty()
             || result == JType::Dyn;
-        let assigned: Vec<Slot> = code.ops.iter().flat_map(|op| uses(op, &inl).wslots).collect();
+        let assigned: Vec<Slot> = code.ops.iter().flat_map(|op| assigned_slots(op, &inl)).collect();
         let mut nframe = 0usize;
         let mut dyn_regs = HashMap::new();
         for r in &dyn_reg_list {
@@ -1178,12 +1313,32 @@ fn define(
         if uses_dyn {
             nframe += TMP;
         }
+        let mut frame_sizes = Vec::new();
         let (base, argv) = if uses_dyn {
             let ss =
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (nframe * RVAL) as u32, 3));
             let base = b.ins().stack_addr(ptr, ss, 0);
             let n = b.ins().iconst(types::I64, nframe as i64);
+            frame_sizes.push(b.func.dfg.value_def(n).unwrap_inst());
+            // Scalars defined so far (arguments, cells) go around the call
+            // through memory, explicitly: live across it, they would be
+            // spilled, and the register allocator then stores and reloads
+            // them in every iteration of the loops that read them.
+            let mut around: Vec<(Variable, Type)> =
+                v.slot.values().filter(|(_, t)| t.is_scalar()).map(|(var, t)| (*var, cl_type(*t))).collect();
+            around.sort_by_key(|(var, _)| var.as_u32());
+            let keep = (!around.is_empty()).then(|| {
+                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (around.len() * 8) as u32, 3))
+            });
+            for (k, (var, _)) in around.iter().enumerate() {
+                let x = b.use_var(*var);
+                b.ins().stack_store(ptr, x, keep.unwrap(), (k * 8) as i32);
+            }
             b.ins().call(helpers["robigo_d_init"], &[base, n]);
+            for (k, (var, ty)) in around.iter().enumerate() {
+                let x = b.ins().stack_load(ptr, *ty, keep.unwrap(), (k * 8) as i32);
+                b.def_var(*var, x);
+            }
             let sa =
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (MAX_ARGS * 8) as u32, 3));
             (Some(base), Some(b.ins().stack_addr(ptr, sa, 0)))
@@ -1223,6 +1378,7 @@ fn define(
             deopt: HashMap::new(),
             exit,
             helpers,
+            lp: None,
             whole: Some(Whole {
                 bail,
                 rem,
@@ -1232,6 +1388,8 @@ fn define(
                 views,
                 base,
                 nframe,
+                tmp_used: 0,
+                frame_sizes,
                 dyn_regs,
                 tmp,
                 dyn_slots,
@@ -1241,15 +1399,35 @@ fn define(
                 ret,
             }),
         };
+        let targets = super::jump_targets(&code.ops, 0, len);
+        let mut fused = false;
         for pc in 0..len {
+            if std::mem::take(&mut fused) {
+                continue;
+            }
             let blk = g.block(pc);
             g.b.switch_to_block(blk);
             if g.states[pc].is_none() || fl.bail[pc] {
                 g.b.ins().jump(bail, &[]);
                 continue;
             }
+            if let Op::LoopEnter { brk, .. } = code.ops[pc]
+                && let Some(ls) = loop_summary(code, fl, &inl, &g.v, pc, brk as usize)
+            {
+                g.summarized_loop(&ls, brk as usize);
+            }
             g.cur = pc;
             g.cur_defs = defs(&code.ops[pc], g.state(pc), &fl.slot_ty, &inl);
+            if pc + 1 < len
+                && !fl.bail[pc + 1]
+                && super::fusable(&code.ops, pc, len, &targets, |q| g.states[q].as_ref(), &fl.slot_ty)
+            {
+                let (Op::Rel { dst, .. } | Op::RelL { dst, .. }) = code.ops[pc] else { unreachable!() };
+                let live = super::live_after(&code.ops, pc + 1, len, dst, dst == code.result, &inl);
+                g.compare_branch(pc, &code.ops[pc], &code.ops[pc + 1], live);
+                fused = true;
+                continue;
+            }
             g.op(pc, &code.ops[pc]);
         }
         let last = g.block(len);
@@ -1269,14 +1447,30 @@ fn define(
         let z = zero(&mut g.b, result);
         let failed = g.i32c(1);
         g.b.ins().return_(&[z, failed]);
+        // The frame ends with the temporaries actually used.
+        let w = g.whole.as_ref().unwrap();
+        if w.base.is_some() {
+            let size = (w.nframe - TMP + w.tmp_used) as i64;
+            for inst in w.frame_sizes.clone() {
+                g.b.func.replace(inst).iconst(types::I64, size);
+            }
+        }
         g.b.seal_all_blocks();
         g.b.finalize(tcfg);
+    }
+    let dump = std::env::var_os("ROBIGO_JIT_DUMP").is_some();
+    if dump {
+        eprintln!("{}", ctx.func.display());
+        ctx.set_disasm(true);
     }
     if let Err(e) = module.define_function(id, &mut ctx) {
         if trace() {
             eprintln!("jit: closure: codegen failed: {:?}", e);
         }
         return Err(Reject::Never);
+    }
+    if dump && let Some(cc) = ctx.compiled_code() {
+        eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
     module.clear_context(&mut ctx);
     Ok(())
@@ -1420,11 +1614,25 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
     let builtins =
         funs.iter().any(|f| f.code.ops.iter().any(|o| matches!(o, Op::CallBuiltin { .. } | Op::Builtin1 { .. })));
     let writes = cells.iter().any(|c| c.written);
+    let mut frame_syms: Vec<Sym> = cells.iter().map(|c| c.sym).collect();
+    for f in &funs {
+        frame_syms.extend(f.sites.iter().map(|(_, s)| *s));
+        frame_syms.extend(f.guards.iter().copied());
+    }
+    frame_syms.sort();
+    frame_syms.dedup();
+    let dyn_args = dyn_formals(&funs)[0].iter().enumerate().fold(0u32, |m, (k, d)| m | ((*d as u32) << k));
     let e = Rc::new(Entry {
+        id: NEXT_ENTRY.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        }),
         funs,
         builtins,
         writes,
         cells,
+        frame_syms,
+        dyn_args,
         ctx_words,
         valid: RefCell::new(None),
         runs: Cell::new(0),
@@ -1531,18 +1739,21 @@ fn run(
     // The closures, cheaply if nothing changed since the last run.
     let epoch = search_epoch();
     let key = Rc::as_ptr(clo) as usize;
-    let memo: Option<SmallVec<[Rc<Closure>; 4]>> = e.valid.borrow().as_ref().and_then(|v| {
+    // (The closures' environments are what is needed.)
+    let memo: Option<Insts> = e.valid.borrow().as_ref().and_then(|v| {
         if v.root != key || v.epoch != epoch {
             return None;
         }
-        // (Without cells nothing below needs the closures themselves.)
-        if v.search && e.cells.is_empty() {
-            return Some(SmallVec::new());
+        // On the search path the epoch says it all: the closures are the
+        // same (the weak references keep their addresses from being
+        // reused, so the root is the same closure).
+        if v.search {
+            return Some(Insts::Envs(v.envs.clone()));
         }
         let i: Option<SmallVec<[Rc<Closure>; 4]>> = v.insts.iter().map(|w| w.upgrade()).collect();
         let i = i?;
         let versions = i.iter().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(chain_version(&c.env)));
-        (versions == v.versions).then_some(i)
+        (versions == v.versions).then_some(Insts::Closures(i))
     });
     let insts = match memo {
         Some(i) => i,
@@ -1551,8 +1762,10 @@ fn run(
             let versions = i.iter().fold(0u32, |a, c| a.wrapping_mul(31).wrapping_add(chain_version(&c.env)));
             let insts = i.iter().map(Rc::downgrade).collect();
             let search = i.iter().all(|c| c.env.is_search());
-            *e.valid.borrow_mut() = Some(Valid { root: key, epoch, versions, insts, search });
-            i.into_iter().collect()
+            let kept =
+                if search && !e.cells.is_empty() { i.iter().map(|c| c.env.clone()).collect() } else { SmallVec::new() };
+            *e.valid.borrow_mut() = Some(Valid { root: key, epoch, versions, insts, search, envs: kept });
+            Insts::Closures(i.into_iter().collect())
         }
     };
     // The arguments and cells, and their types.
@@ -1565,7 +1778,7 @@ fn run(
     let mut tys_buf = [JType::D; MAX_ARGS];
     let tys = &mut tys_buf[..args.len()];
     for (k, v) in args.iter().enumerate() {
-        let t = jit_type(v).unwrap_or(JType::Dyn);
+        let t = if e.dyn_args & (1 << k) != 0 { JType::Dyn } else { jit_type(v).unwrap_or(JType::Dyn) };
         tys[k] = t;
         if t == JType::Dyn {
             // (`args` outlives the run.)
@@ -1602,12 +1815,20 @@ fn run(
         interp.visible = ctx[0] != 0;
         return Some(if l.result == JType::Dyn { out_any } else { from_bits(l.result, out) });
     }
-    let mut ctx: SmallVec<[u64; 24]> = SmallVec::from_elem(0, e.ctx_words);
+    // (On the stack when it fits: `SmallVec::from_elem` costs a call.)
+    let mut ctx_stack = [0u64; 24];
+    let mut ctx_heap: Vec<u64>;
+    let ctx: &mut [u64] = if e.ctx_words <= ctx_stack.len() {
+        &mut ctx_stack[..e.ctx_words]
+    } else {
+        ctx_heap = vec![0; e.ctx_words];
+        &mut ctx_heap
+    };
     ctx[0] = 1;
     // (Pending assignments of the caller's frame matter only if a cell may be
     // one of its variables.)
     if let Some(caller) = pending
-        && insts.iter().any(|c| on_chain(&c.env, caller))
+        && (0..insts.len()).any(|k| on_chain(insts.env(k), caller))
     {
         *flush = true;
         return None;
@@ -1620,9 +1841,9 @@ fn run(
         held.reserve(e.cells.len());
     }
     for c in &e.cells {
-        let env = &insts[c.users[0]].env;
+        let env = insts.env(c.users[0]);
         for u in &c.users[1..] {
-            if !owner(env, c.sym)?.ptr_eq(&owner(&insts[*u].env, c.sym)?) {
+            if !owner(env, c.sym)?.ptr_eq(&owner(insts.env(*u), c.sym)?) {
                 return None;
             }
         }
@@ -1709,7 +1930,7 @@ fn run(
     let mut wrote = false;
     for (c, t) in e.cells.iter().zip(&cell_ty) {
         if c.written && ctx[c.off + 1] != 0 {
-            let o = owner(&insts[c.users[0]].env, c.sym)?;
+            let o = owner(insts.env(c.users[0]), c.sym)?;
             set_plain_in_place(&o, c.sym, &mut from_bits(*t, ctx[c.off]), false);
             wrote = true;
         }
@@ -1752,6 +1973,8 @@ pub(crate) fn depth_budget(limit_left: usize, stack_left: usize) -> i32 {
 const ARITH: [ArithOp; 7] =
     [ArithOp::Plus, ArithOp::Minus, ArithOp::Times, ArithOp::Div, ArithOp::Pow, ArithOp::Mod, ArithOp::IDiv];
 const REL: [RelOp; 6] = [RelOp::Eq, RelOp::Ne, RelOp::Lt, RelOp::Le, RelOp::Gt, RelOp::Ge];
+const MATH1: [Math1; 8] =
+    [Math1::Sqrt, Math1::Abs, Math1::Exp, Math1::Floor, Math1::Ceiling, Math1::Sin, Math1::Cos, Math1::Tan];
 const BUILTIN1: [Builtin1; 11] = [
     Builtin1::Length,
     Builtin1::IsNull,
@@ -1888,6 +2111,34 @@ unsafe extern "C" fn h_d_builtin1(f: i32, x: *const RVal, dst: *mut RVal) -> i32
         None => 1,
     }
 }
+unsafe extern "C" fn h_d_math1(f: i32, x: *const RVal, dst: *mut RVal) -> i32 {
+    // SAFETY: see above.
+    match crate::vm::scalar(unsafe { &*x }).and_then(|x| crate::vm::math1_fast(MATH1[f as usize], x)) {
+        Some(v) => {
+            // SAFETY: see above.
+            unsafe { *dst = v };
+            0
+        }
+        None => 1,
+    }
+}
+/// `x[i] <- v` / `x[[i]] <- v` of a variable `x` of the frame, by the VM's
+/// fast path (`vm::set_element`: copies a shared vector first); 1 where the
+/// VM would make the call.
+unsafe extern "C" fn h_d_set_index(x: *mut RVal, i: f64, v: *const RVal, two: i32) -> i32 {
+    // NaN fails both comparisons. R: subassign.c (as `vm::scalar_index`).
+    if !(1.0..4503599627370496.0).contains(&i) {
+        return 1;
+    }
+    // SAFETY: see above; `x` is a slot of this frame, not the caller's (an
+    // assigned formal has its own copy).
+    let (x, v) = unsafe { (&mut *x, &*v) };
+    match x {
+        // (A copy of the value, which `set_element` may take: the slot keeps its own.)
+        RVal::V(xv) => (!crate::vm::set_element(xv, (i.trunc() - 1.0) as usize, &mut v.clone(), two != 0, true)) as i32,
+        _ => 1,
+    }
+}
 /// `list(...)` of untagged arguments: takes them, as the VM does.
 unsafe extern "C" fn h_d_list(argv: *const *mut RVal, n: i64, dst: *mut RVal) {
     let mut v = Vec::with_capacity(n as usize);
@@ -1956,6 +2207,7 @@ unsafe extern "C" fn h_d_c(argv: *const *mut RVal, n: i64, dst: *mut RVal) -> i3
 
 /// Native-code helpers for values of any type, as `crate::jit::HELPERS`.
 pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
+    ("robigo_summary", h_summary as *const u8, &[types::I64, types::I64, types::I64], Some(types::I32)),
     ("robigo_d_init", h_d_init as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_release", h_d_release as *const u8, &[types::I64, types::I64], None),
     ("robigo_d_copy", h_d_copy as *const u8, &[types::I64, types::I64], None),
@@ -1974,6 +2226,13 @@ pub(super) const DYN_HELPERS: &[(&str, *const u8, &[Type], Option<Type>)] = &[
     ("robigo_d_builtin1", h_d_builtin1 as *const u8, &[types::I32, types::I64, types::I64], Some(types::I32)),
     ("robigo_d_list", h_d_list as *const u8, &[types::I64, types::I64, types::I64], None),
     ("robigo_d_c", h_d_c as *const u8, &[types::I64, types::I64, types::I64], Some(types::I32)),
+    ("robigo_d_math1", h_d_math1 as *const u8, &[types::I32, types::I64, types::I64], Some(types::I32)),
+    (
+        "robigo_d_set_index",
+        h_d_set_index as *const u8,
+        &[types::I64, types::F64, types::I64, types::I32],
+        Some(types::I32),
+    ),
 ];
 
 /// Register types of the ops that compute with values of any type.
@@ -2007,7 +2266,7 @@ pub(super) fn dyn_defs(
         {
             d(dst)
         }
-        Op::Builtin1 { dst, a, .. } if rt(a) == Some(JType::Dyn) => d(dst),
+        Op::Builtin1 { dst, a, .. } | Op::Math1 { dst, a, .. } if rt(a) == Some(JType::Dyn) => d(dst),
         _ => None,
     }
 }
@@ -2027,7 +2286,8 @@ impl Gen<'_, '_> {
     }
 
     fn tmp(&mut self, k: usize) -> CValue {
-        let w = self.whole.as_ref().unwrap();
+        let w = self.whole.as_mut().unwrap();
+        w.tmp_used = w.tmp_used.max(k + 1);
         let (base, off) = (w.base.unwrap(), w.tmp + (k * RVAL) as i32);
         self.b.ins().iadd_imm_s(base, off as i64)
     }
@@ -2053,6 +2313,8 @@ impl Gen<'_, '_> {
         let w = self.whole.as_ref().unwrap();
         if let Some(base) = w.base {
             let n = self.b.ins().iconst(types::I64, w.nframe as i64);
+            let inst = self.b.func.dfg.value_def(n).unwrap_inst();
+            self.whole.as_mut().unwrap().frame_sizes.push(inst);
             self.hcall("robigo_d_release", &[base, n]);
         }
     }
@@ -2194,6 +2456,23 @@ impl Gen<'_, '_> {
                 let r = self.hcall("robigo_d_builtin1", &[fi, x, d]).unwrap();
                 self.failed(r, pc);
             }
+            Op::Math1 { f, dst, a, .. } if rt(a) == dy => {
+                let (x, _) = self.reg(*a);
+                let d = self.dyn_reg(*dst);
+                let fi = self.i32c(MATH1.iter().position(|v| v == f).unwrap() as i64);
+                let r = self.hcall("robigo_d_math1", &[fi, x, d]).unwrap();
+                self.failed(r, pc);
+            }
+            Op::SetIndex { val, slot, i, two, .. } => {
+                let v = self.reg(*val);
+                let pv = self.as_slot(v, 0);
+                let iv = self.leaf(i);
+                let f = self.to_f64(iv.0, iv.1);
+                let (x, _) = self.var(*slot);
+                let two = self.i32c(*two as i64);
+                let r = self.hcall("robigo_d_set_index", &[x, f, pv, two]).unwrap();
+                self.failed(r, pc);
+            }
             Op::CallBuiltin { dst, f, args, .. } => {
                 let code = self.inl.specs.and_then(|s| s.code()).unwrap();
                 let is_list = matches!(&code.consts[*f as usize], Value::Builtin(b) if b.name == "list");
@@ -2230,5 +2509,167 @@ impl Gen<'_, '_> {
         let o = self.i32c(k as i64);
         let r = self.hcall(if arith { "robigo_d_arith" } else { "robigo_d_rel" }, &[o, pa, pb, d]).unwrap();
         self.failed(r, pc);
+    }
+}
+
+/// A loop of a closure compiled whole that has a closed form
+/// ([`super::summary`]): its variables and registers, in the order of the
+/// value buffer the summary runs on.
+pub(super) struct LoopSum {
+    sum: &'static super::summary::Summary,
+    /// (slot, type, assigned by the loop)
+    slots: Vec<(Slot, JType, bool)>,
+    /// (register, type): a `for` sequence and its index.
+    regs: Vec<(Reg, JType)>,
+    nvals: usize,
+}
+
+/// The closed form of the loop at `pc` (a `LoopEnter`, `brk` its
+/// `LoopExit`), if all it uses are scalar locals.
+fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usize) -> Option<LoopSum> {
+    if !super::summaries() || brk > code.ops.len() || pc + 1 >= brk {
+        return None;
+    }
+    let mut list: Vec<Slot> = Vec::new();
+    let mut wr: Vec<Slot> = Vec::new();
+    for q in pc + 1..brk {
+        let op = &code.ops[q];
+        if matches!(op, Op::LoopEnter { .. } | Op::Call { .. }) || fl.bail[q] {
+            return None;
+        }
+        let u = uses(op, inl);
+        for s in u.rslots.iter().chain(&u.wslots) {
+            if !list.contains(s) {
+                list.push(*s);
+            }
+        }
+        wr.extend(u.wslots);
+    }
+    list.sort();
+    let mut slots = Vec::new();
+    let mut infos = Vec::new();
+    for (k, s) in list.iter().enumerate() {
+        // Plain scalar locals only (not cells, vectors or values of any type).
+        let (_, t) = v.slot.get(s)?;
+        if !t.is_scalar() || fl.slot_ty.get(s) != Some(t) {
+            return None;
+        }
+        let written = wr.contains(s);
+        slots.push((*s, *t, written));
+        infos.push(super::SlotInfo {
+            slot: *s,
+            sym: code.vars[*s as usize],
+            ty: *t,
+            idx: k,
+            // (Every local has a value here: zero where unset, which the
+            // closure never reads.)
+            needs_entry: true,
+            written,
+            flag: None,
+            writable: false,
+            owned: false,
+        });
+    }
+    let mut nvals = slots.len();
+    let mut regs = Vec::new();
+    let mut reg_idx = HashMap::new();
+    if let Op::ForStep { seq, idx, .. } = code.ops[brk - 1] {
+        let st = fl.states[pc].as_ref()?;
+        if st[seq as usize] != Some(JType::Range) || st[idx as usize] != Some(JType::I) {
+            return None;
+        }
+        regs.push((seq, JType::Range));
+        regs.push((idx, JType::I));
+        reg_idx.insert(seq, nvals);
+        reg_idx.insert(idx, nvals + 3);
+        nvals += 4;
+    }
+    let sum = super::summary::analyze(code, pc + 1, brk, &infos, &fl.slot_ty, &reg_idx, &regs, inl)?;
+    if trace() {
+        eprintln!("jit: closure loop at {} has a closed form", pc);
+    }
+    // Native code is never freed (the module keeps every function), and
+    // neither is the summary it refers to.
+    let sum: &'static super::summary::Summary = Box::leak(Box::new(sum));
+    Some(LoopSum { sum, slots, regs, nvals })
+}
+
+/// Runs a loop's closed form on its value buffer: nonzero if it applied.
+///
+/// # Safety
+///
+/// `s` is a summary and `vals` points to `n` values laid out for it.
+unsafe extern "C" fn h_summary(s: *const super::summary::Summary, vals: *mut u64, n: i64) -> i32 {
+    // SAFETY: the caller's contract.
+    let (s, vals) = unsafe { (&*s, std::slice::from_raw_parts_mut(vals, n as usize)) };
+    s.run(vals) as i32
+}
+
+impl Gen<'_, '_> {
+    /// Before the loop whose `LoopExit` is `brk`: run its closed form, and
+    /// continue after the loop if it applied.
+    fn summarized_loop(&mut self, ls: &LoopSum, brk: usize) {
+        if ls.sum.is_for()
+            && let [(seq, JType::Range), (idx, JType::I)] = ls.regs[..]
+        {
+            // A `for` loop's closed form in native code.
+            let vars: Vec<Variable> = ls.slots.iter().map(|(s, _, _)| self.v.slot[s].0).collect();
+            let range = self.v.range[&seq];
+            let index = self.v.reg[&(idx, JType::I)];
+            let exit = self.block(brk);
+            let fallback = self.b.create_block();
+            ls.sum.emit_for(self, &vars, range, index, exit, fallback);
+            self.b.switch_to_block(fallback);
+            return;
+        }
+        let mf = MemFlagsData::trusted();
+        let ss =
+            self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (ls.nvals * 8) as u32, 3));
+        let ptr = types::I64;
+        let buf = self.b.ins().stack_addr(ptr, ss, 0);
+        let mut k = 0;
+        for (s, t, _) in &ls.slots {
+            let (var, _) = self.v.slot[s];
+            let x = self.b.use_var(var);
+            let x = if *t == JType::D { x } else { self.b.ins().sextend(types::I64, x) };
+            self.b.ins().store(mf, x, buf, k * 8);
+            k += 1;
+        }
+        for (r, t) in &ls.regs {
+            if *t == JType::Range {
+                let (a, b2, c) = self.v.range[r];
+                for var in [a, b2, c] {
+                    let x = self.b.use_var(var);
+                    self.b.ins().store(mf, x, buf, k * 8);
+                    k += 1;
+                }
+            } else {
+                let var = self.v.reg[&(*r, *t)];
+                let x = self.b.use_var(var);
+                let x = self.b.ins().sextend(types::I64, x);
+                self.b.ins().store(mf, x, buf, k * 8);
+                k += 1;
+            }
+        }
+        let sp = self.b.ins().iconst(ptr, ls.sum as *const _ as i64);
+        let n = self.b.ins().iconst(types::I64, ls.nvals as i64);
+        let f = self.helpers["robigo_summary"];
+        let c = self.b.ins().call(f, &[sp, buf, n]);
+        let ok = self.b.inst_results(c)[0];
+        let done = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.ins().brif(ok, done, &[], cont, &[]);
+        self.b.switch_to_block(done);
+        for (k, (s, t, written)) in ls.slots.iter().enumerate() {
+            if !*written {
+                continue;
+            }
+            let x = self.b.ins().load(cl_type(*t), mf, buf, (k * 8) as i32);
+            let (var, _) = self.v.slot[s];
+            self.b.def_var(var, x);
+        }
+        let exit = self.block(brk);
+        self.b.ins().jump(exit, &[]);
+        self.b.switch_to_block(cont);
     }
 }

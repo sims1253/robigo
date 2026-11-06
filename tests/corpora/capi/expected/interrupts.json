@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "interrupts",
+ "out": {
+  "t": "[1] FALSE\n[1] TRUE\n[1] FALSE\n[1] \"interrupt\" \"condition\"\n[1] \"caught later\"             \"suspended block finished\"\n[1] FALSE\n"
+ },
+ "sha": "5b529d1b3c405966",
+ "status": 0
+}
