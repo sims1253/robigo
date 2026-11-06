@@ -432,3 +432,13 @@ serves the stream as-is when the magic is missing (and open fails with
 Read-side streaming (sockets) is not streamed — the wrapped stream is read
 whole at open, as robigo's `gzfile()` does; a `gzcon` wrapping a `gzcon`
 warns and returns itself. Marked: `base/gzcon`.
+
+Rebased onto the per-kind connection methods (2026-11-06): the gzcon takes
+over the wrapped connection's number, as `Connections[icon] = new` does,
+and the wrapped connection moves to a hidden slot past `NCONNECTIONS`
+(freed with the gzcon). Reading follows gzcon_read: a crc mismatch or a
+truncated trailer is reported as `crc error %lx %lx` on stderr, not an
+error, and inflate failures return what was inflated. Open gap: GNU R
+reports the crc error again on every read after the stream end (z_err is
+no longer Z_STREAM_END); robigo reports it once, at open.
+(`tests/r/io/gzcon-crc.R`, `gzcon-slot.R`.)

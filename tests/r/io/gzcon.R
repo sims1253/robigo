@@ -12,7 +12,7 @@ close(zz)
 print(readLines(gzfile(fil)))
 # readBin through gzcon
 zz <- gzcon(file(fil, "rb"))
-print(head(readBin(zz, "character", n = 2)))
+print(readBin(zz, "character", n = 2))
 close(zz)
 # an uncompressed stream: refused without allowNonCompressed, passed through
 # with it

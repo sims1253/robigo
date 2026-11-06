@@ -326,13 +326,29 @@ impl Default for ConnState {
 impl ConnState {
     /// R: connections.c:getConnection
     pub fn get(&mut self, n: i32) -> RResult<&mut Connection> {
-        if n < 0 || n as usize >= NCONNECTIONS || n == NA_INTEGER {
+        // (slots from NCONNECTIONS on are hidden ones, see `hide`)
+        if n < 0 || n as usize >= self.table.len() || n == NA_INTEGER {
             return Err(Flow::error("invalid connection"));
         }
         match self.table[n as usize].as_deref_mut() {
             Some(c) => Ok(c),
             None => Err(Flow::error("invalid connection")),
         }
+    }
+
+    /// A slot outside R's connection table (from `NCONNECTIONS` on, so
+    /// `getAllConnections()` does not list it and `next_connection` never
+    /// hands it out): the connection a `gzcon` wraps.
+    fn hide(&mut self, con: Box<Connection>) -> i32 {
+        let k = match (NCONNECTIONS..self.table.len()).find(|&k| self.table[k].is_none()) {
+            Some(k) => k,
+            None => {
+                self.table.push(None);
+                self.table.len() - 1
+            }
+        };
+        self.table[k] = Some(con);
+        k as i32
     }
 
     fn next_connection(&self) -> RResult<usize> {
@@ -1100,6 +1116,10 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
     if n < 0 || n as usize >= i.conns.table.len() {
         return Ok(());
     }
+    let wrapped = match i.conns.table[n as usize].as_deref() {
+        Some(Connection { kind: ConnKind::Gzcon { inner, .. }, .. }) => Some(*inner),
+        _ => None,
+    };
     let r = match i.conns.table[n as usize].as_deref().map(|c| &c.kind) {
         Some(ConnKind::Native { .. }) => native_bridge().and_then(|b| b.conn_destroy(i, n)),
         // R: connections.c null_destroy, text_destroy, outtext_destroy:
@@ -1119,6 +1139,11 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
         | None => Ok(()),
     };
     i.conns.table[n as usize] = None;
+    // a gzcon's wrapped connection (gzcon_close closed it)
+    if let Some(k) = wrapped {
+        let _ = check_close(i, k);
+        con_free(i, k)?;
+    }
     r
 }
 
@@ -2236,9 +2261,13 @@ fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
             "cannot create a 'gzcon' connection from a writable textConnection; maybe use rawConnection",
         ));
     }
-    let ncon = i.conns.next_connection()?;
+    // R: `Connections[icon] = new` — the gzcon takes over the wrapped
+    // connection's number, and the wrapped one leaves the table (it lives
+    // on in a hidden slot, freed with the gzcon).
+    let Some(wrapped) = i.conns.table[icon as usize].take() else { return Err(Flow::error("invalid connection")) };
+    let inner = i.conns.hide(wrapped);
     let kind = ConnKind::Gzcon {
-        inner: icon,
+        inner,
         level: level as u32,
         allow: allow == TRUE,
         data: Vec::new(),
@@ -2249,9 +2278,9 @@ fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     let mut con = Connection::new("gzcon", &format!("gzcon({})", idesc), mode, kind);
     con.text = text == TRUE;
     con.canseek = false;
-    let v = install_connection(i, ncon, con);
+    let v = install_connection(i, icon as usize, con);
     if inner_open {
-        let _ = gzcon_open(i, ncon as i32)?;
+        let _ = gzcon_open(i, icon)?;
     }
     Ok(v)
 }
@@ -2280,10 +2309,7 @@ fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
     }
     if !canwrite {
         // Reading: pull the wrapped stream and inflate it (as gzfile does).
-        let raw = match con_read_all(i, inner) {
-            Ok(r) => r,
-            Err(e) => return Err(e),
-        };
+        let raw = con_read_all(i, inner)?;
         let ConnKind::Gzcon { allow, .. } = i.conns.get(n)?.kind else { unreachable!() };
         let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
             if !allow {
@@ -2341,11 +2367,10 @@ fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
             };
             if ended {
                 // gzcon_byte: EOF (-1) past the end of the wrapped stream.
-                let mut t = (dec.total_in() as usize).min(body.len());
+                let t = (dec.total_in() as usize).min(body.len());
                 let mut crc: u64 = 0;
-                for _ in 0..4 {
-                    let b = body.get(t).map_or(u64::MAX, |&b| b as u64);
-                    t += 1;
+                for k in t..t + 4 {
+                    let b = body.get(k).map_or(u64::MAX, |&b| b as u64);
                     crc >>= 8;
                     crc = crc.wrapping_add(b << 24);
                 }
