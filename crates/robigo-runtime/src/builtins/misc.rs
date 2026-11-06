@@ -64,7 +64,7 @@ pub static DEFS: &[Builtin] = &[
     special("declare", do_declare, -1).invisible(),
     internal("returnValue", do_return_value, 1),
     internal("asCharacterFactor", do_as_character_factor, 1),
-    internal("interruptsSuspended", do_false_any, -1),
+    internal("interruptsSuspended", do_interrupts_suspended, -1),
     internal("activeBindingFunction", do_active_binding_function, 2),
     internal("enableJIT", do_zero1, 1),
     internal("compilePKGS", do_false, 1),
@@ -917,9 +917,6 @@ fn do_null_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value
 fn do_false(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::lgl(false))
 }
-fn do_false_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::lgl(false))
-}
 fn do_zero1(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::int(0))
 }
@@ -928,4 +925,29 @@ fn do_one(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 fn do_inf(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::real(f64::INFINITY))
+}
+
+thread_local! {
+    /// `R_interrupts_suspended` when no native bridge holds it.
+    static INTERRUPTS_SUSPENDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// R: errors.c:do_interruptsSuspended -- the flag before; set when given.
+// R_CheckUserInterrupt leaves a pending interrupt for later while it is set.
+fn do_interrupts_suspended(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let set = match args.first() {
+        Some(a) => Some(crate::builtins::summary::as_bool2(&a.value, call)?),
+        None => None,
+    };
+    let orig = match crate::native::bridge().and_then(|b| b.interrupts_suspended(set)) {
+        Some(orig) => orig,
+        None => INTERRUPTS_SUSPENDED.with(|c| {
+            let orig = c.get();
+            if let Some(v) = set {
+                c.set(v);
+            }
+            orig
+        }),
+    };
+    Ok(Value::lgl(orig))
 }
