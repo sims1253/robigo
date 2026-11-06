@@ -373,10 +373,11 @@ impl Interp {
     /// does; `None` when the stack has none (or its exit is NULL).
     fn try_jump_to_restart(&mut self) -> Option<Flow> {
         let mut cur = self.restarts.clone();
-        while let Some(node) = cur.clone() {
+        while let Some(node) = cur {
+            // R matches only a VECSXP of length > 1 with a length-1 name.
             let name = match &node.restart {
-                Value::List(l) => match l.data.first() {
-                    Some(Value::Str(s)) => s.data.first().and_then(|x| x.as_deref()),
+                Value::List(l) if l.data.len() > 1 => match l.data.first() {
+                    Some(Value::Str(s)) if s.data.len() == 1 => s.data.first().and_then(|x| x.as_deref()),
                     _ => None,
                 },
                 _ => None,
@@ -384,10 +385,11 @@ impl Interp {
             if name.is_some_and(|n| n == "browser" || n == "tryRestart" || n == "abort") {
                 let Value::List(l) = &node.restart else { return None };
                 let Value::Env(exit) = &l.data[1] else { return None };
-                // Pop this restart and everything above it, as .invokeRestart
-                // does (the found node is identified by its exit env).
+                // R: errors.c:invokeRestart pops through the first node with
+                // this exit env — a sibling restart of the same withRestarts
+                // shares it, so this walk can stop above the matched node.
                 let is_target = |n: &Rc<RestartNode>| match &n.restart {
-                    Value::List(rl) => matches!(&rl.data[1], Value::Env(x) if x.ptr_eq(exit)),
+                    Value::List(rl) => matches!(rl.data.get(1), Some(Value::Env(x)) if x.ptr_eq(exit)),
                     _ => false,
                 };
                 let mut depth = 0usize;
