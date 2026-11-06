@@ -3199,9 +3199,11 @@ pub(crate) fn native_never(clo: &Closure) -> bool {
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run
-/// inline: a pure closure without free variables (see [`inline_info`], or
-/// [`native_inline`]) called with plain arguments or element reads (`x[i]`,
-/// `x[a:b]`, which native code evaluates where it has them).
+/// inline: a pure closure (see [`inline_info`], [`native_inline`] or
+/// [`loop_callee`]) called with plain arguments or element reads (`x[i]`,
+/// `x[a:b]`, which native code evaluates where it has them); a
+/// [`loop_callee`] may also read scalar variables of its enclosing
+/// environments and assign them with `<<-` (see `crate::jit::LoopCell`).
 fn inline_call(
     interp: &mut Interp,
     code: &Code,
@@ -3237,17 +3239,32 @@ fn inline_call(
     if clo.jit.traced() || args.len() != clo.formals.len() {
         return None;
     }
-    let (body, formal_slots, guard_syms) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
-        Some(info) if !info.free_vars => (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone()),
-        Some(_) => return None,
-        None => native_inline(&clo)?,
+    let (body, formal_slots, guard_syms, cells) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
+        Some(info) if !info.free_vars => {
+            (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new())
+        }
+        // (Free variables: cells of the loop, see `loop_callee`.)
+        Some(_) => loop_callee(&clo)?,
+        None => match native_inline(&clo) {
+            Some((c, f, g)) => (c, f, g, Vec::new()),
+            None => loop_callee(&clo)?,
+        },
     };
     // Native code does not count calls: take the loop to call the closure
     // at least twice (GNU R's JIT decides by the second call).
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
-    Some(crate::jit::InlineCall { code: body, formal_slots, guard_syms, args, clo: clo.clone(), callee: 0, arg_syms })
+    Some(crate::jit::InlineCall {
+        code: body,
+        formal_slots,
+        guard_syms,
+        args,
+        clo: clo.clone(),
+        callee: 0,
+        arg_syms,
+        cells,
+    })
 }
 
 /// A closure body only native code runs inline: as [`inline_analysis`]
@@ -3296,6 +3313,71 @@ fn native_inline(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     Some((code, formal_slots, guard_syms))
+}
+
+/// A closure that reads or `<<-`-assigns variables of its enclosing
+/// environments, as [`inline_call`] takes it: the body is pure but for the
+/// `<<-` (as [`inline_info`] has it, which keeps such bodies in the VM),
+/// and every such variable is bound to a scalar now. (The native loop
+/// checks the bindings again whenever it is entered.)
+#[cold]
+#[allow(clippy::type_complexity)]
+fn loop_callee(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, Vec<crate::jit::CalleeCell>)> {
+    // (Untagged formals come from the C API's `R_mkClosure`.)
+    if !may_inline()
+        || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || f.tag.is_none() || !f.value.is_missing_arg())
+    {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    let formals: Vec<Sym> = clo.formals.iter().map(|f| f.tag.unwrap()).collect();
+    let mut guard_syms = Vec::new();
+    let mut written: Vec<Slot> = Vec::new();
+    for op in &code.ops {
+        match op {
+            Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
+                if formals.contains(sym) {
+                    return None;
+                }
+                if !guard_syms.contains(sym) {
+                    guard_syms.push(*sym);
+                }
+            }
+            // (`<<-` of a formal's name assigns the enclosing binding while
+            // the body reads the formal: not a cell.)
+            Op::SuperSet { sym, slot, .. } if !formals.contains(sym) => written.push(*slot),
+            Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::JumpIfNot { .. }
+            | Op::JumpIf { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Return { .. } => {}
+            _ => return None,
+        }
+    }
+    let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
+    let mut cells = Vec::new();
+    for (k, sym) in code.vars.iter().enumerate() {
+        if formals.contains(sym) {
+            continue;
+        }
+        let t = plain_lookup(&clo.env, *sym).as_ref().and_then(jit_type).filter(|t| t.is_scalar())?;
+        cells.push(crate::jit::CalleeCell {
+            slot: k as Slot,
+            sym: *sym,
+            ty: t,
+            written: written.contains(&(k as Slot)),
+        });
+    }
+    Some((code, formal_slots, guard_syms, cells))
 }
 
 /// Run the loop entered at op `enter` natively (compiling it first if
@@ -3385,6 +3467,18 @@ fn jit_enter(
             }
         }
     };
+    // A closure called inline that is defined in this frame sees its
+    // pending assignments, for its variables and for the functions it
+    // calls: they go first.
+    if !jl.cells.is_empty()
+        && vars.dirty
+        && jl.calls.iter().any(|(_, c, _)| crate::jit::closure::on_chain(&c.env, env))
+        && let Err(e) = vars.flush(interp, env, &code.vars)
+    {
+        vars.failed = Some(Box::new(e));
+        vars.dirty = true;
+        return None;
+    }
     // Guards: native code assumes them, and that its inlined calls still
     // call the same closures (whose guards hold).
     for (sym, at) in &jl.guards {
@@ -3451,6 +3545,30 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
+    // The cells: the bindings the closures called inline see (pending
+    // assignments flushed above).
+    let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
+    if !jl.cells.is_empty() {
+        let clo_at = |site: u32| jl.calls.iter().find(|(s, _, _)| *s == site).map(|(_, c, _)| c);
+        for c in &jl.cells {
+            let first = clo_at(c.sites[0])?;
+            let o = crate::jit::closure::owner(&first.env, c.sym)?;
+            for s in &c.sites[1..] {
+                if !crate::jit::closure::owner(&clo_at(*s)?.env, c.sym)?.ptr_eq(&o) {
+                    return None;
+                }
+            }
+            if c.written && !o.plain_binding(c.sym) {
+                return None;
+            }
+            vals[c.idx] = match (c.ty, plain_lookup(&o, c.sym).as_ref().and_then(scalar)) {
+                (JType::D, Some(Num::D(x))) => x.to_bits(),
+                (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => x as i64 as u64,
+                _ => return None,
+            };
+            owners.push(o);
+        }
+    }
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
     let mut ctx = crate::jit::LoopCtx::default();
     for s in &jl.slots {
@@ -3578,6 +3696,7 @@ fn jit_enter(
         }
     }
     vals[jl.vis] = interp.visible as u64;
+    let entry_cells: SmallVec<[u64; 4]> = jl.cells.iter().map(|c| vals[c.idx]).collect();
     // A closed form, where it applies, leaves `vals` as the native code would
     // at its exit (the visibility flag included: a closed form only ever
     // exits, and the VM sets visibility after a loop where it is used).
@@ -3589,6 +3708,26 @@ fn jit_enter(
         _ => unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) },
     };
     interp.visible = vals[jl.vis] != 0;
+    // The cells the calls assigned, back to their bindings (checked above to
+    // be plain); this frame's cached copies of them are stale.
+    for ((c, o), was) in jl.cells.iter().zip(&owners).zip(&entry_cells) {
+        let b = vals[c.idx];
+        if !c.written || b == *was {
+            continue;
+        }
+        let mut v = match c.ty {
+            JType::D => RVal::D(f64::from_bits(b)),
+            JType::I => RVal::I(b as i32),
+            _ => RVal::L(b as i32),
+        };
+        let done = set_plain_in_place(o, c.sym, &mut v, false);
+        debug_assert!(done);
+        for (k, sym) in code.vars.iter().enumerate() {
+            if *sym == c.sym && matches!(vars.slots[k], SlotVal::Clean(_)) {
+                vars.slots[k] = SlotVal::Empty;
+            }
+        }
+    }
     // Registers the VM continues with (vector ones are copied out of what
     // they view, which the write-back below may take).
     if ret != crate::jit::EXIT {

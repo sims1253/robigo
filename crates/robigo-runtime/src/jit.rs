@@ -172,6 +172,8 @@ pub struct JitLoop {
     /// (LoopEnter index, break target, next target) of loops inside the
     /// region, outermost first (not the region's own loop).
     pub nested: Vec<(u32, u32, u32)>,
+    /// Variables of the environments of closures called inline.
+    pub cells: Vec<LoopCell>,
     /// The functions the loop's guards check, with the index of a guarding
     /// op (for its memo).
     pub guards: Vec<(Sym, usize)>,
@@ -216,6 +218,40 @@ pub struct InlineCall {
     /// In a loop: the functions its arguments use (`[` of `f(x[i])`), which
     /// must be base's.
     pub arg_syms: Vec<Sym>,
+    /// In a loop: the callee's variables of its enclosing environments,
+    /// which are the loop's [`LoopCell`]s.
+    pub cells: Vec<CalleeCell>,
+}
+
+/// A variable of an enclosing environment that a closure called inline
+/// from a loop reads (see [`LoopCell`]).
+#[derive(Clone, Copy)]
+pub struct CalleeCell {
+    /// Its slot in the callee's code.
+    pub slot: Slot,
+    pub sym: Sym,
+    /// The type of its value.
+    pub ty: JType,
+    /// Assigned with `<<-`.
+    pub written: bool,
+}
+
+/// A variable of an enclosing environment of closures a loop calls inline:
+/// read when native code is entered, and (when they assign it with `<<-`)
+/// written back to its binding when it leaves. Nothing else can read or
+/// write the binding meanwhile: no R code runs, and the loop itself does
+/// not name it (see [`compile`]). An inlined call assigns a copy, which
+/// becomes the cell's value only when the call completes, so a call that
+/// leaves native code midway leaves the cell as it was: the VM makes the
+/// call from scratch.
+pub struct LoopCell {
+    pub sym: Sym,
+    pub ty: JType,
+    /// Index into the value buffer.
+    pub idx: usize,
+    pub written: bool,
+    /// The call sites whose closures read it.
+    pub sites: Vec<u32>,
 }
 
 /// An argument of a call in native code: evaluated by the caller, which is
@@ -342,6 +378,9 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             slot_ty.insert(*s, *args.get(k)?);
         }
     }
+    for c in &ic.cells {
+        slot_ty.insert(c.slot, c.ty);
+    }
     let empty = HashMap::new();
     let inl = Inl::new(&empty);
     let len = code.ops.len();
@@ -399,6 +438,13 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
             Op::Return { src } => {
                 merge_result(st[*src as usize])?;
                 continue;
+            }
+            // Into a cell, keeping its type.
+            Op::SuperSet { src, slot, .. } => {
+                let cell = ic.cells.iter().find(|c| c.slot == *slot)?;
+                if !cell.written || st[*src as usize] != Some(cell.ty) {
+                    return None;
+                }
             }
             _ => return None,
         }
@@ -899,6 +945,22 @@ pub fn compile(
 ) -> Result<JitLoop, Reject> {
     let mut inl = Inl::new(&calls);
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
+    // The cells of the calls run inline, one per symbol.
+    let mut cells: Vec<LoopCell> = Vec::new();
+    let mut sites: Vec<u32> = calls.keys().copied().collect();
+    sites.sort();
+    for site in sites {
+        for cc in &calls[&site].cells {
+            match cells.iter_mut().find(|c| c.sym == cc.sym) {
+                Some(c) if c.ty != cc.ty => return Err(not_now(10)),
+                Some(c) => {
+                    c.written |= cc.written;
+                    c.sites.push(site);
+                }
+                None => cells.push(LoopCell { sym: cc.sym, ty: cc.ty, idx: 0, written: cc.written, sites: vec![site] }),
+            }
+        }
+    }
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
         return Err(Reject::Never);
@@ -932,6 +994,17 @@ pub fn compile(
             }
             leave[pc] = true;
             continue;
+        }
+        // A cell is not a variable of the loop: the loop must not name it,
+        // even where it would be another binding of the same name.
+        if !cells.is_empty() {
+            let u = uses(op, &inl);
+            if u.rslots.iter().chain(&u.wslots).any(|s| cells.iter().any(|c| c.sym == code.vars[*s as usize])) {
+                if trace() {
+                    eprintln!("jit: the loop names a variable of a closure it calls at {}: {:?}", pc, op);
+                }
+                return Err(Reject::Never);
+            }
         }
         match op {
             Op::LoopEnter { brk, nxt } => nested.push((pc as u32, *brk, *nxt)),
@@ -1256,6 +1329,11 @@ pub fn compile(
     let vis = nvals - 1;
     let vis_at = visibility(code, &r, &inl);
 
+    for c in &mut cells {
+        c.idx = nvals;
+        nvals += 1;
+    }
+
     let mut deopt_regs = HashMap::new();
     let lay = Layout {
         slots: &slots,
@@ -1267,6 +1345,7 @@ pub fn compile(
         counter,
         vis,
         vis_at: &vis_at,
+        cells: &cells,
     };
     let (func, temps) = codegen(code, &r, &lay, &mut deopt_regs, &inl)?;
     let mut arg_syms = Vec::new();
@@ -1312,6 +1391,7 @@ pub fn compile(
         temps,
         arg_syms,
         summary,
+        cells,
     })
 }
 
@@ -1328,6 +1408,8 @@ struct Layout<'a> {
     counter: Option<usize>,
     vis: usize,
     vis_at: &'a [Vis],
+    /// The cells of the calls run inline (see [`LoopCell`]).
+    cells: &'a [LoopCell],
 }
 
 /// What the VM's visibility flag is before an op: as at entry, set to a
@@ -1840,6 +1922,8 @@ struct Vars {
     /// Per register and type: one variable, or three for a range.
     reg: HashMap<(Reg, JType), Variable>,
     range: HashMap<Reg, (Variable, Variable, Variable)>,
+    /// Per [`LoopCell`]: its variable.
+    cells: Vec<Variable>,
     lp: LoopVars,
 }
 
@@ -1884,6 +1968,7 @@ struct Gen<'a, 'b> {
     b: FunctionBuilder<'b>,
     v: Vars,
     slots: &'a [SlotInfo],
+    cells: &'a [LoopCell],
     states: Vec<Option<RegState>>,
     inl: &'a Inl<'a>,
     /// Inside an inlined callee: leave at this op (the call) instead, and
@@ -2039,6 +2124,12 @@ impl Gen<'_, '_> {
             };
             if let Some(x) = x {
                 self.b.ins().store(mf, x, self.vals, (vis * 8) as i32);
+            }
+        }
+        for (c, var) in self.cells.iter().zip(&self.v.cells) {
+            if c.written {
+                let x = self.b.use_var(*var);
+                self.b.ins().store(mf, x, self.vals, (c.idx * 8) as i32);
             }
         }
         let mut live = Vec::new();
@@ -2477,9 +2568,15 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, x);
             }
             Op::Visible { on } if self.whole.is_some() => self.set_visible(*on),
-            Op::SuperSet { src, slot, .. } => {
+            Op::SuperSet { src, slot, .. } if self.whole.is_some() => {
                 let (x, _) = self.reg(*src);
                 self.super_set(*slot, x);
+            }
+            // In a callee run inline: its copy of the cell.
+            Op::SuperSet { src, slot, .. } => {
+                let (x, _) = self.reg(*src);
+                let (var, _) = self.v.slot[slot];
+                self.b.def_var(var, x);
             }
             Op::Builtin1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
@@ -2744,6 +2841,7 @@ impl Gen<'_, '_> {
             Op::Call { dst, site, .. } => {
                 let ic = &self.inl.calls[site];
                 let (code, formal_slots, arg_list) = (ic.code.clone(), ic.formal_slots.clone(), ic.args.clone());
+                let cells = ic.cells.clone();
                 let args: Vec<(CValue, JType)> =
                     arg_list.iter().enumerate().map(|(k, a)| self.call_arg(k, a, pc)).collect();
                 if self.whole.is_some() {
@@ -2755,7 +2853,7 @@ impl Gen<'_, '_> {
                 }
                 let args: Vec<(CValue, Option<CValue>, JType)> = args.into_iter().map(|(x, t)| (x, None, t)).collect();
                 let ct = self.inl.callee(*site, args.iter().map(|a| a.2).collect()).unwrap();
-                let (v, _) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+                let (v, _) = self.inline_body(pc, &code, &formal_slots, &cells, &ct, &args);
                 self.set_reg(*dst, v);
             }
             Op::Return { src } if self.whole.is_some() => {
@@ -2793,6 +2891,7 @@ impl Gen<'_, '_> {
         call: usize,
         code: &Code,
         formal_slots: &[Option<Slot>],
+        cells: &[CalleeCell],
         ct: &CalleeTy,
         args: &[(CValue, Option<CValue>, JType)],
     ) -> (CValue, Option<CValue>) {
@@ -2818,6 +2917,23 @@ impl Gen<'_, '_> {
                     self.b.def_var(var, x);
                     slot.insert(*s, (var, t));
                 }
+            }
+        }
+        // Its cells: copies, which become the cells' values if it completes.
+        let mut copies: Vec<(Variable, Variable)> = Vec::new();
+        for cc in cells {
+            let k = self
+                .cells
+                .iter()
+                .position(|c| c.sym == cc.sym)
+                .expect("a callee's cell is one of the loop's (`compile` collects them all)");
+            let cell = self.v.cells[k];
+            let var = self.b.declare_var(cl_type(cc.ty));
+            let x = self.b.use_var(cell);
+            self.b.def_var(var, x);
+            slot.insert(cc.slot, (var, cc.ty));
+            if cc.written {
+                copies.push((cell, var));
             }
         }
         let mut pairs: Vec<(Reg, JType)> = Vec::new();
@@ -2926,6 +3042,10 @@ impl Gen<'_, '_> {
         self.ret = saved_ret;
         self.cur_defs = saved_defs;
         self.b.switch_to_block(after);
+        for (cell, var) in copies {
+            let x = self.b.use_var(var);
+            self.b.def_var(cell, x);
+        }
         (self.b.use_var(res), res_len.map(|l| self.b.use_var(l)))
     }
 
@@ -3312,8 +3432,9 @@ impl Gen<'_, '_> {
                 }
             });
         }
+        let cells = self.inl.calls[&site].cells.clone();
         let ct = self.inl.callee(site, args.iter().map(|a| a.2).collect()).unwrap();
-        let (v, n) = self.inline_body(pc, &code, &formal_slots, &ct, &args);
+        let (v, n) = self.inline_body(pc, &code, &formal_slots, &cells, &ct, &args);
         match n {
             Some(n) => self.set_vreg(dst, v, n),
             None => self.set_reg(dst, v),
@@ -3500,8 +3621,16 @@ fn codegen(
                 flag: HashMap::new(),
                 reg: HashMap::new(),
                 range: HashMap::new(),
+                cells: Vec::new(),
                 lp: LoopVars::default(),
             };
+            for c in lay.cells {
+                let ty = cl_type(c.ty);
+                let var = b.declare_var(ty);
+                let x = b.ins().load(ty, mf, vals, (c.idx * 8) as i32);
+                b.def_var(var, x);
+                v.cells.push(var);
+            }
             let view = |k: usize, field: usize| (k * std::mem::size_of::<VecView>() + 8 * field) as i32;
             for s in slots {
                 if s.ty.is_scalar() || s.ty == JType::Range {
@@ -3634,6 +3763,7 @@ fn codegen(
                 b,
                 v,
                 slots,
+                cells: lay.cells,
                 states: states.to_vec(),
                 inl,
                 deopt_at: None,

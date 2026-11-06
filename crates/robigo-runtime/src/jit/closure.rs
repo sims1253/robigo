@@ -614,6 +614,7 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                             clo: callee,
                             callee: k,
                             arg_syms: Vec::new(),
+                            cells: Vec::new(),
                         },
                     );
                 }
@@ -849,7 +850,7 @@ fn resolve(interp: &mut Interp, e: &Entry, root: &Rc<Closure>) -> Option<Vec<Rc<
 }
 
 /// The frame binding `sym`, from `env` outwards.
-fn owner(env: &Env, sym: Sym) -> Option<Env> {
+pub(crate) fn owner(env: &Env, sym: Sym) -> Option<Env> {
     let mut cur = env.clone();
     loop {
         if cur.has_local(sym) {
@@ -1157,6 +1158,7 @@ fn define(
             reg: HashMap::new(),
             range: HashMap::new(),
             lp: Default::default(),
+            cells: Vec::new(),
         };
         let mut views = HashMap::new();
         let mut written = HashMap::new();
@@ -1365,6 +1367,7 @@ fn define(
             b,
             v,
             slots: &[],
+            cells: &[],
             states: fl.states.clone(),
             inl: &inl,
             deopt_at: None,
