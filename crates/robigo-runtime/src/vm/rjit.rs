@@ -64,9 +64,13 @@ const NOJIT: u64 = 3;
 /// Compiled; the frozen set is in the high bits.
 const COMPILED: u64 = 4;
 /// Installed: unserialized with a bytecode body (base's and packages'
-/// lazy-load databases); the frozen set it was compiled with, taken at its
-/// first call, is in the high bits for the closures its code makes.
+/// lazy-load databases); the frozen set it was compiled with is in the high
+/// bits, taken when first needed ([`installed_mask`]): [`MASK_PENDING`]
+/// until then.
 const IGNORE: u64 = 5;
+/// An installed closure's frozen set is not computed yet. (Above any mask
+/// bit: frozen sets hold [`FROZEN_FUNS`] indices only.)
+const MASK_PENDING: u64 = 1 << 63;
 // R: print.c:PrintClosure / serialize.c:ReadItem. A loaded BCODESXP body
 // is printed as bytecode without changing the execution/inheritance state.
 const LOADED_BYTECODE: u64 = 0x80;
@@ -306,13 +310,15 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
             // Installed code is what the unserializer read with a bytecode
             // body (serialize.c ReadBC: base's and packages' lazy-load
             // databases, a saved compiled closure): compiled with the
-            // bindings its environment had then, taken now. Nothing else is
-            // installed, whatever its environment (a closure interpreted
-            // code made below a namespace, testthat's test files): the JIT
-            // decides, as for any closure.
+            // bindings its environment had then. Nothing else is installed,
+            // whatever its environment (a closure interpreted code made
+            // below a namespace, testthat's test files): the JIT decides, as
+            // for any closure. Its frozen set matters only to the closures
+            // its code makes and to its `local()` calls, which most
+            // installed closures never reach: it is taken then
+            // ([`installed_mask`]), not at every first call.
             if v & LOADED_BYTECODE != 0 {
-                let mask = compile_mask(interp, clo).unwrap_or(0);
-                clo.jit.set(IGNORE, mask);
+                clo.jit.set(IGNORE, MASK_PENDING >> 8);
                 return;
             }
             // R: eval.c:R_CheckJIT, strategy STRATEGY_TOP_SMALL_MAYBE.
@@ -549,6 +555,22 @@ fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
     Some(top_mask(interp, &top, &syms) & !below & !local)
 }
 
+/// The frozen set of the installed closure `clo` ([`IGNORE`]): computed at
+/// the first need, then kept.
+#[inline(never)]
+fn installed_mask(interp: &mut Interp, clo: &Closure) -> u64 {
+    let v = clo.jit.0.get();
+    if v & MASK_PENDING == 0 {
+        return v >> 8;
+    }
+    let mask = compile_mask(interp, clo).unwrap_or(0);
+    // (Unless finding `local` ran code that changed the closure's state.)
+    if clo.jit.0.get() & (STATE_MASK | MASK_PENDING) == IGNORE | MASK_PENDING {
+        clo.jit.set(IGNORE, mask);
+    }
+    mask
+}
+
 /// The symbols of [`FROZEN_FUNS`] that exist (a name never interned is
 /// bound nowhere).
 fn frozen_syms() -> [Option<Sym>; FROZEN_FUNS.len()] {
@@ -740,7 +762,7 @@ fn frame_mask(interp: &Interp, env: &Env) -> u64 {
 /// package code, a top-level loop) base's `local` as found now.
 // R: compiler/R/cmp.R: setInlineHandler("local") (length(e) == 2)
 #[inline]
-pub fn inlines_local(interp: &Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) -> bool {
+pub fn inlines_local(interp: &mut Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) -> bool {
     if l.args.len() != 1 || l.fun.as_sym().is_none_or(|f| f != s::LOCAL) {
         return false;
     }
@@ -749,7 +771,7 @@ pub fn inlines_local(interp: &Interp, clo: &Rc<Closure>, l: &Lang, env: &Env) ->
 
 #[cold]
 #[inline(never)]
-fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
+fn inlines_local_slow(interp: &mut Interp, clo: &Rc<Closure>, env: &Env) -> bool {
     let base = match interp.base.get_local(s::LOCAL) {
         Some(Value::Promise(p)) => p.forced_fun(),
         v => v,
@@ -757,20 +779,23 @@ fn inlines_local_slow(interp: &Interp, clo: &Rc<Closure>, env: &Env) -> bool {
     if !base.is_some_and(|b| matches!(&b, Value::Closure(c) if Rc::ptr_eq(c, clo))) {
         return false;
     }
-    for ctx in interp.frames.iter().rev() {
-        if ctx.cloenv.ptr_eq(env) {
-            let Value::Closure(c) = &ctx.function else { return true };
-            // Compiled by the JIT, or installed (and closures their code
-            // made): base's `local` when it was compiled, by its frozen set.
-            let v = c.jit.0.get();
-            return match v & STATE_MASK {
-                COMPILED | IGNORE => index(s::LOCAL).is_some_and(|i| (v >> 8) >> i & 1 != 0),
-                _ => true,
-            };
+    let Some(ctx) = interp.frames.iter().rev().find(|ctx| ctx.cloenv.ptr_eq(env)) else {
+        // A loop in the global environment (do_for and friends).
+        return true;
+    };
+    let Value::Closure(c) = &ctx.function else { return true };
+    // Compiled by the JIT, or installed (and closures their code made):
+    // base's `local` when it was compiled, by its frozen set.
+    let v = c.jit.0.get();
+    let mask = match v & STATE_MASK {
+        COMPILED => v >> 8,
+        IGNORE => {
+            let c = c.clone();
+            installed_mask(interp, &c)
         }
-    }
-    // A loop in the global environment (do_for and friends).
-    true
+        _ => return true,
+    };
+    index(s::LOCAL).is_some_and(|i| mask >> i & 1 != 0)
 }
 
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled
@@ -820,7 +845,7 @@ pub fn frozen_fun(interp: &Interp, f: &Value, l: &Lang, env: &Env) -> Option<Val
 /// closure, the new closure is compiled code too, with the creator's
 /// bindings (R: cmp.R:cmpfun compiles nested function bodies).
 #[inline(never)]
-pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
+pub fn jit_inherit(interp: &mut Interp, clo: &Closure, env: &Env) {
     if env.is_search() {
         // R: eval.c:do_for and friends compile a loop the interpreter meets
         // in the global environment (`Interp::bc`); `function` there makes
@@ -832,26 +857,24 @@ pub fn jit_inherit(interp: &Interp, clo: &Closure, env: &Env) {
         }
         return;
     }
-    for ctx in interp.frames.iter().rev() {
-        if ctx.cloenv.ptr_eq(env) {
-            if let Value::Closure(c) = &ctx.function {
-                // A formal's default is never compiled (formals stay AST
-                // even in installed bytecode), so a closure created while
-                // one is forced is interpreted.
-                if DEFAULT_FORCING.with(|d| d.borrow().last().is_some_and(|&p| p == env.id())) {
-                    return;
-                }
-                let v = c.jit.0.get();
-                match v & STATE_MASK {
-                    COMPILED => clo.jit.set(INHERITED, v >> 8),
-                    // Installed bytecode: its nested closures are compiled
-                    // with it (MAKECLOSURE), with its frozen set.
-                    IGNORE => clo.jit.set(INHERITED, v >> 8),
-                    _ => {}
-                }
-            }
-            return;
+    let Some(ctx) = interp.frames.iter().rev().find(|ctx| ctx.cloenv.ptr_eq(env)) else { return };
+    let Value::Closure(c) = &ctx.function else { return };
+    // A formal's default is never compiled (formals stay AST even in
+    // installed bytecode), so a closure created while one is forced is
+    // interpreted.
+    if DEFAULT_FORCING.with(|d| d.borrow().last().is_some_and(|&p| p == env.id())) {
+        return;
+    }
+    let v = c.jit.0.get();
+    match v & STATE_MASK {
+        COMPILED => clo.jit.set(INHERITED, v >> 8),
+        // Installed bytecode: its nested closures are compiled with it
+        // (MAKECLOSURE), with its frozen set.
+        IGNORE => {
+            let c = c.clone();
+            clo.jit.set(INHERITED, installed_mask(interp, &c));
         }
+        _ => {}
     }
 }
 

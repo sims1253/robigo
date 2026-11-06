@@ -467,10 +467,73 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
+**Twins** (#167, council round 5 in #364). C keeps objects across
+calls without protecting them when something in R holds them (rlang's
+`rlang_zap = rlang_ns_get("zap!")`), compares them by address, and
+writes through their cells (`node_poke_car(node_cddr(e), x)`). So a
+runtime value C looked up (`findVar`, `findVarInFrame`, `R_getVar`) or
+bound (`defineVar`, `setVar`), and every call and pairlist C receives,
+gets one long-lived core copy, its *twin*, kept while the value is
+referenced from anywhere but the bridge's table:
+
+- `to_sexp` of the value is the twin and `from_sexp` of the twin is the
+  value (the same `Rc`), in any call; what a twin contains is the twin of
+  what the value contains.
+- The twin's header, spine cells and attribute cells carry the header bit
+  `extra::TWIN` (`robigo_core`), so `SETCAR`/`SETCDR`/`SET_TAG`,
+  `SET_VECTOR_ELT`, `SET_STRING_ELT`, `SET_ATTRIB`, `SET_TYPEOF`,
+  `SETLENGTH`, the S4/OBJECT setters and a writable `DATAPTR` report
+  C's writes (`memory.rs` `watch_write`); a dirty twin is written back
+  into the runtime value in place before R code runs (host callbacks)
+  and before a native call's result is converted.
+- A spine cell inside a twin that C hands back (`CDR(x)`) becomes the
+  twin of a new runtime tail on the same cells; a write through a cell is
+  written back into every twin that has it.
+- Shared scalar constants get a read-only twin; the twin's `REFCNT`
+  follows the value's sharing on every use; the table's reference is
+  ignored by the runtime's reachability graphs, as `PROXIED`'s is.
+
+**One mark over both heaps** (#344, council round 6). A cycle can cross
+the heaps: a runtime frame holds an `ExtPtr` whose core object's
+protected field holds the proxy of a closure of that frame (curl's
+handles and their callbacks). GNU R's one heap frees it in one `gc()`.
+So does robigo:
+
+- The core objects runtime values wrap (`CoreRef`) and the proxies
+  pinned for C (`PINNED`) are *held* (`Core::hold`), a set apart from
+  the precious list. In collections the allocator triggers, held objects
+  are roots.
+- In a `gc()` they are not, also with C frames active below it (R code
+  that rlang's C code evaluates, as in every testthat expectation): the
+  conservative stack scan still covers those frames, so what a C local
+  holds is marked, and what C keeps in a static is a pin, which the
+  runtime graph keeps while its runtime object lives. The bridge marks the held objects it
+  still reaches, through the runtime graph (`mark_proxies`: a wrapper
+  the graph does not show dead; `trace_proxy`: what a traced proxy's
+  runtime object reaches). The core queues the holds it found dead
+  between its mark and its sweep, without calling the bridge. The bridge
+  drains that queue after the collection and before any finalizer runs,
+  making those `CoreRef`s inert and dropping their `WRAPPED` entries, so
+  a reused slot is never handed out as the old object. One
+  `reclaim_host_cycles` then frees the runtime half.
+- The invariant this needs: **every runtime reference that the cycle
+  graph ignores must be an edge from a core object that marks its target
+  when the core traces it.** `PROXIED`'s clones are (a traced proxy
+  marks its runtime object through `trace_proxy`), and so are the
+  twins' table's: a twin is a hold as well (`Held::Twin`), marked in
+  `gc()` when the runtime graph shows its value live (`mark_proxies`) or
+  a traced proxy's runtime side reaches the value (`trace_proxy`); a twin
+  nothing reached dies with the collection, and the reclamation roots
+  every twin that survived, as it roots every proxy. `STORED` is precious
+  until it has that property too.
+- `PINNED` and the holds of a twin are roots in collections the
+  allocator triggers, as before.
+
 Known differences until G3 (documented, measured by the corpus):
-`SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* do not reach the
-caller's object; `NAMED`/`MAYBE_SHARED` on arguments report "shared"
-(always safe for C code: it copies).
+`SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* that is not a twin
+reach the caller's object only when the call returns; `NAMED`/
+`MAYBE_SHARED` on arguments report "shared" (always safe for C code: it
+copies).
 
 ## 7. Crates and boundaries
 

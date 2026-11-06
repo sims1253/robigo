@@ -135,6 +135,17 @@ pub struct Core {
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
     precious: Vec<Sexp>,
+    /// Objects the host holds (the native bridge: core objects runtime
+    /// values wrap, proxies pinned for C), by hold id. Roots, unless
+    /// `held_roots` is off: then the host marks the ones it still reaches
+    /// (through its own object graph, from [`Core::mark`] in a root hook or
+    /// the host trace), and the others die with this collection, their
+    /// ids queued in `dead_held` (one mark over both heaps, docs/core.md
+    /// §6).
+    held: HashMap<u64, Sexp, BuildFx>,
+    next_held: u64,
+    held_roots: bool,
+    dead_held: Vec<u64>,
     /// extra precise roots: called during marking with this core.
     ///
     /// The contract of every hook here: the collector is running. A hook
@@ -265,6 +276,10 @@ impl Core {
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
             precious: Vec::new(),
+            held: HashMap::default(),
+            next_held: 1,
+            held_roots: true,
+            dead_held: Vec::new(),
             root_fns: Vec::new(),
             host_trace: None,
             host_trace_end: None,
@@ -760,6 +775,42 @@ impl Core {
         }
     }
 
+    /// Hold `x` for the host; the id releases it ([`Core::unhold`]) and
+    /// names it in [`Core::take_dead_held`].
+    ///
+    /// # Safety
+    /// `x` must be a live object of this heap: while `held_roots` is on
+    /// (the default) every collection traces it until it is released.
+    pub unsafe fn hold(&mut self, x: Sexp) -> u64 {
+        let id = self.next_held;
+        self.next_held += 1;
+        self.held.insert(id, x);
+        id
+    }
+
+    /// Release a hold (no effect on an id whose object has died).
+    pub fn unhold(&mut self, id: u64) {
+        self.held.remove(&id);
+    }
+
+    /// Whether held objects are roots of the next collections; returns
+    /// the previous setting. With it off, the host marks what it still
+    /// holds itself, and the rest is collected.
+    pub fn set_held_roots(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.held_roots, on)
+    }
+
+    /// The holds whose objects died in the collections since the last
+    /// call: they are released already, and the objects freed.
+    pub fn take_dead_held(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.dead_held)
+    }
+
+    /// How many objects are held.
+    pub fn held_count(&self) -> usize {
+        self.held.len()
+    }
+
     /// Register a weak reference object (a WEAKREFSXP: key, value,
     /// finalizer, next) with the collector.
     ///
@@ -1226,6 +1277,12 @@ impl Core {
                 let p = self.precious[i];
                 self.mark_obj(p);
             }
+            if self.held_roots {
+                let held: Vec<Sexp> = self.held.values().copied().collect();
+                for p in held {
+                    self.mark_obj(p);
+                }
+            }
             for i in 0..self.finalize_queue.len() {
                 let w = self.finalize_queue[i];
                 self.mark_obj(w);
@@ -1252,6 +1309,15 @@ impl Core {
             crate::unwind::robigo_spill(Self::scan_stack, self as *mut Core as *mut c_void);
             self.process_weak_refs();
             self.prune_chars();
+            if !self.held_roots {
+                // nothing marked them: the host's hold dies with them
+                let dead: Vec<u64> =
+                    self.held.iter().filter(|&(_, &x)| !self.is_marked(x)).map(|(&id, _)| id).collect();
+                for id in &dead {
+                    self.held.remove(id);
+                }
+                self.dead_held.extend(dead);
+            }
             self.sweep();
             if let Some(end) = self.host_trace_end {
                 end();

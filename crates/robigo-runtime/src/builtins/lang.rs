@@ -278,7 +278,7 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
 
 /// The closure `do_function` makes (also compiled code's `MakeClosure`).
 pub(crate) fn make_closure(
-    interp: &Interp,
+    interp: &mut Interp,
     formals: Rc<[Arg]>,
     body: Value,
     srcref: Option<&Value>,
@@ -526,6 +526,16 @@ fn complex_assign_inner(
     pre: Option<&[Value]>,
     rhs_call: Option<&Value>,
 ) -> RResult<()> {
+    // In-place path for nested assignments over list containers
+    // (`a$x[[1]] <- v`): R mutates the element without copying. It runs
+    // before any value is acquired (it takes the binding itself and
+    // restores it on every fallback), so no other path pays for it.
+    if levels.len() >= 2 && !superassign && !env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0) {
+        if let Some(r) = complex_assign_inplace(interp, levels, target, rhs.clone(), env, pre) {
+            return r;
+        }
+    }
+
     // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
     // environment. Preserve the error signaled there, including its call.
     let base_val = if superassign {
@@ -619,6 +629,262 @@ fn complex_assign_inner(
 
 fn is_inplace_special(name: &str) -> bool {
     matches!(name, "[<-" | "[[<-" | "$<-")
+}
+
+/// Whether two values are the same allocation, for every variant
+/// [`Value::ptr_eq`] does not cover (the slot-identity scan of
+/// [`complex_assign_inplace`] needs exact identity).
+fn same_allocation(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
+        (Value::Cplx(a), Value::Cplx(b)) => Rc::ptr_eq(a, b),
+        (Value::Raw(a), Value::Raw(b)) => Rc::ptr_eq(a, b),
+        (Value::Expr(a), Value::Expr(b)) => Rc::ptr_eq(a, b),
+        (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
+        (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
+        (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
+        (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b),
+        (Value::Int(a), Value::Int(b)) => Rc::ptr_eq(a, b),
+        (Value::Real(a), Value::Real(b)) => Rc::ptr_eq(a, b),
+        (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
+        _ => a.ptr_eq(b),
+    }
+}
+
+/// R: eval.c:applydefine — GNU R hands a replacement the element of a
+/// uniquely-held container without copying (the replacement path's
+/// `lazy_duplicate` only ENSURE_NAMEDMAXes; duplicate.c:171), so
+/// `a$x[[1]] <- v` mutates `a$x` in place. The general path below keeps the
+/// container's reference alive, which forces `Rc::make_mut` to duplicate
+/// the element. This path takes the target's binding out and walks the
+/// getter chain (`$`/`[[` builtins over list containers, slot found by
+/// allocation identity) taking each element out of its uniquely-held
+/// container; the innermost replacement then runs in place and the chain is
+/// healed back into the binding. Returns `None` when a shape is not
+/// supported, leaving the binding untouched for the general path.
+#[allow(clippy::too_many_arguments)]
+fn complex_assign_inplace(
+    interp: &mut Interp,
+    levels: &[Rc<Lang>],
+    target: Sym,
+    rhs: Value,
+    env: &Env,
+    pre: Option<&[Value]>,
+) -> Option<RResult<()>> {
+    let n = levels.len();
+    if n < 2 || !env.has_local(target) {
+        return None;
+    }
+    // Every getter level must be a plain base `$`/`[[` call; the innermost
+    // setter a builtin replacement (evaluated arguments).
+    for k in 1..n {
+        let l = &levels[n - k];
+        let Value::Sym(f) = &l.fun else { return None };
+        if *f != s::DOLLAR && *f != s::BRACKET2 {
+            return None;
+        }
+    }
+    // The innermost level's head is the *getter* (`[[`, `[`, `$`, ...);
+    // its replacement function is what runs on the element.
+    let setter_sym = match assign_fun(&levels[0].fun) {
+        Ok(Value::Sym(f)) => f,
+        _ => return None,
+    };
+    let setter: &'static Builtin = match interp.find_fun(setter_sym, env) {
+        Ok(Value::Builtin(bb)) if bb.kind == BuiltinKind::Builtin || is_inplace_special(bb.name) => bb,
+        _ => return None,
+    };
+    // Take the binding: the sole robigo reference to the container (other
+    // variables aliasing it share the allocation; the spine copy that
+    // `Rc::make_mut` then makes matches GNU R's `$<-` duplicate). Restore
+    // it on every exit.
+    let mut root = match env.take_local(target) {
+        Some(Value::Promise(p)) => p.value()?,
+        Some(v) => v,
+        None => return None,
+    };
+    let restore = |env: &Env, v: Value| {
+        env.set_local(target, v);
+    };
+    if root.is_object() || !matches!(root, Value::List(_) | Value::Expr(_)) {
+        restore(env, root);
+        return None;
+    }
+    // Walk the getters, taking every element out of its (now uniquely
+    // held) container. `slots[k]` is containers[k+1]'s slot in
+    // containers[k]. Every exit after a take-out heals the chain first:
+    // a fallback that left holes would drop data.
+    let mut containers: Vec<Value> = vec![std::mem::replace(&mut root, Value::Null)];
+    let mut slots: Vec<usize> = Vec::new();
+    /// Put every taken element back into its slot and the binding back;
+    /// `err` distinguishes a fallback (None) from a propagated error.
+    fn leave(
+        env: &Env,
+        target: Sym,
+        containers: &mut Vec<Value>,
+        slots: &[usize],
+        err: Option<Flow>,
+    ) -> Option<RResult<()>> {
+        for j in (1..containers.len()).rev() {
+            let v = containers[j].clone();
+            match &mut containers[j - 1] {
+                Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slots[j - 1]] = v,
+                _ => unreachable!("complex_assign_inplace containers are lists"),
+            }
+        }
+        env.set_local(target, containers.remove(0));
+        err.map(Err)
+    }
+    for k in 1..n {
+        let l = levels[n - k].clone();
+        let is_dollar = matches!(&l.fun, Value::Sym(f) if *f == s::DOLLAR);
+        let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
+        let mut argv = vec![Arg::pos(containers.last().unwrap().clone())];
+        if is_dollar {
+            // `$` is a special: its name argument stays unevaluated.
+            argv.extend(extra.iter().cloned());
+        } else if let Err(f) = interp.eval_args(&extra, env, &Value::Null) {
+            return leave(env, target, &mut containers, &slots, Some(f));
+        } else if let Ok(mut ev) = interp.eval_args(&extra, env, &Value::Null) {
+            argv.append(&mut ev);
+        }
+        let Value::Builtin(b) = interp.find_fun(if is_dollar { s::DOLLAR } else { s::BRACKET2 }, env).ok()? else {
+            unreachable!("checked above");
+        };
+        let gcall = Value::lang(l.fun.clone(), argv.clone());
+        let got = match interp.invoke_builtin(b, &gcall, argv, env) {
+            Ok(v) => v,
+            Err(f) => return leave(env, target, &mut containers, &slots, Some(f)),
+        };
+        if got.is_object() {
+            return leave(env, target, &mut containers, &slots, None);
+        }
+        // Find the slot by allocation identity and take the element out of
+        // the container (whose only other holders are aliases outside our
+        // control; a spine copy here is GNU R's own `$<-` duplicate).
+        let container = containers.last_mut().unwrap();
+        let slot = match container {
+            Value::List(rc) | Value::Expr(rc) => {
+                let vec = Rc::make_mut(rc);
+                vec.data.iter().position(|e| same_allocation(e, &got))
+            }
+            _ => None,
+        };
+        let Some(i) = slot else {
+            return leave(env, target, &mut containers, &slots, None);
+        };
+        let element = match containers.last_mut().unwrap() {
+            Value::List(rc) | Value::Expr(rc) => std::mem::replace(&mut Rc::make_mut(rc).data[i], Value::Null),
+            _ => unreachable!(),
+        };
+        slots.push(i);
+        containers.push(element);
+    }
+    // Only a uniquely-held innermost element can be modified in place;
+    // otherwise the general path's copy is GNU R's, too.
+    if !sole_allocation(containers.last().unwrap()) {
+        return leave(env, target, &mut containers, &slots, None);
+    }
+    // The innermost replacement runs on the (uniquely held) element.
+    crate::builtins::subassign::clear_restore();
+    let element = containers.pop().unwrap();
+    let l0 = levels[0].clone();
+    let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
+    let mut argv = Vec::with_capacity(extra.len() + 2);
+    argv.push(Arg::pos(element));
+    // The setter's argument conventions, as in fast_replace: builtin
+    // replacements take evaluated arguments; specials take them
+    // unevaluated (`$<-`'s name as-is, others evaluated here and quoted,
+    // the object and the value quoted).
+    let r = if let Some(vals) = pre {
+        for (a, v) in extra.iter().zip(vals.iter()) {
+            let v = if setter.kind == BuiltinKind::Special { quote_if_needed(v.clone()) } else { v.clone() };
+            argv.push(Arg::new(a.tag, v));
+        }
+        Ok(())
+    } else if setter.kind == BuiltinKind::Special {
+        if setter.name == "$<-" {
+            argv.extend(extra.iter().cloned());
+            Ok(())
+        } else {
+            match crate::builtins::subset::eval_keep_missing(interp, &extra, env) {
+                Ok(ev) => {
+                    for e in ev {
+                        let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
+                        argv.push(Arg::new(e.tag, v));
+                    }
+                    Ok(())
+                }
+                Err(f) => Err(f),
+            }
+        }
+    } else {
+        match interp.eval_args(&extra, env, &Value::Null) {
+            Ok(mut ev) => {
+                argv.append(&mut ev);
+                Ok(())
+            }
+            Err(f) => Err(f),
+        }
+    };
+    if let Err(f) = r {
+        return leave(env, target, &mut containers, &slots, Some(f));
+    }
+    if setter.kind == BuiltinKind::Special {
+        argv[0].value = quote_if_needed(argv[0].value.clone());
+        argv.push(Arg::new(Some(s::VALUE), quote_if_needed(rhs)));
+    } else {
+        argv.push(Arg::new(Some(s::VALUE), rhs));
+    }
+    let scall = Value::lang(Value::Sym(setter_sym), argv.clone());
+    let new_element = match interp.invoke_builtin(setter, &scall, argv, env) {
+        Ok(v) => v,
+        Err(f) => {
+            // The replacement owned the element; subassign hands it back
+            // unchanged on error, so put it back where it came from.
+            let back = crate::builtins::subassign::take_restore().unwrap_or(Value::Null);
+            return_into_slot(&mut containers, &slots, back);
+            return leave(env, target, &mut containers, &slots, Some(f));
+        }
+    };
+    return_into_slot(&mut containers, &slots, new_element);
+    leave(env, target, &mut containers, &slots, None);
+    Some(Ok(()))
+}
+
+/// The element the innermost replacement received (by `pop`, its sole
+/// owner) is back as its result: fill the slot it was taken from, in the
+/// last remaining container.
+fn return_into_slot(containers: &mut [Value], slots: &[usize], v: Value) {
+    let slot = *slots.last().expect("a take-out happened");
+    match containers.last_mut().expect("the root container") {
+        Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slot] = v,
+        _ => unreachable!("complex_assign_inplace containers are lists"),
+    }
+}
+
+/// Whether `v` is the only handle to its allocation (R's `MAYBE_SHARED`
+/// being false: the replacement may modify it in place).
+fn sole_allocation(v: &Value) -> bool {
+    let count = match v {
+        Value::Lgl(x) => Rc::strong_count(x),
+        Value::Int(x) => Rc::strong_count(x),
+        Value::Real(x) => Rc::strong_count(x),
+        Value::Cplx(x) => Rc::strong_count(x),
+        Value::Str(x) => Rc::strong_count(x),
+        Value::Raw(x) => Rc::strong_count(x),
+        Value::List(x) => Rc::strong_count(x),
+        Value::Expr(x) => Rc::strong_count(x),
+        Value::Pairlist(x) => Rc::strong_count(x),
+        Value::Lang(x) => Rc::strong_count(x),
+        Value::Closure(x) => Rc::strong_count(x),
+        Value::Promise(x) => Rc::strong_count(x),
+        Value::Dots(x) => Rc::strong_count(x),
+        Value::ExtPtr(x) => Rc::strong_count(x),
+        Value::Obj(x) => Rc::strong_count(x),
+        _ => return true,
+    };
+    count == 1
 }
 
 /// In-place replacement for a single-level assignment with a builtin.

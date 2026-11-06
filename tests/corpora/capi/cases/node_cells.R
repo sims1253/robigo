@@ -1,0 +1,27 @@
+dyn.load("node_cells.so")
+
+e <- quote(f(a, b, c))
+invisible(.Call("capi_node_poke_car", .Call("capi_node_cddr", e), quote(B)))
+print(e)
+
+t1 <- .Call("capi_node_cdr", e)
+t2 <- .Call("capi_node_cdr", e)
+print(.Call("capi_node_same", t1, t2))
+
+x <- quote(c(a, z))
+tail <- .Call("capi_node_cdr", x)
+invisible(.Call("capi_node_poke_cdr", tail, as.pairlist(alist(b, z))))
+print(x)
+print(length(tail))
+
+# a tail of a tail, and a pairlist's (#387's repro)
+call <- quote(f(a, b))
+t1 <- .Call("capi_node_cdr", call)
+invisible(.Call("capi_node_poke_car", t1, quote(z)))
+print(call)
+t2 <- .Call("capi_node_cdr", t1)
+invisible(.Call("capi_node_poke_cdr", t2, pairlist(x = "new")))
+print(call)
+p <- pairlist(1, 2, 3)
+invisible(.Call("capi_node_poke_car", .Call("capi_node_cdr", .Call("capi_node_cdr", p)), 30))
+print(unlist(as.list(p)))

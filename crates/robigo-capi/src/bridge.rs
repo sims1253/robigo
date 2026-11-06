@@ -85,6 +85,10 @@ thread_local! {
     static FINALIZER_CONTEXTS: RefCell<Vec<FinalizerContext>> = const { RefCell::new(Vec::new()) };
     static INTERP: Cell<*mut Interp> = const { Cell::new(std::ptr::null_mut()) };
     static FLOWS: RefCell<HashMap<usize, Flow>> = RefCell::new(HashMap::default());
+    /// Core symbol -> runtime symbol, and by runtime symbol index the core
+    /// one (see `sym_of`, `sym_sexp`).
+    static SYM_OF: RefCell<HashMap<usize, Sym>> = RefCell::new(HashMap::default());
+    static SYM_SEXP: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(1) };
     /// identity of a runtime object -> its proxy's handle
     static PROXY_OF: RefCell<HashMap<usize, (usize, Sexp)>> = RefCell::new(HashMap::default());
@@ -118,21 +122,24 @@ thread_local! {
     /// the same core object (findVar(x) == R_getVar(x)). Entries are
     /// preserved until the outermost native call returns.
     static SEEN: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::default());
-    /// Identity across native calls for a vector C code stored in an
-    /// environment (`Rf_defineVar`, `Rf_setVar`): the runtime value it
-    /// became -> the core object, preserved. C code keeps such objects in
-    /// statics and writes to them later (Rcpp's `.rcpp_cache`, read once
-    /// with `Rf_findVarInFrame`). The entry holds the value too, so a
-    /// runtime-side change copies it (a new identity, so no stale object
-    /// is handed out); `gc()` drops entries whose value only it still holds.
+    /// C-assembled promise nodes (see `CPROMISE_MEMO`): the runtime
+    /// promise -> its node, preserved. The entry holds the promise too;
+    /// `gc()` drops entries whose promise only it still holds. (Vectors,
+    /// lists, calls and pairlists that C keeps across calls are twins.)
     static STORED: RefCell<HashMap<usize, (Sexp, Value)>> = RefCell::new(HashMap::default());
     /// Proxies kept preserved while their runtime object is referenced
     /// from anywhere but `PROXIED` (handle -> proxy): C code keeps
     /// functions and environments it looked up in statics (Rcpp's
     /// `Rcpp::Function`s and namespace), which GNU R keeps alive through
-    /// their bindings. `gc()` unpins the others; the collector then frees
-    /// them and `release_proxy` forgets them.
-    static PINNED: RefCell<HashMap<usize, Sexp>> = RefCell::new(HashMap::default());
+    /// their bindings. Held by the core (with the hold's id): `gc()` marks
+    /// them through the runtime graph, which keeps the ones whose runtime
+    /// objects are live (one mark over both heaps); `sweep_stored` unpins
+    /// those only the bridge refers to.
+    static PINNED: RefCell<HashMap<usize, (Sexp, u64)>> = RefCell::new(HashMap::default());
+    /// What each of the bridge's holds in the core heap is (hold id ->
+    /// a wrapped object or a pinned proxy), for the holds a collection
+    /// found dead (`drain_dead_held`).
+    static HELD: RefCell<HashMap<u64, Held>> = RefCell::new(HashMap::default());
     /// Handles of the proxies whose attributes C code reached through the
     /// API since a `.Call` last wrote back (see [`touch_attrs`]).
     static ATTRS_TOUCHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
@@ -297,6 +304,9 @@ fn take_flow(t: usize) -> Flow {
 /// them into R errors.
 #[inline(always)]
 fn guarded(f: impl FnOnce() -> usize) -> usize {
+    // R code may run: it must see what C wrote into twins
+    // SAFETY: on the R thread, in a callback from C (no conversion running).
+    unsafe { flush_twins() };
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(t) => t,
         Err(p) => {
@@ -357,6 +367,7 @@ fn only_stored(v: &Value) -> bool {
 
 /// Returns how many core objects it released.
 unsafe fn sweep_stored() -> usize {
+    let removed_twins = sweep_twins();
     let dead: Vec<Sexp> = STORED.with(|m| {
         let mut m = m.borrow_mut();
         let keys: Vec<usize> = m.iter().filter(|(_, e)| only_stored(&e.1)).map(|(k, _)| *k).collect();
@@ -368,7 +379,7 @@ unsafe fn sweep_stored() -> usize {
         core().release(x);
         forget_attrs(x);
     }
-    let unpinned: Vec<Sexp> = PINNED.with(|p| {
+    let unpinned: Vec<(Sexp, u64)> = PINNED.with(|p| {
         let mut p = p.borrow_mut();
         let handles: Vec<usize> = PROXIED.with(|m| {
             let m = m.borrow();
@@ -377,10 +388,11 @@ unsafe fn sweep_stored() -> usize {
         handles.into_iter().filter_map(|h| p.remove(&h)).collect()
     });
     released += unpinned.len();
-    for x in unpinned {
-        core().release(x);
+    for (_, id) in unpinned {
+        core().unhold(id);
+        HELD.with(|m| m.borrow_mut().remove(&id));
     }
-    if removed_stored {
+    if removed_stored || removed_twins {
         // Dropping the bridge's own value can make its runtime cycle
         // unreachable.
         robigo_runtime::env::Env::mark_cycle_dirty();
@@ -389,56 +401,46 @@ unsafe fn sweep_stored() -> usize {
     released
 }
 
-/// Drop preservation pins whose only remaining owners are runtime cycles.
-/// Called before entering a collection, with no collector borrow active.
-/// Returns how many it dropped.
-unsafe fn unpin_cycles() -> usize {
-    let dead = PROXIED.with(|m| {
-        let proxies = m.borrow();
-        let mut graph = robigo_runtime::reachability::ObjectGraph::default();
-        for (_, value) in proxies.values() {
-            graph.ignore_owner(value);
-        }
-        graph.include_escaped();
-        graph.expand();
-        let graph = if graph.clear_callsite_memos() {
-            // The first graph's own owners would look like outside
-            // references to the rebuilt one.
-            drop(graph);
-            let mut fresh = robigo_runtime::reachability::ObjectGraph::default();
-            for (_, value) in proxies.values() {
-                fresh.ignore_owner(value);
-            }
-            fresh.include_escaped();
-            fresh.expand();
-            fresh
-        } else {
-            graph
-        };
-        let live = graph.externally_live();
-        PINNED.with(|pins| {
-            let mut pins = pins.borrow_mut();
-            let handles: Vec<_> =
-                proxies.iter().filter(|(_, (_, value))| !graph.is_live(value, &live)).map(|(h, _)| *h).collect();
-            handles.into_iter().filter_map(|h| pins.remove(&h)).collect::<Vec<_>>()
-        })
-    });
-    let released = dead.len();
-    for x in dead {
-        core().release(x);
-    }
-    released
+/// What only the bridge holds, before a collection.
+unsafe fn sweep_bridge_holds() {
+    sweep_stored();
+    cpromise_memo_sweep();
 }
 
-/// What only the bridge holds, or only dead cycles pin, before a
-/// collection: how many core objects that released.
-unsafe fn sweep_bridge_holds() -> usize {
-    let mut released = sweep_stored();
-    cpromise_memo_sweep();
-    if HOST_WEAK_REFS.with(|active| active.get()) {
-        released += unpin_cycles();
+/// A hold of the bridge in the core heap.
+enum Held {
+    /// The object a runtime `ExtPtr` wraps (`CoreRef`), at this address.
+    Wrapped(usize),
+    /// A proxy pinned for C, by handle.
+    Pinned(usize),
+    /// A twin, by its runtime identity.
+    Twin(usize),
+}
+
+/// The holds the last collection found dead (one mark over both heaps:
+/// nothing reached them, through either heap): their wrappers become
+/// inert, so that a slot the sweep reuses is never handed out as the old
+/// object, and their pins go. Runs right after the collection, before any
+/// finalizer.
+unsafe fn drain_dead_held() {
+    for id in core().take_dead_held() {
+        match HELD.with(|m| m.borrow_mut().remove(&id)) {
+            Some(Held::Wrapped(addr)) => {
+                let w = WRAPPED.with(|m| m.borrow_mut().remove(&addr));
+                if let Some(p) = w.and_then(|w| w.upgrade()) {
+                    if let Some(c) = p.payload.as_ref().and_then(|p| p.downcast_ref::<CoreRef>()) {
+                        c.inert.set(true);
+                    }
+                }
+                forget_attrs(Sexp(addr as *mut u8));
+            }
+            Some(Held::Pinned(h)) => {
+                PINNED.with(|m| m.borrow_mut().remove(&h));
+            }
+            Some(Held::Twin(k)) => forget_dead_twin(k),
+            None => {}
+        }
     }
-    released
 }
 
 /// The runtime allocation graph over the proxy table, after a collection.
@@ -459,6 +461,12 @@ unsafe fn cycle_graph() -> robigo_runtime::reachability::ObjectGraph {
         PROXIED.with(|m| {
             for (_, value) in m.borrow().values() {
                 graph.root(value);
+            }
+        });
+        // a twin left after the collection is one the core heap kept too
+        TWINS.with(|t| {
+            for tw in t.borrow().values() {
+                graph.root(&tw.value);
             }
         });
         graph.include_escaped();
@@ -495,7 +503,7 @@ unsafe fn reclaim_host_cycles() -> usize {
 }
 
 fn kept_count() -> usize {
-    STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len())
+    STORED.with(|m| m.borrow().len()) + PINNED.with(|m| m.borrow().len()) + TWINS.with(|m| m.borrow().len())
 }
 
 fn drain_dead() {
@@ -554,8 +562,9 @@ unsafe fn proxy(v: &Value) -> Sexp {
     }
     PROXIED.with(|m| m.borrow_mut().insert(h, (key, v.clone())));
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
-    core().preserve(x);
-    PINNED.with(|m| m.borrow_mut().insert(h, x));
+    let id = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(id, Held::Pinned(h)));
+    PINNED.with(|m| m.borrow_mut().insert(h, (x, id)));
     // the object's attributes (a closure's, an environment's class, ...),
     // as C reads them with getAttrib (R_GE_maskType: a mask function's
     // "type")
@@ -575,6 +584,512 @@ unsafe fn proxy(v: &Value) -> Sexp {
         }
         agree_attrs(x);
     }
+    x
+}
+
+// ---- twins -----------------------------------------------------------------
+//
+// A twin is the one long-lived core object of a runtime value that C code
+// can keep: a value it looked up (`findVar`, `findVarInFrame`, `R_getVar`)
+// or bound (`defineVar`, `setVar`), and every call and pairlist it
+// receives. GNU R gives C the bound object itself: C keeps it in statics
+// without protecting it (rlang's `rlang_zap = rlang_ns_get("zap!")`),
+// compares objects by address (`value == rlang_zap`), writes into it, and
+// walks a call's cells and writes through them (`node_poke_car(node_cddr(e),
+// x)`). So, while the runtime value is referenced from anywhere but here:
+//
+// - `to_sexp` of the value returns the twin, and `from_sexp` of the twin
+//   returns the value (the same `Rc`), in any call;
+// - the twin's cells (its header, a pairlist's or call's spine, its
+//   attribute cells) are marked (robigo_core::extra::TWIN), so the API's
+//   setters report C's writes; the twin is then dirty, and written back into
+//   the runtime value in place (`write_back`) before R code or a conversion
+//   can see the value;
+// - what the twin contains is the twin of what the value contains, so a
+//   write through a container's cell reaches the element's value too;
+// - a spine cell inside a twin that C hands back (`CDR(call)`) becomes the
+//   twin of a new runtime tail that shares the cells: a write through any
+//   cell is written back into every twin that contains it.
+//
+// The table holds the value, as `STORED` did, so a runtime-side change copies
+// it (copy-on-modify sees it shared) and the twin never goes stale; the
+// sweep drops twins whose value only the table holds. A twin is a hold
+// in the core heap (`Held::Twin`): a root in the collections the allocator
+// triggers; in gc() it is marked when the runtime graph shows its value
+// live or a traced proxy's runtime side reaches the value (one mark over
+// both heaps), and a twin nothing reached dies with the collection
+// (`forget_dead_twin`). Shared scalars (`Value::lgl`, small `Value::int`)
+// get a read-only twin, which C cannot write back into every user of them.
+
+struct Twin {
+    x: Sexp,
+    /// its hold in the core heap (see `Held::Twin`)
+    hold: u64,
+    value: Value,
+    readonly: bool,
+    /// a constant of code (inside a call): not mutable, as eval.c's
+    /// ENSURE_NAMEDMAX makes what a call evaluates to
+    constant: bool,
+    /// the watched cells registered for this twin
+    cells: Vec<Sexp>,
+}
+
+thread_local! {
+    /// runtime identity -> its twin
+    static TWINS: RefCell<HashMap<usize, Twin>> = RefCell::new(HashMap::default());
+    /// core address of a twin's head -> the runtime identity
+    static TWIN_HEAD: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::default());
+    /// core address of a watched cell -> the twins it is a cell of
+    static TWIN_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::default());
+    /// twins C wrote to since their last write-back
+    static TWIN_DIRTY: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+}
+
+/// The identity a twin is kept under: a value C can hold as an object of
+/// its own. Promises are not: their core nodes are `STORED`'s.
+fn twin_key(v: &Value) -> Option<usize> {
+    if matches!(v, Value::Promise(_)) { None } else { vector_identity(v) }
+}
+
+/// Can `x` be the core object of `v` (C can retype a cell, SET_TYPEOF)?
+unsafe fn twin_shape(x: Sexp, v: &Value) -> bool {
+    match v {
+        Value::Lgl(_) => x.typ() == LGLSXP,
+        Value::Int(_) => x.typ() == INTSXP,
+        Value::Real(_) => x.typ() == REALSXP,
+        Value::Cplx(_) => x.typ() == CPLXSXP,
+        Value::Str(_) => x.typ() == STRSXP,
+        Value::Raw(_) => x.typ() == RAWSXP,
+        Value::List(_) => x.typ() == VECSXP,
+        Value::Expr(_) => x.typ() == EXPRSXP,
+        Value::Obj(_) => x.typ() == OBJSXP,
+        Value::Pairlist(_) => matches!(x.typ(), LISTSXP | DOTSXP),
+        Value::Dots(_) => x.typ() == DOTSXP,
+        Value::Lang(_) => x.typ() == LANGSXP,
+        _ => false,
+    }
+}
+
+/// Does the read-only twin `x` still hold the shared scalar `v`? C can
+/// write into the object it bound (`defineVar(sym, ScalarInteger(0), env)`,
+/// then `INTEGER(x)[0]++`): it is then no longer that number's object.
+unsafe fn scalar_intact(x: Sexp, v: &Value) -> bool {
+    match v {
+        Value::Lgl(r) | Value::Int(r) => {
+            matches!(x.typ(), LGLSXP | INTSXP)
+                && !x.is_altrep()
+                && x.std_len() == 1
+                && x.attrib_raw() == R_NilValue
+                && *(x.std_data() as *const i32) == r.data[0]
+        }
+        _ => true,
+    }
+}
+
+/// The twin of `v`, if it has one.
+#[inline]
+unsafe fn twin_of(v: &Value) -> Option<Sexp> {
+    let k = twin_key(v)?;
+    let (x, readonly, scalar) = TWINS.with(|t| {
+        let t = t.borrow();
+        if t.is_empty() {
+            return None;
+        }
+        t.get(&k).map(|tw| (tw.x, tw.readonly || tw.constant, tw.readonly))
+    })?;
+    if !twin_shape(x, v) || (scalar && !scalar_intact(x, v)) {
+        // C retyped it (SET_TYPEOF): no longer the value's object
+        drop_twin(k);
+        return None;
+    }
+    // C sees the value as shared as R holds it (the table's own reference
+    // aside), as memory.c's REFCNT would count its owners
+    if !readonly {
+        x.set_refcnt(sharing(v).saturating_sub(1).max(1));
+    }
+    Some(x)
+}
+
+/// The cells of `x` that a write to changes what `v` is: the object, a
+/// pairlist's or call's spine, and its attribute cells.
+unsafe fn twin_cells(x: Sexp) -> Vec<Sexp> {
+    let mut cells = vec![x];
+    if matches!(x.typ(), LISTSXP | LANGSXP | DOTSXP) {
+        let mut p = x.cdr();
+        // (a circular spine C made stops the walk at the head, or after
+        // a bound no real pairlist reaches)
+        while !p.is_null() && p != R_NilValue && p != x && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+            cells.push(p);
+            if cells.len() > 1 << 24 {
+                break;
+            }
+            p = p.cdr();
+        }
+    }
+    if x.typ() != CHARSXP {
+        let mut a = x.attrib_raw();
+        while !a.is_null() && a != R_NilValue && a.typ() == LISTSXP {
+            cells.push(a);
+            a = a.cdr();
+        }
+    }
+    cells
+}
+
+unsafe fn watch_cells(k: usize, cells: &[Sexp]) {
+    TWIN_CELLS.with(|m| {
+        let mut m = m.borrow_mut();
+        for c in cells {
+            let owners = m.entry(c.addr()).or_default();
+            if !owners.contains(&k) {
+                owners.push(k);
+            }
+            c.set_twin_cell(true);
+        }
+    });
+}
+
+/// Forget `k` as an owner of `cells`. Only cells in `live` (reachable from a
+/// rooted twin now) are touched; the others may have been freed since.
+unsafe fn unwatch_cells(k: usize, cells: &[Sexp], live: &[Sexp]) {
+    let live: HashSet<Sexp> = live.iter().copied().collect();
+    TWIN_CELLS.with(|m| {
+        let mut m = m.borrow_mut();
+        for c in cells {
+            let Some(owners) = m.get_mut(&c.addr()) else { continue };
+            owners.retain(|&o| o != k);
+            if owners.is_empty() {
+                m.remove(&c.addr());
+                if live.contains(c) {
+                    c.set_twin_cell(false);
+                }
+            }
+        }
+    });
+}
+
+/// Make `x` the twin of `v`, and what it contains the twins of what `v`
+/// contains. `x` must have `v`'s shape (converted from it, or it from `x`).
+unsafe fn make_twin(x: Sexp, v: &Value) {
+    make_twin_as(x, v, false)
+}
+
+unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
+    let Some(k) = twin_key(v) else { return };
+    if x.is_null() || x == R_NilValue || x.has_flag(flags::HOST) || x.has_flag(flags::IMMORTAL) || x.typ() == SYMSXP {
+        return;
+    }
+    if !twin_shape(x, v)
+        || TWINS.with(|t| t.borrow().contains_key(&k))
+        || TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr()))
+    {
+        return;
+    }
+    let readonly = v.is_shared_scalar();
+    let cells = twin_cells(x);
+    watch_cells(k, &cells);
+    TWIN_HEAD.with(|h| h.borrow_mut().insert(x.addr(), k));
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Twin(k)));
+    TWINS.with(|t| t.borrow_mut().insert(k, Twin { x, hold, value: v.clone(), readonly, constant, cells }));
+    if readonly || constant {
+        x.set_refcnt(u16::MAX);
+    }
+    twin_children(x, v, constant);
+}
+
+/// Twin what `x` contains with what `v` contains, where they correspond
+/// (what a call contains is code: `constant`).
+unsafe fn twin_children(x: Sexp, v: &Value, constant: bool) {
+    match v {
+        Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) && !x.is_altrep() => {
+            if x.std_len() as usize == rc.data.len() {
+                for (i, e) in rc.data.iter().enumerate() {
+                    make_twin_as(VECTOR_ELT(x, i as isize), e, constant);
+                }
+            }
+        }
+        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => twin_items(x, &p.items, constant),
+        Value::Dots(d) if x.typ() == DOTSXP => twin_items(x, d, constant),
+        Value::Lang(l) if x.typ() == LANGSXP => {
+            make_twin_as(x.car(), &l.fun, true);
+            twin_items(x.cdr(), &l.args, true);
+        }
+        _ => {}
+    }
+    // attribute values, in attrs_from's order
+    let Some(attrs) = v.attrs() else { return };
+    if x.typ() == CHARSXP {
+        return;
+    }
+    let mut a = x.attrib_raw();
+    let mut it = attrs.0.iter();
+    while !a.is_null() && a != R_NilValue && a.typ() == LISTSXP {
+        if a.tag().typ() == SYMSXP {
+            match it.next() {
+                Some((s, val)) if *s == sym_of(a.tag()) => make_twin_as(a.car(), val, constant),
+                _ => return,
+            }
+        }
+        a = a.cdr();
+    }
+}
+
+unsafe fn twin_items(mut p: Sexp, items: &[Arg], constant: bool) {
+    for item in items {
+        if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+            return;
+        }
+        make_twin_as(p.car(), &item.value, constant);
+        p = p.cdr();
+    }
+}
+
+/// Drop twin `k` (its value is referenced only by the table).
+unsafe fn drop_twin(k: usize) {
+    let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    core().unhold(tw.hold);
+    HELD.with(|m| m.borrow_mut().remove(&tw.hold));
+    TWIN_HEAD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.get(&tw.x.addr()) == Some(&k) {
+            h.remove(&tw.x.addr());
+        }
+    });
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    let live = twin_cells(tw.x);
+    unwatch_cells(k, &tw.cells, &live);
+    // its attribute agreement (to_sexp_new, write_back) goes with it: the
+    // address may be another object's after the next collection
+    forget_attrs(tw.x);
+}
+
+/// Twin `k` died in the collection (nothing reached it, through either
+/// heap): forget it without reading its freed cells.
+unsafe fn forget_dead_twin(k: usize) {
+    let Some(tw) = TWINS.with(|t| t.borrow_mut().remove(&k)) else { return };
+    TWIN_HEAD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.get(&tw.x.addr()) == Some(&k) {
+            h.remove(&tw.x.addr());
+        }
+    });
+    TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    // no cell of it is known live: their bits stay, as unwatch leaves them
+    unwatch_cells(k, &tw.cells, &[]);
+    forget_attrs(tw.x);
+}
+
+/// A setter wrote to the watched object `x` (memory.rs `watch_write`).
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn twin_written(x: Sexp) {
+    let owners = TWIN_CELLS.with(|m| m.borrow().get(&x.addr()).cloned());
+    if let Some(owners) = owners {
+        TWIN_DIRTY.with(|d| d.borrow_mut().extend(owners));
+        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Write twin `k` back into its runtime value, in place, and watch what
+/// the write changed (new cells, new elements).
+unsafe fn flush_twin(k: usize) {
+    if !TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k)) {
+        return;
+    }
+    let Some((x, value, readonly, constant, old)) = TWINS
+        .with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.clone(), tw.readonly, tw.constant, tw.cells.clone())))
+    else {
+        return;
+    };
+    if readonly {
+        return;
+    }
+    if !twin_shape(x, &value) {
+        drop_twin(k);
+        return;
+    }
+    write_back(&value, x, &mut HashMap::default());
+    let cells = twin_cells(x);
+    let now: HashSet<Sexp> = cells.iter().copied().collect();
+    let gone: Vec<Sexp> = old.iter().copied().filter(|c| !now.contains(c)).collect();
+    unwatch_cells(k, &gone, &[]);
+    watch_cells(k, &cells);
+    TWINS.with(|t| {
+        if let Some(tw) = t.borrow_mut().get_mut(&k) {
+            tw.cells = cells;
+        }
+    });
+    twin_children(x, &value, constant);
+}
+
+/// Some twin is dirty (one load on the host callbacks' path: the R thread
+/// is the only one that touches it).
+static ANY_TWIN_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Write back every twin C wrote to: before R code runs (host callbacks)
+/// and before a native call's result is converted.
+#[inline(always)]
+pub(crate) unsafe fn flush_twins() {
+    if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+        flush_dirty_twins();
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn flush_dirty_twins() {
+    ANY_TWIN_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    // flush_twin takes each off the set (and may flush others first)
+    while let Some(k) = TWIN_DIRTY.with(|d| d.borrow().iter().next().copied()) {
+        flush_twin(k);
+        TWIN_DIRTY.with(|d| d.borrow_mut().remove(&k));
+    }
+}
+
+/// The runtime value of the twin `x` (its head, or a spine cell inside one,
+/// which becomes the twin of a new tail sharing those cells).
+unsafe fn twin_value(x: Sexp) -> Option<Value> {
+    if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
+        let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.clone(), tw.readonly)))?;
+        if !twin_shape(x, &v) || (scalar && !scalar_intact(x, &v)) {
+            // retyped by C: no longer the value's object
+            drop_twin(k);
+            return None;
+        }
+        flush_twin(k);
+        resync_atomics(x, &v, 0);
+        return Some(v);
+    }
+    if matches!(x.typ(), LISTSXP | DOTSXP) && TWIN_CELLS.with(|m| m.borrow().contains_key(&x.addr())) {
+        // R: memory.c's CDR is the cell itself; the runtime has no views
+        // into a pairlist, so the tail is a value of its own on the same
+        // cells
+        let v = if x.typ() == DOTSXP {
+            Value::Dots(Rc::new(items_of(x)))
+        } else {
+            Value::Pairlist(Rc::new(Pairlist { items: items_of(x), attrs: attrs_from(x) }))
+        };
+        make_twin(x, &v);
+        return Some(v);
+    }
+    None
+}
+
+/// C writes into an atomic vector through a pointer it took once (rlang's
+/// `*sys_frame_n_addr = n` into the argument of a call it keeps): no setter
+/// sees that, so a twin's atomic vectors, and those of the twins it
+/// contains, are compared with the runtime values whenever R gets the twin
+/// back, and C's writes copied in place (`write_back`).
+unsafe fn resync_atomics(x: Sexp, v: &Value, depth: u32) {
+    if depth > 256 || x.is_altrep() {
+        return;
+    }
+    match v {
+        Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) => {
+            if !v.is_shared_scalar() && twin_shape(x, v) {
+                write_back(v, x, &mut HashMap::default());
+            }
+        }
+        Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) => {
+            if x.std_len() as usize == rc.data.len() {
+                for (i, e) in rc.data.iter().enumerate() {
+                    resync_child(VECTOR_ELT(x, i as isize), e, depth);
+                }
+            }
+        }
+        Value::Lang(l) if x.typ() == LANGSXP => {
+            resync_child(x.car(), &l.fun, depth);
+            resync_items(x.cdr(), &l.args, depth);
+        }
+        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => resync_items(x, &p.items, depth),
+        Value::Dots(d) if x.typ() == DOTSXP => resync_items(x, d, depth),
+        _ => {}
+    }
+}
+
+/// [`resync_atomics`] of a contained object that is a twin of `v`.
+unsafe fn resync_child(x: Sexp, v: &Value, depth: u32) {
+    if x.is_null() || x == R_NilValue || !x.is_twin_cell() {
+        return;
+    }
+    let Some(k) = twin_key(v) else { return };
+    if TWIN_HEAD.with(|h| h.borrow().get(&x.addr()) == Some(&k)) {
+        resync_atomics(x, v, depth + 1);
+    }
+}
+
+unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
+    for item in items {
+        if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+            return;
+        }
+        resync_child(p.car(), &item.value, depth);
+        p = p.cdr();
+    }
+}
+
+/// The twins whose values the runtime graph shows live (a twin is a
+/// hold: a root in the collections the allocator triggers, marked through
+/// the runtime graph in gc(), one mark over both heaps).
+unsafe fn mark_live_twins(c: &mut robigo_core::Core, graph: &robigo_runtime::reachability::ObjectGraph, live: &[bool]) {
+    TWINS.with(|t| {
+        for tw in t.borrow().values() {
+            if graph.is_live(&tw.value, live) {
+                c.mark(tw.x);
+            }
+        }
+    });
+}
+
+/// The twin of a value the runtime graph reaches from a traced proxy.
+unsafe fn mark_twin_of(c: &mut robigo_core::Core, v: &Value) {
+    let Some(k) = twin_key(v) else { return };
+    if let Some(x) = TWINS.with(|t| t.borrow().get(&k).map(|tw| tw.x)) {
+        c.mark(x);
+    }
+}
+
+/// Drop the twins whose value only the table still holds (inner twins
+/// follow their container's).
+unsafe fn sweep_twins() -> bool {
+    let mut any = false;
+    loop {
+        let dead: Vec<usize> =
+            TWINS.with(|t| t.borrow().iter().filter(|(_, tw)| only_stored(&tw.value)).map(|(k, _)| *k).collect());
+        if dead.is_empty() {
+            return any;
+        }
+        any = true;
+        for k in dead {
+            drop_twin(k);
+        }
+    }
+}
+
+/// The runtime graphs exclude the table's own reference to each value.
+fn ignore_twin_owners(graph: &mut robigo_runtime::reachability::ObjectGraph) {
+    TWINS.with(|t| {
+        for tw in t.borrow().values() {
+            graph.ignore_owner(&tw.value);
+        }
+    });
+}
+
+/// C bound its object `x` as `v` (`from_sexp(x)`): `x` is `v`'s twin
+/// from now on (a promise node is `STORED`'s, see `CPROMISE_MEMO`).
+unsafe fn bound(x: Sexp, v: &Value) {
+    if matches!(v, Value::Promise(_)) {
+        remember_stored(x, v);
+    } else {
+        make_twin(x, v);
+    }
+}
+
+/// The core object of a value C looked up in an environment: its twin.
+unsafe fn looked_up(v: &Value) -> Sexp {
+    let x = to_sexp(v);
+    make_twin(x, v);
     x
 }
 
@@ -783,9 +1298,6 @@ thread_local! {
     /// graph, so that every proxy left afterwards is one the core heap
     /// keeps (see [`reclaim_host_cycles`]).
     static GRAPH_MARK: Cell<bool> = const { Cell::new(false) };
-    /// Core objects the runtime let go of (`CoreRef`s dropped): a
-    /// reclamation that dropped none freed nothing a collection could find.
-    static CORE_RELEASES: Cell<u64> = const { Cell::new(0) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
     /// C-assembled promise nodes converted by `from_sexp`, by node
     /// address. The weak reference plus the promise's `STORED` entry
@@ -918,6 +1430,7 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
         for (_, value) in proxies.values() {
             graph.ignore_owner(value);
         }
+        ignore_twin_owners(&mut graph);
         graph.include_escaped();
         graph.expand();
         let live = graph.externally_live();
@@ -928,6 +1441,17 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
                 }
             }
         }
+        mark_live_twins(c, &graph, &live);
+        // The objects runtime values wrap: live unless the graph shows
+        // that only dead runtime objects refer to their wrapper. (Held
+        // objects are no roots in gc(): one mark over both heaps.)
+        WRAPPED.with(|m| {
+            for (&addr, w) in m.borrow().iter() {
+                if w.strong_count() > 0 && graph.is_live_key(Weak::as_ptr(w) as *const () as usize, &live) {
+                    c.mark(Sexp(addr as *mut u8));
+                }
+            }
+        });
         let visited = graph.visited_set();
         TRACE_GRAPH.with(|g| *g.borrow_mut() = Some((graph, visited)));
     })
@@ -957,6 +1481,11 @@ pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
                         c.mark(x);
                     }
                 }
+                // a wrapped object the traced object's runtime side holds
+                if let Some(x) = core_ref_of(value) {
+                    c.mark(x);
+                }
+                mark_twin_of(c, value);
             });
         });
     });
@@ -974,11 +1503,21 @@ unsafe fn proxied(x: Sexp) -> Option<Value> {
     PROXIED.with(|m| m.borrow().get(&h).map(|e| e.1.clone()))
 }
 
-/// A core object kept alive while the runtime holds it.
-struct CoreRef(Sexp);
+/// A core object kept alive while the runtime holds it (a hold in the
+/// core heap). Inert once a collection found its object dead, which only
+/// a dead runtime cycle can still refer to: then it owns nothing.
+struct CoreRef {
+    x: Sexp,
+    hold: u64,
+    inert: Cell<bool>,
+}
 
 impl Drop for CoreRef {
     fn drop(&mut self) {
+        if self.inert.get() {
+            // the object is gone, its slot may be another's by now
+            return;
+        }
         // A runtime value kept in one of this module's thread-locals can
         // outlive `WRAPPED` (and the isolate): TLS destructors run in
         // reverse registration order at process exit. Reaching either with
@@ -986,19 +1525,19 @@ impl Drop for CoreRef {
         if crate::state::try_isolate().is_some() {
             // SAFETY: the isolate is alive on this thread, the only one
             // that holds runtime values.
-            unsafe { core().release(self.0) };
+            unsafe { core().unhold(self.hold) };
         }
-        let _ = CORE_RELEASES.try_with(|n| n.set(n.get() + 1));
+        let _ = HELD.try_with(|m| m.borrow_mut().remove(&self.hold));
         let _ = WRAPPED.try_with(|m| {
-            m.borrow_mut().remove(&self.0.addr());
+            m.borrow_mut().remove(&self.x.addr());
         });
-        forget_attrs(self.0);
+        forget_attrs(self.x);
     }
 }
 
 pub fn core_ref_of(v: &Value) -> Option<Sexp> {
     match v {
-        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().map(|c| c.0),
+        Value::ExtPtr(p) => p.payload.as_ref()?.downcast_ref::<CoreRef>().filter(|c| !c.inert.get()).map(|c| c.x),
         _ => None,
     }
 }
@@ -1007,11 +1546,13 @@ pub unsafe fn wrap_core(x: Sexp) -> Value {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
         return Value::ExtPtr(p);
     }
-    core().preserve(x);
+    let hold = core().hold(x);
+    HELD.with(|m| m.borrow_mut().insert(hold, Held::Wrapped(x.addr())));
     let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag()) } else { Value::Null };
     let attrs = attrs_with_s4(x);
     agree_attrs(x);
-    let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(CoreRef(x))) });
+    let core_ref = CoreRef { x, hold, inert: Cell::new(false) };
+    let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(core_ref)) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
     Value::ExtPtr(p)
 }
@@ -1022,7 +1563,20 @@ unsafe fn sym_sexp(s: Sym) -> Sexp {
     if s == s::EMPTY {
         return R_MissingArg;
     }
-    s.with_name(|n| core().install(n.as_bytes()))
+    // (see `sym_of`: by the symbol's index)
+    let k = s.0 as usize;
+    if let Some(x) = SYM_SEXP.with(|v| v.borrow().get(k).copied().filter(|x| !x.is_null())) {
+        return x;
+    }
+    let x = s.with_name(|n| core().install(n.as_bytes()));
+    SYM_SEXP.with(|v| {
+        let mut v = v.borrow_mut();
+        if v.len() <= k {
+            v.resize(k + 1, Sexp::NULL);
+        }
+        v[k] = x;
+    });
+    x
 }
 
 unsafe fn char_sexp(s: &RStr) -> Sexp {
@@ -1103,13 +1657,24 @@ fn vector_identity(v: &Value) -> Option<usize> {
 /// Convert a runtime value to a core object (a copy for vectors; the
 /// same copy while a native call runs).
 pub unsafe fn to_sexp(v: &Value) -> Sexp {
+    if let Some(x) = twin_of(v) {
+        return x;
+    }
+    // a call, pairlist or `...` keeps its cells while it lives (see twins)
+    if matches!(v, Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_)) {
+        let x = to_sexp_new(v);
+        make_twin(x, v);
+        return x;
+    }
     if let Some(x) = STORED.with(|m| {
         let m = m.borrow();
         if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
     }) {
         return x;
     }
-    let key = if CALL_DEPTH.with(|d| d.get()) > 0 { vector_identity(v) } else { None };
+    // (a shared scalar constant is every use of its number: C may write
+    // into the object one use got, so each gets its own)
+    let key = if CALL_DEPTH.with(|d| d.get()) > 0 && !v.is_shared_scalar() { vector_identity(v) } else { None };
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
             return x;
@@ -1145,7 +1710,11 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         Value::Str(x) => {
             let r = Rf_protect(core().alloc_vector(STRSXP, x.data.len()));
             for (i, s) in x.data.iter().enumerate() {
-                SET_STRING_ELT(r, i as isize, char_sexp(s));
+                let c = char_sexp(s);
+                // SET_STRING_ELT's store: a fresh vector is neither watched
+                // nor ALTREP, and `i` is in range (char_sexp can collect;
+                // the slot is read after it)
+                crate::memory::store_slot(r, (r.std_data() as *mut Sexp).add(i), c);
             }
             Rf_unprotect(1);
             r
@@ -1246,7 +1815,15 @@ unsafe fn sym_of(x: Sexp) -> Sym {
     if x == R_MissingArg {
         return s::EMPTY;
     }
-    Sym::new(&String::from_utf8_lossy(x.car().char_bytes()))
+    // Symbols on both sides live as long as the process (the core's
+    // install table, the interner): the name is read and hashed once per
+    // symbol, not at every conversion.
+    if let Some(s) = SYM_OF.with(|m| m.borrow().get(&x.addr()).copied()) {
+        return s;
+    }
+    let s = Sym::new(&String::from_utf8_lossy(x.car().char_bytes()));
+    SYM_OF.with(|m| m.borrow_mut().insert(x.addr(), s));
+    s
 }
 
 /// A CHARSXP as a runtime string (UTF-8; Latin-1 converted).
@@ -1289,6 +1866,11 @@ unsafe fn items_of(mut p: Sexp) -> Vec<Arg> {
 pub unsafe fn from_sexp(x: Sexp) -> Value {
     if x.is_null() || x == R_NilValue {
         return Value::Null;
+    }
+    if x.is_twin_cell() {
+        if let Some(v) = twin_value(x) {
+            return v;
+        }
     }
     if let Some(v) = proxied(x) {
         return v;
@@ -1530,16 +2112,6 @@ unsafe fn binding(env: &Env, sym: Sym) -> RResult<Option<Value>> {
     Ok(Some(v))
 }
 
-/// A variable's value for C; a list is noted, in case C changes it in
-/// place (crate::owned).
-unsafe fn found(v: &Value, env: &Env, sym: Sym) -> Sexp {
-    let x = to_sexp(v);
-    if matches!(v, Value::List(_)) && CALL_DEPTH.with(|d| d.get()) > 0 {
-        crate::owned::note_origin(x, env, sym);
-    }
-    x
-}
-
 fn vtype_of(t: i32) -> Option<VType> {
     Some(match t as u8 {
         NILSXP => VType::Null,
@@ -1722,7 +2294,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             {
                 robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
             } else {
-                remember_stored(a[1], &val);
+                bound(a[1], &val);
                 with_interp(|i| i.define(sym, val, &env))?;
             }
             R_NilValue
@@ -1730,7 +2302,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "setVar" => {
             // R: envir.c:setVar — assign where bound, else in the global env
             let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
-            remember_stored(a[1], &val);
+            bound(a[1], &val);
             let mut cur = Some(env);
             let mut target = None;
             while let Some(e) = cur {
@@ -1751,7 +2323,10 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     return Ok(x);
                 }
                 if let Some(v) = binding(&e, sym)? {
-                    return Ok(found(&v, &e, sym));
+                    return Ok(looked_up(&v));
+                }
+                if missing_marker_at(&e, sym) {
+                    return Ok(R_MissingArg);
                 }
                 env = e.parent();
             }
@@ -1763,11 +2338,15 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 return Ok(x);
             }
             match binding(&env, sym)? {
-                Some(v) => found(&v, &env, sym),
+                Some(v) => looked_up(&v),
+                None if missing_marker_at(&env, sym) => R_MissingArg,
                 None => R_UnboundValue,
             }
         }
-        "existsVarInFrame" => crate::list::Rf_ScalarLogical(env_of(a[0])?.has_local(sym_arg(a[1])?) as c_int),
+        "existsVarInFrame" => {
+            let (env, sym) = (env_of(a[0])?, sym_arg(a[1])?);
+            crate::list::Rf_ScalarLogical((env.has_local(sym) || missing_marker_at(&env, sym)) as c_int)
+        }
         "removeVar" => {
             let (sym, env) = (sym_arg(a[0])?, env_of(a[1])?);
             if env.0.locked.get() {
@@ -1793,7 +2372,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 cur = if inherits { e.parent() } else { None };
             }
             match found {
-                Some(v) => to_sexp(&with_interp(|i| i.force(v))?),
+                Some(v) => looked_up(&with_interp(|i| i.force(v))?),
                 None if a[3] != R_UnboundValue => a[3],
                 None => return Err(Flow::error(format!("object '{}' not found", sym.name()))),
             }
@@ -2304,9 +2883,19 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut HashMap<usize, Value>) 
     if v.is_shared_scalar() {
         return;
     }
-    unsafe fn back<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
+    unsafe fn back<T: Copy + PartialEq + 'static>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
-        if n == 0 || crate::memory::xlength(x) as usize != n {
+        let m = crate::memory::xlength(x) as usize;
+        if m != n {
+            // C resized the object in place (SETLENGTH over TRUELENGTH,
+            // rlang's dynamic arrays): the caller's object has the new
+            // length. The old buffer stays alive until top level (see
+            // `retire`): R code can be walking it.
+            let src = if m == 0 { &[][..] } else { std::slice::from_raw_parts(x.std_data() as *const T, m) };
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, src.to_vec());
+            return;
+        }
+        if n == 0 {
             return;
         }
         let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
@@ -2527,6 +3116,7 @@ unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResu
 }
 
 unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
+    flush_twins();
     if t != 0 {
         return Err(take_flow(t));
     }
@@ -2551,15 +3141,20 @@ unsafe fn check_result(out: Sexp) -> RResult<()> {
     Ok(())
 }
 
-/// A list or call cell that `.Call` returned and that came from the runtime:
-/// it is the caller's own object, not a copy (`node_poke_cadr(node_car(x), v)`
-/// writes through `x`). `originals` has the routine's writes.
+/// A list, call or pairlist `.Call` returned that came from the runtime (an
+/// argument or what one contains): it is the caller's own object, not a
+/// copy, as GNU R returns it (`node_poke_cadr(node_car(x), v)` writes
+/// through `x`).
+/// `originals` has the routine's writes.
 unsafe fn original_cell(out: Sexp, originals: &HashMap<usize, Value>) -> Option<Value> {
-    match originals.get(&out.addr()) {
-        Some(v @ Value::Pairlist(_)) if out.typ() == LISTSXP => Some(v.clone()),
-        Some(v @ Value::Lang(_)) if out.typ() == LANGSXP => Some(v.clone()),
-        _ => None,
+    // A list, call or pairlist: the write-back has rewritten its elements in
+    // place. Not an atomic vector: C's writes to one do not always come back
+    // (into a compact sequence, an ALTREP object C materialized), and a
+    // conversion of the result sees them.
+    if !matches!(out.typ(), LISTSXP | LANGSXP | VECSXP | EXPRSXP) || out.is_altrep() {
+        return None;
     }
+    originals.get(&out.addr()).filter(|v| twin_shape(out, v)).cloned()
 }
 
 unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode::CallInfo) {
@@ -2575,6 +3170,7 @@ unsafe fn stack_imbalance(interp: &mut Interp, name: &str, info: &crate::dotcode
 unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     CALL_DEPTH.with(|d| d.set(d.get() + 1));
     let res = call_routine_ctx(interp, call, r, args, env);
+    flush_twins();
     crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
@@ -2586,14 +3182,17 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
             // the agreement of an object with attributes (`write_back`
             // forgets the others); a value C stored keeps its own
             let attributed = (x.attrib_raw() != R_NilValue && !x.attrib_raw().is_null()) || x.gp() & gp::S4 != 0;
-            if attributed && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x)) {
+            // (and a twin keeps its own until it is dropped)
+            if attributed
+                && STORED.with(|m| m.borrow().get(&k).is_none_or(|e| e.0 != x))
+                && !TWIN_HEAD.with(|h| h.borrow().contains_key(&x.addr()))
+            {
                 forget_attrs(x);
             }
         }
         if kept_count() > SWEEP_AT.with(|c| c.get()) {
             sweep_stored();
         }
-        crate::owned::clear_origins();
     }
     res
 }
@@ -2735,7 +3334,7 @@ unsafe fn write_back_touched(xs: &[Sexp], originals: &mut HashMap<usize, Value>)
         }
         let proxy = PROXIED
             .try_with(|m| {
-                PINNED.try_with(|p| Some((*p.borrow().get(&h)?, m.borrow().get(&h)?.1.clone()))).ok().flatten()
+                PINNED.try_with(|p| Some((p.borrow().get(&h)?.0, m.borrow().get(&h)?.1.clone()))).ok().flatten()
             })
             .ok()
             .flatten();
@@ -2765,7 +3364,27 @@ pub(crate) unsafe fn drain_touched() {
 
 /// What a `.Call` changed in the objects it could reach.
 unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
+    // An atomic twin is compared like any argument (C may write through a
+    // pointer it took earlier), but through its own write-back; C reaches
+    // the cells of the others only through the setters, which report it.
+    let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
+    let mark = |x: &Sexp| {
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
+            if let Some(k) = twin(x) {
+                TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
+                ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    };
     let seen: Vec<_> = SEEN.with(|m| m.borrow().values().cloned().collect());
+    for (x, _) in &seen {
+        mark(x);
+    }
+    for x in xs {
+        mark(x);
+    }
+    flush_twins();
+    let seen: Vec<_> = seen.into_iter().filter(|(x, _)| twin(x).is_none()).collect();
     let mut originals: HashMap<_, _> = seen.iter().map(|(x, v)| (x.addr(), v.clone())).collect();
     for (x, value) in &seen {
         if !xs.contains(x) {
@@ -2774,7 +3393,9 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> HashMap<usize, Value> {
     }
     write_back_touched(xs, &mut originals);
     for (a, &x) in args.iter().zip(xs) {
-        write_back(&a.value, x, &mut originals);
+        if twin(&x).is_none() {
+            write_back(&a.value, x, &mut originals);
+        }
     }
     originals
 }
@@ -2861,10 +3482,26 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
         Z(Vec<Complex>),
         R(Vec<u8>),
         S(#[allow(dead_code)] Vec<CString>, Vec<*mut c_char>),
+        /// `.Fortran`'s character argument: one string, in a buffer of at
+        /// least 256 bytes
+        F(Vec<u8>),
     }
+    let fortran = r.interface == Interface::Fortran;
     let mut bufs = Vec::with_capacity(args.len());
     for a in &args {
         bufs.push(match &a.value {
+            // R: dotcode.c:do_dotCode, STRSXP with Fort
+            Value::Str(v) if fortran => {
+                let ss = v.data.first().map(|s| s.as_deref().unwrap_or("NA")).unwrap_or("");
+                if v.data.len() > 1 {
+                    interp.warning("only the first string in a char vector used in .Fortran")?;
+                } else {
+                    interp.warning("passing a char vector to .Fortran is not portable")?;
+                }
+                let mut b = vec![0u8; ss.len().max(255) + 1];
+                b[..ss.len()].copy_from_slice(ss.as_bytes());
+                Buf::F(b)
+            }
             Value::Lgl(v) | Value::Int(v) => Buf::I(v.data.clone()),
             Value::Real(v) => Buf::D(v.data.clone()),
             Value::Cplx(v) => Buf::Z(v.data.clone()),
@@ -2891,6 +3528,7 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
             Buf::Z(v) => v.as_mut_ptr() as *mut c_void,
             Buf::R(v) => v.as_mut_ptr() as *mut c_void,
             Buf::S(_, p) => p.as_mut_ptr() as *mut c_void,
+            Buf::F(b) => b.as_mut_ptr() as *mut c_void,
         })
         .collect();
     publish(interp);
@@ -2908,6 +3546,11 @@ unsafe fn dot_c(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, 
                 (Buf::D(d), _) => Value::Real(Rc::new(Vector::new(d))),
                 (Buf::Z(d), _) => Value::Cplx(Rc::new(Vector::new(d))),
                 (Buf::R(d), _) => Value::Raw(Rc::new(Vector::new(d))),
+                // only return one string: warned on the R -> Fortran step
+                (Buf::F(b), _) => {
+                    let end = b.iter().take(255).position(|&c| c == 0).unwrap_or(255.min(b.len()));
+                    Value::Str(Rc::new(Vector::new(vec![Some(RString::from_bytes(&b[..end], Encoding::Native))])))
+                }
                 (Buf::S(_, p), _) => Value::Str(Rc::new(Vector::new(
                     p.iter()
                         .map(|&q| Some(RString::from_bytes(CStr::from_ptr(q).to_bytes(), Encoding::Native)))
@@ -3177,59 +3820,46 @@ impl NativeBridge for Bridge {
             return;
         }
         let outer = INTERP.with(|c| c.get().is_null());
-        // GNU R's collection finds everything unreachable at once. Here a
-        // runtime cycle can hold core objects (an external pointer in a
-        // test_that() environment) and core objects can hold runtime ones
-        // (a callback in a pointer's protected field): collect, reclaim
-        // the runtime cycles nothing reaches anymore, and collect again
-        // while that frees something, so that one gc() runs the finalizers
-        // of everything that became unreachable.
+        // GNU R's collection finds everything unreachable at once, in one
+        // mark. Here a runtime cycle can hold core objects (an external
+        // pointer in a test_that() environment) and core objects can hold
+        // runtime ones (a callback in a pointer's protected field), so the
+        // collection marks both heaps as one: what the bridge holds in the
+        // core heap is no root, it is marked through the runtime graph
+        // (mark_proxies, trace_proxy). With C code running below gc() (R
+        // code that rlang's or testthat's C code evaluates), the stack scan
+        // covers its frames: what a C local holds is marked as before.
         // R: memory.c:R_gc_internal
         // SAFETY: on the R thread, with libR ready (READY), and no
         // collector borrow active: the collection starts below.
         unsafe { sweep_bridge_holds() };
-        loop {
-            // Proxies are marked by the runtime graph: one that only a dead
-            // cycle refers to has a count above one, and kept now it would
-            // root its cycle in the reclamation below.
-            GRAPH_MARK.with(|on| on.set(true));
-            // SAFETY: the R thread with `interp` current.
-            enter(interp, |_| unsafe {
-                // gc() from R with no C code active: nothing on the
-                // machine stack can hold a core object
-                let old = if outer { core().set_scan_top(0) } else { 0 };
-                core().collect();
-                if outer {
-                    core().set_scan_top(old);
-                }
-                GRAPH_MARK.with(|on| on.set(false));
-                // Finalizers are C code: the scan is back on, so a
-                // collection inside one sees its locals.
-                crate::util::safe_point();
-            });
+        GRAPH_MARK.with(|on| on.set(true));
+        // SAFETY: the R thread with `interp` current.
+        enter(interp, |_| unsafe {
+            // gc() from R with no C code active: nothing on the machine
+            // stack can hold a core object
+            let old = if outer { core().set_scan_top(0) } else { 0 };
+            let roots = core().set_held_roots(false);
+            core().collect();
+            core().set_held_roots(roots);
+            if outer {
+                core().set_scan_top(old);
+            }
             GRAPH_MARK.with(|on| on.set(false));
-            drain_dead();
-            // After the collection and its finalizers: the weak-reference
-            // round is over, so what only dead cycles reach can be
-            // reclaimed.
-            let before = CORE_RELEASES.with(|n| n.get());
-            // SAFETY: the collection and its finalizers are over, and no
-            // collector borrow is active.
-            if unsafe { reclaim_host_cycles() } == 0 {
-                break;
-            }
-            // Collect again only if the reclaimed cycles let go of core
-            // objects: wrapped pointers they held, or what the bridge kept
-            // for them (a cycle of plain R objects frees nothing there).
-            let dropped = CORE_RELEASES.with(|n| n.get()) - before;
-            // (Pins only reclaimed cycles held are left to the next gc():
-            // finding them takes another graph, and they only wait.)
-            // SAFETY: as above.
-            let swept = unsafe { sweep_stored() };
-            if dropped == 0 && swept == 0 {
-                break;
-            }
-        }
+            // before any finalizer: no wrapper may hand out a freed object
+            drain_dead_held();
+            // Finalizers are C code: the scan is back on, so a collection
+            // inside one sees its locals.
+            crate::util::safe_point();
+        });
+        GRAPH_MARK.with(|on| on.set(false));
+        drain_dead();
+        // After the collection and its finalizers: the weak-reference
+        // round is over, so the runtime half of what died can be
+        // reclaimed.
+        // SAFETY: the collection and its finalizers are over, and no
+        // collector borrow is active.
+        unsafe { reclaim_host_cycles() };
     }
 }
 
@@ -3238,6 +3868,17 @@ impl NativeBridge for Bridge {
 /// some of the thread-locals its destructor needs (`WRAPPED`, the isolate,
 /// the search epoch) are gone. Rust aborts the process when a TLS access
 /// during destruction panics, so those destructors use `try_with`.
+/// R: names.c:mkSymMarker -- R_MissingArg, the symbol "", is its own
+/// SYMVALUE, which is the binding the base environment and the base
+/// namespace give a symbol: base "binds" it to the missing argument.
+///
+/// # Safety
+/// The R thread, with the interpreter current (a host op).
+unsafe fn missing_marker_at(env: &Env, sym: Sym) -> bool {
+    // SAFETY: the caller's contract.
+    sym.is_empty() && unsafe { with_interp(|i| i.is_base_frame(env)) }
+}
+
 #[cfg(test)]
 mod tls_drop_tests {
     use super::*;
