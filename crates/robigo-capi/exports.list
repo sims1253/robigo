@@ -1028,6 +1028,7 @@
   Rstrlen;
   Runzip;
   Rvprintf;
+  Rvsnprintf_mbcs;
   SETCAD4R;
   SETCADDDR;
   SETCADDR;
@@ -1141,6 +1142,7 @@
   dsvdc_;
   dtrsl_;
   dummy_fgetc;
+  dummy_vfprintf;
   exp_rand;
   extR_HTTPDCreate;
   extR_HTTPDStop;
@@ -1192,7 +1194,11 @@
   names;
   nmmin;
   norm_rand;
+  null_fgetc;
+  null_open;
+  null_read;
   null_seek;
+  null_truncate;
   null_vfprintf;
   null_write;
   opt_stop;
@@ -1229,8 +1235,12 @@
   rexit_;
   rexitc_;
   robigo_capi_init;
+  robigo_con_destroy;
+  robigo_conn_vfprintf;
   robigo_connection_string_arg;
+  robigo_connection_with_id;
   robigo_console_init;
+  robigo_destroy_connection;
   robigo_dll_close;
   robigo_dll_find;
   robigo_dll_flags;
@@ -1244,6 +1254,7 @@
   robigo_extdata;
   robigo_extdata_owner;
   robigo_flags;
+  robigo_forget_conn_id;
   robigo_gc;
   robigo_gc_count;
   robigo_gc_seconds;
@@ -1252,7 +1263,10 @@
   robigo_gr_roots;
   robigo_host_handle;
   robigo_host_proxy;
+  robigo_install_connection;
   robigo_locale_init;
+  robigo_next_connection;
+  robigo_next_connection_id;
   robigo_print_roots;
   robigo_run_finalizers;
   robigo_set_OutDec;

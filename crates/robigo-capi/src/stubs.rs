@@ -16,7 +16,6 @@ pub static STUBS: &[&str] = &[
     "R_execMethod",
     "R_findVarLocInFrame",
     "R_moduleCdynload",
-    "R_new_custom_connection",
     "R_primitive_generic",
     "R_primitive_methods",
     "R_runHandlers",
@@ -80,11 +79,6 @@ pub static mut R_ignore_SIGPIPE: [usize; 4] = [0; 4];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_moduleCdynload() {
     not_implemented("R_moduleCdynload")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_new_custom_connection() {
-    not_implemented("R_new_custom_connection")
 }
 
 #[unsafe(no_mangle)]
