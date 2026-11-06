@@ -921,6 +921,7 @@ dependencies = [
  "robigo-numerics",
  "robigo-syntax",
  "smallvec",
+ "zlib-rs",
 ]
 
 [[package]]

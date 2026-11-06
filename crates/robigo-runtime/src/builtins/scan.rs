@@ -368,15 +368,17 @@ impl Scan {
 
     // R: scan.c:extractItem
     fn extract(&mut self, i: &mut Interp, buf: &[u8], col: &mut Col) -> RResult<()> {
-        let s = String::from_utf8_lossy(buf).into_owned();
+        // Borrowed unless the field needs repair: an allocation per field
+        // is most of the cost of reading numbers.
+        let s = String::from_utf8_lossy(buf);
         match col {
             Col::Null => {}
             Col::Lgl(v) => {
                 if self.is_na_string(&s, 0) {
                     v.push(NA_LOGICAL);
                 } else {
-                    let tr = matches!(s.as_str(), "T" | "True" | "TRUE" | "true");
-                    let fa = matches!(s.as_str(), "F" | "False" | "FALSE" | "false");
+                    let tr = matches!(&*s, "T" | "True" | "TRUE" | "true");
+                    let fa = matches!(&*s, "F" | "False" | "FALSE" | "false");
                     if tr || fa {
                         v.push(tr as i32);
                     } else {

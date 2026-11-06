@@ -218,6 +218,24 @@ fn coerce_lhs(x: &Value, to: u32) -> Value {
     }
 }
 
+/// [`coerce_lhs`] of `x` in place. A logical vector nothing else holds
+/// becomes an integer vector without a copy: the two have the same
+/// representation (`Lgl` is `i32`, NA is `INT_MIN` in both) and keep the
+/// same attributes, so only the type changes, as in the new vector GNU R
+/// allocates.
+fn coerce_lhs_in_place(x: &mut Value, to: u32) {
+    if to == 13
+        && let Value::Lgl(rc) = x
+        && Rc::strong_count(rc) == 1
+        && Rc::weak_count(rc) == 0
+    {
+        let Value::Lgl(rc) = std::mem::replace(x, Value::Null) else { unreachable!() };
+        *x = Value::Int(rc);
+        return;
+    }
+    *x = coerce_lhs(x, to);
+}
+
 /// `coerceVector(y, VECSXP)` for the right-hand side.
 // R: coerce.c:coerceVector
 fn coerce_rhs_to_list(interp: &mut Interp, y: Value) -> RResult<Value> {
@@ -523,7 +541,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     }
     // Committed: nothing below can fail.
     if let Some(t) = fix.x_to {
-        *x = coerce_lhs(x, t);
+        coerce_lhs_in_place(x, t);
     }
     if stretch > 0 {
         enlarge_vector(x, stretch as usize)?;
@@ -661,7 +679,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
         )));
     }
     if let Some(t) = fix.x_to {
-        *x = coerce_lhs(x, t);
+        coerce_lhs_in_place(x, t);
     }
     if n == 0 {
         return Ok(());
@@ -735,6 +753,41 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
             }
         }
     }
+    // `x[, , i] <- y`: whole leading dimensions, then in-range scalars,
+    // select one contiguous block, which a same-typed `y` of its length
+    // fills in order (as the general path below would).
+    let lead = subs.iter().take_while(|s| is_missing_or_empty(s)).count();
+    if lead >= 1 && lead < k {
+        let mut base = 0usize;
+        let mut stride = 1usize;
+        let mut ok = true;
+        for i in 0..k {
+            if i >= lead {
+                match as_scalar_index(&subs[i]) {
+                    Some(idx) if idx >= 1 && idx <= dims[i] as i64 => base += (idx - 1) as usize * stride,
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            stride *= dims[i] as usize;
+        }
+        let len: usize = dims[..lead].iter().map(|&d| d as usize).product();
+        if ok && ny == len && len > 0 {
+            match (&mut *x, &y) {
+                (Value::Real(a), Value::Real(b)) => {
+                    Rc::make_mut(a).data[base..base + len].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                (Value::Int(a), Value::Int(b)) => {
+                    Rc::make_mut(a).data[base..base + len].copy_from_slice(&b.data);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
     let mut sub_idx = Vec::with_capacity(k);
     for i in 0..k {
         sub_idx.push(array_subscript(interp, i, &subs[i], &dims, x, Some(call))?);
@@ -768,7 +821,7 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
         )));
     }
     if let Some(t) = fix.x_to {
-        *x = coerce_lhs(x, t);
+        coerce_lhs_in_place(x, t);
     }
     if n == 0 {
         return Ok(());
@@ -1019,7 +1072,7 @@ fn assign2_level(
         }
         // Committed.
         if let Some(t) = fix.x_to {
-            *x = coerce_lhs(x, t);
+            coerce_lhs_in_place(x, t);
         }
         if stretch > 0 {
             enlarge_vector(x, stretch)?;

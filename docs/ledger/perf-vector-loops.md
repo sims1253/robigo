@@ -1,0 +1,130 @@
+# perf-vector-loops: fannkuch-style integer vector loops
+
+Metric: `scripts/rivals.py` peak (fastest warmed-up iteration) against GNU R,
+Ř and FastR on `fannkuchredux`, `fannkuchredux_naive`, `vectorFor`,
+`robigo/queens`, `robigo/fannkuch`. Gate: `scripts/perf.py compare` of
+instruction counts against main (no benchmark more than 0.5% slower) and
+conformance in all three tiers.
+
+Baseline (main 5ce8d760, peak seconds): fannkuchredux 0.0239 (GNU R 0.0118,
+Ř 0.00387, FastR 0.000488); fannkuchredux_naive 0.00522 (0.00625, 0.00133,
+0.000516); vectorFor 0.00252 (0.0297, 0.00197, 0.00491); queens 0.00347;
+robigo/fannkuch 0.05.
+
+## 2026-11-04: round 1, whole fannkuch loops in native code
+
+- Why: `fannkuchredux_naive` is scalar element swaps, which the loop JIT has,
+  but only its inner loops compiled (4,400 native entries per run). The outer
+  `while (TRUE)` was rejected for three reasons: `perm <- perm1` (a vector
+  assigned to a variable), `max(max_flip_count, flip_count)` (a builtin call),
+  and `cat(...); return(...)` at the very end (calls). Also `if (k <- perm1[[1L]])`
+  (an integer condition) and `for (r in rxrange)` over a range held in a
+  variable. FastR at 0.5 ms compiles the whole function.
+- Change (`jit.rs`, `vm::jit_enter`), loop tier only:
+  - Leaving at ops native code lacks: a call or `return` at the loop's own
+    level (not in a nested loop) compiles to a deopt at that op; the VM
+    executes it and goes on. The registers such an op reads must be ones
+    native code restores or never writes. A loop that cannot complete an
+    iteration without leaving (no back edge on a cycle of native ops) is not
+    compiled, and one that keeps leaving (4 leaves, fewer than 16 back edges
+    per leave) is given up: native code counts its back edges.
+  - Vector variables assigned in the loop (`perm <- perm1`) are *owned*: a
+    buffer of the run's `LoopCtx`, copied from the value at entry if read
+    first, grown by a helper, written back as a new vector at exit and deopt.
+    `GetVar` of a vector gives a vector register (pointer, length) that views
+    it; a loop where such a register is live across a change of the vector it
+    views is rejected, and vector registers are restored at a deopt only if
+    live (liveness analysis), since a dead one may view a resized buffer.
+  - Range variables (an unmaterialized `a:b`, or a compact sequence) as three
+    values, readable as `for` sequences; `length()` of vectors and ranges.
+  - `max`/`min` of two to four scalars (R: summary.c; NA and NaN deopt, ties
+    keep the first); `if`/`while` on integer and double scalars
+    (asLogical2's `x != 0`, NA deopts).
+- Rejected on the way:
+  - leaving at any op: startup +0.4% (two base loops, `dynGet`'s and
+    `registerS3methods`', compiled and left in every iteration), the whole
+    suite +0.7%;
+  - "a back edge is reachable" as the test for running an iteration: a
+    `while` loop's condition is reachable without its body;
+  - leaving at `:` and at calls in nested loops: `robigo/fannkuch` +2.5%,
+    `spectralnorm_naive` +1.1%, `spectralnorm_alt_3` +1.0%,
+    `mandelbrot_naive_ascii` +1.1% (compiled, then left at once every entry).
+- Result: `fannkuchredux_naive` peak 5.22 ms -> **0.41 ms** (FastR 0.52,
+  Ř 1.33, GNU R 6.25); shot 48 -> 35 ms. Gate against main bf7332ee: 1 faster
+  (`fannkuchredux_naive` -7.4% with startup), 0 slower; worst +0.33%
+  (`robigo/nbody`), startup +0.03%.
+- Verified: `tests/r/jit/loop-vectors.R` (owned copies, growth, `x <- x`,
+  values read at entry, deopts and overflow with owned vectors, range
+  variables, `max`/`min` with NA, NaN, signed zeros, logicals and a local
+  `max`, numeric conditions with NA, leaving at `cat`, `return`, `paste0`,
+  `stop`, `warning`, and the shootout program), byte-identical in all tiers.
+- Found after filing (own review): native loops do not run the VM's
+  `Visible` ops, so `invisible(1); for (...) if (...) return(s)` returned `s`
+  invisibly once the `return` was a leave op. Native code now hands the VM
+  the visibility at a leave: a forward analysis gives it per op, and only
+  where a `return` can read it before an op sets it; a value that differs
+  between paths there is tracked at run time. Tracking it everywhere cost
+  `scalarFor` +1.0% and `nbody` +1.1%; the analysis made it free.
+- Sol review (gpt-6.1-sol, round 1) found that the vector registers restored
+  at a leave were only those the leave op reads: in
+  `return(sum(x, sum(1L, 2L)))` the VM, after the inner call, read a stale
+  register for `x` (the result was 3 for 33). Liveness is now the VM's: a
+  backward analysis of every op's reads, definite writes (also on a failing
+  guard's jump) and jumps from where native code leaves; a register live
+  there that native code wrote without a single type rejects the loop.
+  Buffers replaced by larger ones are kept until the run ends, so a register
+  can never view freed memory. Case added to the test (fails on the first
+  version).
+- Gaps found (tests without markers): `tests/r/basics/if-condition-na-message.R`
+  (a non-logical NA condition must say "argument is not interpretable as
+  logical"; robigo says "missing value where TRUE/FALSE needed", in every
+  tier: `coerce::as_condition`), `tests/r/jit/negzero-constant.R` (GNU R's
+  compiler pools 0 and -0 as one constant in a compiled function).
+- Next: `fannkuchredux` itself needs `:` in native code, indexing with ranges
+  and vectors, range assignment, and inlining `rev.default` with a vector
+  argument.
+
+## 2026-11-04: round 2, ranges, vector indexing and `rev.default` in native loops
+
+- Why: `fannkuchredux` (23.9 ms peak; FastR 0.49, Ř 3.9, GNU R 11.8) flips with
+  `perm[k_range] <- rev.default(perm[k_range])` and rotates with
+  `perm1[1:r] <- perm1[2:(r + 1L)]` and `perm1[one_two] <- perm1[two_one]`. Its
+  loop was rejected at the first `:`, and the VM ran each flip through the
+  interpreter (the promise `perm[k_range]`, the complex assignment).
+- Change (`jit.rs`, `vm::inline_call`), loop tier, stacked on round 1:
+  - `a:b` of scalars is a range register (`vm::colon_range`'s conditions).
+  - `x[i]` with a range or a plain vector `i` is a *temporary* vector: a buffer
+    of the run's `LoopCtx` per op that computes one, reused across iterations
+    (a register is redefined before its op runs again). Every index is checked
+    (in range, not NA, not below 1; a fraction truncates) or native code leaves.
+  - `x[i] <- v` with such an index and a scalar or a vector of as many
+    elements: all indices are checked before anything is written (an NA index
+    is an error in R and must leave `x` untouched), `v` must not view `x`
+    itself (`x[3:1] <- x`), and the target is never grown.
+  - Closures run inline take vectors: arguments `x[i]`/`x[a:b]` are evaluated
+    by native code where it has them (and `[` must be base's), bodies may use
+    `length`, `:`, `x[i]` and numeric conditions and return vectors. A closure
+    the VM's inline path does not take for those ops (`rev.default`) is
+    analysed for native code only (`native_inline`), so the VM pays nothing.
+  - `length()`/`is.null()` in loops.
+- Result: `fannkuchredux` peak 23.9 ms -> **0.371 ms** (FastR 0.488, Ř 3.87,
+  GNU R 11.8), shot 59 -> 38 ms; `robigo/fannkuch` 50 -> 32.5 ms. Instruction
+  gate against main bf7332ee: 3 faster (`fannkuchredux` -46.7%,
+  `robigo/fannkuch` -27.0%, `fannkuchredux_naive` -7.5%, startup included), 0
+  slower, worst +0.33% (`robigo/nbody`).
+- Verified: `tests/r/jit/loop-vector-index.R` (range and vector reads with
+  every index native code leaves for, assignments with ranges, vectors and
+  scalars, the fannkuch rotation, `x[3:1] <- x`, mismatched lengths, NA
+  indices leaving `x` unchanged, growth, a value of another type, range
+  variables, `rev.default` and user closures with vector arguments and
+  results, rebound `rev.default` and `[`), byte-identical in all tiers.
+- Found by an adversarial review (a subagent with a random program
+  generator, ~11,400 programs over 60 templates, both tiers): `x[x] <- v`
+  re-read its indices from `x` while writing `x`; native code now leaves when
+  the index vector is the target's storage (test case added). Also a gap in
+  every tier, not a native one: `tests/r/basics/return-assign-visible.R`
+  (GNU R's compiled `return(s <- v)` is visible).
+- Found: the first version of the round-1 test called each function once, and
+  small closures are only compiled at their second call (GNU R's JIT
+  heuristic), so most of its loops ran in the interpreter: tests now call
+  twice and the trace (`ROBIGO_JIT_TRACE=1`) was checked for each loop.
