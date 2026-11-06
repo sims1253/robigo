@@ -154,6 +154,11 @@ thread_local! {
 impl Connection {
     /// R: connections.c:init_con
     pub(super) fn new(class: &str, description: &str, mode: &str, kind: ConnKind) -> Connection {
+        Connection::with_id(class, description, mode, kind, next_connection_id())
+    }
+
+    /// init_con with the id already taken from `current_id`.
+    fn with_id(class: &str, description: &str, mode: &str, kind: ConnKind, id: usize) -> Connection {
         Connection {
             class: class.to_string(),
             description: description.to_string(),
@@ -172,7 +177,7 @@ impl Connection {
             pos_pushback: 0,
             kind,
             ex_ptr: Value::Null,
-            id: next_connection_id(),
+            id,
         }
     }
 
@@ -360,7 +365,7 @@ const NATIVE_READ: usize = usize::MAX;
 
 /// The native bridge, which calls a native connection's methods.
 fn native_bridge() -> RResult<&'static dyn crate::native::NativeBridge> {
-    crate::native::bridge().ok_or_else(|| Flow::error("robigo: native connections need the native bridge"))
+    crate::native::bridge().ok_or_else(crate::native::no_native_connections)
 }
 
 /// Open connection `n` with its current mode (R's `con->open(con)`).
@@ -1483,12 +1488,12 @@ pub fn connection_with_id(i: &Interp, id: usize) -> Option<i32> {
 /// C `struct Rconn` at `con`, whose `con->id` is `id` (from
 /// [`next_connection_id`]). The bridge copies the struct's fields in.
 pub fn install_native_connection(i: &mut Interp, n: i32, class: &str, description: &str, con: usize, id: usize) {
-    debug_assert!(
+    assert!(
         (3..NCONNECTIONS as i32).contains(&n) && i.conns.table[n as usize].is_none(),
         "install_native_connection: slot {n} is not a free connection slot"
     );
-    let mut c = Connection::new(class, description, "", ConnKind::Native { con });
-    c.id = id;
+    // init_con took `id` from current_id already: take no second one
+    let c = Connection::with_id(class, description, "", ConnKind::Native { con }, id);
     i.conns.table[n as usize] = Some(Box::new(c));
 }
 
@@ -2329,6 +2334,10 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         };
         let eof = lines.read(getc, &mut ans, &mut nul_warnings, &mut incomplete_buf);
         if let Some(e) = err {
+            // R warns inline, so the warnings earned before the error stand
+            for k in nul_warnings {
+                i.warning(format!("line {} appears to contain an embedded nul", k))?;
+            }
             return Err(e);
         }
         eof

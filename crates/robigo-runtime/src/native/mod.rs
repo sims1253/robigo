@@ -218,7 +218,7 @@ pub trait NativeBridge: Sync {
     }
 }
 
-fn no_native_connections() -> Flow {
+pub(crate) fn no_native_connections() -> Flow {
     Flow::error("robigo: native connections need the native bridge")
 }
 
