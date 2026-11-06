@@ -147,6 +147,13 @@ pub fn missing_arg_error(sym: crate::sym::Sym, call: Value, subclass: &'static s
     }))
 }
 
+/// What errors.c:try_jump_to_restart did: jumped to a restart's exit, or
+/// (a NULL exit) cleared the restart stack for jump_to_toplevel.
+enum RestartJump {
+    Exit(Flow),
+    Toplevel,
+}
+
 impl Interp {
     /// The call of the closure that called the current builtin, as used by
     /// `stop()` and `warning()` (R's `findCall`).
@@ -351,11 +358,14 @@ impl Interp {
         // .Traceback is written (try_jump_to_restart): an
         // unhandled error invokes the innermost "browser", "tryRestart" or
         // "abort" restart (source(catch.aborts = TRUE) relies on this).
-        if let Some(f) = self.try_jump_to_restart() {
-            return f;
-        }
+        let to_toplevel = match self.try_jump_to_restart() {
+            Some(RestartJump::Exit(f)) => return f,
+            // invokeRestart's NULL exit: jump_to_toplevel, no traceback.
+            Some(RestartJump::Toplevel) => true,
+            None => false,
+        };
         // Only a session that goes on can read it.
-        if self.interactive || have_handler || self.option_lgl("catch.script.errors", false) {
+        if !to_toplevel && (self.interactive || have_handler || self.option_lgl("catch.script.errors", false)) {
             let calls = self.traceback_calls(0).into_iter().map(Arg::pos).collect();
             self.base.force_set(Sym::new(".Traceback"), Value::pairlist(calls));
         }
@@ -371,8 +381,8 @@ impl Interp {
 
     /// R: errors.c:try_jump_to_restart — invoke the innermost restart named
     /// "browser", "tryRestart" or "abort", unwinding as `.invokeRestart`
-    /// does; `None` when the stack has none (or its exit is NULL).
-    fn try_jump_to_restart(&mut self) -> Option<Flow> {
+    /// does; `None` when the stack has none.
+    fn try_jump_to_restart(&mut self) -> Option<RestartJump> {
         let mut cur = self.restarts.clone();
         while let Some(node) = cur {
             // R matches only a VECSXP of length > 1 with a length-1 name.
@@ -385,7 +395,16 @@ impl Interp {
             };
             if name.is_some_and(|n| n == "browser" || n == "tryRestart" || n == "abort") {
                 let Value::List(l) = &node.restart else { return None };
-                let Value::Env(exit) = &l.data[1] else { return None };
+                let exit = match &l.data[1] {
+                    Value::Env(exit) => exit,
+                    // R: errors.c:invokeRestart -- a NULL exit clears the
+                    // restart stack and jumps to top level.
+                    Value::Null => {
+                        self.restarts = None;
+                        return Some(RestartJump::Toplevel);
+                    }
+                    _ => return None,
+                };
                 // R: errors.c:invokeRestart pops through the first node with
                 // this exit env — a sibling restart of the same withRestarts
                 // shares it, so this walk can stop above the matched node.
@@ -412,7 +431,7 @@ impl Interp {
                 }
                 self.restarts = rest;
                 self.restore_expressions();
-                return Some(Flow::Return(Value::Null, exit.clone()));
+                return Some(RestartJump::Exit(Flow::Return(Value::Null, exit.clone())));
             }
             cur = node.next.clone();
         }

@@ -1,3 +1,5 @@
 Error in h() : first
 Error in f() : boom
 Calls: withRestarts -> withOneRestart -> doWithOneRestart -> f
+Error in k() : null exit
+Error in m() : recorded

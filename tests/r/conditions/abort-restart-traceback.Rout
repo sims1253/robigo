@@ -11,3 +11,15 @@ stop("first")
 [[2]]
 h()
 
+[[1]]
+stop("first")
+
+[[2]]
+h()
+
+[[1]]
+stop("recorded")
+
+[[2]]
+m()
+
