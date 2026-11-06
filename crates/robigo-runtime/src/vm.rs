@@ -4309,7 +4309,7 @@ fn jit_enter(
             return None;
         }
         let k = match call_site_fun_fast(interp, c.f, cs, env) {
-            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) => k,
+            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) && !k.jit.traced() => k,
             Some(Value::Closure(k))
                 if Rc::ptr_eq(&k.formals, &c.clo.formals)
                     && matches!((k.code.get(), c.clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
