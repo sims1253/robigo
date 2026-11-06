@@ -1,0 +1,4 @@
+slice store: during 1 2, after 1
+slice store in a loop: during 2 6, after 2
+slice superassignment: during 1 6, after 1
+slice store's value used: during 0 1, after 1
