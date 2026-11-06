@@ -832,6 +832,9 @@ thread_local! {
     static PENDING: RefCell<HashMap<u64, (Sexp, WeakVal, usize)>> = RefCell::new(HashMap::default());
     /// runtime identity -> its pending object's watch id
     static PENDING_OF: RefCell<HashMap<usize, u64>> = RefCell::new(HashMap::default());
+    /// The pending watch ids, oldest first, for `prune_pending` (ids the
+    /// collections decided meanwhile are skipped there).
+    static PENDING_ORDER: RefCell<std::collections::VecDeque<u64>> = const { RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// The identity a twin is kept under: a value C can hold as an object of
@@ -1125,6 +1128,31 @@ unsafe fn pend(x: Sexp, v: &Value) {
     let id = core().watch(x);
     PENDING.with(|m| m.borrow_mut().insert(id, (x, w, k)));
     PENDING_OF.with(|m| m.borrow_mut().insert(k, id));
+    PENDING_ORDER.with(|q| q.borrow_mut().push_back(id));
+    prune_pending();
+}
+
+/// Forget two of the oldest pending objects whose runtime value died: there
+/// is nothing left to make their twin, whatever the next collection finds,
+/// so their watch need not wait for it. A loop of native calls whose
+/// results R drops (`for (i in 1:n) a <- .Call(...)`) keeps as many
+/// pending objects as results R still holds, not one per call until the
+/// next collection (capi identity_temp_flat).
+unsafe fn prune_pending() {
+    for _ in 0..2 {
+        let Some(id) = PENDING_ORDER.with(|q| q.borrow_mut().pop_front()) else { return };
+        let dead = PENDING.with(|m| m.borrow().get(&id).map(|(_, w, k)| (w.dead(), *k)));
+        match dead {
+            // a collection decided it already (drain_watched)
+            None => {}
+            Some((true, k)) => {
+                PENDING.with(|m| m.borrow_mut().remove(&id));
+                forget_pending_key(id, k);
+                core().unwatch(id);
+            }
+            Some((false, _)) => PENDING_ORDER.with(|q| q.borrow_mut().push_back(id)),
+        }
+    }
 }
 
 /// Forget a pending object of runtime identity `k`.
@@ -1171,6 +1199,10 @@ unsafe fn drain_watched() {
         }
         // the twin holds it now (or nothing does)
         core().unhold(hold);
+    }
+    // (ids a collection decided stay in the order until pruned: none left)
+    if PENDING.with(|m| m.borrow().is_empty()) {
+        PENDING_ORDER.with(|q| q.borrow_mut().clear());
     }
 }
 
