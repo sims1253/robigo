@@ -146,6 +146,13 @@ pub struct Core {
     next_held: u64,
     held_roots: bool,
     dead_held: Vec<u64>,
+    /// Objects the host watches without rooting them ([`Core::watch`]):
+    /// a collection that marks one makes it a hold (the pair of ids in
+    /// `kept_watched`), one that does not frees it (its id in
+    /// `lost_watched`). Checked between mark and sweep in every collection.
+    watched: HashMap<u64, Sexp, BuildFx>,
+    kept_watched: Vec<(u64, u64)>,
+    lost_watched: Vec<u64>,
     /// extra precise roots: called during marking with this core.
     ///
     /// The contract of every hook here: the collector is running. A hook
@@ -280,6 +287,9 @@ impl Core {
             next_held: 1,
             held_roots: true,
             dead_held: Vec::new(),
+            watched: HashMap::default(),
+            kept_watched: Vec::new(),
+            lost_watched: Vec::new(),
             root_fns: Vec::new(),
             host_trace: None,
             host_trace_end: None,
@@ -806,6 +816,31 @@ impl Core {
         std::mem::take(&mut self.dead_held)
     }
 
+    /// Watch `x` without rooting it: the next collection that marks it
+    /// (something else keeps it: the precious list, a C root, an object
+    /// that is kept) turns the watch into a hold, and one that does not
+    /// lets it die. [`Core::take_watched`] reports both.
+    ///
+    /// # Safety
+    /// `x` must be a live object of this heap.
+    pub unsafe fn watch(&mut self, x: Sexp) -> u64 {
+        let id = self.next_held;
+        self.next_held += 1;
+        self.watched.insert(id, x);
+        id
+    }
+
+    /// Stop watching (no effect on an id a collection has decided).
+    pub fn unwatch(&mut self, id: u64) {
+        self.watched.remove(&id);
+    }
+
+    /// The watches the collections since the last call decided: (watch id,
+    /// the id of the hold it became) for the kept, and the ids of the lost.
+    pub fn take_watched(&mut self) -> (Vec<(u64, u64)>, Vec<u64>) {
+        (std::mem::take(&mut self.kept_watched), std::mem::take(&mut self.lost_watched))
+    }
+
     /// How many objects are held.
     pub fn held_count(&self) -> usize {
         self.held.len()
@@ -1317,6 +1352,22 @@ impl Core {
                     self.held.remove(id);
                 }
                 self.dead_held.extend(dead);
+            }
+            // what the host watches: kept by something else, or lost
+            // (decided before the sweep frees the lost and reuses their
+            // slots; a kept one is held from here on)
+            if !self.watched.is_empty() {
+                let watched: Vec<(u64, Sexp)> = self.watched.drain().collect();
+                for (id, x) in watched {
+                    if self.is_marked(x) {
+                        let h = self.next_held;
+                        self.next_held += 1;
+                        self.held.insert(h, x);
+                        self.kept_watched.push((id, h));
+                    } else {
+                        self.lost_watched.push(id);
+                    }
+                }
             }
             self.sweep();
             if let Some(end) = self.host_trace_end {

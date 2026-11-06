@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "identity_result_roundtrip",
+ "out": {
+  "t": "[1] TRUE\n[1] TRUE\n[1] TRUE\n[1] TRUE\n[1] TRUE\n[1] TRUE\n[1] TRUE\n[1] FALSE\n"
+ },
+ "sha": "b9ec6c4451a1a4fa",
+ "status": 0
+}
