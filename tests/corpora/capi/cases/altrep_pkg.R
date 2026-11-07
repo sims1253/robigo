@@ -54,8 +54,16 @@ if (t) print("due") else print("not due")
 if (t) print("due") else print("not due")
 g <- function(t) if (t) "due" else "not due"
 print(g(t))
+# `&&` and `||` read it through Elt too, interpreted and compiled
+print(TRUE && t)
+print(t || FALSE)
+h <- function(t) c(TRUE && t, t || FALSE)
+print(h(t))
 .Call("altrep_pkg_set_flag", FALSE)
 print(g(t))
+print(TRUE && t)
+print(t || FALSE)
+print(h(t))
 print(t[[1L]])
 
 # a modified copy is an ordinary vector

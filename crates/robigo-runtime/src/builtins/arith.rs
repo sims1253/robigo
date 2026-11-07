@@ -1197,6 +1197,12 @@ pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: 
         }
         return Ok(NA_LOGICAL);
     }
+    // R: coerce.c:asLogical2 reads the scalar through an ALTREP class
+    // (LOGICAL_ELT etc.), as `if` does (crate::coerce::as_condition)
+    if let Some(h) = crate::altrep::lookup(v) {
+        let e = crate::altrep::elt(i, h, 0)?;
+        return scalar_logical(i, call, &e, which, op);
+    }
     Ok(as_logical(v))
 }
 

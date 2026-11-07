@@ -72,12 +72,13 @@ pub unsafe fn package_class(x: Sexp) -> bool {
 }
 
 /// The class's `Sum`, `Min` or `Max` (0: none).
-pub unsafe fn summary_method(x: Sexp, which: u8) -> usize {
+pub unsafe fn summary_method(x: Sexp, which: robigo_runtime::altrep::Summary) -> usize {
+    use robigo_runtime::altrep::Summary;
     let m = &*mt(x);
     match which {
-        0 => m.sum,
-        1 => m.min,
-        _ => m.max,
+        Summary::Sum => m.sum,
+        Summary::Min => m.min,
+        Summary::Max => m.max,
     }
 }
 

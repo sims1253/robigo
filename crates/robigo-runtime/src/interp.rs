@@ -560,7 +560,9 @@ impl Interp {
         };
         if forced {
             // (an unboxed value or a shared small integer: boxed once)
-            return Ok(p.value().unwrap_or(Value::Null));
+            let v = p.value();
+            debug_assert!(v.is_some(), "a forced promise has a value");
+            return Ok(v.unwrap_or(Value::Null));
         }
         let v = self.force_promise_raw(p)?;
         if v.shared_int().is_some() {

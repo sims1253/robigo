@@ -2394,9 +2394,6 @@ pub fn compile_body(body: &Value) -> Code {
     Code::new(c, r, true)
 }
 
-/// Bytecode for a promise of `e`, when the compiler handles `e` itself
-/// (not only by evaluating it in the interpreter). `Return` unwinds to the
-/// function whose frame the promise is evaluated in.
 /// A builtin that hands its arguments to native code (`.Call` & co): a
 /// variable passed to it is the binding's own object, which C may write
 /// into. (Other builtins do not keep a scalar argument where native code
@@ -2420,6 +2417,9 @@ fn var_arg(e: &Value) -> Option<Sym> {
     }
 }
 
+/// Bytecode for a promise of `e`, when the compiler handles `e` itself
+/// (not only by evaluating it in the interpreter). `Return` unwinds to the
+/// function whose frame the promise is evaluated in.
 pub fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
     if !matches!(e, Value::Lang(_)) {
         return None;

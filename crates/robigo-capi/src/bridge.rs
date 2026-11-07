@@ -4707,16 +4707,10 @@ impl NativeBridge for Bridge {
         op: robigo_runtime::altrep::Summary,
         narm: bool,
     ) -> RResult<Option<Value>> {
-        use robigo_runtime::altrep::Summary;
         // SAFETY: as altrep_elt; the slot holds the class's C function.
         unsafe {
             let x = original_of(handle)?;
-            let which = match op {
-                Summary::Sum => 0,
-                Summary::Min => 1,
-                Summary::Max => 2,
-            };
-            let f = crate::altrep::summary_method(x, which);
+            let f = crate::altrep::summary_method(x, op);
             if f == 0 {
                 return Ok(None);
             }

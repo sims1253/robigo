@@ -432,13 +432,18 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
     // the vector for scalars.
     #[inline(always)]
     fn read(v: &Value) -> Option<RVal> {
-        Some(match v {
+        let r = match v {
             Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
             Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
             Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
             v if v.is_missing_arg() => return None,
-            v => RVal::V(v.clone()),
-        })
+            v => return Some(RVal::V(v.clone())),
+        };
+        // (a package ALTREP scalar stays boxed, as in `unbox`)
+        if crate::altrep::any() {
+            return Some(unbox_alt(v.clone(), r));
+        }
+        Some(r)
     }
     // `None`: not bound in `e`; `Some(None)`: bound, but reading may run code.
     #[inline(always)]
@@ -552,6 +557,7 @@ fn native_builtin_op(
 /// object.
 #[inline(never)]
 fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg> {
+    debug_assert_eq!(code.arglists[args as usize].len(), code.argvars[args as usize].len());
     code.arglists[args as usize]
         .iter()
         .zip(&code.argvars[args as usize])
@@ -2108,6 +2114,13 @@ fn andor_operand(interp: &mut Interp, v: &Value, and: bool, is_y: bool, call: &V
             call.clone(),
             format!("invalid '{}' type in 'x {} y'", if is_y { "y" } else { "x" }, if and { "&&" } else { "||" }),
         ));
+    }
+    // asLogical2 reads the scalar through an ALTREP class (LOGICAL_ELT etc.)
+    if v.len() == 1
+        && let Some(h) = crate::altrep::lookup(v)
+    {
+        let e = crate::altrep::elt(interp, h, 0)?;
+        return andor_operand(interp, &e, and, is_y, call);
     }
     crate::builtins::summary::as_logical2(v, true, call)
 }
@@ -5150,11 +5163,10 @@ fn for_element(sv: &Value, i: usize) -> Option<RVal> {
 const ALT_FOR: i32 = i32::MIN;
 
 /// Element `i` of a package ALTREP `for` sequence, from its class's `Elt`
-/// (crate::altrep).
+/// (crate::altrep). Before element 0 the loop variable is bound to NULL,
+/// as for any sequence (the frame is flushed: `define` writes it).
 #[cold]
 #[inline(never)]
-/// Before element 0 the loop variable is bound to NULL, as for any
-/// sequence (the frame is flushed: `define` writes it).
 fn for_altrep_element(interp: &mut Interp, env: &Env, var: Sym, sv: &Value, i: usize) -> RResult<Value> {
     if i == 0 {
         interp.define(var, Value::Null, env)?;
