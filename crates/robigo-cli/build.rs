@@ -4,7 +4,10 @@ fn main() {
     // Compile against the same headers as the linked allocator; do not
     // duplicate mimalloc's private structure layout in Rust.
     let mut heap_probe = cc::Build::new();
-    heap_probe.file("src/heap_probe.c").include(std::env::var("DEP_MIMALLOC_INCLUDE_DIR").expect("mimalloc headers"));
+    // (libmimalloc-sys's `include_dir` build metadata)
+    let include = std::env::var("DEP_MIMALLOC_INCLUDE_DIR")
+        .expect("DEP_MIMALLOC_INCLUDE_DIR is not set: libmimalloc-sys must export its include_dir");
+    heap_probe.file("src/heap_probe.c").include(include);
     heap_probe.define("MI_DEBUG", "0");
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         heap_probe.cpp(true).std("c++17").flag_if_supported("/Zc:__cplusplus");

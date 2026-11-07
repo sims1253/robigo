@@ -252,8 +252,8 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
 /// promise's own object (`Promise::value`).
 #[cold]
 #[inline(never)]
-fn expand_promise(p: &Promise, v: Value) -> Value {
-    p.value().unwrap_or(v)
+fn expand_promise(p: &Promise) -> Value {
+    p.value().expect("a forced promise has a value")
 }
 
 /// A constant argument as GNU R's AST interpreter passes it: an unforced
@@ -580,13 +580,11 @@ impl Interp {
         };
         if forced {
             // (an unboxed value or a shared small integer: boxed once)
-            let v = p.value();
-            debug_assert!(v.is_some(), "a forced promise has a value");
-            return Ok(v.unwrap_or(Value::Null));
+            return Ok(p.value().expect("a forced promise has a value"));
         }
         let v = self.force_promise_raw(p)?;
         if v.shared_int().is_some() {
-            return Ok(expand_promise(p, v));
+            return Ok(expand_promise(p));
         }
         Ok(v)
     }

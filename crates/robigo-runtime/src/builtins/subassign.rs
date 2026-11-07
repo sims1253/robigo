@@ -76,7 +76,9 @@ fn force_operands_slow(
         Ok(f) => f.unwrap_or(x),
         Err(f) => return Err((x, f)),
     };
-    let keep = keep_in_list && matches!(x, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Env(_));
+    // (a call's cell takes the value as it is too: SETCAR, subassign.c)
+    let keep = keep_in_list
+        && matches!(x, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_) | Value::Env(_));
     if keep {
         return Ok((x, y));
     }

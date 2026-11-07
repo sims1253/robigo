@@ -895,6 +895,8 @@ impl Code {
         };
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
+        // `native_args` pairs each argument list with its variables
+        assert_eq!(c.arglists.len(), c.argvars.len(), "Code::argvars must match Code::arglists");
         Code {
             ops: c.ops,
             consts: c.consts,

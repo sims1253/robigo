@@ -6420,7 +6420,9 @@ fn run_with(
                     // check is off the path of ordinary loops' iterations.
                     None => {
                         let RVal::I(raw) = regs[*idx as usize] else { continue };
-                        if raw >= 0 || (raw - ALT_FOR) as usize >= sv.len() {
+                        // (a negative index of an ordinary sequence is a
+                        // wrapped count past i32::MAX iterations: not ALTREP)
+                        if raw >= 0 || (raw - ALT_FOR) as usize >= sv.len() || crate::altrep::lookup(sv).is_none() {
                             continue;
                         }
                         flush!();
