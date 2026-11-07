@@ -718,7 +718,18 @@ fn complex_assign_inplace(
     // `Rc::make_mut` then makes matches GNU R's `$<-` duplicate). Restore
     // it on every exit.
     let mut root = match env.take_local(target) {
-        Some(Value::Promise(p)) => p.value()?,
+        Some(Value::Promise(p)) => match p.value() {
+            Some(v) => v,
+            // An unforced promise (a function argument not yet touched):
+            // put the binding back exactly as it was and let the general
+            // path force it. (Taking it out and returning here left NULL
+            // bound, so the general path then assigned into NULL and the
+            // object's attributes vanished.)
+            None => {
+                env.set_local(target, Value::Promise(p));
+                return None;
+            }
+        },
         Some(v) => v,
         None => return None,
     };
